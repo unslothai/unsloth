@@ -2,11 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 // use-tauri-backend.ts pulls in React and the Tauri APIs, so the message choice
 // lives in its own module and is driven directly here.
 import {
+  MANAGED_ENVIRONMENT_BUSY,
   WORKING_DIRECTORY_UNAVAILABLE,
   PATH_SETTING_UNRESOLVABLE,
   preflightStaleMessage,
@@ -96,4 +98,22 @@ test("the setting that could not be resolved is named", () => {
   const unnamed = preflightStaleMessage("managed_stale", PATH_SETTING_UNRESOLVABLE);
   assert.match(unnamed, /One of Unsloth's folder settings points/);
   assert.doesNotMatch(unnamed, UPDATE_ADVICE);
+});
+
+test("a busy managed environment waits instead of repairing", async () => {
+  const native = await readFile(
+    new URL("../../src-tauri/src/preflight/managed.rs", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    native.includes(`MANAGED_ENVIRONMENT_BUSY: &str = "${MANAGED_ENVIRONMENT_BUSY}"`),
+  );
+
+  const hook = await readFile(
+    new URL("../src/hooks/use-tauri-backend.ts", import.meta.url),
+    "utf8",
+  );
+  const busy = hook.indexOf("preflight.reason === MANAGED_ENVIRONMENT_BUSY");
+  const repair = hook.indexOf("if (preflight.can_auto_repair)");
+  assert.ok(busy !== -1 && busy < repair);
 });

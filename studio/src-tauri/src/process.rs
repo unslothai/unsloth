@@ -341,6 +341,7 @@ mod appimage_environment_tests {
 const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
 
 pub(crate) const STUDIO_RUNTIME_GATE_HANDOFF_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF";
+pub(crate) const STUDIO_RUNTIME_GATE_BUSY: &str = "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again.";
 const STUDIO_RUNTIME_GATE_ACQUIRE_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_ACQUIRE";
 
 #[cfg(windows)]
@@ -402,10 +403,7 @@ fn acquire_named_studio_runtime_launch_guard(
             unsafe {
                 let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
             }
-            Err(
-                "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
-                    .to_string(),
-            )
+            Err(STUDIO_RUNTIME_GATE_BUSY.to_string())
         }
         _ => {
             let error = std::io::Error::last_os_error();
@@ -534,10 +532,7 @@ fn acquire_file_studio_runtime_launch_guard(
     }
     let error = std::io::Error::last_os_error();
     if error.kind() == std::io::ErrorKind::WouldBlock {
-        return Err(
-            "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
-                .to_string(),
-        );
+        return Err(STUDIO_RUNTIME_GATE_BUSY.to_string());
     }
     Err(format!("Could not acquire the Studio runtime lock: {error}"))
 }

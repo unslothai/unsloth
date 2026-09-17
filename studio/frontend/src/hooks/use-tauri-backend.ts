@@ -9,7 +9,10 @@ import {
   useSyncExternalStore,
 } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
-import { preflightStaleMessage } from "@/hooks/backend-preflight-message";
+import {
+  MANAGED_ENVIRONMENT_BUSY,
+  preflightStaleMessage,
+} from "@/hooks/backend-preflight-message";
 import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
@@ -29,6 +32,7 @@ import {
 import {
   INITIAL_STARTUP_MESSAGE,
   SERVER_STARTUP_MESSAGE,
+  UPDATE_STARTUP_MESSAGE,
   startupMessageFromLog,
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
@@ -76,6 +80,7 @@ interface DesktopPreflightResult {
 }
 
 const MANAGED_STARTUP_POLL_MS = 500;
+const MANAGED_ENVIRONMENT_POLL_MS = 5_000;
 
 type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
 type ManagedStartupResult =
@@ -162,6 +167,7 @@ export function useTauriBackend() {
   const [isExternalServer, setIsExternalServer] = useState(false);
   const externalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const externalPollAbortedRef = useRef(false);
+  const environmentWaitRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
   // Whether the repair in flight was asked to skip straight to the installer. Read back by
@@ -252,6 +258,23 @@ export function useTauriBackend() {
     statusRef.current = status;
   }, [status]);
 
+  function stopManagedEnvironmentWait() {
+    if (environmentWaitRef.current) {
+      clearTimeout(environmentWaitRef.current);
+      environmentWaitRef.current = null;
+    }
+  }
+
+  function waitForManagedEnvironment() {
+    stopManagedEnvironmentWait();
+    setStartupMessage(UPDATE_STARTUP_MESSAGE);
+    setBackendStatus("starting");
+    environmentWaitRef.current = setTimeout(() => {
+      environmentWaitRef.current = null;
+      void checkInstallAndStart();
+    }, MANAGED_ENVIRONMENT_POLL_MS);
+  }
+
   async function checkInstallAndStart() {
     // Honor a persisted stop before preflight: the native command side-effects
     // (it can adopt a still-reaping backend, reset the intentional-stop flag,
@@ -300,6 +323,10 @@ export function useTauriBackend() {
         case "managed_stale":
           setIsExternalServer(false);
           stopExternalServerPoll();
+          if (preflight.reason === MANAGED_ENVIRONMENT_BUSY) {
+            waitForManagedEnvironment();
+            return;
+          }
           if (preflight.can_auto_repair) {
             await startRepair();
           } else {
@@ -496,6 +523,7 @@ export function useTauriBackend() {
     elevationResumeRef.current = null;
     setIsExternalServer(false);
     stopExternalServerPoll();
+    stopManagedEnvironmentWait();
     seenStepsRef.current.clear();
     if (resumeForcedRepair) {
       void startRepair({ forceInstaller: true });
@@ -736,6 +764,7 @@ export function useTauriBackend() {
       disposed = true;
       cleanup.forEach((fn) => fn());
       stopExternalServerPoll();
+      stopManagedEnvironmentWait();
     };
   }, []);
 

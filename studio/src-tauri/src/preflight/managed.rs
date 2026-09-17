@@ -53,6 +53,35 @@ pub(super) fn is_context_reason(reason: &str) -> bool {
     head == WORKING_DIRECTORY_UNAVAILABLE || head == PATH_SETTING_UNRESOLVABLE
 }
 
+/// An install, update or repair holds the runtime gate. Mirrored in the frontend.
+pub(super) const MANAGED_ENVIRONMENT_BUSY: &str = "managed_environment_busy";
+
+pub(super) fn blocks_auto_repair(reason: &str) -> bool {
+    reason == MANAGED_ENVIRONMENT_BUSY || is_context_reason(reason)
+}
+
+fn unasked_reason(error: &str) -> String {
+    if error == MANAGED_ENVIRONMENT_BUSY {
+        return error.to_string();
+    }
+    working_directory_reason().unwrap_or_else(|| WORKING_DIRECTORY_UNAVAILABLE.to_string())
+}
+
+fn spawn_probe(cmd: &mut tokio::process::Command) -> Result<tokio::process::Child, String> {
+    crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    })
+    .map_err(probe_spawn_error)
+}
+
+fn probe_spawn_error(error: String) -> String {
+    if error == crate::process::STUDIO_RUNTIME_GATE_BUSY {
+        MANAGED_ENVIRONMENT_BUSY.to_string()
+    } else {
+        error
+    }
+}
+
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV64_PRIME: u64 = 0x100000001b3;
 const HASHED_MARKER_MAX_BYTES: u64 = 64 * 1024;
@@ -407,15 +436,23 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> Result<bool, String> {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let Ok(mut child) = crate::process::with_studio_runtime_launch_guard(|| {
-        cmd.spawn().map_err(|error| error.to_string())
-    }) else {
-        info!(
-            "Managed preflight probe {:?} failed to spawn in {}ms",
-            args,
-            started.elapsed().as_millis()
-        );
-        return Ok(false);
+    let mut child = match spawn_probe(&mut cmd) {
+        Ok(child) => child,
+        Err(error) if error == MANAGED_ENVIRONMENT_BUSY => {
+            info!(
+                "Managed preflight probe {:?} skipped: managed environment is busy",
+                args
+            );
+            return Err(error);
+        }
+        Err(_) => {
+            info!(
+                "Managed preflight probe {:?} failed to spawn in {}ms",
+                args,
+                started.elapsed().as_millis()
+            );
+            return Ok(false);
+        }
     };
 
     let ok = match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
@@ -470,14 +507,19 @@ async fn probe_cli_capability(bin: &Path) -> Result<Option<DesktopCapability>, S
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let Ok(mut child) = crate::process::with_studio_runtime_launch_guard(|| {
-        cmd.spawn().map_err(|error| error.to_string())
-    }) else {
-        info!(
-            "Managed desktop-capabilities probe failed to spawn in {}ms",
-            started.elapsed().as_millis()
-        );
-        return Ok(None);
+    let mut child = match spawn_probe(&mut cmd) {
+        Ok(child) => child,
+        Err(error) if error == MANAGED_ENVIRONMENT_BUSY => {
+            info!("Managed desktop-capabilities probe skipped: managed environment is busy");
+            return Err(error);
+        }
+        Err(_) => {
+            info!(
+                "Managed desktop-capabilities probe failed to spawn in {}ms",
+                started.elapsed().as_millis()
+            );
+            return Ok(None);
+        }
     };
     let Some(mut stdout) = child.stdout.take() else {
         return Ok(None);
@@ -587,16 +629,15 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     // below still skips the heavier desktop-capabilities probe on a hit.
     match run_cli_probe(&bin, &["-h"]).await {
         // The CLI was never asked, so do not report a broken install.
-        Err(_) => {
+        Err(error) => {
             info!(
-                "Managed preflight: no usable managed context for {:?} in {}ms",
+                "Managed preflight: cli not asked for {:?} in {}ms",
                 bin,
                 started.elapsed().as_millis()
             );
             return ManagedProbe::Stale {
                 bin,
-                reason: working_directory_reason()
-                    .unwrap_or_else(|| WORKING_DIRECTORY_UNAVAILABLE.to_string()),
+                reason: unasked_reason(&error),
             };
         }
         Ok(false) => {
@@ -627,16 +668,15 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
 
     let capability = match probe_cli_capability(&bin).await {
         Ok(capability) => capability,
-        Err(_) => {
+        Err(error) => {
             info!(
-                "Managed preflight: no usable managed context for {:?} in {}ms",
+                "Managed preflight: cli not asked for {:?} in {}ms",
                 bin,
                 started.elapsed().as_millis()
             );
             return ManagedProbe::Stale {
                 bin,
-                reason: working_directory_reason()
-                    .unwrap_or_else(|| WORKING_DIRECTORY_UNAVAILABLE.to_string()),
+                reason: unasked_reason(&error),
             };
         }
     };
@@ -954,6 +994,20 @@ mod tests {
             "a removed studio package must not keep serving the cached Ready answer"
         );
         let _ = fs::remove_dir_all(&venv);
+    }
+
+    #[test]
+    fn a_busy_runtime_gate_is_not_a_broken_install() {
+        let busy = probe_spawn_error(crate::process::STUDIO_RUNTIME_GATE_BUSY.to_string());
+        assert_eq!(busy, MANAGED_ENVIRONMENT_BUSY);
+        assert_eq!(unasked_reason(&busy), MANAGED_ENVIRONMENT_BUSY);
+        assert!(blocks_auto_repair(&busy));
+        assert!(!is_context_reason(&busy));
+
+        let spawn_failure = probe_spawn_error("No such file or directory".to_string());
+        assert_eq!(spawn_failure, "No such file or directory");
+        assert!(!blocks_auto_repair("cli_unusable"));
+        assert!(blocks_auto_repair(WORKING_DIRECTORY_UNAVAILABLE));
     }
 
     #[test]

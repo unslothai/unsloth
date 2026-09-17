@@ -949,7 +949,7 @@ pub async fn start_managed_repair(
         .map(|s| s.child.is_some())
         .unwrap_or(false)
     {
-        return Err("Repair is already running.".to_string());
+        return Err("An update or repair is already running.".to_string());
     }
 
     let diagnostics_state = diagnostics.inner().clone();

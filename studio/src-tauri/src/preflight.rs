@@ -102,7 +102,7 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             ManagedProbe::Stale { bin, reason } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedStale,
                 // The repair needs the same home directory, so do not offer it.
-                can_auto_repair: release_auto_repair() && !managed::is_context_reason(&reason),
+                can_auto_repair: release_auto_repair() && !managed::blocks_auto_repair(&reason),
                 reason: Some(reason),
                 port: None,
                 managed_bin: Some(bin),
