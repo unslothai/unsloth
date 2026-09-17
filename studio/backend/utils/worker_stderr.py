@@ -97,23 +97,18 @@ TAIL_READ_BYTES = 64 * 1024
 _PUMP_JOIN_TIMEOUT_S = 2.0
 
 
-def _without_partial_utf8_edges(data: bytes) -> bytes:
-    """Drop a UTF-8 sequence that a byte window cut in half at either end.
+def _utf8_edge_bounds(data: bytes, *, trim_end: bool = True) -> "tuple[int, int]":
+    """``(start, end)`` of *data* with a severed UTF-8 sequence excluded at either edge.
 
-    Both byte windows in this module open at an arbitrary offset: the parent reads the last
-    ``TAIL_READ_BYTES`` of the sink, and the pump compacts the sink down to its last
-    ``cap_bytes``. Neither can land on a character boundary on purpose. Without this, one
-    severed multi-byte character made strict UTF-8 fail for the WHOLE window, the probe fell
-    through to cp1252, and every non-ASCII character in the traceback came back as the two
-    or three cp1252 characters its UTF-8 bytes spell. Trimming at most three bytes off each
-    end costs nothing and keeps the rest readable.
+    The bounds rather than the slice, because the caller needs to know what was taken off
+    the END: see `decode_worker_stderr`, which renders those bytes rather than dropping them.
     """
     start = 0
-    # A window that opens mid-character starts with continuation bytes (0b10xxxxxx).
     while start < len(data) and start < 3 and 0x80 <= data[start] < 0xC0:
         start += 1
     end = len(data)
-    # A window that closes mid-character ends with a lead byte and too few continuations.
+    if not trim_end:
+        return start, end
     for back in range(1, min(4, end - start) + 1):
         byte = data[end - back]
         if byte < 0x80:
@@ -123,10 +118,31 @@ def _without_partial_utf8_edges(data: bytes) -> bytes:
             if back < width:
                 end -= back
             break
+    return start, end
+
+
+def _without_partial_utf8_edges(data: bytes, *, trim_end: bool = True) -> bytes:
+    """Drop a UTF-8 sequence that a byte window cut in half at either end.
+
+    Both byte windows in this module open at an arbitrary offset: the parent reads the last
+    ``TAIL_READ_BYTES`` of the sink, and the pump compacts the sink down to its last
+    ``cap_bytes``. Neither can land on a character boundary on purpose. Without this, one
+    severed multi-byte character made strict UTF-8 fail for the WHOLE window, the probe fell
+    through to cp1252, and every non-ASCII character in the traceback came back as the two
+    or three cp1252 characters its UTF-8 bytes spell. Trimming at most three bytes off each
+    end costs nothing and keeps the rest readable.
+
+    ``trim_end`` is off for a window that ends at the sink's EOF, which every reader here
+    does. Nothing severed a character there, so a trailing byte of 0xC0 or above is a
+    COMPLETE cp1252 character -- `caf\xe9` -- and trimming it made the strict decode succeed
+    on `RuntimeError: caf`, which kept the cp1252 fallback from ever running and quietly
+    dropped the last character of the crash detail.
+    """
+    start, end = _utf8_edge_bounds(data, trim_end = trim_end)
     return data[start:end]
 
 
-def decode_worker_stderr(data: bytes) -> str:
+def decode_worker_stderr(data: bytes, *, ends_at_eof: bool = True) -> str:
     """Decode worker stderr bytes and normalise their line endings.
 
     Encoding is probed, not assumed. A worker on Linux or macOS writes UTF-8, while on
@@ -139,17 +155,41 @@ def decode_worker_stderr(data: bytes) -> str:
     the entire tail to mojibake. Anything that is neither encoding is decoded with
     replacement rather than discarded: a mangled traceback still names the exception.
 
+    ``ends_at_eof`` says the last byte of *data* is the last byte the worker wrote, which is
+    true for every reader in this module: the leading edge is still trimmed, because the
+    window opens at an arbitrary offset, and the trailing edge is left alone, because nothing
+    cut it. See `_without_partial_utf8_edges`.
+
     CRLF and lone CR both become LF, so a Windows traceback does not arrive with a trailing
     carriage return on every line, and a progress bar that redraws itself with CR becomes
     separate lines that the tail can then drop.
     """
     text: str | None = None
-    for candidate in (data, _without_partial_utf8_edges(data)):
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    if text is None:
+        start, end = _utf8_edge_bounds(data)
         try:
-            text = candidate.decode("utf-8")
+            text = data[start:end].decode("utf-8")
         except UnicodeDecodeError:
-            continue
-        break
+            text = None
+        else:
+            # What the trim took off the END is not necessarily a severed character. The
+            # sink's last byte is the worker's last byte, so on a cp1252 host a trailing
+            # 0xC0-or-above byte is a COMPLETE character -- `caf\xe9` -- and dropping it
+            # silently shortened the crash detail. It can also be a real UTF-8 lead byte a
+            # mid-write read cut in half. Neither can be told from the other, so the bytes
+            # are rendered as cp1252 rather than discarded: the first case comes out right,
+            # and the second costs one spurious character at the very end of a read that the
+            # next one will supersede, instead of a whole tail of mojibake.
+            tail_bytes = data[end:] if ends_at_eof else b""
+            if tail_bytes:
+                try:
+                    text += tail_bytes.decode("cp1252")
+                except (UnicodeDecodeError, LookupError):
+                    pass
     if text is None:
         try:
             text = data.decode("cp1252")
@@ -162,6 +202,8 @@ def stderr_tail_from_bytes(
     data: bytes,
     max_lines: int = DEFAULT_TAIL_LINES,
     max_chars: int = DEFAULT_TAIL_CHARS,
+    *,
+    ends_at_eof: bool = True,
 ) -> str:
     """Return the last few meaningful lines of *data* as text.
 
@@ -170,7 +212,7 @@ def stderr_tail_from_bytes(
     the line cap and trims from the front, so the exception line at the end is the last
     thing to go; a partial first line is dropped rather than shown cut in half.
     """
-    text = decode_worker_stderr(data)
+    text = decode_worker_stderr(data, ends_at_eof = ends_at_eof)
     lines = [line.rstrip() for line in text.split("\n")]
     lines = [line for line in lines if line.strip()]
     if not lines:

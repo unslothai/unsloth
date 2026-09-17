@@ -90,6 +90,29 @@ def test_cp1252_bytes_that_are_not_valid_utf8_still_decode():
     assert decode_worker_stderr(raw) == "warning: café layer skipped\n"
 
 
+def test_a_cp1252_character_at_the_very_end_is_not_trimmed_away():
+    """The window ENDS where the worker stopped writing, so nothing severed its last byte.
+
+    A trailing 0xC0-or-above byte there is a complete cp1252 character. Trimming it made the
+    strict UTF-8 decode succeed on what was left, so the cp1252 fallback never ran and the
+    last character of the crash detail was dropped: `RuntimeError: caf` for `caf\xe9`.
+    """
+    assert decode_worker_stderr(b"RuntimeError: caf\xe9") == "RuntimeError: café"
+    # And the leading edge is still trimmed, because the window DOES open mid-character.
+    assert decode_worker_stderr("é at the start".encode("utf-8")[1:]).endswith(
+        " at the start"
+    )
+    # A caller that really is mid-stream can still drop the severed bytes outright.
+    truncated = "RuntimeError: é".encode("utf-8")[:-1]
+    assert decode_worker_stderr(truncated, ends_at_eof = False) == "RuntimeError: "
+    # And by default those same bytes are rendered rather than dropped, which costs one
+    # spurious character at the very end of a mid-write read instead of the whole tail:
+    # everything before it is still the UTF-8 it was.
+    assert decode_worker_stderr(truncated) == "RuntimeError: \u00c3"
+    # Valid UTF-8 that happens to end on a multi-byte character is unaffected either way.
+    assert decode_worker_stderr("done é".encode("utf-8")) == "done é"
+
+
 def test_undecodable_bytes_are_replaced_rather_than_dropped():
     # 0x81 and 0x90 are undefined in cp1252 and invalid as UTF-8. A mangled traceback still
     # has to name the exception, so the text is kept with replacement characters.
