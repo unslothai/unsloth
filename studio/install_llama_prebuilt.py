@@ -10349,7 +10349,7 @@ def install_prebuilt(
                         )
                     return
     except BusyInstallConflict as exc:
-        log("prebuilt install path is blocked by an in-use llama.cpp install")
+        log("prebuilt install path is blocked")
         log(f"prebuilt busy reason: {exc}")
         raise SystemExit(EXIT_BUSY) from exc
     except UnknownBackendRequest as exc:
