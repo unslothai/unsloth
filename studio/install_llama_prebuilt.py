@@ -7587,15 +7587,11 @@ def _macos_split_entrypoint_groups(
 ) -> list[list[str]]:
     """The macOS half of the same upstream split, gated by the same rule.
 
-    The bundle carries these: llama-b11007-mix-3e83366-bin-macos-arm64.tar.gz ships
-    libllama-server-impl.dylib and libllama-quantize-impl.dylib beside the two
-    entrypoints, and _PREBUILT_TREE_EVIDENCE already reads the first as proof of a
-    prebuilt macOS tree. Without them here every library group and both executable
-    checks passed while dyld could not start the entrypoint, so
-    installed_runtime_health answered Ready on the one platform this probe is for.
-
-    Delegates the gate rather than repeating it, so the build floor cannot drift from
-    the Linux and Windows halves it was measured on.
+    The bundles carry them: b10840 and b11007 macos-arm64 both ship
+    libllama-server-impl.dylib and libllama-quantize-impl.dylib, and
+    _PREBUILT_TREE_EVIDENCE already reads the first as proof of a prebuilt macOS tree.
+    Without them here every group and both executable checks passed while dyld could not
+    start the entrypoint. Delegates the gate so the build floor cannot drift from Linux.
     """
     if not _linux_split_entrypoint_groups(source_label, tag):
         return []
