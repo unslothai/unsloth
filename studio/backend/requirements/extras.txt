@@ -3,8 +3,13 @@ flatbuffers==25.12.19
 # Also needed by sentence_transformers (installed with --no-deps in extras-no-deps.txt);
 # librosa pulls it in too, but is skipped in no-torch mode.
 # scikit-learn publishes win_arm64 wheels from 1.8 only; 1.7.1 would source-build there.
+# Both lines are exact pins, not ranges. scan_packages_baseline.json records findings keyed by a
+# hash of the scanned file's contents, so a floating version makes every one of this package's 13
+# baseline entries stop matching the moment upstream publishes, and the security audit goes red on
+# an unrelated PR. 1.8.0 is the lowest release carrying win_arm64 wheels, which keeps the ARM64
+# branch as close to 1.7.1 as the wheel availability allows.
 scikit-learn==1.7.1; sys_platform != "win32" or platform_machine != "ARM64"
-scikit-learn>=1.8.0; sys_platform == "win32" and platform_machine == "ARM64"
+scikit-learn==1.8.0; sys_platform == "win32" and platform_machine == "ARM64"
 
 # Additional extras
 jiwer==4.0.0                     # WER/CER metrics for vision OCR save-merge benchmarks

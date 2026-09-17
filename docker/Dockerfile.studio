@@ -66,7 +66,10 @@ ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
     UNSLOTH_IMAGE_ALLOW_CPU=1 \
     JUPYTER_PORT=8888 \
+    UNSLOTH_STUDIO_PORT=8000 \
     UNSLOTH_ENABLE_SSHD=false \
+    UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120 \
+    UNSLOTH_STUDIO_STOP_WAIT_S=150 \
     DEBIAN_FRONTEND=noninteractive
 
 # install.sh needs curl + git; supervisor + openssh-server run the service

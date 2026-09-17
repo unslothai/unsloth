@@ -977,6 +977,7 @@ def test_the_mlx_audit_does_not_fight_the_bundled_override(monkeypatch) -> None:
 
 def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_path) -> None:
     seen: list[str] = []
+    written: list[pathlib.Path] = []
 
     def _closure(
         req,
@@ -985,14 +986,26 @@ def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_pat
     ):
         seen.append(req.read_text(encoding = "utf-8"))
         assert req.exists()
+        written.append(pathlib.Path(req))
         return ["miniaudio"]
 
+    # mkstemp with no dir lands in the SHARED system temp dir, so globbing that for
+    # leftovers also sees files this test did not create. Four other tests in this file
+    # call _mlx_closure_unmet, and under xdist one of them can be inside the call -- with
+    # its own unsloth-mlx-*.txt on disk -- at the moment this globs. That is a cross-worker
+    # race, not a leak, and it is what turned this test red on main. Give the audit a
+    # private temp dir so the leftover check can only ever see this test's own files.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", _closure)
     monkeypatch.setattr(stack, "_installed_index", lambda: {})
     assert stack._mlx_closure_unmet() is True
     assert seen and all(spec in seen[0] for spec in [*stack._MLX_PINS, stack._MLX_VLM_SPEC])
     # A temp file per update, on a path the step is not allowed to leave behind.
-    assert not list(pathlib.Path(tempfile.gettempdir()).glob("unsloth-mlx-*.txt"))
+    assert not list(tmp_path.glob("unsloth-mlx-*.txt"))
+    # Name the exact file rather than resting on an empty directory: an audit that stopped
+    # creating one would leave the glob empty too, and that must not read as cleanup.
+    assert written and written[0].parent == tmp_path
+    assert not written[0].exists()
 
     def _raises(*_a, **_k):
         raise RuntimeError("metadata unreadable")

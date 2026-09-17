@@ -3986,6 +3986,11 @@ async def get_kv_cache_estimate(
                         # The route's own toggle; the helper folds the extras and the
                         # inherited split-mode env on top of it.
                         tensor_parallel = bool(tensor_parallel),
+                        # From the header this backend already read. llama.cpp forces
+                        # flash attention off for Grok ahead of every other rule, so a
+                        # route that answered otherwise would publish a context the
+                        # server cannot hold.
+                        architecture = getattr(be, "_architecture", None),
                     ),
                     # The loader's own default: unified only for >1 slot, only if supported.
                     "kv_unified": _kv_unified_from_args(
@@ -4227,6 +4232,10 @@ async def get_kv_cache_estimate(
                             # Same estimator, so it must get the same resolved plan.
                             **_plan_kwargs,
                         )
+                        # Plus the draft decode graph's floor, which the helper leaves to
+                        # the loader's soft overhead.
+                        if spec is not None:
+                            spec += be._MTP_DRAFT_COMPUTE_BYTES
                 except Exception as e:
                     logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
 

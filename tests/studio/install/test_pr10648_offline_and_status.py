@@ -663,45 +663,40 @@ def test_pre_pr_an_unreachable_release_listing_escaped_as_an_uncaught_oserror():
     assert guard in post
 
 
-@requires_merge_base
-def test_the_pr_only_added_new_arms_to_the_setup_status_blocks():
-    """The pre-existing tokens must mean exactly what they meant before.
+def test_the_keep_arm_sits_beside_the_status_arms_it_did_not_replace():
+    """The pre-existing tokens must still mean exactly what they meant before.
 
     ``already matches`` and llama's two arms carry other behaviour (node greps the same
-    token at setup.sh:1261), so the new keep arm is only safe if it was inserted beside
-    them rather than rewritten over them. Checked on the diff, not on the current text: a
-    reworded arm would still satisfy a substring assertion on the file.
-    """
-    diff = _git("diff", "-U0", MERGE_BASE, "--", "studio/setup.sh", "studio/setup.ps1")
-    assert diff.returncode == 0, diff.stderr
-    removed = [
-        line[1:]
-        for line in diff.stdout.splitlines()
-        if line.startswith("-") and not line.startswith("---")
-    ]
-    added = [
-        line[1:]
-        for line in diff.stdout.splitlines()
-        if line.startswith("+") and not line.startswith("+++")
-    ]
-    # Nothing that carries a status decision was removed or rewritten.
-    for line in removed:
-        assert MATCH_TOKEN not in line, f"the PR rewrote an 'already matches' arm: {line!r}"
-        assert "step " not in line, f"the PR rewrote a status line: {line!r}"
-        assert "grep -Fq" not in line, f"the PR rewrote a status grep: {line!r}"
-        assert "-match" not in line, f"the PR rewrote a status match: {line!r}"
-    # What WAS added is the keep arm, once per script.
-    keep_arms = [line for line in added if KEEP_TOKEN in line]
-    assert len(keep_arms) == 2, keep_arms
-    assert any("grep -Fq" in line for line in keep_arms), keep_arms
-    assert any("-match" in line for line in keep_arms), keep_arms
+    token at setup.sh:1261), so this PR's keep arm is only safe next to them rather than
+    written over them.
 
-    # The llama arms and node's grep are still exactly where they were.
+    Stated on the shipped text, not on a diff. The original spelling of this test read
+    ``git diff <the PR's merge base> -- studio/setup.*`` and asserted that no line carrying
+    a status decision appeared as a REMOVAL, which is a property of one branch and not of
+    the product: on ``main`` that diff is everything the installers have done since
+    2026-09-09, so it went red the moment the PR landed on a main that had moved, and it
+    said so about whichever unrelated commit happened to touch a ``-match`` line. CI never
+    reported it because ``actions/checkout`` is shallow there and the merge base is absent,
+    so ``requires_merge_base`` skipped the whole thing. What the assertions below keep is
+    the part that is checkable forever: each arm, each guard, and exactly one keep arm per
+    runtime per script -- a rewritten or duplicated arm still fails here.
+    """
     setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+
+    # The keep arm this PR added: one per runtime per script, and guarded with each shell's
+    # own test rather than, say, both scripts growing the sh spelling.
+    sh_keeps = [line for line in setup_sh.splitlines() if KEEP_TOKEN in line]
+    ps1_keeps = [line for line in setup_ps1.splitlines() if KEEP_TOKEN in line]
+    assert len(sh_keeps) == 2, sh_keeps
+    assert len(ps1_keeps) == 2, ps1_keeps
+    assert all("grep -Fq" in line for line in sh_keeps), sh_keeps
+    assert all("-match" in line for line in ps1_keeps), ps1_keeps
+
+    # The llama arms and node's grep are still exactly where they were.
     assert 'grep -Fq "already matches" "$_PREBUILT_LOG"' in setup_sh
     assert 'grep -Fq "already matches" "$_NODE_LOG"' in setup_sh
-    assert '$prebuiltOutput -match "already matches"' in setup_ps1
+    assert f'$prebuiltOutput -match "{MATCH_TOKEN}"' in setup_ps1
     for script in (setup_sh, setup_ps1):
         assert (
             script.count("update unavailable, existing prebuilt kept") == 2

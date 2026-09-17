@@ -403,12 +403,8 @@ def test_emitted_batch_clears_both_llama_server_floors(n_batch, n_parallel, expe
 
 
 def test_budgets_use_the_raised_batch_not_the_requested_one():
-    """llama.cpp caps the micro-batch against the batch it is GIVEN
-    (cparams.n_ubatch = min(cparams.n_batch, n_ubatch or n_batch)), and the loader
-    raises --batch-size to max(slots, 2) before launch. Budgeting from the requested
-    value instead planned n_batch=1 / n_ubatch=64 / 64 slots at a micro-batch of 1
-    and launched it at 64: ~2.2 GB of compute buffer the training guard never
-    charged, and an auto-fit sized for a graph the server does not build."""
+    """Budget the micro-batch after the loader raises batch size to max(slots, 2).
+    A batch of 1 with 64 slots and ubatch 64 must be priced at ubatch 64."""
     from unittest.mock import patch
 
     from routes import inference as route
@@ -429,7 +425,17 @@ def test_budgets_use_the_raised_batch_not_the_requested_one():
             "/x.gguf", 32768, n_parallel = 64, n_batch = 1, n_ubatch = 1
         )
     assert raised == pytest.approx(explicit, abs = 0.01)
-    assert raised > unraised + 2.0
+    # 63 more micro-batch tokens of activations and KQ mask, and 63 more output rows.
+    probe = LlamaCppBackend()
+    _header_reader(**_QWEN3_8B)(probe, "/x.gguf")
+    grown = (
+        probe._estimate_compute_buffer_bytes(n_ubatch = 64, n_parallel = 64)
+        + probe._compute_buffer_ctx_bytes(32768, 64)
+        - probe._estimate_compute_buffer_bytes(n_ubatch = 1, n_parallel = 64)
+        - probe._compute_buffer_ctx_bytes(32768, 1)
+    ) / 1024**3
+    assert grown > 0.05
+    assert raised - unraised == pytest.approx(grown, abs = 0.001)
 
     # the remote branch shares the floor: no dims, but the kq mask still grows
     from types import SimpleNamespace
@@ -648,8 +654,9 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
         and isinstance(node.func, ast.Name)
         and node.func.id == "_ubatch_for_slots"
     ]
-    # sizing pass, embedding slot clamp, fit-time reduction, then the post-launch record
-    assert len(calls) == 4, f"expected four re-derivations, found {len(calls)}"
+    # sizing pass, embedding slot clamp, candidate split pricing, fit-time reduction, then
+    # the post-launch record
+    assert len(calls) == 5, f"expected five re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact
@@ -660,12 +667,27 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     )
 
 
+def test_the_guard_prices_the_output_rows_of_the_build_it_launches():
+    """An older llama.cpp (before ggml-org/llama.cpp#23861) reserves an output row for
+    every micro-batch token; the guard asks the binary rather than assuming the cap."""
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    def _gb(older):
+        with (
+            patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**_QWEN3_8B)),
+            patch.object(LlamaCppBackend, "reserves_micro_batch_outputs", lambda *a, **k: older),
+        ):
+            return route._estimate_gguf_kv_gb("/x.gguf", 8192, n_parallel = 1, n_ubatch = 2048)
+
+    rows = (2048 - 1) * 151936 * 4 * LlamaCppBackend._COMPUTE_BUFFER_SAFETY / 1024**3
+    assert _gb(True) - _gb(False) == pytest.approx(rows, abs = 0.001)
+
+
 def test_the_remote_guard_charges_the_flat_output_buffer():
-    """The KQ mask is only the context-linear half of the compute buffer. llama.cpp also
-    reserves n_vocab * ubatch * 4 per slot past the first, which is context-INdependent and
-    dwarfs the mask at large settings: n_batch = n_ubatch = 32768 on two slots is ~32 GiB
-    the mask never covers. Omitting it remotely let the coexistence guard admit an uncached
-    load that then OOMs the training job it exists to protect."""
+    """Unknown headers still need an activation reserve beyond the KQ mask.
+    Activations scale with ubatch; extra slots add output rows."""
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -698,11 +720,11 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
 
     # Unset fields still launch at llama.cpp's known default 512-token micro-batch.
     assert blank_1 > 1.5
-    assert blank_4 > blank_1 + 1.5
-    # The remote header may enable embeddings, so the first output buffer is charged.
+    # Slots add output rows, far below a second activation reserve.
+    assert blank_1 < blank_4 < blank_1 + 0.5
+    # The activation ceiling at a 32768-token micro-batch.
     assert big_1 > blank_1 + 30.0
-    # 262144 * 32768 * 4 = 32 GiB for the second slot too.
-    assert big_2 > big_1 + 30.0
+    assert big_1 < big_2 < big_1 + 1.0
     # and it stays proportionate where the values are ordinary
     assert typical_4 < 4.0
 
@@ -730,7 +752,7 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
 
         layer_1, layer_2 = _split(False, 1), _split(False, 2)
         tensor_1, tensor_2 = _split(True, 1), _split(True, 2)
-    # the second device adds only the ctx-linear mask, not another 32 GiB of logits
+    # the second device adds only the ctx-linear mask, not another 35 GiB of activations
     assert layer_2 - layer_1 < 30.0
     # tensor mode replicates the whole buffer on every card, so it does roughly double
     assert tensor_2 > tensor_1 * 1.8

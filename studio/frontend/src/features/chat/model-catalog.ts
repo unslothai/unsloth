@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ProviderModelCapabilityInfo } from "./api/providers-api";
+import type { ModelCatalogResponse, ProviderModelCapabilityInfo } from "./api/providers-api";
+import {
+  MODEL_CATALOG_SNAPSHOT,
+  type ModelCatalogSnapshotEntry,
+} from "./model-catalog-snapshot.ts";
 
 export type ReasoningEffortLevel =
   | "none"
@@ -41,6 +45,10 @@ interface LiveCatalogRecord {
 const LIVE_CATALOG_KEY = "unsloth_chat_provider_model_catalog";
 const LIVE_CATALOG = new Map<string, LiveCatalogRecord>();
 let liveCatalogHydrated = false;
+
+const MODELS_DEV_KEY = "unsloth_chat_models_dev_catalog";
+let modelsDev: ModelCatalogResponse | null = null;
+let modelsDevHydrated = false;
 
 const catalogListeners = new Set<() => void>();
 let catalogVersion = 0;
@@ -119,6 +127,67 @@ function persistLiveCatalog(): void {
   }
 }
 
+function hydrateModelsDev(): void {
+  if (modelsDevHydrated) return;
+  modelsDevHydrated = true;
+  if (!canUseStorage()) return;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MODELS_DEV_KEY) ?? "null") as ModelCatalogResponse | null;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof parsed.fetched_at === "number" &&
+      parsed.providers &&
+      typeof parsed.providers === "object"
+    ) {
+      modelsDev = parsed;
+    }
+  } catch {
+    // Invalid browser state; the next refresh rewrites it.
+  }
+}
+
+export function setModelsDevCatalog(catalog: ModelCatalogResponse): void {
+  hydrateModelsDev();
+  modelsDev = catalog;
+  nameIndex = null;
+  familyIndex = null;
+  mergedNamespaces = null;
+  notifyCatalogChange();
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(MODELS_DEV_KEY, JSON.stringify(catalog));
+  } catch {
+    // Storage failures leave the in-memory copy valid for this session.
+  }
+}
+
+export function modelsDevCatalogFetchedAt(): number | null {
+  hydrateModelsDev();
+  return modelsDev?.fetched_at ?? null;
+}
+
+// Merged namespaces, rebuilt whenever a served catalog lands.
+let mergedNamespaces: Map<string, Readonly<Record<string, ModelCatalogSnapshotEntry>>> | null = null;
+
+function snapshotNamespace(
+  providerType: string,
+): Readonly<Record<string, ModelCatalogSnapshotEntry>> | undefined {
+  hydrateModelsDev();
+  const served = modelsDev?.providers[providerType];
+  const bundled = MODEL_CATALOG_SNAPSHOT[providerType];
+  if (!served) return bundled;
+  if (!bundled) return served;
+  // Per MODEL, not per namespace: a cache that survived an upgrade, or the expired copy served
+  // offline, would otherwise hide models the newer bundled snapshot knows.
+  if (!mergedNamespaces) mergedNamespaces = new Map();
+  const cached = mergedNamespaces.get(providerType);
+  if (cached) return cached;
+  const merged = { ...bundled, ...served };
+  mergedNamespaces.set(providerType, merged);
+  return merged;
+}
+
 function fromLiveModel(model: ProviderModelCapabilityInfo): ModelCatalogEntry {
   const reasoning = model.reasoning ?? null;
   const defaultEffort = reasoning?.default_effort;
@@ -134,6 +203,20 @@ function fromLiveModel(model: ProviderModelCapabilityInfo): ModelCatalogEntry {
       typeof model.max_output_tokens === "number" && model.max_output_tokens > 0
         ? model.max_output_tokens
         : null,
+  };
+}
+
+function fromSnapshotEntry(entry: ModelCatalogSnapshotEntry): ModelCatalogEntry {
+  const reasoning = entry.reasoning === true;
+  const efforts = sortReasoningEfforts(entry.efforts ?? []);
+  return {
+    reasoning,
+    efforts,
+    mandatory:
+      reasoning && entry.toggle !== true && !efforts.includes("none"),
+    defaultEffort: null,
+    inputModalities: entry.input ?? null,
+    maxOutputTokens: null,
   };
 }
 
@@ -175,7 +258,22 @@ function lookupCandidates(providerType: string, modelId: string): string[] {
     const variant = bare.indexOf(":");
     if (variant > 0) candidates.push(bare.slice(0, variant));
   }
+  if (providerType === "ollama") {
+    const tag = normalized.indexOf(":");
+    if (tag > 0) candidates.push(normalized.slice(0, tag));
+  }
   return candidates;
+}
+
+function findByBaseName(
+  models: Readonly<Record<string, unknown>>,
+  baseName: string,
+): string | null {
+  for (const id of Object.keys(models)) {
+    const tag = id.indexOf(":");
+    if ((tag > 0 ? id.slice(0, tag) : id) === baseName) return id;
+  }
+  return null;
 }
 
 export function resolveModelCatalogEntry(
@@ -194,7 +292,77 @@ export function resolveModelCatalogEntry(
       if (entry) return entry;
     }
   }
+  const snapshot = snapshotNamespace(normalizedProvider);
+  if (!snapshot) return null;
+  for (const candidate of candidates) {
+    const entry = snapshot[candidate];
+    if (entry) return fromSnapshotEntry(entry);
+  }
+  if (normalizedProvider === "ollama") {
+    // An instruct-only tag has no thinking even when a sibling does, and Ollama 400s a thinking request on it.
+    if (modelId.toLowerCase().includes("instruct")) return null;
+    const match = findByBaseName(snapshot, candidates[candidates.length - 1]);
+    if (match) return fromSnapshotEntry(snapshot[match]);
+    return resolveModelCatalogEntryByName(modelId);
+  }
   return null;
+}
+
+const NAME_INDEX_NAMESPACES = [
+  "openrouter",
+  "huggingface",
+  "lmstudio",
+  "ollama",
+  "openai",
+  "deepseek",
+  "qwen",
+  "kimi",
+  "mistral",
+  "gemini",
+  "anthropic",
+];
+let nameIndex: Map<string, ModelCatalogSnapshotEntry> | null = null;
+let familyIndex: Map<string, ModelCatalogSnapshotEntry> | null = null;
+
+function bareModelName(modelId: string): string {
+  let name = modelId.trim().toLowerCase();
+  name = name.split("/").at(-1) ?? name;
+  name = name.replace(/\.gguf$/, "");
+  const tag = name.indexOf(":");
+  if (tag > 0) name = name.slice(0, tag);
+  return name.replace(/-(?:ud-)?(?:i?q\d[a-z0-9_]*|f16|bf16|fp16|fp8)$/, "");
+}
+
+function modelFamily(bareName: string): string {
+  return bareName
+    .split("-")
+    .filter((part) => !/^(?:\d+(?:\.\d+)?[bm]|a\d+b)$/.test(part))
+    .join("-");
+}
+
+function buildNameIndexes(): void {
+  nameIndex = new Map();
+  familyIndex = new Map();
+  for (const namespace of NAME_INDEX_NAMESPACES) {
+    const models = snapshotNamespace(namespace);
+    if (!models) continue;
+    for (const [id, entry] of Object.entries(models)) {
+      const name = bareModelName(id);
+      if (!nameIndex.has(name)) nameIndex.set(name, entry);
+      const family = modelFamily(name);
+      if (family !== name && !familyIndex.has(family)) familyIndex.set(family, entry);
+    }
+  }
+}
+
+export function resolveModelCatalogEntryByName(
+  modelId: string | null | undefined,
+): ModelCatalogEntry | null {
+  if (!modelId) return null;
+  if (!nameIndex || !familyIndex) buildNameIndexes();
+  const name = bareModelName(modelId);
+  const entry = nameIndex?.get(name) ?? familyIndex?.get(modelFamily(name));
+  return entry ? fromSnapshotEntry(entry) : null;
 }
 
 export function modelCatalogSupportsVision(
