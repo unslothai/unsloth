@@ -437,9 +437,9 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
     # Join-Path terminates on a missing drive under ErrorActionPreference Stop, and this runs
     # outside the installation branch's try, so XDG_DATA_HOME=Z:\xdg ended setup.
     body = finder[finder.index("$candidates") :]
-    assert "Join-Path" not in body, (
-        "the candidate paths are built with Join-Path again; one missing drive ends setup"
-    )
+    assert (
+        "Join-Path" not in body
+    ), "the candidate paths are built with Join-Path again; one missing drive ends setup"
     # And the run that installs uv has to use it, or it records a manifest with no uv_version and
     # the next run rewrites it: a no-op update that is not one.
     install_arm = text[text.index('substep "installing uv package manager..."') :][:2000]
