@@ -18,7 +18,7 @@ This answers three questions on a real Windows ROCm box:
      no spawns.
   3. What do the Windows-only gates actually evaluate to?
 
-Run from ``studio/backend`` with the Studio venv's python::
+Run from ``studio/backend`` with the Unsloth venv's python::
 
     python tests/manual/windows_rocm_vram_check.py --gib 4
 

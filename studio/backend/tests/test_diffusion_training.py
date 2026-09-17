@@ -234,6 +234,52 @@ def test_service_stop_marks_stopped():
     assert svc.stop() is False
 
 
+def test_service_stop_for_shutdown_saves_and_waits():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _stoppable_target)
+    svc.start(dict(_CFG))
+    _wait_status(svc, "running")
+    assert svc.stop_for_shutdown(timeout = 5) is True
+    st = svc.status()
+    assert st["status"] == "stopped"
+    assert st["active"] is False
+
+
+def test_service_stop_for_shutdown_is_immediate_when_idle():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    t0 = time.monotonic()
+    assert svc.stop_for_shutdown(timeout = 5) is True
+    assert time.monotonic() - t0 < 1
+
+
+class _ExitedProc:
+    def is_alive(self):
+        return False
+
+
+def test_service_stop_for_shutdown_waits_for_the_pump_after_the_worker_exits():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    written = threading.Event()
+    svc._proc = _ExitedProc()
+    svc._pump = threading.Thread(target = lambda: (time.sleep(0.5), written.set()), daemon = True)
+    svc._pump.start()
+    assert svc.stop_for_shutdown(timeout = 5) is True
+    assert written.is_set()
+
+
+def _ignores_stop_target(*, event_queue, stop_queue, config):
+    event_queue.put({"type": "model_load_completed"})
+    time.sleep(3)
+
+
+def test_service_stop_for_shutdown_wait_is_bounded():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _ignores_stop_target)
+    svc.start(dict(_CFG))
+    _wait_status(svc, "running")
+    t0 = time.monotonic()
+    assert svc.stop_for_shutdown(timeout = 0.5) is False
+    assert 0.4 < time.monotonic() - t0 < 2
+
+
 def test_service_crash_without_terminal_event_is_error():
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _crashing_target)
     svc.start(dict(_CFG))
@@ -468,7 +514,7 @@ def client(monkeypatch):
     return c
 
 
-# Studio-relative paths: the route resolves/contains them before spawn.
+# Unsloth-relative paths: the route resolves/contains them before spawn.
 _BODY = {
     "base_model": "stabilityai/sdxl-turbo",
     "data_dir": "uploads/my-images",
@@ -482,7 +528,7 @@ def test_route_start_ok(client):
     assert r.status_code == 200, r.text
     assert r.json() == {"job_id": "job-123", "status": "running"}
     assert client._fake.started_with["base_model"] == "stabilityai/sdxl-turbo"
-    # Paths were resolved to absolute Studio-contained locations before spawn.
+    # Paths were resolved to absolute Unsloth-contained locations before spawn.
     from pathlib import Path
 
     assert Path(client._fake.started_with["data_dir"]).is_absolute()
@@ -728,7 +774,7 @@ def test_route_start_preflights_the_normalized_fetch_mirror(
         assert mirror in req.full_url
         return object()
 
-    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr("utils.utils.auth_safe_open", _fake_urlopen)
     r = client.post(
         "/api/train/diffusion/start",
         json = {**_BODY, "base_model": source, "hf_token": hf_token},
@@ -830,7 +876,7 @@ def test_the_start_preflight_never_heads_the_hub_for_a_local_clone(monkeypatch, 
     def _explode(*a, **k):
         pytest.fail("a local clone must never be probed over the network")
 
-    monkeypatch.setattr(urllib.request, "urlopen", _explode)
+    monkeypatch.setattr("utils.utils.auth_safe_open", _explode)
 
     _preflight_gated_base(local, None)
 
@@ -1048,7 +1094,7 @@ def test_route_start_rejects_nonpositive_snr_gamma(client):
 
 
 def test_route_start_rejects_uncontained_paths(client):
-    # An absolute path outside the Studio dataset roots is a 400, not silently accepted.
+    # An absolute path outside the Unsloth dataset roots is a 400, not silently accepted.
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "/etc"})
     assert r.status_code == 400
 
@@ -1837,7 +1883,7 @@ def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
     import sys
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = None: object())
     monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.39.0", "Krea2Pipeline"))
 
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
@@ -2207,7 +2253,7 @@ def test_start_gated_base_without_access_is_400_and_keeps_gpu(client, monkeypatc
     def _fake_urlopen(req, timeout = None):
         raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
 
-    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr("utils.utils.auth_safe_open", _fake_urlopen)
     r = client.post(
         "/api/train/diffusion/start",
         json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
@@ -2256,7 +2302,7 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
         "core.training.diffusion_train_common.training_precision_preflight_error",
         lambda fam, prec: None,
     )
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = None: object())
     r = client.post(
         "/api/train/diffusion/start",
         json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},

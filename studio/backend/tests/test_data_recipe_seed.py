@@ -30,7 +30,12 @@ class _FakeUpload:
         return self._content
 
 
-def _load_seed_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def _load_seed_route(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    inline_extraction = True,
+):
     pytest.importorskip("fastapi")
     pytest.importorskip("multipart")
     pytest.importorskip("structlog")
@@ -43,6 +48,12 @@ def _load_seed_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     seed_route = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(seed_route)
     seed_route.UNSTRUCTURED_UPLOAD_ROOT = tmp_path / "unstructured-uploads"
+    if inline_extraction:
+        # Unit cases inject extractor failures in this process. Process isolation has separate tests.
+        async def extract(file_path, ext):
+            return seed_route._extract_text_from_file(file_path, ext)
+
+        monkeypatch.setattr(seed_route, "_extract_text_from_file_async", extract)
     return seed_route
 
 
@@ -380,3 +391,42 @@ def test_plugin_resolution_survives_a_reload_and_normalizes(monkeypatch, tmp_pat
     source = tmp_path / "notes.txt"
     source.write_text("a\n\n\n\nb", encoding = "utf-8")
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\nb"
+
+
+def test_a_backend_executed_seed_resolves_the_endpoint_on_the_backend(monkeypatch):
+    """The seed is fetched in THIS process, so the endpoint must be ours.
+
+    A remote browser is told the public default for a loopback mirror (it cannot
+    reach the backend's localhost), so letting the client's value through would
+    bypass the mirror on exactly the deployments that need it. A value the user
+    typed into the seed node is still honoured.
+    """
+    pytest.importorskip("fastapi")
+    backend_root = Path(__file__).resolve().parent.parent
+    monkeypatch.syspath_prepend(str(backend_root))
+    monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+
+    from routes.data_recipe.jobs import _resolve_seed_endpoint
+
+    recipe = {"seed_config": {"source": {"seed_type": "hf", "path": "a/b", "endpoint": None}}}
+    _resolve_seed_endpoint(recipe)
+    assert recipe["seed_config"]["source"]["endpoint"] == "http://127.0.0.1:9700"
+
+    recipe = {"seed_config": {"source": {"seed_type": "hf", "path": "a/b"}}}
+    _resolve_seed_endpoint(recipe)
+    assert recipe["seed_config"]["source"]["endpoint"] == "http://127.0.0.1:9700"
+
+    explicit = {
+        "seed_config": {
+            "source": {"seed_type": "hf", "path": "a/b", "endpoint": "https://hub.internal"}
+        }
+    }
+    _resolve_seed_endpoint(explicit)
+    assert explicit["seed_config"]["source"]["endpoint"] == "https://hub.internal"
+
+    # Nothing to resolve for the other seed types, and no crash on a malformed recipe.
+    other = {"seed_config": {"source": {"seed_type": "local", "paths": []}}}
+    _resolve_seed_endpoint(other)
+    assert "endpoint" not in other["seed_config"]["source"]
+    _resolve_seed_endpoint({})
+    _resolve_seed_endpoint({"seed_config": "nope"})

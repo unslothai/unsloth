@@ -12,10 +12,64 @@ from storage import research_runs_db as research_db
 from storage import studio_db
 
 
+def _shared_setup_1():
+    from core import research_runs as worker
+
+    _create()
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    return supervisor, worker
+
+
+def _shared_setup_2():
+    _create()
+    plan = research_db.set_plan("run-1", _plan())
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    research_db.claim_next("worker-1")
+    return plan
+
+
+def _shared_setup_3():
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _shared_setup_4(supervisor, worker):
+    research_db.request_cancel("run-1")
+    claimed = research_db.claim_next(supervisor.worker_id)
+    assert claimed is not None
+
+    async def cancelled_plan(run):
+        raise worker.RunCancelled()
+
+    original_update = worker._update_assistant
+    return cancelled_plan, claimed, original_update
+
+
+def _shared_setup_5():
+    _create()
+    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    research_db.approve("run-1", 1, plan["planHash"])
+    research_db.claim_next("worker-1")
+
+
+def _shared_setup_6():
+    cancelled: list[str] = []
+    request = SimpleNamespace(
+        app = SimpleNamespace(
+            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
+        )
+    )
+    return cancelled, request
+
+
 @pytest.fixture
 def research_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "thread-1",
@@ -210,31 +264,31 @@ def test_synthesis_evidence_budget_tracks_loaded_context(monkeypatch):
     from core import research_runs as worker
 
     # Unknown context keeps the full cap (backwards compatible).
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: None)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: None)
     assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
     # A small context shrinks the budget so evidence fits, and the rest of the prompt eats into
     # it, but the output reserve is capped at half the window so the budget never collapses to 0
     # and empties the prompt (which is worse than a truncated one).
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 2048)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 2048)
     small = worker._synthesis_evidence_budget()
     assert 0 < small < worker._MAX_SYNTHESIS_EVIDENCE_CHARS
     assert worker._synthesis_evidence_budget(small) == 0
 
     # The rest of the prompt counts against the same budget, not just the evidence.
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 16384)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 16384)
     roomy = worker._synthesis_evidence_budget()
     assert 0 < worker._synthesis_evidence_budget(8_000) < roomy
 
     # A large context uses (and clamps to) the full cap.
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 32768)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 32768)
     assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
 
 def test_synthesis_context_budgets_model_derived_json_with_evidence(monkeypatch):
     from core import research_runs as worker
 
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 8192)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 8192)
     notes = [f"### Step {index}\n" + "evidence " * 2_000 for index in range(6)]
     audit = {"thesis": "a" * 3_000}
     research_state = {"summary": "s" * 3_000}
@@ -324,13 +378,14 @@ def test_report_is_recovered_from_substantial_synthesis_reasoning():
 
 def test_document_citations_are_restricted_to_persisted_sources():
     from core import research_runs as worker
+    from core.research.citations import _validate_report_document_sources
 
     report = (
         "Supported [Document: private.pdf, p. 2]. "
         "Fabricated [Document: invented.pdf, p. 9] and "
         "[Document: multiline.pdf,\np. 3]."
     )
-    validated = worker._validate_report_document_sources(
+    validated = _validate_report_document_sources(
         report,
         [{"filename": "private.pdf", "page": 2}],
     )
@@ -495,7 +550,7 @@ def test_schema_and_state_transitions(research_home):
 
 def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "shared-thread",
@@ -540,7 +595,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     finally:
         conn.close()
 
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         primary_key = [
@@ -565,7 +620,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
 
 def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "shared-thread",
@@ -607,14 +662,14 @@ def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monke
         return real_connect(path, *args, **kwargs)
 
     monkeypatch.setattr(studio_db.sqlite3, "connect", _failing_connect)
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     with pytest.raises(RuntimeError, match = "simulated crash"):
         studio_db.get_connection()
 
     # Recover: the interrupted migration left nothing half-applied, so a clean boot
     # completes the migration and preserves the original claim exactly once.
     monkeypatch.setattr(studio_db.sqlite3, "connect", real_connect)
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         primary_key = [
@@ -663,10 +718,7 @@ def test_pruning_messages_preserves_runs_whose_user_message_survives(research_ho
 
 @pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
 def test_pruning_skips_research_turn_messages(research_home, removed_id):
-    _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    research_db.approve("run-1", 1, plan["planHash"])
-    research_db.claim_next("worker-1")
+    _shared_setup_5()
     research_db.finish("run-1", "worker-1", "completed")
     survivors = [
         message
@@ -683,10 +735,7 @@ def test_pruning_skips_research_turn_messages(research_home, removed_id):
 
 @pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
 def test_pruning_exempts_research_messages_even_when_updates_allowed(research_home, removed_id):
-    _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    research_db.approve("run-1", 1, plan["planHash"])
-    research_db.claim_next("worker-1")
+    _shared_setup_5()
     research_db.finish("run-1", "worker-1", "completed")
     survivors = [
         message
@@ -805,18 +854,10 @@ def test_delete_thread_cancels_active_research_run(research_home):
 
     from routes import chat_history
 
-    _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    research_db.approve("run-1", 1, plan["planHash"])
-    research_db.claim_next("worker-1")
+    _shared_setup_5()
     assert research_db.get_run("run-1")["status"] == "running"
 
-    cancelled: list[str] = []
-    request = SimpleNamespace(
-        app = SimpleNamespace(
-            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
-        )
-    )
+    cancelled, request = _shared_setup_6()
     asyncio.run(
         chat_history.delete_threads(
             chat_history.ChatDeleteRequest(ids = ["thread-1"]),
@@ -841,17 +882,9 @@ def test_project_delete_cancels_runs_captured_by_delete_transaction(research_hom
         }
     )
     studio_db.update_chat_thread("thread-1", {"projectId": "project-1"})
-    _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    research_db.approve("run-1", 1, plan["planHash"])
-    research_db.claim_next("worker-1")
+    _shared_setup_5()
 
-    cancelled: list[str] = []
-    request = SimpleNamespace(
-        app = SimpleNamespace(
-            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
-        )
-    )
+    cancelled, request = _shared_setup_6()
 
     deleted = asyncio.run(
         chat_history.delete_project(
@@ -868,17 +901,9 @@ def test_project_delete_cancels_runs_captured_by_delete_transaction(research_hom
 def test_clear_history_cancels_runs_captured_by_delete_transaction(research_home):
     from routes import chat_history
 
-    _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    research_db.approve("run-1", 1, plan["planHash"])
-    research_db.claim_next("worker-1")
+    _shared_setup_5()
 
-    cancelled: list[str] = []
-    request = SimpleNamespace(
-        app = SimpleNamespace(
-            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
-        )
-    )
+    cancelled, request = _shared_setup_6()
 
     asyncio.run(chat_history.clear_history(request, current_subject = "alice"))
 
@@ -910,12 +935,7 @@ def test_revision_hash_conflicts_and_idempotent_approval(research_home):
 def test_planner_cannot_finalize_after_its_lease_timestamp_expires(research_home):
     _create()
     assert research_db.claim_next("planner-1") is not None
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
-        conn.commit()
-    finally:
-        conn.close()
+    _shared_setup_3()
 
     with pytest.raises(research_db.ResearchConflictError, match = "no longer owns"):
         research_db.set_plan("run-1", _plan(), worker_id = "planner-1")
@@ -927,12 +947,7 @@ def test_expired_worker_cannot_write_progress_or_execution_state(research_home):
     plan = research_db.set_plan("run-1", _plan())
     research_db.approve("run-1", plan["planRevision"], plan["planHash"])
     assert research_db.claim_next("worker-1") is not None
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
-        conn.commit()
-    finally:
-        conn.close()
+    _shared_setup_3()
 
     assert (
         research_db.append_worker_event(
@@ -984,12 +999,7 @@ def test_expired_worker_cannot_write_progress_or_execution_state(research_home):
 def test_stale_planner_cannot_overwrite_new_lease_owner(research_home):
     _create()
     assert research_db.claim_next("planner-1") is not None
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
-        conn.commit()
-    finally:
-        conn.close()
+    _shared_setup_3()
     assert research_db.claim_next("planner-2") is not None
 
     with pytest.raises(research_db.ResearchConflictError, match = "no longer owns"):
@@ -1049,10 +1059,7 @@ def test_recovery_releases_expired_leases(research_home, status):
 
 
 def test_execution_reset_clears_steps_and_sources(research_home):
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     research_db.upsert_execution_step(
         "run-1", 0, "Old step", "old query", "completed", worker_id = "worker-1"
     )
@@ -1114,7 +1121,7 @@ def test_recovered_supervisor_waits_for_actual_server_port(research_home):
     with pytest.raises(RuntimeError, match = "server port"):
         supervisor._endpoint()
 
-    supervisor.note_request_port(SimpleNamespace(scope = {"server": ("127.0.0.1", 4321)}))
+    supervisor.note_request_address(SimpleNamespace(scope = {"server": ("127.0.0.1", 4321)}))
     assert supervisor._endpoint() == "http://127.0.0.1:4321/v1/chat/completions"
 
 
@@ -1135,10 +1142,7 @@ def test_sources_are_normalized_by_url(research_home):
 
 
 def test_partial_report_is_persisted_and_emits_an_event(research_home):
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     before = research_db.get_run("run-1")["lastEventSeq"]
 
     assert research_db.set_report_progress("run-1", "Partial report", " report") is True
@@ -1152,13 +1156,13 @@ def test_partial_report_is_persisted_and_emits_an_event(research_home):
 
 
 def test_report_citations_are_limited_to_gathered_sources():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     report = (
         "Supported [claim](https://example.com/source) and "
         "invented [claim](https://invalid.example/guess)."
     )
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         report,
         [
             {
@@ -1173,24 +1177,24 @@ def test_report_citations_are_limited_to_gathered_sources():
 
 
 def test_report_citations_preserve_balanced_parentheses_in_urls():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     url = "https://en.wikipedia.org/wiki/Function_(mathematics)"
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         f"Supported [generic label]({url}).",
         [{"url": url, "title": "Function (mathematics)"}],
     )
 
     assert f"[Function (mathematics)]({url})" in validated
     assert (
-        _validate_report_sources(
+        citations._validate_report_sources(
             f'With title [generic label]({url} "reference page").',
             [{"url": url, "title": "Function (mathematics)"}],
         )
         == f"With title [Function (mathematics)]({url})."
     )
     assert (
-        _validate_report_sources(
+        citations._validate_report_sources(
             f"Malformed [generic label]({url}",
             [{"url": url, "title": "Function (mathematics)"}],
         )
@@ -1199,13 +1203,13 @@ def test_report_citations_preserve_balanced_parentheses_in_urls():
 
 
 def test_report_citations_use_canonical_titles_without_model_sources_section():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     report = (
         "A supported claim [generic source](https://example.com/a).\n\n"
         "## Sources\n\n- [Duplicate](https://example.com/a)"
     )
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         report,
         [
             {"url": "https://example.com/a", "title": "Primary Report"},
@@ -1220,13 +1224,13 @@ def test_report_citations_use_canonical_titles_without_model_sources_section():
 
 
 def test_report_citations_normalize_numbered_bare_and_autolink_styles():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     sources = [
         {"url": "https://example.com/a", "title": "Primary Report"},
         {"url": "https://example.com/b", "title": "Supporting Data"},
     ]
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         "Numbered [1], bare https://example.com/b, and "
         "automatic <https://example.com/a>. Unknown https://invalid.example/x.",
         sources,
@@ -1496,10 +1500,7 @@ def test_research_budget_limits_allow_unlimited_model_requests():
 
 
 def test_retry_is_bounded_and_resumes_from_saved_plan(research_home):
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     research_db.upsert_execution_step("run-1", 0, "Old step", "old", "completed")
     research_db.upsert_source("run-1", 0, "https://old.example", "Old", "Old evidence")
     research_db.append_event("run-1", "reasoning.updated", {"reasoningDelta": "old reasoning"})
@@ -1783,10 +1784,11 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(
     assert planned["status"] == "awaiting_approval"
     assert planned["planRevision"] == 1
     assert planned["assistantMessageId"] is None
+    assert research_db.claim_next(supervisor.worker_id) is None
 
-    research_db.approve("run-1", planned["planRevision"], planned["planHash"])
+    assert research_db.approve("run-1", planned["planRevision"], planned["planHash"]) == "queued"
     running = research_db.claim_next(supervisor.worker_id)
-    assert running is not None  # planning released its lease; approval starts immediately
+    assert running is not None
     asyncio.run(supervisor._process(running))
 
     completed = research_db.get_run("run-1")
@@ -2154,7 +2156,7 @@ def test_auto_scrape_skipped_on_small_context(research_home, monkeypatch):
     # grounding is skipped (snippet-only) even when maxAutoScrape is set.
     from core import research_runs as worker
 
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 2048)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 2048)
     _create(budgets = _SCRAPE_BUDGETS)
 
     def fake_tool(name, arguments, *args, **kwargs):
@@ -2400,12 +2402,7 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
         "Must be discarded",
         "old-worker",
     )
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
-        conn.commit()
-    finally:
-        conn.close()
+    _shared_setup_3()
     assert research_db.recover_expired() == 1
 
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
@@ -2785,6 +2782,28 @@ def test_shared_chat_subject_can_follow_and_cancel_research(research_home):
     assert cancelled["status"] == "cancelling"
 
 
+def test_shared_chat_subject_can_repoint_stopped_research(research_home):
+    from routes.research_runs import CreateResearchRun, create_research_run
+
+    _create()
+    _cancel_run()
+    _new_user_message()
+
+    reused = create_research_run(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-2",
+            inferenceRequest = {"model": "local-model"},
+        ),
+        SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+        current_subject = "bob",
+    )
+
+    assert reused["id"] == "run-1"
+    assert reused["ownerSubject"] == "alice"
+    assert reused["status"] == "planning"
+
+
 def test_list_active_returns_complete_snapshots(research_home):
     _create()
     research_db.set_plan("run-1", _plan())
@@ -2798,10 +2817,7 @@ def test_list_active_returns_complete_snapshots(research_home):
 def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home):
     from routes.research_runs import research_events
 
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     research_db.upsert_source(
         "run-1", 0, "https://example.com/final", "Final source", "Final evidence"
     )
@@ -2857,7 +2873,8 @@ def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home)
     ("cancelled", "expected_status", "text"),
     [
         (True, "cancelled", "Research cancelled."),
-        (False, "failed", "Research failed: mocked model failure"),
+        # Provider text reaches a Markdown surface here too, so it is quoted literally.
+        (False, "failed", "Research failed: `mocked model failure`"),
     ],
 )
 def test_worker_terminal_paths_create_one_fallback_without_frontend_message(
@@ -2965,6 +2982,65 @@ def test_create_run_rejects_binding_to_populated_reply(research_home):
     assert run["assistantMessageId"] == "empty-placeholder"
 
 
+def test_create_run_binds_through_a_preamble_beside_the_handoff(research_home):
+    # A thinking model narrates before it calls a tool, so both arrive in one message.
+    studio_db.upsert_chat_message(
+        {
+            "id": "preamble-and-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "reasoning", "text": "the user wants research"},
+                {"type": "text", "text": "I'll research that now."},
+                {"type": "tool-call", "toolName": "deep_research", "toolCallId": "c1"},
+            ],
+            "createdAt": 6,
+        }
+    )
+    run = _create(assistant_message_id = "preamble-and-call")
+    assert run["assistantMessageId"] == "preamble-and-call"
+
+
+def test_create_run_still_rejects_an_answer_beside_an_unrelated_tool_call(research_home):
+    studio_db.upsert_chat_message(
+        {
+            "id": "answer-and-other-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "existing answer"},
+                {"type": "tool-call", "toolName": "search_knowledge_base", "toolCallId": "c2"},
+            ],
+            "createdAt": 7,
+        }
+    )
+    with pytest.raises(research_db.ResearchConflictError):
+        _create(assistant_message_id = "answer-and-other-call")
+    assert research_db.get_run("run-1") is None
+
+
+def test_create_run_rejects_a_completed_answer_even_beside_the_handoff(research_home):
+    studio_db.upsert_chat_message(
+        {
+            "id": "sources-and-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "existing answer"},
+                {"type": "source", "sourceType": "url", "url": "https://kept.example"},
+                {"type": "tool-call", "toolName": "deep_research", "toolCallId": "c3"},
+            ],
+            "createdAt": 8,
+        }
+    )
+    with pytest.raises(research_db.ResearchConflictError):
+        _create(assistant_message_id = "sources-and-call")
+    assert research_db.get_run("run-1") is None
+
+
 def test_update_assistant_replaces_report_parts_without_duplication(research_home):
     from core.research_runs import _update_assistant
 
@@ -3003,10 +3079,7 @@ def test_update_assistant_replaces_report_parts_without_duplication(research_hom
 
 @pytest.mark.parametrize("requested", ["completed", "failed"])
 def test_cancel_requested_wins_finish_cas(research_home, requested):
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     assert research_db.request_cancel("run-1") == "cancelling"
 
     actual = research_db.finish(
@@ -3052,10 +3125,7 @@ def test_lost_lease_stops_worker_before_more_writes(research_home):
 
 
 def test_owned_run_is_failed_instead_of_replanned_after_lease_loss(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     run = research_db.claim_next(supervisor.worker_id)
 
     async def lose_lease(_run_id):
@@ -3069,10 +3139,7 @@ def test_owned_run_is_failed_instead_of_replanned_after_lease_loss(research_home
 
 
 def test_lease_loss_terminalization_retries_database_lock(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.claim_next(supervisor.worker_id)
     real_finish = worker.db.finish
     calls = 0
@@ -3097,10 +3164,7 @@ def test_lease_loss_terminalization_retries_database_lock(research_home, monkeyp
 
 
 def test_error_after_lease_expiry_is_failed_instead_of_replanned(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     run = research_db.claim_next(supervisor.worker_id)
 
     async def fail_after_expiry(_run):
@@ -3121,10 +3185,7 @@ def test_error_after_lease_expiry_is_failed_instead_of_replanned(research_home, 
 
 
 def test_error_terminalization_retries_database_lock(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     run = research_db.claim_next(supervisor.worker_id)
     real_finish = worker.db.finish
     calls = 0
@@ -3158,10 +3219,7 @@ def test_planning_cancel_wins_failed_finish(research_home):
 
 
 def test_failed_heartbeat_signals_stale_worker(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.claim_next(supervisor.worker_id)
 
     async def no_wait(_seconds):
@@ -3175,10 +3233,7 @@ def test_failed_heartbeat_signals_stale_worker(research_home, monkeypatch):
 
 
 def test_transient_heartbeat_error_does_not_signal_lease_loss(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.claim_next(supervisor.worker_id)
     calls = 0
 
@@ -3202,10 +3257,7 @@ def test_transient_heartbeat_error_does_not_signal_lease_loss(research_home, mon
 
 
 def test_sustained_heartbeat_errors_stop_before_lease_expiry(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.claim_next(supervisor.worker_id)
     calls = 0
 
@@ -3226,13 +3278,20 @@ def test_sustained_heartbeat_errors_stop_before_lease_expiry(research_home, monk
     assert supervisor._cancel_event("run-1").is_set()
 
 
-def test_completion_cancellation_closes_loopback_request(research_home, monkeypatch):
-    from core import research_runs as worker
+# A hang guard, not a latency assertion. These three cancellation tests used a fixed
+# 50ms sleep to "wait" for the request to start and then gave cancellation one second to
+# land. CI runs this suite in parallel with tens of thousands of other tests, so a busy
+# runner blew the bound and reported cancellation as broken. The waits below are now
+# signalled by the fake itself, and this bound only exists so a genuine hang fails
+# instead of running until the suite timeout.
+_CANCEL_TIMEOUT_S = 30.0
 
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+
+def test_completion_cancellation_closes_loopback_request(research_home, monkeypatch):
+    supervisor, worker = _shared_setup_1()
     run = research_db.claim_next(supervisor.worker_id)
     request_cancelled = {"value": False}
+    in_flight = asyncio.Event()
 
     class FakeClient:
         def __init__(self, **kwargs):
@@ -3248,6 +3307,7 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
             return object()
 
         async def send(self, request, *, stream):
+            in_flight.set()
             try:
                 await asyncio.Event().wait()
             finally:
@@ -3265,25 +3325,26 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
         task = asyncio.create_task(
             supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
         )
-        await asyncio.sleep(0.05)
+        # Wait for the request to actually be in flight rather than guessing how
+        # long that takes: cancelling before it starts tests nothing.
+        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = 1)
+            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert request_cancelled["value"] is True
 
 
 def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.claim_next(supervisor.worker_id)
     iterator_cancelled = {"value": False}
+    in_flight = asyncio.Event()
 
     class FakeResponse:
         async def _lines(self):
+            in_flight.set()
             try:
                 await asyncio.Event().wait()
                 yield "unreachable"
@@ -3299,22 +3360,22 @@ def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
                 pass
 
         task = asyncio.create_task(consume())
-        await asyncio.sleep(0.05)
+        # Wait for the request to actually be in flight rather than guessing how
+        # long that takes: cancelling before it starts tests nothing.
+        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = 1)
+            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert iterator_cancelled["value"] is True
 
 
 def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     run = research_db.claim_next(supervisor.worker_id)
     request_cancelled = {"value": False}
+    in_flight = asyncio.Event()
 
     class FakeClient:
         def __init__(self, **kwargs):
@@ -3330,6 +3391,7 @@ def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkey
             return object()
 
         async def send(self, request, *, stream):
+            in_flight.set()
             try:
                 await asyncio.Event().wait()
             finally:
@@ -3347,10 +3409,12 @@ def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkey
         task = asyncio.create_task(
             supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
         )
-        await asyncio.sleep(0.05)
+        # Wait for the request to actually be in flight rather than guessing how
+        # long that takes: cancelling before it starts tests nothing.
+        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = 1)
+            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert request_cancelled["value"] is True
@@ -3746,3 +3810,637 @@ def test_an_authorized_reparent_of_a_research_row_is_not_overwritten(research_ho
     assert studio_db.get_chat_message("thread-1", "ancestor") is None
     assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "keeper"
     assert _thread_imports_cleanly()
+
+
+def _new_user_message(message_id = "user-2", created_at = 20):
+    studio_db.upsert_chat_message(
+        {
+            "id": message_id,
+            "threadId": "thread-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed in the EU AI Act?"}],
+            "createdAt": created_at,
+        }
+    )
+    return message_id
+
+
+def _rebind(
+    user_message_id,
+    assistant_message_id = None,
+    thread_id = "thread-1",
+):
+    return research_db.rebind_cancelled(
+        thread_id = thread_id,
+        user_message_id = user_message_id,
+        assistant_message_id = assistant_message_id,
+        config = {
+            "model": "local-model",
+            "inferenceRequest": {"model": "local-model"},
+            "ragScope": None,
+            "instructions": "",
+            "budgets": {
+                "maxSteps": 5,
+                "maxSources": 15,
+                "modelTimeoutSeconds": 30,
+                "toolTimeoutSeconds": 10,
+            },
+        },
+    )
+
+
+def _cancel_run():
+    research_db.request_cancel("run-1")
+    research_db.claim_next("worker-1")
+    research_db.finish("run-1", "worker-1", "cancelled")
+
+
+def test_stopped_run_is_repointed_at_a_newer_message(research_home):
+    _create()
+    _cancel_run()
+
+    reused = _rebind(_new_user_message())
+    assert reused is not None
+    assert reused["id"] == "run-1"
+    assert reused["status"] == "planning"
+    assert reused["userMessageId"] == "user-2"
+    assert research_db.has_thread_claim("thread-1") is True
+
+
+def test_no_placeholder_rebind_gets_a_fresh_terminal_fallback(research_home):
+    _create(assistant_message_id = None)
+    _cancel_run()
+    first_id, first_created = research_db.create_and_bind_terminal_fallback(
+        "run-1", text = "Research cancelled.", status = "cancelled"
+    )
+    assert first_created is True
+
+    assert _rebind(_new_user_message(), assistant_message_id = None) is not None
+    research_db.set_plan("run-1", _plan())
+    assert research_db.request_cancel("run-1") == "cancelled"
+    second_id, second_created = research_db.create_and_bind_terminal_fallback(
+        "run-1", text = "Research cancelled again.", status = "cancelled"
+    )
+
+    assert second_created is True
+    assert second_id != first_id
+    first = studio_db.get_chat_message("thread-1", first_id)
+    second = studio_db.get_chat_message("thread-1", second_id)
+    assert first["parentId"] == "user-1"
+    assert second["parentId"] == "user-2"
+    assert second["content"][0]["text"] == "Research cancelled again."
+
+
+def test_migrated_history_does_not_hide_the_claim_owner_s_stopped_run(research_home):
+    _create()
+    conn = studio_db.get_connection()
+    try:
+        conn.executemany(
+            """INSERT INTO research_runs
+               (id, owner_subject, thread_id, user_message_id, status, config_json,
+                created_at, updated_at, completed_at, error_message)
+               VALUES (?, ?, 'thread-1', 'user-1', ?, '{}', ?, ?, ?, ?)""",
+            [
+                ("legacy-completed", "alice", "completed", 1, 1, 1, None),
+                ("legacy-superseded", "bob", "failed", 2, 2, 2, "Superseded"),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _cancel_run()
+
+    assert research_db.research_spent("thread-1") is False
+    reused = _rebind(_new_user_message())
+    assert reused is not None
+    assert reused["id"] == "run-1"
+    assert reused["status"] == "planning"
+
+
+def test_repointed_run_starts_a_fresh_attempt_clock(research_home, monkeypatch):
+    _create()
+    _cancel_run()
+    monkeypatch.setattr(research_db, "now_ms", lambda: 5_000_000)
+
+    reused = _rebind(_new_user_message())
+
+    assert reused is not None
+    assert reused["createdAt"] == 5_000_000
+    assert reused["heartbeatAt"] == 5_000_000
+    assert reused["updatedAt"] == 5_000_000
+
+
+def test_repointing_clears_the_stopped_run_of_its_old_question(research_home):
+    plan = _shared_setup_2()
+    research_db.upsert_source("run-1", 0, "https://example.com/a", "A", "snippet")
+    research_db.request_cancel("run-1")
+    research_db.finish("run-1", "worker-1", "cancelled")
+
+    reused = _rebind(_new_user_message())
+    assert reused is not None
+    assert reused["plan"] is None
+    assert reused["steps"] == []
+    assert reused["sources"] == []
+    assert reused["planRevision"] > plan["planRevision"]
+    # Events replay into the activity panel, so a kept approval would claim the new question's
+    # plan was already approved.
+    types = [event["type"] for event in research_db.list_events("run-1")]
+    assert "run.approved" not in types
+    assert types[-1] == "run.rebound"
+
+
+def test_repointing_refuses_a_run_that_is_still_going(research_home):
+    _create()
+    assert _rebind(_new_user_message()) is None
+
+    plan = research_db.set_plan("run-1", _plan())
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    assert _rebind("user-2") is None
+
+
+def test_repointing_refuses_a_message_that_is_not_this_thread_s_question(research_home):
+    _create()
+    _cancel_run()
+
+    studio_db.upsert_chat_thread(
+        {
+            "id": "thread-2",
+            "title": "Other",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-elsewhere",
+            "threadId": "thread-2",
+            "role": "user",
+            "content": [{"type": "text", "text": "Elsewhere"}],
+            "createdAt": 20,
+        }
+    )
+    assert _rebind("user-elsewhere") is None
+    assert _rebind("assistant-1") is None
+    assert _rebind("missing-message") is None
+
+
+def test_route_repoints_a_stopped_run_at_the_next_question(research_home):
+    from routes.research_runs import CreateResearchRun, create_research_run
+
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    created = create_research_run(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
+        ),
+        request,
+        current_subject = "alice",
+    )
+    assert created["status"] == "planning"
+
+    research_db.request_cancel(created["id"])
+    research_db.claim_next("worker-1")
+    research_db.finish(created["id"], "worker-1", "cancelled")
+
+    _new_user_message()
+    reused = create_research_run(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-2",
+            inferenceRequest = {"model": "local-model"},
+        ),
+        request,
+        current_subject = "alice",
+    )
+    assert reused["id"] == created["id"]
+    assert reused["status"] == "planning"
+    assert reused["userMessageId"] == "user-2"
+
+
+def test_route_still_refuses_a_second_run_while_one_is_going(research_home):
+    from fastapi import HTTPException
+    from routes.research_runs import CreateResearchRun, create_research_run
+
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    create_research_run(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
+        ),
+        request,
+        current_subject = "alice",
+    )
+    _new_user_message()
+    with pytest.raises(HTTPException, match = "already has") as caught:
+        create_research_run(
+            CreateResearchRun(
+                threadId = "thread-1",
+                userMessageId = "user-2",
+                inferenceRequest = {"model": "local-model"},
+            ),
+            request,
+            current_subject = "alice",
+        )
+    assert caught.value.status_code == 409
+
+
+def test_repointing_unbinds_the_reply_it_leaves_behind(research_home):
+    _create()
+    _cancel_run()
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-2",
+            "threadId": "thread-1",
+            "parentId": "user-2",
+            "role": "assistant",
+            "content": [],
+            "createdAt": 21,
+        }
+    )
+
+    reused = _rebind(_new_user_message(), assistant_message_id = "assistant-2")
+    assert reused is not None
+    assert reused["assistantMessageId"] == "assistant-2"
+
+    # Both replies pointing at one run would render its live card twice.
+    stale = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert "researchRunId" not in (stale.get("metadata") or {})
+    fresh = studio_db.get_chat_message("thread-1", "assistant-2")
+    assert fresh["metadata"]["researchRunId"] == "run-1"
+
+
+def test_research_is_spent_by_a_finished_run_but_not_by_a_stopped_one(research_home):
+    _create()
+    assert research_db.research_spent("thread-1") is True
+
+    _cancel_run()
+    # The claim is still held (it is what lets the run be re-pointed), but the composer must
+    # offer research again after a stop, so this is what /active reports as hasRun.
+    assert research_db.has_thread_claim("thread-1") is True
+    assert research_db.research_spent("thread-1") is False
+
+    reused = _rebind(_new_user_message())
+    assert reused is not None
+    assert research_db.research_spent("thread-1") is True
+
+
+def test_research_stays_spent_after_a_completed_run(research_home):
+    plan = _shared_setup_2()
+    research_db.finish("run-1", "worker-1", "completed")
+    assert research_db.research_spent("thread-1") is True
+
+
+def test_the_new_question_does_not_inherit_the_stopped_one_s_reasoning(research_home):
+    """get_reasoning_text joins every reasoning event at the run's current attempt.
+
+    The run row is reused, so without a new attempt the report written for the new question
+    opens with the thinking the user stopped.
+    """
+    _create()
+    research_db.append_event("run-1", "reasoning.updated", {"reasoningDelta": "about dog breeds"})
+    _cancel_run()
+
+    assert _rebind(_new_user_message()) is not None
+    research_db.append_event("run-1", "reasoning.updated", {"reasoningDelta": "about the AI Act"})
+
+    assert research_db.get_reasoning_text("run-1") == "about the AI Act"
+    # The stopped question's activity is still there to read, under its own attempt.
+    kept = [
+        event for event in research_db.list_events("run-1") if event["type"] == "reasoning.updated"
+    ]
+    assert len(kept) == 2
+    assert kept[0]["data"]["attempt"] != kept[1]["data"]["attempt"]
+
+
+def test_the_new_question_gets_its_own_retry_budget(research_home):
+    """Retries belong to the question, not to the run row the thread reuses forever."""
+    _create()
+    for _ in range(3):
+        _cancel_run()
+        research_db.retry("run-1")
+    _cancel_run()
+    with pytest.raises(research_db.ResearchConflictError):
+        research_db.retry("run-1")
+
+    assert _rebind(_new_user_message()) is not None
+    _cancel_run()
+    assert research_db.retry("run-1") == "planning"
+
+
+def test_cancel_route_sync_cannot_cross_a_rebind(research_home):
+    from routes.research_runs import _sync_assistant
+
+    _create()
+    _cancel_run()
+    stopped = research_db.get_run("run-1")
+    assert stopped is not None and stopped["status"] == "cancelled"
+
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-2",
+            "threadId": "thread-1",
+            "parentId": "user-2",
+            "role": "assistant",
+            "content": [],
+            "createdAt": 21,
+        }
+    )
+    assert _rebind(_new_user_message(), assistant_message_id = "assistant-2") is not None
+
+    # A cancel request can hold this snapshot while another tab starts the next question.
+    _sync_assistant(stopped)
+
+    current = research_db.get_run("run-1")
+    reply = studio_db.get_chat_message("thread-1", "assistant-2")
+    assert current is not None and current["status"] == "planning"
+    assert current["retryCount"] == 1
+    assert reply["metadata"]["researchStatus"] == "planning"
+    assert reply["metadata"]["researchPlanRevision"] == current["planRevision"]
+
+
+def test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question(research_home, monkeypatch):
+    """The worker finishes a stop, then writes its reply. The user can ask in between.
+
+    Both replies are resolved by the same reused run id, so without the attempt guard the new
+    question's placeholder is written "Research cancelled." and stays that way.
+    """
+    supervisor, worker = _shared_setup_1()
+    research_db.request_cancel("run-1")
+    claimed = research_db.claim_next(supervisor.worker_id)
+
+    async def cancelled_plan(run):
+        raise worker.RunCancelled()
+
+    # The window: the run reaches "cancelled", the user asks the next question, and only then
+    # does the worker get round to writing its reply.
+    real_get_run = research_db.get_run
+
+    def racing_get_run(run_id, *args, **kwargs):
+        if research_db.get_run.calls == 0:
+            research_db.get_run.calls += 1
+            # No placeholder written by hand: rebind_cancelled creates and binds it, exactly
+            # as the endpoint does for the next armed question.
+            research_db.rebind_cancelled(
+                thread_id = "thread-1",
+                user_message_id = _new_user_message(),
+                assistant_message_id = "assistant-2",
+                config = dict(real_get_run("run-1")["config"]),
+            )
+        return real_get_run(run_id, *args, **kwargs)
+
+    racing_get_run.calls = 0
+    monkeypatch.setattr(supervisor, "_plan", cancelled_plan)
+    monkeypatch.setattr(research_db, "get_run", racing_get_run)
+    research_db.get_run.calls = 0
+    asyncio.run(supervisor._process(claimed))
+
+    # real_get_run, not the patched name: undoing the patch here would also undo the fixture's
+    # UNSLOTH_STUDIO_HOME and read a different database.
+    rebound = real_get_run("run-1")
+    assert racing_get_run.calls == 1
+    assert rebound["status"] == "planning"
+    assert rebound["assistantMessageId"] == "assistant-2"
+    new_reply = studio_db.get_chat_message("thread-1", "assistant-2")
+    assert (new_reply["metadata"] or {}).get("researchStatus") != "cancelled"
+    assert "Research cancelled." not in json.dumps(new_reply["content"])
+
+
+def test_terminal_write_cannot_cross_a_rebind_after_the_worker_guard(research_home, monkeypatch):
+    supervisor, worker = _shared_setup_1()
+    cancelled_plan, claimed, original_update = _shared_setup_4(supervisor, worker)
+    rebound = False
+
+    def rebind_after_guard(*args, **kwargs):
+        nonlocal rebound
+        if not rebound:
+            rebound = True
+            studio_db.upsert_chat_message(
+                {
+                    "id": "assistant-2",
+                    "threadId": "thread-1",
+                    "parentId": "user-2",
+                    "role": "assistant",
+                    "content": [],
+                    "createdAt": 21,
+                }
+            )
+            assert _rebind(_new_user_message(), assistant_message_id = "assistant-2") is not None
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_plan", cancelled_plan)
+    monkeypatch.setattr(worker, "_update_assistant", rebind_after_guard)
+    asyncio.run(supervisor._process(claimed))
+
+    current = research_db.get_run("run-1")
+    reply = studio_db.get_chat_message("thread-1", "assistant-2")
+    assert current is not None and current["status"] == "planning"
+    assert current["retryCount"] == 1
+    assert (reply["metadata"] or {}).get("researchStatus") != "cancelled"
+    assert "Research cancelled." not in json.dumps(reply["content"])
+
+
+def test_terminal_fallback_cannot_cross_a_no_placeholder_rebind(research_home, monkeypatch):
+    from core import research_runs as worker
+
+    _create(assistant_message_id = None)
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    cancelled_plan, claimed, original_update = _shared_setup_4(supervisor, worker)
+    rebound = False
+
+    def rebind_after_guard(*args, **kwargs):
+        nonlocal rebound
+        if not rebound:
+            rebound = True
+            assert _rebind(_new_user_message(), assistant_message_id = None) is not None
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_plan", cancelled_plan)
+    monkeypatch.setattr(worker, "_update_assistant", rebind_after_guard)
+    asyncio.run(supervisor._process(claimed))
+
+    current = research_db.get_run("run-1")
+    assert current is not None and current["status"] == "planning"
+    assert current["retryCount"] == 1
+    assert current["assistantMessageId"] is None
+    assert studio_db.get_chat_message("thread-1", "research-run-1") is None
+
+
+def test_terminal_write_cannot_cross_a_retry_after_the_worker_guard(research_home, monkeypatch):
+    supervisor, worker = _shared_setup_1()
+    cancelled_plan, claimed, original_update = _shared_setup_4(supervisor, worker)
+    retried = False
+
+    def retry_after_guard(*args, **kwargs):
+        nonlocal retried
+        if not retried:
+            retried = True
+            assert research_db.retry("run-1") == "planning"
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_plan", cancelled_plan)
+    monkeypatch.setattr(worker, "_update_assistant", retry_after_guard)
+    asyncio.run(supervisor._process(claimed))
+
+    current = research_db.get_run("run-1")
+    reply = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert current is not None and current["status"] == "planning"
+    assert current["retryCount"] == 1
+    assert (reply["metadata"] or {}).get("researchStatus") != "cancelled"
+    assert "Research cancelled." not in json.dumps(reply["content"])
+
+
+def _attachment_only_message(message_id = "user-img", created_at = 40):
+    """What the composer sends for an image-only turn: attachments, no text."""
+    studio_db.upsert_chat_message(
+        {
+            "id": message_id,
+            "threadId": "thread-1",
+            "role": "user",
+            "content": [],
+            "attachments": [{"id": "att-1", "type": "image", "name": "chart.png", "content": []}],
+            "createdAt": created_at,
+        }
+    )
+    return message_id
+
+
+def _create_via_route(user_message_id, question = None):
+    from fastapi import Request
+    from routes.research_runs import CreateResearchRun, create_research_run
+
+    payload = CreateResearchRun(
+        threadId = "thread-1",
+        userMessageId = user_message_id,
+        assistantMessageId = None,
+        inferenceRequest = {"model": "local-model"},
+        **({"question": question} if question is not None else {}),
+    )
+    request = Request(
+        {
+            "type": "http",
+            "headers": [],
+            "app": SimpleNamespace(state = SimpleNamespace(research_supervisor = None)),
+        }
+    )
+    return create_research_run(payload, request, current_subject = "alice")
+
+
+def test_an_attachment_only_turn_researches_the_handed_off_question(research_home):
+    """A multimodal model reads the image and hands off a question; the message has no text.
+
+    The worker researches config.question, so refusing on the message's own text ends an
+    otherwise complete handoff in "Deep research could not start".
+    """
+    message_id = _attachment_only_message()
+
+    run = _create_via_route(message_id, question = "What does this revenue chart show for Q3?")
+
+    assert run["status"] == "planning"
+    assert run["config"]["question"] == "What does this revenue chart show for Q3?"
+
+
+def test_an_attachment_only_turn_with_no_question_is_still_refused(research_home):
+    """Nothing to research: neither the message nor the handoff carries a question."""
+    import fastapi
+
+    message_id = _attachment_only_message("user-img-2", 41)
+
+    with pytest.raises(fastapi.HTTPException) as excinfo:
+        _create_via_route(message_id)
+    assert excinfo.value.status_code == 400
+    assert "non-empty text" in excinfo.value.detail
+
+
+def test_planner_opt_out_is_only_sent_where_the_model_has_one(research_home, monkeypatch):
+    from core import research_runs as worker
+
+    _create()
+    run = research_db.claim_next("worker-1")
+    payloads = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def build_request(self, *args, **kwargs):
+            payloads.append(kwargs["json"])
+            return object()
+
+        async def send(self, request, *, stream):
+            return FakeResponse()
+
+    monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        worker.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1})
+    )
+    monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: None)
+    monkeypatch.setattr(
+        worker.db, "append_worker_event", lambda run_id, worker_id, event_type, data: 1
+    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    external = {
+        "model": "m",
+        "providerId": "p1",
+        "providerType": "huggingface",
+        "externalModel": "m",
+    }
+
+    def planner_payload(**inference):
+        run["config"]["inferenceRequest"] = {**external, **inference}
+        payloads.clear()
+        asyncio.run(
+            supervisor._stream_completion(
+                run,
+                [{"role": "user", "content": "question"}],
+                report_progress = False,
+                phase = "planning",
+                enable_thinking = False,
+            )
+        )
+        return payloads[0]
+
+    # gpt-oss has no "none" effort, so the planner keeps the chat's effort instead.
+    no_off = planner_payload(
+        supportsReasoning = True, supportsReasoningOff = False, reasoningEffort = "high"
+    )
+    assert "enable_thinking" not in no_off and no_off["reasoning_effort"] == "high"
+    plain = planner_payload(
+        supportsReasoning = False, supportsReasoningOff = False, enableThinking = True
+    )
+    assert "enable_thinking" not in plain and "reasoning_effort" not in plain
+    with_off = planner_payload(
+        supportsReasoning = True, supportsReasoningOff = True, reasoningEffort = "high"
+    )
+    assert with_off["enable_thinking"] is False and with_off["reasoning_effort"] == "none"
+    # A run queued or retried from before these flags existed carries neither, so the gate has
+    # to treat unknown like non-reasoning: a resumed legacy run must not be the one request that
+    # sends a field the model may not take.
+    older_run = planner_payload(reasoningEffort = "high")
+    assert "enable_thinking" not in older_run and "reasoning_effort" not in older_run
+
+    # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, and the
+    # provider branch now writes it for every model, so the planner opt-out must not reach a
+    # non-reasoning model such as mistral-large-latest.
+    external["providerType"] = "mistral"
+    mistral = planner_payload(supportsReasoning = False, supportsReasoningOff = False)
+    assert "enable_thinking" not in mistral and "reasoning_effort" not in mistral

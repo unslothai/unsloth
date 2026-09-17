@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsAccountOwner } from "@/features/auth";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,10 +21,18 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   type FineTuneFormat,
   archiveAllChatItems,
@@ -59,17 +68,26 @@ import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
-  ArrowLeft01Icon,
+  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
+  FlimSlateIcon,
+  Image03Icon,
+  Message01Icon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
-import { ArchivedMediaView } from "../components/archived-media-dialog";
+import {
+  type ArchivedMediaKind,
+  ArchivedMediaView,
+} from "../components/archived-media-dialog";
 import { ManageChatsView } from "../components/manage-chats-view";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { SettingsRow } from "../components/settings-row";
@@ -89,10 +107,12 @@ const SUBPAGE_FOR_SHELF = {
   chats: "archived",
   images: "archived-images",
   videos: "archived-videos",
+  audio: "archived-audio",
 } as const;
 
-export function DataTab() {
+export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const navigate = useNavigate();
   const archivedRequested = useSettingsDialogStore((s) => s.archivedRequested);
   const consumeArchivedChatsRequest = useSettingsDialogStore(
@@ -105,21 +125,33 @@ export function DataTab() {
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
-    "main" | "manage" | "archived" | "archived-images" | "archived-videos" | "files"
-  >(archivedRequested ? SUBPAGE_FOR_SHELF[archivedRequested] : "main");
+    | "main"
+    | "manage"
+    | "archived"
+    | "archived-images"
+    | "archived-videos"
+    | "archived-audio"
+    | "files"
+  >(
+    searchEntry
+      ? "main"
+      : archivedRequested ? SUBPAGE_FOR_SHELF[archivedRequested] : "main",
+  );
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [archivedExporting, setArchivedExporting] = useState(false);
   // Gates the archived subpage Export button.
-  const { archivedItems } = useChatSidebarItems({ requireMessages: false });
+  const { archivedItems } = useChatSidebarItems({
+    requireMessages: false,
+    enabled: subpage === "archived",
+  });
   const [clearing, setClearing] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
-  // Chat-only hosts redirect /studio back to /chat, so loading a dataset in
-  // the Train tab would upload it and then strand the user; gate the action
-  // the same way the sidebar gates Train.
+  // Chat-only hosts redirect /studio back to /chat, so loading a dataset in the Train tab would
+  // upload it and then strand the user; gate the action the same way the sidebar gates Train.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
@@ -139,20 +171,24 @@ export function DataTab() {
     chatOnly && restoredAction === "train" ? "export" : restoredAction;
   // Chat Completions (OpenAI messages) is the only export format we ship.
   const fineTuneFormat: FineTuneFormat = "openai";
-  // Requests can arrive after Data is already mounted (for example from the
-  // archive-all toast), so always switch before consuming the flag.
+  // Search needs the main-page anchors even when a subpage is already open.
   useEffect(() => {
-    if (!archivedRequested) return;
+    const next = searchEntry
+      ? "main"
+      : archivedRequested
+        ? SUBPAGE_FOR_SHELF[archivedRequested]
+        : null;
+    if (!next) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setSubpage(SUBPAGE_FOR_SHELF[archivedRequested]);
+      setSubpage(next);
       consumeArchivedChatsRequest();
     });
     return () => {
       cancelled = true;
     };
-  }, [archivedRequested, consumeArchivedChatsRequest]);
+  }, [archivedRequested, searchEntry, consumeArchivedChatsRequest]);
 
   useEffect(() => {
     if (!ragAvailabilityUnknown) return;
@@ -204,8 +240,23 @@ export function DataTab() {
   });
 
   useEffect(() => {
-    void countAllChats().then(setCount);
-  }, []);
+    if (subpage !== "main") return;
+    let cancelled = false;
+    void countAllChats().then(
+      (next) => {
+        if (!cancelled) setCount(next);
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        toast.error(t("common.error"), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [subpage, t]);
 
   const handleExport = async () => {
     setExporting(true);
@@ -380,10 +431,9 @@ export function DataTab() {
   const handleUseInTraining = async () => {
     setLoadingTraining(true);
     try {
-      // Same deferred module as above. The training store and datasets-api it also
-      // pulls stay eager either way, since __root.tsx imports the @/features/training
-      // barrel that re-exports both; Recipe Studio is what actually leaves the
-      // startup bundle.
+      // Same deferred module as above. The training store and datasets-api it also pulls stay eager
+      // either way, since __root.tsx imports the @/features/training barrel that re-exports both;
+      // Recipe Studio is what actually leaves the startup bundle.
       const { loadFineTuneDatasetInTrainTab } = await import(
         "../components/finetune-recipe"
       );
@@ -412,6 +462,11 @@ export function DataTab() {
       void handleUseInTraining();
     } else if (fineTuneAction === "recipes") void handleOpenInRecipes();
     else void handleFineTuneExport();
+  };
+
+  const openClearConfirmation = (deleteFiles?: boolean) => {
+    setDeleteFilesOnClear(deleteFiles ?? alwaysDeleteChatFiles);
+    setConfirmOpen(true);
   };
 
   const handleClear = async () => {
@@ -484,9 +539,9 @@ export function DataTab() {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -513,9 +568,9 @@ export function DataTab() {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -558,8 +613,27 @@ export function DataTab() {
     );
   }
 
-  if (subpage === "archived-images" || subpage === "archived-videos") {
-    const isImages = subpage === "archived-images";
+  if (
+    subpage === "archived-images" ||
+    subpage === "archived-videos" ||
+    subpage === "archived-audio"
+  ) {
+    const kind: ArchivedMediaKind =
+      subpage === "archived-images"
+        ? "images"
+        : subpage === "archived-videos"
+          ? "videos"
+          : "audio";
+    const heading = {
+      images: t("settings.data.archivedImages"),
+      videos: t("settings.data.archivedVideos"),
+      audio: t("settings.data.archivedAudio"),
+    }[kind];
+    const description = {
+      images: t("settings.data.archivedImagesDescription"),
+      videos: t("settings.data.archivedVideosDescription"),
+      audio: t("settings.data.archivedAudioDescription"),
+    }[kind];
     return (
       <div className="flex flex-col gap-6">
         <header className="flex items-center gap-2">
@@ -567,33 +641,22 @@ export function DataTab() {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
           </h1>
         </header>
         <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">
-            {isImages
-              ? t("settings.data.archivedImages")
-              : t("settings.data.archivedVideos")}
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            {isImages
-              ? t("settings.data.archivedImagesDescription")
-              : t("settings.data.archivedVideosDescription")}
-          </p>
+          <h2 className="text-sm font-semibold">{heading}</h2>
+          <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         {/* Keyed by kind: switching shelves on an already-mounted tab otherwise keeps the
             instance, and a showMore still awaiting the old shelf appends its rows to the new one,
             which then drives restore and delete through the wrong media API. */}
-        <ArchivedMediaView
-          key={subpage}
-          kind={isImages ? "images" : "videos"}
-        />
+        <ArchivedMediaView key={subpage} kind={kind} />
       </div>
     );
   }
@@ -606,9 +669,9 @@ export function DataTab() {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -638,11 +701,199 @@ export function DataTab() {
         </p>
       </header>
 
-      <div className="flex flex-col divide-y divide-border/60">
+      <SettingsSection title={t("settings.data.chatsSection")}>
         <SettingsRow
-          alignTop={true}
+          label={t("settings.data.manageChats")}
+          description={t("settings.data.manageChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubpage("manage")}
+          >
+            {t("settings.data.manageAction")}
+          </Button>
+        </SettingsRow>
+        <div
+          data-settings-label={t("settings.data.archives")}
+          className="py-3"
+        >
+          <p className="mb-2 text-sm font-medium">
+            {t("settings.data.archives")}
+          </p>
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+            {([
+              ["archived", "archivedChats", "settings.data.archiveChatsLabel", Message01Icon],
+              [
+                "archived-images",
+                "archivedImages",
+                "shell.navigation.images",
+                Image03Icon,
+              ],
+              [
+                "archived-videos",
+                "archivedVideos",
+                "settings.data.archiveVideosLabel",
+                FlimSlateIcon,
+              ],
+              [
+                "archived-audio",
+                "archivedAudio",
+                "shell.navigation.audio",
+                AudioWave01Icon,
+              ],
+            ] as const).map(([page, label, shortLabel, icon]) => (
+              <button
+                key={page}
+                type="button"
+                data-settings-label={t(`settings.data.${label}`)}
+                aria-label={t(`settings.data.${label}`)}
+                onClick={() => setSubpage(page)}
+                className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-border/60 px-3 py-2.5 text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <HugeiconsIcon
+                    icon={icon}
+                    aria-hidden={true}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                  <span className="truncate">
+                    {t(shortLabel)}
+                  </span>
+                </span>
+                <HugeiconsIcon
+                  icon={ChevronRightStandardIcon}
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                />
+              </button>
+            ))}
+          </div>
+        </div>
+        <SettingsRow
+          label={t("settings.data.archiveAllChats")}
+          description={t("settings.data.archiveAllChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setArchiveConfirmOpen(true)}
+          >
+            <HugeiconsIcon icon={Archive02Icon} className="size-3.5 mr-1.5" />
+            {t("settings.data.archiveAllAction")}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.data.transferSection")}>
+        <SettingsRow
+          label={t("settings.chat.importChats")}
+          description={t("settings.chat.importChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleImportClick()}
+            // A second pick mid-import would interleave two streams into one
+            // history, and on desktop it retires the running import's handle.
+            disabled={importing}
+          >
+            {importing ? (
+              <Spinner className="size-3.5 mr-1.5" />
+            ) : (
+              <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
+            )}
+            {t("settings.chat.importChatsAction")}
+          </Button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,.jsonl,.ndjson,.csv"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void handleImport(fileImportSource(file));
+            }}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.exportHistory")}
+          description={t("settings.chat.exportHistoryDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExport}
+            disabled={exporting || count === 0}
+          >
+            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
+            {exporting
+              ? t("settings.chat.exportingAction")
+              : t("settings.chat.exportAction")}
+          </Button>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.exportConversations")}
+          description={t("settings.data.exportFormatsSummary")}
+          hint={t("settings.chat.exportConversationsDescription")}
+        >
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <Button variant="outline" size="sm" disabled={count === 0}>
+                <HugeiconsIcon
+                  icon={Download01Icon}
+                  className="size-3.5 mr-1.5"
+                />
+                {t("settings.chat.exportConversationsAction")}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {(
+                [
+                  { scope: "recents", label: "exportScopeRecents" },
+                  { scope: "all", label: "exportScopeAll" },
+                ] as const
+              ).map(({ scope, label }) => (
+                <DropdownMenuSub key={scope}>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon
+                      icon={Download01Icon}
+                      className="size-3.5 mr-1"
+                    />
+                    {t(`settings.chat.${label}`)}
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56">
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
+                      <DropdownMenuItem
+                        key={`${scope}-m-${fmt}`}
+                        onSelect={() =>
+                          void bulkExportConversationsByScope(scope, fmt, true)
+                        }
+                      >
+                        {fmtLabel} {t("settings.chat.exportCombinedSuffix")}
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
+                      <DropdownMenuItem
+                        key={`${scope}-s-${fmt}`}
+                        onSelect={() =>
+                          void bulkExportConversationsByScope(scope, fmt, false)
+                        }
+                      >
+                        {fmtLabel} {t("settings.chat.exportPerChatSuffix")}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.data.fineTuneExport")}
-          description={t("settings.data.fineTuneExportDescription")}
+          description={t("settings.data.trainingSummary")}
+          hint={t("settings.data.fineTuneExportDescription")}
         >
           <div className="flex items-center gap-2">
             <DropdownMenu>
@@ -700,230 +951,90 @@ export function DataTab() {
             </Button>
           </div>
         </SettingsRow>
+      </SettingsSection>
 
-        <SettingsRow
-          label={t("settings.data.manageChats")}
-          description={t("settings.data.manageChatsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSubpage("manage")}
-          >
-            {t("settings.data.manageAction")}
-          </Button>
-        </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.data.archivedChats")}
-          description={t("settings.data.archivedChatsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSubpage("archived")}
-          >
-            {t("settings.data.manageAction")}
-          </Button>
-        </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.data.archivedImages")}
-          description={t("settings.data.archivedImagesDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSubpage("archived-images")}
-          >
-            {t("settings.data.manageAction")}
-          </Button>
-        </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.data.archivedVideos")}
-          description={t("settings.data.archivedVideosDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSubpage("archived-videos")}
-          >
-            {t("settings.data.manageAction")}
-          </Button>
-        </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.data.archiveAllChats")}
-          description={t("settings.data.archiveAllChatsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setArchiveConfirmOpen(true)}
-          >
-            <HugeiconsIcon icon={Archive02Icon} className="size-3.5 mr-1.5" />
-            {t("settings.data.archiveAllAction")}
-          </Button>
-        </SettingsRow>
-
+      <SettingsSection title={t("settings.data.deletionSection")}>
         <SettingsRow
           label={t("settings.data.confirmBeforeDeleting")}
-          description={t("settings.data.confirmBeforeDeletingDescription")}
+          description={t("settings.data.confirmDeletionSummary")}
         >
           <Switch
+            aria-label={t("settings.data.confirmBeforeDeleting")}
             checked={confirmDeleteChats}
             onCheckedChange={setConfirmDeleteChats}
           />
         </SettingsRow>
-
         <SettingsRow
-          label={t("settings.data.alwaysDeleteFiles")}
-          description={t("settings.data.alwaysDeleteFilesDescription")}
+          label={t("settings.data.sandboxFiles")}
+          description={t("settings.data.sandboxFilesDescription")}
         >
-          <Switch
-            checked={alwaysDeleteChatFiles}
-            onCheckedChange={setAlwaysDeleteChatFiles}
-          />
-        </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.chat.exportHistory")}
-          description={t("settings.chat.exportHistoryDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExport}
-            disabled={exporting || count === 0}
+          <Select
+            value={alwaysDeleteChatFiles ? "delete" : "keep"}
+            onValueChange={(value) => setAlwaysDeleteChatFiles(value === "delete")}
           >
-            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
-            {exporting
-              ? t("settings.chat.exportingAction")
-              : t("settings.chat.exportAction")}
-          </Button>
+            <SelectTrigger
+              size="sm"
+              aria-label={t("settings.data.sandboxFiles")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="keep">
+                {t("settings.data.keepSandboxFiles")}
+              </SelectItem>
+              <SelectItem value="delete">
+                {t("settings.data.deleteSandboxFiles")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.chat.exportConversations")}
-          description={t("settings.chat.exportConversationsDescription")}
-        >
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild={true}>
-              <Button variant="outline" size="sm" disabled={count === 0}>
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  className="size-3.5 mr-1.5"
-                />
-                {t("settings.chat.exportConversationsAction")}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              {(
-                [
-                  { scope: "recents", label: "exportScopeRecents" },
-                  { scope: "all", label: "exportScopeAll" },
-                ] as const
-              ).map(({ scope, label }) => (
-                <DropdownMenuSub key={scope}>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon
-                      icon={Download01Icon}
-                      className="size-3.5 mr-1"
-                    />
-                    {t(`settings.chat.${label}`)}
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-56">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
-                      <DropdownMenuItem
-                        key={`${scope}-m-${fmt}`}
-                        onSelect={() =>
-                          void bulkExportConversationsByScope(scope, fmt, true)
-                        }
-                      >
-                        {fmtLabel} {t("settings.chat.exportCombinedSuffix")}
-                      </DropdownMenuItem>
-                    ))}
-                    <DropdownMenuSeparator />
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
-                      <DropdownMenuItem
-                        key={`${scope}-s-${fmt}`}
-                        onSelect={() =>
-                          void bulkExportConversationsByScope(scope, fmt, false)
-                        }
-                      >
-                        {fmtLabel} {t("settings.chat.exportPerChatSuffix")}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </SettingsRow>
-
-        <SettingsRow
-          destructive={true}
-          // divide-y already draws the row separator; drop the extra border.
-          className="border-t-0 mt-0 pt-3"
-          label={t("settings.chat.clearAllChats")}
-          description={
-            count === null
-              ? t("settings.chat.clearAllChatsDescription")
-              : count === 0
-                ? t("settings.chat.noChatsToClear")
-                : count === 1
-                  ? t("settings.chat.clearOneChatDescription")
-                  : t("settings.chat.clearChatCountDescription", { count })
-          }
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setDeleteFilesOnClear(alwaysDeleteChatFiles);
-              setConfirmOpen(true);
-            }}
-            disabled={count === 0}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+        <p className="pb-3 text-xs leading-relaxed text-muted-foreground">
+          {t("settings.data.projectFilesKept")}
+        </p>
+        <div className="border-t border-border/60">
+          <SettingsRow
+            label={t("settings.chat.clearAllChats")}
+            description={
+              count === null
+                ? t("settings.chat.clearAllChatsDescription")
+                : count === 0
+                  ? t("settings.chat.noChatsToClear")
+                  : count === 1
+                    ? t("settings.chat.clearOneChatDescription")
+                    : t("settings.chat.clearChatCountDescription", { count })
+            }
           >
-            <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-1.5" />
-            {t("settings.chat.clearChatsAction")}
-          </Button>
-        </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.chat.importChats")}
-          description={t("settings.chat.importChatsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void handleImportClick()}
-            // A second pick mid-import would interleave two streams into one
-            // history, and on desktop it retires the running import's handle.
-            disabled={importing}
-          >
-            {importing ? (
-              <Spinner className="size-3.5 mr-1.5" />
-            ) : (
-              <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
-            )}
-            {t("settings.chat.importChatsAction")}
-          </Button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".json,.jsonl,.ndjson,.csv"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) void handleImport(fileImportSource(file));
-            }}
-          />
-        </SettingsRow>
-      </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={count === null || count === 0 || clearing}
+                  className="text-destructive hover:text-destructive aria-expanded:text-destructive hover:border-destructive/60"
+                >
+                  <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                  {t("settings.data.deleteAllAction")}
+                  <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => openClearConfirmation(false)}
+                >
+                  {t("settings.data.deleteChatsOnly")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => openClearConfirmation(true)}
+                >
+                  {t("settings.data.deleteChatsAndSandboxes")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SettingsRow>
+        </div>
+      </SettingsSection>
 
       <SettingsSection title={t("settings.data.filesSection")}>
         <SettingsRow
@@ -945,7 +1056,8 @@ export function DataTab() {
         ) : null}
       </SettingsSection>
 
-      <DocumentsRagSection />
+      {/* Embedding model settings are installation-wide (owner-only routes). */}
+      {isOwner ? <DocumentsRagSection /> : null}
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
         <DialogContent className="max-w-md">
@@ -971,8 +1083,13 @@ export function DataTab() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent className="max-w-md">
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          if (!clearing) setConfirmOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-md" showCloseButton={!clearing}>
           <DialogHeader>
             <DialogTitle>
               {count === 1
@@ -983,15 +1100,21 @@ export function DataTab() {
               {t("settings.chat.clearChatsConfirmDescription")}
             </DialogDescription>
           </DialogHeader>
-          <DeleteChatFilesSwitch
-            id="clear-chats-delete-files"
-            checked={deleteFilesOnClear}
-            onCheckedChange={setDeleteFilesOnClear}
-            // Every chat at once, so the per-chat wording does not fit.
-            description={t("shell.selection.deleteFilesDescription")}
-          />
+          <fieldset disabled={clearing} className="min-w-0 disabled:opacity-50">
+            <DeleteChatFilesSwitch
+              id="clear-chats-delete-files"
+              label={t("settings.data.deleteSandboxFiles")}
+              checked={deleteFilesOnClear}
+              onCheckedChange={setDeleteFilesOnClear}
+              description={t("settings.data.deleteSandboxFilesDescription")}
+            />
+          </fieldset>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+            <Button
+              variant="outline"
+              disabled={clearing}
+              onClick={() => setConfirmOpen(false)}
+            >
               {t("common.cancel")}
             </Button>
             <Button

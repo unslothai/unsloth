@@ -208,8 +208,8 @@ def test_a_slow_state_flip_does_not_bank_quiet_frames_before_it():
     )
     assert out["spansOpen"] == SPANS_SETTLED
     assert out["openCensored"] is False
-    # The flip and the settled read are different moments, and both are reported so a reader can
-    # see how much of open_ms was spent after the state arrived.
+    # The flip and the settled read are different moments, and both are reported so a reader can see
+    # how much of open_ms was spent after the state arrived.
     assert out["openStateReachedMs"] < out["openMs"]
 
 
@@ -307,16 +307,16 @@ def test_the_state_reached_mark_shares_the_timing_origin():
     assert out["openStateReachedMs"] <= out["openMs"]
 
 
+# The close direction: the same defect the quiet streak fixes for the open direction, from the
+# other side. `data-state` flips on the click and BOTH collapse mechanisms keep the children in
+# the document until the exit animation ends (Radix's `Presence` until `animationend`, the grid
+# arm until `transitionend` or its 250 ms backstop) so `pre span` is frozen at its open value and
+# a streak that only asks whether the census has stopped moving is satisfied by one that has not
+# started.
+# The grid arm is `UnmeasuredCollapsibleContent`.
+
+
 # ── the close direction ─────────────────────────────────────────────────────────────────────────
-#
-# The same defect the quiet streak fixes for the open direction, arriving from the other side.
-# `data-state` flips on the click, and BOTH collapse mechanisms keep the children in the document
-# until the exit animation ends: Radix's `Presence` until `animationend`, the grid arm's
-# `UnmeasuredCollapsibleContent` until the `grid-template-rows` `transitionend` or its 250 ms
-# backstop. So `pre span` is frozen at its open value for that whole window, and a streak that only
-# asks whether the census has stopped moving is satisfied by a census that has not started.
-
-
 def test_a_collapse_is_not_settled_while_its_panes_are_still_mounted():
     """THE REGRESSION. `close_ms` must not name the state flip plus four frames.
 

@@ -217,7 +217,7 @@ fn mutation_blocker_from_probe(
         }
         // An id-less backend may be this install serving from a terminal, in
         // which case rewriting the venv underneath it would break it. It may
-        // equally be a remote Studio behind a port forward, and refusing on
+        // equally be a remote Unsloth behind a port forward, and refusing on
         // that leaves a stale install with no way to repair itself, since
         // repair is what the app runs automatically. The local per-port record
         // is what tells the two apart, so it, not the port, decides.
@@ -319,6 +319,19 @@ pub async fn desktop_preflight_result_with_state(
                         snapshot.port,
                         "state owner probe no longer verifies",
                     );
+                    return Ok((choose_preflight(managed, backend), None));
+                }
+                // The spawned arm self-heals too, but only for a child that has actually
+                // exited: a handle with no validated port is usually a cold start still
+                // importing torch, and clearing that would abandon a healthy launch. A
+                // child that died without its stdout reaching EOF is invisible to the
+                // crash detector, and the handle it leaves behind makes every later
+                // launch answer "Backend is already running." (#9756).
+                if crate::process::clear_spawned_backend_if_exited(
+                    state,
+                    snapshot.generation,
+                    "state owner probe no longer verifies",
+                ) {
                     return Ok((choose_preflight(managed, backend), None));
                 }
                 return Ok((
@@ -1198,7 +1211,7 @@ exit 1
         ));
     }
 
-    /// The report this came from: an id-less Studio answered on a candidate
+    /// The report this came from: an id-less Unsloth answered on a candidate
     /// port, and a perfectly healthy install refused to launch at all.
     #[test]
     fn an_unrelated_backend_does_not_block_a_launch() {

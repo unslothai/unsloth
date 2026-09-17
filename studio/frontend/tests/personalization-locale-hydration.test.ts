@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { sanitizeCustomization } from "../src/features/settings/stores/appearance-custom-store.ts";
 
 type Slot = {
   value?: unknown;
@@ -182,11 +183,31 @@ function remotePersonalization(language: string) {
   };
 }
 
-function setup(localeResult: "superseded" | "cancelled" | "stalled") {
+function setup(
+  localeResult: "superseded" | "cancelled" | "stalled",
+  options: {
+    localCustomization?: Record<string, unknown>;
+    remote?: ReturnType<typeof remotePersonalization> & {
+      chatWidthSaved?: boolean;
+    };
+  } = {},
+) {
   const runTimers = installWindow();
   const host = createReact();
   const saves: SavedPayload[] = [];
   const localeCalls: unknown[] = [];
+  let customization = sanitizeCustomization(options.localCustomization);
+  const appearanceStore = Object.assign(
+    (select: (state: unknown) => unknown) => select({ customization }),
+    {
+      getState: () => ({
+        customization,
+        replaceAll: (next: unknown) => {
+          customization = sanitizeCustomization(next);
+        },
+      }),
+    },
+  );
   let profile: Profile = {
     displayName: "",
     nickname: "",
@@ -220,17 +241,17 @@ function setup(localeResult: "superseded" | "cancelled" | "stalled") {
       isDefaultCustomization: (value: unknown) =>
         Object.keys(value as object).length === 0,
       isPalette: (value: unknown) => typeof value === "string",
-      loadPersonalization: () => Promise.resolve(remotePersonalization("de")),
+      loadPersonalization: () =>
+        Promise.resolve(options.remote ?? remotePersonalization("de")),
       migrateShippedSidebarNavDefault: (value: unknown) => value,
-      sanitizeCustomization: (value: unknown) => value ?? {},
+      sanitizeCustomization,
       savePersonalization: (data: SavedPayload) => {
         saves.push(data);
         return Promise.resolve();
       },
       setPalette: () => undefined,
       setTheme: () => undefined,
-      useAppearanceCustomStore: (select: (state: unknown) => unknown) =>
-        select({ customization: {} }),
+      useAppearanceCustomStore: appearanceStore,
       usePalette: () => ({ palette: "standard" }),
       useTheme: () => ({ theme: "system" }),
     },
@@ -268,6 +289,7 @@ function setup(localeResult: "superseded" | "cancelled" | "stalled") {
     releaseLocale,
     runTimers,
     saves,
+    customization: () => customization,
     rename(displayName: string) {
       profile = { ...profile, displayName };
     },
@@ -337,4 +359,75 @@ test("a stalled locale catalog does not pause personalization saves", async () =
 
   assert.equal(app.saves.length, 1);
   assert.equal(app.saves[0]?.profile.displayName, "Ada");
+});
+
+function widthRemote(chatWidthSaved?: boolean, chatWidth?: string) {
+  const remote = remotePersonalization("auto");
+  return {
+    ...remote,
+    version: 4,
+    chatWidthSaved,
+    appearance: {
+      ...remote.appearance,
+      customization: {
+        uiFont: "Georgia",
+        ...(chatWidth === undefined ? {} : { chatWidth }),
+      },
+    },
+  };
+}
+
+for (const localWidth of ["wide", "full"]) {
+  test(`legacy chat width preserves and uploads local ${localWidth}`, async () => {
+    const app = setup("stalled", {
+      localCustomization: { chatWidth: localWidth, uiFont: "Arial" },
+      remote: widthRemote(false, "standard"),
+    });
+    app.render();
+    await settle();
+    app.render();
+
+    assert.equal(app.customization().chatWidth, localWidth);
+    assert.equal(app.customization().uiFont, "Georgia");
+    app.runTimers();
+    await settle();
+    assert.equal(app.saves.length, 1);
+    assert.equal(app.saves[0]?.appearance.customization.chatWidth, localWidth);
+    app.host.unmount();
+  });
+}
+
+for (const remoteWidth of ["standard", "wide", "full"]) {
+  test(`saved chat width ${remoteWidth} overrides local without another save`, async () => {
+    const app = setup("stalled", {
+      localCustomization: {
+        chatWidth: remoteWidth === "full" ? "wide" : "full",
+      },
+      remote: widthRemote(true, remoteWidth),
+    });
+    app.render();
+    await settle();
+    app.render();
+    assert.equal(app.customization().chatWidth, remoteWidth);
+    app.runTimers();
+    await settle();
+    assert.equal(app.saves.length, 0);
+    app.host.unmount();
+  });
+}
+
+test("an older server without chat width metadata preserves local width", async () => {
+  const app = setup("stalled", {
+    localCustomization: { chatWidth: "wide" },
+    remote: widthRemote(),
+  });
+  app.render();
+  await settle();
+  app.render();
+  assert.equal(app.customization().chatWidth, "wide");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 1);
+  assert.equal(app.saves[0]?.appearance.customization.chatWidth, "wide");
+  app.host.unmount();
 });

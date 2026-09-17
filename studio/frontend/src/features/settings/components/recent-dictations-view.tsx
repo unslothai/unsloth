@@ -35,13 +35,15 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import {
-  ArrowLeft01Icon,
   Copy01Icon,
   Delete02Icon,
   Message01Icon,
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
@@ -204,9 +206,9 @@ export function RecentDictationsView({
               ? t("settings.voice.recents.backToRecents")
               : t("settings.voice.recents.backToVoice")
           }
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="settings-back-button inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+          <ChevronLeftIcon className="size-4 rtl:rotate-180" />
         </button>
         <h1 className="font-heading text-xl font-semibold">
           {t("settings.voice.title")}

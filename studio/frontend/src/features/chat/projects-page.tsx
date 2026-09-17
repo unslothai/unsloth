@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -41,6 +42,8 @@ import {
   usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildProjectsTourSteps } from "./tour";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import {
   Delete02Icon,
@@ -58,6 +61,7 @@ import { MoreHorizontalIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   exportProjectConversations,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
@@ -83,8 +87,8 @@ const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
 const PROJECTS_ROW_HEIGHT = 68;
 
-// Modified column, matching a file-list feel: Today / Yesterday / N days ago,
-// then a short date once it is over a week old.
+// Modified column, matching a file-list feel: Today / Yesterday / N days ago, then a short date
+// once it is over a week old.
 function formatModified(ts: number): string {
   if (!Number.isFinite(ts)) return "";
   const now = new Date();
@@ -111,6 +115,7 @@ function formatModified(ts: number): string {
 }
 
 export function ProjectsPage() {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const { projects, hasLoaded } = useChatProjects();
 
@@ -248,8 +253,8 @@ export function ProjectsPage() {
     );
     return filtered;
   }, [projects, query, sortMode]);
-  // Default view shows as many rows as fit the page, then loads more as the
-  // user scrolls near the bottom. Search always spans every project.
+  // Default view shows as many rows as fit the page, then loads more as the user scrolls near the
+  // bottom. Search always spans every project.
   const isSearching = query.trim() !== "";
   const visibleCount = baseFit + extraCount;
   const visibleProjects = isSearching
@@ -257,16 +262,23 @@ export function ProjectsPage() {
     : sortedProjects.slice(0, visibleCount);
   const hasMore = !isSearching && sortedProjects.length > visibleCount;
 
+  // The list only renders once at least one project exists, so its step is dropped until then.
+  const tourSteps = useMemo(
+    () => buildProjectsTourSteps({ hasProjects: visibleProjects.length > 0 }),
+    [visibleProjects.length],
+  );
+  const tour = useGuidedTourController({ id: "projects", steps: tourSteps });
+
   useEffect(() => {
     if (!hasLoaded || reloadReadySent.current) {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [hasLoaded]);
+    signalReady();
+  }, [hasLoaded, signalReady]);
 
-  // Estimate how many rows fit below the list's top so the first page fills the
-  // screen without loading everything up front.
+  // Estimate how many rows fit below the list's top so the first page fills the screen without
+  // loading everything up front.
   useEffect(() => {
     function measure() {
       const el = listRef.current;
@@ -283,8 +295,7 @@ export function ProjectsPage() {
     return () => window.removeEventListener("resize", measure);
   }, [hasLoaded]);
 
-  // Infinite scroll: reveal another page-step whenever the sentinel near the
-  // list bottom scrolls into view.
+  // Infinite scroll: reveal another page-step whenever the sentinel near the list bottom scrolls into view.
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el || !hasMore) return;
@@ -298,8 +309,8 @@ export function ProjectsPage() {
     );
     io.observe(el);
     return () => io.disconnect();
-    // Re-observe after each load so it keeps filling while the sentinel stays
-    // in view (IntersectionObserver does not re-fire on a steady intersection).
+    // Re-observe after each load so it keeps filling while the sentinel stays in view
+    // (IntersectionObserver does not re-fire on a steady intersection).
   }, [hasMore, visibleCount]);
 
   function openProject(projectId: string) {
@@ -387,6 +398,7 @@ export function ProjectsPage() {
 
   return (
     <main className="mx-auto w-full max-w-5xl px-6 pb-10 pt-16 font-heading sm:px-10">
+      <GuidedTour {...tour.tourProps} />
       {/* Global import file input */}
       <input
         ref={globalImportRef}
@@ -439,6 +451,7 @@ export function ProjectsPage() {
               <Button
                 variant="outline"
                 size="icon"
+                data-tour="projects-io"
                 title="Import / Export projects"
                 className="rounded-full border-none bg-muted shadow-none dark:bg-card"
               >
@@ -458,7 +471,7 @@ export function ProjectsPage() {
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
                         {label}
                       </DropdownMenuItem>
@@ -484,7 +497,7 @@ export function ProjectsPage() {
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
                         {label}
                       </DropdownMenuItem>
@@ -505,7 +518,9 @@ export function ProjectsPage() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button onClick={() => setCreating(true)}>New project</Button>
+          <Button data-tour="projects-new" onClick={() => setCreating(true)}>
+            New project
+          </Button>
         </div>
       </div>
 
@@ -557,7 +572,7 @@ export function ProjectsPage() {
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
           </div>
-          <div ref={listRef}>
+          <div ref={listRef} data-tour="projects-list">
           {visibleProjects.map((project) => {
             const pinned = pinnedProjectIdSet.has(project.id);
             return (
@@ -665,7 +680,7 @@ export function ProjectsPage() {
                         <span>Export</span>
                       </DropdownMenuSubTrigger>
                       <DropdownMenuSubContent className="w-52">
-                        {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                        {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                           <DropdownMenuItem
                             key={fmt}
                             onSelect={(e) => {

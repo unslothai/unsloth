@@ -7,7 +7,7 @@ The ctx slider in the chat settings sheet reads
 ``/api/inference/status.max_context_length`` to decide when to render the
 "Exceeds estimated VRAM capacity. The model may use system RAM." warning:
 
-    ctxDisplayValue > ggufMaxContextLength → show warning
+    ctxDisplayValue > maxContextLength → show warning
 
 When weights fit on some GPU subset, the threshold is the largest ctx that
 fits fully in VRAM (the binary-search cap from ``_fit_context_to_vram``).

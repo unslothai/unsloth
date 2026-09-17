@@ -31,6 +31,7 @@ import { resolveVisionOverrides } from "./vision-overrides";
 
 export interface TrackedDocument extends RagDocument {
   progress?: number | null;
+  stage?: string | null;
 }
 
 /** Matches the backend's folder scan interval, so a job it starts is counted
@@ -120,6 +121,18 @@ export function useRagDocuments(
   // True while upload() runs, so the scope-change effect can tell a real switch
   // from lazy thread materialization mid-upload (which must not reset).
   const uploadInFlightRef = useRef(false);
+  const uploadGenerationRef = useRef(0);
+  const activeUploadsRef = useRef(new Set<object>());
+  useEffect(
+    () => () => {
+      uploadGenerationRef.current += 1;
+      activeUploadsRef.current.clear();
+      uploadInFlightRef.current = false;
+      for (const controller of trackedJobs.current.values()) controller.abort();
+      trackedJobs.current.clear();
+    },
+    [],
+  );
   // Refreshes fire from several places at once (a mutation invalidates before
   // and after, the poll ticks, the scope changes) and can complete out of order,
   // so only the newest publishes: an earlier one landing last would restore the
@@ -155,12 +168,20 @@ export function useRagDocuments(
       if (trackedJobs.current.has(jobId)) return;
       const controller = new AbortController();
       trackedJobs.current.set(jobId, controller);
+      const generation = uploadGenerationRef.current;
+      const stale = () =>
+        controller.signal.aborted || generation !== uploadGenerationRef.current;
+      const forget = () => {
+        if (trackedJobs.current.get(jobId) === controller)
+          trackedJobs.current.delete(jobId);
+      };
 
       const finish = (
         status: TerminalJobStatus,
         error?: string | null,
         numChunks?: number | null,
       ) => {
+        if (stale()) return forget();
         if (status === "cancelled") {
           sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
@@ -181,16 +202,20 @@ export function useRagDocuments(
             ...(numChunks != null ? { numChunks } : {}),
           });
         }
-        trackedJobs.current.delete(jobId);
+        forget();
       };
 
       (async () => {
+        // Past the shared budget in rag-api, streamJobEvents throws and this falls
+        // through to the poll below.
         try {
           for await (const ev of streamJobEvents(jobId, controller.signal)) {
+            if (stale()) return forget();
             if (ev.type === "progress") {
               patchDoc(documentId, {
                 status: "running",
                 progress: ev.progress ?? null,
+                stage: ev.stage ?? null,
               });
             } else if (ev.type === "complete") {
               finish("completed", null, ev.num_chunks);
@@ -204,38 +229,45 @@ export function useRagDocuments(
             }
           }
           // Stream ended with no terminal frame: reconcile.
-          const job = await getJob(jobId);
+          if (stale()) return forget();
+          const job = await getJob(jobId, controller.signal);
           const terminal = terminalJobStatus(job.status);
-          finish(terminal ?? "completed", job.error, job.numChunks);
-        } catch {
-          if (controller.signal.aborted) {
-            trackedJobs.current.delete(jobId);
+          if (terminal) {
+            finish(terminal, job.error, job.numChunks);
             return;
           }
-          // SSE unavailable: poll to a terminal state.
-          try {
-            for (let i = 0; i < 600; i++) {
-              if (controller.signal.aborted) break;
-              const job = await getJob(jobId);
-              const terminal = terminalJobStatus(job.status);
-              if (terminal) {
-                return finish(
-                  terminal,
-                  terminal === "failed"
-                    ? (job.error ?? "Indexing failed")
-                    : job.error,
-                  job.numChunks,
-                );
-              }
-              patchDoc(documentId, {
-                status: job.status === "running" ? "running" : "pending",
-                progress: job.progress ?? null,
-              });
-              await new Promise((r) => setTimeout(r, 1500));
-            }
-          } catch {
-            trackedJobs.current.delete(jobId);
+        } catch {
+          if (stale()) {
+            forget();
+            return;
           }
+        }
+        // Poll until the persisted job reaches a terminal state.
+        try {
+          while (!stale()) {
+            const job = await getJob(jobId, controller.signal);
+            if (stale()) return forget();
+            const terminal = terminalJobStatus(job.status);
+            if (terminal) {
+              return finish(
+                terminal,
+                terminal === "failed"
+                  ? (job.error ?? "Indexing failed")
+                  : job.error,
+                job.numChunks,
+              );
+            }
+            patchDoc(documentId, {
+              status: job.status === "running" ? "running" : "pending",
+              progress: job.progress ?? null,
+              stage: job.stage ?? null,
+            });
+            await new Promise((r) => setTimeout(r, 1500));
+          }
+        } catch {
+          // A list refresh can restart tracking after a request fails.
+        } finally {
+          forget();
         }
       })();
     },
@@ -262,7 +294,7 @@ export function useRagDocuments(
             return tracked &&
               tracked.progress != null &&
               row.status !== "completed"
-              ? { ...row, progress: tracked.progress }
+              ? { ...row, progress: tracked.progress, stage: tracked.stage }
               : row;
           });
           // Keep optimistic chips (not yet listed) so a refresh racing an upload
@@ -309,8 +341,7 @@ export function useRagDocuments(
       try {
         for (let attempt = 0; attempt < REFRESH_RETRIES; attempt += 1) {
           const last = attempt === REFRESH_RETRIES - 1;
-          // True for a request that published, and for one a newer request has
-          // already outranked.
+          // True for a request that published, and for one a newer request has already outranked.
           if (await refresh({ quiet: opts?.quiet, silentErrors: !last })) return;
           if (last) break;
           await new Promise((resolve) =>
@@ -343,6 +374,10 @@ export function useRagDocuments(
       // null scope starts no replacement request to outrank it, so without this
       // its response would repopulate the list that is about to be cleared.
       refreshSeq.current += 1;
+      uploadGenerationRef.current += 1;
+      activeUploadsRef.current.clear();
+      uploadInFlightRef.current = false;
+      setUploading(false);
       // Scope changes intentionally clear the old scope before fetching the new
       // one. Keep this synchronous so React StrictMode's setup/cleanup replay
       // cannot cancel the only refresh after prevScopeKeyRef has advanced.
@@ -353,10 +388,9 @@ export function useRagDocuments(
           ? loadProjectSources(scope.projectId)
           : refresh());
       } else {
-        // Nothing is coming for the scope just dropped, and the request that
-        // was is now behind the sequence, so it will not clear these itself.
-        // Left set, the composer reads the list as still unknown and holds
-        // every send.
+        // Nothing is coming for the scope just dropped, and the request that was is now behind the
+        // sequence, so it will not clear these itself. Left set, the composer reads the list as
+        // still unknown and holds every send.
         refreshInFlight.current = false;
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setLoading(false);
@@ -376,12 +410,11 @@ export function useRagDocuments(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
 
-  // Safety net: a big upload opens one SSE stream per doc, but HTTP/1.1 caps
-  // concurrent connections, so streams past the cap may never deliver a terminal
-  // frame and leave a chip spinning. While anything is indexing, reconcile against
-  // the document list (one request covers every doc) so chips always resolve.
-  // Work on this project running elsewhere: an upload from the other instance,
-  // or a folder sync. Neither has a row here until it lands.
+  // Safety net: a big upload opens one SSE stream per doc, but HTTP/1.1 caps concurrent
+  // connections, so streams past the cap may never deliver a terminal frame and leave a chip
+  // spinning. While anything is indexing, reconcile against the document list (one request covers
+  // every doc) so chips always resolve. Work on this project running elsewhere: an upload from the
+  // other instance, or a folder sync. Neither has a row here until it lands.
   const [workElsewhere, setWorkElsewhere] = useState(0);
   const workScopeId = scope?.type === "project" ? scope.projectId : null;
   useEffect(() => {
@@ -417,10 +450,9 @@ export function useRagDocuments(
     documents.some((d) => d.status === "pending" || d.status === "running");
   useEffect(() => {
     if (!scopeKey || !hasIndexing) return;
-    // Skip a tick while one is still out. Starting another would retire it
-    // through the sequence gate, and a list slower than the interval would
-    // then never publish: the row this is watching never reaches completed and
-    // a queued send waits forever.
+    // Skip a tick while one is still out. Starting another would retire it through the sequence
+    // gate, and a list slower than the interval would then never publish: the row this is watching
+    // never reaches completed and a queued send waits forever.
     const id = setInterval(() => {
       if (!refreshInFlight.current) {
         void refresh({ quiet: true });
@@ -451,18 +483,18 @@ export function useRagDocuments(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectScopeId]);
 
-  // POST one file, then swap its optimistic chip (`tempId`) to the real id; drop
-  // the chip if the backend deduped. `seenIds` holds ids present/added this batch.
+  // Replace pending chips, deduplicating concurrent upload responses.
   const uploadOne = useCallback(
     async (
       item: RagUploadItem,
-      seenIds: Set<string>,
       activeScope: RagDocumentScope,
       tempId: string,
+      generation: number,
     ) => {
       const name = itemName(item);
       try {
         const { ocr, caption } = await resolveVisionOverrides();
+        if (generation !== uploadGenerationRef.current) return;
         // Leases are short-lived, so mint one per upload rather than at drop time.
         const file =
           item.kind === "file"
@@ -472,6 +504,7 @@ export function useRagDocuments(
                   await consumeNativePathToken(item.token, "attach")
                 ).nativePathLease,
               };
+        if (generation !== uploadGenerationRef.current) return;
         const result =
           activeScope.type === "kb"
             ? await uploadKnowledgeBaseDocument(
@@ -493,29 +526,25 @@ export function useRagDocuments(
                   ocr,
                   caption,
                 );
+        if (generation !== uploadGenerationRef.current) return;
         sigByDocId.current.set(result.documentId, itemSignature(item));
-        if (seenIds.has(result.documentId)) {
-          setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-          toast.info(
-            `${result.filename || name} is already indexed - skipping`,
-          );
-          return;
-        }
-        seenIds.add(result.documentId);
         setDocuments((rows) =>
-          rows.map((row) =>
-            row.id === tempId
-              ? {
-                  ...row,
-                  id: result.documentId,
-                  filename: result.filename || row.filename,
-                  status: "running",
-                }
-              : row,
-          ),
+          rows.some((row) => row.id === result.documentId)
+            ? rows.filter((row) => row.id !== tempId)
+            : rows.map((row) =>
+                row.id === tempId
+                  ? {
+                      ...row,
+                      id: result.documentId,
+                      filename: result.filename || row.filename,
+                      status: "running",
+                    }
+                  : row,
+              ),
         );
         trackJob(result.jobId, result.documentId, result.filename || name);
       } catch (err) {
+        if (generation !== uploadGenerationRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
         // Drop the chip rather than show "Failed"; warn via toast.
         setDocuments((rows) => rows.filter((row) => row.id !== tempId));
@@ -525,25 +554,31 @@ export function useRagDocuments(
     [trackJob],
   );
 
-  // `overrideScope` lets a caller pass a freshly-resolved scope (or a promise of
-  // one), since the thread bar's id is still null on the first click; falls back to
-  // the hook scope.
+  // `overrideScope` lets a caller pass a freshly-resolved scope (or a promise of one), since the
+  // thread bar's id is still null on the first click; falls back to the hook scope.
   const upload = useCallback(
     async (
       files: FileList | File[] | RagUploadItem[],
-      overrideScope?: RagDocumentScope | Promise<RagDocumentScope | null>,
+      overrideScope?:
+        | RagDocumentScope
+        | Promise<RagDocumentScope | null>
+        | (() => Promise<RagDocumentScope | null>),
     ) => {
+      const generation = uploadGenerationRef.current;
+      const uploadToken = {};
+      activeUploadsRef.current.add(uploadToken);
       // Flip the in-flight guard synchronously, before awaiting a thread id that
       // may still be materializing, so the scope-change effect reads it and leaves
       // job tracking and optimistic chips alone.
       uploadInFlightRef.current = true;
       setUploading(true);
-      // Published before the first await so the other instance gates from the
-      // moment the upload starts, not once the bytes are in.
-      // The composer passes its project scope explicitly, since the hook's own
-      // can still be null on the render that starts the upload.
+      // Published before the first await so the other instance gates from the moment the upload
+      // starts, not once the bytes are in. The composer passes its project scope explicitly, since
+      // the hook's own can still be null on the render that starts the upload.
       const knownScope =
-        overrideScope instanceof Promise ? null : (overrideScope ?? scope);
+        overrideScope instanceof Promise || typeof overrideScope === "function"
+          ? null
+          : (overrideScope ?? scope);
       const uploadingProjectId =
         knownScope?.type === "project" ? knownScope.projectId : null;
       if (uploadingProjectId) {
@@ -561,7 +596,6 @@ export function useRagDocuments(
           const item: RagUploadItem =
             entry instanceof File ? { kind: "file", file: entry } : entry;
           if (sigBlocksReupload(itemSignature(item))) {
-            toast.info(`${itemName(item)} is already indexed - skipping`);
             continue;
           }
           fresh.push({
@@ -581,32 +615,55 @@ export function useRagDocuments(
           })),
         ]);
 
-        const resolved =
-          overrideScope instanceof Promise
-            ? await overrideScope
-            : overrideScope;
-        const activeScope = resolved ?? scope;
-        if (!activeScope) {
+        let activeScope: RagDocumentScope | null;
+        try {
+          activeScope =
+            overrideScope === undefined
+              ? scope
+              : typeof overrideScope === "function"
+                ? await overrideScope()
+                : await overrideScope;
+          if (!activeScope) {
+            throw new Error("Could not start a chat to attach them to.");
+          }
+        } catch (err) {
+          if (generation !== uploadGenerationRef.current) return;
           // Materialization failed: drop the chips so they don't hang "pending".
           const tempIds = new Set(fresh.map((f) => f.tempId));
           setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
           toast.error("Couldn't attach documents", {
-            description: "Could not start a chat to attach them to.",
+            description: err instanceof Error ? err.message : String(err),
           });
           return;
         }
 
-        const seenIds = new Set(
-          documentsRef.current
-            .filter((d) => !d.id.startsWith("pending_"))
-            .map((d) => d.id),
-        );
+        // A batch begun with no scope is exempt from the generation bump, so materializing
+        // a thread cannot abort it. That exemption also covers navigating away mid-flight,
+        // so compare destinations here: another chat on screen means this one was left. A
+        // null key is still materializing, not a navigation.
+        const resolvedKey =
+          activeScope.type === "kb"
+            ? `kb:${activeScope.kbId}`
+            : activeScope.type === "project"
+              ? `project:${activeScope.projectId}`
+              : `thread:${activeScope.threadId}`;
+        const liveKey = liveScopeKeyRef.current;
+        if (knownScope === null && liveKey !== null && liveKey !== resolvedKey) {
+          const tempIds = new Set(fresh.map((f) => f.tempId));
+          setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
+          return;
+        }
+
         for (const { tempId, item } of fresh) {
-          await uploadOne(item, seenIds, activeScope, tempId);
+          if (generation !== uploadGenerationRef.current) return;
+          await uploadOne(item, activeScope, tempId, generation);
         }
       } finally {
-        setUploading(false);
-        uploadInFlightRef.current = false;
+        activeUploadsRef.current.delete(uploadToken);
+        if (generation === uploadGenerationRef.current) {
+          uploadInFlightRef.current = activeUploadsRef.current.size > 0;
+          setUploading(uploadInFlightRef.current);
+        }
         if (uploadingProjectId) {
           noteProjectWork(uploadingProjectId, -1);
         }

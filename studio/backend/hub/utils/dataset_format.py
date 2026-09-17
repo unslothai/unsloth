@@ -403,13 +403,11 @@ def detect_multimodal_dataset(dataset):
 
     detected_text_col = None
     if audio_columns:
-        # Two passes, not one list: a set carrying both an instruction-like "prompt" and a
-        # real "transcript" would otherwise be mapped by schema order, and training an ASR
-        # set against its instructions instead of its ground truth fails silently.
+        # Two passes, not one list: a set carrying both an instruction-like "prompt" and a real
+        # "transcript" would be mapped by schema order, training an ASR set against its instructions.
         transcript_names = ("text", "sentence", "transcript", "transcription", "label")
-        # TTS corpora name the line to speak rather than a transcript of it: every
-        # svjack/SparkTTS_* set uses "prompt", LJSpeech derivatives use "normalized_text".
-        # Without these the set needs a manual mapping it cannot satisfy.
+        # TTS corpora name the line to speak rather than a transcript of it: SparkTTS sets use "prompt",
+        # LJSpeech derivatives "normalized_text".
         fallback_names = ("prompt", "normalized_text")
         for candidates in (transcript_names, fallback_names):
             for col_name in column_names:
@@ -711,6 +709,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     }
 
 
+# The aliases `standardize_data_formats` accepts. Keys are normalised: look them up
+# through `_normalize_role_alias`.
 _ROLE_MAP = {
     "human": "user",
     "user": "user",
@@ -720,6 +720,14 @@ _ROLE_MAP = {
     "output": "assistant",
     "system": "system",
 }
+
+
+def _normalize_role_alias(role: Any) -> str:
+    """Match aliases the way the trainer does: `role.strip().lower()`, as
+    `standardize_data_formats` compares them (unslothai/unsloth-zoo#1225)."""
+    if role is None:
+        return ""
+    return str(role).strip().lower()
 
 
 def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str, Any]:
@@ -732,9 +740,11 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
             continue
         role = message.get("role") or message.get("from")
         content = message.get("content") if "content" in message else message.get("value")
+        normalized = _normalize_role_alias(role)
         messages.append(
             {
-                "role": _ROLE_MAP.get(str(role), str(role or "user")),
+                # Unknown alias shown as written; blank falls back to "user", as before.
+                "role": _ROLE_MAP.get(normalized, str(role)) if normalized else "user",
                 "content": "" if content is None else content,
             }
         )

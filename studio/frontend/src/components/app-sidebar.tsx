@@ -42,6 +42,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -74,9 +75,6 @@ import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
-  ArrowDown01Icon,
-  ArrowRight02Icon,
-  ArrowUp01Icon,
   BadgeInfoIcon,
   BookOpen01Icon,
   BubbleChatIcon,
@@ -123,7 +121,13 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, Moon } from "lucide-react";
+import {
+  ArrowRightIcon,
+  ChevronDown,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  Moon,
+} from "lucide-react";
 import {
   Link,
   useNavigate,
@@ -197,8 +201,8 @@ import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
-import { clearAuthTokens, logout } from "@/features/auth";
-import { TOUR_OPEN_EVENT } from "@/features/tour";
+import { AUTH_SESSION_ENDING_EVENT, clearAuthTokens, logout } from "@/features/auth";
+import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
 import {
   deleteTrainingRun,
   emitTrainingRunDeleted,
@@ -227,7 +231,6 @@ import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
-/** The ⌥⌘1-6 Recents slots, as a constant so the list below is fixed-length. */
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
 const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
@@ -251,13 +254,6 @@ function renderEmphasizedTranslation(
     }
   });
   return nodes;
-}
-
-function getTourId(pathname: string): string | null {
-  if (pathname.startsWith("/studio")) return "studio";
-  if (pathname.startsWith("/export")) return "export";
-  if (pathname.startsWith("/chat")) return "chat";
-  return null;
 }
 
 // Optional user-menu shortcuts that jump to a settings tab; the id is the tab id.
@@ -294,6 +290,7 @@ type NavRowDef = {
 
 type ConversationExportFormat =
   | "raw-jsonl"
+  | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
   | typeof CONVERSATION_MARKDOWN_FORMAT;
@@ -307,10 +304,9 @@ const SIDEBAR_PROJECT_LIMIT = 5;
 const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
 
-// Whether cmd or ctrl adds a row to the selection. This is the user's own
-// keyboard, not the host Studio runs on, so it reads the browser rather than
-// the platform store: a Mac browser on a Linux host still uses cmd. Ctrl is
-// left alone on macOS, where ctrl click is the right click chord.
+// Whether cmd or ctrl adds a row to the selection. This is the user's own keyboard, not the host
+// Unsloth runs on, so it reads the browser rather than the platform store: a Mac browser on a Linux
+// host still uses cmd. Ctrl is left alone on macOS, where ctrl click is the right click chord.
 const SELECT_WITH_META =
   typeof navigator !== "undefined" &&
   /mac/i.test(navigator.platform || navigator.userAgent);
@@ -342,7 +338,8 @@ const CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ConversationExportFormat;
 }> = [
-  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "Training JSONL", format: "raw-jsonl" },
+  { label: "Message JSONL", format: "messages-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
   { label: CONVERSATION_MARKDOWN_LABEL, format: CONVERSATION_MARKDOWN_FORMAT },
@@ -358,6 +355,8 @@ async function exportConversationByFormat(
   switch (format) {
     case "raw-jsonl":
       return exports.exportConversationRawJsonl(threadId);
+    case "messages-jsonl":
+      return exports.exportConversationMessagesJsonl(threadId);
     case "csv":
       return exports.exportConversationCsv(threadId);
     case "sharegpt-jsonl":
@@ -423,18 +422,13 @@ function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
 
-// "New" pill for recent tabs. Same recipe as the brand "beta" badge.
 /**
- * "Open chat folder" for a browser session, where the backend's file manager is
- * not the user's. Radix's `disabled` takes the row's pointer events away and a
- * tooltip is blocked while the menu owns the screen, so the row stays enabled,
- * refuses the select itself, and drives a controlled tooltip off a
- * pointer-events-none anchor (as the MCP rows do).
- *
- * The reason is carried twice: the tooltip hangs off an aria-hidden anchor and
- * opens on hover, which a screen reader never reaches and a touch device does
- * not have, so `title` describes the row itself and selecting it (tap or Enter)
- * opens the hint rather than doing nothing.
+ * "Open chat folder" for a browser session, where the backend's file manager is not the user's.
+ * Radix's `disabled` takes the row's pointer events away and a tooltip is blocked while the menu
+ * owns the screen, so the row stays enabled, refuses the select itself, and drives a controlled
+ * tooltip off a pointer-events-none anchor (as the MCP rows do). The reason is carried twice: that
+ * tooltip opens on hover, which a screen reader never reaches and a touch device does not have, so
+ * `title` describes the row and selecting it opens the hint rather than doing nothing.
  */
 function OpenChatFolderUnavailableItem() {
   const [hintOpen, setHintOpen] = useState(false);
@@ -521,7 +515,6 @@ function NavItem({
   // Show that tooltip on the expanded row too, not just the collapsed rail where it
   // stands in for the hidden label.
   alwaysTooltip?: boolean;
-  // Trailing "New" pill text.
   badge?: string;
   // Absolutely-positioned extras over the row, e.g. a disclosure chevron.
   overlay?: ReactNode;
@@ -572,11 +565,9 @@ function getSidebarItemThreadIds(item: SidebarItem) {
 
 const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
 
-// Re-read cadences for the hardware verdict below. An unmeasured verdict holds Train and Video
-// on a spinner, so it is re-read sooner than the background MLX self-heal check, which only
-// pays off after the user has repaired an install. A re-read outstanding longer than the stall
-// window is given up on rather than latching the poll off: the backend it is waiting on is the
-// one case this has to recover from.
+// Re-read cadences for the hardware verdict below. An unmeasured verdict holds Train and Video on
+// a spinner, so it is re-read sooner than the background MLX self-heal check. A re-read outstanding
+// longer than the stall window is given up on rather than latching the poll off.
 /** How long a selection chord keeps a repeat press off the open chat. */
 const SELECTION_ACTION_GRACE_MS = 750;
 /** The sidebar's own element, present on desktop and inside the mobile drawer. */
@@ -584,6 +575,27 @@ const SIDEBAR_SELECTOR = '[data-slot="sidebar"]';
 const VERDICT_UNKNOWN_POLL_MS = 3000;
 const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
+// The backend reclassifies a host without a restart on a 60s TTL: attach an eGPU to a
+// CPU-torch machine and no_gpu becomes torch_cpu_build. Nothing else re-reads the verdict.
+// Matched to that TTL, since polling faster than the answer can change is pure traffic.
+const INVENTORY_POLL_MS = 60000;
+// The health path reads those snapshots non-blocking: the first read past expiry SCHEDULES the
+// refresh and returns the stale entry. On the TTL alone the read that triggers the refresh is a
+// whole interval from the read that consumes it, leaving an attached eGPU invisible for close to
+// two minutes. One short follow-up read collects it instead.
+const INVENTORY_FOLLOW_UP_MS = 4000;
+// The verdicts the inventory can still move. Everything else describes something a probe
+// cannot change (an Intel Mac stays an Intel Mac).
+const INVENTORY_SENSITIVE_REASONS = new Set([
+  "no_gpu",
+  "torch_cpu_build",
+  "torch_cuda_unavailable",
+  // A torch that will not import is classified from its wheel on disk, so the backend can replace
+  // this with torch_cpu_build or torch_cuda_unavailable once the OS probe recovers. Leaving it out
+  // treated that first answer as settled and stopped the only forced health re-read, so the sidebar
+  // stayed on the failure while /api/system already reported the mismatch.
+  "detection_failed",
+]);
 
 /** One workflow in the list under the Images row. */
 function WorkflowChoice({
@@ -741,9 +753,8 @@ export function AppSidebar() {
   );
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
-  // Read from the shortcuts store, not the shipped default: a rebound or
-  // cleared action must not leave the hint advertising a dead chord. Both
-  // already render in the platform's own notation.
+  // Read from the shortcuts store, not the shipped default: a rebound or cleared action must not
+  // leave the hint advertising a dead chord. Both already render in the platform's own notation.
   const searchShortcutLabel = useShortcutLabel("searchChats");
   const settingsShortcutLabel = useShortcutLabel("openSettings");
   const { pathname, search, href } = useRouterState({
@@ -755,6 +766,10 @@ export function AppSidebar() {
       href: s.location.href,
     }),
   });
+  // Route alone is not enough: a page can gate its tour behind a capability check, and an entry
+  // that dispatches to nobody does nothing when clicked.
+  const routeTourId = getTourId(pathname);
+  const tourAvailable = useTourAvailable(routeTourId);
   const {
     pinned,
     togglePinned,
@@ -775,10 +790,9 @@ export function AppSidebar() {
   const closeMobileIfOpen = () => {
     if (isMobile) setOpenMobile(false);
   };
-  // SidebarProvider is mounted at the route root and outlives the navigation,
-  // and the workspace chords register up there too, above it, so they cannot
-  // call what every row below calls by hand. Closing on the route covers both,
-  // and anything else that navigates from outside this file.
+  // SidebarProvider is mounted at the route root and outlives the navigation, and the workspace
+  // chords register above it, so they cannot call what every row below calls by hand. Closing on the
+  // route covers both, and anything else that navigates from outside this file.
   useEffect(() => {
     if (isMobile) setOpenMobile(false);
   }, [href, isMobile, setOpenMobile]);
@@ -804,37 +818,50 @@ export function AppSidebar() {
         chatOnlyDetail
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
-      : chatOnlyReason === "intel_mac"
+      : chatOnlyReason === "no_torch"
+        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix.
+          "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
-        : chatOnlyReason === "no_gpu"
-          ? "Training needs an NVIDIA or AMD GPU."
-          : undefined;
+        : chatOnlyReason === "torch_cpu_build" ||
+            chatOnlyReason === "torch_cuda_unavailable"
+          ? // The host HAS GPUs; this PyTorch cannot open them. "Get a GPU" is both wrong
+            // and unactionable here, so name the installed build and point at the repair.
+            chatOnlyDetail
+            ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
+            : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
+          : chatOnlyReason === "no_gpu"
+            ? "Training needs an NVIDIA or AMD GPU."
+            : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
   const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
   const videoDisabled = videoDisabledHint !== undefined;
 
-  // Two things can change the verdict after the first /api/health. The backend MLX self-heal
-  // (utils/mlx_repair) can reinstall MLX and flip chat_only false without a restart, and
-  // detection can land after fetchDeviceType gave up waiting for it. The platform store cached
-  // that first reply, so re-poll for both; the guard below stops it once neither applies.
+  // Two things can change the verdict after the first /api/health: the backend MLX self-heal
+  // (utils/mlx_repair) can reinstall MLX and flip chat_only false without a restart, and detection
+  // can land after fetchDeviceType gave up waiting. The platform store cached that first reply, so
+  // re-poll for both; the guard below stops it once neither applies.
   useEffect(() => {
     // Also while deferred: under the kill switch health settles nothing, so a GPU host would stay chat-only.
     const selfHealSettled =
       !chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred);
-    // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded
-    // wait at most once per page load, so a host that detects slower than that keeps the
-    // provisional reply, and nothing else is scheduled to re-read it: the rows above would spin
-    // and /studio would hold its loading panel for the rest of the session. This is the only
-    // recovery poll in the app, and the sidebar is mounted on every route that gates on the
-    // verdict (studio-page reads the same store, so it recovers with it; video-page reads the
-    // backend's video verdict instead and needs nothing from here).
-    if (selfHealSettled && !capabilitiesUnknown) return;
+    // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded wait at
+    // most once per page load, so a host that detects slower keeps the provisional reply and nothing
+    // else re-reads it: the rows above would spin and /studio would hold its loading panel for the rest
+    // of the session. This is the only recovery poll in the app, and the sidebar is mounted on every
+    // route that gates on the verdict.
+    const inventorySensitive =
+      chatOnly && INVENTORY_SENSITIVE_REASONS.has(chatOnlyReason ?? "");
+    if (selfHealSettled && !capabilitiesUnknown && !inventorySensitive) return;
     let pollingSince = 0;
-    // Which read currently owns the guard. A read that outlived the stall window is replaced,
-    // and the replacement takes the guard with it; without an owner the abandoned read's
-    // `finally` would clear a guard it no longer holds and let the next tick stack another
-    // forced read onto the slow backend, every interval, which is the pile-up this prevents.
+    // Which read currently owns the guard. A read that outlived the stall window is replaced, and the
+    // replacement takes the guard with it; without an owner the abandoned read's `finally` would clear
+    // a guard it no longer holds and stack another forced read onto the slow backend every interval.
     let pollOwner = 0;
+    // Cleared on unmount with the interval: a follow-up outliving the effect would read against a
+    // verdict this effect no longer describes. Through `window`, and 0 for "none" because that is what
+    // window.setTimeout never returns.
+    let followUp = 0;
     const id = window.setInterval(() => {
       // A backend still importing torch answers slowly, so skip while a re-read is outstanding
       // rather than stacking them against it. Bounded, or a request that never settles would
@@ -845,10 +872,27 @@ export function AppSidebar() {
       void fetchDeviceType({ force: true })
         .catch(() => undefined)
         .finally(() => {
-          if (owned === pollOwner) pollingSince = 0;
+          if (owned !== pollOwner) return;
+          pollingSince = 0;
+          // Only where a background refresh is what we are waiting on. The unknown poll is
+          // already fast enough, and the self-heal poll is not waiting on a TTL at all.
+          if (!selfHealSettled || capabilitiesUnknown) return;
+          if (followUp) window.clearTimeout(followUp);
+          followUp = window.setTimeout(() => {
+            followUp = 0;
+            void fetchDeviceType({ force: true }).catch(() => undefined);
+          }, INVENTORY_FOLLOW_UP_MS);
         });
-    }, capabilitiesUnknown ? VERDICT_UNKNOWN_POLL_MS : SELF_HEAL_POLL_MS);
-    return () => window.clearInterval(id);
+    }, capabilitiesUnknown
+      ? VERDICT_UNKNOWN_POLL_MS
+      : selfHealSettled
+        ? INVENTORY_POLL_MS
+        : SELF_HEAL_POLL_MS);
+    const stopPolling = () => {
+      window.clearInterval(id);
+      if (followUp) window.clearTimeout(followUp);
+    };
+    return () => stopPolling();
   }, [capabilitiesUnknown, chatOnly, chatOnlyReason, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
@@ -905,10 +949,9 @@ export function AppSidebar() {
   const [scrolled, setScrolled] = useState(false);
   // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
   const [canScrollDown, setCanScrollDown] = useState(false);
-  // Rail width: 0 where scrollbars overlay (macOS default) or the list fits,
-  // the platform's thin rail where they are classic. Only rows inside the
-  // scroller lose it, so the rows outside pad by it to keep one edge. Written
-  // to the DOM, and only on a change: state here would loop (React #185).
+  // Rail width: 0 where scrollbars overlay (macOS default) or the list fits, the platform's thin rail
+  // where they are classic. Only rows inside the scroller lose it, so the rows outside pad by it to
+  // keep one edge. Written to the DOM, and only on a change: state here would loop (React #185).
   const railWidthRef = useRef<number | null>(null);
   const measureScrollRail = useCallback((el: HTMLDivElement) => {
     const rail = el.offsetWidth - el.clientWidth;
@@ -917,10 +960,9 @@ export function AppSidebar() {
     el.parentElement?.style.setProperty("--sidebar-rail", `${rail}px`);
   }, []);
 
-  // A callback ref, not an effect: the mobile Sheet unmounts its subtree on
-  // close and the breakpoint swaps it for the desktop one, so the scroller is a
-  // new node each time and an effect keyed on a stable callback never re-runs.
-  // Still runs before paint.
+  // A callback ref, not an effect: the mobile Sheet unmounts its subtree on close and the breakpoint
+  // swaps it for the desktop one, so the scroller is a new node each time and an effect keyed on a
+  // stable callback never re-runs. Still runs before paint.
   const railObserverRef = useRef<ResizeObserver | null>(null);
   const attachScroller = useCallback(
     (el: HTMLDivElement | null) => {
@@ -932,11 +974,9 @@ export function AppSidebar() {
       railWidthRef.current = null;
       if (!el) return;
       measureScrollRail(el);
-      // Watch the box, not renders: the Images disclosure and the project
-      // toggles change the row count without rendering this component, and a
-      // scrollbar appearing shrinks the content box by its own width. Safe
-      // where the earlier observer was not: it writes a variable, never state,
-      // so there is no render to feed back (React #185).
+      // Watch the box, not renders: the Images disclosure and the project toggles change the row count
+      // without rendering this component, and a scrollbar appearing shrinks the content box. Safe where
+      // the earlier observer was not: it writes a variable, never state, so nothing feeds back.
       const observer = new ResizeObserver(() => measureScrollRail(el));
       observer.observe(el);
       railObserverRef.current = observer;
@@ -1010,11 +1050,9 @@ export function AppSidebar() {
   const setChatSort = useSidebarOrganizationStore((s) => s.setChatSort);
   const setPinnedSort = useSidebarOrganizationStore((s) => s.setPinnedSort);
   const setManualOrder = useSidebarOrganizationStore((s) => s.setManualOrder);
-  // With the Projects section on, a project chat lives in its folder and
-  // repeating it here would be noise. With it off there are no folders, so
-  // Recents is where those chats go, and a new project chat still lands
-  // somewhere visible. Pinned chats are held back either way: the Pinned
-  // section renders those.
+  // With the Projects section on, a project chat lives in its folder and repeating it here would be
+  // noise. With it off there are no folders, so Recents is where those chats go. Pinned chats are
+  // held back either way: the Pinned section renders those.
   const recentChatItems = useMemo(
     () =>
       allChatItems.filter(
@@ -1054,10 +1092,9 @@ export function AppSidebar() {
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     return map;
   }, [allChatItems]);
-  // Every project gets a folder: pinned first in pin order, then by activity,
-  // then whatever the user dragged, which outranks both. Activity comes from
-  // the member chats, since a project's own updatedAt only moves when its name,
-  // instructions or archived flag are edited.
+  // Every project gets a folder: pinned first in pin order, then by activity, then whatever the user
+  // dragged, which outranks both. Activity comes from the member chats, since a project's own
+  // updatedAt only moves when its name, instructions or archived flag are edited.
   const sidebarProjectRecords = useMemo(() => {
     const lastActivityAt = (project: ProjectRecord) => {
       let latest = project.updatedAt ?? project.createdAt;
@@ -1085,10 +1122,9 @@ export function AppSidebar() {
     manualOrder,
     chatsByProjectId,
   ]);
-  // Memoised for its identity, not for the slice. It feeds the rendered-row set
-  // the selection guard depends on, and that effect sets state: React re-renders
-  // once to find the bail-out, which would rebuild this array and schedule the
-  // effect again, without end.
+  // Memoised for its identity, not for the slice. It feeds the rendered-row set the selection guard
+  // depends on, and that effect sets state: React re-renders once to find the bail-out, which would
+  // rebuild this array and schedule the effect again, without end.
   const visibleProjectRecords = useMemo(
     () =>
       showAllProjects
@@ -1164,8 +1200,7 @@ export function AppSidebar() {
       undefined
     : undefined;
   const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);
-  // In the navigation store, not local state: the unread chords register
-  // outside this tree.
+  // In the navigation store, not local state: the unread chords register outside this tree.
   const unreadThreadIds = useChatNavigationStore((s) => s.unreadThreadIds);
   const markThreadsUnread = useChatNavigationStore((s) => s.markThreadsUnread);
   const clearThreadsUnread = useChatNavigationStore(
@@ -1269,24 +1304,19 @@ export function AppSidebar() {
     () => sortedPinnedChatItems.map((item) => item.id),
     [sortedPinnedChatItems],
   );
-  // Whole lists, not the visible slices, so a drop cannot lose what a
-  // collapsed "Show more" is hiding.
-  // The project chats actually on screen. Grouping by project keeps them out of
-  // Recents, so without these the chords cannot see them at all. Same rule the
-  // Projects section renders by, collapsed folders and per-folder limit included.
-  // All three chat groups leave the tree on Train/Recipes/Export and are hidden
-  // on the icon rail, so a chord must not reach what they hold. Same rule a
-  // collapsed section follows, read off the sidebar as a whole. The mobile
-  // sheet is not part of it: it carries no collapsible state, and gating on it
-  // would strand the chords on any window narrow enough to count as mobile.
+  // Whole lists, not the visible slices, so a drop cannot lose what a collapsed "Show more" is
+  // hiding, plus the project chats actually on screen: grouping by project keeps them out of Recents,
+  // so without those the chords cannot see them at all. All three chat groups leave the tree on
+  // Train/Recipes/Export and are hidden on the icon rail, so a chord must not reach what they hold;
+  // read off the sidebar as a whole. The mobile sheet is not part of it, since it carries no
+  // collapsible state and gating on it would strand the chords on any narrow window.
   const chatListsOnScreen =
     !isStudioRoute &&
     !showTrainingRecents &&
     (isMobile || sidebarState !== "collapsed");
-  // Selecting needs the rows, not just the lists. A closed mobile sheet unmounts
-  // them as the icon rail does, so Select All would build a selection with
-  // nothing on screen and Archive, Pin and Mark unread would take it over the
-  // open chat. Navigation is deliberately exempt: it moves the chat the user IS
+  // Selecting needs the rows, not just the lists. A closed mobile sheet unmounts them as the icon
+  // rail does, so Select All would build a selection with nothing on screen and Archive, Pin and Mark
+  // unread would take it over the open chat. Navigation is exempt: it moves the chat the user IS
   // looking at, and the sheet is closed for most of its life on a narrow window.
   const chatRowsOnScreen = chatListsOnScreen && (!isMobile || openMobile);
   const renderedProjectChatItems = useMemo(() => {
@@ -1332,10 +1362,9 @@ export function AppSidebar() {
     for (const item of visibleRecentItems) ids.add(item.id);
     return ids;
   }, [visiblePinnedItems, renderedProjectChatItems, visibleRecentItems]);
-  // The folder rows, selectable in their own right and leaving the screen on
-  // their own terms: the section closes, the sidebar organizes by date, or a
-  // "show less" takes back the overflow. The chat sets above say nothing about
-  // that, since a folder with no chats in view is still a row.
+  // The folder rows, selectable in their own right and leaving the screen on their own terms: the
+  // section closes, the sidebar organizes by date, or a "show less" takes back the overflow. The chat
+  // sets above say nothing about that, since a folder with no chats in view is still a row.
   const renderedProjectIds = useMemo(() => {
     if (!chatListsOnScreen || organizeBy !== "project" || !projectsOpen) {
       return new Set<string>();
@@ -1457,14 +1486,11 @@ export function AppSidebar() {
     dropProjectSelection();
   }, [dropChatSelection, dropProjectSelection]);
 
-  // Emptying the published lists is not enough: Archive, Pin, Mark unread and
-  // Delete all prefer the selection over the open chat, and a selection shows
-  // nowhere but the rows, its count living in their context menus. Carried onto
-  // Train or behind the icon rail it would be invisible and still be what the
-  // chords hit. Same reason opening a row drops it.
-  // Sections close one at a time, though, and a "show less" takes back only
-  // its own overflow, so the rest of the selection is still on screen and
-  // still worth acting on. Drop what went and keep what stayed.
+  // Emptying the published lists is not enough: Archive, Pin, Mark unread and Delete all prefer the
+  // selection over the open chat, and a selection shows nowhere but the rows. Carried onto Train or
+  // behind the icon rail it would be invisible and still be what the chords hit. Sections close one
+  // at a time, though, and a "show less" takes back only its own overflow, so drop what went and keep
+  // what stayed.
   useEffect(() => {
     if (!chatRowsOnScreen) {
       clearSelection();
@@ -1482,10 +1508,9 @@ export function AppSidebar() {
       }
       return kept.size === prev.size ? prev : kept;
     });
-    // Folder rows go the same way. Left behind, a project whose section the
-    // user closed keeps the selection alive with nothing on screen, and the
-    // tool card's Escape steps aside for it: the press that should have
-    // declined a call clears a selection instead.
+    // Folder rows go the same way. Left behind, a project whose section the user closed keeps the
+    // selection alive with nothing on screen, and the tool card's Escape steps aside for it: the press
+    // that should have declined a call clears a selection instead.
     const projectAnchor = projectAnchorRef.current;
     if (projectAnchor && !renderedProjectIds.has(projectAnchor)) {
       projectAnchorRef.current = null;
@@ -1521,19 +1546,16 @@ export function AppSidebar() {
     dropProjectSelection,
   ]);
 
-  // Escape leaves a selection, as it does the menus. A passive listener rather
-  // than one that consumes the key: dictation's Escape reads defaultPrevented
-  // first, and a stale selection must not outrank a live recording. Declining a
-  // tool call is the Escape that must not double up, and it steps aside on
-  // `selectionActive` below.
+  // Escape leaves a selection, as it does the menus. A passive listener rather than one that consumes
+  // the key: dictation's Escape reads defaultPrevented first, and a stale selection must not outrank
+  // a live recording. Declining a tool call steps aside on `selectionActive` below.
   const selectionActive = selectionCount > 0 || projectSelectionCount > 0;
   useEffect(() => {
     if (!selectionActive) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      // Bare, and only bare. Escape with a modifier is somebody else's chord,
-      // ⇧Esc for Clear all unreads among them, and dropping the selection under
-      // one would leave Archive or Pin pointing elsewhere. defaultPrevented for
-      // the same reason: a menu closing on Escape is not a request to lose it.
+      // Bare, and only bare. Escape with a modifier is somebody else's chord, Clear all unreads among
+      // them, and dropping the selection under one would leave Archive or Pin pointing elsewhere.
+      // defaultPrevented likewise: a menu closing on Escape is not a request to lose it.
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
         return;
@@ -1718,7 +1740,6 @@ export function AppSidebar() {
   const manualDragEnabled = chatSort === "manual";
   const pinnedDragEnabled = pinnedSort === "manual";
 
-  /** The cue class for this row, or undefined when it is not the drop target. */
   function dropCueClass(
     scope: string | undefined,
     orderedIds: string[] | undefined,
@@ -1737,11 +1758,8 @@ export function AppSidebar() {
       : DROP_CUE_TOP;
   }
 
-  /**
-   * Menu path to the same reorder dragging does. Touch browsers never fire
-   * dragstart and a keyboard cannot drag, so a manually ordered list is
-   * unreorderable without this.
-   */
+  /** Menu path to the same reorder dragging does. Touch browsers never fire dragstart and a keyboard
+     *  cannot drag, so a manually ordered list is unreorderable without this. */
   function renderMoveRowItems(
     scope: string,
     orderedIds: string[],
@@ -1756,21 +1774,20 @@ export function AppSidebar() {
     return (
       <>
         <DropdownMenuItem disabled={at <= 0} onSelect={() => move(-1)}>
-          <HugeiconsIcon icon={ArrowUp01Icon} strokeWidth={1.75} className="size-icon" />
+          <ChevronUpIcon strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.organize.moveUp")}</span>
         </DropdownMenuItem>
         <DropdownMenuItem
           disabled={at === -1 || at >= orderedIds.length - 1}
           onSelect={() => move(1)}
         >
-          <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={1.75} className="size-icon" />
+          <ChevronDownIcon strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.organize.moveDown")}</span>
         </DropdownMenuItem>
       </>
     );
   }
 
-  /** Drag handlers for one row of a reorderable list. */
   function rowDragProps(scope: string, orderedIds: string[], rowId: string) {
     return {
       draggable: true,
@@ -1901,18 +1918,26 @@ export function AppSidebar() {
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
 
-  // One box for every row pill, so a hover pill has the same edges wherever it
-  // lands. Rows outside the list scroller add the rail width it does not lose,
-  // so both end on the same edge whether or not the scrollbar takes space.
-  // Logical sides, since the rail is on the inline end and moves under rtl.
+  // Navigation rows share one box, so a hover pill has the same edges wherever it lands. Rows outside
+  // the list scroller add the rail width it does not lose, so both end on the same edge whether or
+  // not the scrollbar takes space. Logical sides, since the rail moves under rtl.
   const rowPadding = usesDesktopTitlebar
     ? "ps-[5px] pe-[calc(var(--sidebar-rail,0px)+5px)]"
     : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px)]";
 
-  // Inside it the rail already sits in that space, so this is just the gap
-  // between a pill and the scrollbar, matched to the gap on the other side.
-  const scrollRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
+  // Inside the scroller the rail already occupies that space. The profile footer also uses this
+  // padding deliberately: its width is independent of whether the recent-chat list has a scrollbar.
+  const unrailedRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
 
+  // Header actions end where a hovered row's "…" does: unrailedRowPadding + the
+  // action's own pr-1.5. 12px normally (the pr-3 class default), 11px here.
+  const headerRightPadding = usesDesktopTitlebar
+    ? "sidebar-sticky-label-desktop"
+    : null;
+  // Recents alone is nudged 2px right there, and carries its padding with it.
+  const recentsHeaderRightPadding = usesDesktopTitlebar
+    ? "sidebar-sticky-label-desktop-recents"
+    : null;
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
   const navRows: Record<SidebarNavItemId, NavRowDef> = {
@@ -2491,9 +2516,8 @@ export function AppSidebar() {
     } else if (empty.value) {
       toast.info("No exportable content.");
     } else {
-      // Denied permission, an unfocused document, a failed history read: the
-      // payload was fine and the write was not, and a chord has no cursor to
-      // show that with.
+      // Denied permission, an unfocused document, a failed history read: the payload was fine and
+      // the write was not, and a chord has no cursor to show that with.
       toast.error("Could not copy this chat.");
     }
   }
@@ -2501,11 +2525,9 @@ export function AppSidebar() {
   /** The sandbox sessions this chat's stored tool results name, if any. */
   async function recordedSandboxSessionIds(ids: string[]): Promise<string[]> {
     const recorded: string[] = [];
-    // Every id a thread names, not just its latest: one chat that ran a tool,
-    // moved between projects and ran another wrote to two folders on its own,
-    // and the newest would answer for both.
-    // One at a time, not Promise.all: this file's export contract forbids a
-    // concurrent await here, and two panes win nothing.
+    // Every id a thread names, not just its latest: one chat that ran a tool, moved between projects
+    // and ran another wrote to two folders on its own, and the newest would answer for both. One at a
+    // time, not Promise.all: this file's export contract forbids a concurrent await here.
     for (const threadId of ids) {
       recorded.push(
         ...allRecordedSandboxSessionIds(await listStoredChatMessages(threadId)),
@@ -2515,34 +2537,23 @@ export function AppSidebar() {
   }
 
   /**
-   * The folders this chat's files are actually in: what its tool results name,
-   * or, for a chat old enough that they name nothing, what is on disk.
-   *
-   * Chats stored before results carried a session recorded nothing, so one that
-   * ran loose and has since joined a project would be answered with the project
-   * workspace. Its thread sandbox is the only other candidate, and files there
-   * are this chat's, which is what makes them worth probing: a chat can join a
-   * project, record that session, and move back out, and current membership
-   * says nothing about where its older files went. The project workspace is
-   * not probed, because it belongs to every chat in the project alike.
-   *
-   * A union rather than a fallback. One recorded id is not evidence that the
-   * others are recorded too: a chat can have run a tool before recording
-   * existed, moved into a project, and run another one since, and taking the
-   * recorded id alone would answer for both folders while hiding the older.
-   *
-   * Shared by "Open chat folder" and "Copy session id", which drifted apart
-   * once: the copy path skipped the probe and reported success on a folder the
-   * chat had never written to.
-   */
+     * The folders this chat's files are actually in: what its tool results name, or, for a chat old
+     * enough that they name nothing, what is on disk. Chats stored before results carried a session
+     * recorded nothing, so one that ran loose and has since joined a project would be answered with
+     * the project workspace; its thread sandbox is the only other candidate, and files there are this
+     * chat's. The project workspace is not probed, because it belongs to every chat alike.
+     *
+     * A union rather than a fallback: one recorded id is not evidence that the others are recorded
+     * too, and taking it alone would answer for both folders while hiding the older. Shared by "Open
+     * chat folder" and "Copy session id", which drifted apart once, the copy path skipping the probe
+     * and reporting success on a folder the chat had never written to.
+     */
   async function sandboxSessionIdsHolding(ids: string[]): Promise<string[]> {
     const recorded = await recordedSandboxSessionIds(ids);
-    // Thread folders only. A project sandbox is shared by every chat in the
-    // project, so files there are no evidence that THIS chat wrote them, and
-    // counting one would report a second folder for any chat that joined a
-    // project someone else had already used. Both callers already fall back to
-    // the folder membership gives them when nothing here names one, which is
-    // the honest answer where there is no evidence either way.
+    // Thread folders only. A project sandbox is shared by every chat in the project, so files there are
+    // no evidence that THIS chat wrote them, and counting one would report a second folder for any chat
+    // that joined a project someone else had used. Both callers already fall back to the folder
+    // membership gives them when nothing here names one.
     const held: string[] = [];
     for (const candidate of ids) {
       // Already named, so there is nothing a probe could add.
@@ -2556,10 +2567,9 @@ export function AppSidebar() {
   async function copyChatSessionId(item: SidebarItem) {
     const threadIds = getSidebarItemThreadIds(item);
     const ids = threadIds.length > 0 ? threadIds : [item.id];
-    // The chat's own history names the folder it wrote to, which is not where
-    // current membership points once it has moved between projects. Same read
-    // as "Open chat folder", and the same answer when it names two, whether
-    // that is a compare row's two panes or one thread that outlived a move.
+    // The chat's own history names the folder it wrote to, which is not where current membership points
+    // once it has moved between projects. Same read as "Open chat folder", and the same answer when it
+    // names two, whether that is a compare row's two panes or one thread that outlived a move.
     const refusal: { value: { title: string; description?: string } | null } = {
       value: null,
     };
@@ -2637,9 +2647,9 @@ export function AppSidebar() {
   useEffect(() => {
     openChatItemRef.current = openChatItem;
   });
-  // The sidebar is unmounted on the auth routes, so this is where a sign-out
-  // reaches: the store outlives the component that filled it, and the unread
-  // set and the walk belong to the account that just left.
+  // The sidebar is unmounted on the auth routes, so this is where a sign-out reaches: the store
+  // outlives the component that filled it, and the unread set and the walk belong to the account
+  // that just left.
   useEffect(
     () => () => useChatNavigationStore.getState().resetAccountState(),
     [],
@@ -2650,9 +2660,8 @@ export function AppSidebar() {
     return () => setOpenChatItem(null);
   }, []);
 
-  // --- Chat shortcuts ----------------------------------------------------
-  // The sidebar is on every shell route and holds the list, the handlers and
-  // the router, so the chat chords register here.
+  // --- Chat shortcuts ---
+  // The sidebar is on every shell route and holds the list, the handlers and the router.
   const activeChatItem = useMemo(
     () => allChatItems.find((item) => item.id === activeThreadId) ?? null,
     [allChatItems, activeThreadId],
@@ -2668,12 +2677,10 @@ export function AppSidebar() {
   const goToChat = (pick: (state: ChatNavigationState) => SidebarItem | null) =>
     openChatItemById(pick(useChatNavigationStore.getState()));
 
-  // With rows selected these act on the selection, matching the context menu;
-  // otherwise on the open chat. Acting on a selection clears it, so without
-  // this latch a second press would land on the open chat, which the user
-  // never selected.
-  // Keyed by action: the press to hold back is a repeat of the one that just
-  // took the selection, not a different command the user chose deliberately.
+  // With rows selected these act on the selection, matching the context menu; otherwise on the open
+  // chat. Acting on a selection clears it, so without this latch a second press would land on the
+  // open chat, which the user never selected. Keyed by action: the press to hold back is a repeat of
+  // the one that just took the selection, not a different command chosen deliberately.
   const selectionActedRef = useRef<{ id: ShortcutId; at: number } | null>(null);
   const actOnSelection = (id: ShortcutId, fn: () => void) => {
     selectionActedRef.current = { id, at: Date.now() };
@@ -2690,18 +2697,15 @@ export function AppSidebar() {
   // than falling through to the open chat. Delete already behaves this way.
   const projectsOnlySelected = () =>
     selectionCount === 0 && projectSelectionCount > 0;
-  // A dialog leaves the sidebar mounted and inert behind it, and these chords
-  // are window-level, so Settings over Chat would archive or rename the chat
-  // behind it. Asked at press time, since `enabled` is read at render.
-  //
-  // Backgrounded, not "not in the foreground": reading a missing element as
-  // covered would kill these chords on the mobile drawer, which unmounts.
+  // A dialog leaves the sidebar mounted and inert behind it, and these chords are window-level, so
+  // Settings over Chat would archive or rename the chat behind it. Asked at press time, since
+  // `enabled` is read at render. Backgrounded, not "not in the foreground": reading a missing element
+  // as covered would kill these chords on the mobile drawer, which unmounts.
   const sidebarCovered = () => {
     if (isSurfaceBackgrounded(SIDEBAR_SELECTOR)) return true;
-    // With the mobile drawer closed the sidebar is unmounted, so the check
-    // above has nothing to read. The app root is always mounted and Radix
-    // aria-hides it for a modal's life. A fallback only: an open drawer is
-    // itself a dialog hiding the root, and the sidebar in it is the foreground.
+    // With the mobile drawer closed the sidebar is unmounted, so the check above has nothing to read.
+    // The app root is always mounted and Radix aria-hides it for a modal's life. A fallback only: an
+    // open drawer is itself a dialog hiding the root, and the sidebar in it is the foreground.
     return (
       typeof document !== "undefined" &&
       document.querySelector(SIDEBAR_SELECTOR) === null &&
@@ -2740,9 +2744,8 @@ export function AppSidebar() {
     if (followsSelectionAction("togglePinChat")) return;
     withActiveChat((item) => togglePinnedChat(item.id));
   });
-  // A selection made behind a dialog is invisible and still what the mutating
-  // chords hit once the dialog closes, which is the thing those chords being
-  // guarded was meant to prevent.
+  // A selection made behind a dialog is invisible and still what the mutating chords hit once the
+  // dialog closes, which is the thing those chords being guarded was meant to prevent.
   useShortcut("selectAllChats", () => {
     if (sidebarCovered()) return;
     selectAllChats();
@@ -2752,17 +2755,15 @@ export function AppSidebar() {
     if (sidebarCovered()) return;
     if (selectionCount > 0) deleteSelected();
   });
-  // Through the dialog: the row's inline pill is rendered by the row, and the
-  // open chat may be behind a collapsed section, past a folder's "show more",
-  // or on a route with no chat list at all, where the chord would look dead and
-  // leave a rename waiting to appear the moment the row came back.
+  // Through the dialog: the row's inline pill is rendered by the row, and the open chat may be behind
+  // a collapsed section, past a folder's "show more", or on a route with no chat list at all, where
+  // the chord would look dead and leave a rename waiting to appear when the row came back.
   useShortcut("renameChat", () => {
     if (sidebarCovered()) return;
     withActiveChat((item) => openRenameChat(item, false));
   });
-  // The clipboard is outside the app, so writing a hidden chat's contents into
-  // it from behind a dialog is not something the user can take back by closing
-  // the dialog.
+  // The clipboard is outside the app, so writing a hidden chat's contents into it from behind a
+  // dialog is not something the user can take back by closing the dialog.
   useShortcut("copyChatAsMarkdown", () => {
     if (sidebarCovered()) return;
     withActiveChat((item) => void copyChatItemAsMarkdown(item));
@@ -2780,9 +2781,8 @@ export function AppSidebar() {
   useShortcut("previousChat", () => goToChat((s) => adjacentChatItem(s, -1)), {
     repeats: true,
   });
-  // The walk holds the stack still while it runs, so a modifier held down
-  // reaches the third chat back and beyond; releasing it ends the walk and
-  // puts the chat it landed on at the top.
+  // The walk holds the stack still while it runs, so a modifier held down reaches the third chat
+  // back and beyond; releasing it ends the walk and puts the chat it landed on at the top.
   const walkRecentlyViewed = (delta: number) =>
     openChatItemById(useChatNavigationStore.getState().stepRecentlyViewed(delta));
   useShortcut("nextRecentlyViewedChat", () => walkRecentlyViewed(1), {
@@ -2807,8 +2807,7 @@ export function AppSidebar() {
     toast.success(`Cleared ${cleared} unread ${cleared === 1 ? "chat" : "chats"}`);
   });
 
-  // The six slots register as <Shortcut> elements: a loop of hooks would
-  // break the rules of hooks.
+  // The six slots register as <Shortcut> elements: a loop of hooks would break the rules of hooks.
   const slotShortcuts = (
     <>
       {RECENT_SLOT_NUMBERS.map((slot) => (
@@ -2827,6 +2826,7 @@ export function AppSidebar() {
       // Desktop signs out through the OS account menu, not here.
       if (isTauri) return;
       void (async () => {
+        if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
         try {
           await logout();
         } catch {
@@ -2848,64 +2848,63 @@ export function AppSidebar() {
     includeOrganize?: boolean;
   }) {
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+      <NonModalDropdownMenu
+        side="bottom"
+        align="end"
+        sideOffset={2}
+        className="unsloth-plus-menu w-56"
+        trigger={(triggerRef) => (
           <button
+            ref={triggerRef}
             type="button"
             aria-label={options.ariaLabel}
             className="sidebar-header-action"
           >
             <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
           </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          side="bottom"
-          align="end"
-          sideOffset={2}
-          className="unsloth-plus-menu w-56"
+        )}
+      >
+        {options.includeOrganize && (
+          <>
+            <DropdownMenuLabel>
+              {t("shell.organize.sidebarHeading")}
+            </DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={organizeBy}
+              onValueChange={(value) =>
+                setOrganizeBy(value as SidebarOrganizeBy)
+              }
+            >
+              {ORGANIZE_OPTIONS.map((option) => (
+                <DropdownMenuRadioItem
+                  key={option.value}
+                  value={option.value}
+                  className={menuRadioItemClass}
+                >
+                  {t(option.key)}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </>
+        )}
+        <DropdownMenuLabel>{options.sortLabel}</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={options.sortValue}
+          onValueChange={(value) =>
+            options.onSortChange(value as SidebarChatSort)
+          }
         >
-          {options.includeOrganize && (
-            <>
-              <DropdownMenuLabel>
-                {t("shell.organize.sidebarHeading")}
-              </DropdownMenuLabel>
-              <DropdownMenuRadioGroup
-                value={organizeBy}
-                onValueChange={(value) =>
-                  setOrganizeBy(value as SidebarOrganizeBy)
-                }
-              >
-                {ORGANIZE_OPTIONS.map((option) => (
-                  <DropdownMenuRadioItem
-                    key={option.value}
-                    value={option.value}
-                    className={menuRadioItemClass}
-                  >
-                    {t(option.key)}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </>
-          )}
-          <DropdownMenuLabel>{options.sortLabel}</DropdownMenuLabel>
-          <DropdownMenuRadioGroup
-            value={options.sortValue}
-            onValueChange={(value) =>
-              options.onSortChange(value as SidebarChatSort)
-            }
-          >
-            {CHAT_SORT_OPTIONS.map((option) => (
-              <DropdownMenuRadioItem
-                key={option.value}
-                value={option.value}
-                className={menuRadioItemClass}
-              >
-                {t(option.key)}
-              </DropdownMenuRadioItem>
-            ))}
-          </DropdownMenuRadioGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          {CHAT_SORT_OPTIONS.map((option) => (
+            <DropdownMenuRadioItem
+              key={option.value}
+              value={option.value}
+              className={menuRadioItemClass}
+            >
+              {t(option.key)}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </NonModalDropdownMenu>
     );
   }
 
@@ -3001,9 +3000,11 @@ export function AppSidebar() {
       item.type === "compare"
         ? (item.threadIds ?? []).some((id) => Boolean(runningByThreadId[id]))
         : Boolean(runningByThreadId[item.id]);
-    const hasQueuedActivity = threadIds.some((threadId) =>
-      Boolean(queueByThreadId[threadId]),
-    );
+    // A paused queue is not activity: its entry outlives Stop, so the row would spin on.
+    const hasQueuedActivity = threadIds.some((threadId) => {
+      const entry = queueByThreadId[threadId];
+      return Boolean(entry) && !entry.paused;
+    });
     // Active generation and queued work share the in-row spinner slot so they cannot drift.
     const showQueuedActivity = hasQueuedActivity && !isGenerating;
     const showWorkSpinner = isGenerating || showQueuedActivity;
@@ -3048,16 +3049,14 @@ export function AppSidebar() {
           : showWorkSpinner
             ? // A spinner glyph cannot truncate, so clear the kebab's 30px inset (pr-1.5 + size-6).
               "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-10"
-            : // Hover room for the kebab only; title keeps one more character.
-              // Touch rows clear the full always-visible kebab hit area (pr-10).
-              "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-10",
-      // A focused kebab is revealed without hover, so a spinner row reserves the same room.
-      showWorkSpinner &&
-        (variant === "project"
-          ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
-          : isPinned
-            ? "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16"
-            : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-8"),
+            : // Clear the full menu circle only while it is visible.
+              "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-10",
+      // Keyboard focus reveals the action without hover.
+      variant === "project"
+        ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
+        : isPinned
+          ? "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16"
+          : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-8",
     );
 
     const isRenamingThis =
@@ -3179,9 +3178,14 @@ export function AppSidebar() {
                 </span>
               </button>
             )}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+            <NonModalDropdownMenu
+              side="bottom"
+              align="start"
+              sideOffset={0}
+              className="unsloth-plus-menu menu-flat-destructive w-56"
+              trigger={(triggerRef) => (
                 <button
+                  ref={triggerRef}
                   type="button"
                   onClick={(e) => e.stopPropagation()}
                   aria-label="Chat options"
@@ -3191,191 +3195,182 @@ export function AppSidebar() {
                     <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
                   </span>
                 </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side="bottom"
-                align="start"
-                sideOffset={0}
-                className="unsloth-plus-menu menu-flat-destructive w-56"
-              >
-                <DropdownMenuItem onSelect={() => openRenameChat(item)}>
-                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Rename</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => togglePinnedChat(item.id)}>
-                  <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
-                </DropdownMenuItem>
-                {drag &&
-                  renderMoveRowItems(
-                    drag.scope,
-                    drag.orderedIds,
-                    item.id,
-                    drag.index,
-                  )}
-                {sandboxSessionId ? (
-                  isTauri ? (
-                    <DropdownMenuItem
-                      title="Open the folder this chat's tool calls read and write"
-                      onSelect={() => {
-                        void (async () => {
-                          try {
-                            // A chat moved between projects keeps the sandbox it
-                            // wrote to, so its own history names the folder, not
-                            // current membership. A failed read is reported
-                            // below rather than caught per pane, which would
-                            // read as "never ran a tool" and fall back to
-                            // membership, the answer the recorded id overrides.
-                            const ids =
-                              threadIds.length > 0 ? threadIds : [item.id];
-                            const distinct = await sandboxSessionIdsHolding(ids);
-                            if (distinct.length > 1) {
-                              toast.error("This chat wrote to more than one folder.", {
-                                description:
-                                  "It ran tools on both sides of a move, so open the folder from a tool card instead.",
-                              });
-                              return;
-                            }
-                            await revealSandbox(distinct[0] ?? sandboxSessionId);
-                          } catch (error) {
-                            toast.error("Could not open the chat folder.", {
+              )}
+            >
+              <DropdownMenuItem onSelect={() => openRenameChat(item)}>
+                <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                <span>Rename</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => togglePinnedChat(item.id)}>
+                <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
+              </DropdownMenuItem>
+              {drag &&
+                renderMoveRowItems(
+                  drag.scope,
+                  drag.orderedIds,
+                  item.id,
+                  drag.index,
+                )}
+              {sandboxSessionId ? (
+                isTauri ? (
+                  <DropdownMenuItem
+                    title="Open the folder this chat's tool calls read and write"
+                    onSelect={() => {
+                      void (async () => {
+                        try {
+                          // A chat moved between projects keeps the sandbox it wrote to, so its own
+                          // history names the folder, not current membership. A failed read is
+                          // reported below rather than caught per pane.
+                          const ids =
+                            threadIds.length > 0 ? threadIds : [item.id];
+                          const distinct = await sandboxSessionIdsHolding(ids);
+                          if (distinct.length > 1) {
+                            toast.error("This chat wrote to more than one folder.", {
                               description:
-                                error instanceof Error
-                                  ? error.message
-                                  : String(error),
+                                "It ran tools on both sides of a move, so open the folder from a tool card instead.",
                             });
+                            return;
                           }
-                        })();
-                      }}
-                    >
-                      <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-                      <span>Open chat folder</span>
-                    </DropdownMenuItem>
-                  ) : (
-                    <OpenChatFolderUnavailableItem />
-                  )
-                ) : null}
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>Move to project</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent
-                    sideOffset={0}
-                    alignOffset={-4}
-                    className="unsloth-plus-menu w-52"
+                          await revealSandbox(distinct[0] ?? sandboxSessionId);
+                        } catch (error) {
+                          toast.error("Could not open the chat folder.", {
+                            description:
+                              error instanceof Error
+                                ? error.message
+                                : String(error),
+                          });
+                        }
+                      })();
+                    }}
                   >
+                    <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>Open chat folder</span>
+                  </DropdownMenuItem>
+                ) : (
+                  <OpenChatFolderUnavailableItem />
+                )
+              ) : null}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>Move to project</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent
+                  sideOffset={0}
+                  alignOffset={-4}
+                  className="unsloth-plus-menu w-52"
+                >
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setProjectCreateMoveTarget(item);
+                      setCreatingProject(true);
+                    }}
+                  >
+                    <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>New project</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!item.projectId}
+                    onSelect={() => void moveChatToProject(item, null)}
+                  >
+                    <span>Recents</span>
+                  </DropdownMenuItem>
+                  {projects.map((project) => (
                     <DropdownMenuItem
-                      onSelect={() => {
-                        setProjectCreateMoveTarget(item);
-                        setCreatingProject(true);
+                      key={project.id}
+                      disabled={item.projectId === project.id}
+                      onSelect={() => void moveChatToProject(item, project.id)}
+                    >
+                      <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                      <span className="truncate">{project.name}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Export</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+                  {CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
+                    <DropdownMenuItem
+                      key={label}
+                      onSelect={async () => {
+                        try {
+                          const ids = item.type === "single"
+                            ? [item.id]
+                            : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
+                          for (const id of ids) {
+                            await exportConversationByFormat(id, format);
+                          }
+                        } catch (error) {
+                          if (!isDownloadCancelled(error)) {
+                            toast.error("Export failed.");
+                          }
+                        }
                       }}
                     >
-                      <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
-                      <span>New project</span>
+                      {label}
                     </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                  {/* Bulk export and import live in Settings -> Data. */}
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      useSettingsDialogStore.getState().openDialog("data")
+                    }
+                  >
+                    Export all chats…
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Save to project sources</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+                  {projects.length === 0 && (
+                    <DropdownMenuItem disabled>No projects yet</DropdownMenuItem>
+                  )}
+                  {projects.map((project) => (
                     <DropdownMenuItem
-                      disabled={!item.projectId}
-                      onSelect={() => void moveChatToProject(item, null)}
+                      key={project.id}
+                      onSelect={async () => {
+                        try {
+                          await saveChatToProjectSources(item, project.id);
+                        } catch {
+                          toast.error("Failed to save to project sources.");
+                        }
+                      }}
                     >
-                      <span>Recents</span>
+                      <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                      <span className="truncate">{project.name}</span>
                     </DropdownMenuItem>
-                    {projects.map((project) => (
-                      <DropdownMenuItem
-                        key={project.id}
-                        disabled={item.projectId === project.id}
-                        onSelect={() => void moveChatToProject(item, project.id)}
-                      >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                        <span className="truncate">{project.name}</span>
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Export</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
-                    {CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
-                      <DropdownMenuItem
-                        key={label}
-                        onSelect={async () => {
-                          try {
-                            const ids = item.type === "single"
-                              ? [item.id]
-                              : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
-                            for (const id of ids) {
-                              await exportConversationByFormat(id, format);
-                            }
-                          } catch (error) {
-                            if (!isDownloadCancelled(error)) {
-                              toast.error("Export failed.");
-                            }
-                          }
-                        }}
-                      >
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                    <DropdownMenuSeparator />
-                    {/* Bulk export and import live in Settings -> Data. */}
-                    <DropdownMenuItem
-                      onSelect={() =>
-                        useSettingsDialogStore.getState().openDialog("data")
-                      }
-                    >
-                      Export all chats…
-                    </DropdownMenuItem>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Save to project sources</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
-                    {projects.length === 0 && (
-                      <DropdownMenuItem disabled>No projects yet</DropdownMenuItem>
-                    )}
-                    {projects.map((project) => (
-                      <DropdownMenuItem
-                        key={project.id}
-                        onSelect={async () => {
-                          try {
-                            await saveChatToProjectSources(item, project.id);
-                          } catch {
-                            toast.error("Failed to save to project sources.");
-                          }
-                        }}
-                      >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                        <span className="truncate">{project.name}</span>
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
-                  <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Archive</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onSelect={() =>
-                    confirmDeleteChats
-                      ? openDeleteDialog({ kind: "chat", item })
-                      : void deleteChatWithCleanup(item, {
-                          deleteFiles: alwaysDeleteChatFiles,
-                        })
-                  }
-                >
-                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Delete</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
+                <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+                <span>Archive</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() =>
+                  confirmDeleteChats
+                    ? openDeleteDialog({ kind: "chat", item })
+                    : void deleteChatWithCleanup(item, {
+                        deleteFiles: alwaysDeleteChatFiles,
+                      })
+                }
+              >
+                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                <span>Delete</span>
+              </DropdownMenuItem>
+            </NonModalDropdownMenu>
           </SidebarMenuItem>
         </ContextMenuTrigger>
         {renderChatContextMenu()}
@@ -3626,7 +3621,7 @@ export function AppSidebar() {
           data-tour="navbar"
           className={cn(
             "group-data-[collapsible=icon]:px-0 py-0 shrink-0",
-            scrollRowPadding,
+            unrailedRowPadding,
           )}
         >
 
@@ -3801,7 +3796,7 @@ export function AppSidebar() {
         {!isStudioRoute && !showTrainingRecents && pinnedChatItems.length > 0 && (
           <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", scrolled && "is-scrolled")}>
+              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", headerRightPadding, scrolled && "is-scrolled")}>
                 <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                   Pinned
                   <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
@@ -3815,7 +3810,7 @@ export function AppSidebar() {
                 })}
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className={scrollRowPadding}>
+                <SidebarGroupContent className={unrailedRowPadding}>
                   <SidebarMenu>
                     {sortedPinnedChatItems.map((item, index) =>
                       renderChatSidebarItem(
@@ -3850,7 +3845,7 @@ export function AppSidebar() {
             >
               <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
                 {/* Trigger takes the free space; the actions reveal beside it. */}
-                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", scrolled && "is-scrolled")}>
+                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", headerRightPadding, scrolled && "is-scrolled")}>
                   <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                     {t("shell.navigation.projects")}
                     <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
@@ -3875,7 +3870,7 @@ export function AppSidebar() {
                   </button>
                 </SidebarGroupLabel>
                 <CollapsibleContent>
-                  <SidebarGroupContent className={scrollRowPadding}>
+                  <SidebarGroupContent className={unrailedRowPadding}>
                     <SidebarMenu>
                       {visibleProjectRecords.map((project, projectIndex) => {
                         const projectChats =
@@ -3951,9 +3946,14 @@ export function AppSidebar() {
                                 </span>
                               </button>
                               {/* Project options */}
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
+                              <NonModalDropdownMenu
+                                side="bottom"
+                                align="start"
+                                sideOffset={0}
+                                className="unsloth-plus-menu menu-flat-destructive w-56"
+                                trigger={(triggerRef) => (
                                   <button
+                                    ref={triggerRef}
                                     type="button"
                                     onClick={(e) => e.stopPropagation()}
                                     aria-label="Project options"
@@ -3963,58 +3963,52 @@ export function AppSidebar() {
                                       <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
                                     </span>
                                   </button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent
-                                  side="bottom"
-                                  align="start"
-                                  sideOffset={0}
-                                  className="unsloth-plus-menu menu-flat-destructive w-56"
+                                )}
+                              >
+                                <DropdownMenuItem onSelect={() => openProject(project.id)}>
+                                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                                  <span>Project home</span>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onSelect={() => openNewChat(project.id)}>
+                                  <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+                                  <span>New chat</span>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onSelect={() => {
+                                    // Seed the shared draft so the dialog opens with the current name, not stale text.
+                                    setRenameDraft(project.name);
+                                    setRenamingTarget({
+                                      kind: "project",
+                                      project,
+                                      current: project.name,
+                                    });
+                                  }}
                                 >
-                                  <DropdownMenuItem onSelect={() => openProject(project.id)}>
-                                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                                    <span>Project home</span>
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem onSelect={() => openNewChat(project.id)}>
-                                    <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
-                                    <span>New chat</span>
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem
-                                    onSelect={() => {
-                                      // Seed the shared draft so the dialog opens with the current name, not stale text.
-                                      setRenameDraft(project.name);
-                                      setRenamingTarget({
-                                        kind: "project",
-                                        project,
-                                        current: project.name,
-                                      });
-                                    }}
-                                  >
-                                    <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                                    <span>Rename project</span>
-                                  </DropdownMenuItem>
-                                  {renderMoveRowItems(
-                                    PROJECT_ORDER_SCOPE,
-                                    projectRowIds,
-                                    project.id,
-                                    projectIndex,
-                                  )}
-                                  <DropdownMenuItem onSelect={() => toggleProjectPin(project.id)}>
-                                    <HugeiconsIcon icon={isProjectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                                    <span>{isProjectPinned ? "Unpin project" : "Pin project"}</span>
-                                  </DropdownMenuItem>
-                                  <DropdownMenuSeparator />
-                                  <DropdownMenuItem
-                                    variant="destructive"
-                                    onSelect={() => {
-                                      // Start each delete with the file toggle off: Cancel closes programmatically and skips the
-                                      openDeleteDialog({ kind: "project", project });
-                                    }}
-                                  >
-                                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                                    <span>Delete project</span>
-                                  </DropdownMenuItem>
-                                </DropdownMenuContent>
-                              </DropdownMenu>
+                                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                                  <span>Rename project</span>
+                                </DropdownMenuItem>
+                                {renderMoveRowItems(
+                                  PROJECT_ORDER_SCOPE,
+                                  projectRowIds,
+                                  project.id,
+                                  projectIndex,
+                                )}
+                                <DropdownMenuItem onSelect={() => toggleProjectPin(project.id)}>
+                                  <HugeiconsIcon icon={isProjectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                                  <span>{isProjectPinned ? "Unpin project" : "Pin project"}</span>
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onSelect={() => {
+                                    // Start each delete with the file toggle off: Cancel closes programmatically and skips the
+                                    openDeleteDialog({ kind: "project", project });
+                                  }}
+                                >
+                                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                                  <span>Delete project</span>
+                                </DropdownMenuItem>
+                              </NonModalDropdownMenu>
                             </SidebarMenuItem>
                           </ContextMenuTrigger>
                           {renderProjectContextMenu()}
@@ -4089,6 +4083,7 @@ export function AppSidebar() {
               <SidebarGroupLabel
                 className={cn(
                   "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
+                  recentsHeaderRightPadding,
                   scrolled && "is-scrolled",
                   usesDesktopTitlebar && "translate-x-[2px]",
                 )}
@@ -4115,7 +4110,7 @@ export function AppSidebar() {
                 </button>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className={scrollRowPadding}>
+                <SidebarGroupContent className={unrailedRowPadding}>
                   <SidebarMenu>
                     {sortedRecentChatItems.map((item, index) =>
                       renderChatSidebarItem(
@@ -4158,7 +4153,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className={scrollRowPadding}>
+              <SidebarGroupContent className={unrailedRowPadding}>
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active job only while the "Current Run"
@@ -4201,9 +4196,14 @@ export function AppSidebar() {
                             {run.dataset_name}
                           </span>
                         </SidebarMenuButton>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
+                        <NonModalDropdownMenu
+                          side="bottom"
+                          align="end"
+                          sideOffset={0}
+                          className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-full border-0"
+                          trigger={(triggerRef) => (
                             <button
+                              ref={triggerRef}
                               type="button"
                               onClick={(e) => e.stopPropagation()}
                               aria-label={t("shell.aria.runOptions")}
@@ -4213,29 +4213,23 @@ export function AppSidebar() {
                                 <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
                               </span>
                             </button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent
-                            side="bottom"
-                            align="end"
-                            sideOffset={0}
-                            className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-full border-0"
+                          )}
+                        >
+                          <DropdownMenuItem onSelect={() => openRenameRun(run)}>
+                            <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                            <span>{t("common.rename")}</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            variant="destructive"
+                            disabled={run.status === "running"}
+                            onSelect={() =>
+                              openDeleteDialog({ kind: "run", run })
+                            }
                           >
-                            <DropdownMenuItem onSelect={() => openRenameRun(run)}>
-                              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                              <span>{t("common.rename")}</span>
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              variant="destructive"
-                              disabled={run.status === "running"}
-                              onSelect={() =>
-                                openDeleteDialog({ kind: "run", run })
-                              }
-                            >
-                              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                              <span>{t("common.delete")}</span>
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                            <span>{t("common.delete")}</span>
+                          </DropdownMenuItem>
+                        </NonModalDropdownMenu>
                       </SidebarMenuItem>
                     );
                   })}
@@ -4250,11 +4244,11 @@ export function AppSidebar() {
       <SidebarFooter
         className={cn(
           "relative pb-[11px] group-data-[collapsible=icon]:px-0",
-          // Same box as the rows above.
-          rowPadding,
-          // pt-[3px] cancels the profile button's -3px margin, so the 8px
-          // above it is whatever sits over the footer edge (the fade plateau,
-          // or the list's pb-2 once the fade is hidden) and 8px sits below.
+          // The profile is outside the recent-chat scroller and keeps its full
+          // width when that scroller gains or loses a scrollbar.
+          unrailedRowPadding,
+          // pt-[3px] cancels the profile button's -3px margin, so the 8px above it is whatever sits over the
+          // footer edge (the fade plateau, or the list's pb-2 once the fade is hidden) and 8px sits below.
           showUpdateCard ? "pt-1" : "pt-[3px]",
         )}
       >
@@ -4265,9 +4259,8 @@ export function AppSidebar() {
         <div
           aria-hidden="true"
           className={cn(
-            // The scroll area hard-clips at the fade's bottom edge, so a plain
-            // ramp is still part-transparent there and slices the last row
-            // mid-glyph. from-[8px] holds it opaque just across the clip, and
+            // The scroll area hard-clips at the fade's bottom edge, so a plain ramp is still part-transparent
+            // there and slices the last row mid-glyph. from-[8px] holds it opaque just across the clip, and
             // matches the list's pb-2 so the gap is the same once it hides.
             "pointer-events-none absolute start-0 end-[var(--sidebar-rail,0px)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade with the update card so the list reads closer to
@@ -4315,8 +4308,7 @@ export function AppSidebar() {
                   aria-hidden="true"
                   className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
                 >
-                  <HugeiconsIcon
-                    icon={ArrowRight02Icon}
+                  <ArrowRightIcon
                     className="size-[17px]"
                     strokeWidth={1.75}
                   />
@@ -4337,9 +4329,14 @@ export function AppSidebar() {
             }}
           />
           <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+            <NonModalDropdownMenu
+              side="top"
+              align="center"
+              sideOffset={8}
+              className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-white/[0.05]"
+              trigger={(triggerRef) => (
                 <SidebarMenuButton
+                  ref={triggerRef}
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
                   className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] pl-2 pr-[45px] py-[3px] rounded-[14px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
@@ -4359,129 +4356,122 @@ export function AppSidebar() {
                     <span className="truncate text-ui-11p5 tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
                 </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side="top"
-                align="center"
-                sideOffset={8}
-                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-white/[0.05]"
-              >
-                <DropdownMenuGroup>
-                  <DropdownMenuItem
-                    onSelect={() => useSettingsDialogStore.getState().openDialog()}
-                  >
-                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.navigation.settings")}</span>
-                    {settingsShortcutLabel && (
-                      <DropdownMenuShortcut>
-                        {settingsShortcutLabel}
-                      </DropdownMenuShortcut>
-                    )}
-                  </DropdownMenuItem>
-                  {/* Optional items follow the order and visibility set in
-                      Appearance settings; Settings above and the block after
-                      the separator are pinned. */}
-                  {sidebarMenu.map((item) => {
-                    if (!item.visible) return null;
-                    if (item.id === "api") {
-                      return (
-                        <DropdownMenuItem
-                          key={item.id}
-                          onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
-                        >
-                          <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
-                          <span>{t("shell.navigation.api")}</span>
-                        </DropdownMenuItem>
-                      );
-                    }
-                    if (item.id === "darkMode") {
-                      return (
-                        <DropdownMenuItem
-                          key={item.id}
-                          ref={anchorRef as React.Ref<HTMLDivElement>}
-                          onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
-                        >
-                          {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
-                          <span>
-                            {isDark
-                              ? t("shell.navigation.lightMode")
-                              : t("shell.navigation.darkMode")}
-                          </span>
-                        </DropdownMenuItem>
-                      );
-                    }
-                    if (item.id === "guidedTour") {
-                      if (!getTourId(pathname)) return null;
-                      return (
-                        <DropdownMenuItem
-                          key={item.id}
-                          onSelect={() => {
-                            const tourId = getTourId(pathname);
-                            if (!tourId) return;
-                            window.dispatchEvent(
-                              new CustomEvent(TOUR_OPEN_EVENT, {
-                                detail: { id: tourId },
-                              }),
-                            );
-                          }}
-                        >
-                          <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
-                          <span>{t("shell.navigation.guidedTour")}</span>
-                        </DropdownMenuItem>
-                      );
-                    }
-                    // Remaining ids are settings tabs shown by their tab name.
-                    const settingsTabId = item.id;
-                    const tab = SETTINGS_TAB_MENU_ITEMS[settingsTabId];
+              )}
+            >
+              <DropdownMenuGroup>
+                <DropdownMenuItem
+                  onSelect={() => useSettingsDialogStore.getState().openDialog()}
+                >
+                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("shell.navigation.settings")}</span>
+                  {settingsShortcutLabel && (
+                    <DropdownMenuShortcut>
+                      {settingsShortcutLabel}
+                    </DropdownMenuShortcut>
+                  )}
+                </DropdownMenuItem>
+                {/* Optional items follow the order and visibility set in
+                    Appearance settings; Settings above and the block after
+                    the separator are pinned. */}
+                {sidebarMenu.map((item) => {
+                  if (!item.visible) return null;
+                  if (item.id === "api") {
                     return (
                       <DropdownMenuItem
                         key={item.id}
-                        onSelect={() => useSettingsDialogStore.getState().openDialog(settingsTabId)}
+                        onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
-                        <span>{t(tab.labelKey)}</span>
+                        <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
+                        <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );
-                  })}
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
+                  }
+                  if (item.id === "darkMode") {
+                    return (
+                      <DropdownMenuItem
+                        key={item.id}
+                        ref={anchorRef as React.Ref<HTMLDivElement>}
+                        onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
+                      >
+                        {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
+                        <span>
+                          {isDark
+                            ? t("shell.navigation.lightMode")
+                            : t("shell.navigation.darkMode")}
+                        </span>
+                      </DropdownMenuItem>
+                    );
+                  }
+                  if (item.id === "guidedTour") {
+                    if (!routeTourId || !tourAvailable) return null;
+                    return (
+                      <DropdownMenuItem
+                        key={item.id}
+                        onSelect={() => {
+                          window.dispatchEvent(
+                            new CustomEvent(TOUR_OPEN_EVENT, {
+                              detail: { id: routeTourId },
+                            }),
+                          );
+                        }}
+                      >
+                        <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
+                        <span>{t("shell.navigation.guidedTour")}</span>
+                      </DropdownMenuItem>
+                    );
+                  }
+                  // Remaining ids are settings tabs shown by their tab name.
+                  const settingsTabId = item.id;
+                  const tab = SETTINGS_TAB_MENU_ITEMS[settingsTabId];
+                  return (
+                    <DropdownMenuItem
+                      key={item.id}
+                      onSelect={() => useSettingsDialogStore.getState().openDialog(settingsTabId)}
+                    >
+                      <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
+                      <span>{t(tab.labelKey)}</span>
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
+              <DropdownMenuItem
+                onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+              >
+                <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
+                <span>{t("common.help")}</span>
+              </DropdownMenuItem>
+              {!isTauri && (
                 <DropdownMenuItem
-                  onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+                  onSelect={async () => {
+                    if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
+                    // Best-effort server revocation; ignore network errors so the local clear still runs.
+                    try {
+                      await logout();
+                    } catch {
+                      clearAuthTokens();
+                    }
+                    void navigate({ to: "/login" });
+                  }}
                 >
-                  <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t("common.help")}</span>
+                  <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("shell.navigation.logOut")}</span>
                 </DropdownMenuItem>
-                {!isTauri && (
-                  <DropdownMenuItem
-                    onSelect={async () => {
-                      // Best-effort server revocation; ignore network errors so the local clear still runs.
-                      try {
-                        await logout();
-                      } catch {
-                        clearAuthTokens();
-                      }
-                      void navigate({ to: "/login" });
-                    }}
-                  >
-                    <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.navigation.logOut")}</span>
-                  </DropdownMenuItem>
-                )}
-                {!isTauri && (
-                  <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
-                    <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("common.shutdown")}</span>
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+              )}
+              {!isTauri && (
+                <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
+                  <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("common.shutdown")}</span>
+                </DropdownMenuItem>
+              )}
+            </NonModalDropdownMenu>
             {/* settings cog; sibling of the trigger (buttons cannot nest),
                 overlaid on the row's right edge, opens settings directly */}
             <button
               type="button"
               aria-label={t("shell.navigation.settings")}
               onClick={() => useSettingsDialogStore.getState().openDialog()}
-              className="absolute right-2 top-1/2 flex size-[32px] -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+              className="absolute right-2 top-1/2 flex size-[32px] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
             >
               <HugeiconsIcon
                 icon={Settings02Icon}

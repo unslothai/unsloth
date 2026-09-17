@@ -9,7 +9,6 @@ import base64
 import hashlib
 import json
 import os
-import re
 import shutil
 import signal
 import socket
@@ -23,7 +22,11 @@ from pathlib import Path
 from typing import Any
 
 
-from appimage_test_support import assert_no_loader_errors
+from appimage_test_support import (
+    FIXTURE_BACKEND_VERSION,
+    assert_fixture_version_clears_floor,
+    assert_no_loader_errors,
+)
 
 
 REPO_ID = "unsloth/FLUX.2-klein-4B-GGUF"
@@ -93,12 +96,63 @@ def _wait_for(
     raise AssertionError(f"Timed out waiting for {description}; last result: {last!r}")
 
 
-def _minimum_backend_version() -> str:
-    source = (REPO_ROOT / "studio/src-tauri/src/preflight/version.rs").read_text(encoding = "utf-8")
-    match = re.search(r'MIN_DESKTOP_BACKEND_VERSION: &str = "([^"]+)"', source)
-    if not match:
-        raise RuntimeError("Could not read MIN_DESKTOP_BACKEND_VERSION")
-    return match.group(1)
+# The quant list is fetched once per expanded row, by an effect keyed on [repoId, localSource, refreshKey, hfToken].
+# Its .catch() calls setError and stops: there is no automatic retry, by design, and the row offers a Retry button
+# instead. So one transient transport blip at the moment the row expands leaves the row showing an error for the rest
+# of the run, and waiting longer cannot help -- nothing is still in flight. Observed as "Unsloth isn't running --
+# please relaunch it." rendered inside the FLUX.2-klein-4B row while /api/health kept answering for another 49 seconds,
+# on a job that fails on roughly three runs in four across unrelated branches.
+#
+# Clicking Retry is what a user does and what the row is built for. Bounded, and the listing error is reported if the
+# retries run out, so a backend that is genuinely unreachable still fails the run rather than looping.
+_VARIANT_RETRY_ATTEMPTS = 3
+_VARIANT_ERROR_TEXT = (
+    "const box=[...document.querySelectorAll('div')].find("
+    "(d)=>d.className.includes('text-destructive') && "
+    "[...d.querySelectorAll('button')].some((b)=>(b.innerText||'').trim()==='Retry'));"
+    "return box ? (box.innerText||'').trim() : '';"
+)
+_VARIANT_RETRY_CLICK = (
+    "const box=[...document.querySelectorAll('div')].find("
+    "(d)=>d.className.includes('text-destructive') && "
+    "[...d.querySelectorAll('button')].some((b)=>(b.innerText||'').trim()==='Retry'));"
+    "const b=box && [...box.querySelectorAll('button')].find("
+    "(e)=>(e.innerText||'').trim()==='Retry'); if(b)b.click(); return !!b;"
+)
+
+
+def _wait_for_quantization(
+    base: str,
+    session_id: str,
+    script: str,
+    description: str,
+    *,
+    timeout: float = 15,
+) -> Any:
+    """_wait_for, plus the row's own Retry button when the listing failed outright."""
+    last_error = ""
+    for attempt in range(1, _VARIANT_RETRY_ATTEMPTS + 1):
+        try:
+            return _wait_for(base, session_id, script, description, timeout = timeout)
+        except AssertionError:
+            error_text = _execute(base, session_id, _VARIANT_ERROR_TEXT) or ""
+            if not error_text:
+                raise  # No listing error on screen, so retrying would prove nothing.
+            last_error = error_text
+            print(
+                f"[appimage-e2e] quant listing failed (attempt {attempt}/"
+                f"{_VARIANT_RETRY_ATTEMPTS}): {error_text!r}",
+                flush = True,
+            )
+            if attempt == _VARIANT_RETRY_ATTEMPTS:
+                break
+            if not _execute(base, session_id, _VARIANT_RETRY_CLICK):
+                break  # The button went away; let the assertion below carry the text.
+            time.sleep(1.0)
+    raise AssertionError(
+        f"Timed out waiting for {description} after {_VARIANT_RETRY_ATTEMPTS} listing "
+        f"attempts. The row reported: {last_error!r}"
+    )
 
 
 def _write_backend_fixture(home: Path, request_log: Path) -> None:
@@ -155,15 +209,31 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(raw)))
                     self.send_header("Access-Control-Allow-Origin", "tauri://localhost")
-                    self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-HF-Token")
+                    self.send_header("Access-Control-Allow-Headers", self.allowed_headers())
                     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                     self.end_headers()
                     self.wfile.write(raw)
 
+                def allowed_headers(self):
+                    # Echo requested headers so this fixture follows frontend changes.
+                    asked = self.headers.get("Access-Control-Request-Headers")
+                    return asked or "Authorization, Content-Type, X-HF-Token"
+
                 def do_OPTIONS(self):
+                    # Recorded like GET and POST. A preflight the browser rejects means the
+                    # real request is never sent, so without this the request log shows
+                    # nothing and the failure looks like the frontend never tried.
+                    record("OPTIONS", urlparse(self.path).path)
                     self.send_response(204)
                     self.send_header("Access-Control-Allow-Origin", "tauri://localhost")
-                    self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-HF-Token")
+                    # Echo what was asked for. studio/backend/main.py runs CORSMiddleware
+                    # with allow_headers = ["*"], so a fixed list here is not the product's
+                    # behaviour but a second copy of it, and it drifted: #8879 began sending
+                    # two X-Unsloth timezone headers on every authFetch, this list still
+                    # named three headers, and every authed request in this test has failed
+                    # its preflight since. Echoing cannot drift again.
+                    requested = self.headers.get("Access-Control-Request-Headers")
+                    self.send_header("Access-Control-Allow-Headers", requested or "*")
                     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                     self.end_headers()
 
@@ -176,7 +246,7 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                         return self.send_json({{
                             "status": "alive",
                             "service": "Unsloth UI Backend",
-                            "version": {_minimum_backend_version()!r},
+                            "version": {FIXTURE_BACKEND_VERSION!r},
                             "desktop_protocol_version": 1,
                             "desktop_manageability_version": 2,
                             "supports_desktop_auth": True,
@@ -335,7 +405,7 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                   "supports_provision_desktop_auth": True,
                   "supports_desktop_backend_ownership": True,
                   "studio_install_ok": True,
-                  "version": _minimum_backend_version(),
+                  "version": FIXTURE_BACKEND_VERSION,
               }, separators = (",", ":"))}'
               exit 0
             fi
@@ -446,6 +516,7 @@ def _install_colrv1_probe_font(config_dir: Path, data_dir: Path) -> dict[str, st
 
 
 def main() -> None:
+    assert_fixture_version_clears_floor(REPO_ROOT)
     appimage_value = os.environ.get("APPIMAGE_PATH", "")
     if not appimage_value:
         raise SystemExit("APPIMAGE_PATH must name the AppImage under test")
@@ -642,7 +713,7 @@ def main() -> None:
             session_id,
             "const b=[...document.querySelectorAll('button')].find((e)=>(e.innerText||'').trim()==='GGUF'); if(b)b.click(); return !!b;",
         )
-        _wait_for(
+        _wait_for_quantization(
             base,
             session_id,
             "return [...document.querySelectorAll('button')].some((b)=>(b.innerText||'').includes('Q4_K_M'))",

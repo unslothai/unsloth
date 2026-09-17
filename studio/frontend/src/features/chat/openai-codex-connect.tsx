@@ -173,7 +173,7 @@ export function OpenAICodexConnect({
         <p className="text-sm font-medium">ChatGPT subscription</p>
         <p className="text-xs text-muted-foreground">
           {connected
-            ? "Connected securely on this Studio installation."
+            ? "Connected securely on this Unsloth installation."
             : authStatus === "reauthorization_required"
               ? "Your saved authorization is no longer valid. Reconnect to continue."
               : "Authorize in your system browser. Tokens never enter browser storage."}

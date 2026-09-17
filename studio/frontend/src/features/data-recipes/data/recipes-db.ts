@@ -2,12 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
+import { accountDatabaseName } from "@/lib/account-transition";
 import { normalizeNonEmptyName } from "@/utils";
 import Dexie, { type EntityTable, liveQuery } from "dexie";
 import { useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
 
-const db = new Dexie("unsloth-data-recipes") as Dexie & {
+const db = new Dexie(accountDatabaseName("unsloth-data-recipes")) as Dexie & {
   recipes: EntityTable<RecipeRecord, "id">;
 };
 

@@ -29,6 +29,14 @@ import pytest
 from core.inference import tools
 
 
+def _shared_setup_1():
+    text = "0123456789abcdef" * 2000
+    budget = tools._tool_result_char_budget()
+
+    first = tools._dense_char_limit(text, budget)
+    return budget, first, text
+
+
 @pytest.fixture(autouse = True)
 def _unknown_window(monkeypatch):
     """Default to "no model loaded" so each test states the window it means."""
@@ -710,10 +718,7 @@ class TestTheProbeIsNotPaidForTwice:
         """Retries, regenerations and a model that runs the same command again."""
         _window(monkeypatch, 5120)
         calls, _ = self._serving(monkeypatch, 5120)
-        text = "0123456789abcdef" * 2000
-        budget = tools._tool_result_char_budget()
-
-        first = tools._dense_char_limit(text, budget)
+        budget, first, text = _shared_setup_1()
         assert calls, "the first pass must actually measure"
         calls.clear()
         second = tools._dense_char_limit(text, budget)
@@ -747,10 +752,7 @@ class TestTheProbeIsNotPaidForTwice:
         does, so the safe answer is to keep paying. Every lightweight double lands here."""
         _window(monkeypatch, 5120)
         calls, _ = self._serving(monkeypatch, 5120, identified = False)
-        text = "0123456789abcdef" * 2000
-        budget = tools._tool_result_char_budget()
-
-        first = tools._dense_char_limit(text, budget)
+        budget, first, text = _shared_setup_1()
         spent = len(calls)
         calls.clear()
         second = tools._dense_char_limit(text, budget)
@@ -828,10 +830,7 @@ class TestTheProbeIsNotPaidForTwice:
         monkeypatch.setattr(tools, "_PROBE_COUNT_CACHE_CHARS", 5000)
         _window(monkeypatch, 5120)
         calls, _ = self._serving(monkeypatch, 5120)
-        text = "0123456789abcdef" * 2000
-        budget = tools._tool_result_char_budget()
-
-        first = tools._dense_char_limit(text, budget)
+        budget, first, text = _shared_setup_1()
         held = sum(len(key) for entry in tools._PROBE_COUNT_CACHE.values() for key in entry)
         calls.clear()
         second = tools._dense_char_limit(text, budget)
@@ -863,7 +862,7 @@ class TestTheProbeIsNotPaidForTwice:
     def test_a_pass_through_chat_template_is_not_answered_from_the_managed_one(self, monkeypatch):
         """The gap `_chat_template_override` cannot see.
 
-        User extra args are appended verbatim AFTER Studio's own flags and llama.cpp is
+        User extra args are appended verbatim AFTER Unsloth's own flags and llama.cpp is
         last-wins, so `--chat-template` / `--chat-template-file` in extra args changes what
         `/apply-template` renders while every managed field stays exactly as it was. Same
         GGUF, same window, same managed override: reuse the counts and a prefix gets a
@@ -929,10 +928,7 @@ class TestTheProbeIsNotPaidForTwice:
         _window(monkeypatch, 5120)
         calls, backend = self._serving(monkeypatch, 5120)
         backend._gguf_load_identity = {"not": "hashable"}
-        text = "0123456789abcdef" * 2000
-        budget = tools._tool_result_char_budget()
-
-        first = tools._dense_char_limit(text, budget)
+        budget, first, text = _shared_setup_1()
         spent = len(calls)
         calls.clear()
 

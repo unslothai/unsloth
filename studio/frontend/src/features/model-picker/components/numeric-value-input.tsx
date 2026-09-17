@@ -48,6 +48,7 @@ export const NumericValueInput = forwardRef<
     step: number;
     onChange: (v: number) => void;
     displayValue?: string;
+    derived?: boolean;
     className?: string;
     ariaLabel?: string;
     size?: number;
@@ -61,6 +62,7 @@ export const NumericValueInput = forwardRef<
     step,
     onChange,
     displayValue,
+    derived = false,
     className,
     ariaLabel,
     size: sizeAttr,
@@ -73,31 +75,40 @@ export const NumericValueInput = forwardRef<
   const cancelBlurCommitRef = useRef(false);
   const draftRef = useRef("");
   const dirtyRef = useRef(false);
-  // Same-click Load: blur commits via onChange and clears dirtyRef before the
-  // button onClick runs, while parent `value` is still stale. Keep the blur
-  // result for one imperative commit(); clear when `value` catches up or on
-  // focus / external edits (Reset, slider).
+  // Same-click Load: blur commits via onChange and clears dirtyRef before the button onClick runs,
+  // while parent `value` is still stale. Keep the blur result for one imperative commit(); clear
+  // when `value` catches up or on focus or an external edit.
   const lastBlurCommittedRef = useRef<number | null>(null);
 
-  // The blur bridge is only valid across the single synchronous gesture that set
-  // it: blur commits during a button's mousedown and that button's onClick
-  // consumes it via commit() before React re-renders. Any settled render means the
-  // gesture is over, so drop the cache on every commit. Keying this on [value]
-  // alone missed a Reset (or other external edit) that restores the shown value
-  // unchanged when the blur did dispatch onChange (final !== value): value nets
-  // back to its prior number, so the effect never re-ran, the stale pin survived,
-  // and the next Load/Save replayed the override Reset had removed.
+  // The blur bridge is only valid across the single synchronous gesture that set it: blur commits
+  // during a button's mousedown and that button's onClick consumes it before React re-renders. Any
+  // settled render means the gesture is over, so drop the cache on every commit. Keying on
+  // [value] alone missed a Reset that restores the shown value unchanged, so value netted back to
+  // its prior number, the effect never re-ran, and the next Load replayed the removed override.
   useEffect(() => {
     lastBlurCommittedRef.current = null;
   });
+
+  // The shown number is not always the user's -- a placeholder hides it, and a derived
+  // one stands in for a choice never made -- but typing it is still a choice.
+  const isEdit = (final: number) =>
+    final !== value || displayValue != null || derived;
 
   const commitDraft = (raw: string): number | null => {
     const parsed = Number.parseFloat(raw);
     if (!Number.isFinite(parsed)) {
       return null;
     }
-    const final = snapToStep(parsed, step, min, max);
-    if (final !== value) {
+    // Committing the number already shown means that number, not the nearest one on the
+    // control's grid: a derived value describes what a load resolves to and need not sit
+    // on the grid. Outside what the control accepts it cannot be asked for at all, so it
+    // reads as no commit rather than as a value the blur bridge would hold.
+    const shown = parsed === value;
+    if (shown && ((max != null && parsed > max) || (min != null && parsed < min))) {
+      return null;
+    }
+    const final = shown ? parsed : snapToStep(parsed, step, min, max);
+    if (isEdit(final)) {
       onChange(final);
     }
     return final;
@@ -134,7 +145,7 @@ export const NumericValueInput = forwardRef<
         return null;
       },
     }),
-    [draft, focused, max, min, onChange, step, value],
+    [derived, displayValue, draft, focused, max, min, onChange, step, value],
   );
 
   const displayed = focused ? draft : (displayValue ?? String(value));
@@ -160,7 +171,18 @@ export const NumericValueInput = forwardRef<
         setDraft(next);
         setFocused(true);
         const target = e.currentTarget;
-        requestAnimationFrame(() => target.select());
+        requestAnimationFrame(() => {
+          // Only while this input still holds focus. select() FOCUSES a blurred input in
+          // Chrome, and it takes focus off another element to do it, so an unconditional
+          // select a frame later steals focus back from wherever the user moved to. Two of
+          // these focused in the same task (tab, or a click straight from one field to the
+          // next) then steal from each other every frame forever: each steal fires focus on
+          // the other input, whose onFocus queues the next frame's steal. Measured on
+          // /images with Steps and Guidance: 7870 of 9081 animation frames in 76s scheduled
+          // from here, and every popover opened while it runs is dismissed immediately
+          // because focus keeps landing outside it.
+          if (document.activeElement === target) target.select();
+        });
       }}
       onBlur={() => {
         if (cancelBlurCommitRef.current) {
@@ -174,13 +196,13 @@ export const NumericValueInput = forwardRef<
             lastBlurCommittedRef.current = null;
           } else {
             draftRef.current = String(final);
-            // Only bridge the still-stale parent value when the blur actually
-            // dispatched onChange (final !== value). When final === value the
-            // parent is already current, so there is nothing to bridge; caching
-            // here would leave a stale pin that a later Reset or external edit
-            // (which doesn't change the displayed value) can never clear, so a
-            // following Load/Save would recreate the override Reset removed.
-            lastBlurCommittedRef.current = final !== value ? final : null;
+            // Only bridge the still-stale parent value when the blur actually dispatched onChange.
+            // Otherwise the parent is already current and there is nothing to bridge; caching here
+            // would leave a stale pin that a later Reset or external edit (which doesn't change the
+            // displayed value) can never clear, so a following Load/Save would recreate the
+            // override Reset removed. Same test as the dispatch, so a click in the same turn as the
+            // blur cannot see them disagree.
+            lastBlurCommittedRef.current = isEdit(final) ? final : null;
           }
         }
         setFocused(false);

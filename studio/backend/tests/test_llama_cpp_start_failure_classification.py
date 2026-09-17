@@ -37,6 +37,7 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+import time
 
 _classify = LlamaCppBackend._classify_llama_start_failure
 
@@ -132,6 +133,18 @@ class TestUnsupportedNonDiffusionArchitecture:
         assert "enough memory" not in msg.lower()
         assert "diffusion" not in msg.lower()
 
+    def test_an_unknown_llm_arch_points_at_the_build_not_at_the_file(self):
+        """The arch branches above name models llama-server will never run. This
+        one is everything else, and "cannot be run with llama-server" was wrong for
+        the case that actually reached users: a build older than the architecture.
+        Seen on qwen4exp, where the identical file loaded after a llama.cpp update
+        and ran for six days, and the user reinstalled four times in between."""
+        out = "error loading model: unknown model architecture: 'qwen4exp'"
+        msg = _classify(out, "/models/x.gguf", "local/x")
+        assert "qwen4exp" in msg
+        assert "updating llama.cpp" in msg.lower()
+        assert "cannot be run" not in msg.lower()
+
     # Exact match: a chat arch merely containing a diffusion token (wan,
     # sd1, flux, ...) must not be routed to the Images page.
     @pytest.mark.parametrize(
@@ -151,7 +164,7 @@ class TestUnsupportedNonDiffusionArchitecture:
         out = f"error loading model: unknown model architecture: '{arch}'"
         msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
         assert arch in msg
-        assert "does not support" in msg.lower()
+        assert "does not recognise" in msg.lower()
         assert "diffusion" not in msg.lower()
         assert "Images page" not in msg
 
@@ -171,7 +184,7 @@ class TestOllamaAndFallback:
         msg = _classify(out, self._OLLAMA_GGUF, "ollama/some-new")
         assert "Ollama" in msg
         assert "directly through Ollama" in msg
-        assert "does not support" not in msg.lower()
+        assert "does not recognise" not in msg.lower()
 
     def test_ollama_diffusion_arch_still_routes_to_images(self):
         # Diffusion routing wins over the Ollama hint.
@@ -193,7 +206,9 @@ class TestOllamaAndFallback:
         # A live server that never returns 200 on /health must name the probe and
         # proxy/context causes, not blame a bad GGUF (#5740).
         msg = _classify(
-            "llama-server health check timed out after 600.0s", "/models/x.gguf", "local/x"
+            "llama-server health check timed out: no startup progress for 600s",
+            "/models/x.gguf",
+            "local/x",
         )
         assert "/health" in msg
         assert "NO_PROXY" in msg
@@ -512,7 +527,7 @@ class TestMissingSharedLibrary:
 
 
 class TestBundledHipRocrMismatch:
-    """Studio prepends system ROCm, the prebuilt still binds its bundled HIP,
+    """Unsloth prepends system ROCm, the prebuilt still binds its bundled HIP,
     and glibc exits 127 on the symbol lookup (#8998). That used to read as a
     missing llama-server and get retried as a VRAM miss. Neither is true.
     """
@@ -944,12 +959,12 @@ class TestMacOSLoaderEdgeCases:
         assert len(msg) < 1000
 
     def test_the_health_timeout_marker_is_not_absorbed_into_a_dyld_reason(self):
-        # Studio appends its own marker to the captured output; it must not be
+        # Unsloth appends its own marker to the captured output; it must not be
         # quoted back to the user as part of dyld's diagnosis.
         out = (
             "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
             "  Reason: tried: '/x/libllama.dylib' (no such file)\n"
-            "llama-server health check timed out after 600.0s"
+            "llama-server health check timed out: no startup progress for 600s"
         )
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
         assert "health check timed out" not in msg
@@ -964,7 +979,7 @@ class TestMacOSLoaderEdgeCases:
 
 class TestDiagnosticsDoNotLeak:
     """The output tail is llama-server's own stdout, and llama-server inherits
-    nearly all of Studio's environment."""
+    nearly all of Unsloth's environment."""
 
     _OUT = "build: 9415\nenv dump: OPENAI_API_KEY=sk-owner-secret-1234567890\nabort"
 
@@ -1008,7 +1023,6 @@ class TestDiagnosticsDoNotLeak:
         # measures the runner instead, which is why this exact assertion goes red on
         # the Windows runner for main as well as for a branch. The stopwatch stays
         # only as a catastrophic guard, loose enough that no runner can trip it.
-        import time
 
         buried = "error: invalid argument: --nope\n" + "x" * 10_000_000 + "\nggml_metal_init: error"
         start = time.perf_counter()
@@ -1199,13 +1213,24 @@ class TestTheDyldReasonIsBounded:
     def test_a_pathological_reason_does_not_stall_the_classifier(self):
         # 100KB of "'a' (" drove the candidate scan quadratic: 6.3s measured
         # before the cap, against 0.0s on main, on the thread serving the load.
-        import time
 
         out = (
             "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
             "  Reason: tried: " + "'a' (" * 20000
         )
-        start = time.perf_counter()
+        # CPU time, not wall clock. What the caps buy is that the candidate scan
+        # stops being quadratic, and that is a cost in cycles: a runner that
+        # descheduls this thread inflates the wall reading without a single extra
+        # cycle being spent. Measured here pinned to one core, the classifier holds
+        # ~0.0097s of CPU whether it runs alone or against four spinners, while the
+        # wall reading goes to 0.0516s, 5.3x, on identical work. CI hit that at
+        # 1.006s against this 1.0s budget and failed by six milliseconds, on a
+        # classifier costing ten.
+        #
+        # The budget stays 1.0s because it is still the right number: healthy is
+        # ~0.01s and the regression it guards is 6.3s, so there are two orders of
+        # magnitude of room on either side. It is only the clock that was wrong.
+        start = time.process_time()
         msg = _classify(
             out,
             "/models/x.gguf",
@@ -1213,7 +1238,7 @@ class TestTheDyldReasonIsBounded:
             1,
             "/Users/me/.unsloth/llama.cpp/build/bin/llama-server",
         )
-        assert time.perf_counter() - start < 1.0
+        assert time.process_time() - start < 1.0
         assert "libllama.dylib" in msg
 
     def test_a_real_reason_is_not_truncated(self):
@@ -1342,7 +1367,7 @@ class TestOutputIsNeverTrustedForBeingOurOwnFraming:
     message: printing "llama-server output:" as its first line returned its
     stdout verbatim, past the redaction and past the 2000-character cap. The
     fixed point was for a caller that does not exist; the bypass was reachable
-    by anything Studio launches.
+    by anything Unsloth launches.
     """
 
     _LOG = "/Users/me/.unsloth/studio/logs/llama-server/llama-1-port-8080.log"
@@ -1463,8 +1488,6 @@ class TestAnEncodedSecretIsStillRedacted:
     )
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
-        import time
-
         start = time.monotonic()
         _classify(blob, "/m.gguf", "u/x", 1)
         assert time.monotonic() - start < 2.0
@@ -1687,8 +1710,6 @@ class TestTheRedactionHolesCodexFound:
         ids = ["unterminated-quote", "dotted-names", "many-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
-        import time
-
         start = time.monotonic()
         LlamaCppBackend._scrub_secret_values(blob, ())
         assert time.monotonic() - start < 2.0
@@ -1747,7 +1768,7 @@ class TestRejectedArguments:
         assert "stoi" not in msg
 
     def test_a_value_error_on_a_flag_the_user_did_not_set_stays_neutral(self):
-        # Studio emits its own options conditionally on the capability probe, so a
+        # Unsloth emits its own options conditionally on the capability probe, so a
         # build that reads "--flash-attn on" differently rejects a value the box
         # never held. Sending that reader to edit their extra arguments points them
         # at a setting they cannot use to fix it.
@@ -1856,7 +1877,7 @@ class TestArgumentErrorsAreQuotedShort:
 
 class TestTensorSplitQuantizedKvUnsupported:
     """llama.cpp before ggml-org/llama.cpp#23792 (b9455) refused a quantized KV
-    cache under --split-mode tensor. Studio no longer pre-empts that refusal, so
+    cache under --split-mode tensor. Unsloth no longer pre-empts that refusal, so
     the message has to name the remedy: the generic invalid-GGUF/OOM fallback sends
     the user to check their file or buy VRAM, neither of which is the problem."""
 

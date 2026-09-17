@@ -10,6 +10,7 @@ import type { SettingsTab } from "./stores/settings-dialog-store";
  * (profile, connections) are still reachable from search.
  */
 export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
+  accounts: ["settings.accounts.title", "settings.accounts.create"],
   general: [
     "settings.general.account",
     "settings.general.password",
@@ -40,9 +41,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.description",
     "settings.profile.displayName",
     "settings.profile.nickname",
-    // avatarShape lives inside the avatar edit popover, so it has no
-    // always-rendered label for search to scroll to.
-    // The stats heading and highlight tiles render for every profile; the
+    // avatarShape lives inside the avatar edit popover, so it has no always-rendered label for
+    // search to scroll to. The stats heading and highlight tiles render for every profile; the
     // insight and training cards are conditional, so they stay out.
     "settings.profile.stats.title",
     "settings.profile.stats.lifetimeTokens",
@@ -60,6 +60,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.uiFont.label",
     "settings.appearance.custom.headingFont.label",
     "settings.appearance.custom.chatFont.label",
+    "settings.appearance.custom.chatWidth.label",
     "settings.appearance.custom.codeFont.label",
     "settings.appearance.custom.contrast.label",
     "settings.appearance.custom.pointerCursors.label",
@@ -95,18 +96,30 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   chat: [
     "settings.general.chatDefaults",
+    "composerSettings.sendShortcut",
+    "composerSettings.followUp",
+    "composerSettings.plainText",
+    "composerSettings.showContext",
+    "settings.chat.pastedTextThreshold",
+    "settings.chat.groups.conversations.title",
+    "settings.chat.groups.display.title",
+    "settings.chat.modelSelection.title",
+    "settings.chat.currentDate.label",
     "settings.general.autoTitleNewChats",
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
+    "settings.chat.autoCompact",
+    "settings.chat.compactionStyle",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.collapseByDefault",
+    "settings.chat.tools.collapseByDefault",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
-    "settings.chat.webSearch.title",
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
     "settings.chat.projectsSection",
+    "settings.chat.groups.menu.title",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
@@ -114,7 +127,12 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedChats",
     "settings.data.archiveAllChats",
     "settings.data.confirmBeforeDeleting",
-    "settings.data.alwaysDeleteFiles",
+    "settings.data.sandboxFiles",
+    "settings.data.deletionSection",
+    "settings.data.archives",
+    "settings.data.archivedImages",
+    "settings.data.archivedVideos",
+    "settings.data.archivedAudio",
     "settings.data.uploadedFiles",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
@@ -193,6 +211,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.switchToVideo.label",
     "settings.keyboardShortcuts.actions.switchToAudio.label",
     "settings.keyboardShortcuts.actions.switchToExport.label",
+    "settings.keyboardShortcuts.actions.findInPage.label",
     "settings.keyboardShortcuts.actions.toggleApiMonitor.label",
     "settings.keyboardShortcuts.actions.toggleSidebar.label",
     "settings.keyboardShortcuts.actions.openMcpServers.label",
@@ -256,6 +275,16 @@ export function createSettingsSearchIndex({
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
       ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
+      // Desktop only, like the row itself: DesktopRepairControl renders nothing without a
+      // Tauri repair controller, so indexing it on the web build would scroll to a row
+      // that is not there. Worth indexing at all because the capability message for a host
+      // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
+      // and searching Settings for "repair" answered "No settings found."
+      "settings.general.repairInstall.label",
+    ],
+    appearance: [
+      ...SETTINGS_SEARCH_INDEX.appearance,
+      "settings.appearance.custom.interfaceScale.label",
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
@@ -281,4 +310,6 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
+  "settings.chat.compactionStyle": "settings.chat.autoCompactKeywords",
 };

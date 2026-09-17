@@ -44,8 +44,8 @@ def _size(sibling) -> int:
 
 
 def repo_ships_transformers_weights(filenames: Iterable[str]) -> bool:
-    # A "._consolidated.safetensors" does not start with "consolidated", so it would answer yes
-    # here and then have every consolidated* file stripped from the download.
+    # A "._consolidated.safetensors" does not start with "consolidated", so it would answer yes here and
+    # then have every consolidated* file stripped from the download.
     for name in drop_shadowed_appledouble_names(list(filenames)):
         base = name.rsplit("/", 1)[-1].lower()
         if base.startswith("consolidated"):
@@ -94,9 +94,8 @@ def total_size_for_siblings(siblings: Iterable) -> int:
 
 
 def blob_hashes_for_siblings(siblings: Iterable) -> frozenset[str]:
-    # Blob filename == file etag (LFS sha256, else git blob id). Collecting both
-    # lets progress count exactly this revision's files without summing stale
-    # blobs from other revisions.
+    # Blob filename == file etag (LFS sha256, else git blob id), so collecting both lets progress count
+    # exactly this revision's files without summing stale blobs from other revisions.
     hashes: set[str] = set()
     for sibling in siblings:
         sha = getattr(getattr(sibling, "lfs", None), "sha256", None)

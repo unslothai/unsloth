@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { authFetch, getAuthToken } from "@/features/auth";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
+import { cn } from "@/lib/utils";
 
 import { sandboxFilePath, type SandboxFile } from "./sandbox-files";
 import { revealSandbox } from "./sandbox-reveal";
@@ -128,13 +129,15 @@ function SandboxFolderLabel({
 export function SandboxFiles({
   sessionId,
   files,
+  className,
 }: {
   sessionId: string;
   files: SandboxFile[];
+  className?: string;
 }) {
   if (!sessionId || files.length === 0) return null;
   return (
-    <div className="mt-2 border-t border-dashed pt-2">
+    <div className={cn("mt-2 border-t border-dashed pt-2", className)}>
       <SandboxFolderLabel
         sessionId={sessionId}
         label={files.length === 1 ? "file created" : "files created"}

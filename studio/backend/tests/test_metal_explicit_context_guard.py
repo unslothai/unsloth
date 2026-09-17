@@ -8,7 +8,7 @@ Auto was moved to it: an explicit request was passed through verbatim, on the th
 "--fit on" is a backstop. It is one, but not a trustworthy one here. llama.cpp will reduce
 an explicit context (fit_params_min_ctx defaults to 4096; only "-c 0" disables it), but it
 decides from ggml-metal's free-memory report, off the device's recommendedMaxWorkingSetSize,
-which knows nothing of Studio's own resident gigabyte or two, other running apps, or the
+which knows nothing of Unsloth's own resident gigabyte or two, other running apps, or the
 iogpu wired limit actually being blown. When that estimate is optimistic the request stands
 and the launch over-commits wired memory, which Jetsam cannot reclaim, so the machine
 panics instead of the load failing. An M1 Max 32 GB hit exactly that on
@@ -55,7 +55,11 @@ if "jwt" not in sys.modules:
         _jwt_stub.InvalidTokenError = type("InvalidTokenError", (Exception,), {})
         sys.modules["jwt"] = _jwt_stub
 
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import (  # noqa: E402
+    _FIT_MIN_CTX,
+    GgufLoadIntent,
+    LlamaCppBackend,
+)
 
 _message = LlamaCppBackend._metal_context_overcommit_message
 _ENV = LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV
@@ -169,7 +173,7 @@ def _launch(
     backend._amd_apu_wants_unified_memory = lambda *a, **k: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: False
-    backend._wait_for_health = lambda timeout: True
+    backend._wait_for_health = lambda timeout, **_kw: True
     backend._detect_audio_type_strict = lambda: None
     backend._apply_detected_audio = lambda _detected: True
     backend._context_length = native
@@ -772,10 +776,17 @@ class TestWhenNothingFitsAtAll:
         assert _ctx_values(cmd)[-1] == "8192"
 
     def test_auto_is_untouched(self, tmp_path, monkeypatch):
-        """Auto has always launched at the 4096 floor on this host. Changing that is a
-        larger claim than this guard makes, and it is not what was reported."""
+        """Auto launches at this arm's floor on this host, and the guard still does not
+        move it.
+
+        That floor was a hardcoded 4096 and is now _FIT_MIN_CTX, which is the larger
+        claim this docstring used to decline to make -- made deliberately elsewhere, so
+        that Metal stops publishing half the context a discrete GPU does for the same
+        model. What this test owns is unchanged: the explicit-context guard leaves Auto
+        alone. Spelled against the constant so the next floor move does not land here.
+        """
         cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, **self.NOTHING_FITS)["cmd"]
-        assert _ctx_values(cmd)[-1] == "4096"
+        assert _ctx_values(cmd)[-1] == str(_FIT_MIN_CTX)
 
     def test_a_fixed_manual_layer_count_is_still_exempt(self, tmp_path, monkeypatch):
         cmd = _launch(
@@ -940,3 +951,607 @@ class TestACpuPinnedProjectorOnUnifiedMemory:
             **self._COMMON,
         )
         assert _ctx_values(captured["cmd"])[-1] == "40960"
+
+
+_GIB = 1024**3
+_MIB = 1024**2
+
+
+def _backend_with_embeddings(
+    monkeypatch,
+    *,
+    embd,
+    tensors = 12 * _GIB,
+    measured = "mapped as designed",
+    settings = (False, False),
+    layout = None,
+):
+    """Build a backend with controlled tensor layout and probe results.
+
+    The default result maps everything loadable except the input embeddings into Metal.
+    """
+    from core.inference.llama_server_args import MEMORY_ENV_VARS
+    from core.inference.offload_layout import ModelLayout
+    import utils.model_memory_settings as _mem_settings
+
+    monkeypatch.setattr(_mem_settings, "get_model_memory_settings", lambda: settings)
+    placement_vars = (
+        "LLAMA_ARG_OVERRIDE_TENSOR",
+        "LLAMA_ARG_CPU_MOE",
+        "LLAMA_ARG_N_CPU_MOE",
+        "LLAMA_ARG_N_CPU_FFN",
+        "LLAMA_ARG_N_GPU_LAYERS",
+        "LLAMA_ARG_DEVICE",
+    )
+    for name in (*MEMORY_ENV_VARS, *placement_vars):
+        monkeypatch.delenv(name, raising = False)
+    if layout is None:
+        layout = ModelLayout(complete = True, token_embd_bytes = embd, tensor_bytes = tensors)
+    if measured == "mapped as designed":
+        # Blocks the loader skips are in no buffer, so they are in no row of the table either.
+        metal = layout.tensor_bytes - embd - layout.excluded_block_bytes
+        measured = (metal // _MIB, embd // _MIB, 2)
+    backend = LlamaCppBackend()
+    backend._tensor_spill_layout = lambda _path, **_kw: layout
+    backend._metal_measured_model_mib = lambda _binary, _path: measured
+    return backend
+
+
+class TestInputEmbeddingsLeftInTheFileMapping:
+    """Exercise Metal fitting when input embeddings remain pageable on the CPU."""
+
+    _COMMON = dict(real_fit = True, budget_bytes = 16 * 1024**3, weights_bytes = 12 * 1024**3)
+
+    def _published(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        n_ctx,
+        kv_per_token = 32 * 1024,
+        extra_args = None,
+        gpu_memory_mode = "auto",
+        gpu_layers = -1,
+        **kw,
+    ):
+        return self._launched(
+            tmp_path,
+            monkeypatch,
+            n_ctx = n_ctx,
+            kv_per_token = kv_per_token,
+            extra_args = extra_args,
+            gpu_memory_mode = gpu_memory_mode,
+            gpu_layers = gpu_layers,
+            **kw,
+        )[:2]
+
+    def _launched(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        n_ctx,
+        kv_per_token = 32 * 1024,
+        extra_args = None,
+        gpu_memory_mode = "auto",
+        gpu_layers = -1,
+        budget_bytes = 16 * _GIB,
+        **kw,
+    ):
+        """``(published ceiling, launched context, argv)``."""
+        kw.setdefault("embd", 6 * 1024**3)
+        captured = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = n_ctx,
+            kv_per_token = kv_per_token,
+            extra_args = extra_args,
+            gpu_memory_mode = gpu_memory_mode,
+            gpu_layers = gpu_layers,
+            backend = _backend_with_embeddings(monkeypatch, **kw),
+            **{**self._COMMON, "budget_bytes": budget_bytes},
+        )
+        cmd = captured["cmd"]
+        return captured["backend"]._max_context_length, _ctx_values(cmd)[-1], cmd
+
+    @staticmethod
+    def _fit_tokens(cmd):
+        """The placement tokens this launch emitted, in order."""
+        out = []
+        for i, token in enumerate(cmd):
+            if token in ("-ngl", "--fit") and i + 1 < len(cmd):
+                out.extend([token, cmd[i + 1]])
+        return out
+
+    @pytest.mark.parametrize("n_ctx", [0, 32768])
+    def test_a_discounted_ceiling_launches_pinned_to_the_measured_placement(
+        self, tmp_path, monkeypatch, n_ctx
+    ):
+        """A discounted launch must preserve the probe's full-offload placement."""
+        from core.inference.llama_server_args import fit_is_effectively_on
+
+        published, _, cmd = self._launched(tmp_path, monkeypatch, n_ctx = n_ctx)
+        assert published > _FIT_MIN_CTX
+        assert self._fit_tokens(cmd) == ["-ngl", "-1", "--fit", "off"]
+        assert not fit_is_effectively_on(cmd, {})
+
+    def test_a_load_with_nothing_taken_out_keeps_the_fitter(self, tmp_path, monkeypatch):
+        _, _, cmd = self._launched(tmp_path, monkeypatch, n_ctx = 32768, embd = 0)
+        assert self._fit_tokens(cmd) == ["--fit", "on"]
+
+    def test_a_floor_the_discount_did_not_lift_keeps_the_fitter(self, tmp_path, monkeypatch):
+        published, _, cmd = self._launched(tmp_path, monkeypatch, n_ctx = 0, embd = _GIB)
+        assert published == _FIT_MIN_CTX
+        assert self._fit_tokens(cmd) == ["--fit", "on"]
+
+    @pytest.mark.parametrize("extra_args", [["--fit", "on"], ["--fit=on"], ["-fit", "1"]])
+    def test_an_extra_that_turns_the_fitter_back_on_keeps_the_charge(
+        self, tmp_path, monkeypatch, extra_args
+    ):
+        """A later pass-through flag can override Unsloth's placement pin."""
+        from core.inference.llama_server_args import fit_is_effectively_on
+
+        published, _, cmd = self._launched(
+            tmp_path, monkeypatch, n_ctx = 32768, extra_args = extra_args
+        )
+        assert published == _FIT_MIN_CTX
+        assert fit_is_effectively_on(cmd, {})
+        assert "-ngl" not in cmd
+
+    def test_a_pass_through_fit_off_still_matches_the_pin(self, tmp_path, monkeypatch):
+        from core.inference.llama_server_args import fit_is_effectively_on
+
+        published, _, cmd = self._launched(
+            tmp_path, monkeypatch, n_ctx = 32768, extra_args = ["--fit", "off"]
+        )
+        assert published > 32768
+        assert self._fit_tokens(cmd)[:4] == ["-ngl", "-1", "--fit", "off"]
+        assert not fit_is_effectively_on(cmd, {})
+
+    def test_a_placement_it_did_not_measure_keeps_the_fitter(self, tmp_path, monkeypatch):
+        _, _, cmd = self._launched(
+            tmp_path, monkeypatch, n_ctx = 32768, extra_args = ["--load-mode", "none"]
+        )
+        assert self._fit_tokens(cmd) == ["--fit", "on"]
+
+    def test_charged_whole_the_same_load_publishes_the_floor(self, tmp_path, monkeypatch):
+        published, _ = self._published(tmp_path, monkeypatch, n_ctx = 32768, embd = 0)
+        assert published == _FIT_MIN_CTX
+
+    def test_an_explicit_context_publishes_a_measured_ceiling(self, tmp_path, monkeypatch):
+        published, launched = self._published(tmp_path, monkeypatch, n_ctx = 32768)
+        assert launched == "32768"
+        assert published > 32768
+
+    def test_the_ceiling_follows_the_kv_cache_size(self, tmp_path, monkeypatch):
+        wide, _ = self._published(tmp_path, monkeypatch, n_ctx = 0, kv_per_token = 32 * 1024)
+        narrow, _ = self._published(tmp_path, monkeypatch, n_ctx = 0, kv_per_token = 64 * 1024)
+        assert _FIT_MIN_CTX < narrow < wide
+
+    def test_a_short_measured_ceiling_is_refused_past_rather_than_floored(
+        self, tmp_path, monkeypatch
+    ):
+        """A measured ceiling below the usual floor still refuses larger contexts."""
+        with pytest.raises(RuntimeError, match = "unified") as refused:
+            self._published(tmp_path, monkeypatch, n_ctx = 32768, kv_per_token = _FAT_KV)
+        assert 0 < _named_ceiling(str(refused.value)) < _FIT_MIN_CTX
+
+    def test_a_build_that_maps_the_embeddings_keeps_the_charge(self, tmp_path, monkeypatch):
+        published, _ = self._published(
+            tmp_path, monkeypatch, n_ctx = 32768, measured = (12 * 1024, 6 * 1024, 2)
+        )
+        assert published == _FIT_MIN_CTX
+
+    def test_a_draft_that_loads_the_targets_own_mtp_blocks_keeps_the_charge(
+        self, tmp_path, monkeypatch
+    ):
+        from core.inference.offload_layout import ModelLayout
+
+        layout = ModelLayout(
+            complete = True,
+            token_embd_bytes = 6 * _GIB,
+            tensor_bytes = 12 * _GIB,
+            has_excluded_blocks = True,
+            excluded_block_bytes = _GIB,
+        )
+        published, _ = self._published(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 32768,
+            extra_args = ["--spec-type", "draft-mtp"],
+            layout = layout,
+            measured = (6 * 1024, 6 * 1024, 2),
+        )
+        assert published == _FIT_MIN_CTX
+
+    def test_no_measurement_keeps_the_charge(self, tmp_path, monkeypatch):
+        published, _ = self._published(tmp_path, monkeypatch, n_ctx = 32768, measured = None)
+        assert published == _FIT_MIN_CTX
+
+    def test_a_fixed_manual_layer_count_keeps_the_charge(self, tmp_path, monkeypatch):
+        published, _ = self._published(
+            tmp_path, monkeypatch, n_ctx = 32768, gpu_memory_mode = "manual", gpu_layers = 20
+        )
+        assert published == _FIT_MIN_CTX
+
+    def test_the_fit_and_the_launch_price_the_same_settings_read(self, tmp_path, monkeypatch):
+        """A settings change during loading must not split fit and launch decisions."""
+        import utils.model_memory_settings as _mem_settings
+
+        backend = _backend_with_embeddings(monkeypatch, embd = 6 * 1024**3)
+        reads = []
+
+        def settings():
+            reads.append(None)
+            return (False, False) if len(reads) == 1 else (True, False)
+
+        monkeypatch.setattr(_mem_settings, "get_model_memory_settings", settings)
+        captured = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 32768,
+            kv_per_token = 32 * 1024,
+            backend = backend,
+            **self._COMMON,
+        )
+        locked = any("mlock" in str(token) for token in captured["cmd"])
+        discounted = captured["backend"]._max_context_length > _FIT_MIN_CTX
+        assert locked != discounted
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [
+            ["--no-mmap"],
+            ["--mlock"],
+            ["--load-mode", "none"],
+            ["--load-mode", "dio"],
+            ["--override-tensor", "per_layer_token_embd=CPU"],
+            ["--cpu-moe"],
+            ["-ncffn", "4"],
+            ["--fit-target", "2048"],
+        ],
+    )
+    def test_a_loader_or_placement_it_did_not_measure_keeps_the_charge(
+        self, tmp_path, monkeypatch, extra_args
+    ):
+        published, _ = self._published(tmp_path, monkeypatch, n_ctx = 32768, extra_args = extra_args)
+        assert published == _FIT_MIN_CTX
+
+
+class TestWhichLoadsLeaveTheEmbeddingsInTheMapping:
+    """Cover loader and placement inputs that control the discount."""
+
+    BYTES = 3 * _GIB
+    # The embeddings, less a MiB per measured table row for rounding.
+    DISCOUNT = BYTES - 2 * _MIB
+
+    def _bytes(
+        self,
+        monkeypatch,
+        *,
+        extra_args = None,
+        env = None,
+        load_mode = None,
+        layers_fixed = False,
+        mtp_may_engage = False,
+        **kw,
+    ):
+        kw.setdefault("embd", self.BYTES)
+        backend = _backend_with_embeddings(monkeypatch, **kw)
+        return backend._metal_demand_paged_embedding_bytes(
+            "/models/model.gguf",
+            extra_args,
+            binary = "/fake/llama-server",
+            requested_load_mode = load_mode,
+            supports_load_mode = True,
+            settings = kw.get("settings", (False, False)),
+            layers_fixed = layers_fixed,
+            mtp_may_engage = mtp_may_engage,
+            env = env or {},
+        )
+
+    @pytest.mark.parametrize("load_mode", [None, "auto", "mmap"])
+    def test_a_mapped_load_discounts_the_unmapped_embeddings(self, monkeypatch, load_mode):
+        assert self._bytes(monkeypatch, load_mode = load_mode) == self.DISCOUNT
+
+    def test_weights_llama_cpp_moved_to_the_cpu_stay_charged(self, monkeypatch):
+        """CPU fallback weights remain charged."""
+        tensors = 12 * _GIB
+        # 7 GiB Metal, 3 GiB embeddings, and 2 GiB CPU fallback.
+        measured = (7 * 1024, 5 * 1024, 3)
+        unmapped = self._bytes(monkeypatch, tensors = tensors, measured = measured)
+        charged = tensors - unmapped
+        assert charged >= 9 * _GIB
+        assert unmapped == 3 * _GIB - 3 * _MIB
+
+    def test_embeddings_mapped_into_metal_are_not_taken_out(self, monkeypatch):
+        """A collapsed Metal span can include the embeddings."""
+        tensors = 12 * _GIB
+        measured = (10 * 1024, 5 * 1024, 3)  # the span covers embeddings, fallback is on the host
+        assert self._bytes(monkeypatch, tensors = tensors, measured = measured) == 0
+
+    def test_never_more_than_the_embeddings_comes_out(self, monkeypatch):
+        """Unaccounted bytes cannot increase the discount past the embeddings."""
+        measured = (4 * 1024, 3 * 1024, 2)  # 7 GiB reported of a 12 GiB file
+        assert self._bytes(monkeypatch, tensors = 12 * _GIB, measured = measured) == self.BYTES
+
+    @staticmethod
+    def _layout_with_nextn(has_nextn):
+        from core.inference.offload_layout import ModelLayout
+        return ModelLayout(
+            complete = True,
+            token_embd_bytes = 3 * _GIB,
+            tensor_bytes = 12 * _GIB,
+            has_excluded_blocks = has_nextn,
+            excluded_block_bytes = 2 * _GIB if has_nextn else 0,
+        )
+
+    def test_its_own_mtp_blocks_loading_drops_it(self, monkeypatch):
+        """The probe cannot model target-embedded MTP blocks."""
+        layout = self._layout_with_nextn(True)
+        assert self._bytes(monkeypatch, layout = layout, mtp_may_engage = True) == 0
+
+    @pytest.mark.parametrize(("has_nextn", "mtp_may_engage"), [(True, False), (False, True)])
+    def test_mtp_blocks_that_stay_skipped_keep_it(self, monkeypatch, has_nextn, mtp_may_engage):
+        layout = self._layout_with_nextn(has_nextn)
+        unmapped = self._bytes(monkeypatch, layout = layout, mtp_may_engage = mtp_may_engage)
+        assert unmapped == self.DISCOUNT
+
+    def test_skipped_mtp_bytes_are_not_read_as_unmapped_embeddings(self, monkeypatch):
+        """TENSOR_SKIP keeps the trailing blocks out of every buffer AND every table row."""
+        layout = self._layout_with_nextn(True)
+        # 12 GiB file = 7 GiB trunk + 3 GiB embeddings + 2 GiB skipped MTP. The Metal span
+        # collapses over the embeddings, so nothing is demand-paged: 10 GiB Metal, the
+        # embeddings again in the host row, and no sign of the 2 GiB llama.cpp never created.
+        measured = (10 * 1024, 3 * 1024, 2)
+        assert self._bytes(monkeypatch, layout = layout, measured = measured) == 0
+
+    @pytest.mark.parametrize("load_mode", ["none", "mlock", "mmap+mlock", "dio"])
+    def test_a_holding_per_model_mode_drops_it(self, monkeypatch, load_mode):
+        assert self._bytes(monkeypatch, load_mode = load_mode) == 0
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [
+            ["--lora", "/a.gguf"],
+            ["--lora-scaled", "/a.gguf:0.5"],
+            ["--control-vector", "/v.gguf"],
+            ["--control-vector-scaled", "/v.gguf:0.5"],
+            ["--lora=/a.gguf"],
+        ],
+    )
+    def test_a_pass_through_adapter_drops_it(self, monkeypatch, extra_args):
+        """The probe loads the base GGUF alone, and no Apple term charges the adapter."""
+        assert self._bytes(monkeypatch, extra_args = extra_args) == 0
+
+    def test_the_adapter_gate_is_the_flag_set_the_other_consumers_price(self, monkeypatch):
+        from core.inference.llama_cpp import _SIDECAR_ADAPTER_FLAGS
+        for flag in _SIDECAR_ADAPTER_FLAGS:
+            assert self._bytes(monkeypatch, extra_args = [flag, "/a.gguf:0.5"]) == 0
+
+    def test_keep_model_in_gpu_memory_drops_it(self, monkeypatch):
+        assert self._bytes(monkeypatch, settings = (True, False)) == 0
+
+    def test_no_ram_reserve_vetoes_a_holding_mode_back_to_the_mapping(self, monkeypatch):
+        assert self._bytes(monkeypatch, load_mode = "none", settings = (False, True)) == self.DISCOUNT
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [["--no-mmap"], ["--mlock"], ["--load-mode=none"], ["-lm", "mmap+mlock"], ["--direct-io"]],
+    )
+    def test_a_holding_pass_through_flag_drops_it(self, monkeypatch, extra_args):
+        assert self._bytes(monkeypatch, extra_args = extra_args) == 0
+
+    def test_a_pass_through_mmap_keeps_it(self, monkeypatch):
+        assert self._bytes(monkeypatch, extra_args = ["--load-mode", "mmap"]) == self.DISCOUNT
+
+    @pytest.mark.parametrize("extra_args", [["--fit", "on"], ["--fit=on"], ["-fit", "true"]])
+    def test_a_pass_through_fit_on_drops_it(self, monkeypatch, extra_args):
+        assert self._bytes(monkeypatch, extra_args = extra_args) == 0
+
+    @pytest.mark.parametrize("extra_args", [["--fit", "off"], ["--fit=off"]])
+    def test_a_pass_through_fit_off_keeps_it(self, monkeypatch, extra_args):
+        assert self._bytes(monkeypatch, extra_args = extra_args) == self.DISCOUNT
+
+    def test_an_inherited_fit_on_keeps_it(self, monkeypatch):
+        assert self._bytes(monkeypatch, env = {"LLAMA_ARG_FIT": "on"}) == self.DISCOUNT
+
+    @pytest.mark.parametrize(
+        "env",
+        [{"LLAMA_ARG_MLOCK": "1"}, {"LLAMA_ARG_NO_MMAP": "0"}, {"LLAMA_ARG_LOAD_MODE": "none"}],
+    )
+    def test_a_holding_inherited_variable_drops_it(self, monkeypatch, env):
+        assert self._bytes(monkeypatch, env = env) == 0
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [
+            ["-ot", "token_embd=MTL0"],
+            ["--override-tensor", "per_layer_token_embd=CPU"],
+            ["--override-tensor=exps=CPU"],
+            ["--cpu-moe"],
+            ["--n-cpu-moe", "4"],
+            ["-ngl", "20"],
+            ["--device", "none"],
+            ["-ncffn", "4"],
+            ["--n-cpu-ffn=4"],
+            ["--fit-target", "2048"],
+            ["-fitt", "2048"],
+            ["--fit-ctx", "16384"],
+            ["-fitc=16384"],
+        ],
+    )
+    def test_a_pass_through_placement_drops_it(self, monkeypatch, extra_args):
+        assert self._bytes(monkeypatch, extra_args = extra_args) == 0
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CPU"},
+            {"LLAMA_ARG_CPU_MOE": "1"},
+            {"LLAMA_ARG_N_GPU_LAYERS": "20"},
+            {"LLAMA_ARG_DEVICE": "none"},
+            {"LLAMA_ARG_N_CPU_FFN": "4"},
+            {"LLAMA_ARG_FIT_TARGET": "2048"},
+            {"LLAMA_ARG_FIT_CTX": "16384"},
+        ],
+    )
+    def test_an_inherited_placement_drops_it(self, monkeypatch, env):
+        assert self._bytes(monkeypatch, env = env) == 0
+
+    def test_a_request_with_a_fixed_layer_count_drops_it(self, monkeypatch):
+        assert self._bytes(monkeypatch, layers_fixed = True) == 0
+
+    def test_an_unreadable_layout_abstains(self, monkeypatch):
+        from core.inference.offload_layout import ModelLayout
+        assert self._bytes(monkeypatch, layout = ModelLayout()) == 0
+
+    def test_no_measurement_abstains_and_says_so(self, monkeypatch):
+        """Recorded off the module logger, not caplog.
+
+        The structlog stub at the top of this file is installed with
+        `sys.modules.setdefault`, so in a full run any module that imported the real
+        structlog first wins and the log never reaches a stdlib handler. Under xdist
+        that depends on which worker gets this file, which made the caplog spelling
+        pass alone and fail in CI.
+        """
+        import core.inference.llama_cpp as llama_cpp
+
+        said = []
+        monkeypatch.setattr(llama_cpp.logger, "info", lambda msg, *a, **kw: said.append(str(msg)))
+        assert self._bytes(monkeypatch, measured = None) == 0
+        assert any("could not measure" in line for line in said)
+
+
+# b10909-mix output from an 8 GB M1; the second table adds -ncffn 30.
+_E4B_TABLE = """0.00.408.825 I common_memory_breakdown_print: | memory breakdown [MiB] | total   free    self   model   context   compute    unaccounted |
+0.00.429.748 I common_memory_breakdown_print: |   - MTL0 (Apple M1)    |  5461 = 5460 + (3642 =  3025 +      28 +     589) +       -3642 |
+0.00.429.748 I common_memory_breakdown_print: |   - Host               |                 2352 =  2288 +       0 +      64                |
+0.00.444.070 I llama_fit_params: printing fitted CLI arguments to stdout...
+-c 512 -ngl 999
+"""
+_E4B_NCFFN_TABLE = """I common_memory_breakdown_print: | memory breakdown [MiB] | total   free    self   model   context   compute    unaccounted |
+I common_memory_breakdown_print: |   - MTL0 (Apple M1)    |  5461 = 5460 + (2196 =  1625 +      28 +     543) +       -2196 |
+I common_memory_breakdown_print: |   - Host               |                 2430 =  2288 +       0 +     142                |
+I common_memory_breakdown_print: |   - CPU_REPACK         |                 1400 =  1400 +       0 +       0                |
+"""
+
+
+class TestTheMetalMemoryProbe:
+    """Parse and invoke llama-fit-params conservatively."""
+
+    def test_it_reads_the_metal_and_host_model_columns(self):
+        from core.inference.llama_cpp import _parse_metal_memory_breakdown
+        assert _parse_metal_memory_breakdown(_E4B_TABLE) == (3025, 2288, 2)
+
+    def test_every_host_buffer_type_is_summed(self):
+        from core.inference.llama_cpp import _parse_metal_memory_breakdown
+        assert _parse_metal_memory_breakdown(_E4B_NCFFN_TABLE) == (1625, 2288 + 1400, 3)
+
+    def test_only_the_first_table_is_read(self):
+        from core.inference.llama_cpp import _parse_metal_memory_breakdown
+        assert _parse_metal_memory_breakdown(_E4B_TABLE + _E4B_NCFFN_TABLE) == (3025, 2288, 2)
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            "",
+            "error: invalid argument: -lv",
+            _E4B_TABLE.replace("MTL0 (Apple M1)", "CUDA0 (RTX 4090)"),
+            _E4B_TABLE.replace("2352 =  2288 +", "2352"),
+            _E4B_TABLE.replace("3025 +", "x +"),
+        ],
+    )
+    def test_anything_else_is_unknown(self, output):
+        from core.inference.llama_cpp import _parse_metal_memory_breakdown
+        assert _parse_metal_memory_breakdown(output) is None
+
+    @staticmethod
+    def _install(tmp_path, script):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "llama-server").write_text("")
+        probe = bin_dir / "llama-fit-params"
+        probe.write_text(script)
+        probe.chmod(0o755)
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"GGUF")
+        return str(bin_dir / "llama-server"), str(model)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason = "shell script stands in for the binary")
+    def test_it_runs_the_probe_beside_the_binary_and_caches_the_answer(self, tmp_path, monkeypatch):
+        calls = tmp_path / "calls"
+        table = _E4B_TABLE.replace("\n", "\\n")
+        script = f'#!/bin/sh\necho "$@" >> "{calls}"\nprintf "{table}"\n'
+        binary, model = self._install(tmp_path, script)
+        monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "10")
+        backend = LlamaCppBackend()
+        assert backend._metal_measured_model_mib(binary, model) == (3025, 2288, 2)
+        assert backend._metal_measured_model_mib(binary, model) == (3025, 2288, 2)
+        argv = calls.read_text().splitlines()
+        assert argv == [f"-m {model} -ngl 999 -c 512 -lv 4"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason = "shell script stands in for the binary")
+    def test_a_failing_probe_is_unknown(self, tmp_path):
+        binary, model = self._install(tmp_path, "#!/bin/sh\nexit 1\n")
+        assert LlamaCppBackend()._metal_measured_model_mib(binary, model) is None
+
+    def test_no_probe_is_unknown(self, tmp_path):
+        (tmp_path / "llama-server").write_text("")
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"GGUF")
+        backend = LlamaCppBackend()
+        assert backend._metal_measured_model_mib(str(tmp_path / "llama-server"), str(model)) is None
+        assert backend._metal_measured_model_mib(None, str(model)) is None
+
+
+def test_every_forced_full_offload_arm_owes_the_fit_on_retry():
+    """A forced "-ngl -1 --fit off" must also claim the full offload.
+
+    The `--fit on` retry after a startup crash is gated on `fully_gpu_offloaded`,
+    and the tensor-spill recovery ahead of it is a no-op without a spill plan, so
+    an arm that pins the placement without setting the flag drops straight to the
+    terminal fallbacks when its estimate turns out optimistic. Checked at the
+    source, like the other invariants over this launch path, because the retry only
+    runs behind a real child crash.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))
+
+    def pins_full_offload(stmt):
+        """The emission as a DIRECT statement of the arm, so an enclosing `if` does
+        not also count as one."""
+        if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
+            return False
+        call = stmt.value
+        if not isinstance(call.func, ast.Attribute) or call.func.attr != "extend":
+            return False
+        if not call.args or not isinstance(call.args[0], ast.List):
+            return False
+        values = [e.value for e in call.args[0].elts if isinstance(e, ast.Constant)]
+        return values == ["-ngl", "-1", "--fit", "off"]
+
+    def claims_full_offload(body):
+        for stmt in body:
+            if not isinstance(stmt, ast.Assign) or not isinstance(stmt.value, ast.Constant):
+                continue
+            if stmt.value.value is not True:
+                continue
+            if any(isinstance(t, ast.Name) and t.id == "fully_gpu_offloaded" for t in stmt.targets):
+                return True
+        return False
+
+    arms = [
+        branch
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        for branch in (node.body, node.orelse)
+        if branch and any(pins_full_offload(stmt) for stmt in branch)
+    ]
+    assert len(arms) == 2, f"expected the two forced full-offload arms, found {len(arms)}"
+    assert all(claims_full_offload(arm) for arm in arms)

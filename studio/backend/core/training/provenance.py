@@ -131,8 +131,8 @@ def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
         return False
     except Exception:
         return False
-    # The same disjunction effective_training_load_in_4bit tests: routes/training.py
-    # fills require_exact_model_resource from exact_resume_resource_requirements and
+    # The same disjunction effective_training_load_in_4bit tests: routes/training.py fills
+    # require_exact_model_resource from exact_resume_resource_requirements and
     # require_exact_resume_resources from resource_provenance_is_complete.
     return bool(requires_exact_model or resource_provenance_is_complete(config))
 
@@ -416,7 +416,10 @@ def _hf_dataset_source_ref(path_value: str) -> Optional[tuple[str, str, str]]:
 
     try:
         parsed = urlsplit(path_value)
-        endpoint = urlsplit(os.environ.get("HF_ENDPOINT", "https://huggingface.co"))
+        # The shared helper, not a third private parse: a blank or scheme-less
+        # value yielded an empty netloc here and matched no URL at all.
+        from utils.hf_endpoint import get_hf_endpoint
+        endpoint = urlsplit(get_hf_endpoint())
     except ValueError:
         return None
     if (

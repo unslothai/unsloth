@@ -8,10 +8,16 @@ import ntpath
 import os
 import re
 import sys
+import threading
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Iterable
 import tempfile
 
-from utils.paths.path_utils import drop_appledouble_metadata
+from loggers import get_logger
+from utils.account_context import current_account, is_owner_context
+from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
+
+logger = get_logger(__name__)
 
 
 def _infer_studio_home_from_venv() -> Path | None:
@@ -33,9 +39,18 @@ def _infer_studio_home_from_venv() -> Path | None:
         ).is_file()
     except OSError:
         return None
-    if has_sentinel:
-        return candidate
-    return None
+    if not has_sentinel:
+        return None
+    # In the Docker image sys.prefix resolves to UNSLOTH_STUDIO_APP, which carries the same sentinels
+    # but is the container layer, not the volume: never adopt it as the home.
+    app_dir = os.environ.get("UNSLOTH_STUDIO_APP", "").strip()
+    if app_dir:
+        try:
+            if candidate == Path(app_dir).resolve():
+                return None
+        except (OSError, ValueError):
+            pass
+    return candidate
 
 
 def studio_root() -> Path:
@@ -59,8 +74,17 @@ def studio_root() -> Path:
     return Path.home() / ".unsloth" / "studio"
 
 
+def workspace_root() -> Path:
+    """Private persistent root of the acting account: owner keeps the historical install-root
+    layout, others get ``accounts/<account_id>/``, keyed by id so a reused name inherits nothing."""
+    root = studio_root()
+    if is_owner_context():
+        return root
+    return root / "accounts" / current_account().account_id
+
+
 def cache_root() -> Path:
-    """Central cache dir for all studio downloads (models, datasets, etc.)."""
+    """Central cache dir for all studio downloads (models, datasets, etc.). Shared."""
     return studio_root() / "cache"
 
 
@@ -74,28 +98,37 @@ def studio_bin_root() -> Path:
     return studio_root() / "bin"
 
 
+def account_path(relative: str) -> Path:
+    """``workspace_root() / relative``, checked to really live inside the account's workspace: a
+    directory swapped for a link into another account's tree would carry all its readers there."""
+    path = workspace_root() / relative
+    if not is_owner_context() and not within_account(path):
+        raise ValueError(f"path escapes the account workspace: {path!s}")
+    return path
+
+
 def assets_root() -> Path:
-    return studio_root() / "assets"
+    return account_path("assets")
 
 
 def datasets_root() -> Path:
-    return assets_root() / "datasets"
+    return account_path("assets/datasets")
 
 
 def dataset_uploads_root() -> Path:
-    return datasets_root() / "uploads"
+    return account_path("assets/datasets/uploads")
 
 
 def recipe_datasets_root() -> Path:
-    return datasets_root() / "recipes"
+    return account_path("assets/datasets/recipes")
 
 
 def outputs_root() -> Path:
-    return studio_root() / "outputs"
+    return account_path("outputs")
 
 
 def exports_root() -> Path:
-    return studio_root() / "exports"
+    return account_path("exports")
 
 
 def auth_root() -> Path:
@@ -107,12 +140,12 @@ def auth_db_path() -> Path:
 
 
 def studio_db_path() -> Path:
-    return studio_root() / "studio.db"
+    return account_path("studio.db")
 
 
 def rag_root() -> Path:
     """Root directory for retrieval-augmented-generation state (db + uploads)."""
-    return studio_root() / "rag"
+    return account_path("rag")
 
 
 def rag_db_path() -> Path:
@@ -162,7 +195,7 @@ def _windows_documents_dir() -> Path | None:
     if os.name != "nt":
         return None
     try:
-        import winreg  # Windows-only, and absent from some stripped builds.
+        import winreg
     except ImportError:
         return None
     try:
@@ -188,19 +221,33 @@ def documents_root() -> Path:
     )
 
 
+def shared_project_workspaces_root() -> Path:
+    """Base every account's ``project_workspaces_root`` lives under; confinement hides it first."""
+    override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
+    return Path(override).expanduser() if override else documents_root() / "Unsloth Studio"
+
+
 def project_workspaces_root() -> Path:
     override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
-    if override:
-        return Path(override).expanduser()
-    return documents_root() / "Unsloth Studio" / "Projects"
+    base = shared_project_workspaces_root()
+    if is_owner_context():
+        return base if override else base / "Projects"
+    return base / "Accounts" / current_account().account_id / "Projects"
 
 
-def tmp_root() -> Path:
+def shared_tmp_root() -> Path:
     return Path(tempfile.gettempdir()) / "unsloth-studio"
 
 
+def tmp_root() -> Path:
+    root = shared_tmp_root()
+    if is_owner_context():
+        return root
+    return root / "accounts" / current_account().account_id
+
+
 def seed_uploads_root() -> Path:
-    return datasets_root() / "seed-uploads"
+    return account_path("assets/datasets/seed-uploads")
 
 
 def unstructured_seed_cache_root() -> Path:
@@ -208,7 +255,7 @@ def unstructured_seed_cache_root() -> Path:
 
 
 def unstructured_uploads_root() -> Path:
-    return datasets_root() / "unstructured-uploads"
+    return account_path("assets/datasets/unstructured-uploads")
 
 
 def oxc_validator_tmp_root() -> Path:
@@ -216,12 +263,81 @@ def oxc_validator_tmp_root() -> Path:
 
 
 def tensorboard_root() -> Path:
-    return studio_root() / "runs"
+    return account_path("runs")
+
+
+def _mkdir(path: Path) -> Path:
+    path.mkdir(parents = True, exist_ok = True)
+    return path
+
+
+class RetiredAccountError(RuntimeError):
+    """A write arrived for an account whose private roots have already been retired."""
+
+
+# Held across the rename-aside and every guarded directory creation.
+root_retirement_lock = threading.RLock()
+
+
+def external_account_sandbox_root() -> Path | None:
+    """The managed account's tool sandbox when ``UNSLOTH_STUDIO_SANDBOX_HOME`` moves it out of the
+    workspace. A private root like the others, so retirement and ``ensure_dir`` cover it."""
+    override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
+    if is_owner_context() or not override:
+        return None
+    return (
+        Path(os.path.abspath(os.path.expanduser(override)))
+        / "accounts"
+        / current_account().account_id
+    )
+
+
+def managed_account_roots() -> tuple[Path, ...]:
+    """Every private root retirement renames aside for the acting managed account."""
+    roots = [workspace_root(), project_workspaces_root(), tmp_root()]
+    sandbox = external_account_sandbox_root()
+    if sandbox is not None:
+        roots.append(sandbox)
+    return tuple(roots)
+
+
+def _under_managed_workspace(path: Path) -> bool:
+    """Lexically, whether *path* is inside one of the roots retirement renames aside."""
+    if is_owner_context():
+        return False
+    try:
+        absolute = Path(os.path.abspath(path))
+        for root in managed_account_roots():
+            try:
+                absolute.relative_to(os.path.abspath(root))
+                return True
+            except ValueError:
+                continue
+    except (OSError, ValueError):
+        return False
+    return False
 
 
 def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents = True, exist_ok = True)
-    return path
+    """Create *path*; inside a managed workspace this is retirement-aware for every caller."""
+    if _under_managed_workspace(path):
+        return ensure_account_dir(path)
+    return _mkdir(path)
+
+
+def ensure_account_dir(path: Path) -> Path:
+    """``ensure_dir`` inside the acting account's workspace: refuse once the tombstone is set, or a
+    finalizer outliving deletion recreates the renamed-aside roots. Locked against the rename."""
+    with root_retirement_lock:
+        if not is_owner_context():
+            from core.training.account_jobs import account_is_retired
+
+            # Existence is not proof of life: a late request can mkdir the workspace back.
+            if account_is_retired():
+                raise RetiredAccountError(
+                    f"account has been deleted; refusing to recreate {path!s}"
+                )
+        return _mkdir(path)
 
 
 def legacy_hf_cache_dir() -> Path:
@@ -238,36 +354,137 @@ def hf_default_cache_dir() -> Path:
     return Path.home() / ".cache" / "huggingface" / "hub"
 
 
+def _host_path(path: str | Path) -> Path:
+    """Expand a configured path into one this process can stat.
+
+    A drive-letter path from another tool's config means nothing to a WSL process
+    until it is mapped under the automount root.
+    """
+    return Path(host_normalize_path(str(path))).expanduser()
+
+
+def _existing_dirs(candidates: Iterable[str | Path], *, resolve: bool) -> list[Path]:
+    """Host-translate *candidates*, drop non-directories, dedupe by real path.
+
+    *resolve* picks the return shape: ``well_known_model_dirs`` feeds a containment
+    check and needs real paths, while the per-tool lists feed model ids and must keep
+    the spelling the user configured.
+    """
+    out: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            expanded = _host_path(candidate)
+            resolved = expanded.resolve()
+            is_dir = expanded.is_dir()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        key = str(resolved)
+        if key in seen or not is_dir:
+            continue
+        seen.add(key)
+        out.append(resolved if resolve else expanded)
+    return out
+
+
+def _lmstudio_downloads_folder() -> str:
+    """Custom models folder from LM Studio's settings.json, or "" if unset.
+
+    utf-8-sig: LM Studio may write this file with a BOM, which a plain utf-8 read turns
+    into a JSONDecodeError that used to be swallowed, dropping the folder (#9748).
+    """
+    settings_path = Path.home() / ".lmstudio" / "settings.json"
+    if not settings_path.is_file():
+        return ""
+    try:
+        settings = json.loads(settings_path.read_text(encoding = "utf-8-sig"))
+        downloads = settings.get("downloadsFolder", "")
+        # A number or list here is a corrupt file, not a path; str() would stat "123".
+        return downloads if isinstance(downloads, str) else ""
+    except Exception as exc:
+        logger.debug("Ignoring unreadable LM Studio settings at %s: %s", settings_path, exc)
+        return ""
+
+
 def lmstudio_model_dirs() -> list[Path]:
     """Return LM Studio model directories that exist on disk."""
-    dirs: list[Path] = []
-    seen: set[Path] = set()
+    candidates: list[str | Path] = []
 
-    def _add(p: Path) -> None:
-        resolved = p.resolve()
-        if resolved not in seen and p.is_dir():
-            seen.add(resolved)
-            dirs.append(p)
+    downloads = _lmstudio_downloads_folder()
+    if downloads:
+        candidates.append(downloads)
 
-    # LM Studio settings.json custom downloads folder
-    settings_path = Path.home() / ".lmstudio" / "settings.json"
-    if settings_path.is_file():
-        try:
-            with open(settings_path, encoding = "utf-8-sig") as f:
-                settings = json.load(f)
-            downloads = settings.get("downloadsFolder", "")
-            if downloads:
-                _add(Path(downloads).expanduser())
-        except Exception:
-            pass
+    candidates.append(Path.home() / ".lmstudio" / "models")
+    # Legacy cache location.
+    candidates.append(Path.home() / ".cache" / "lm-studio" / "models")
 
-    # LM Studio default models directory (all platforms)
-    _add(Path.home() / ".lmstudio" / "models")
+    return _existing_dirs(candidates, resolve = False)
 
-    # Legacy LM Studio cache location
-    _add(Path.home() / ".cache" / "lm-studio" / "models")
 
-    return dirs
+def ollama_model_dirs() -> list[Path]:
+    """Return Ollama model directories that exist on disk.
+
+    User-level plus the common system-wide install paths
+    (https://github.com/ollama/ollama/issues/733).
+    """
+    candidates: list[str | Path] = []
+    ollama_env = os.environ.get("OLLAMA_MODELS")
+    if ollama_env:
+        candidates.append(ollama_env)
+    candidates.append(Path.home() / ".ollama" / "models")
+    candidates.append(Path("/usr/share/ollama/.ollama/models"))
+    candidates.append(Path("/var/lib/ollama/.ollama/models"))
+    return _existing_dirs(candidates, resolve = False)
+
+
+def _hermes_native_home() -> Path:
+    """Hermes' platform-native home, ignoring HERMES_HOME."""
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
+
+
+def _hermes_root() -> Path:
+    """The Hermes root a download hangs off, mirroring its own resolution.
+
+    HERMES_HOME under the native home (the normal and profile layouts) still
+    means the native home; a ``<root>/profiles/<name>`` path elsewhere means
+    ``<root>``; anything else IS the root (Docker / custom deployments).
+    """
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    native = _hermes_native_home()
+    if not env_home:
+        return native
+    env_path = Path(env_home)
+    try:
+        env_path.resolve().relative_to(native.resolve())
+        return native
+    except (OSError, ValueError):
+        pass
+    if env_path.parent.name == "profiles":
+        return env_path.parent.parent
+    return env_path
+
+
+def hermes_model_dirs() -> list[Path]:
+    """Return Hermes model directories that exist on disk.
+
+    Hermes Desktop's one-click GGUF downloads land in ``<root>/models``. That is
+    machine-scoped upstream, never profile-scoped -- a 20 GB GGUF is a machine
+    asset and every profile shares the one server that runs it -- so it hangs off
+    the root, not off HERMES_HOME when that names a profile.
+
+    The native root is scanned as well, because ``unsloth start hermes`` points
+    HERMES_HOME at a throwaway session dir while the user's real downloads stay
+    under the native home; scanning only the resolved root would lose them for the
+    duration of a session Studio launched itself.
+    """
+    return _existing_dirs(
+        [_hermes_root() / "models", _hermes_native_home() / "models"],
+        resolve = False,
+    )
 
 
 def well_known_model_dirs() -> list[Path]:
@@ -275,51 +492,29 @@ def well_known_model_dirs() -> list[Path]:
 
     Backs the folder browser's quick-pick chips. Returns only paths that
     exist on disk, so the UI never shows dead chips. Order reflects rough
-    likelihood of models being there -- LM Studio and Ollama first, then
-    generic fallbacks.
+    likelihood of models being there -- LM Studio, Ollama and Hermes first,
+    then generic fallbacks.
     """
-    candidates: list[Path] = []
-
-    # LM Studio (reuses the logic above, including settings.json override)
+    candidates: list[str | Path] = []
     candidates.extend(lmstudio_model_dirs())
+    candidates.extend(ollama_model_dirs())
+    candidates.extend(hermes_model_dirs())
 
-    # Ollama -- user-level and common system-wide install paths
-    # (https://github.com/ollama/ollama/issues/733).
-    ollama_env = os.environ.get("OLLAMA_MODELS")
-    if ollama_env:
-        candidates.append(Path(ollama_env).expanduser())
-    candidates.append(Path.home() / ".ollama" / "models")
-    candidates.append(Path("/usr/share/ollama/.ollama/models"))
-    candidates.append(Path("/var/lib/ollama/.ollama/models"))
-
-    # HF hub cache root (separate from the explicit HF cache chip)
+    # HF hub cache root, separate from the explicit HF cache chip.
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
 
-    # Generic "my models" spots users drop things into
+    # Generic "my models" spots users drop things into.
     for name in ("models", "Models"):
         candidates.append(Path.home() / name)
 
-    # Dedupe preserving order; keep only extant dirs
-    out: list[Path] = []
-    seen: set[str] = set()
-    for p in candidates:
-        try:
-            resolved = str(p.resolve())
-        except OSError:
-            continue
-        if resolved in seen:
-            continue
-        if Path(resolved).is_dir():
-            seen.add(resolved)
-            out.append(Path(resolved))
-    return out
+    return _existing_dirs(candidates, resolve = True)
 
 
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
-    Explicit Hugging Face environment variables take precedence over Studio's
-    stored location. Studio seeds import-time variables once, while each later
+    Explicit Hugging Face environment variables take precedence over Unsloth's
+    stored location. Unsloth seeds import-time variables once, while each later
     worker receives its own captured cache location.
     """
     root = cache_root()
@@ -329,21 +524,18 @@ def _setup_cache_env() -> None:
     defaults: dict[str, str] = {
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
-        # unsloth_zoo defaults this to a bare relative name, which resolves
-        # against the CWD, and the Windows launcher runs Studio with
-        # WorkingDirectory=%USERPROFILE%, so the cache landed in the user home.
-        # Must be set before unsloth_zoo.compiler imports: it reads the value
-        # at import time and puts it on sys.path.
+        # unsloth_zoo defaults this to a bare relative name.
+        # It resolves against the CWD and the Windows launcher runs Unsloth with WorkingDirectory=%USERPROFILE%, so the
+        # cache landed in the user home. Must be set before unsloth_zoo.compiler imports: it reads the value at import
+        # time and puts it on sys.path.
         "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
     }
     for key, value in defaults.items():
-        # Blank counts as unset: an inherited KEY= would otherwise pin the
-        # cache to "", which puts an empty entry on sys.path and sends the
-        # compiler to the system temp directory instead.
+        # Blank counts as unset: an inherited KEY= would otherwise pin the cache to "", which puts an empty entry on
+        # sys.path and sends the compiler to the system temp directory instead.
         if not (os.environ.get(key) or "").strip():
             os.environ[key] = value
-            # Best-effort: a non-writable custom HF_HOME must not crash startup;
-            # HF surfaces a clear error at download time instead.
+            # Best-effort: a non-writable custom HF_HOME must not crash startup
             try:
                 created = True
                 try:
@@ -427,8 +619,34 @@ def _assert_contained(resolved: Path, root: Path) -> None:
         resolved_real.relative_to(root_real)
     except ValueError as exc:
         raise ValueError(
-            f"path escapes root: {resolved!s} -> {resolved_real!s} " f"is not under {root_real!s}"
+            f"path escapes root: {resolved!s} -> {resolved_real!s} is not under {root_real!s}"
         ) from exc
+
+
+def within_account(path: Path) -> bool:
+    if is_owner_context():
+        return True
+    try:
+        real = Path(os.path.realpath(path))
+    except OSError:
+        return False
+    for root in (workspace_root(), project_workspaces_root(), tmp_root()):
+        try:
+            real.relative_to(Path(os.path.realpath(root)))
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def own_entry(path: Path) -> bool:
+    return path.exists() and within_account(path)
+
+
+def require_within_account(path: Path) -> Path:
+    if not within_account(path):
+        raise ValueError(f"path escapes the account workspace: {path!s}")
+    return path
 
 
 def resolve_under_root(
@@ -464,10 +682,9 @@ def resolve_under_root(
 
 
 def default_run_dir_name(model_name: str) -> str:
-    # Folder-safe run name for an auto-created output dir. Repo ids keep their
-    # namespace (org/model -> org_model); local paths (incl. G:\dir\model)
-    # collapse to their final component so an absolute source can't escape
-    # outputs_root. Length-capped to stay under the filesystem name limit.
+    # Repo ids keep their namespace while local paths collapse to their final component, so an absolute source cannot
+    # escape outputs_root; length-capped to the filesystem name limit.
+    # Repo ids keep their namespace (org/model -> org_model).
     raw = str(model_name or "").strip()
     is_path = (
         "\\" in raw
@@ -518,7 +735,7 @@ def resolve_export_write_dir(path_value: str | None = None) -> Path:
     if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
     if _is_absolute_user_path(path):
-        return path
+        return require_within_account(path)
     return resolve_under_root(
         path_value,
         root = exports_root(),
@@ -562,7 +779,7 @@ def resolve_dataset_path(path_value: str) -> Path:
         for root_fn in (datasets_root, dataset_uploads_root, recipe_datasets_root):
             try:
                 _assert_contained(path, root_fn())
-                return path
+                return require_within_account(path)
             except ValueError:
                 continue
         raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
@@ -572,10 +789,10 @@ def resolve_dataset_path(path_value: str) -> Path:
         parts = parts[2:]
     if parts and parts[0] == "uploads":
         cleaned = Path(*parts[1:]) if len(parts) > 1 else Path()
-        return dataset_uploads_root() / cleaned
+        return require_within_account(dataset_uploads_root() / cleaned)
     if parts and parts[0] == "recipes":
         cleaned = Path(*parts[1:]) if len(parts) > 1 else Path()
-        return recipe_datasets_root() / cleaned
+        return require_within_account(recipe_datasets_root() / cleaned)
 
     cleaned = Path(*parts) if parts else Path()
     candidates = [
@@ -587,5 +804,5 @@ def resolve_dataset_path(path_value: str) -> Path:
     ]
     for candidate in candidates:
         if candidate.exists():
-            return candidate
+            return require_within_account(candidate)
     return candidates[0]

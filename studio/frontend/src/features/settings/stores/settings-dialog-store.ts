@@ -10,6 +10,7 @@ import { create } from "zustand";
 export const SETTINGS_TABS = [
   "general",
   "profile",
+  "accounts",
   "appearance",
   "resources",
   "chat",
@@ -26,31 +27,36 @@ export const SETTINGS_TABS = [
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
-export type SettingsScrollTarget = "about-updates" | "appearance-sidebar-nav";
+export type SettingsScrollTarget =
+  | "about-updates"
+  | "appearance-sidebar-nav"
+  | "chat-composer"
+  | "chat-canvas-network";
 
 /** Which archive the Data tab should open straight into. */
-export type ArchivedShelf = "chats" | "images" | "videos";
+export type ArchivedShelf = "chats" | "images" | "videos" | "audio";
 
 interface OpenDialogOptions {
   scrollTarget?: SettingsScrollTarget;
+  focusFallback?: HTMLElement | null;
 }
 
 interface SettingsDialogState {
   open: boolean;
   activeTab: SettingsTab;
   scrollTarget: SettingsScrollTarget | null;
-  // Element focused when openDialog() ran. Radix's FocusScope normally tracks
-  // this, but the rAF-scheduled focus() in settings-dialog.tsx races its
-  // previous-focus capture, leaving focus on <body> after close. We restore
-  // explicitly via onCloseAutoFocus.
+  // Element focused when openDialog() ran. Radix's FocusScope normally tracks this, but the
+  // rAF-scheduled focus() in settings-dialog.tsx races its previous-focus capture, leaving focus on
+  // <body> after close. We restore explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
+  openerFallback: HTMLElement | null;
   // Set when something asks to jump straight to an archive listing (the archive
   // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
   // for how long it lives unconsumed.
   archivedRequested: ArchivedShelf | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
-  openArchivedMedia: (shelf: "images" | "videos") => void;
+  openArchivedMedia: (shelf: Exclude<ArchivedShelf, "chats">) => void;
   consumeArchivedChatsRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
@@ -63,6 +69,26 @@ function captureOpener(): HTMLElement | null {
     document.activeElement !== document.body
     ? document.activeElement
     : null;
+}
+
+function focusForOpen(
+  state: SettingsDialogState,
+  requestedFallback: HTMLElement | null = null,
+) {
+  if (state.open) {
+    return {
+      opener: state.opener,
+      openerFallback: state.openerFallback,
+    };
+  }
+  const opener = captureOpener();
+  if (opener?.closest("[data-slot=dialog-content]")) {
+    return {
+      opener: state.opener,
+      openerFallback: state.openerFallback,
+    };
+  }
+  return { opener, openerFallback: requestedFallback };
 }
 
 const ACTIVE_TAB_KEY = "unsloth_settings_active_tab";
@@ -82,8 +108,10 @@ function loadInitialTab(): SettingsTab {
 
 /** The panel that delivers each scroll target, so a navigation elsewhere abandons it. */
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
+  "chat-composer": "chat",
   "about-updates": "about",
   "appearance-sidebar-nav": "appearance",
+  "chat-canvas-network": "chat",
 };
 
 /**
@@ -110,6 +138,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   activeTab: loadInitialTab(),
   scrollTarget: null,
   opener: null,
+  openerFallback: null,
   archivedRequested: null,
   openDialog: (tab, options) =>
     set((state) => {
@@ -121,25 +150,25 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
         // A caller that names a target replaces whatever was still pending.
         scrollTarget: options?.scrollTarget ?? pending.scrollTarget,
         archivedRequested: pending.archivedRequested,
-        opener: captureOpener(),
+        ...focusForOpen(state, options?.focusFallback),
       };
     }),
   openArchivedChats: () =>
-    set({
+    set((state) => ({
       open: true,
       activeTab: "data",
       scrollTarget: null,
       archivedRequested: "chats",
-      opener: captureOpener(),
-    }),
+      ...focusForOpen(state),
+    })),
   openArchivedMedia: (shelf) =>
-    set({
+    set((state) => ({
       open: true,
       activeTab: "data",
       scrollTarget: null,
       archivedRequested: shelf,
-      opener: captureOpener(),
-    }),
+      ...focusForOpen(state),
+    })),
   consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({

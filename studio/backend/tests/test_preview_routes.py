@@ -22,6 +22,14 @@ import types as _types
 import pytest
 
 
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(
+        preview,
+        "list_preview_targets",
+        lambda: [{"ref": "demorun", "is_latest": True}],
+    )
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -29,9 +37,13 @@ if _BACKEND_DIR not in sys.path:
 # Mirror test_preview.py: the real `loggers` package pulls in heavy handlers.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+# __path__ so `loggers.media_progress` still resolves to the real submodule. Without it the stub
+# shadows the package rather than its __init__, and any module importing a submodule dies with
+# "'loggers' is not a package" as soon as this file shares a pytest process with it (#10995).
+_loggers_stub.__path__ = [str(Path(_BACKEND_DIR) / "loggers")]
 sys.modules.setdefault("loggers", _loggers_stub)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
@@ -124,9 +136,38 @@ def test_page_renders_with_csp(client):
 
 def test_page_renders_friendly_busy_message(client):
     response = client.get(f"/p/demorun?k={_sig('demorun')}")
-    assert "Studio is currently using another model" in response.text
+    assert "Unsloth is currently using another model" in response.text
 
 
+def test_page_renders_reasoning_stream(client):
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "delta.reasoning_content" in text
+    assert 'choice.finish_reason === "length"' in text
+    assert "Reply cut off at the preview length limit." in text
+    assert "cutoff.hidden = !truncated" in text
+    assert 'cutoff.setAttribute("role", "status")' in text
+    assert "preview stream ended before completion" in text
+
+
+def test_page_keeps_assistant_turn_for_reasoning_only_reply(client):
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "if (hasContent || hasReasoning)" in text
+    assert "if (hasReasoning) reply.reasoning_content = reasoning" in text
+    assert "if (reasoning.trim())" in text
+
+
+def test_page_recovers_from_empty_reply(client):
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "if (!hasContent && !hasReasoning)" in text
+    assert "The model returned an empty reply. Please try again." in text
+    assert "Reply cut off before the model returned an answer." in text
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "'<' is not a legal Windows filename character, so a run dir named a<b cannot "
+    "exist there and the escaping this covers is unreachable",
+)
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     # Run dir name carries an HTML-special char; the page must escape it.
@@ -158,11 +199,7 @@ def test_models_endpoint_shape(client):
 
 
 def test_list_previews_builds_urls(client, monkeypatch):
-    monkeypatch.setattr(
-        preview,
-        "list_preview_targets",
-        lambda: [{"ref": "demorun", "is_latest": True}],
-    )
+    _shared_setup_1(monkeypatch)
     r = client.get("/p")
     assert r.status_code == 200
     data = r.json()["data"]
@@ -173,11 +210,7 @@ def test_list_previews_builds_urls(client, monkeypatch):
 
 
 def test_list_previews_omits_capability_when_sharing_disabled(client, monkeypatch):
-    monkeypatch.setattr(
-        preview,
-        "list_preview_targets",
-        lambda: [{"ref": "demorun", "is_latest": True}],
-    )
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: False)
     r = client.get("/p")
     assert r.status_code == 200
@@ -189,11 +222,7 @@ def test_list_previews_omits_capability_when_sharing_disabled(client, monkeypatc
 
 
 def test_list_previews_omits_capability_for_keyless_caller(client, monkeypatch):
-    monkeypatch.setattr(
-        preview,
-        "list_preview_targets",
-        lambda: [{"ref": "demorun", "is_latest": True}],
-    )
+    _shared_setup_1(monkeypatch)
     client.app.dependency_overrides[preview.authenticated_without_credential] = lambda: True
     body = client.get("/p").json()
     assert body["data"][0]["key"] is None
@@ -372,6 +401,45 @@ def test_streaming_holds_lock_until_drained(tmp_path, monkeypatch, captured):
     assert not preview._preview_lock.locked()
 
 
+def test_a_video_clip_is_refused_before_the_checkpoint_loads(tmp_path, monkeypatch, captured):
+    """A preview target cannot read a clip, and the load it would precede evicts the resident model."""
+    outputs = tmp_path / "outputs"
+    _make_run(outputs)
+    from utils.paths import storage_roots as _sr
+
+    monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
+
+    loaded = []
+
+    async def _fake_load_model(load_req, request, subject):
+        loaded.append(load_req)
+        return None
+
+    async def _fake_chat(payload, request, subject):
+        return {"ok": True}
+
+    monkeypatch.setattr(preview, "load_model_for_preview", _fake_load_model)
+    monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
+
+    payload = ChatCompletionRequest(
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,QUJD"}},
+                    {"type": "text", "text": "what happens here?"},
+                ],
+            }
+        ]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(preview._serve_chat("demorun", None, payload, request = None))
+    assert excinfo.value.status_code == 400
+    assert "Video input" in excinfo.value.detail
+    assert loaded == []
+    assert not preview._preview_lock.locked()
+
+
 # ── Capability gating ────────────────────────────────────────────────────────
 
 
@@ -526,8 +594,6 @@ def test_chat_rate_limited_returns_429(client, monkeypatch):
 # Model-slot ownership regressions.
 import threading
 from types import SimpleNamespace
-
-from fastapi import HTTPException
 
 import routes.inference as inference
 from core.inference import llama_keepwarm
@@ -729,7 +795,7 @@ def test_cancelled_json_response_does_not_claim_slot(slot_state):
     import inspect
     import threading
 
-    src = inspect.getsource(inference.openai_chat_completions)
+    src = inspect.getsource(inference.produce_openai_chat_completions)
     assert src.count("_mark_cancelled_json_response_failed(request, cancel_event)") == 3
 
     _reset_keepwarm_counters()
@@ -745,6 +811,47 @@ def test_cancelled_json_response_does_not_claim_slot(slot_state):
         await send({"type": "http.response.body", "body": b"{}", "more_body": False})
 
     _run_middleware(_app, "/v1/chat/completions")
+    assert inference._is_preview_resident("/outputs/run/ckpt")
+    _reset_keepwarm_counters()
+
+
+def test_cancelled_anthropic_non_streaming_does_not_claim_slot(slot_state):
+    """/v1/messages answers 200 from partial output after a disconnect, same as the twin."""
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    total = 200
+    emitted = []
+
+    async def _app(scope, receive, send):
+        cancel_event = threading.Event()
+        started = threading.Event()
+
+        class _LeavingRequest:
+            def __init__(self):
+                self.scope = scope
+
+            async def is_disconnected(self):
+                return started.is_set()
+
+        def _run_gen():
+            for _ in range(total):
+                if cancel_event.wait(0.005):
+                    return
+                emitted.append(1)
+                started.set()
+                yield "x"
+
+        response = await inference._anthropic_plain_non_streaming(
+            _LeavingRequest(), _run_gen, "msg_1", "m", cancel_event = cancel_event
+        )
+        assert response.status_code == 200
+        assert cancel_event.is_set()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/messages")
+    assert len(emitted) < total
     assert inference._is_preview_resident("/outputs/run/ckpt")
     _reset_keepwarm_counters()
 
@@ -896,7 +1003,7 @@ def test_slot_claim_happens_before_admitted_decrement(slot_state, monkeypatch):
     _run_middleware(_app, "/v1/chat/completions")
     assert observed["admitted_at_claim"] == 1
     assert llama_keepwarm._admitted_inference == 0  # decremented afterwards
-    assert not inference._is_preview_resident("/outputs/run/ckpt-a")  # claimed for Studio
+    assert not inference._is_preview_resident("/outputs/run/ckpt-a")  # claimed for Unsloth
     _reset_keepwarm_counters()
     llama_keepwarm._admitted_inference = 0
 

@@ -567,6 +567,35 @@ def test_native_fallback_preserves_assistant_reasoning_content():
     }
 
 
+def test_native_fallback_keeps_participant_names():
+    InferenceBackend = _inference_backend()
+    seen = {}
+
+    class _Tokenizer:
+        chat_template = "template"
+
+        def apply_chat_template(self, messages, **_kwargs):
+            seen["messages"] = messages
+            return "rendered"
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "m"
+    backend.models = {
+        "m": {
+            "tokenizer": _Tokenizer(),
+            "chat_template_info": {"has_template": False},
+        }
+    }
+
+    conversation = [
+        {"role": "user", "name": "alice", "content": "hi"},
+        {"role": "assistant", "name": "researcher", "content": "hello"},
+        {"role": "user", "content": "again"},
+    ]
+    assert backend.format_chat_prompt(conversation) == "rendered"
+    assert seen["messages"] == conversation
+
+
 def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
     """The merge follows the same rule as the prompt boundary.
 
@@ -585,6 +614,67 @@ def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
     assert len(conversation) == 2
     assert conversation[-1]["content"] == "Looking that up now."
     assert conversation[-1]["tool_calls"] == [{"id": "c1"}]
+
+
+def test_a_resumed_partial_keeps_the_metadata_the_continuation_does_not_repeat():
+    """Gemini pins the text part's signature back on from extra_content alone.
+
+    The merge used to assign the continuation into the slot, so every key the
+    partial carried and the continuation did not was dropped and the replayed
+    turn was rejected.
+    """
+    conversation = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "Looking that ",
+            "extra_content": {"google": {"thought_signature": "SIG-PARTIAL"}},
+        },
+    ]
+    append_assistant_turn(
+        conversation,
+        {"role": "assistant", "content": "up now."},
+        continue_final_message = True,
+    )
+
+    assert conversation[-1]["content"] == "Looking that up now."
+    assert conversation[-1]["extra_content"] == {"google": {"thought_signature": "SIG-PARTIAL"}}
+
+
+def test_a_merge_leaves_the_callers_message_alone():
+    """The caller owns the dict it passed and may still read it afterwards."""
+    conversation = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "Looking that "},
+    ]
+    generated = {"role": "assistant", "content": "up now."}
+    append_assistant_turn(conversation, generated, continue_final_message = True)
+
+    assert conversation[-1]["content"] == "Looking that up now."
+    assert generated["content"] == "up now."
+
+
+def test_a_continuation_still_wins_on_a_key_it_does_repeat():
+    """Merging must not resurrect a stale value the new turn deliberately set."""
+    conversation = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "Looking that ",
+            "extra_content": {"google": {"thought_signature": "STALE"}},
+        },
+    ]
+    append_assistant_turn(
+        conversation,
+        {
+            "role": "assistant",
+            "content": "up now.",
+            "extra_content": {"google": {"thought_signature": "FRESH"}},
+        },
+        continue_final_message = True,
+    )
+
+    assert conversation[-1]["extra_content"] == {"google": {"thought_signature": "FRESH"}}
 
 
 def test_a_merge_stops_once_the_turn_is_no_longer_the_resumed_one():

@@ -13,6 +13,31 @@ import pytest
 from hub.utils import download_registry, hf_cache_state, resumable_partials
 
 
+def _shared_setup_1(blobs, monkeypatch):
+    monkeypatch.setattr(
+        download_registry,
+        "iter_destructive_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+
+def _shared_setup_2(blobs, monkeypatch):
+    monkeypatch.setattr(
+        download_registry, "hf_cache_roots", lambda *_a, **_k: [blobs.parent.parent]
+    )
+
+    download_registry.reap_orphan_workers()
+    _join_background_sweep()
+
+
+def _shared_setup_3(blobs, monkeypatch):
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
+    _prepare()
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+    return partial
+
+
 _MAIN = "a" * 64
 _PEER = "b" * 64
 _LEGACY_PARTIAL = f"{_MAIN}{hf_cache_state.INCOMPLETE_SUFFIX}"
@@ -119,10 +144,7 @@ def test_a_nonce_partial_is_unresumable_even_under_a_legacy_writer(monkeypatch):
 
 def test_unresumable_partial_is_purged_despite_a_matching_marker(monkeypatch, blobs):
     """The marker vouches for provenance, which is worth nothing with no resumer left."""
-    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
-    _prepare()  # writes the http marker
-    partial = blobs / _NONCE_PARTIAL
-    partial.write_bytes(b"x" * 25)
+    partial = _shared_setup_3(blobs, monkeypatch)
     _abandon(partial)
 
     assert _prepare() == 1
@@ -137,16 +159,14 @@ def test_resumable_partial_survives_a_matching_marker(monkeypatch, blobs):
     partial.write_bytes(b"x" * 25)
     _abandon(partial)
 
+    # Too fresh at download start, so prepare leaves it alone.
     assert _prepare() == 0
     assert partial.exists()
 
 
 def test_a_partial_still_being_written_is_left_alone(monkeypatch, blobs):
     """It may belong to a client this backend's peer registry cannot see."""
-    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
-    _prepare()
-    partial = blobs / _NONCE_PARTIAL
-    partial.write_bytes(b"x" * 25)  # mtime is now, as a live writer's would be
+    partial = _shared_setup_3(blobs, monkeypatch)
 
     assert _prepare() == 0
     assert partial.exists()
@@ -212,12 +232,8 @@ def test_transport_status_does_not_promise_a_resume_it_cannot_keep(monkeypatch, 
 
 def test_a_skipped_partial_is_swept_once_it_ages_out(monkeypatch, blobs):
     """The start-of-download skip is not the last word on an orphan."""
-    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
-    _prepare()
-    partial = blobs / _NONCE_PARTIAL
-    partial.write_bytes(b"x" * 25)
+    partial = _shared_setup_3(blobs, monkeypatch)
 
-    # Too fresh at download start, so prepare leaves it alone.
     assert _prepare() == 0
     assert partial.exists()
 
@@ -249,10 +265,7 @@ def test_the_sweep_still_spares_a_live_writer_and_a_peer(monkeypatch, blobs):
 
 def test_a_locked_blob_is_spared_however_stale_it_looks(monkeypatch, blobs):
     """A writer stalled past the grace still holds the lock, and still owns the file."""
-    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
-    _prepare()
-    partial = blobs / _NONCE_PARTIAL
-    partial.write_bytes(b"x" * 25)
+    partial = _shared_setup_3(blobs, monkeypatch)
     _abandon(partial)
 
     monkeypatch.setattr(download_registry, "blob_download_lock_held", lambda *_a: True)
@@ -284,11 +297,7 @@ def test_the_lock_probe_reads_the_layout_hf_writes(tmp_path):
 def test_unresumable_bytes_are_not_credited_against_the_disk_check(monkeypatch, blobs):
     """_preflight_disk_space subtracts this, so crediting a refetch can approve a full disk."""
     (blobs / _NONCE_PARTIAL).write_bytes(b"x" * 25)
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    _shared_setup_1(blobs, monkeypatch)
 
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
     assert download_registry.existing_blob_bytes("model", "Org/Model", frozenset({_MAIN})) == 0
@@ -300,11 +309,7 @@ def test_unresumable_bytes_are_not_credited_against_the_disk_check(monkeypatch, 
 def test_a_finalized_blob_still_counts_against_the_disk_check(monkeypatch, blobs):
     """Only partials are in question; a finished blob is bytes nobody refetches."""
     (blobs / _MAIN).write_bytes(b"x" * 25)
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    _shared_setup_1(blobs, monkeypatch)
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
 
     assert download_registry.existing_blob_bytes("model", "Org/Model", frozenset({_MAIN})) == 25
@@ -313,19 +318,14 @@ def test_a_finalized_blob_still_counts_against_the_disk_check(monkeypatch, blobs
 def test_startup_sweep_does_not_depend_on_a_breadcrumb(monkeypatch, tmp_path, blobs):
     """finalize_worker_exit drops the breadcrumb, so the boot sweep cannot be driven off one."""
     workers = tmp_path / "workers"
-    workers.mkdir()  # deliberately empty, as it is once drop_process has run
+    workers.mkdir()
     partial = blobs / _NONCE_PARTIAL
     partial.write_bytes(b"x" * 25)
     _abandon(partial)
 
     monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: workers)
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
-    monkeypatch.setattr(
-        download_registry, "hf_cache_roots", lambda *_a, **_k: [blobs.parent.parent]
-    )
-
-    download_registry.reap_orphan_workers()
-    _join_background_sweep()
+    _shared_setup_2(blobs, monkeypatch)
 
     assert not partial.exists()
 
@@ -340,12 +340,7 @@ def test_startup_sweep_leaves_a_resumable_partial_alone(monkeypatch, tmp_path, b
 
     monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: workers)
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: True)
-    monkeypatch.setattr(
-        download_registry, "hf_cache_roots", lambda *_a, **_k: [blobs.parent.parent]
-    )
-
-    download_registry.reap_orphan_workers()
-    _join_background_sweep()
+    _shared_setup_2(blobs, monkeypatch)
 
     assert partial.exists()
 
@@ -354,12 +349,8 @@ def test_a_reaped_job_does_not_wait_out_the_grace_on_its_own_blobs(monkeypatch, 
     """Cancelling writes the partial seconds before the sweep, so waiting strands it."""
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
     partial = blobs / _NONCE_PARTIAL
-    partial.write_bytes(b"x" * 25)  # freshly written, as a just-cancelled download's would be
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    partial.write_bytes(b"x" * 25)
+    _shared_setup_1(blobs, monkeypatch)
 
     # Without the ownership claim it has to wait, which is what stranded it for the session.
     assert download_registry.sweep_abandoned_partials("model", "Org/Model") == 0
@@ -383,11 +374,7 @@ def test_ownership_never_overrides_the_lock(monkeypatch, blobs):
     partial = blobs / _NONCE_PARTIAL
     partial.write_bytes(b"x" * 25)
     _abandon(partial)
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    _shared_setup_1(blobs, monkeypatch)
 
     swept = download_registry.sweep_abandoned_partials(
         "model",
@@ -404,11 +391,7 @@ def test_ownership_never_overrides_peer_protection(monkeypatch, blobs):
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
     partial = blobs / _NONCE_PARTIAL
     partial.write_bytes(b"x" * 25)
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    _shared_setup_1(blobs, monkeypatch)
 
     swept = download_registry.sweep_abandoned_partials(
         "model",
@@ -434,8 +417,8 @@ def test_the_sweep_accepts_the_string_root_the_metadata_holds(monkeypatch, tmp_p
     partial.write_bytes(b"x" * 25)
     _abandon(partial)
 
-    # A Path-only signature raised AttributeError here, and the caller's broad except
-    # swallowed it, so the terminal sweep silently did nothing for every real download.
+    # A Path-only signature raised AttributeError here and the caller's broad except swallowed it, so
+    # the terminal sweep silently did nothing for every real download.
     swept = download_registry.sweep_abandoned_partials(
         "model",
         "Org/Model",
@@ -450,12 +433,8 @@ def test_a_job_owning_its_whole_repo_needs_no_hash_list(monkeypatch, blobs):
     """A download with no variant resolves no blob hashes, and claim() gives it the repo."""
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
     partial = blobs / _NONCE_PARTIAL
-    partial.write_bytes(b"x" * 25)  # fresh, as a just-cancelled snapshot download's would be
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    partial.write_bytes(b"x" * 25)
+    _shared_setup_1(blobs, monkeypatch)
 
     assert download_registry.sweep_abandoned_partials("model", "Org/Model") == 0
     assert (
@@ -496,15 +475,11 @@ def test_the_boot_sweep_runs_after_the_orphan_is_killed(monkeypatch, tmp_path, b
         "hf_cache_roots",
         lambda *_a, **_k: [blobs.parent.parent],
     )
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    _shared_setup_1(blobs, monkeypatch)
 
     def _kill(_pid):
         order.append("kill")
-        locked["held"] = False  # the lock dies with the process
+        locked["held"] = False
         return True
 
     monkeypatch.setattr(download_registry, "_kill_orphan", _kill)
@@ -525,12 +500,8 @@ def test_a_companion_the_dead_worker_was_writing_is_owned_too(monkeypatch, blobs
     """A shared mmproj lives in progress_blob_hashes, never in the main blob_hashes set."""
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
     companion = blobs / f"{_PEER}.feedface{hf_cache_state.INCOMPLETE_SUFFIX}"
-    companion.write_bytes(b"x" * 25)  # fresh, as a just-cancelled worker's companion would be
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    companion.write_bytes(b"x" * 25)
+    _shared_setup_1(blobs, monkeypatch)
 
     # Ownership limited to the variant's own quant leaves the companion waiting out the grace.
     assert (
@@ -567,7 +538,7 @@ def test_the_reaper_waits_for_the_worker_to_actually_die(monkeypatch):
 
     download_registry._kill_orphan(4242)
 
-    assert alive["n"] == 0  # returned only once the process was gone, not straight after kill
+    assert alive["n"] == 0
 
 
 def test_a_worker_that_will_not_die_keeps_its_breadcrumb_and_its_partial(
@@ -597,14 +568,14 @@ def test_a_worker_that_will_not_die_keeps_its_breadcrumb_and_its_partial(
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
     monkeypatch.setattr(download_registry, "_process_alive", lambda _pid: True)
     monkeypatch.setattr(download_registry, "_is_our_worker", lambda *_a: True)
-    monkeypatch.setattr(download_registry, "_kill_orphan", lambda _pid: False)  # would not die
+    monkeypatch.setattr(download_registry, "_kill_orphan", lambda _pid: False)
     monkeypatch.setattr(download_registry, "hf_cache_roots", lambda *_a, **_k: [tmp_path / "none"])
 
     download_registry.reap_orphan_workers()
     _join_background_sweep()
 
     assert partial.exists()
-    assert crumb.exists()  # still tracked, so the next boot tries again
+    assert crumb.exists()
 
 
 def test_a_locked_peer_partial_still_counts_against_the_disk_check(monkeypatch, blobs):
@@ -673,7 +644,7 @@ def test_ownership_is_recovered_from_the_manifest_when_hashes_never_resolved(mon
         metadata, frozenset(), frozenset(), "model", "Org/Model"
     )
 
-    assert owns_all is False  # a variant job never owns its siblings' blobs
+    assert owns_all is False
     assert owned == frozenset({_MAIN})
 
 
@@ -702,8 +673,8 @@ def test_a_filesystem_without_flock_does_not_escape_the_probe(monkeypatch, tmp_p
     # No lock file: nobody has locked this blob, whatever the filesystem supports.
     assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is False
 
-    # With one, the answer is "held" rather than an exception -- which is also what a
-    # SoftFileLock would say, since its file IS the lock and that file is present.
+    # With one, the answer is "held" rather than an exception, which is also what a SoftFileLock would
+    # say, since its file IS the lock.
     lock_path.touch()
     assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is True
 
@@ -746,12 +717,7 @@ def test_unreadable_breadcrumbs_do_not_cancel_the_cache_sweep(monkeypatch, tmp_p
 
     monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: _UnreadableDir())
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
-    monkeypatch.setattr(
-        download_registry, "hf_cache_roots", lambda *_a, **_k: [blobs.parent.parent]
-    )
-
-    download_registry.reap_orphan_workers()
-    _join_background_sweep()
+    _shared_setup_2(blobs, monkeypatch)
 
     assert not partial.exists()
 
@@ -759,13 +725,9 @@ def test_unreadable_breadcrumbs_do_not_cancel_the_cache_sweep(monkeypatch, tmp_p
 def test_an_owned_partial_that_is_still_growing_is_spared(monkeypatch, blobs):
     """Ownership proves OUR writer died, never that no other process shares the cache."""
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
-    monkeypatch.setattr(download_registry, "blob_download_lock_held", lambda *_a: False)  # lies
+    monkeypatch.setattr(download_registry, "blob_download_lock_held", lambda *_a: False)
     monkeypatch.setattr(download_registry, "_STILLNESS_PROBE_SECONDS", 0.05)
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    _shared_setup_1(blobs, monkeypatch)
     partial = blobs / _NONCE_PARTIAL
     partial.write_bytes(b"x" * 25)
 
@@ -774,7 +736,7 @@ def test_an_owned_partial_that_is_still_growing_is_spared(monkeypatch, blobs):
     def _write_while_we_watch(_seconds):
         real_sleep(_seconds)
         with partial.open("ab") as handle:
-            handle.write(b"y" * 10)  # an external writer, mid-transfer
+            handle.write(b"y" * 10)
 
     monkeypatch.setattr(download_registry.time, "sleep", _write_while_we_watch)
 
@@ -792,13 +754,9 @@ def test_an_owned_partial_that_never_moves_is_swept_without_the_full_grace(monke
     """The corpse of a cancelled download must not outlive the retry that follows it."""
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
     monkeypatch.setattr(download_registry, "_STILLNESS_PROBE_SECONDS", 0.05)
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    _shared_setup_1(blobs, monkeypatch)
     partial = blobs / _NONCE_PARTIAL
-    partial.write_bytes(b"x" * 25)  # written seconds ago, far inside the abandonment grace
+    partial.write_bytes(b"x" * 25)
 
     swept = download_registry.sweep_abandoned_partials(
         "model",
@@ -828,19 +786,15 @@ def test_a_breadcrumb_whose_worker_already_exited_is_claimed(monkeypatch, tmp_pa
         encoding = "utf-8",
     )
     partial = blobs / _NONCE_PARTIAL
-    partial.write_bytes(b"x" * 25)  # fresh, so only an ownership claim reaches it
+    partial.write_bytes(b"x" * 25)
 
     monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: workers)
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
-    monkeypatch.setattr(download_registry, "_process_alive", lambda _pid: False)  # already dead
+    monkeypatch.setattr(download_registry, "_process_alive", lambda _pid: False)
     monkeypatch.setattr(download_registry, "_STILLNESS_PROBE_SECONDS", 0.05)
     monkeypatch.setattr(download_registry, "_settle_orphaned_download", lambda *_a, **_k: None)
     monkeypatch.setattr(download_registry, "hf_cache_roots", lambda *_a, **_k: [tmp_path / "none"])
-    monkeypatch.setattr(
-        download_registry,
-        "iter_destructive_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
-    )
+    _shared_setup_1(blobs, monkeypatch)
 
     download_registry.reap_orphan_workers()
     _join_background_sweep()

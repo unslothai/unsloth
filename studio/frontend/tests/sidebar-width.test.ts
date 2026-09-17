@@ -3,7 +3,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 // Every localStorage key written by a panel width store.
 const PANEL_WIDTH_KEYS = ["sidebar_width", "chat_settings_width"];
@@ -58,10 +59,7 @@ test("re-evaluates the cap per call, so a resize can re-clamp", () => {
 // The reset action promises to clear every stored preference, so a persisted
 // panel width that is missing from the list survives the reload.
 test("persisted panel widths are cleared by the preference reset", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
   const keys = source.slice(
     source.indexOf("const PREFS_KEYS"),
     source.indexOf("];", source.indexOf("const PREFS_KEYS")),

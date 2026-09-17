@@ -25,7 +25,7 @@ Object.assign(globalThis.window, {
   },
 });
 
-/** Exactly what a Studio from before this change wrote: no `etaSeconds` key. */
+/** Exactly what an Unsloth from before this change wrote: no `etaSeconds` key. */
 function legacyJob(repoId: string, extra: Record<string, unknown> = {}) {
   return {
     key: `model:${repoId}`,
@@ -86,7 +86,7 @@ test("a hostile persisted etaSeconds cannot reach the UI", () => {
   }
 });
 
-test("what this version writes back carries no etaSeconds, so an older Studio reads it unchanged", () => {
+test("what this version writes back carries no etaSeconds, so an older Unsloth reads it unchanged", () => {
   patchJob(keyOf("org/legacy"), { etaSeconds: 1234, bytesPerSec: 5_000_000 });
   assert.equal(getState().jobs[keyOf("org/legacy")].etaSeconds, 1234);
 
@@ -102,7 +102,7 @@ test("what this version writes back carries no etaSeconds, so an older Studio re
   );
   // The rate has never been persisted either; the ETA follows the same rule.
   assert.ok(!("bytesPerSec" in job), "persisted record leaked bytesPerSec");
-  // Everything an older Studio does read is still there and unchanged.
+  // Everything an older Unsloth does read is still there and unchanged.
   assert.equal(job.downloadedBytes, 4_000_000_000);
   assert.equal(job.expectedBytes, 8_000_000_000);
   assert.equal(job.state, "running");

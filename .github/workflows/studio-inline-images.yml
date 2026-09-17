@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Inline image compatibility
+
+on:
+  pull_request:
+    paths:
+      - 'studio/frontend/src/components/assistant-ui/markdown-text.tsx'
+      - 'studio/frontend/src/components/assistant-ui/rehype-sandbox-images.ts'
+      - 'studio/frontend/src/components/assistant-ui/sandbox-files.ts'
+      - 'studio/frontend/src/components/assistant-ui/use-sandbox-image.ts'
+      - 'studio/frontend/src/lib/markdown-data-images.ts'
+      - 'studio/frontend/src/lib/safe-markdown-url.ts'
+      - 'studio/frontend/src/lib/native-files.ts'
+      - 'studio/frontend/src/lib/data-uri.ts'
+      - 'studio/frontend/src/features/auth/**'
+      - 'studio/frontend/src/index.css'
+      - 'studio/frontend/package*.json'
+      - 'studio/frontend/vite.config.ts'
+      - 'studio/frontend/tests/markdown-image-pipeline.test.ts'
+      - 'studio/frontend/tests/sandbox-image-lifecycle.test.ts'
+      - 'studio/src-tauri/tauri.conf.json'
+      - 'tests/studio/fixtures/inline-image-*'
+      - 'tests/studio/playwright_inline_images.py'
+      - 'tests/studio/_playwright_robust.py'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - 'scripts/lockfile_supply_chain_audit.py'
+      - '.github/workflows/studio-inline-images.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  images:
+    name: Inline images (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/temp/inline-image-validation/browsers
+      PIP_CACHE_DIR: ${{ github.workspace }}/temp/inline-image-validation/pip-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Audit dependencies
+        run: python scripts/lockfile_supply_chain_audit.py
+      - name: Install frontend dependencies
+        working-directory: studio/frontend
+        run: npm ci --ignore-scripts --no-fund --no-audit
+      - name: Create isolated test environment
+        run: |
+          python -m venv temp/inline-image-validation/venv
+          if [ "$RUNNER_OS" = Windows ]; then
+            bin="$PWD/temp/inline-image-validation/venv/Scripts"
+          else
+            bin="$PWD/temp/inline-image-validation/venv/bin"
+          fi
+          "$bin/python" -m pip install playwright==1.62.0 pillow==12.3.0
+          echo "$bin" >> "$GITHUB_PATH"
+      - name: Install browser engines
+        timeout-minutes: 10
+        run: python -m playwright install chromium firefox webkit
+      - name: Install missing Linux browser libraries
+        if: runner.os == 'Linux'
+        timeout-minutes: 17
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '420'
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          if ! python tests/studio/playwright_inline_images.py --probe; then
+            bash .github/scripts/retry-with-apt-lock.sh python -m playwright install-deps chromium firefox webkit
+            python tests/studio/playwright_inline_images.py --probe
+          fi
+      - name: Markdown path matrix
+        working-directory: studio/frontend
+        run: node --experimental-strip-types --test tests/markdown-image-pipeline.test.ts tests/sandbox-image-lifecycle.test.ts
+      - name: Browser simulations
+        timeout-minutes: 5
+        run: python tests/studio/playwright_inline_images.py --browsers chromium firefox webkit chrome msedge --output temp/inline-image-validation/after
+      - name: Upload failure reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: inline-images-${{ runner.os }}
+          path: |
+            temp/inline-image-validation/after/*.json
+            temp/inline-image-validation/after/*.png
+            temp/inline-image-validation/after/server.log
+          retention-days: 1
+          if-no-files-found: ignore

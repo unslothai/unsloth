@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Best-effort MLX self-heal for Apple Silicon.
-
-On macOS, Unsloth enables Train/Export only when the MLX training/export stack is
-usable (see utils.hardware.hardware.detect_hardware -> CHAT_ONLY). MLX is pulled
-only transitively via unsloth-zoo, and a resolver backtrack (mlx-vlm ->
-transformers>=5 vs the single-env transformers pin) can silently drop it, leaving
-Train/Export greyed out after a reinstall/update. This reinstalls mlx by name on
-a background thread, then re-detects so the gate re-opens without a manual
-`unsloth studio update`.
-
-The install mirrors the main Apple Silicon installer (install_python_stack.py):
-it points UV_OVERRIDE at overrides-darwin-arm64.txt so the resolver keeps the
-Unsloth transformers pin AND installs a current mlx-vlm, and it requires the same
-minimum versions unsloth-zoo declares so a backtracked old mlx-vlm (which still
-imports but breaks VLM Train/Export) is never accepted as healthy.
-
-Mirrors the runtime backend self-heal already used for tilelang
-(core.training.worker._ensure_tilelang_backend_unconditional): default-on,
-best-effort, opt out with UNSLOTH_DISABLE_MLX_AUTOREPAIR=1.
-"""
+"""Best-effort MLX self-heal for Apple Silicon. On macOS, Unsloth enables Train/Export only when the MLX training/export stack is usable (see utils.hardware.hardware.detect_hardware -> CHAT_ONLY). MLX is pulled only transitively via unsloth-zoo, and a resolver backtrack (mlx-vlm -> transformers>=5 vs the single-env transformers pin) can silently drop it, leaving Train/Export greyed out after a reinstall/update, so this reinstalls mlx by name on a background thread and re-detects, reopening the gate without a manual `unsloth studio update`. The install mirrors the main Apple Silicon installer (install_python_stack.py): it points UV_OVERRIDE at overrides-darwin-arm64.txt so the resolver keeps the Unsloth transformers pin AND installs a current mlx-vlm, and it requires the same minimum versions unsloth-zoo declares so a backtracked old mlx-vlm (which still imports but breaks VLM Train/Export) is never accepted as healthy. Mirrors the runtime backend self-heal already used for causal-conv1d (core.training.worker._ensure_causal_conv1d_fast_path): default-on, best-effort, opt out with UNSLOTH_DISABLE_MLX_AUTOREPAIR=1."""
 
 from __future__ import annotations
 
@@ -43,68 +24,76 @@ from utils.uv_path_safety import uv_safe_path
 logger = structlog.get_logger(__name__)
 
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
-# uv's wording when --python names a path it will not install into. Matched on the
-# stable leading clause only: uv appends the offending path and a "run `uv venv`"
-# hint, and has reworded the tail across releases.
+# uv's wording when --python names a path it will not install into, matched on the stable leading clause only: uv appends the offending path and has reworded the tail across releases.
 _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installation found"
-# Minimum versions unsloth-zoo requires on Apple Silicon (its pyproject darwin
-# deps). mlx-vlm especially must be >=0.4.4: an older one still imports but
-# breaks VLM Train/Export, so installing it would wrongly clear chat-only.
-# mlx-lm's floor tracks unsloth-zoo, which needs GenerationBatch.Response and
-# BatchGenerator.next_generated from 0.31.2; it read 0.22.0 here, which would
-# have let a stack too old for batched generation clear the chat-only gate.
+# Minimum versions unsloth-zoo requires on Apple Silicon (its pyproject darwin deps). mlx-vlm especially must be >=0.4.4: an older one still imports but breaks VLM Train/Export, so installing it would wrongly clear chat-only. mlx-lm's floor tracks unsloth-zoo, which needs GenerationBatch.Response and BatchGenerator.next_generated from 0.31.2; it read 0.22.0 here, which would have let a stack too old for batched generation clear the chat-only gate.
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-# What the self-heal INSTALLS, as opposed to the floors above, which judge a
-# stack that is already there. Pinned rather than floored because this install is
-# unattended and default-on, and mlx ships breaking changes in patch releases:
-# 0.32.1 broke model loading here (unslothai/unsloth#9466). A floor would fetch
-# whatever shipped since the user last opened Unsloth, unasked.
-#
-# Keep in sync with unsloth-zoo's pyproject darwin deps. mlx-vlm stays a range so
-# the resolver can pick 0.6.15 here, where the installer overrides mlx-vlm's
-# transformers requirement, and 0.6.4 under the plain cap.
-#
-# 0.32.1 is chosen with its known defect, not in ignorance of it: it segfaults at
-# interpreter finalization when a fused Metal custom kernel is the last work a
-# process did, which unsloth-zoo measured and works around in
-# tests/_run_then_exit_hard.py. Staying on 0.32.0 to dodge that would give back
-# mlx#3833, where two fast.metal_kernel instances sharing a name but not a source
-# silently run the first kernel's code for the second. A noisy exit after the work
-# is finished beats wrong numbers from the fused kernels this stack is built on.
+# What the self-heal INSTALLS, as opposed to the floors above, which judge a stack that is already there. Pinned rather than floored because this install is unattended and default-on and mlx ships breaking changes in patch releases: 0.32.1 broke model loading here (unslothai/unsloth#9466). Keep in sync with unsloth-zoo's pyproject darwin deps; mlx-vlm stays a range so the resolver can pick 0.7.1, where the installer overrides mlx-vlm's transformers requirement, and 0.6.4 under the plain cap. mlx moves to 0.32.2 because mlx-vlm 0.7.x floors it there; that release also retires the interpreter-finalization segfault 0.32.1 hit when a fused Metal custom kernel was the last work a process did, and still carries the fix for mlx#3833, where two fast.metal_kernel instances sharing a name but not a source ran the first kernel's code for the second.
 _MLX_INSTALL_SPECS = {
-    "mlx": "==0.32.1",
+    "mlx": "==0.32.2",
     "mlx-lm": "==0.31.3",
-    "mlx-vlm": ">=0.4.4,<0.7.0",
+    "mlx-vlm": ">=0.4.4,<=0.7.1",
 }
 MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
+
+
+def _zoo_declared_specifier(package: str) -> str:
+    """The version range the INSTALLED unsloth-zoo declares for `package`, or "".
+
+    The specs above track the zoo in the repository, but the self-heal runs against whatever zoo is on
+    the machine, and it never upgrades it. mlx-vlm 0.7.1 passes `cache` to `gated_delta_update`, which a
+    zoo predating that keyword does not accept, so admitting 0.7.1 next to an older zoo raises TypeError
+    at the first Qwen3.5 VLM training step, after mlx_stack_available() has already cleared the
+    chat-only gate. Reading the installed zoo's own requirement is what keeps the two in step without
+    naming a zoo version here: it widens on its own the moment a zoo that declares 0.7.1 is installed.
+    """
+    try:
+        from importlib.metadata import requires
+    except ImportError:  # pragma: no cover - importlib.metadata is stdlib on every supported Python
+        return ""
+    try:
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+    except ImportError:
+        return ""
+    try:
+        declared = requires("unsloth_zoo") or ()
+    except Exception:
+        # Not installed, or metadata unreadable. Either way there is no zoo constraint to honour.
+        return ""
+    wanted = canonicalize_name(package)
+    for raw in declared:
+        try:
+            requirement = Requirement(raw)
+        except Exception:
+            continue
+        if canonicalize_name(requirement.name) == wanted and str(requirement.specifier):
+            return str(requirement.specifier)
+    return ""
+
+
+def _install_packages() -> tuple[str, ...]:
+    """MLX_PACKAGES, with mlx-vlm narrowed to what the installed unsloth-zoo declares.
+
+    Only mlx-vlm: it is the one whose call shape the zoo has to match, and mlx/mlx-lm are pinned
+    exactly at both ends, so intersecting those would just empty the range on any zoo a patch release
+    behind. Both specifiers are passed and uv intersects them.
+    """
+    packages = []
+    for name, spec in _MLX_INSTALL_SPECS.items():
+        declared = _zoo_declared_specifier(name) if name == "mlx-vlm" else ""
+        packages.append(f"{name}{spec},{declared}" if declared else f"{name}{spec}")
+    return tuple(packages)
+
+
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
 )
-# Require pre-built wheels for the unattended self-heal. A source distribution's
-# PEP 517 build backend runs arbitrary code at install time, and this install is
-# default-on, resolver-driven, and runs before the post-install stack check can
-# reject anything. mlx/mlx-metal ship wheels only (no sdist on PyPI) and
-# mlx-lm/mlx-vlm publish py3-none-any wheels, so requiring wheels does not break a
-# healthy self-heal; if a wheel is genuinely unavailable the install fails and
-# Unsloth stays chat-only (the existing safe fallback) until `unsloth studio update`.
+# Require pre-built wheels for the unattended self-heal: a source distribution's PEP 517 build backend runs arbitrary code at install time, and this install is default-on and runs before the post-install stack check can reject anything. mlx/mlx-metal ship wheels only (no sdist on PyPI) and mlx-lm/mlx-vlm publish py3-none-any wheels, so requiring wheels does not break a healthy self-heal; if a wheel is genuinely unavailable the install fails and Unsloth stays chat-only.
 _ONLY_BINARY_ARG = "--only-binary=:all:"
-# Allowlist of environment variables forwarded to the install subprocess. The
-# self-heal runs without confirmation on the default startup path, so it must not
-# hand resolver/build code the full Unsloth environment. Everything outside this
-# set is dropped, which excludes three dangerous classes by construction:
-#   * secrets (HF_TOKEN, AWS_*, WANDB_API_KEY, ...) that a malicious wheel/sdist
-#     build hook would otherwise read straight out of os.environ;
-#   * package-source redirects (UV_INDEX*, UV_DEFAULT_INDEX, UV_FIND_LINKS,
-#     PIP_INDEX_URL, ...) so a poisoned process env cannot silently repoint the
-#     install at an attacker-controlled index/find-links;
-#   * cache-dir redirects (UV_CACHE_DIR, XDG_CACHE_HOME) so a poisoned env cannot
-#     point uv at an attacker-staged cache (cache poisoning / symlink writes). uv
-#     falls back to its safe user-owned default cache, reused across runs anyway.
-# uv still honours on-disk config (uv.toml / pip.conf), so a corporate mirror
-# configured there keeps working; only process-env redirects are dropped. We set
-# UV_OVERRIDE ourselves in _mlx_install_env, so a poisoned one here is ignored.
+# Allowlist of environment variables forwarded to the install subprocess. The self-heal runs without confirmation on the default startup path, so it must not hand resolver/build code the full Unsloth environment. Dropping everything else excludes three classes by construction: secrets (HF_TOKEN, AWS_*, WANDB_API_KEY) a malicious wheel/sdist build hook would read out of os.environ; package-source redirects (UV_INDEX*, UV_DEFAULT_INDEX, UV_FIND_LINKS, PIP_INDEX_URL) that could repoint the install at an attacker-controlled index; and cache-dir redirects (UV_CACHE_DIR, XDG_CACHE_HOME) that could point uv at an attacker-staged cache. uv still honours on-disk config (uv.toml / pip.conf), so a corporate mirror keeps working, and UV_OVERRIDE is set in _mlx_install_env, so a poisoned one here is ignored.
 _MLX_ENV_ALLOWLIST = frozenset(
     {
         "PATH",
@@ -137,29 +126,16 @@ _MLX_ENV_ALLOWLIST = frozenset(
 )
 _REPAIR_TIMEOUT_S = 900
 
-# Attempt at most once per process; success is sticky (mlx then imports and the
-# guard short-circuits on the next boot).
+# Attempt at most once per process; success is sticky, since mlx then imports and the guard short-circuits on the next boot.
 _attempted = False
 _attempted_lock = threading.Lock()
-# The worker started by start_mlx_autorepair_if_needed, so callers can tell "still
-# installing" from "done, whichever way it went". Written under _attempted_lock together
-# with the latch above, since mlx_repair_in_flight() reads the pair as one state.
+# The worker started by start_mlx_autorepair_if_needed, so callers can tell "still installing" from "done". Written under _attempted_lock with the latch above, which mlx_repair_in_flight() reads as one state.
 _repair_thread: Optional[threading.Thread] = None
-# When that worker started, and the total it is allowed. attempt_mlx_repair times the uv
-# subprocess, but not the mlx_stack_available() imports that verify the install nor the
-# detect_hardware() pass after it -- and those import mlx.core, mlx_lm and mlx_vlm, the
-# imports this module already assumes can park indefinitely on a broken stack. An alive
-# thread was therefore an unbounded answer: a worker parked in them would hold the verdict
-# provisional for the whole session, spinning Train and Video instead of settling into the
-# chat-only state a broken stack has earned. The subprocess keeps its full timeout; this
-# adds the post-install work on top.
+# attempt_mlx_repair times the uv subprocess but not the imports that verify the install, and those can park indefinitely on a broken stack, so an alive thread alone was an unbounded answer: a parked worker would hold the verdict provisional for the whole session. Those imports are mlx.core, mlx_lm and mlx_vlm, reached through mlx_stack_available() and the detect_hardware() pass; the subprocess keeps its full timeout and this adds the post-install work on top.
 _repair_started_at: Optional[float] = None
 _WORKER_BUDGET_S = _REPAIR_TIMEOUT_S + 300
 # Indirected so the tests can drive the budget without sleeping through it.
 _repair_clock = time.monotonic
-# True once the install subprocess has actually run, which is what tells a repair that
-# changed the environment and then failed its own validation apart from one that never
-# touched it. Single-writer: the _attempted latch allows one repair per process.
 _environment_mutated = False
 
 
@@ -175,14 +151,7 @@ def mlx_available() -> bool:
         return False
 
 
-# An import error is free-form and can be a paragraph: a compiled-against-the-wrong-
-# transformers ImportError carries the hint text, and a dyld failure carries a list of
-# paths tried, and an interrupted install can leave malformed version metadata behind.
-# The blocker line ends up in /api/health and in the Train row's native tooltip, neither
-# of which can render a paragraph, so everything read from outside is folded and cut.
-# Each piece read from outside, and the finished line. Both, because a blocker can hold
-# two of them: a malformed version and the error parsing it are individually short enough
-# and together are not.
+# An import error is free-form and can be a paragraph: a compiled-against-the-wrong
 _BLOCKER_PART_CAP = 80
 _BLOCKER_LINE_CAP = 200
 
@@ -249,14 +218,7 @@ def _mlx_versions_satisfy_minimums() -> bool:
 
 
 def mlx_stack_blockers() -> list[str]:
-    """Why this host cannot train with MLX, in the order the gate checks it.
-
-    The gate itself is all-or-nothing, and "run `unsloth studio update`" is no help
-    to someone who has just run it: a resolver backtrack leaves a stack that is
-    present but unusable, and nothing said which package or which import was the
-    problem. Same order as ``mlx_stack_available`` so the two cannot disagree.
-    Empty means the stack is usable.
-    """
+    """Why this host cannot train with MLX, in the order the gate checks it. The gate itself is all-or-nothing, and "run `unsloth studio update`" is no help to someone who has just run it: a resolver backtrack leaves a stack that is present but unusable, and nothing said which package or which import was the problem. Same order as ``mlx_stack_available`` so the two cannot disagree. Empty means the stack is usable."""
     versions = _mlx_version_blockers()
     if versions:
         return [_bounded(line, _BLOCKER_LINE_CAP) for line in versions]
@@ -265,39 +227,21 @@ def mlx_stack_blockers() -> list[str]:
 
 
 def mlx_stack_available() -> bool:
-    """`import mlx.core` works AND mlx/mlx-lm/mlx-vlm meet unsloth-zoo's minimums.
-
-    Check distribution versions before imports so a too-old but importable MLX
-    module is not loaded into this process before repair can replace it."""
+    """`import mlx.core` works AND mlx/mlx-lm/mlx-vlm meet unsloth-zoo's minimums. Check distribution versions before imports so a too-old but importable MLX module is not loaded into this process before repair can replace it."""
     if not _mlx_versions_satisfy_minimums():
         return False
     return _mlx_runtime_imports_available()
 
 
 def mlx_repair_in_flight() -> bool:
-    """True while the one-time self-heal can still overturn a chat-only verdict.
-
-    Ask only about a host whose MLX stack has just been measured as unusable, which is
-    what detect_hardware's "mlx_unavailable" verdict means. This answers "has the repair
-    finished", not "does this host need one": the not-yet-started branch would otherwise
-    have to re-probe the stack, and on the host that matters that means re-running the
-    failing mlx imports on the event loop for every health poll.
-
-    Detection runs on the warm thread and the repair is scheduled after it, so such a host
-    settles chat-only first and only flips once the reinstall lands. Both halves of that
-    window count, since both publish an answer the repair is about to replace: the stretch
-    before the worker starts, and the worker itself. False the moment it has finished,
-    whichever way it went, so a host that genuinely cannot train still gets a final
-    verdict -- as it does when the self-heal is opted out of, or cannot apply at all, or
-    when a worker outlives _WORKER_BUDGET_S without finishing.
-
-    The not-yet-started half is unbounded here on purpose: this module cannot tell a
-    repair that is moments away from starting from one whose scheduler never arrives.
-    Callers holding a verdict back on the strength of it pair this with
-    mlx_repair_started() and bound that half themselves."""
+    """True while the one-time self-heal can still overturn a chat-only verdict. Ask only about a host whose MLX stack has just been measured as unusable, which is what detect_hardware's "mlx_unavailable" verdict means: this answers "has the repair finished", not "does this host need one", since the not-yet-started branch would otherwise have to re-probe the stack, and on the host that matters that means re-running the failing mlx imports on the event loop for every health poll. Detection runs on the warm thread and the repair is scheduled after it, so such a host settles chat-only first and only flips once the reinstall lands; both halves of that window count, since both publish an answer the repair is about to replace: the stretch before the worker starts, and the worker itself. False the moment it has finished, whichever way it went, so a host that genuinely cannot train still gets a final verdict, as it does when the self-heal is opted out of, or cannot apply at all, or when a worker outlives _WORKER_BUDGET_S without finishing. The not-yet-started half is unbounded here on purpose: this module cannot tell a repair that is moments away from starting from one whose scheduler never arrives, so callers holding a verdict back on the strength of it pair this with mlx_repair_started() and bound that half themselves."""
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
     if not is_apple_silicon():
+        return False
+    # A --no-torch install declines the self-heal like the kill switch, so no repair is
+    # coming and the verdict settles now instead of after the pre-start grace.
+    if _installed_without_torch():
         return False
     with _attempted_lock:
         attempted, thread, started_at = _attempted, _repair_thread, _repair_started_at
@@ -305,22 +249,13 @@ def mlx_repair_in_flight() -> bool:
         return True
     if thread is None or not thread.is_alive():
         return False
-    # Alive is not the same as making progress. See _WORKER_BUDGET_S: the uv call is timed,
-    # the imports that follow it are not, so a worker parked in them would otherwise answer
-    # True for the rest of the process.
     if started_at is not None and _repair_clock() - started_at >= _WORKER_BUDGET_S:
         return False
     return True
 
 
 def mlx_repair_started() -> bool:
-    """True once start_mlx_autorepair_if_needed() has claimed the one-time latch.
-
-    Splits mlx_repair_in_flight()'s True into its two halves for callers that treat them
-    differently: a live worker is a reinstall that legitimately runs for many minutes,
-    while "not started yet" is a promise nothing has kept yet. Reads the latch rather
-    than the thread handle, so a worker whose start() blew up still counts as started and
-    falls through to in_flight's aliveness check."""
+    """True once start_mlx_autorepair_if_needed() has claimed the one-time latch. Splits mlx_repair_in_flight()'s True into its two halves for callers that treat them differently: a live worker is a reinstall that legitimately runs for many minutes, while "not started yet" is a promise nothing has kept yet. Reads the latch rather than the thread handle, so a worker whose start() blew up still counts as started and falls through to in_flight's aliveness check."""
     with _attempted_lock:
         return _attempted
 
@@ -345,10 +280,7 @@ def _uv_executable() -> str | None:
 
 
 def _venv_root() -> str | None:
-    """The venv directory this interpreter runs from, or None outside a venv.
-
-    `sys.prefix` differs from `sys.base_prefix` exactly when a venv is active.
-    Confirm the marker file so a half-deleted tree is never named as the target."""
+    """The venv directory this interpreter runs from, or None outside a venv. `sys.prefix` differs from `sys.base_prefix` exactly when a venv is active; confirm the marker file so a half-deleted tree is never named as the target."""
     if sys.prefix == sys.base_prefix:
         return None
     try:
@@ -367,35 +299,7 @@ def _uv_install_cmd(*args: str) -> list[str] | None:
 
 
 def _mlx_install_env() -> dict[str, str]:
-    """Minimal, allowlisted environment for the unattended mlx install.
-
-    The self-heal runs without confirmation on the default startup path, so it
-    forwards only the variables uv genuinely needs (see _MLX_ENV_ALLOWLIST) instead
-    of the full Unsloth environment: secrets and package-source redirects in
-    os.environ are dropped so a malicious resolver-selected artifact cannot read
-    Unsloth secrets or be steered to a hostile index.
-
-    Mirror the main installer (install_python_stack.py) by pointing UV_OVERRIDE at
-    overrides-darwin-arm64.txt, which keeps mlx-vlm/mlx-lm on the Studio
-    Transformers floor. Without it, uv keeps the Unsloth transformers pin only
-    by silently backtracking mlx-vlm to an old, unsupported version (uv honours
-    UV_OVERRIDE; plain pip ignores it, so the transformers constraint below is the
-    pip-path safety net). We set UV_OVERRIDE ourselves, so a poisoned one in the
-    process env is ignored.
-
-    VIRTUAL_ENV is set from sys.prefix rather than forwarded from os.environ, for
-    the same reason: it names the environment uv must install into, and taking it
-    from the process env would let a caller redirect the install elsewhere.
-
-    It does NOT rescue a venv whose bin/python has stopped resolving. An explicit
-    --python outranks VIRTUAL_ENV, so uv reports the same unresolved-interpreter
-    error either way; this once claimed otherwise, and named an interpreter-probe
-    helper that was deleted with it. Nothing passable to `uv pip install` recovers
-    that state -- --target and --prefix do exit 0, but resolve against whatever
-    ambient interpreter uv finds and write a wrong-ABI or off-sys.path install,
-    which is worse than staying chat-only because it defeats the
-    mlx_stack_available() gate. That case is detected and reported instead: see
-    the _UNRESOLVED_PYTHON_MARKER branch in attempt_mlx_repair."""
+    """Minimal, allowlisted environment for the unattended mlx install. The self-heal runs without confirmation on the default startup path, so it forwards only the variables uv genuinely needs (see _MLX_ENV_ALLOWLIST) instead of the full Unsloth environment: secrets and package-source redirects in os.environ are dropped so a malicious resolver-selected artifact cannot read Unsloth secrets or be steered to a hostile index. Mirror the main installer (install_python_stack.py) by pointing UV_OVERRIDE at overrides-darwin-arm64.txt, which keeps mlx-vlm/mlx-lm on the Unsloth Transformers floor: without it, uv keeps the Unsloth transformers pin only by silently backtracking mlx-vlm to an old, unsupported version (uv honours UV_OVERRIDE; plain pip ignores it, so the transformers constraint below is the pip-path safety net). We set UV_OVERRIDE ourselves, so a poisoned one in the process env is ignored. VIRTUAL_ENV is set from sys.prefix rather than forwarded from os.environ, for the same reason: it names the environment uv must install into, and taking it from the process env would let a caller redirect the install elsewhere. It does NOT rescue a venv whose bin/python has stopped resolving: an explicit --python outranks VIRTUAL_ENV, so uv reports the same unresolved-interpreter error either way, and nothing passable to `uv pip install` recovers that state, since --target and --prefix do exit 0 but resolve against whatever ambient interpreter uv finds and write a wrong-ABI or off-sys.path install, which is worse than staying chat-only because it defeats the mlx_stack_available() gate. That case is detected and reported instead: see the _UNRESOLVED_PYTHON_MARKER branch in attempt_mlx_repair."""
     env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
     if (venv_root := _venv_root()) is not None:
         env["VIRTUAL_ENV"] = venv_root
@@ -412,19 +316,7 @@ def _mlx_install_env() -> dict[str, str]:
 
 
 def _transformers_constraint_args() -> tuple[list[str], str | None]:
-    """Pin transformers to the running version for the mlx install.
-
-    The install must never upgrade transformers underneath a running Unsloth
-    (the single-env install pins a compatible default). With UV_OVERRIDE set this
-    is belt-and-suspenders; on the plain-pip path (no UV_OVERRIDE support) it is
-    the actual guard -- the resolver either finds an mlx build compatible with the
-    pin or fails, leaving us chat-only rather than breaking Unsloth. Returns
-    (pip args, temp file path to clean up).
-
-    Read the version from installed metadata rather than `import transformers`:
-    transformers can have valid metadata yet fail to import (e.g. an incompatible
-    huggingface_hub), and in that case we still want to pin it so the mlx install
-    cannot quietly upgrade it out from under Unsloth."""
+    """Pin transformers to the running version for the mlx install. The install must never upgrade transformers underneath a running Unsloth (the single-env install pins a compatible default). With UV_OVERRIDE set this is belt-and-suspenders; on the plain-pip path (no UV_OVERRIDE support) it is the actual guard, since the resolver either finds an mlx build compatible with the pin or fails, leaving us chat-only rather than breaking Unsloth. Returns (pip args, temp file path to clean up). Read the version from installed metadata rather than `import transformers`: transformers can have valid metadata yet fail to import (e.g. an incompatible huggingface_hub), and in that case we still want to pin it so the mlx install cannot quietly upgrade it out from under Unsloth."""
     from importlib.metadata import PackageNotFoundError, version as _dist_version
 
     try:
@@ -440,23 +332,19 @@ def _transformers_constraint_args() -> tuple[list[str], str | None]:
 
 
 def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
-    """Install a usable mlx/mlx-lm/mlx-vlm stack by name into the running venv.
-    Best-effort; returns True iff the resulting stack meets unsloth-zoo's minimums
-    (so a backtracked old mlx-vlm is rejected, not accepted). transformers is held
-    at its pinned version so the install can never upgrade it underneath Unsloth."""
+    """Install a usable mlx/mlx-lm/mlx-vlm stack by name into the running venv. Best-effort; returns True iff the resulting stack meets unsloth-zoo's minimums (so a backtracked old mlx-vlm is rejected, not accepted). transformers is held at its pinned version so the install can never upgrade it underneath Unsloth."""
     global _environment_mutated
-    # Prepare the constraint inside the try: this runs on a daemon thread, so an
-    # exception here (e.g. tempfile.mkstemp failing on a full disk or bad TMPDIR)
-    # must leave Unsloth chat-only, not crash the background self-heal thread.
+    # Prepare the constraint inside the try: this runs on a daemon thread, and an exception here (e.g. tempfile.mkstemp failing on a full disk or a bad TMPDIR) must leave Unsloth chat-only, not crash the background self-heal thread.
     constraint_path = None
     try:
         constraint_args, constraint_path = _transformers_constraint_args()
+        packages = _install_packages()
         cmd = _uv_install_cmd(
             "--upgrade",
             _ONLY_BINARY_ARG,
             *_MLX_REINSTALL_ARGS,
             *constraint_args,
-            *MLX_PACKAGES,
+            *packages,
         )
         if cmd is None:
             logger.warning(
@@ -464,11 +352,8 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
                 "staying chat-only. Run `unsloth studio update` to restore uv."
             )
             return False
-        logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
-        # Before the wait, not after it. Every package is passed with
-        # --reinstall-package, so uv removes and replaces them as it goes: a timeout or a
-        # non-zero exit part way through leaves a stack neither the one detection measured
-        # nor the one asked for. Nothing before this line touches the environment.
+        logger.info("MLX self-heal: installing %s", ", ".join(packages))
+        # Before the wait, not after: every package is passed with --reinstall-package, so uv removes and replaces them as it goes and a timeout or a non-zero exit part way through leaves a stack neither the one detection measured nor the one asked for. Nothing before this line touches the environment.
         _environment_mutated = True
         result = subprocess.run(
             cmd,
@@ -495,18 +380,6 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     if result.returncode != 0:
         tail = (result.stdout or "")[-2000:]
         if _UNRESOLVED_PYTHON_MARKER in (result.stdout or ""):
-            # uv will not install into this environment at all, so the venv is broken
-            # rather than merely missing MLX, and no install flag recovers it from in
-            # here: `--python <venv>/bin/python`, `--python <venv>` and a bare
-            # VIRTUAL_ENV all report the same error against an interpreter uv cannot
-            # resolve. Only rebuilding the environment fixes it, so name the command
-            # that does. uv's own text says to run `uv venv`, which would build an
-            # environment Unsloth does not manage.
-            #
-            # uv gave up before resolving an interpreter, so it installed nothing and the
-            # stack is exactly as detection last measured it. Take the mark back: a
-            # re-detect here would re-run the mlx imports for a verdict that cannot have
-            # changed, on a host where those imports are already suspect.
             _environment_mutated = False
             logger.warning(
                 "MLX self-heal could not use the Unsloth environment at %s: uv did not "
@@ -525,9 +398,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         logger.warning(
             "MLX self-heal produced an incomplete or too-old MLX stack "
             "(need %s); staying chat-only.",
-            # The floors, not MLX_PACKAGES: the gate above tests the floors, so
-            # quoting the install pins would tell someone on a usable mlx 0.33
-            # that they need exactly 0.32.1.
+            # The floors, not MLX_PACKAGES: the gate above tests the floors, so quoting the install pins would tell someone on a usable mlx 0.33 that they need exactly 0.32.2.
             ", ".join(f"{name}>={ver}" for name, ver in _MLX_MIN_VERSIONS.items()),
         )
         return False
@@ -536,26 +407,17 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
 
 def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
     repaired = attempt_mlx_repair()
-    # Re-detect after a failed validation too, as long as the install ran. That path has
-    # already changed the environment, and the verdict beside it was measured before the
-    # change: its detail can name a package the install has since put there, or an import
-    # error the install has since replaced. The verdict itself stays chat-only, correctly.
-    # A repair that never ran (opted out, uv refused, subprocess died) is skipped, since
-    # re-detecting there would re-run the mlx imports on a stack nothing has touched.
+    # Re-detect after a failed validation too, as long as the install ran.
     if not repaired and not _environment_mutated:
         return
     try:
         from utils.hardware import hardware as hw
 
-        # A pip install, so shutdown can land anywhere inside it. Scoping to the epoch read
-        # before start() discards the re-detect rather than republish for a dead lifespan.
+        # A pip install, so shutdown can land anywhere inside it. Scoping to the epoch read before start() discards the re-detect rather than republish for a dead lifespan.
         with hw.owning_detection_epoch(epoch):
-            hw.detect_hardware()  # flips CHAT_ONLY / DEVICE now that mlx imports
+            hw.detect_hardware()
         if epoch is not None and hw.current_detection_epoch() != epoch:
-            # The scoped pass declined: this repair outlived its lifespan. The install
-            # still succeeded, so the live lifespan holds a verdict measured before mlx
-            # existed and the _attempted latch blocks any later repair. Re-detect under
-            # the live epoch, or a now-capable Mac stays chat-only until a restart.
+            # The scoped pass declined, so this repair outlived its lifespan while the install succeeded: re-detect under the live epoch or a now-capable Mac stays chat-only until a restart.
             hw.detect_hardware()
         if repaired:
             logger.info(
@@ -572,31 +434,31 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
         logger.warning("MLX installed but hardware re-detection failed: %s", exc)
 
 
+def _installed_without_torch() -> bool:
+    """True when this venv was installed --no-torch (GGUF-only). Unknown reads as False: an install predating the manifest keeps today's repair behaviour rather than silently losing it."""
+    try:
+        from studio.install_manifest import recorded_no_torch
+        return recorded_no_torch() is True
+    except Exception:
+        return False
+
+
 def start_mlx_autorepair_if_needed() -> bool:
-    """If this is an Apple Silicon host whose MLX stack is missing or too old, reinstall it on
-    a daemon thread (off the startup critical path) and re-detect on success. True iff a repair
-    thread was started; False off Apple Silicon, when already attempted this process, or when
-    disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. An adequate stack starts no repair but still
-    overturns a verdict that contradicts it."""
+    """If this is an Apple Silicon host whose MLX stack is missing or too old, reinstall it on a daemon thread (off the startup critical path) and re-detect on success. True iff a repair thread was started; False off Apple Silicon, when already attempted this process, when the venv was installed --no-torch, or when disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. An adequate stack starts no repair but still overturns a verdict that contradicts it."""
     global _attempted, _repair_thread, _repair_started_at
     if not is_apple_silicon():
         return False
     from utils.hardware import hardware as _hw
 
-    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs, but
-    # only when one waits on it: under the warm's kill switch it would be a first MLX import
-    # for no one.
-    opted_out = os.environ.get(DISABLE_ENV_VAR) == "1"
+    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs, but only when one waits on it: under the warm's kill switch it would be a first MLX import for no one. A --no-torch install declined the training stack on purpose, so it counts as the same opt-out.
+    no_torch = _installed_without_torch()
+    opted_out = os.environ.get(DISABLE_ENV_VAR) == "1" or no_torch
     if opted_out and not _hw.verdict_blames_the_mlx_stack():
         return False
-    # Read before the measurement, so a shutdown during it discards whatever is published on
-    # the strength of it. The repair worker shares this epoch rather than a later one.
+    # Read before the measurement, so a shutdown during it discards whatever is published on the strength of it. The repair worker shares this epoch rather than a later one.
     epoch = _hw.current_detection_epoch()
     if mlx_stack_available():
-        # Detection asks this as the warm's first stage, early enough to race another thread's
-        # first transformers import: CPython hands the loser a partially initialised module, so
-        # mlx_lm's chain raises on a healthy install (#9120). Usable here means the verdict was
-        # raced. Only the warm's is reachable; with the warm off, a later one stands unreconciled.
+        # Asked as the warm's first stage, early enough to race another thread's first transformers import: CPython hands the loser a partially initialised module, so mlx_lm's chain raises on a healthy install (#9120).
         if _hw.overturn_the_mlx_verdict(epoch):
             logger.info(
                 "MLX stack measures usable after the warm, against a chat-only verdict "
@@ -604,28 +466,29 @@ def start_mlx_autorepair_if_needed() -> bool:
             )
         return False
     if opted_out:
+        # Measured unusable and nothing will reinstall it, so a --no-torch host's verdict
+        # settles as the opt-out it is instead of staying a repairable mlx_unavailable.
+        if no_torch and _hw.settle_the_no_torch_verdict(epoch):
+            logger.info(
+                "MLX stack measures unusable on a --no-torch install; Train/Export stay "
+                "off by request. Reinstall without --no-torch to enable them."
+            )
         return False
 
     with _attempted_lock:
         if _attempted:
             return False
         _attempted = True
-        # Built and started inside the lock that claims the latch, so the pair is never
-        # half-published: a reader landing between the two sees "attempted, nothing alive"
-        # and settles the very verdict this repair is about to overturn. The worker never
-        # takes this lock, so the start() handshake cannot deadlock against it.
         _repair_thread = threading.Thread(
             target = _run_repair_and_redetect,
             args = (epoch,),
             daemon = True,
             name = "mlx-autorepair",
         )
-        # Stamped before start() so the budget covers the worker's whole life, and under the
-        # same lock as the pair above so a reader never sees a live thread with no deadline.
+        # Stamped before start() so the budget covers the worker's whole life
         _repair_started_at = _repair_clock()
         _repair_thread.start()
-    # Logged outside the lock: a blocked stdout must not hold up mlx_repair_in_flight(),
-    # which /api/health calls on the event loop.
+    # Logged outside the lock: a blocked stdout must not hold up mlx_repair_in_flight()
     logger.warning(
         "Apple Silicon without a usable MLX stack; attempting a one-time background "
         "reinstall of mlx/mlx-lm/mlx-vlm to re-enable Train/Export. "

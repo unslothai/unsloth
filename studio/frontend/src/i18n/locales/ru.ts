@@ -5,6 +5,67 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ru = {
+  composerSettings: {
+    title: "Ввод сообщений",
+    plainText: "Обычный текст",
+    plainTextDescription: "Показывать код, Markdown и ссылки как обычный текст. Отключите для предпросмотра форматирования.",
+    showContext: "Показывать использование контекстного окна",
+    sendShortcut: "Клавиши отправки",
+    sendDescription: "Выберите, отправляет ли Enter сообщение или добавляет новую строку.",
+    followUp: "Последующие сообщения",
+    followUpDescription: "Выберите действие при отправке во время ответа. Нажмите {shortcut}, чтобы выполнить противоположное действие для одного сообщения.",
+    queue: "В очередь",
+    steer: "Перенаправить",
+    steerDescription: "Перенаправление останавливает текущий ответ и отправляет ваше сообщение следующим.",
+    settings: "Настройки ввода",
+    preview: "Предпросмотр форматирования",
+  },
+  promptQueue: {
+    loading: "Загрузка сообщений из очереди",
+    listLabel: "Сообщения в очереди",
+    regionLabel: "Очередь сообщений, {current} из {total}",
+    itemLabel: "Сообщение в очереди {position} из {total}: {prompt}",
+    reorderInstructions: "Перетащите маркер, чтобы изменить порядок. Когда маркер в фокусе, используйте стрелки вверх или вниз для перемещения на одну позицию либо Home или End для перехода в начало или конец.",
+    dragTooltip: "Перетащите, чтобы изменить порядок",
+    reorderLabel: "Изменить порядок сообщения в очереди {position} из {total}",
+    paused: "Приостановлено",
+    steer: "Перенаправить",
+    steerTooltip: "Прервать ответ и отправить это сообщение следующим",
+    steerLabel: "Перенаправить сообщением из очереди {position}",
+    removeTooltip: "Убрать из очереди",
+    removeLabel: "Убрать сообщение из очереди {position}",
+    moreTooltip: "Дополнительно",
+    moreLabel: "Дополнительные действия для сообщения в очереди {position}",
+    editItem: "Изменить сообщение",
+    copyItem: "Скопировать сообщение",
+    editLabel: "Изменить сообщение в очереди {position}",
+    cancel: "Отмена",
+    save: "Сохранить",
+    turnOffQueueing: "Отключить очередь",
+    turnOnQueueing: "Включить очередь",
+    resume: "Возобновить очередь",
+    queueButton: "Поставить сообщение в очередь",
+    steerButton: "Перенаправить ответ",
+    sendTooltip: "Отправить сообщение ({shortcut})",
+    sendLabel: "Отправить сообщение",
+    followUpTooltip: "{action} ({send}) · {opposite} для обратного действия",
+    announceUpdated: "Сообщение в очереди обновлено.",
+    announceEditFailed: "Это сообщение больше нельзя изменить, потому что очередь изменилась.",
+    announceRemoved: "Сообщение убрано из очереди.",
+    announceSteered: "Это сообщение перенаправит ответ следующим.",
+    announceSteerFailed: "Не удалось перенаправить ответ этим сообщением. Проверьте очередь и повторите попытку.",
+    announceCopied: "Сообщение скопировано.",
+    announceCopyFailed: "Не удалось скопировать это сообщение. Повторите попытку.",
+    announceQueueingOn: "Новые последующие сообщения встанут в очередь после текущего ответа.",
+    announceQueueingOff: "Новые последующие сообщения перенаправят текущий ответ.",
+    announceMoved: "Сообщение перемещено на позицию {position} из {total}.",
+    announceMoveFailed: "Очередь изменилась до того, как сообщение удалось переместить. Повторите попытку.",
+    announceDragReset: "Очередь изменилась. Перетащите снова, чтобы изменить порядок оставшихся сообщений.",
+    editingHint: "Изменение сообщения",
+    queueingOffHint: "Новые сообщения прерывают ответ и выполняются следующими.",
+    queueingOnHint: "Новые сообщения ждут своей очереди.",
+    queueingHintShared: "Очередь сохраняется.",
+  },
   picker: {
     onDevice: "На устройстве",
     huggingFace: "Hugging Face",
@@ -54,6 +115,13 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
+    find: {
+      label: "Поиск на странице",
+      previous: "Предыдущее совпадение",
+      next: "Следующее совпадение",
+      close: "Закрыть поиск",
+      truncated: "Эта страница слишком длинная, чтобы выполнить поиск целиком.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -177,6 +245,34 @@ export const ru = {
     },
   },
   settings: {
+    accounts: {
+      title: "Учётные записи",
+      description: "Создавайте отдельные учётные записи Studio. Новые пользователи входят по одноразовому коду настройки и задают пароль.",
+      username: "Имя пользователя",
+      create: "Создать учётную запись",
+      setupCode: "Код настройки",
+      setupFor: "Код настройки для {username}",
+      shownOnce: "Скопируйте этот код сейчас и передайте владельцу учётной записи. Он показывается только здесь и действует один раз в течение 60 минут.",
+      expires: "Истекает {expiry}",
+      copy: "Скопировать код настройки",
+      copied: "Скопировано",
+      copyFailed: "Не удалось скопировать. Выделите и скопируйте код настройки выше.",
+      dismiss: "Готово",
+      owner: "Владелец установки",
+      active: "Активна",
+      inactive: "Неактивна",
+      regenerate: "Создать новый код настройки",
+      resetTitle: "Сбросить пароль {username}?",
+      resetDescription: "Создание нового кода настройки заменяет пароль {username}, завершает его сеансы и отзывает его ключи API. Передайте ему новый код, чтобы он снова выбрал пароль.",
+      deactivate: "Деактивировать",
+      reactivate: "Активировать снова",
+      delete: "Удалить учётную запись",
+      deleteTitle: "Удалить {username}?",
+      deleteDescription: "Это отзывает сеансы {username} и отменяет текущую работу. Чаты, настройки, учётные данные, загрузки, наборы данных, обучения, результаты, экспорты, галереи, песочницы, проекты и временные файлы выводятся из использования. Каталоги переименовываются и откладываются, но не удаляются. Повторное создание этого имени пользователя начнёт новую учётную запись без этих данных.",
+      cancel: "Отмена",
+      retry: "Обновить список",
+      failed: "Запрос к учётной записи не выполнен.",
+    },
     title: "Настройки",
     dialog: {
       title: "Настройки",
@@ -188,6 +284,7 @@ export const ru = {
       panelReload: "Перезагрузить",
     },
     tabs: {
+      accounts: "Учётные записи",
       general: "Общие",
       profile: "Профиль",
       appearance: "Оформление",
@@ -224,6 +321,10 @@ export const ru = {
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
       actions: {
+        findInPage: {
+          label: "Поиск на странице",
+          description: "Искать текст на этой странице",
+        },
         openSettings: {
           label: "Открыть настройки",
           description: "Открыть окно настроек",
@@ -456,6 +557,17 @@ export const ru = {
       droppedNotice: "Часть строк пропущена: журнал записывался быстрее, чем его удавалось читать.",
       morePending: "Ещё строки продолжают читаться; они появятся при следующем обновлении.",
       staleSession: "Запись журнала в файл отключена, поэтому это предыдущий сеанс, который не будет обновляться.",
+      downloadAllLogs: "Скачать все журналы (.zip)",
+      downloadingAllLogs: "Упаковка журналов...",
+      exportMaskedNote: "В экспортированных файлах учётные данные скрыты. Очень большие журналы сохраняют только самые свежие строки, а некоторые могут быть исключены целиком; смотрите EXPORT_WARNINGS.txt в архиве.",
+      downloadedTo: "Сохранено в {path}",
+      downloadedToBrowser: "Загрузка началась.",
+      showInFolder: "Показать в папке",
+      openLogsFolder: "Открыть папку журналов",
+      openLogsFolderFailed: "Не удалось открыть папку журналов.",
+      exportFailed: "Не удалось скачать журналы.",
+      exportTooOld: "Запущенный сервер Unsloth слишком старый для экспорта журналов. Обновите его и перезапустите.",
+      exportForbidden: "Для скачивания всех журналов нужен вход в сеанс Studio. Ключа API недостаточно.",
       keywords: "отладка журнал журналы лог логи ошибка ошибки сбой трассировка диагностика поиск неисправностей debug log",
     },
     voice: {
@@ -484,6 +596,13 @@ export const ru = {
         sttModelLabel: "Модель распознавания речи",
         sttModelDescription:
           "Выберите или найдите модель STT для локального запуска.",
+        sttDeviceLabel: "Загружать в",
+        sttDeviceAuto: "GPU, если доступен",
+        sttDeviceCpu: "ОЗУ процессора",
+        sttDeviceAutoDescription:
+          "Использовать GPU, когда он есть, иначе CPU.",
+        sttDeviceCpuDescription:
+          "Держать модель в системной памяти. Расшифровка медленнее, но память GPU не занимается.",
         sttModelSearchPlaceholder: "Поиск модели",
         sttModelSearching: "Поиск на Hugging Face…",
         sttModelValidating: "Проверка совместимости с Whisper…",
@@ -693,7 +812,7 @@ export const ru = {
         sectionTitle: "Автопереключение модели (OpenAI API)",
         enable: "Переключать модель по запросу",
         enableDescription:
-          "Загружать скачанную модель GGUF, указанную в запросе к API, перед обработкой запроса. По умолчанию выключено.",
+          "Загружать скачанную модель, указанную в запросе к API, перед обработкой запроса. По умолчанию выключено.",
         idleUnload: "Автовыгрузка при простое",
         idleUnloadDescription:
           "Освобождать VRAM после указанного числа секунд простоя. 0 оставляет модель загруженной; минимальное значение: 60.",
@@ -798,7 +917,7 @@ export const ru = {
         embeddingModel: "Модель эмбеддингов",
         embeddingModelDescription:
           "Модель Hugging Face или локальный путь для индексации и поиска по вашим документам. По умолчанию {defaultModel}.",
-        searchPlaceholder: "Поиск embedding-моделей",
+        searchPlaceholder: "Поиск любой модели на HF",
         reindexWarning:
           "Влияет только на вновь индексируемые документы. После смены модели загрузите существующие документы заново.",
         emptyError: "Введите ID модели Hugging Face или локальный путь.",
@@ -806,7 +925,24 @@ export const ru = {
         saveError: "Не удалось сохранить модель эмбеддингов.",
         saved: "Модель эмбеддингов сохранена.",
         saveAnyway: "Всё равно сохранить",
-        resetAction: "Восстановить значение по умолчанию",
+        recommended: "Рекомендуется",
+        onDevice: "На устройстве",
+        searching: "Поиск в Hugging Face…",
+        checking: "Проверка…",
+        noResults: "Модели эмбеддингов не найдены",
+        download: "Скачать",
+        unload: "Выгрузить",
+        unloadFailed: "Не удалось выгрузить модель эмбеддингов",
+        downloadingStatus: "Загрузка…",
+        notDownloaded: "Не загружено",
+        notDownloadedSized: "Не загружено · {size}",
+        loaded: "Загружено",
+        downloading: "Загрузка {model}",
+        downloadingDescription:
+          "Прогресс виден на панели загрузок. После завершения он будет использован для индексации.",
+        downloadFailed: "Не удалось начать загрузку",
+        downloadConflict: "Возобновите эту загрузку в Hub",
+        downloadBusy: "Загрузка уже выполняется",
       },
       storage: {
         sectionTitle: "Хранилище",
@@ -817,6 +953,16 @@ export const ru = {
         copied: "Путь скопирован",
         openError: "Не удалось открыть папку",
         copyError: "Не удалось скопировать путь",
+      },
+      repairInstall: {
+        label: "Восстановить установку",
+        description:
+          "Повторно запускает установщик для управляемой среды. Пригодится, если графический процессор не определяется или приложение не запускается.",
+        action: "Восстановить установку",
+        confirmTitle: "Восстановить эту установку?",
+        confirmDescription:
+          "Останавливает сервер и повторно запускает установщик, который переустанавливает PyTorch для графического процессора этого компьютера. Чаты и настройки сохраняются. Это может занять несколько минут.",
+        confirmAction: "Восстановить",
       },
       resetPreferences: {
         sectionTitle: "Опасная зона",
@@ -871,16 +1017,20 @@ export const ru = {
           "Всё ниже считается по вашей собственной истории. Ничего не собирается и не отправляется в Unsloth.",
         retry: "Повторить",
         privacyNote:
-          "Статистика рассчитывается по истории чатов и обучения, которая хранится в вашей установке Unsloth. Ничего не собирается и ничего не отправляется ни в Unsloth, ни третьим лицам.",
+          "Статистика рассчитывается по локальной истории чатов, использования API и обучения в вашей установке Unsloth. Запросы, ответы и ключи API для статистики никогда не сохраняются. Ничего не отправляется ни в Unsloth, ни третьим лицам.",
         emptyChats:
-          "Чатов пока нет. Начните разговор, и статистика появится здесь.",
+          "Чатов и использования API пока нет. Начните разговор или выполните аутентифицированный запрос к локальному API.",
         lifetimeTokens: "Токенов за всё время",
         peakTokens: "Пиковый день",
         longestChat: "Самый длинный чат",
         currentStreak: "Текущая серия",
         longestStreak: "Самая длинная серия",
         activityTitle: "Активность по токенам",
-        activityDescription: "Период: {weeks} · {total}",
+        activityDescription: {
+          daily: "Период: {weeks} · {total}",
+          weekly: "Пиковая неделя {total} · последние {weeks}",
+          cumulative: "{total} накоплено за последние {weeks}",
+        },
         mode: {
           daily: "По дням",
           weekly: "По неделям",
@@ -895,6 +1045,9 @@ export const ru = {
         totalMessages: "Всего сообщений",
         tokensIn: "Отправлено токенов",
         tokensOut: "Сгенерировано токенов",
+        totalTokens: "Всего токенов",
+        studioChatTokens: "Токены Unsloth Chat",
+        apiTokens: "Токены API",
         cachedTokens: "Токенов из кеша",
         cachedValue: "{tokens} ({percent}% ввода)",
         avgTokensPerChat: "В среднем токенов на чат",
@@ -941,6 +1094,13 @@ export const ru = {
         minimal: "Минималистичная",
       },
       custom: {
+        chatWidth: {
+          label: "Ширина чата",
+          description: "Задайте ширину сообщений и поля ввода. Полная ширина использует пространство между боковыми панелями.",
+          standard: "Стандартная",
+          wide: "Широкая",
+          full: "Полная ширина",
+        },
         reset: "Сбросить",
         resetAll: "Сбросить настройки оформления",
         preferencesTitle: "Параметры",
@@ -990,6 +1150,10 @@ export const ru = {
           errorStorageFull:
             "Недостаточно локального хранилища для этого шрифта. Сначала удалите один из импортированных.",
           errorFailed: "Не удалось загрузить этот файл шрифта.",
+        },
+        interfaceScale: {
+          label: "Масштаб интерфейса",
+          description: "Измените размер всех элементов интерфейса.",
         },
         uiFontSize: {
           label: "Размер шрифта интерфейса",
@@ -1071,6 +1235,8 @@ export const ru = {
         currentLoad: "Текущая нагрузка",
         free: "{value} свободно",
         noGpu: "GPU не обнаружен",
+        gpuUnusable: "GPU недоступен",
+        gpuUnusableDetail: "Обнаружен, но PyTorch не может его использовать",
       },
       gpu: {
         title: "Устройства GPU",
@@ -1080,6 +1246,12 @@ export const ru = {
         unreadable: "Не удалось прочитать оборудование этого сервера.",
         noGpu:
           "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
+        noUsableGpu: "Ни один GPU на этой машине недоступен для PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch собран только для CPU ({version}), поэтому GPU ниже использовать нельзя. Восстановите установку, чтобы вернуть поддержку GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) не может инициализировать GPU ниже, поэтому использовать их нельзя. Проверьте драйвер видеокарты или восстановите установку.",
+        unusableDevice: "недоступен",
         unknownDevice: "Неизвестный GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1134,6 +1306,8 @@ export const ru = {
           sourceBuild: "Этот llama.cpp собран из исходников, его бэкенд нельзя переключить отсюда.",
           customPath: "Выбрана пользовательская папка llama.cpp. Её сборка определяет вычислительный бэкенд.",
           unresolved: "Не удалось проверить доступные бэкенды. Проверьте подключение и повторите попытку.",
+          updateChecksDisabled:
+            "Проверка обновлений отключена (UNSLOTH_DISABLE_UPDATE_CHECK=1), поэтому доступные бэкенды не запрашиваются.",
         },
         // Не отображается: дополнительные слова для поиска по настройкам.
         llamaBackendKeywords:
@@ -1145,8 +1319,8 @@ export const ru = {
         keepResidentDescription: "Остаётся в видеопамяти между запросами.",
         keepResidentHint: "Веса не возвращаются в системную ОЗУ, пока модель загружена. Отключает автовыгрузку по простою, а если веса действительно находятся в ОЗУ хоста (единая память или частичная выгрузка на GPU), дополнительно передаёт --mlock, чтобы ОС не вытесняла их и не загружала заново при следующем запросе.",
         noRamReserve: "Не резервировать системную ОЗУ под модель",
-        noRamReserveDescription: "Не хранит полную копию в ОЗУ.",
-        noRamReserveHint: "Веса передаются в видеопамять вместо хранения полной копии в ОЗУ. Сохраняет загрузку через отображение файла в память в llama.cpp и убирает --no-mmap и --mlock.",
+        noRamReserveDescription: "Уменьшает объём ОЗУ, занятый весами модели.",
+        noRamReserveHint: "Пропускает загрузку через отображение файла в память в поддерживаемых сборках Windows, когда модель полностью выгружена на видеокарту, чтобы её страницы не оставались в памяти. В остальных случаях сохраняет загрузку через отображение файла в память. Необходимые буферы ЦП всё равно могут занимать ОЗУ. Убирает --no-mmap и --mlock.",
         mlockVetoed: "--mlock остаётся выключенным: закрепление модели зарезервировало бы ОЗУ под неё целиком. Автовыгрузка по простою по-прежнему отключена.",
         memlockCapped: "Система ограничивает блокируемую память значением {limit}. Модель большего размера не будет закреплена полностью; увеличьте лимит через ulimit -l.",
         reloadRequired: "Перезагрузите модель, чтобы применить новые параметры памяти.",
@@ -1192,6 +1366,7 @@ export const ru = {
         processMemory: "Память процесса",
         notInstalled: "Не установлено",
         unknown: "Неизвестно",
+        vramWithShared: "{vram} VRAM + {shared} общей памяти",
       },
     },
     agents: {
@@ -1199,11 +1374,12 @@ export const ru = {
       description:
         "Подключение кодинг-агентов, таких как Claude Code и Codex, к локальной модели с помощью unsloth start.",
       intro:
-        "подключает Claude Code, Codex, Hermes, OpenClaw, OpenCode и других агентов к модели, которую Unsloth обслуживает локально, полностью офлайн. Запускается OpenAI-совместимый сервер, а файлы конфигурации вашего агента остаются нетронутыми.",
+        "подключает Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode и других агентов к модели, которую Unsloth обслуживает локально, полностью офлайн. Запускается OpenAI-совместимый сервер, а файлы конфигурации вашего агента остаются нетронутыми.",
       readDocs: "Открыть документацию",
       copy: "Копировать",
       copied: "Скопировано",
       commandBuilder: "Конструктор команды",
+      commandShell: "Оболочка для всех команд",
       agent: "Кодинг-агент",
       model: "Модель",
       searchModels: "Поиск моделей GGUF…",
@@ -1221,6 +1397,14 @@ export const ru = {
       docs: "Документация",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex требует модель GGUF, обслуживаемую llama-server. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
       subagent: {
@@ -1300,6 +1484,29 @@ export const ru = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Беседы" },
+        files: { title: "Файлы и вставка" },
+        display: { title: "Отображение" },
+        composer: { title: "Поле сообщения" },
+        menu: { title: "Меню чата" },
+        advanced: { title: "Дополнительно" },
+        contextTitle: "Контекст",
+      },
+      projectAttachmentsHint:
+        "Для отдельного чата настройку можно изменить в его меню вложений.",
+      rememberParamsPerModelHint:
+        "Если выключено, для всех моделей используются одинаковые настройки.",
+      autoCompactHint: "Учитывает заданную длину контекста, а не доступную VRAM.",
+      pastedTextShortDescription:
+        "Вставленный текст длиной от {count} символов становится вложением .txt. Более короткий текст остаётся в поле сообщения.",
+      pastedTextOffDescription:
+        "Весь вставленный текст остаётся в поле сообщения независимо от длины.",
+      compactionDescriptionInherit: "Использует политику контекста сервера.",
+      compactionDescriptionCheckpoint:
+        "Сохраняет последний обмен сообщениями и постоянные инструкции.",
+      compactionDescriptionRolling:
+        "Удаляет самые старые реплики, сохраняя недавнюю историю и выбранный запас свободного места.",
       projectsSection: "Показывать раздел «Проекты»",
       projectsSectionDescription:
         "Группирует чаты проектов под заголовком «Проекты». Отключите, чтобы они отображались в «Недавних».",
@@ -1313,6 +1520,9 @@ export const ru = {
         showAllQuantizations: "Показывать все квантизации",
         showAllQuantizationsDescription:
           "Включено: показываются все квантизации из раздела «On Device», в том числе не скачанные. Выключено: показываются только скачанные квантизации.",
+        showMemoryBar: "Показывать шкалу использования VRAM",
+        showMemoryBarDescription:
+          "Показывает под строкой каждой скачанной модели её ожидаемое потребление VRAM: веса, KV-кеш при той длине контекста, с которой модель будет загружена, и резерв для спекулятивного черновика.",
       },
       menu: {
         title: "Меню чата",
@@ -1320,12 +1530,14 @@ export const ru = {
           "Закрепляйте пункты в боковом меню «+» чата. Остальные будут доступны в разделе «Ещё».",
         chatWithFiles: "Чат с файлами (RAG)",
         mcp: "MCP",
+        skills: "Навыки агентов",
         savedPrompts: "Сохранённые промпты",
         compareChat: "Сравнить чаты",
         exportChat: "Экспортировать чат",
       },
       pastedTextThreshold: "Сворачивать длинные вставки",
-      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения. Нажмите {shortcut}, чтобы всё равно вставить в поле сообщения.",
+      pastedTextThresholdDescription:
+        "Нажмите {shortcut}, чтобы вставить текст прямо в поле сообщения.",
       pastedTextThresholdOff: "Выкл.",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
@@ -1335,20 +1547,50 @@ export const ru = {
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
       projectAttachments: "Общий доступ к файлам в проекте",
       projectAttachmentsDescription:
-        "Поведение по умолчанию для файлов, прикрепленных в чате, который относится к проекту: индексировать их для всего проекта, чтобы любой чат в нем мог их использовать. Каждый чат может изменить это в меню вложений.",
+        "Делает новые вложения доступными во всех чатах проекта.",
       rememberParamsPerModel: "Запоминать настройки для каждой модели",
       rememberParamsPerModelDescription:
-        "При переключении модели восстанавливаются температура, промпт и другие настройки, которые вы использовали с ней в последний раз. Если выключено, для всех моделей действует один набор настроек.",
+        "Восстанавливает последний промпт, температуру и другие настройки каждой модели.",
+      autoCompact: "Автоматически сжимать длинные чаты",
+      autoCompactDescription:
+        "Удаляет старые ходы, когда локальный чат GGUF достигает лимита контекста.",
+      compactionStyle: "Когда контекст заполнен",
+      compactionStyleDescription:
+        "Настройка сервера сохраняет UNSLOTH_CONTEXT_POLICY. Сброс беседы оставляет последний ход и постоянные инструкции. Скользящее окно удаляет самые старые ходы и может сохранить больше недавней истории.",
+      compactionStyleInherit: "Использовать настройку сервера",
+      compactionStyleCheckpoint: "Сбросить беседу",
+      compactionStyleRollingDefault:
+        "Удалять старые ходы (~25% дополнительного места)",
+      compactionStyleRolling10:
+        "Удалять старые ходы (~10% дополнительного места)",
+      compactionStyleRolling5:
+        "Удалять старые ходы (~5% дополнительного места)",
+      compactionStyleRollingNone:
+        "Удалять старые ходы (без дополнительного сокращения)",
+      autoCompactKeywords:
+        "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Сворачивать размышления по умолчанию",
         collapseByDefaultDescription:
           "Размышления остаются свёрнутыми, пока модель думает, вместо автоматического раскрытия. Разверните блок, чтобы прочитать его.",
       },
+      currentDate: {
+        label: "Сообщать модели сегодняшнюю дату",
+        description:
+          "Добавляет текущую дату в запрос, чтобы веб-поиск и Deep Research искали свежие источники, а не исходили из даты окончания обучения модели.",
+        loadError: "Не удалось загрузить настройки текущей даты",
+        saveError: "Не удалось обновить настройки текущей даты",
+      },
+      tools: {
+        collapseByDefault: "Сворачивать действия инструментов по умолчанию",
+        collapseByDefaultDescription:
+          "Входные и выходные данные инструментов остаются свёрнутыми во время работы. Разверните строку инструмента для просмотра.",
+      },
       webSearch: {
         title: "Веб-поиск",
         images: "Показывать изображения из веб-поиска",
         imagesDescription:
-          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Studio, поэтому браузер никогда не обращается к хостам изображений.",
+          "Добавляет изображения в результаты поиска.",
       },
       artifacts: {
         title: "Canvas",
@@ -1361,6 +1603,11 @@ export const ru = {
         blockedBanner: "Заблокирован {count} внешний ресурс с {hosts}.",
         blockedBannerPlural: "Заблокировано внешних ресурсов: {count} с {hosts}.",
         blockedBannerAction: "Разрешить для этого Canvas",
+        blockedTitle: "Доступ Canvas к сети отключён",
+        blockedHint:
+          "Включите «{setting}» в разделе Настройки → Чат, чтобы Canvas мог загружать внешние ресурсы, или разрешите только для этого Canvas.",
+        blockedSettingsAction: "Открыть настройки",
+        blockedDismiss: "Закрыть",
       },
       data: "Данные",
       exportHistory: "Экспортировать историю чатов",
@@ -1369,7 +1616,7 @@ export const ru = {
       exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
-        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Raw JSONL, CSV или ShareGPT JSONL, объединённо или по чатам.",
+        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV или ShareGPT JSONL, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",
@@ -1377,7 +1624,7 @@ export const ru = {
       exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
-        "Импортируйте экспорт Open WebUI, JSONL, NDJSON или CSV в Недавние.",
+        "Импортируйте файлы JSON, JSONL, NDJSON или CSV в Недавние.",
       importChatsAction: "Импорт",
       importNoConversations: "В файле не найдено диалогов.",
       importedOneChat: "Импортирован 1 диалог в «Недавние».",
@@ -1421,6 +1668,80 @@ export const ru = {
       failedToClearChats: "Не удалось очистить чаты",
     },
     data: {
+      library: {
+        defaultSort: "По умолчанию",
+        updated: "По обновлению",
+        created: "По созданию",
+        oldest: "Сначала старые",
+        alphabetical: "По алфавиту",
+        allChats: "Все чаты",
+        singleChats: "Одиночные чаты",
+        compareChats: "Чаты сравнения",
+        allProjects: "Все проекты",
+        noProject: "Без проекта",
+        unavailableProject: "Проект недоступен",
+        filterSort: "Фильтры и сортировка",
+        sort: "Сортировка",
+        type: "Тип",
+        sortBy: "Сортировать по",
+        filterProject: "Фильтр по проекту",
+        searchProjects: "Поиск проектов",
+        noProjects: "Проекты не найдены.",
+        untitled: "Без названия",
+        oneChat: "1 чат",
+        chatCount: "Чатов: {count}",
+        searchChats: "Поиск чатов или проектов",
+        searchArchivedChats: "Поиск архивных чатов или проектов",
+        searchImages: "Поиск архивных изображений",
+        searchVideos: "Поиск архивных видео",
+        searchAudio: "Поиск архивного аудио",
+        unarchive: "Разархивировать",
+        unarchiveAll: "Разархивировать всё",
+        unarchiveResults: "Разархивировать результаты",
+        deleteResults: "Удалить результаты",
+        noChats: "Нет чатов, соответствующих запросу.",
+        noArchivedChats: "Нет архивных чатов.",
+        noArchivedMatches: "Нет архивных чатов, соответствующих запросу.",
+        noMedia: "Нет архивных элементов.",
+        noMediaMatches: "Нет архивных элементов, соответствующих запросу.",
+        itemCount: "Элементов: {count}",
+        incompleteSearch: "Поиск не завершён. Повторите загрузку оставшихся элементов.",
+        searchingRemaining: "Поиск оставшихся элементов (загружено: {count})...",
+        noLoadedMatches: "Среди загруженных элементов совпадений нет.",
+        deleteItem: "Удалить: {title}",
+        unarchiveItem: "Разархивировать: {title}",
+        deleteItemsTitle: "Удалить архивные элементы ({count})",
+        unarchiveItemsTitle: "Разархивировать элементы ({count})",
+        deleteFilesWarning: "Эти файлы будут удалены навсегда. Это действие нельзя отменить.",
+        restoreWarning: "Эти элементы вернутся в галерею.",
+        working: "Обработка...",
+        loadFailed: "Не удалось загрузить архивные элементы",
+        loadMoreFailed: "Не удалось загрузить другие архивные элементы",
+        restoreFailed: "Не удалось разархивировать выбранные элементы",
+        deleteFailed: "Не удалось удалить выбранные элементы",
+        projectsFailed: "Не удалось загрузить архивные проекты",
+        pageStalled: "Следующая страница архива не загружена. Повторите попытку.",
+        pageChanged: "Архив изменился во время загрузки. Повторите попытку.",
+        selectAll: "Выбрать все видимые чаты",
+        selectItem: "Выбрать «{title}»",
+        selectedChats: "Выбрано чатов: {count}",
+        move: "Переместить",
+        pin: "Закрепить",
+        unpin: "Открепить",
+        archive: "Архивировать",
+        deletedChats: "Удалено чатов: {count}",
+        restoredChats: "Разархивировано чатов: {count}",
+        pinnedChats: "Закреплено чатов: {count}",
+        unpinnedChats: "Откреплено чатов: {count}",
+        movedChatsToProject: "Перемещено чатов в {project}: {count}",
+        movedChatsToRecents: "Перемещено чатов в недавние: {count}",
+        moveFailed: "Не удалось переместить чаты",
+        deleteChatsTitle: "Удалить чаты ({count})",
+        deleteChatsWarning: "Удалить выбранные чаты ({count})? Это действие нельзя отменить.",
+        deleteArchivedTitle: "Удалить архивные чаты ({count})",
+        deleteArchivedWarning: "Удалить выбранные архивные чаты ({count})? Это действие нельзя отменить.",
+        deleting: "Удаление...",
+      },
       title: "Данные",
       backToData: "Вернуться к данным",
       exportFailed: "Не удалось экспортировать чаты",
@@ -1433,6 +1754,8 @@ export const ru = {
       archivedImagesDescription: "Просмотр и управление изображениями, которые вы архивировали.",
       archivedVideos: "Архивные видео",
       archivedVideosDescription: "Просмотр и управление видео, которые вы архивировали.",
+      archivedAudio: "Архивированные аудио",
+      archivedAudioDescription: "Просмотр и управление аудиоклипами, которые вы архивировали.",
       manageAction: "Управлять",
       manageChats: "Управление чатами",
       manageChatsDescription:
@@ -1462,6 +1785,27 @@ export const ru = {
       alwaysDeleteFiles: "Всегда удалять файлы",
       alwaysDeleteFilesDescription:
         "При удалении чата с диска удаляется и его собственная папка песочницы. Файлы, созданные внутри проекта, остаются в рабочей папке этого проекта.",
+      chatsSection: "Чаты и архивы",
+      transferSection: "Импорт и экспорт",
+      deletionSection: "Удаление",
+      archives: "Архивы",
+      archiveChatsLabel: "Чаты",
+      archiveVideosLabel: "Видео",
+      exportFormatsSummary: "Экспортируйте чаты из Недавних и проектов в нужном формате.",
+      trainingSummary: "Создайте из чатов набор данных для дообучения.",
+      confirmDeletionSummary:
+        "Запрашивать подтверждение перед удалением отдельных чатов.",
+      sandboxFiles: "Файлы песочниц чатов",
+      sandboxFilesDescription: "Действие по умолчанию при удалении чата.",
+      keepSandboxFiles: "Сохранять файлы песочниц",
+      deleteSandboxFiles: "Удалять файлы песочниц",
+      projectFilesKept:
+        "Песочницы представляют собой папки, созданные для отдельных чатов. Файлы в рабочих пространствах проектов сохраняются.",
+      deleteAllAction: "Удалить всё",
+      deleteChatsOnly: "Удалить только чаты…",
+      deleteChatsAndSandboxes: "Удалить чаты и песочницы…",
+      deleteSandboxFilesDescription:
+        "Также удалить папку песочницы каждого чата и файлы в ней. Файлы в рабочих пространствах проектов сохраняются.",
       filesSection: "Файлы",
       uploadedFiles: "Загруженные файлы",
       uploadedFilesDescription:
@@ -1774,6 +2118,7 @@ export const ru = {
       sourceHfCache: "Кэш HF",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Пользовательская папка",
       sourceLocalModel: "Локальная модель",
       scanningLocal: "Сканирование локальных моделей…",
@@ -2055,6 +2400,7 @@ export const ru = {
       memoryEfficient: "Экономия памяти",
       weightDecomposed: "Декомпозиция весов",
       notSupportedAppleSilicon: "Не поддерживается на Apple Silicon",
+      doraNeedsVisionLayersOff: "Отключите обучение слоёв зрения, чтобы использовать DoRA",
       optimization: "Оптимизация",
       schedule: "Расписание",
       memory: "Память",
@@ -2349,5 +2695,32 @@ export const ru = {
       datasetStreaming: "Датасет: потоковая передача (без полной загрузки)",
       modelWeights: "Веса модели",
     },
+  },
+  modelMemory: {
+    readout:
+      "Веса {model} + контекст {context} = {total} из {budget} доступной VRAM",
+    readoutWithSpec:
+      "Веса {model} + KV {kv} + черновик MTP {spec} = {total} из {budget} доступной VRAM",
+    kvRate: "KV зарезервирован, ~{rate}/токен",
+    oomLikely: "При текущих настройках вероятна нехватка памяти",
+    tooLarge: "Больше объёма VRAM, часть уйдёт на CPU. Меньшая квантизация работает быстрее",
+  },
+  skills: {
+    title: "Навыки агентов",
+    description: "Навыки находятся в стандартных папках агентов. Включите их здесь, затем введите @ в чате, чтобы упомянуть навык.",
+    precedence: "~/.agents/skills имеет приоритет над ~/.claude/skills.",
+    refresh: "Обновить",
+    empty: "Навыки не найдены. Добавьте папку с SKILL.md в ~/.agents/skills или ~/.claude/skills и обновите.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "Встроенный",
+    shadowed: "Перекрыт",
+    invalid: "Недействителен",
+    compatibility: "Совместимость: {value}",
+    shadowedBy: "Другой навык ({source}) с таким именем имеет приоритет.",
+    enable: "Включить {name}",
+    disable: "Отключить {name}",
+    updateError: "Не удалось обновить навык агента",
+    mentions: "Навыки агентов",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
