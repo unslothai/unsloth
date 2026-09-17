@@ -1088,11 +1088,9 @@ def _vulkan_icd_manifest_paths() -> "list[str]":
 
 
 def _searched_vulkan_icd_manifest_paths() -> "list[str]":
-    """The half of the above a forced list REPLACES: the ordinary search, plus the additive
-    list the loader ignores while a force list is set.
+    """The half of the above a forced list REPLACES: the search, plus the additive list.
 
-    Split out so the attribution below can ask the counterfactual -- what the loader would
-    read if the forced list were cleared -- rather than assuming it would read something.
+    Split out so the attribution below can ask what clearing a forced list would expose.
     """
     if platform.system() != "Linux":
         return []
@@ -1125,10 +1123,8 @@ def the_vulkan_loader_can_only_load_amd() -> bool:
 
 
 def _loadable_icd_manifests(paths: "list[str] | None" = None) -> "list[str]":
-    """The manifests the loader would both find here and be able to load.
-
-    ``paths`` asks the same question of a candidate list instead of this host's.
-    """
+    """The manifests the loader would both find here and load; ``paths`` asks of a
+    candidate list instead of this host's."""
     return [
         path
         for path in (_vulkan_icd_manifest_paths() if paths is None else paths)
@@ -1174,13 +1170,9 @@ def _vulkan_override_patterns(var: str) -> "list[str]":
 def _the_loader_would_have_a_driver_without(cleared: "frozenset[str]") -> bool:
     """Whether the loader would end up with a usable driver if ``cleared`` were unset.
 
-    The whole question this attribution answers, asked once instead of restated per
-    variable: a repair is only a repair if it leaves a driver the loader can actually
-    LOAD. Testing filename allowance alone named a filter over a manifest whose library
-    was gone, where clearing the variable changes nothing and reinstalling is the fix.
-
-    ``_vulkan_icd_manifest_paths`` is used unless a forced list is being cleared, so the
-    candidate set stays the one the rest of this module reads.
+    Asked once rather than restated per variable: a repair only counts if it leaves a
+    driver the loader can LOAD. Filename allowance alone named a filter over a manifest
+    whose library was gone, where clearing it changes nothing and the fix is a reinstall.
     """
     forced = [var for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES") if _is_set(var)]
     if not set(forced) & cleared:
@@ -1424,10 +1416,8 @@ def _groups_that_own(paths: list) -> tuple:
         # this account owns the group bits are never consulted and joining the group
         # cannot open it. os.access() already said it is shut; the repair is the mode.
         if _st.st_uid == os.getuid():
-            # Unless the owner bits ALREADY grant it. os.access said the node is shut, so
-            # when rw is there for the owner the mode is not what is denying it and chmod
-            # repairs nothing: it is the same external denial the membership case below
-            # reports, reached by owner class instead.
+            # Unless the owner bits already grant rw: the node is known shut, so the
+            # mode is not what denies it. Same external denial as `already`, by owner class.
             if _st.st_mode & stat.S_IRUSR and _st.st_mode & stat.S_IWUSR:
                 external.append(path)
             else:

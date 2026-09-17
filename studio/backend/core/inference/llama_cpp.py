@@ -12708,8 +12708,8 @@ class LlamaCppBackend:
             # The closed node when it does NOT explain the empty probe, appended to whatever
             # reason does rather than returned in place of it.
             _second_finding = ""
-            # The loader diagnosis, which is sufficient on its own, so it rides on the
-            # PRIMARY reason rather than inside whatever gets demoted.
+            # Sufficient on its own, so it rides on the PRIMARY reason, not on what
+            # gets demoted.
             _loader_finding = ""
 
             def _the_vulkan_loader_has_no_driver() -> bool:
@@ -12756,12 +12756,11 @@ class LlamaCppBackend:
                 _node_is_why = (
                     _closed_nodes_block_the_runtime() and not _another_vendor_has_an_open_node()
                 )
-                # A blocker the node repair cannot clear: manifests were found and not one is
-                # loadable, so the probe stays empty however the node is owned. Kept OUT of
-                # node_hint, because that string may be demoted below and this finding is
-                # sufficient on its own -- folding it in demoted the one diagnosis that
-                # always holds to "not why the probe is empty". "also" only where the node
-                # repair really does precede it.
+                # A blocker the node repair cannot clear: manifests were found and none
+                # is loadable, so the probe stays empty however the node is owned. Kept out
+                # of node_hint, which may be demoted below: folding it in filed the one
+                # diagnosis that always holds under "not why the probe is empty". "also"
+                # only where the node repair really does precede it.
                 _also = "also " if _node_is_why else ""
                 if _is_vulkan and _the_vulkan_loader_has_no_driver():
                     # The repair depends on WHY. A filter that disables every manifest, and

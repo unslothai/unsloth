@@ -3945,15 +3945,13 @@ _amd_node_repairs() {
             # node this account owns the group bits are never consulted and no membership
             # opens it however they read. The repair there is the mode.
             if (self != -1 && $5 + 0 == self + 0) {
-                # Unless the OWNER digit already grants read and write. The node is known
-                # shut, so the mode is then not what denies it and chmod repairs nothing:
-                # it is the same external denial the already-a-member branch reports,
-                # reached by owner class instead. Mirrors the external bucket in amd.py.
-                # Padded before indexing: stat %a drops leading zeros, so mode 060 prints
-                # "60" and an owner index of 0 is not an error -- gawk and mawk return the
-                # GROUP digit there and busybox returns "", so the classification would
-                # differ by which awk the host ships. The group read below counts from the
-                # right, where the digit is always second-from-last, so it is unaffected.
+                # Unless the OWNER digit already grants rw: the node is known shut, so
+                # the mode is not what denies it. Same external denial as the
+                # already-a-member branch, by owner class. Mirrors amd.py external.
+                # Padded first: stat %a drops leading zeros, so mode 060 prints "60" and
+                # an owner index of 0 is not an error -- gawk and mawk return the GROUP
+                # digit, busybox "", so the answer would vary by which awk the host ships.
+                # The group read counts from the right, so it is unaffected.
                 perm = $1
                 while (length(perm) < 3) { perm = "0" perm }
                 u = substr(perm, length(perm) - 2, 1) + 0
