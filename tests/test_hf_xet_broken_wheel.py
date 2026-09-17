@@ -390,9 +390,9 @@ def test_patches_the_frozen_constant_when_the_hub_is_already_imported(monkeypatc
     IF.fix_broken_hf_xet_wheel()
 
     assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1", "the variable must still be set too"
-    assert modules["constants"].HF_HUB_DISABLE_XET is True, (
-        "the already frozen constant was left False, so this process still routes to Xet"
-    )
+    assert (
+        modules["constants"].HF_HUB_DISABLE_XET is True
+    ), "the already frozen constant was left False, so this process still routes to Xet"
 
 
 def test_patches_every_module_that_binds_the_flag(monkeypatch):
@@ -411,8 +411,8 @@ def test_patches_every_module_that_binds_the_flag(monkeypatch):
         {
             "": _UNBOUND,
             "constants": False,
-            "file_download": False,      # a hypothetical `from .constants import ...` copy
-            "utils._xet": False,         # ditto
+            "file_download": False,  # a hypothetical `from .constants import ...` copy
+            "utils._xet": False,  # ditto
             "utils._runtime": _UNBOUND,  # reads constants.X, holds no copy: must stay unbound
         },
     )
