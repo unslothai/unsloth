@@ -244,11 +244,25 @@ def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch
 # These pin both halves, so neither an upstream change nor a change to our own compile can
 # move this silently.
 
-def _mask_for(create, attention_mask, q_len = 64, head_dim = 256, bsz = 2):
+
+def _mask_for(
+    create,
+    attention_mask,
+    q_len = 64,
+    head_dim = 256,
+    bsz = 2,
+):
     import torch
     import transformers as T
-    cfg = T.LlamaConfig(hidden_size = 2048, num_attention_heads = 8, num_key_value_heads = 8,
-                        num_hidden_layers = 1, head_dim = head_dim, vocab_size = 128)
+
+    cfg = T.LlamaConfig(
+        hidden_size = 2048,
+        num_attention_heads = 8,
+        num_key_value_heads = 8,
+        num_hidden_layers = 1,
+        head_dim = head_dim,
+        vocab_size = 128,
+    )
     cfg._attn_implementation = "sdpa"
     return create(
         config = cfg,
@@ -261,6 +275,7 @@ def _mask_for(create, attention_mask, q_len = 64, head_dim = 256, bsz = 2):
 
 def _uncompiled_create_causal_mask():
     from transformers import masking_utils
+
     original = getattr(masking_utils, "_unsloth_original_create_causal_mask", None)
     if original is None:
         pytest.skip("this transformers/unsloth pair does not stash the original")
@@ -269,6 +284,7 @@ def _uncompiled_create_causal_mask():
 
 def test_upstream_skips_the_mask_for_an_unpadded_batch():
     import torch
+
     create = _uncompiled_create_causal_mask()
     assert _mask_for(create, None) is None
     assert _mask_for(create, torch.ones(2, 64, dtype = torch.long)) is None
@@ -276,9 +292,12 @@ def test_upstream_skips_the_mask_for_an_unpadded_batch():
 
 def test_upstream_still_materialises_a_mask_when_padded():
     import torch
+
     create = _uncompiled_create_causal_mask()
-    right = torch.ones(2, 64, dtype = torch.long); right[0, -8:] = 0
-    left = torch.ones(2, 64, dtype = torch.long); left[0, :8] = 0
+    right = torch.ones(2, 64, dtype = torch.long)
+    right[0, -8:] = 0
+    left = torch.ones(2, 64, dtype = torch.long)
+    left[0, :8] = 0
     assert _mask_for(create, right) is not None
     assert _mask_for(create, left) is not None
 
@@ -286,5 +305,6 @@ def test_upstream_still_materialises_a_mask_when_padded():
 def test_our_compiled_wrapper_is_what_defeats_the_skip():
     """Pins the cause, so this is a deliberate trade and not an accident nobody noticed."""
     from transformers import masking_utils
-    _uncompiled_create_causal_mask()   # skip when the pair does not stash it
+
+    _uncompiled_create_causal_mask()  # skip when the pair does not stash it
     assert _mask_for(masking_utils.create_causal_mask, None) is not None
