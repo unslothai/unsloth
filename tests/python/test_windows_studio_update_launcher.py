@@ -55,7 +55,7 @@ REAL_MSVCRT = sys.modules.get("msvcrt")
 
 
 @pytest.fixture
-def studio(monkeypatch):
+def studio(monkeypatch, tmp_path):
     package = types.ModuleType("unsloth_cli")
     package.__path__ = [str(REPO_ROOT / "unsloth_cli")]
     commands = types.ModuleType("unsloth_cli.commands")
@@ -81,6 +81,15 @@ def studio(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, module_name, module)
     spec.loader.exec_module(module)
+
+    # studio.py resolves STUDIO_HOME once, at import, and `update()` takes a NON-BLOCKING
+    # flock on the single .studio-runtime.lock beneath it. Left at the real ~/.unsloth/studio
+    # that file is shared by every xdist worker, so two tests in this shard that reach
+    # update() at the same time collide and the loser dies with
+    # `StudioRuntimeGateBusy -> typer.Exit(1)`, on a machine where nothing is wrong.
+    # _configure_windows already redirects it; the tests that build their own environment
+    # did not, which is the half that flaked. Do it here so it cannot be forgotten again.
+    monkeypatch.setattr(module, "STUDIO_HOME", tmp_path / "studio_home")
     return module
 
 

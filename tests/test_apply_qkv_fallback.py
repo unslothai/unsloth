@@ -35,6 +35,9 @@ import pathlib
 import pytest
 import torch
 import unsloth  # noqa: F401
+from real_accelerator import (
+    has_real_cuda,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.models import llama as llama_module
 
@@ -232,7 +235,7 @@ def _plain_model_dtype() -> "torch.dtype":
 
 @pytest.mark.gpu
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not has_real_cuda(),
     reason = "loads a real checkpoint through FastLanguageModel; needs an accelerator",
 )
 def test_apply_qkv_fallback_end_to_end():
