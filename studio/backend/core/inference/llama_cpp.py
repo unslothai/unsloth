@@ -12708,6 +12708,9 @@ class LlamaCppBackend:
             # The closed node when it does NOT explain the empty probe, appended to whatever
             # reason does rather than returned in place of it.
             _second_finding = ""
+            # The loader diagnosis, which is sufficient on its own, so it rides on the
+            # PRIMARY reason rather than inside whatever gets demoted.
+            _loader_finding = ""
 
             def _the_vulkan_loader_has_no_driver() -> bool:
                 try:
@@ -12726,7 +12729,7 @@ class LlamaCppBackend:
                     return None
 
             def _reason(text: str) -> str:
-                return f"{text}{_second_finding}"
+                return f"{text}{_loader_finding}{_second_finding}"
 
             if node_hint:
                 # A mask hides devices whatever the node permissions are, so a host with
@@ -12745,9 +12748,21 @@ class LlamaCppBackend:
                         f"resolve, so whether it also hides the card is unknown; check it "
                         f"if the groups do not help."
                     )
-                # A second blocker the node repair cannot clear: manifests were found and
-                # not one is loadable, so the probe stays empty however the node is owned.
-                # Appended rather than returned, like the mask sentences above.
+                # A closed node explains an empty probe only when it is one the runtime would
+                # have used. On a multi-AMD host a render node can be shut while a sibling is
+                # open, and the runtime then had a complete path and enumerated nothing
+                # anyway, so the closed one is a SECOND finding. Asked per backend, since HIP
+                # also needs /dev/kfd and that node has no sibling.
+                _node_is_why = (
+                    _closed_nodes_block_the_runtime() and not _another_vendor_has_an_open_node()
+                )
+                # A blocker the node repair cannot clear: manifests were found and not one is
+                # loadable, so the probe stays empty however the node is owned. Kept OUT of
+                # node_hint, because that string may be demoted below and this finding is
+                # sufficient on its own -- folding it in demoted the one diagnosis that
+                # always holds to "not why the probe is empty". "also" only where the node
+                # repair really does precede it.
+                _also = "also " if _node_is_why else ""
                 if _is_vulkan and _the_vulkan_loader_has_no_driver():
                     # The repair depends on WHY. A filter that disables every manifest, and
                     # a forced list pointing at paths that do not resolve, are environment
@@ -12755,25 +12770,20 @@ class LlamaCppBackend:
                     # rather than described, so the user has something to unset.
                     _override = _the_loader_override_to_blame()
                     if _override:
-                        node_hint = (
-                            f"{node_hint} The Vulkan loader also has no driver it can load "
+                        _loader_finding = (
+                            f" The Vulkan loader {_also}has no driver it can load "
                             f"here, and what leaves it with none is {_override}: clear or "
                             f"correct that, since reinstalling the driver does not change "
                             f"an environment override."
                         )
                     else:
-                        node_hint = (
-                            f"{node_hint} The Vulkan loader also has no driver it can load "
+                        _loader_finding = (
+                            f" The Vulkan loader {_also}has no driver it can load "
                             f"here: every ICD manifest it would read is missing its library "
                             f"or is 32-bit, so reinstall the Vulkan driver as well."
                         )
-                # A closed node explains an empty probe only when it is one the runtime would
-                # have used. On a multi-AMD host a render node can be shut while a sibling is
-                # open, and the runtime then had a complete path and enumerated nothing
-                # anyway, so the closed one is a SECOND finding. Asked per backend, since HIP
-                # also needs /dev/kfd and that node has no sibling.
-                if _closed_nodes_block_the_runtime() and not _another_vendor_has_an_open_node():
-                    return node_hint
+                if _node_is_why:
+                    return f"{node_hint}{_loader_finding}"
                 _second_finding = f" Separately, and not why the probe is empty: {node_hint}"
             if _is_vulkan:
                 return _reason("the Vulkan probe reported no device")

@@ -1082,10 +1082,8 @@ def _vulkan_icd_manifest_paths() -> "list[str]":
     Linux only, since the render nodes this is asked about exist nowhere else.
     """
     for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
-        value = (os.environ.get(var) or "").strip()
-        if not value:
-            continue
-        return [entry.strip() for entry in value.split(os.pathsep) if entry.strip()]
+        if (os.environ.get(var) or "").strip():
+            return _forced_icd_manifest_paths(var)
     return _searched_vulkan_icd_manifest_paths()
 
 
@@ -1160,6 +1158,66 @@ def the_vulkan_loader_has_no_usable_driver() -> bool:
     return not _loadable_icd_manifests()
 
 
+_DRIVER_OVERRIDES = (
+    "VK_DRIVER_FILES",
+    "VK_ICD_FILENAMES",
+    "VK_LOADER_DRIVERS_SELECT",
+    "VK_LOADER_DRIVERS_DISABLE",
+)
+
+
+def _vulkan_override_patterns(var: str) -> "list[str]":
+    value = os.environ.get(var) or ""
+    return [entry.strip() for entry in value.split(",") if entry.strip()]
+
+
+def _the_loader_would_have_a_driver_without(cleared: "frozenset[str]") -> bool:
+    """Whether the loader would end up with a usable driver if ``cleared`` were unset.
+
+    The whole question this attribution answers, asked once instead of restated per
+    variable: a repair is only a repair if it leaves a driver the loader can actually
+    LOAD. Testing filename allowance alone named a filter over a manifest whose library
+    was gone, where clearing the variable changes nothing and reinstalling is the fix.
+
+    ``_vulkan_icd_manifest_paths`` is used unless a forced list is being cleared, so the
+    candidate set stays the one the rest of this module reads.
+    """
+    forced = [var for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES") if _is_set(var)]
+    if not set(forced) & cleared:
+        candidates = _vulkan_icd_manifest_paths()
+    else:
+        remaining = [var for var in forced if var not in cleared]
+        candidates = (
+            _forced_icd_manifest_paths(remaining[0])
+            if remaining
+            else _searched_vulkan_icd_manifest_paths()
+        )
+    disable = [] if "VK_LOADER_DRIVERS_DISABLE" in cleared else _vulkan_override_patterns(
+        "VK_LOADER_DRIVERS_DISABLE"
+    )
+    select = [] if "VK_LOADER_DRIVERS_SELECT" in cleared else _vulkan_override_patterns(
+        "VK_LOADER_DRIVERS_SELECT"
+    )
+    for path in candidates:
+        name = PurePath(path).name
+        if any(_vulkan_glob_matches(pattern, name) for pattern in disable):
+            continue
+        if select and not any(_vulkan_glob_matches(pattern, name) for pattern in select):
+            continue
+        if not _an_icd_is_32_bit(path) and _icd_manifest_is_usable(path):
+            return True
+    return False
+
+
+def _is_set(var: str) -> bool:
+    return bool((os.environ.get(var) or "").strip())
+
+
+def _forced_icd_manifest_paths(var: str) -> "list[str]":
+    value = (os.environ.get(var) or "").strip()
+    return [entry.strip() for entry in value.split(os.pathsep) if entry.strip()]
+
+
 def the_vulkan_loader_override_to_blame() -> "str | None":
     """The environment variable to name when the loader can load none of its manifests.
 
@@ -1168,63 +1226,25 @@ def the_vulkan_loader_override_to_blame() -> "str | None":
     list pointing at paths that do not resolve, are settings: reinstalling leaves the
     variable in place and the probe just as empty.
 
-    Filters first, because they are applied last and absolutely -- they exclude drivers a
-    forced list named as well. Which filter, though, is decided by which one actually
-    emptied the set rather than by a fixed order: since disable WINS over select, selecting
-    and disabling the same name leaves clearing select changing nothing, and naming it sent
-    the user to unset a variable that was holding nothing back. ``None`` where no override
-    is responsible, which is the missing-library and 32-bit case the reinstall sentence was
-    written for.
+    Decided by the counterfactual rather than by any precedence between the variables:
+    the smallest set whose removal leaves the loader a driver it can LOAD. One variable
+    if one is enough, all of them together when no single removal helps, and ``None``
+    when removing every override still leaves nothing -- which is the missing-library and
+    32-bit case the reinstall sentence was written for.
+
+    Order within a combined answer follows ``_DRIVER_OVERRIDES``, not the environment.
     """
-    paths = _vulkan_icd_manifest_paths()
-    if not paths:
+    if not _vulkan_icd_manifest_paths():
         return None
-    blockers: "list[str]" = []
-    if not any(_vulkan_loader_allows(path) for path in paths):
-
-        def _patterns(var: str) -> "list[str]":
-            value = os.environ.get(var) or ""
-            return [entry.strip() for entry in value.split(",") if entry.strip()]
-
-        disable = _patterns("VK_LOADER_DRIVERS_DISABLE")
-        select = _patterns("VK_LOADER_DRIVERS_SELECT")
-        # Clearing one filter repairs this only if the OTHER one still leaves a manifest, so
-        # that is the test rather than a fixed precedence.
-        select_is_it = select and any(
-            not any(_vulkan_glob_matches(p, PurePath(path).name) for p in disable) for path in paths
-        )
-        disable_is_it = disable and any(
-            not select or any(_vulkan_glob_matches(p, PurePath(path).name) for p in select)
-            for path in paths
-        )
-        if select_is_it:
-            blockers.append("VK_LOADER_DRIVERS_SELECT")
-        elif disable_is_it:
-            blockers.append("VK_LOADER_DRIVERS_DISABLE")
-        elif select and disable:
-            # Both match everything left, so neither one alone is the repair.
-            blockers += ["VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE"]
-    # Reached only when the filters are not what emptied the set, so the manifests
-    # themselves do not resolve. A forced list is to blame for THAT only when the list is
-    # what went wrong: a path that is not there, or an ordinary search it hides that would
-    # have found a usable driver. A list naming a manifest that is present and permitted
-    # and has simply lost its library is the reinstall case, since clearing the variable
-    # leaves the loader reading that same unusable manifest.
-    for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
-        if not (os.environ.get(var) or "").strip():
-            continue
-        # A stale path is a blocker even when a filter is one too: clearing the filter
-        # leaves the loader reading a manifest that is not there. The searched-drivers
-        # question is only asked when no filter is in the way, since a filter would
-        # exclude those as well and the answer would be the same either way.
-        if any(not os.path.exists(path) for path in paths) or (
-            not blockers and _loadable_icd_manifests(_searched_vulkan_icd_manifest_paths())
-        ):
-            blockers.append(var)
-        break
-    if not blockers:
+    overrides = [var for var in _DRIVER_OVERRIDES if _is_set(var)]
+    if not overrides:
         return None
-    return blockers[0] if len(blockers) == 1 else " and ".join(blockers) + " together"
+    for var in overrides:
+        if _the_loader_would_have_a_driver_without(frozenset([var])):
+            return var
+    if len(overrides) > 1 and _the_loader_would_have_a_driver_without(frozenset(overrides)):
+        return " and ".join(overrides) + " together"
+    return None
 
 
 def a_non_amd_render_node_is_open() -> bool:

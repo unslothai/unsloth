@@ -4586,6 +4586,42 @@ def _vulkan_node_hint_under_icd_list(
     return LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
 
 
+def test_the_no_driver_diagnosis_stays_primary_when_a_sibling_node_is_open(
+    monkeypatch, linux, tmp_path
+):
+    """Codex 4040623258. With another vendor's node open, the closed AMD node is a SECOND
+    finding: the runtime had a complete path and enumerated nothing anyway. The loader
+    having no loadable driver is not second, it is sufficient on its own, and folding it
+    into node_hint demoted it along with the permission text to "not why the probe is
+    empty" -- the one sentence that always holds, filed under the one that does not.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _icd_manifest(tmp_path, "radeon_icd.json", present = False)
+    monkeypatch.setattr(amd, "_vulkan_icd_search_dirs", lambda: [str(tmp_path)])
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    # The sibling that makes the closed node a second finding.
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    for _var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_ADD_DRIVER_FILES",
+                 "VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE"):
+        monkeypatch.delenv(_var, raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server") or ""
+
+    assert "no driver it can load" in reason
+    assert "reinstall the Vulkan driver" in reason
+    # The demotion applies to the permission finding only, so the loader sentence must come
+    # BEFORE it rather than inside it.
+    _demoted = reason.index("Separately, and not why the probe is empty")
+    assert reason.index("no driver it can load") < _demoted
+    # And "also" is dropped, since no node repair precedes it here.
+    assert "loader also has no driver" not in reason
+
+
 def test_a_loader_with_no_loadable_driver_is_said_beside_the_node_repair(
     monkeypatch, linux, tmp_path
 ):
@@ -5546,8 +5582,15 @@ def test_the_installer_kfd_arm_consults_the_same_fallback():
     assert "-eq 1 ]; then" in _arm and "continue" in _arm
 
 
-def _loader_blame(monkeypatch, manifests: dict, **env: str) -> "str | None":
-    """Which override amd.py blames for a loader that can load none of its manifests."""
+def _loader_blame(monkeypatch, manifests: dict, searched = (), **env: str) -> "str | None":
+    """Which override amd.py blames for a loader that can load none of its manifests.
+
+    The dict value says whether that manifest still resolves to a library, which is the
+    difference between "clear the variable" and "reinstall the driver": these paths do not
+    exist on the test host, so the real _icd_manifest_is_usable would call every one of
+    them broken. ``searched`` is what the ordinary search would find with a forced list
+    cleared, which is the only way a forced list can be the repair.
+    """
     for var in (
         "VK_DRIVER_FILES",
         "VK_ICD_FILENAMES",
@@ -5558,7 +5601,12 @@ def _loader_blame(monkeypatch, manifests: dict, **env: str) -> "str | None":
         monkeypatch.delenv(var, raising = False)
     for var, value in env.items():
         monkeypatch.setenv(var, value)
+    usable = dict(manifests)
+    usable.update({path: True for path in searched})
     monkeypatch.setattr(amd, "_vulkan_icd_manifest_paths", lambda: list(manifests))
+    monkeypatch.setattr(amd, "_searched_vulkan_icd_manifest_paths", lambda: list(searched))
+    monkeypatch.setattr(amd, "_icd_manifest_is_usable", lambda path: bool(usable.get(path)))
+    monkeypatch.setattr(amd, "_an_icd_is_32_bit", lambda _path: False)
     return amd.the_vulkan_loader_override_to_blame()
 
 
@@ -5597,7 +5645,8 @@ def test_a_forced_list_pointing_at_nothing_is_named_as_well(monkeypatch):
     assert (
         _loader_blame(
             monkeypatch,
-            {"/gone/radeon_icd.x86_64.json": True},
+            {"/gone/radeon_icd.x86_64.json": False},
+            searched = ["/etc/vulkan/icd.d/radeon_icd.x86_64.json"],
             VK_DRIVER_FILES = "/gone/radeon_icd.x86_64.json",
         )
         == "VK_DRIVER_FILES"
@@ -5653,52 +5702,51 @@ def test_the_filter_that_actually_emptied_the_set_is_the_one_named(monkeypatch):
 
 
 def test_a_forced_list_whose_manifest_is_fine_still_asks_for_a_reinstall(monkeypatch):
-    """The forced list is only to blame when the LIST is what went wrong. A list naming a
-    manifest that is present, permitted and has simply lost its library is the reinstall
-    case: clearing the variable leaves the loader reading that same unusable manifest, and
-    reinstalling the driver is what puts the library back.
+    """The forced list is only the repair when clearing it leaves a driver. A list naming a
+    manifest that is present and permitted and has simply lost its library is the reinstall
+    case: clearing the variable leaves the loader reading that same unusable manifest.
     """
-    monkeypatch.setattr(amd, "_searched_vulkan_icd_manifest_paths", list)
     assert (
-        _loader_blame(
-            monkeypatch,
-            {__file__: True},  # a path that exists, so the list itself is not stale
-            VK_DRIVER_FILES = __file__,
-        )
+        _loader_blame(monkeypatch, {__file__: False}, VK_DRIVER_FILES = __file__)
         is None
     )
 
     # The other half of the same rule: the list hides an ordinary search that WOULD have
     # found a usable driver, so clearing it is the repair after all.
-    monkeypatch.setattr(
-        amd, "_searched_vulkan_icd_manifest_paths", lambda: ["/etc/vulkan/icd.d/radeon.json"]
-    )
-    monkeypatch.setattr(amd, "_an_icd_is_32_bit", lambda _p: False)
-    monkeypatch.setattr(amd, "_icd_manifest_is_usable", lambda _p: True)
     assert (
-        _loader_blame(monkeypatch, {__file__: True}, VK_DRIVER_FILES = __file__) == "VK_DRIVER_FILES"
+        _loader_blame(
+            monkeypatch,
+            {__file__: False},
+            searched = ["/etc/vulkan/icd.d/radeon.json"],
+            VK_DRIVER_FILES = __file__,
+        )
+        == "VK_DRIVER_FILES"
     )
 
 
 def test_a_stale_forced_path_is_named_beside_the_filter_that_also_blocks_it(monkeypatch):
-    """Clearing the filter leaves the loader reading a manifest that is not there, so the
-    filter alone was never the repair. Both blockers are named rather than the first one
-    the counterfactual happens to accept.
+    """Clearing the filter leaves the loader reading a manifest that is not there, and
+    clearing the list exposes a search the filter then empties. Neither removal alone is
+    the repair, so both are named rather than whichever one the test happens to reach.
     """
-    monkeypatch.setattr(amd, "_searched_vulkan_icd_manifest_paths", list)
+    gone = {"/gone/radeon.json": False}
+    found = ["/etc/vulkan/icd.d/radeon.json"]
     assert (
         _loader_blame(
             monkeypatch,
-            {"/gone/radeon.json": True},
+            gone,
+            searched = found,
             VK_DRIVER_FILES = "/gone/radeon.json",
             VK_LOADER_DRIVERS_DISABLE = "radeon*",
         )
-        == "VK_LOADER_DRIVERS_DISABLE and VK_DRIVER_FILES together"
+        == "VK_DRIVER_FILES and VK_LOADER_DRIVERS_DISABLE together"
     )
-    # The control in each direction: neither half is named on its own account when the
-    # other is absent, so this is not "always say both".
+    # The control in each direction, so this is not "always say both": with only one of
+    # the two in force, that one is named on its own.
     assert (
-        _loader_blame(monkeypatch, {"/gone/radeon.json": True}, VK_DRIVER_FILES = "/gone/radeon.json")
+        _loader_blame(
+            monkeypatch, gone, searched = found, VK_DRIVER_FILES = "/gone/radeon.json"
+        )
         == "VK_DRIVER_FILES"
     )
     assert (
@@ -5706,6 +5754,32 @@ def test_a_stale_forced_path_is_named_beside_the_filter_that_also_blocks_it(monk
             monkeypatch,
             {__file__: True},
             VK_DRIVER_FILES = __file__,
+            VK_LOADER_DRIVERS_DISABLE = "*",
+        )
+        == "VK_LOADER_DRIVERS_DISABLE"
+    )
+
+
+def test_a_filter_over_a_manifest_whose_library_is_gone_is_still_a_reinstall(monkeypatch):
+    """Codex 4040623253. The counterfactual tested filename allowance, not loadability, so
+    a filter over a manifest that no longer resolves to a library was named as the whole
+    repair: the message said to clear the variable, and clearing it left the loader with
+    the same unloadable manifest and no driver.
+    """
+    assert (
+        _loader_blame(
+            monkeypatch,
+            {"/etc/vulkan/icd.d/radeon_icd.x86_64.json": False},
+            VK_LOADER_DRIVERS_DISABLE = "*",
+        )
+        is None
+    )
+    # The control, without which the fix could be "never blame a filter": the same filter
+    # over a manifest that IS loadable is still named.
+    assert (
+        _loader_blame(
+            monkeypatch,
+            {"/etc/vulkan/icd.d/radeon_icd.x86_64.json": True},
             VK_LOADER_DRIVERS_DISABLE = "*",
         )
         == "VK_LOADER_DRIVERS_DISABLE"
