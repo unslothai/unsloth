@@ -30,6 +30,7 @@ transformers, and it does not need the affected TRL installed to prove the point
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import sys
@@ -40,6 +41,12 @@ import pytest
 
 os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+
+# daily-fresh-fetch collects tests/version_compat/ with only pytest installed; the spoof below
+# imports torch, and the rewriter this exercises imports it too. Skip the module cleanly there
+# rather than failing collection for the whole directory.
+if importlib.util.find_spec("torch") is None:
+    pytest.skip("torch not installed", allow_module_level = True)
 
 _SPOOF_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SPOOF_DIR))
