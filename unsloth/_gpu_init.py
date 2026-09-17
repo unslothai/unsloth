@@ -35,6 +35,7 @@ from .import_fixes import (
     disable_torchaudio_if_cuda_mismatched,
     fix_diffusers_warnings,
     fix_huggingface_hub,
+    fix_broken_hf_xet_wheel,
 )
 
 # Redirect a read-only Hugging Face cache before anything below imports huggingface_hub /
@@ -62,6 +63,11 @@ try:
 except Exception:
     pass
 
+# Must run before ANYTHING imports huggingface_hub (disable_broken_vllm probes `import vllm`,
+# check_fbgemm_gpu_version imports transformers, fix_huggingface_hub imports the Hub itself):
+# huggingface_hub freezes HF_HUB_DISABLE_XET into constants.py at import, so a value set after
+# that point is read by nobody and every Xet download still dies on the broken hf_xet.
+fix_broken_hf_xet_wheel()
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
 configure_amdgpu_asic_id_table_path()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
@@ -99,6 +105,7 @@ del check_transformers_dependency_versions
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
+del fix_broken_hf_xet_wheel
 
 # Unsloth patches these libraries at import time; if they are imported first the unoptimized
 # versions run, risking OOM or slower training.

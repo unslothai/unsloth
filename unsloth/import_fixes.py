@@ -1068,6 +1068,188 @@ def ignore_logger_messages():
         pass
 
 
+# huggingface_hub gates the Xet transport on `is_xet_available()`, which asks importlib.metadata
+# whether the hf_xet DISTRIBUTION is installed. It never asks whether hf_xet IMPORTS. So an hf_xet
+# that is present but unloadable is still routed to, `from hf_xet import PyXetDownloadInfo,
+# download_files` inside file_download.xet_get raises ImportError, and transformers' cached_files
+# turns that into:
+#     OSError: To use optimized download using Xet storage, you need to install the hf_xet
+#     package. Try 'pip install "huggingface_hub[hf_xet]"' or 'pip install hf_xet'.
+# which names the one remedy that cannot possibly work, since hf_xet IS installed. Users reinstall
+# it, get the same wheel back, and the download fails again.
+#
+# Seen on Windows on ARM: an x86-64 hf_xet wheel (WHEEL says `Tag: cp37-abi3-win_amd64`, and
+# hf_xet.pyd carries PE machine 0x8664) landed in an ARM64 CPython 3.13 (0xAA64), so every Hub
+# download died at "ImportError: DLL load failed while importing hf_xet: %1 is not a valid Win32
+# application" and a QLoRA run never got past step 0. The same shape is reachable anywhere a wheel
+# is copied or resolved against the wrong interpreter (a linux aarch64 tree holding an x86_64
+# wheel, a truncated install with no extension module at all).
+#
+# HF_HUB_DISABLE_XET=1 is huggingface_hub's own supported way off that path: is_xet_available()
+# returns False, the download takes the plain HTTPS branch, and the user gets the same files in the
+# same cache, only without the Xet transport. It MUST be set before huggingface_hub is imported,
+# because constants.py freezes the variable into `HF_HUB_DISABLE_XET` at import time, which is why
+# this is wired into the first block of _gpu_init.py rather than down with the late fixes.
+#
+# unsloth_zoo.hf_xet_fallback does NOT cover this. That one is a Xet -> HTTP STALL fallback, a
+# watchdog for a transfer that hangs with no progress, and it only guards downloads routed through
+# its own wrappers. An ImportError at import time never trips it, and the training path that broke
+# here went straight through transformers' cached_files, which those wrappers never see.
+#
+# Only fires on a proven-broken install: an hf_xet that is absent entirely is left alone
+# (huggingface_hub already downgrades to HTTP for that, correctly), an HF_HUB_DISABLE_XET the user
+# set is never overridden in either direction, and a suspicion raised by the wheel metadata is
+# confirmed with a real import before anything is changed.
+_CPU_FAMILY_BY_MACHINE = {
+    "amd64": "x86_64",
+    "x86_64": "x86_64",
+    "x64": "x86_64",
+    "arm64": "arm64",
+    "aarch64": "arm64",
+    "i386": "x86",
+    "i686": "x86",
+    "x86": "x86",
+    "armv7l": "armv7l",
+    "ppc64le": "ppc64le",
+    "s390x": "s390x",
+}
+# Windows platform tags name the CPU outright; every other OS carries it as the tag's last token
+# (macosx_11_0_arm64, manylinux_2_28_aarch64, musllinux_1_2_x86_64, linux_armv7l).
+_WINDOWS_PLATFORM_TAG_CPU = {
+    "win_amd64": "x86_64",
+    "win_arm64": "arm64",
+    "win32": "x86",
+}
+_MULTI_ARCH_PLATFORM_TAG_PREFIXES = ("macosx_", "manylinux", "musllinux", "linux_")
+
+
+def _cpu_family_from_platform_tag(platform_tag):
+    """CPU family a wheel platform tag targets, or None when it cannot be told.
+
+    None is the answer for `any`, macOS `universal2` / `intel` / `fat` and anything unrecognised:
+    a tag we cannot read must never be reported as a mismatch.
+    """
+    platform_tag = platform_tag.strip().lower()
+    if platform_tag in _WINDOWS_PLATFORM_TAG_CPU:
+        return _WINDOWS_PLATFORM_TAG_CPU[platform_tag]
+    if not platform_tag.startswith(_MULTI_ARCH_PLATFORM_TAG_PREFIXES):
+        return None
+    for machine, family in _CPU_FAMILY_BY_MACHINE.items():
+        if platform_tag.endswith("_" + machine):
+            return family
+    return None
+
+
+def _hf_xet_wheel_platform_tags():
+    """Platform components of the installed hf_xet's WHEEL tags, or () when unreadable."""
+    try:
+        wheel_metadata = importlib_distribution("hf_xet").read_text("WHEEL")
+    except Exception:
+        return ()
+    if not wheel_metadata:
+        return ()
+    platform_tags = []
+    for line in wheel_metadata.splitlines():
+        if not line.lower().startswith("tag:"):
+            continue
+        tag = line.split(":", 1)[1].strip()
+        parts = tag.rsplit("-", 1)
+        if len(parts) != 2 or not parts[1]:
+            continue
+        # Compressed tag sets join platforms with a dot:
+        # cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64
+        platform_tags.extend(parts[1].split("."))
+    return tuple(platform_tags)
+
+
+def _hf_xet_architecture_mismatch():
+    """True if hf_xet's wheel targets a CPU family this interpreter is not, False if it matches,
+    None when either side cannot be read. Metadata only: nothing is imported here."""
+    import platform
+
+    try:
+        host_family = _CPU_FAMILY_BY_MACHINE.get(platform.machine().strip().lower())
+    except Exception:
+        return None
+    if host_family is None:
+        return None
+    wheel_families = set()
+    for platform_tag in _hf_xet_wheel_platform_tags():
+        family = _cpu_family_from_platform_tag(platform_tag)
+        if family is None:
+            # One unreadable tag makes the whole verdict unsafe (a universal2 build really does
+            # run here), so stop rather than judge on the remainder.
+            return None
+        wheel_families.add(family)
+    if not wheel_families:
+        return None
+    return host_family not in wheel_families
+
+
+def _hf_xet_extension_is_missing(spec):
+    """True only when hf_xet's package directory holds no compiled extension at all."""
+    locations = list(getattr(spec, "submodule_search_locations", None) or [])
+    if not locations:
+        return False
+    suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
+    for location in locations:
+        try:
+            names = os.listdir(location)
+        except Exception:
+            return False
+        if any(name.endswith(suffixes) for name in names):
+            return False
+    return True
+
+
+def fix_broken_hf_xet_wheel():
+    """Route Hugging Face downloads over plain HTTPS when hf_xet is installed but unimportable."""
+    if os.environ.get("HF_HUB_DISABLE_XET", "").strip() != "":
+        # Set explicitly, in either direction. The user's choice outranks ours.
+        return
+    if "hf_xet" in sys.modules:
+        # Already imported, so it works. Also makes repeat calls free.
+        return
+    try:
+        if importlib.util.find_spec("huggingface_hub") is None:
+            return
+        spec = importlib.util.find_spec("hf_xet")
+    except Exception:
+        return
+    if spec is None:
+        # Not installed. huggingface_hub handles that case correctly on its own.
+        return
+
+    if _hf_xet_architecture_mismatch() is True:
+        suspicion = "its wheel is built for a different CPU architecture than this interpreter"
+    elif _hf_xet_extension_is_missing(spec):
+        suspicion = "its compiled extension module is missing from the installed package"
+    else:
+        return
+
+    # Confirm before acting. A wrong-architecture extension raises ImportError here rather than
+    # loading, and if it does import after all (our reading of the metadata was wrong) Xet is left
+    # switched on. This is the only place hf_xet is imported, and only for an install already
+    # proven suspect, so a healthy environment never pays for it.
+    try:
+        importlib.import_module("hf_xet")
+        return
+    except Exception as error:
+        failure = f"{type(error).__name__}: {error}"
+
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    logger.warning(
+        f"Unsloth: `hf_xet` is installed but cannot be imported ({failure}) because {suspicion} "
+        f"(wheel platform tag(s): {', '.join(_hf_xet_wheel_platform_tags()) or 'unknown'}). "
+        "Set HF_HUB_DISABLE_XET=1, so Hugging Face downloads use plain HTTPS instead: same files, "
+        "same cache, only the Xet transport is skipped. Note that without this, transformers "
+        "reports 'you need to install the hf_xet package', which is misleading: hf_xet IS "
+        "installed, it is simply the wrong build for this Python, and reinstalling the same wheel "
+        "cannot fix it. To get Xet back, install an hf_xet built for this interpreter, for example "
+        "`pip install --force-reinstall --no-cache-dir hf_xet`."
+    )
+
+
 def patch_ipykernel_hf_xet():
     # HF-XET 1.1.10 with ipykernel 7.0.0 / 7.0.1 raises LookupError on ContextVar 'shell_parent';
     # see huggingface/xet-core#526.
