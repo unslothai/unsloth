@@ -1106,6 +1106,9 @@ _ELF_MACHINE_CPU = {
     0xB7: "arm64",
 }
 _PE_MACHINE_CPU = {0x014C: "x86", 0x01C4: "armv7l", 0x8664: "x86_64", 0xAA64: "arm64"}
+# huggingface_hub.constants.ENV_VARS_TRUE_VALUES, matched after .upper(), so an explicit disable
+# is read exactly the way the Hub itself would have read it.
+_HF_HUB_ENV_TRUE_VALUES = ("1", "ON", "TRUE", "YES")
 _MACHO_CPU_TYPE_CPU = {7: "x86", 12: "armv7l", 0x01000007: "x86_64", 0x0100000C: "arm64"}
 
 
@@ -1300,8 +1303,14 @@ def _disable_xet_on_already_imported_huggingface_hub():
 
 def fix_broken_hf_xet_wheel():
     """Route Hugging Face downloads over plain HTTPS when hf_xet is installed but unimportable."""
-    if os.environ.get("HF_HUB_DISABLE_XET", "").strip() != "":
-        return  # set explicitly, in either direction: the user's choice outranks ours
+    explicit = os.environ.get("HF_HUB_DISABLE_XET", "").strip()
+    if explicit != "":
+        # Set explicitly, in either direction: the user's choice outranks ours. A TRUTHY value set
+        # after the Hub was already imported is read by nobody, though, so carry it to the frozen
+        # constant. Falsey values are left alone, so an explicit opt back IN to Xet still wins.
+        if explicit.upper() in _HF_HUB_ENV_TRUE_VALUES:
+            _disable_xet_on_already_imported_huggingface_hub()
+        return
     if "hf_xet" in sys.modules:
         return  # already imported, so it works; also makes repeat calls free
     try:

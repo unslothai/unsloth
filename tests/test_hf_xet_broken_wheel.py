@@ -380,6 +380,40 @@ def test_never_overrides_an_explicit_setting(monkeypatch, user_value):
     assert IF.os.environ["HF_HUB_DISABLE_XET"] == user_value
 
 
+@pytest.mark.parametrize("user_value", ("1", "true", "YES", "on"))
+def test_an_explicit_disable_set_after_the_hub_was_imported_is_carried_through(
+    monkeypatch, user_value
+):
+    """REGRESSION. Setting the variable late is read by nobody, so honour it on the constant.
+
+    The user who imports transformers first and only then sets HF_HUB_DISABLE_XET=1 asked for Xet
+    off and, without this, still gets every download routed to Xet. The truthy set is
+    huggingface_hub's own ENV_VARS_TRUE_VALUES, matched case-insensitively as constants.py does.
+    """
+    monkeypatch.setenv("HF_HUB_DISABLE_XET", user_value)
+    modules = _fake_hub_modules(monkeypatch, {"": _UNBOUND, "constants": False})
+
+    IF.fix_broken_hf_xet_wheel()
+
+    assert modules["constants"].HF_HUB_DISABLE_XET is True
+    assert IF.os.environ["HF_HUB_DISABLE_XET"] == user_value
+
+
+@pytest.mark.parametrize("user_value", ("0", "false", "no", "off"))
+def test_an_explicit_enable_is_never_carried_through(monkeypatch, user_value):
+    """The opposite direction must still win: a user who asked for Xet keeps it."""
+    monkeypatch.setenv("HF_HUB_DISABLE_XET", user_value)
+    _fake_host(monkeypatch, "win-arm64")
+    monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ("win_amd64",))
+    _install_fake_environment(monkeypatch, hf_xet_present = True, import_error = _WRONG_ARCHITECTURE)
+    modules = _fake_hub_modules(monkeypatch, {"": _UNBOUND, "constants": False})
+
+    IF.fix_broken_hf_xet_wheel()
+
+    assert modules["constants"].HF_HUB_DISABLE_XET is False
+    assert IF.os.environ["HF_HUB_DISABLE_XET"] == user_value
+
+
 def _fake_hub_modules(monkeypatch, bindings):
     """`bindings` maps a module suffix ("" is the package) to its starting HF_HUB_DISABLE_XET, or
     to `_UNBOUND` for a module that does not define the flag (every module before 0.34)."""
