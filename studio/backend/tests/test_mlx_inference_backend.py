@@ -908,7 +908,7 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
     monkeypatch.setattr(
         backend, "_release_vlm_snapshots", lambda: order.append("snapshots_released")
     )
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     gen = backend._generate_vlm(*args, _adapter_state = False)
     # First snapshot is the prefill alone, emitted after entering the adapter context.
@@ -984,7 +984,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
     tools = [{"function": {"name": "search"}}]
     generator = backend._generate_vlm(*args, _adapter_state = False)
     assert next(generator) == "ok"
@@ -3600,7 +3600,7 @@ def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
     backend._processor = SimpleNamespace(chat_template = "template")
     args = (
         [{"role": "user", "content": [{"type": "image"}]}],
-        object(),
+        [object()],
         0.7,
         0.9,
         40,
@@ -4454,7 +4454,7 @@ def test_the_window_reaches_the_runtime_on_every_generation_route(monkeypatch):
     next(
         vlm._generate_vlm(
             [{"role": "user", "content": [{"type": "image"}]}],
-            object(),
+            [object()],
             0,
             1,
             0,
@@ -4806,7 +4806,7 @@ def _run_spm_vlm_turn(
     return list(
         backend._generate_vlm(
             [{"role": "user", "content": [{"type": "image"}]}],
-            object(),
+            [object()],
             0,
             1,
             0,
@@ -5493,7 +5493,7 @@ def _run_vlm_budget(
     backend._is_vlm = True
     backend._model = SimpleNamespace()
     backend._processor = SimpleNamespace(tokenizer = backend._tokenizer)
-    args = (messages, image, 0, 1, 0, 0, max_new_tokens, 1, None)
+    args = (messages, [image] if image is not None else None, 0, 1, 0, 0, max_new_tokens, 1, None)
     list(backend._generate_vlm(*args, _adapter_state = False))
     return seen["max_tokens"]
 
@@ -5839,7 +5839,7 @@ def test_mlx_vlm_a_video_turn_whose_render_is_unusable_is_refused_not_recovered(
     with pytest.raises(RuntimeError, match = "for a video turn"):
         list(
             backend._generate_vlm(
-                turn, object(), 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = _CLIP_B64
+                turn, [object()], 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = _CLIP_B64
             )
         )
 
@@ -6102,3 +6102,82 @@ def _mlx_reads_video_probe(monkeypatch):
         lambda _t, _m, **_k: "<video> marked",
     )
     return _mlx_reads_video(SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace()))
+
+
+# ── Multi-image capability ────────────────────────────────────────────────
+
+_RENDERER = "core.inference.chat_template_helpers.apply_chat_template_for_generation"
+
+
+def _vlm_runtime(monkeypatch, marker = "<|image|>"):
+    """A backend already classified with ``marker`` as its image token, plus a stubbed mlx-vlm."""
+    from core.inference import mlx_inference
+
+    calls = []
+
+    def _render(_target, messages, **_kwargs):
+        def _flat(part):
+            return "<|image|>" if part.get("type") == "image" else part.get("text", "")
+
+        return "".join(
+            body if isinstance(body, str) else "".join(map(_flat, body or ()))
+            for body in (message.get("content") for message in messages)
+        )
+
+    def _vlm_stream(model, processor, prompt, images, **kwargs):
+        calls.append({"prompt": prompt, "images": images})
+        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
+
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(_RENDERER, _render)
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "gemma4"})
+    backend._processor = SimpleNamespace(
+        chat_template = "template", tokenizer = SimpleNamespace(chat_template = "nested")
+    )
+    backend._is_vlm = True
+    backend._multi_image_marker = marker
+    return backend, calls
+
+
+def test_several_images_reach_the_runtime_in_the_order_they_were_attached(monkeypatch):
+    """Binding is positional, so a reordered list answers about the wrong picture, not an error."""
+    backend, calls = _vlm_runtime(monkeypatch)
+    first, second = object(), object()
+    history = [{"role": "user", "content": "ask"}, {"role": "user", "content": "compare"}]
+
+    assert list(
+        backend.generate_chat_response(history, images = [first, second], max_new_tokens = 4)
+    ) == ["ok"]
+    assert calls[-1]["images"] == [first, second]
+    assert calls[-1]["prompt"].count("<|image|>") == 2
+
+    only = [{"role": "user", "content": "describe"}]
+    list(backend.generate_chat_response(only, image = first, max_new_tokens = 4))
+    list(backend.generate_chat_response(only, images = [first], max_new_tokens = 4))
+    assert calls[-2] == calls[-1] == {"prompt": "<|image|>describe", "images": [first]}
+
+
+@pytest.mark.parametrize(
+    "marker, render, error",
+    [
+        (None, None, "one image per request"),
+        ("<|image|>", "<|image|>only one", "marked 1 image"),
+    ],
+    ids = ["no marker was classified", "the render collapsed a marker"],
+)
+def test_a_render_that_cannot_bind_every_image_is_refused(monkeypatch, marker, render, error):
+    """One image is still taken either way; too few markers would describe one picture twice."""
+    backend, _calls = _vlm_runtime(monkeypatch, marker = marker)
+    if render is not None:
+        monkeypatch.setattr(_RENDERER, lambda *_a, **_k: render)
+
+    turn = [{"role": "user", "content": "compare"}]
+    with pytest.raises((ValueError, RuntimeError), match = error):
+        list(backend.generate_chat_response(turn, images = [object(), object()]))

@@ -3,6 +3,7 @@
 interface, using mlx-lm/mlx-vlm instead of torch/transformers for model loading and generation."""
 
 import copy
+import difflib
 import hashlib
 import importlib
 import os
@@ -841,6 +842,18 @@ _AUDIO_PROBE_MESSAGES = [{"role": "user", "content": "audio"}]
 # Same turn with and without an image part, so a diff isolates the image marker.
 _IMAGE_PROBE_MESSAGES = [
     {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "hi"}]}
+]
+# A pair differing only in image count, so a diff isolates the marker; the question is distinctive.
+_MULTI_IMAGE_PROBE_TEXT = "what is in these"
+_MULTI_IMAGE_PROBE_MESSAGES = [
+    [
+        {
+            "role": "user",
+            "content": [{"type": "image"}] * count
+            + [{"type": "text", "text": _MULTI_IMAGE_PROBE_TEXT}],
+        }
+    ]
+    for count in (1, 2)
 ]
 _TEXT_PROBE_MESSAGES = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
 _VIDEO_PROBE_MESSAGES = [
@@ -1729,6 +1742,87 @@ def _image_placeholder(tokenizer, processor):
     return None
 
 
+_IMAGE_TOKEN_ID_KEYS = ("image_token_index", "image_token_id", "boi_token_index")
+
+
+def _declared_image_tokens(
+    tokenizer,
+    processor,
+    model = None,
+):
+    """Config token ids too: granite-vision names its token only by id, on a bare tokenizer."""
+    named = []
+
+    def add(token):
+        if isinstance(token, str) and token and token not in named:
+            named.append(token)
+
+    for source in (processor, tokenizer):
+        for attr in ("image_token", "boi_token"):
+            add(getattr(source, attr, None))
+    config, _model_type = _mlx_vlm_model_config(model) if model is not None else (None, None)
+    for key in _IMAGE_TOKEN_ID_KEYS:
+        token_id = config.get(key) if isinstance(config, dict) else getattr(config, key, None)
+        for source in (getattr(processor, "tokenizer", None), tokenizer, processor):
+            try:
+                add(source.convert_ids_to_tokens(token_id))
+            except BaseException:
+                continue
+            break
+    return named
+
+
+def _scaling_image_marker(
+    tokenizer,
+    processor,
+    model = None,
+):
+    """The text this template writes once per image, or None -- a load must never fail on a probe.
+
+    Diffed rather than looked up by attribute name, which would only recognise families someone had
+    checked: Gemma 3 writes its ``boi_token``, Qwen-VL a three-token block. The block must repeat
+    once more for the second image, the question must survive (InternVL drops it), and the marker
+    must be a token the model names, so an override nothing binds pixels to cannot pass.
+    """
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
+
+    targets = _template_render_targets(tokenizer, processor)
+    if not targets:
+        return None
+    try:
+        one, two = (
+            apply_chat_template_for_generation(targets[0], probe)
+            for probe in _MULTI_IMAGE_PROBE_MESSAGES
+        )
+        if not isinstance(one, str) or not isinstance(two, str):
+            return None
+        if _MULTI_IMAGE_PROBE_TEXT not in one or _MULTI_IMAGE_PROBE_TEXT not in two:
+            return None
+        opcodes = difflib.SequenceMatcher(None, one, two, autojunk = False).get_opcodes()
+        inserted = [two[j1:j2] for tag, _i1, _i2, j1, j2 in opcodes if tag == "insert"]
+        if len(inserted) != 1 or any(tag in ("replace", "delete") for tag, *_rest in opcodes):
+            return None
+        marker = inserted[0]
+        if one.count(marker) != 1 or two.count(marker) != 2:
+            return None
+        named = _declared_image_tokens(tokenizer, processor, model)
+        if any(token in marker for token in named):
+            return marker
+    except BaseException:
+        return None
+    return None
+
+
+def _model_type_takes_several_images(model):
+    """Studio renders the model's own template, so mlx-vlm's deny-list has to be read here."""
+    try:
+        from mlx_vlm.prompt_utils import SINGLE_IMAGE_ONLY_MODELS
+    except BaseException:
+        return False
+    _config, model_type = _mlx_vlm_model_config(model)
+    return bool(model_type) and model_type not in SINGLE_IMAGE_ONLY_MODELS
+
+
 def _image_marker_survives(
     tokenizer,
     processor,
@@ -2328,6 +2422,7 @@ class MLXInferenceBackend:
         self._tokenizer = None
         self._processor = None
         self._is_vlm = False
+        self._multi_image_marker = None
         self._config = {}
         self._distributed_group = None
         self._distributed_rank = 0
@@ -2828,6 +2923,12 @@ class MLXInferenceBackend:
             _revoke_override_that_drops_image(
                 self._template_override, self._tokenizer, self._processor, image_placeholder
             )
+        # After the override settles, so the probe measures the template generation will use.
+        self._multi_image_marker = (
+            _scaling_image_marker(self._tokenizer, self._processor, self._model)
+            if is_vision and _model_type_takes_several_images(self._model)
+            else None
+        )
         # Released once the media checks are done: the pairs reference the tokenizer and processor, so keeping them
         # would outlive the unload that nulls both.
         self._template_override["restore"] = []
@@ -2931,6 +3032,7 @@ class MLXInferenceBackend:
             # The body _generate_vlm renders an image turn with, not the tokenizer body.
             "processor_template": None,
             "renders_image": False,
+            "accepts_multiple_images": False,
         }
         from core.inference.chat_template_helpers import (
             chat_render_target as _chat_render_target,
@@ -2944,6 +3046,9 @@ class MLXInferenceBackend:
         if isinstance(_proc_tpl, (str, dict, list, tuple)) and _proc_tpl:
             info["processor_template"] = _proc_tpl
         info["renders_image"] = _proc is not None and bool(getattr(self, "_is_vlm", False))
+        info["accepts_multiple_images"] = info["renders_image"] and bool(
+            getattr(self, "_multi_image_marker", None)
+        )
         try:
             tpl = (
                 getattr(tok, "chat_template", None)
@@ -3127,6 +3232,8 @@ class MLXInferenceBackend:
         # cannot tell that the wrappers below still have to survive decoding.
         tool_protocol_active = None,
         video = None,
+        *,
+        images = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -3139,8 +3246,15 @@ class MLXInferenceBackend:
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
+        images = list(images) if images else ([image] if image is not None else [])
+        if len(images) > 1 and not self._multi_image_marker:
+            raise ValueError(
+                f"'{self.active_model_name}' takes one image per request: its chat template does "
+                f"not mark {len(images)} images separately."
+            )
+
         # Shared with the transformers vision path so both render the same turns (#10092).
-        if self._is_vlm and (image is not None or video is not None):
+        if self._is_vlm and (images or video is not None):
             # Processor templates want part lists, the tokenizer fallback wants strings.
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
@@ -3153,7 +3267,7 @@ class MLXInferenceBackend:
                 messages,
                 system_prompt = system_prompt,
                 structured_content = _renders_via_processor,
-                image = image is not None,
+                image = len(images or ()),
                 video = video is not None,
             )
         else:
@@ -3162,7 +3276,7 @@ class MLXInferenceBackend:
         if self._is_vlm:
             stream = self._generate_vlm(
                 full_messages,
-                image,
+                images,
                 temperature,
                 top_p,
                 top_k,
@@ -3621,12 +3735,19 @@ class MLXInferenceBackend:
             prompt = recovered_prompt
         elif prompt_issue:
             raise RuntimeError(f"VLM chat template returned {prompt_issue}.") from prompt_error
+        # mlx-vlm binds pixel_values[i] to the i-th image token: miscounted markers answer wrong.
+        if attached_images > 1 and self._multi_image_marker:
+            marked = prompt.count(self._multi_image_marker)
+            if marked != attached_images:
+                raise RuntimeError(
+                    f"VLM chat template marked {marked} image(s) for {attached_images} attached."
+                )
         return prompt, chat_target
 
     def _generate_vlm(
         self,
         messages,
-        image,
+        images,
         temperature,
         top_p,
         top_k,
@@ -3651,7 +3772,7 @@ class MLXInferenceBackend:
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
-        images = [image] if image is not None else None
+        images = list(images) if images else None
         prompt, chat_target = self._render_vlm_prompt(
             messages,
             images,
@@ -3686,14 +3807,14 @@ class MLXInferenceBackend:
         stopped = False
         if max_new_tokens is None:
             max_new_tokens = self._unset_generation_budget(prompt)
-            if image is not None or video is not None:
+            if images or video is not None:
                 # Media expands past its placeholder (a clip by a frame each), so the counted
                 # prompt is short: cap at the default, under the cache window.
                 max_new_tokens = min(max_new_tokens, UNSET_GENERATION_BUDGET)
         logger.info(
-            "VLM generating: prompt_len=%d, has_image=%s, has_video=%s",
+            "VLM generating: prompt_len=%d, images=%d, has_video=%s",
             len(prompt),
-            image is not None,
+            len(images or ()),
             video is not None,
         )
         # stream_generate forwards **kwargs into generate_step (which builds the sampler + logits_processors
