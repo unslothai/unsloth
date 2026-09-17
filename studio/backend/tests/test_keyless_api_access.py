@@ -1026,8 +1026,9 @@ def test_protected_side_effect_guards_remain_wired():
     assert "_require_a_credential_of_its_own" in inspect.getsource(auth.change_password)
     assert all(
         "request_admitted_without_credential" in inspect.getsource(handler)
-        for handler in (inference._maybe_auto_switch_model, inference.openai_chat_completions)
+        for handler in (inference._keyless_caller_held_back, inference.openai_chat_completions)
     )
+    assert "_keyless_caller_held_back" in inspect.getsource(inference._maybe_auto_switch_model)
     assert all(
         "authenticated_without_credential" in inspect.getsource(handler)
         and "not no_credential" in inspect.getsource(handler)
@@ -1054,14 +1055,35 @@ def test_protected_side_effect_guards_remain_wired():
     assert security.scheme_name == "HTTPBearer"
 
 
-def test_keyless_idle_restore_requires_the_requested_model(monkeypatch):
-    from core.inference import llama_keepwarm as kw; import auth.authentication as authentication
+def _keyless_switch_hook(scope):
+    from studio.backend.tests import test_openai_auto_switch as auto
+    seed_user(); set_keyless_api_access(scope)
+    request = request_for(headers = {"Host": "localhost:8888", "Authorization": "Bearer no-key-required"})
+    assert admitted_without_session(request)
+    return lambda model: asyncio.run(auto.inference_route._maybe_auto_switch_model(model, request, "unsloth"))
+
+
+@pytest.mark.parametrize("scope", ["inference", "full"])
+def test_keyless_idle_restore_requires_the_requested_model_unless_the_scope_could_load(monkeypatch, scope):
+    from core.inference import llama_keepwarm as kw
     from studio.backend.tests import test_openai_auto_switch as auto
     backend = auto._FakeBackend(None); rec = auto._LoadRecorder(backend)
     auto._wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: True)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
-    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
-    auto._run_hook("org/B-GGUF"); assert rec.calls == []
-    auto._run_hook("org/A-GGUF:Q4_K_M"); assert len(rec.calls) == 1
+    hook = _keyless_switch_hook(scope)
+    hook("gpt-4o-mini")
+    if scope == "full":
+        assert len(rec.calls) == 1; return
+    assert rec.calls == []
+    hook("org/A-GGUF:Q4_K_M"); assert len(rec.calls) == 1
+
+
+@pytest.mark.parametrize(("scope", "loads"), [("full", 1), ("inference", 0)])
+def test_keyless_auto_switch_loads_under_the_full_scope_only(monkeypatch, scope, loads):
+    from studio.backend.tests import test_openai_auto_switch as auto
+    backend, rec = auto._wired(monkeypatch, auto._FakeBackend(None), ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: False)
+    _keyless_switch_hook(scope)("org/A-GGUF")
+    assert len(rec.calls) == loads
 # fmt: on

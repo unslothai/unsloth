@@ -646,7 +646,10 @@ export function UsageExamples({
   const keylessBase =
     !(useTunnel && cloudflareUrl) &&
     keylessBaseEligible(base, keylessScope, keylessExposure);
-  const model = useExampleModelName(keylessBase && !apiKey);
+  // Only the inference scope keeps a keyless caller on the loaded model; full can switch.
+  const model = useExampleModelName(
+    keylessBase && !apiKey && keylessScope === "inference",
+  );
 
   const [statusAnswer, setStatusAnswer] = useState<{
     key: string;

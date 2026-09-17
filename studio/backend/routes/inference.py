@@ -8295,6 +8295,16 @@ def disable_openai_auto_switch_for_request(scope) -> None:
         scope[_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY] = True
 
 
+def _keyless_caller_held_back(fastapi_request) -> bool:
+    """A keyless caller that may not POST /api/inference/load itself, so it gets only the serving model or the idle-unloaded one it names."""
+    from auth.authentication import request_admitted_without_credential
+    from utils.keyless_api_access import keyless_request_may_load_models
+
+    return request_admitted_without_credential(
+        fastapi_request
+    ) and not keyless_request_may_load_models(fastapi_request)
+
+
 def _automatic_model_load_may_run() -> bool:
     """True when a request can trigger an automatic load: either resolver-based
     auto-switch is on, or a standalone idle TTL can reload an idle-freed model. The
@@ -9278,11 +9288,8 @@ async def _maybe_auto_switch_model(
             _claim_slot_for_non_preview(fastapi_request)
         return
 
-    from auth.authentication import request_admitted_without_credential
-
-    keyless_caller = request_admitted_without_credential(fastapi_request)
-    # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
-    if auto_switch_on and keyless_caller:
+    keyless_held_back = _keyless_caller_held_back(fastapi_request)
+    if auto_switch_on and keyless_held_back:
         auto_switch_on = False
         if not idle_unload_is_configured():
             await _reject_unservable_model(requested_model, fastapi_request)
@@ -9354,11 +9361,11 @@ async def _maybe_auto_switch_model(
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
-            # A credential-less caller may restore only the model it explicitly
+            # A held-back keyless caller may restore only the model it explicitly
             # named (or the reload-only sentinel used when the model is omitted).
             # Check before loading so an unrelated name cannot trigger an expensive
             # stash restore and only then receive the normal mismatch response.
-            if keyless_caller and not reload_only:
+            if keyless_held_back and not reload_only:
                 requested_base, requested_variant = split_model_ref(requested_model)
                 if not _matches_any(
                     requested_base, (target_id, override_id, public_model_id(target_id))
