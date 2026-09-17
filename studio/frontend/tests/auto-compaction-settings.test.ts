@@ -140,7 +140,9 @@ test("a queued run keeps its own model's llama.cpp verdict after the picker move
   // carries no .gguf suffix, and the load reports no quant. loadedIsGguf is the only
   // evidence llama.cpp serves it.
   const resident = {
-    params: { checkpoint: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fq" },
+    params: {
+      checkpoint: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fq",
+    },
     activeGgufVariant: null,
     activeNativePathToken: null,
     loadedIsGguf: true,
@@ -182,6 +184,27 @@ test("a queued run keeps its own model's llama.cpp verdict after the picker move
       context_overflow: "truncate_oldest",
       context_policy: "rolling",
       compaction_headroom_ratio: 0.1,
+    },
+  );
+});
+
+test("MLX opts into the existing policy and honors disabling auto compaction", () => {
+  const options = {
+    isGguf: false,
+    isMlx: true,
+    autoCompactEnabled: true,
+    contextPolicy: "rolling" as const,
+    compactionHeadroomRatio: 0.1,
+  };
+  assert.deepEqual(ggufCompactionRequestFields(options), {
+    context_overflow: "truncate_oldest",
+    context_policy: "rolling",
+    compaction_headroom_ratio: 0.1,
+  });
+  assert.deepEqual(
+    ggufCompactionRequestFields({ ...options, autoCompactEnabled: false }),
+    {
+      context_overflow: "error",
     },
   );
 });

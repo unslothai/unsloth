@@ -2025,6 +2025,177 @@ class InferenceOrchestrator:
             raise RuntimeError(error)
         return int(resp["input_tokens"]), resp.get("model")
 
+    def compact_chat_context(
+        self,
+        messages: list,
+        *,
+        system_prompt: str = "",
+        tools: Optional[list] = None,
+        context_overflow: Optional[str] = None,
+        context_policy: Optional[str] = None,
+        compaction_headroom_ratio: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        thread_id: Optional[str] = None,
+        cancel_event = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
+        supports_tools: bool = False,
+        anchor_ids = None,
+        sticky_dropped: Optional[int] = None,
+        recall_done: bool = False,
+        recall_style: Optional[str] = None,
+        boundary_branch_messages: Optional[list] = None,
+        archive_branch_messages: Optional[list] = None,
+    ) -> dict:
+        """Apply Studio's checkpoint/rolling policy to one MLX prompt.
+
+        Returns fitted messages plus the metadata/events the GGUF path emits.
+        Policy failures are deliberately non-fatal: generation receives the
+        untouched request and can report its normal context error.
+        """
+        unchanged = {
+            "messages": list(messages),
+            "system_prompt": system_prompt,
+            "truncation": None,
+            "events": [],
+            "recalled": False,
+            "anchored": [],
+        }
+        model_info = self.models.get(self.active_model_name) or {}
+        context_length = int(model_info.get("context_length") or 0)
+        if (
+            context_overflow != "truncate_oldest"
+            or not model_info.get("is_mlx")
+            or context_length <= 1
+        ):
+            return unchanged
+
+        conversation = []
+        if system_prompt:
+            conversation.append({"role": "system", "content": system_prompt})
+        conversation.extend(messages)
+
+        try:
+            from core.inference.context_window import messages_without_unpriced_media, prompt_budget
+            from core.inference.chat_template_helpers import trailing_assistant_text
+            from core.inference.llama_cpp import (
+                _archive_and_recall,
+                _boundary_metadata,
+                _compaction_fit_kwargs,
+                _can_reset_epoch,
+                _conversation_recall_reserve,
+                _fit_with_instruction_pins,
+                _keeps_compaction_boundary,
+                _memory_tool_withheld,
+                _sticky_compaction_state,
+            )
+
+            if messages_without_unpriced_media(conversation) is not conversation:
+                return unchanged
+            if cancel_event is not None and cancel_event.is_set():
+                return unchanged
+
+            # The existing count API prices a new reply, not an assistant continuation.
+            if continue_final_message and trailing_assistant_text(conversation):
+                return unchanged
+
+            request_branch = list(boundary_branch_messages or conversation)
+            before = conversation
+
+            def _count(fitted):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("Context compaction cancelled")
+                return self.count_chat_tokens(
+                    fitted,
+                    "",
+                    tools = tools,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                )[0]
+
+            can_reset = _can_reset_epoch(
+                thread_id,
+                supports_tools,
+                tools_withheld = _memory_tool_withheld(thread_id, tools),
+            )
+            sticky, sticky_is_checkpoint = (
+                _sticky_compaction_state(
+                    thread_id,
+                    request_branch,
+                    context_policy = context_policy,
+                    can_reset = can_reset,
+                    compaction_headroom_ratio = compaction_headroom_ratio,
+                )
+                if sticky_dropped is None
+                else (max(0, int(sticky_dropped)), False)
+            )
+            fitted, truncation = _fit_with_instruction_pins(
+                before,
+                context_length = context_length,
+                max_tokens = max_tokens,
+                count_tokens = _count,
+                anchor_ids = anchor_ids,
+                keeps_boundary = _keeps_compaction_boundary(thread_id),
+                can_reset = can_reset,
+                reserve_tokens = _conversation_recall_reserve(thread_id),
+                sticky_dropped = sticky,
+                sticky_is_checkpoint = sticky_is_checkpoint,
+                **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
+            )
+
+            events = []
+            recalled = False
+            anchored = []
+            if truncation and truncation.get("fits"):
+                enabled_names = {
+                    (tool.get("function") or {}).get("name")
+                    for tool in tools or []
+                    if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+                }
+                recalled_result = _archive_and_recall(
+                    fitted,
+                    before,
+                    branch_messages = archive_branch_messages or before,
+                    thread_id = thread_id,
+                    style = recall_style
+                    or ("tool" if "search_conversation" in enabled_names else "inline"),
+                    force_recall = bool(truncation.get("checkpoint_started", True)),
+                    recall_done = recall_done,
+                    recall_budget_tokens = max(
+                        0,
+                        prompt_budget(context_length, max_tokens)
+                        - int(truncation.get("prompt_tokens_after") or 0),
+                    ),
+                    count_tokens = _count,
+                )
+                fitted = recalled_result["conversation"]
+                truncation = {**truncation, **recalled_result["counts"]}
+                events.extend(recalled_result["events"])
+                recalled = bool(recalled_result["recalled"])
+                anchored = list(recalled_result["anchored"])
+
+            if truncation and truncation.get("fits"):
+                truncation = {
+                    **truncation,
+                    **_boundary_metadata(fitted, request_branch, compaction_headroom_ratio),
+                }
+            if truncation:
+                events.append({"type": "context_truncated", **truncation})
+            return {
+                "messages": fitted,
+                "system_prompt": "",
+                "truncation": truncation,
+                "events": events,
+                "recalled": recalled,
+                "anchored": anchored,
+            }
+        except Exception as exc:
+            logger.warning("Could not preflight the MLX context window: %s", exc, exc_info = True)
+            return unchanged
+
     def generate_chat_response(
         self,
         messages: list,
@@ -2118,6 +2289,10 @@ class InferenceOrchestrator:
         stop: Optional[list] = None,
         reasoning_prefilled: bool = False,
         seed: Optional[int] = None,
+        context_overflow: Optional[str] = None,
+        context_policy: Optional[str] = None,
+        compaction_headroom_ratio: Optional[float] = None,
+        supports_tools: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -2217,6 +2392,41 @@ class InferenceOrchestrator:
         # Resolved BEFORE the profile: the mapper installs its template during the render.
         _mapped_tpl = mapped_chat_template(_model_info, self.active_model_name)
 
+        _request_branch = list(initial)
+        _sticky_boundary_applied = False
+        _conversation_recall_done = False
+        _rolling_anchor_ids: set[int] = set()
+
+        def _fit_iteration(conversation: list, active_tools: list) -> dict:
+            nonlocal _sticky_boundary_applied, _conversation_recall_done
+            result = self.compact_chat_context(
+                conversation,
+                tools = active_tools,
+                context_overflow = context_overflow,
+                context_policy = context_policy,
+                compaction_headroom_ratio = compaction_headroom_ratio,
+                max_tokens = max_new_tokens,
+                thread_id = thread_id,
+                cancel_event = cancel_event,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
+                supports_tools = bool(supports_tools or tools),
+                anchor_ids = _rolling_anchor_ids,
+                sticky_dropped = 0 if _sticky_boundary_applied else None,
+                recall_done = _conversation_recall_done,
+                boundary_branch_messages = _request_branch,
+                archive_branch_messages = conversation,
+            )
+            if context_overflow == "truncate_oldest" and _model_info.get("is_mlx"):
+                _sticky_boundary_applied = True
+            if result.get("recalled"):
+                _conversation_recall_done = True
+                for message in result.get("anchored") or ():
+                    _rolling_anchor_ids.add(id(message))
+            return result
+
         yield from run_safetensors_tool_loop(
             markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
             renderable_tools = renderable_tool_catalog(
@@ -2247,6 +2457,7 @@ class InferenceOrchestrator:
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
             generation_stats_holder = turn_stats,
+            context_fitter = _fit_iteration,
         )
 
     def generate_with_adapter_control(
