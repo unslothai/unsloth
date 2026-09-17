@@ -354,7 +354,10 @@ def native_binary_installed(*, gpu_ordinal: Optional[int] = None) -> bool:
 
 
 def predict_engine(
-    fam: DiffusionFamily, *, model_kind: Optional[str] = None, gpu_ordinal: Optional[int] = None
+    fam: DiffusionFamily,
+    *,
+    model_kind: Optional[str] = None,
+    gpu_ordinal: Optional[int] = None,
 ) -> str:
     """The engine a load of ``fam`` would select on this host, WITHOUT any side effect.
 
