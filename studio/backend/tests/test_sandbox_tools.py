@@ -304,6 +304,11 @@ class TestNetworkTargetResolution:
                 id = "url_variable_rebound_after_call",
             ),
             pytest.param(
+                f"import requests\ndef fetch(url):\n    if not url:\n        url = 'http://{_H}/'\n"
+                "    requests.get(url)",
+                id = "parameter_with_out_of_policy_fallback",
+            ),
+            pytest.param(
                 f"import socket\nhost = '{_H}'\ns = socket.socket()\ns.connect((host, 22))\nhost = 'huggingface.co'",
                 id = "socket_tuple_host_rebound_after_call",
             ),
@@ -353,6 +358,10 @@ class TestNetworkTargetResolution:
             "import socket\nwith socket.socket() as s:\n    s.connect((input(), 22))",
             "import requests\nrequests.get(*[input()])",
             "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = input()",
+            # A store with no value is an unknown host, so a known store cannot silence it.
+            "import requests\ndef fetch(url):\n    if not url:\n        url = 'https://pypi.org/'\n    requests.get(url)",
+            "import requests\nurl = 'https://pypi.org/'\nfor url in urls:\n    requests.get(url)",
+            "import requests\nurl = 'https://pypi.org/'\nurl += input()\nrequests.get(url)",
             # The receiver is a client on one path, so the unknown host still asks.
             "import paramiko\ndef outer():\n    client = get_db()\n    def swap():\n        nonlocal client\n"
             "        client = paramiko.SSHClient()\n    swap()\n    client.connect(hostname=input())",

@@ -16772,9 +16772,17 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(expr, ast.Name) and depth <= 8:
             values = _name_values(expr)
             if values and len(values) > 1:
-                stores = [v for v in values if isinstance(v, ast.AST)]
-                if stores:
-                    return [r for v in stores for r in _target_hosts(v, kind, depth + 1)]
+                # A store with no value (parameter, loop target, import) is an unknown host, not
+                # an absent one, so it has to keep the call unresolved.
+                return [
+                    result
+                    for value in values
+                    for result in (
+                        _target_hosts(value, kind, depth + 1)
+                        if isinstance(value, ast.AST)
+                        else [(False, None)]
+                    )
+                ]
         return _target_host(expr, kind, depth)
 
     def _target_host(
