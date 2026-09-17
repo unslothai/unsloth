@@ -59,6 +59,10 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
+#### Docker
+
+The [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) `unsloth/unsloth` is available on Docker. [Read guide.](https://unsloth.ai/docs/get-started/install/docker)
+
 #### Community:
 
 - [Discord](https://discord.gg/unsloth)
