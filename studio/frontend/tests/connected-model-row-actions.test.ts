@@ -248,7 +248,26 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   assert.match(settingsDialog, /const systemPrompt = promptDraft \?\? remembered\?\.systemPrompt \?\? "";/);
   assert.match(
     settingsDialog,
+    /const effort = effortDraft \?\? pinnedEffort \?\? FOLLOW_CHAT;/,
+  );
+  assert.match(
+    settingsDialog,
     /\.\.\.\(promptDraft !== null \? \{ systemPrompt: promptDraft \} : \{\}\),/,
+  );
+  // An untouched effort writes nothing: another tab can change the pin while this is open, and a
+  // save of an unrelated field would put the value the select opened with back over it, and reset
+  // the composer's own Think level while it was at it.
+  assert.match(
+    settingsDialog,
+    /if \(effortDraft !== null\) \{\s*const pinned = effortDraft === FOLLOW_CHAT \? null : effortDraft;\s*setModelReasoningEffort\(checkpointId, pinned\);/,
+  );
+  // Which is the listener that makes that reachable.
+  const effortStore = readSrc(
+    "features/model-picker/components/model-selector/model-reasoning-effort.ts",
+  );
+  assert.match(
+    effortStore,
+    /window\.addEventListener\("storage", \(event\) => \{/,
   );
   // Blank or junk is an absence, not a zero the request would then send as the cap.
   assert.match(
@@ -325,10 +344,7 @@ test("editing the live model's effort reaches the chat now", () => {
     settingsDialog,
     /if \(isLiveModel\) \{\s*setReasoningEffort\(\s*resolveExternalReasoningEffort\(\{/,
   );
-  assert.match(
-    settingsDialog,
-    /pinned: effort === FOLLOW_CHAT \? null : effort,/,
-  );
+  assert.match(settingsDialog, /current: chatEffort,\s*pinned,/);
 });
 
 test("a row with no heading over it still names its connection", () => {

@@ -120,13 +120,15 @@ export function ConnectedModelSettingsDialog({
   const clampCap = (value: number) =>
     Math.min(Math.max(value, minCap), maxCap);
 
-  // null is untouched, so an untouched field keeps reading the store. The dialog can open before
-  // chat settings hydrate, and a useState seeded from the empty store then held that emptiness
-  // after the response landed -- and Save wrote it back over the prompt the server had.
+  // null is untouched, so an untouched field keeps reading the store and Save writes nothing for
+  // it. The dialog can open before chat settings hydrate, and a useState seeded from the empty
+  // store then held that emptiness after the response landed, so Save put it back over the prompt
+  // the server had. A pin another tab changes while this is open reads the same way.
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
   const [capDraft, setCapDraft] = useState<string | null>(null);
-  const [effort, setEffort] = useState(pinnedEffort ?? FOLLOW_CHAT);
+  const [effortDraft, setEffortDraft] = useState<string | null>(null);
   const systemPrompt = promptDraft ?? remembered?.systemPrompt ?? "";
+  const effort = effortDraft ?? pinnedEffort ?? FOLLOW_CHAT;
   // Always a real number. A blank would have to mean "forget the cap", and nothing can express
   // that: paramsByModel merges per key here and the settings row deep-merges on the server, so an
   // omitted key keeps the old value and the clear would be dropped without saying so.
@@ -144,23 +146,26 @@ export function ConnectedModelSettingsDialog({
         ? { maxTokens: clampCap(typedCap) }
         : {}),
     });
-    setModelReasoningEffort(
-      checkpointId,
-      effort === FOLLOW_CHAT ? null : effort,
-    );
-    // The pin is read on a model switch, and a switch to the model already loaded returns before
-    // that, so the live model's level has to be set here or the edit would not apply until the
-    // user switched away and back. Through the same resolver the switch uses, so clearing the pin
-    // falls back to the default rather than leaving the cleared level in force.
-    if (isLiveModel) {
-      setReasoningEffort(
-        resolveExternalReasoningEffort({
-          caps: reasoning,
-          providerType,
-          current: chatEffort,
-          pinned: effort === FOLLOW_CHAT ? null : effort,
-        }),
-      );
+    // Untouched writes nothing at all: another tab can change this pin while the dialog is open,
+    // and a save of an unrelated field would otherwise put the value this select opened with back
+    // over it. It would also reset the composer's own Think level for no reason.
+    if (effortDraft !== null) {
+      const pinned = effortDraft === FOLLOW_CHAT ? null : effortDraft;
+      setModelReasoningEffort(checkpointId, pinned);
+      // The pin is read on a model switch, and a switch to the model already loaded returns
+      // before that, so the live model's level has to be set here or the edit would not apply
+      // until the user switched away and back. Through the same resolver the switch uses, so
+      // clearing the pin falls back to the default rather than leaving the cleared level in force.
+      if (isLiveModel) {
+        setReasoningEffort(
+          resolveExternalReasoningEffort({
+            caps: reasoning,
+            providerType,
+            current: chatEffort,
+            pinned,
+          }),
+        );
+      }
     }
     onOpenChange(false);
   }
@@ -216,7 +221,7 @@ export function ConnectedModelSettingsDialog({
           {efforts.length > 0 ? (
             <div className="flex items-center justify-between gap-4">
               <Label htmlFor="connected-model-effort">Reasoning effort</Label>
-              <Select value={effort} onValueChange={setEffort}>
+              <Select value={effort} onValueChange={setEffortDraft}>
                 <SelectTrigger id="connected-model-effort" className="w-40">
                   <SelectValue />
                 </SelectTrigger>
