@@ -160,11 +160,7 @@ def _chat_completions_max_tokens_field(provider_type: str, base_url: str) -> str
 
 
 def _set_chat_completions_max_tokens(
-    body: dict[str, Any],
-    *,
-    provider_type: str,
-    base_url: str,
-    max_tokens: Optional[int],
+    body: dict[str, Any], *, provider_type: str, base_url: str, max_tokens: Optional[int]
 ) -> None:
     if max_tokens is None:
         return
@@ -1421,13 +1417,10 @@ class ExternalProviderClient:
                     if response.status_code != 200:
                         error_body = await response.aread()
                         error_text_raw = error_body.decode("utf-8", errors = "replace")
-                        if (
-                            _max_tokens_attempt == 0
-                            and _should_retry_with_max_completion_tokens(
-                                response.status_code,
-                                error_text_raw,
-                                post_body,
-                            )
+                        if _max_tokens_attempt == 0 and _should_retry_with_max_completion_tokens(
+                            response.status_code,
+                            error_text_raw,
+                            post_body,
                         ):
                             post_body = _rewrite_body_max_tokens_to_completion(post_body)
                             retry_max_completion_tokens = True
@@ -1527,7 +1520,9 @@ class ExternalProviderClient:
                                 {
                                     "type": "tool_end",
                                     "tool_call_id": web_search_tool_id,
-                                    "result": ("\n---\n".join(blocks) if blocks else "(search complete)"),
+                                    "result": (
+                                        "\n---\n".join(blocks) if blocks else "(search complete)"
+                                    ),
                                 }
                             )
 
@@ -1572,14 +1567,18 @@ class ExternalProviderClient:
                                             # Mid-stream provider error event. OpenRouter in particular returns 200 then
                                             # surfaces the failure as an SSE error event.
                                             if "error" in parsed:
-                                                event_counts["error"] = event_counts.get("error", 0) + 1
+                                                event_counts["error"] = (
+                                                    event_counts.get("error", 0) + 1
+                                                )
                                                 logger.warning(
                                                     "%s SSE error event: %s",
                                                     self.provider_type,
                                                     parsed.get("error"),
                                                 )
                                             else:
-                                                event_counts["delta"] = event_counts.get("delta", 0) + 1
+                                                event_counts["delta"] = (
+                                                    event_counts.get("delta", 0) + 1
+                                                )
                                             # OpenRouter (and most OAI-compat providers) report the handling model in every
                                             # chunk's `model` field. Latch the first non-empty value so the router-picked
                                             # model surfaces in logs and reaches the proxy caller.
@@ -1602,7 +1601,9 @@ class ExternalProviderClient:
                                                         ):
                                                             if not isinstance(envelope, dict):
                                                                 continue
-                                                            for ann in envelope.get("annotations") or []:
+                                                            for ann in (
+                                                                envelope.get("annotations") or []
+                                                            ):
                                                                 _record_or_url_citation(ann)
                                 # Verbatim relay, minus Unsloth's own UI control protocol: the frames this server writes to
                                 # paint tool cards ride the same stream, so an endpoint that echoes them forges a card for a
@@ -1613,7 +1614,11 @@ class ExternalProviderClient:
                                 yield relayed
                             # Stream ended without [DONE] (some upstreams just close the connection). Emit tool_end so the
                             # card does not stay in "running" forever.
-                            if web_search_active and web_search_tool_started and not web_search_tool_ended:
+                            if (
+                                web_search_active
+                                and web_search_tool_started
+                                and not web_search_tool_ended
+                            ):
                                 yield _build_web_search_tool_end()
                                 web_search_tool_ended = True
                         except GeneratorExit:
@@ -1633,7 +1638,6 @@ class ExternalProviderClient:
                             )
                             await response.aclose()
                             await lines_gen.aclose()
-
 
                 if retry_max_completion_tokens:
                     logger.info(
@@ -6288,13 +6292,10 @@ class ExternalProviderClient:
                 headers = self._auth_headers(),
                 timeout = self._timeout,
             )
-            if (
-                _max_tokens_attempt == 0
-                and _should_retry_with_max_completion_tokens(
-                    response.status_code,
-                    response.text,
-                    post_body,
-                )
+            if _max_tokens_attempt == 0 and _should_retry_with_max_completion_tokens(
+                response.status_code,
+                response.text,
+                post_body,
             ):
                 logger.info(
                     "Upstream rejected max_tokens for %s; retrying with max_completion_tokens",
