@@ -165,10 +165,26 @@ def assert_linear(
     started = read_clock()
     # Passed down rather than checked here: on a path slow enough to trip it, every repeat
     # is another minute spent measuring something already known to be too slow.
-    ratio, big, result, _ = growth(run, build, units, factor, abort_over_s = budget, clock = clock)
+    ratio, big, result, first_pairs = growth(
+        run,
+        build,
+        units,
+        factor,
+        abort_over_s = budget,
+        budget_s = total_budget_s,
+        clock = clock,
+    )
     # Backstop: a regression bad enough to make the ratio unmeasurable still has to fail, and
     # fail quickly, rather than run until the job's own timeout kills it with no explanation.
     assert big < budget, f"{label} path took {big:.1f}s on {units * factor} units"
+    # The budget covers THIS sample too, and an early stop is not a verdict. Contention that
+    # lands in the SMALL legs is the case: their ratios stay under the tolerance, so nothing
+    # reaches the retry branch below where the budget used to be the only one enforced, and
+    # three pairs of a slow-but-linear-looking path ran past the runner's patience and passed.
+    assert first_pairs == 3, (
+        f"{label} path: the first sample stopped after {first_pairs} of 3 pairs, on the "
+        f"{total_budget_s:.0f}s this call is allowed, so its ratio is not a reading of anything"
+    )
     if ratio >= tolerance:
         # RE-MEASURE rather than loosen. Pairing divides most contention out, but not all of
         # it: the big leg runs `factor`x longer than the small one, so a scheduler stall that

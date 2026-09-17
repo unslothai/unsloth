@@ -143,6 +143,28 @@ def test_a_path_slow_enough_to_trip_the_backstop_fails_on_the_backstop():
         assert_linear(run, _build, "glacial", 2, clock = clock)
 
 
+def test_the_first_sample_is_inside_the_budget_too():
+    """The budget covers the whole call, and the first sample is part of it.
+
+    The case is contention landing in the SMALL legs: 50s small against 55s big reads as a
+    ratio of 1.1, comfortably under the tolerance, so nothing reaches the retry branch where
+    the budget used to be the only one enforced. Three of those pairs is 315s, past the
+    `--timeout=330` these CI invocations pass, and the old form returned a cheerful pass
+    from a sample that had eaten the whole run.
+
+    Stopping is not passing either: two pairs is not the reading the caller asked for, so it
+    fails saying so rather than reporting a median of whatever it managed.
+    """
+    stalls = {}
+    for index in range(6):
+        stalls[index] = 49.998 if index % 2 == 0 else 54.992
+    run, clock, calls = _shaped(1.0, stalls = stalls)
+    with pytest.raises(AssertionError, match = "first sample stopped after 2 of 3"):
+        assert_linear(run, _build, "slow on both legs", 2, clock = clock)
+    assert calls["n"] == 4, f"a pair that could not fit was started anyway: {calls['n']}"
+    assert clock.now - 1000.0 < 330.0, f"the call outlasted the runner: {clock.now - 1000.0}"
+
+
 def test_a_confirmation_that_would_outlast_the_job_is_not_started():
     """The retry must not cost more than the runner will wait, or the message is a timeout.
 
