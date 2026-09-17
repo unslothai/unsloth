@@ -494,9 +494,11 @@ if (`$args[2] -eq "env") { `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = `$dir }
 # A build supplied from inside the managed tree goes with it when the tree is
 # moved or deleted, so the tree is not ours to touch either.
 if (`$args[2] -eq "nested") { `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = Join-Path `$dir "custom" }
-# Renaming needs DELETE on the folder plus write on its parent. Taking either
-# away is the denial that the move cannot recover, and the one the guidance is
-# still written for.
+# On POSIX, renaming needs write and execute on the PARENT, so taking write off the
+# parent is the denial the move cannot recover. On Windows the read deny applied to
+# every mode already refuses the rename, and denying DELETE alone does not (measured),
+# so this mode is the same as the one above there -- which is why the checks that read
+# it are written per platform.
 if (`$args[2] -eq "unmovable") {
     if (`$onWindows) { icacls `$dir /deny "`$env:USERDOMAIN\`${env:USERNAME}:(DE)" *>`$null }
     else { chmod 500 (Split-Path -Parent `$dir) }
@@ -565,13 +567,30 @@ else { chmod 755 `$dir 2>`$null }
     if ($out -notmatch "CAN_DENY: True") {
         Write-Host "  SKIP  cannot deny access on this host (running as root/admin?) -- preflight denial checks skipped" -ForegroundColor Yellow
     } else {
-        # A cache we own and can still rename is recovered rather than reported:
-        # renaming needs DELETE plus write on the parent, and neither is read
-        # access, so this clears denials takeown and icacls cannot.
-        Check "a denied cache that can be renamed is moved aside, not reported" (
-            $out -match "DENIED_VERDICT: continue")
-        Check "the moved cache leaves the original path free for the reinstall" (
-            $out -match "ASIDE_COUNT: 1" -and $out -match "ORIGINAL_EXISTS: False")
+        # A cache we own and can still rename is recovered rather than reported.
+        # Whether it CAN be renamed is not the same question on both platforms, and
+        # the answer was measured rather than reasoned about (windows-latest, denying
+        # each shape on the folder itself, then renaming it):
+        #
+        #   (OI)(CI)(RX)  refused    (OI)(CI)(R)  refused    (RX)  refused    (DE)  SUCCEEDED
+        #
+        # So on Windows every read denial refuses the rename -- the open asks for
+        # SYNCHRONIZE and any read deny removes it -- and denying DELETE, which sounds
+        # like the blocker, does not stop it. The recovery therefore cannot fire on
+        # Windows for the denial this harness creates, and asserting that it does was
+        # asserting something the platform does not allow. On POSIX the rename needs
+        # only write and execute on the parent, so the recovery is real there.
+        if ($onWindows) {
+            Check "a denied cache that cannot be renamed is reported, not moved aside" (
+                $out -match "DENIED_VERDICT: stop")
+            Check "the refused rename leaves nothing behind beside the original" (
+                $out -match "ASIDE_COUNT: 0" -and $out -match "ORIGINAL_EXISTS: True")
+        } else {
+            Check "a denied cache that can be renamed is moved aside, not reported" (
+                $out -match "DENIED_VERDICT: continue")
+            Check "the moved cache leaves the original path free for the reinstall" (
+                $out -match "ASIDE_COUNT: 1" -and $out -match "ORIGINAL_EXISTS: False")
+        }
 
         # Everything below is the tree the move cannot rescue, which is what the
         # guidance was always written for.

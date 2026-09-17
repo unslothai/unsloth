@@ -779,10 +779,19 @@ function Invoke-ManagedLlamaCppPreflight {
         $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
         $moved = $false
         try {
-            Move-Item -LiteralPath $dir -Destination $asideDir -ErrorAction Stop
+            # [System.IO.Directory]::Move, not Move-Item. Move-Item falls back to
+            # copy-then-delete when the rename fails, which creates $asideDir and then dies
+            # on the unreadable contents, leaving a stray llama.cpp.denied-* folder beside
+            # the original on every run. Directory.Move is a bare rename: it either moves
+            # the tree or throws having created nothing. Measured on windows-latest: every
+            # read denial ((OI)(CI)(RX), (OI)(CI)(R), (RX)) refuses the rename, while (DE)
+            # alone does not, so on Windows this recovery cannot fire. On POSIX the rename
+            # needs only write+execute on the parent, which is why it stays.
+            [System.IO.Directory]::Move($dir, $asideDir)
             $moved = $true
         } catch {
-            # Expected when the denial also covers rename; fall through to guidance.
+            # Expected when the denial covers the rename; fall through to guidance.
+            # Nothing to clean up: Directory.Move creates nothing when it throws.
         }
         if ($moved) {
             step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
