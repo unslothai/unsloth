@@ -984,14 +984,14 @@ class TestFrontendAssets:
         )
         assert proxied_loopback.get("/").status_code == 404
         assert proxied_loopback.get("/assets/app.js").status_code == 404
+        assert loopback_client.get("/", headers = {"Host": "127.0.0.1"}).status_code == 404
         assert remote_client.get("/", headers = headers).status_code == 404
 
         app.state.cloudflare_url = "https://remote.trycloudflare.com"
         assert remote_client.get("/", headers = headers).status_code == 200
         assert remote_client.get("/settings/api", headers = headers).status_code == 200
         assert remote_client.get("/assets/app.js", headers = headers).status_code == 200
-        assert loopback_client.get("/", headers = headers).status_code == 200
-        assert loopback_client.get("/settings/api", headers = headers).status_code == 200
+        assert loopback_client.get("/", headers = headers).status_code == 404
         assert loopback_client.get("/").status_code == 200
         assert client.get("/", headers = headers).status_code == 404
         assert client.get("/").status_code == 404
