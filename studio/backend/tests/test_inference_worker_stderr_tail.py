@@ -1166,7 +1166,10 @@ def test_a_worker_that_died_between_requests_is_replayed_before_its_sink_closes(
 
     written: "list[tuple]" = []
     monkeypatch.setattr(
-        module.logger, "error", lambda *args, **kwargs: written.append(args), raising = False,
+        module.logger,
+        "error",
+        lambda *args, **kwargs: written.append(args),
+        raising = False,
     )
 
     closed: "list[bool]" = []
@@ -1176,11 +1179,11 @@ def test_a_worker_that_died_between_requests_is_replayed_before_its_sink_closes(
             closed.append(True)
 
     orchestrator = module.InferenceOrchestrator.__new__(module.InferenceOrchestrator)
-    orchestrator._stderr_capture = _ClosableCapture(
-        "Fatal Python error: Segmentation fault\n"
-    )
+    orchestrator._stderr_capture = _ClosableCapture("Fatal Python error: Segmentation fault\n")
     orchestrator._proc = SimpleNamespace(
-        pid = 7331, exitcode = -11, is_alive = lambda: False,
+        pid = 7331,
+        exitcode = -11,
+        is_alive = lambda: False,
     )
 
     orchestrator._retire_stderr_capture()

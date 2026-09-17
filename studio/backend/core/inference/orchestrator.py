@@ -1026,7 +1026,8 @@ class InferenceOrchestrator:
             worker_is_gone = True
         if worker_is_gone:
             self._log_worker_stderr_once(
-                getattr(proc, "pid", None), getattr(proc, "exitcode", None),
+                getattr(proc, "pid", None),
+                getattr(proc, "exitcode", None),
             )
         try:
             capture.close()
