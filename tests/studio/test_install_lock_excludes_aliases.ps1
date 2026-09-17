@@ -398,8 +398,19 @@ try {
         Check "the planted marker link's target is not truncated" (
             (Get-Content -Raw -LiteralPath $markerVictim) -eq "keep me")
         $written = Get-Item -LiteralPath $plantedMarker -Force -ErrorAction SilentlyContinue
+        # Three checks, not one conjunction. A single Check here reports "the marker is wrong"
+        # without saying which part, and this row failed on Windows PowerShell 5.1 while passing
+        # on pwsh 7, so naming the conjunct is the difference between a diagnosis and a guess.
+        Check "the marker exists after the claim" ($null -ne $written)
+        Check "the marker is empty, as this installer only ever creates it" (
+            $null -ne $written -and $written.Length -eq 0)
+        # The ReparsePoint attribute, not .Target. Both PowerShell versions set the attribute on
+        # a link and clear it on an ordinary file, whereas .Target is $null on pwsh 7 but an
+        # EMPTY COLLECTION on 5.1, and an empty collection is not $null, so the old spelling
+        # failed on a marker that was in fact a perfectly ordinary file.
         Check "the marker is a real file, not the planted link" (
-            $null -ne $written -and $written.Length -eq 0 -and $null -eq $written.Target)
+            $null -ne $written -and
+            (($written.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0))
     }
 
     # And no window between the two. Deleting, confirming the name is free and then writing leaves
