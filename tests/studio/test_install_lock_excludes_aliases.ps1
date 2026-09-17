@@ -358,6 +358,37 @@ try {
         Test-Path -LiteralPath (Join-Path $freshRoot ".unsloth-studio-owned") -PathType Leaf)
     if ($freshLock) { Exit-StudioInstallLock -Lock $freshLock }
 
+    # Stale env-root state from an EARLIER run in the same session must not answer for this one.
+    # Under `irm | iex` a user can run the installer twice in one PowerShell session, and script
+    # scope outlives a run. If the first run recorded that its override root existed, that root
+    # was then removed, and a second run lands on the same path, the stale $true would tell the
+    # lock the directory was already there. It would skip claiming the root it just created, and
+    # a run dying before the venv marker leaves a root the uninstaller will not remove.
+    $StudioRedirectMode = 'env'
+    $staleRoot = Join-Path $tmp "stale-env-root"
+    # Deliberately NOT created: this is the run where the directory is genuinely new.
+    Check "control: the stale root really is absent" (-not (Test-Path -LiteralPath $staleRoot))
+    $script:StudioEnvRootPath = $staleRoot
+    $script:StudioEnvRootExisted = $true
+    $staleLock = Enter-StudioInstallLock -Path $staleRoot
+    Check "the run still took its lock" ($null -ne $staleLock)
+    Check "a root created by THIS run is claimed despite the stale record" (
+        Test-Path -LiteralPath (Join-Path $staleRoot ".unsloth-studio-owned") -PathType Leaf)
+    if ($staleLock) { Exit-StudioInstallLock -Lock $staleLock }
+    $script:StudioEnvRootPath = $null
+    $script:StudioEnvRootExisted = $false
+
+    # And the reset itself has to run before the override is read, or it would wipe the record
+    # the override site just made. Read the installer rather than trusting the ordering.
+    $srcAll = [System.IO.File]::ReadAllText((Join-Path $root "install.ps1"))
+    $resetAt = $srcAll.IndexOf('$script:StudioEnvRootPath = $null')
+    $recordAt = $srcAll.IndexOf('$script:StudioEnvRootPath = $envOverride')
+    Check "the per-invocation reset exists" ($resetAt -gt 0)
+    Check "the reset clears the existed flag too" (
+        $srcAll -match '\$script:StudioEnvRootExisted = \$false')
+    Check "the reset runs before the override records anything" (
+        $resetAt -gt 0 -and $recordAt -gt 0 -and $resetAt -lt $recordAt)
+
     # Bites control for the same code path: a root holding somebody else's file is NOT claimed,
     # so the check above is about the lock file specifically and not about env mode claiming
     # everything it is pointed at.
@@ -604,7 +635,6 @@ try {
 }
 
 Write-Host ""
-if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 # ---------------------------------------------------------------- the swapped-link race
 #
 # The reparse test runs on the pathname BEFORE the lock is opened, so on a root another user can
@@ -664,5 +694,19 @@ try {
     Remove-Item -LiteralPath $raceDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# The gate has to be the LAST thing before the success line. Checks appended after it print
+# FAIL and then the suite exits 0 anyway, which is worse than having no checks at all: CI
+# reports green while the regression they were added for is live. That is exactly what happened
+# to the swapped-link checks below, so the shape is asserted rather than trusted.
+$selfText = [System.IO.File]::ReadAllText($PSCommandPath)
+$gateAt = $selfText.LastIndexOf('if ($failures -gt 0)')
+$passAt = $selfText.LastIndexOf('All install-lock alias checks passed')
+$lastCheckAt = $selfText.LastIndexOf("`nCheck ")
+if ($gateAt -lt 0 -or $passAt -lt $gateAt -or $lastCheckAt -gt $gateAt) {
+    Write-Host "  FAIL  the failure gate is not the last thing before the success line" -ForegroundColor Red
+    exit 1
+}
+
+if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All install-lock alias checks passed"
 exit 0

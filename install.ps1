@@ -2789,6 +2789,16 @@ exit 1
         Join-Path $env:LOCALAPPDATA "Unsloth Studio"
     } else { $null }
 
+    # Cleared per invocation, not just written per invocation. Under `irm | iex` the same
+    # PowerShell session can run the installer more than once, and script scope outlives a run.
+    # A first run under the override records that its root existed; if that root is then removed
+    # and a second run without the override lands on the same path by default, the stale $true
+    # below would tell Enter-StudioInstallLock the directory was already there. It would skip
+    # claiming the root it just created, and a run that died before the later marker write would
+    # leave a lock-only directory scripts/uninstall.ps1 refuses to recognise.
+    $script:StudioEnvRootPath = $null
+    $script:StudioEnvRootExisted = $false
+
     if ($envOverride) {
         # Tilde expansion: env vars aren't subject to it when quoted on assignment.
         if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
@@ -5265,9 +5275,17 @@ exit 0
             # this, so by the time the lock runs it always exists and the check just above would
             # answer yes for every one of them. That site records what it found; prefer its
             # answer when it is speaking about this same directory.
+            #
+            # One direction only. That record exists to say "I created this root, so treat it as
+            # new", and it can never be used to say the opposite: a record claiming the root
+            # already existed cannot be true while the root is absent right now, so it is a
+            # leftover from an earlier run in the same session and the live answer wins. The
+            # top-level flow clears both variables per invocation as well; this is the half that
+            # holds even when something calls the lock directly.
             if ($script:StudioEnvRootPath -and
-                $script:StudioEnvRootPath.Equals($Path, [System.StringComparison]::OrdinalIgnoreCase)) {
-                $existedBefore = $script:StudioEnvRootExisted
+                $script:StudioEnvRootPath.Equals($Path, [System.StringComparison]::OrdinalIgnoreCase) -and
+                -not $script:StudioEnvRootExisted) {
+                $existedBefore = $false
             }
             $null = [System.IO.Directory]::CreateDirectory($Path)
             $lockPath = Join-Path $Path $script:StudioInstallLockFileName
