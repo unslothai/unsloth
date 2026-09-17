@@ -191,10 +191,11 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    # unsloth_zoo publishes its own trl and transformers windows and pip intersects the
-    # two, so widening the ranges below buys nothing until a zoo release carries the same
-    # ceilings: 2026.9.4 on PyPI still says trl<=0.24.0. The floor names the first release
-    # that lifts it, which is why this moves in the same commit as the trl window.
+    # unsloth_zoo publishes its own transformers and trl windows and pip intersects the
+    # two, so widening either range below buys nothing until a zoo release carries the
+    # same ceilings: 2026.9.4 on PyPI still says transformers<=5.5.0 and trl<=0.24.0. The
+    # floor names the first release expected to carry both (unslothai/unsloth-zoo#1227 for
+    # transformers, #1260 for trl), which is why it moves with the windows themselves.
     "unsloth_zoo>=2026.9.5",
     "wheel>=0.42.0",
     "packaging",
