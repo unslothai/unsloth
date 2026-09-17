@@ -53,16 +53,19 @@ const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// and fail-safe, but the fast path never fired. A live listener was accepted in 0.2ms on
 /// all three, which is what rules out a filtered loopback as the explanation.
 ///
-/// 3s leaves roughly 1s over the worst observed Windows wait, against a 28ms spread across
-/// those 12 samples, because the cost of being too low is losing the feature on that
-/// platform entirely.
+/// The Windows value is squeezed from both sides, and 2.5s is the top of the window rather
+/// than a round number. It has to clear 2030.2ms to see a refusal at all, and
+/// `the_refusal_probe_cannot_eat_the_ladder_it_short_circuits` caps it at a quarter of
+/// HEALTH_PROBE_TIMEOUT, so anything above 2.5s trades the ladder it is meant to shorten.
+/// That leaves (2030, 2500] and this takes the end with the most headroom, 470ms over the
+/// worst observed wait against a 28ms spread.
 ///
 /// This is spent BEFORE the ladder's first rung, so it is also the whole cost the fast path
 /// can add. It is only ever paid by a port nobody here manages that neither answers nor
 /// refuses: an alive backend of ours returns before any connect, and one that accepts
 /// answers in microseconds.
 #[cfg(windows)]
-const REFUSAL_PROBE_TIMEOUT: Duration = Duration::from_millis(3_000);
+const REFUSAL_PROBE_TIMEOUT: Duration = Duration::from_millis(2_500);
 #[cfg(not(windows))]
 const REFUSAL_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 /// Budget for the single last-chance probe spent before a stalled backend is declared dead.
@@ -1967,8 +1970,11 @@ mod tests {
     /// fail the suite while a change that drops the budget back below the real wait does.
     #[test]
     fn the_refusal_budget_clears_the_wait_this_platform_actually_takes() {
+        // Above the worst observed wait, not equal to the budget: the budget also has a
+        // ceiling from the ladder invariant below, so pinning this to it would leave one
+        // legal value and fail on any re-measurement.
         let floor = if cfg!(windows) {
-            Duration::from_millis(2_500)
+            Duration::from_millis(2_100)
         } else {
             Duration::from_millis(50)
         };
