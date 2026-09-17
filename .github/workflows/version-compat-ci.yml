@@ -64,6 +64,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install 'pytest>=8' 'pytest-xdist>=3' packaging
+      - name: Resolve the transformers matrix once
+        # xdist requires every worker to collect the same parameters, and each worker
+        # resolves the matrix itself during collection. Resolving it here, before pytest,
+        # means the four workers read one answer instead of making four PyPI reads that a
+        # single timeout can make disagree.
+        env:
+          PYTEST_TRANSFORMERS_MATRIX_FILE: ${{ runner.temp }}/transformers-matrix.json
+        run: |
+          PYTHONPATH=. python -c "
+          import tests.version_compat.test_transformers_pinned_symbols as matrix
+          print('tags:', len(matrix.TRANSFORMERS_TAGS))
+          "
+          echo "PYTEST_TRANSFORMERS_MATRIX_FILE=${{ runner.temp }}/transformers-matrix.json" >> "$GITHUB_ENV"
       - name: Run every pinned-symbol suite
         env:
           # Authenticated raw fetches get 5000/h; unauthenticated is 60/h and trips on the
@@ -118,7 +131,14 @@ jobs:
   #         would only pin a resolver error. torchcodec 0.2 is the row paired with torch
   #         2.6 (TORCH_TORCHCODEC in scripts/notebook_validator.py); torch 2.6.0 pins
   #         triton 3.2.0.
-  # latest: unpinned; torchcodec >= 0.12 is ABI-stable on torch >= 2.11.
+  # ceiling: the declared maxima, which `latest` stops testing the moment upstream ships
+  #         anything above the cap. Without it the floor lane is the only import-time test
+  #         of a supported combination, and the static symbol suite cannot see import-time
+  #         breakage. Exact pins, so this is a point in the window rather than a cap the
+  #         drift gate would have to track.
+  # latest: unpinned, and a canary rather than a gate: it resolves versions outside the
+  #         declared window on purpose, so a failure there is news about a future cap lift,
+  #         not a defect in this revision. Non-blocking for that reason.
   # torchcodec goes on the torch index line, not the package list: its extension links one
   # libtorch, and a PyPI build next to `torch==2.14.0+cpu` imports but then answers
   # `from torchcodec.decoders import ...` with `'torchcodec' is not a package`, which is
@@ -129,6 +149,10 @@ jobs:
   zoo-imports-under-spoof:
     name: unsloth_zoo imports under CUDA spoof (${{ matrix.slug }})
     runs-on: ubuntu-latest
+    # Only the `latest` lane sets this: it resolves outside the declared window by design,
+    # so its failure is news about a future cap lift rather than a defect here. The floor
+    # and ceiling lanes are both inside the window and stay blocking.
+    continue-on-error: ${{ matrix.continue_on_error == true }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -143,7 +167,24 @@ jobs:
               'peft==0.18.0' 'sentence-transformers>=5.0,<6' 'accelerate>=1.0'
               'datasets>=3.4,<4.4' 'bitsandbytes>=0.45.5' 'triton==3.2.0'
               hf_transfer
+          - slug: ceiling
+            # 3.11, not 3.12: the cache key is pip-v2-<name>-<os>-<arch>-py<minor>-<hash>
+            # and every lane here shares the name and the key-files, so two lanes on one
+            # interpreter mint the same key, whichever saves first wins and the other
+            # lane's wheels are never cached. The action's own docs say so, and the
+            # comment on the restore step says two lanes on the same python would need
+            # the job split. The interpreter is incidental to what this lane measures,
+            # which is the dependency ceiling, and 3.11 is inside requires-python and
+            # otherwise uncovered by this job.
+            python: '3.11'
+            torch_pins: >-
+              torch torchvision 'torchcodec>=0.12'
+            pkg_pins: >-
+              'transformers==5.17.0' 'trl==0.24.0'
+              peft sentence-transformers accelerate datasets bitsandbytes triton
+              hf_transfer
           - slug: latest
+            continue_on_error: true
             python: '3.12'
             torch_pins: >-
               torch torchvision 'torchcodec>=0.12'
@@ -186,9 +227,11 @@ jobs:
         # ./ resolves from GITHUB_WORKSPACE, and this job checks the repo out
         # under `unsloth/`, so the unprefixed path is a directory that does not
         # exist and the step fails with "Can't find 'action.yml'".
-        # One literal name for both lanes: the key already carries the interpreter and
+        # One literal name for every lane: the key already carries the interpreter and
         # tests/studio/test_pip_cache_naming.py reads this as text, so `${{ matrix.slug }}`
-        # is not allowed. Two lanes on the SAME python would need the job split.
+        # is not allowed. So no two lanes may share an interpreter, which
+        # tests/test_transformers_cap_sites.py asserts; a third lane on one of these
+        # interpreters would need the job split instead.
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
           name: version-compat-spoof
