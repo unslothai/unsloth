@@ -62,9 +62,9 @@ export const de = {
     announceMoveFailed: "Die Warteschlange hat sich geändert, bevor diese Nachricht verschoben werden konnte. Versuche es erneut.",
     announceDragReset: "Die Warteschlange hat sich geändert. Ziehe erneut, um die übrigen Nachrichten umzusortieren.",
     editingHint: "Nachricht wird bearbeitet",
-    queueingOffHint: "Neue Nachrichten stoppen die aktuelle Antwort und laufen als Nächstes.",
-    queueingOnHint: "Neue Nachrichten warten und laufen der Reihe nach.",
-    queueingHintShared: "Eingereihte Nachrichten bleiben erhalten.",
+    queueingOffHint: "Neue Nachrichten unterbrechen und laufen als Nächstes.",
+    queueingOnHint: "Neue Nachrichten warten auf ihren Platz.",
+    queueingHintShared: "Die Warteschlange bleibt erhalten.",
   },
   picker: {
     onDevice: "Auf dem Gerät",
@@ -1327,6 +1327,8 @@ export const de = {
           sourceBuild: "Dieses llama.cpp wurde aus dem Quellcode gebaut; sein Backend lässt sich hier nicht wechseln.",
           customPath: "Ein benutzerdefinierter llama.cpp-Ordner ist ausgewählt. Dessen Build bestimmt das Compute-Backend.",
           unresolved: "Die verfügbaren Backends konnten nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.",
+          updateChecksDisabled:
+            "Update-Prüfungen sind deaktiviert (UNSLOTH_DISABLE_UPDATE_CHECK=1), daher werden die verfügbaren Backends nicht abgefragt.",
         },
         // Wird nicht angezeigt: zusätzliche Begriffe für die Einstellungssuche.
         llamaBackendKeywords:

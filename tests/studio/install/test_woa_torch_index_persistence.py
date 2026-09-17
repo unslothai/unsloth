@@ -2410,7 +2410,14 @@ class TestThePipFallbackKeepsTheIndexArguments:
             clear_env(UV_INDEX_ENV),
             "$env:UV_NO_CONFIG = '1'",
             UV_SAFE_PATH,
-            functions(SETUP_SRC, "Get-WoaUvConfigIndexPolicy", "Get-WoaDependencyIndexArgs"),
+            functions(
+                SETUP_SRC,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
+                "Get-WoaUvConfigIndexPolicy",
+                "Get-WoaDependencyIndexArgs",
+            ),
             f"$StudioHome = '{tmp_path}'",
             "$WinArm64Venv = $true",
             f"$UseUv = ${str(use_uv).lower()}",
@@ -3895,6 +3902,8 @@ class TestThePyPIProbeHonoursUvConfiguration:
             # Read-WoaUvTomlIndexKeys scans for quotes, so its two scanners come with it.
             functions(
                 INSTALL_SRC,
+                "Test-UvEnvFlag",
+                "Test-NoIndexRequested",
                 "Test-WoaUrlIsPublicPyPI",
                 "Remove-WoaTomlComment",
                 "Split-WoaTomlKey",
@@ -5111,6 +5120,9 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
             "\n".join(f"$env:{k} = '{v}'" for k, v in env.items()),
             functions(
                 src,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
                 "Remove-WoaTomlComment",
                 "Split-WoaTomlKey",
                 "Read-WoaUvTomlIndexKeys",
@@ -5266,6 +5278,9 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
     @pytest.mark.parametrize(
         "name",
         [
+            "Test-UvEnvFlag",
+            "Test-PipEnvFlag",
+            "Test-NoIndexRequested",
             "Remove-WoaTomlComment",
             "Split-WoaTomlKey",
             "Read-WoaUvInlineIndexArray",
@@ -5408,6 +5423,9 @@ class TestANoIndexNativeTrioStillSeesItsSources:
             SUBSTEP_NOOP,
             functions(
                 INSTALL_SRC,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
                 "Get-UvSafePath",
                 "Get-WoaUvConfigIndexPolicy",
                 "Get-WoaDependencyIndexArgs",
@@ -5447,6 +5465,10 @@ class TestANoIndexNativeTrioStillSeesItsSources:
     def test_no_index_yields_for_the_command_and_is_put_back(self, value, yields):
         script = _script(
             substep_collector(),
+            # The yield is gated on Test-UvEnvFlag, and PowerShell does not hoist: without
+            # the lift the call is a non-terminating command-not-found, the `if` sees $null
+            # and the block quietly never runs, which pwsh still exits 0 on.
+            functions(INSTALL_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$script:WoaNativeCudaTorch = $true",
             "$VenvPlatform = 'win-arm64'",
             f"$env:UV_NO_INDEX = '{value}'",
@@ -5478,7 +5500,14 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
             "$env:UV_NO_CONFIG = '1'",
             "\n".join(f"$env:{k} = '{v}'" for k, v in env.items()),
             UV_SAFE_PATH,
-            functions(SETUP_SRC, "Get-WoaUvConfigIndexPolicy", "Get-WoaDependencyIndexArgs"),
+            functions(
+                SETUP_SRC,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
+                "Get-WoaUvConfigIndexPolicy",
+                "Get-WoaDependencyIndexArgs",
+            ),
             f"$StudioHome = '{tmp_path}'",
             "$WinArm64Venv = $true",
             "$UseUv = $true",
@@ -5526,6 +5555,8 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
     def test_no_index_yields_for_the_command_and_is_put_back(self, value, yields):
         script = _script(
             substep_collector(),
+            # As above: the UV_NO_INDEX yield calls Test-UvEnvFlag, so it comes with it.
+            functions(SETUP_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$WinArm64Venv = $true",
             f"$env:UV_NO_INDEX = '{value}'",
             "$env:UV_EXCLUDE_NEWER = '2026-01-01'",
@@ -5551,6 +5582,10 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
     def test_off_arm64_nothing_is_touched(self):
         script = _script(
             SUBSTEP_NOOP,
+            # The arm64 guard means the yield never runs here, so the reader is never
+            # called. Lifted anyway: a command-not-found inside a lifted block is
+            # non-terminating, so without it this test could only ever pass.
+            functions(SETUP_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$WinArm64Venv = $false",
             "$env:UV_NO_INDEX = '1'",
             "$_woaCutoffSaved = @{}",

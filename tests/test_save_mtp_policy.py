@@ -7,6 +7,7 @@ the config still promises. unsloth#7681."""
 
 import ast
 import json
+import os
 import types
 from pathlib import Path
 
@@ -320,3 +321,95 @@ def test_the_manual_merge_restores_the_config_when_the_write_fails(tree):
         "the scrubbed-config write is not in a try/finally that restores old_config, so a "
         "failed save leaves the caller's model stripped"
     )
+
+
+@pytest.fixture(scope = "module")
+def save_module_any():
+    """`unsloth.save` itself, without the MTP-aware zoo the guard tests need.
+
+    What this file's other behavioural fixture skips on is the installed zoo exporting the MTP
+    helpers. The cost question below is about this repo's own control flow, so it is answerable
+    on any zoo and should not be skipped with them.
+    """
+    pytest.importorskip("unsloth", reason = "unsloth is not importable on this runner")
+    try:
+        import unsloth.save as module
+    except ImportError as error:
+        pytest.skip(f"unsloth.save is not importable on this runner: {error}")
+    return module
+
+
+def test_a_local_save_does_not_collect_the_resident_state_dict(
+    save_module_any, monkeypatch, tmp_path
+):
+    """The names are the push guard's, and only the push guard's.
+
+    A local save reconciles the folder it just wrote, so reading the resident tensors for it
+    bought nothing and cost a second full collection on top of save_pretrained's own. On an
+    offloaded or sharded model that materialises every weight, and on a distributed one it is
+    a collective the other ranks are not making, so it can stall rather than merely be slow.
+    """
+    import torch
+
+    collected = []
+
+    class _Model:
+        config = None
+
+        def state_dict(self):
+            collected.append("state_dict")
+            # A real tensor, so the 16bit branch below can cast it as it always does.
+            return {"model.embed_tokens.weight": torch.zeros(1)}
+
+        def save_pretrained(self, directory, **kwargs):
+            os.makedirs(directory, exist_ok = True)
+
+    from unsloth_zoo import saving_utils
+
+    monkeypatch.setattr(saving_utils, "reconcile_mtp_config", lambda *_a, **_k: None, raising = False)
+    for method in ("lora", "merged_4bit_forced"):
+        collected.clear()
+        save_module_any.unsloth_generic_save(
+            _Model(),
+            None,
+            save_directory = str(tmp_path / method),
+            save_method = method,
+            push_to_hub = False,
+        )
+        assert collected == [], (method, collected)
+
+    # A 16bit save still builds one, because that state dict is what gets WRITTEN.
+    collected.clear()
+    save_module_any.unsloth_generic_save(
+        _Model(),
+        None,
+        save_directory = str(tmp_path / "16bit"),
+        save_method = "merged_16bit",
+        push_to_hub = False,
+    )
+    assert collected == ["state_dict"], collected
+
+
+def test_the_resident_tensor_names_are_read_only_on_the_push_branch(tree):
+    """Structural, so the collection cannot drift back out of the branch that needs it."""
+    func = _func(tree, "unsloth_generic_save")
+    pushes = [
+        node
+        for node in ast.walk(func)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "push_to_hub"
+    ]
+    assert pushes, "unsloth_generic_save no longer branches on push_to_hub"
+    inside = {
+        id(node) for push in pushes for statement in push.body for node in ast.walk(statement)
+    }
+    for node in ast.walk(func):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "_mtp_tensor_names"
+            for target in node.targets
+        ):
+            assert id(node) in inside, (
+                "_mtp_tensor_names is assigned outside the push branch, so a local save pays "
+                "for a collection only the push guard consumes"
+            )

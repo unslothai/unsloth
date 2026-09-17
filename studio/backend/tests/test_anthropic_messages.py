@@ -28,6 +28,8 @@ from models.inference import (
     AnthropicResponseToolUseBlock,
 )
 from core.inference.anthropic_compat import (
+    DOCUMENT_IMAGE_OMITTED,
+    DOCUMENT_OMITTED,
     anthropic_messages_to_openai,
     anthropic_schema_client_tool_kind,
     anthropic_tools_to_openai,
@@ -1028,7 +1030,137 @@ class TestAnthropicMessagesToOpenAI:
             }
         ]
         result = anthropic_messages_to_openai(msgs)
-        assert result[0]["content"] == "Line 1 Line 2"
+        assert result[0]["content"] == "Line 1\nLine 2"
+
+    def test_tool_result_search_results_keep_title_source_and_text(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": [
+                            {
+                                "type": "search_result",
+                                "source": "https://docs.example.com/vault",
+                                "title": "Vault",
+                                "content": [
+                                    {"type": "text", "text": "The code is PURPLE-ELEPHANT-42."},
+                                    {"type": "text", "text": "Rotate it monthly."},
+                                ],
+                                "citations": {"enabled": True},
+                            },
+                            {
+                                "type": "search_result",
+                                "source": "kb://faq",
+                                "title": "FAQ",
+                                "content": [{"type": "text", "text": "Ask the admin."}],
+                            },
+                        ],
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert result == [
+            {
+                "role": "tool",
+                "tool_call_id": "tu_1",
+                "content": "Title: Vault\nSource: https://docs.example.com/vault\n"
+                "The code is PURPLE-ELEPHANT-42.\nRotate it monthly.\n"
+                "Title: FAQ\nSource: kb://faq\nAsk the admin.",
+            }
+        ]
+
+    @pytest.mark.parametrize(
+        "source, body",
+        [
+            ({"type": "text", "media_type": "text/plain", "data": "Plain body."}, "Plain body."),
+            (
+                {
+                    "type": "content",
+                    "content": [
+                        {"type": "text", "text": "First chunk"},
+                        {"type": "text", "text": "Second chunk"},
+                    ],
+                },
+                "First chunk\nSecond chunk",
+            ),
+            ({"type": "content", "content": "Whole body."}, "Whole body."),
+            (
+                {
+                    "type": "content",
+                    "content": [
+                        {"type": "text", "text": "Before"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBOR",
+                            },
+                        },
+                        {"type": "text", "text": "After"},
+                    ],
+                },
+                f"Before\n{DOCUMENT_IMAGE_OMITTED}\nAfter",
+            ),
+            (
+                {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
+                DOCUMENT_OMITTED,
+            ),
+            ({"type": "url", "url": "https://example.com/a.pdf"}, DOCUMENT_OMITTED),
+        ],
+    )
+    def test_tool_result_document_renders_its_readable_source(self, source, body):
+        document = {
+            "type": "document",
+            "source": source,
+            "title": "Handbook",
+            "context": "Internal",
+        }
+        msgs = [
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": [document]}],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert result[0]["content"] == f"Title: Handbook\nContext: Internal\n{body}"
+
+    def test_top_level_search_result_and_document_reach_the_user_turn(self):
+        request = AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "search_result",
+                            "source": "kb://vault",
+                            "title": "Vault",
+                            "content": [{"type": "text", "text": "PURPLE-ELEPHANT-42"}],
+                        },
+                        {
+                            "type": "document",
+                            "source": {"type": "text", "media_type": "text/plain", "data": "Memo."},
+                        },
+                        {"type": "document", "source": {"type": "content", "content": "Notes."}},
+                        {"type": "text", "text": "What is the code?"},
+                    ],
+                }
+            ],
+        )
+        result = anthropic_messages_to_openai([m.model_dump() for m in request.messages])
+        assert result == [
+            {
+                "role": "user",
+                "content": "Title: Vault\nSource: kb://vault\nPURPLE-ELEPHANT-42\n"
+                "Memo.\nNotes.\nWhat is the code?",
+            }
+        ]
 
     def test_image_base64_block_becomes_multimodal_part(self):
         msgs = [
@@ -3889,9 +4021,39 @@ def test_user_unknown_block_rejected_not_silently_dropped():
             model = "x",
             max_tokens = 16,
             messages = [
-                {"role": "user", "content": [{"type": "document", "source": {}}]},
+                {"role": "user", "content": [{"type": "container_upload", "file_id": "f"}]},
             ],
         )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
+        {"type": "url", "url": "https://example.com/a.pdf"},
+        {"type": "file", "file_id": "file_1"},
+    ],
+)
+def test_user_unreadable_document_rejected_outside_tool_results(source):
+    from pydantic import ValidationError
+
+    document = {"type": "document", "source": source}
+    with pytest.raises(ValidationError, match = "unsupported document source type"):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "user", "content": [{"type": "text", "text": "Read"}, document]}],
+        )
+    AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [document]}],
+            }
+        ],
+    )
 
 
 def test_user_translatable_blocks_still_accepted():
