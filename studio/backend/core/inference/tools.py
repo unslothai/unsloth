@@ -15992,6 +15992,7 @@ def _check_signal_escape_patterns(code: str):
         "requests.head",
         "requests.request",
         "requests.Session",
+        "requests.sessions.Session",
         "http.client.HTTPConnection",
         "http.client.HTTPSConnection",
         "httpx.get",
@@ -16036,6 +16037,40 @@ def _check_signal_escape_patterns(code: str):
         "fabric.connection.Connection": (0, "host", "host"),
         "asyncssh.connect": (0, "host", "host"),
     }
+    # Session and pool objects send through their own methods, so an instance resolves to its
+    # constructor and the method rides on top: `requests.Session().get(url)` reads as
+    # `requests.Session.get`.
+    _REQUEST_CLIENT_FQ = (
+        "requests.Session",
+        "requests.sessions.Session",
+        "httpx.Client",
+        "httpx.AsyncClient",
+        "aiohttp.ClientSession",
+        "urllib3.PoolManager",
+        "urllib3.ProxyManager",
+    )
+    _NETWORK_TARGET_ARGS.update(
+        {
+            **{
+                f"{client}.{method}": (0, "url", "url")
+                for client in _REQUEST_CLIENT_FQ
+                for method in ("get", "post", "put", "delete", "patch", "head", "stream")
+            },
+            **{f"{client}.request": (1, "url", "url") for client in _REQUEST_CLIENT_FQ},
+            **{
+                f"{client}.urlopen": (1, "url", "url")
+                for client in ("urllib3.PoolManager", "urllib3.ProxyManager")
+            },
+            **{
+                f"{client}.connection_from_url": (0, "url", "url")
+                for client in ("urllib3.PoolManager", "urllib3.ProxyManager")
+            },
+            **{
+                f"{client}.send": (0, "request", "url")
+                for client in ("requests.Session", "requests.sessions.Session")
+            },
+        }
+    )
     # Constructors whose instances open a connection through .connect(...).
     _CONNECTING_CLIENT_FQ = frozenset(
         {"socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient"}
@@ -16514,7 +16549,7 @@ def _check_signal_escape_patterns(code: str):
     _scope_parent: dict[int, ast.AST | None] = {id(tree): None}
     _node_scope: dict[int, ast.AST] = {}
     _declared: dict[tuple[int, str], str] = {}
-    _raw_name_stores: list[tuple[ast.AST, str, object, tuple, object]] = []
+    _raw_name_stores: list[tuple[ast.AST, str, object, tuple, object, bool]] = []
     _name_stores: dict[tuple[int, str], list] = {}
     _attr_stores: dict[tuple[int, str, str], list] = {}
     _model_state: dict[str, bool] = {}
@@ -16544,14 +16579,30 @@ def _check_signal_escape_patterns(code: str):
     def _position(node: ast.AST) -> tuple:
         return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
 
-    def _add_name_store(scope: ast.AST, name: str, value, at: ast.AST) -> None:
+    def _add_name_store(
+        scope: ast.AST,
+        name: str,
+        value,
+        at: ast.AST,
+        *,
+        certain: bool = True,
+    ) -> None:
         # Resolve scopes after collecting bindings so nonlocal can find its owner.
-        _raw_name_stores.append((scope, name, value, _position(at), _node_block.get(id(at))))
+        _raw_name_stores.append(
+            (scope, name, value, _position(at), _node_block.get(id(at)), certain)
+        )
 
     def _first_splat(elts: list) -> int:
         return next((i for i, e in enumerate(elts) if isinstance(e, ast.Starred)), len(elts))
 
-    def _record_store(target: ast.AST, value, scope: ast.AST, handled: set) -> None:
+    def _record_store(
+        target: ast.AST,
+        value,
+        scope: ast.AST,
+        handled: set,
+        *,
+        certain: bool = True,
+    ) -> None:
         if isinstance(target, (ast.Tuple, ast.List)):
             sources = value.elts if isinstance(value, (ast.Tuple, ast.List)) else []
             # Unpacking pairs from the left up to the first splat, and from the right after a
@@ -16569,12 +16620,12 @@ def _check_signal_escape_patterns(code: str):
                     source = sources[from_end]
                 else:
                     source = None
-                _record_store(elt, source, scope, handled)
+                _record_store(elt, source, scope, handled, certain = certain)
         elif isinstance(target, ast.Starred):
-            _record_store(target.value, None, scope, handled)
+            _record_store(target.value, None, scope, handled, certain = certain)
         elif isinstance(target, ast.Name):
             handled.add(id(target))
-            _add_name_store(scope, target.id, value, target)
+            _add_name_store(scope, target.id, value, target, certain = certain)
         elif isinstance(target, ast.Attribute):
             handled.add(id(target))
             if isinstance(target.value, ast.Name):
@@ -16646,7 +16697,8 @@ def _check_signal_escape_patterns(code: str):
                 # A walrus inside a comprehension binds in the scope around it.
                 while isinstance(scope, _COMPREHENSION_NODES):
                     scope = _scope_parent.get(id(scope)) or tree
-                _record_store(node.target, node.value, scope, handled)
+                # A walrus is an expression: `False and (f := print)` never binds.
+                _record_store(node.target, node.value, scope, handled, certain = False)
             elif isinstance(node, (ast.With, ast.AsyncWith)):
                 for item in node.items:
                     if item.optional_vars is not None:
@@ -16671,11 +16723,11 @@ def _check_signal_escape_patterns(code: str):
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 _add_name_store(scope, node.name, None, node)
             elif isinstance(node, ast.ExceptHandler) and node.name:
-                _add_name_store(scope, node.name, None, node)
+                _add_name_store(scope, node.name, None, node, certain = False)
             elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
-                _add_name_store(scope, node.name, None, node)
+                _add_name_store(scope, node.name, None, node, certain = False)
             elif isinstance(node, ast.MatchMapping) and node.rest:
-                _add_name_store(scope, node.rest, None, node)
+                _add_name_store(scope, node.rest, None, node, certain = False)
             if isinstance(node, _FUNCTION_NODES):
                 args = node.args
                 for arg in [
@@ -16694,15 +16746,17 @@ def _check_signal_escape_patterns(code: str):
                 and isinstance(node.ctx, (ast.Store, ast.Del))
                 and id(node) not in handled
             ):
-                _record_store(node, None, _node_scope.get(id(node), tree), handled)
+                # Loop targets, `+=` and `del`: a zero-iteration loop binds nothing, so none of
+                # these are guaranteed to have run by the time a later read happens.
+                _record_store(node, None, _node_scope.get(id(node), tree), handled, certain = False)
         binding = {
             (id(scope), name)
-            for scope, name, _value, _pos, _block in _raw_name_stores
+            for scope, name, _value, _pos, _block, _certain in _raw_name_stores
             if _declared.get((id(scope), name)) is None
         }
-        for scope, name, value, pos, block in _raw_name_stores:
+        for scope, name, value, pos, block, certain in _raw_name_stores:
             key = (id(_store_scope(scope, name, binding)), name)
-            _name_stores.setdefault(key, []).append((value, pos, block))
+            _name_stores.setdefault(key, []).append((value, pos, block, certain))
 
     def _scope_model_ready() -> bool:
         if "built" not in _model_state:
@@ -16735,12 +16789,13 @@ def _check_signal_escape_patterns(code: str):
         read_at = _position(read)
         around = _blocks_around(read)
         live = []
-        for value, pos, block in stores:
+        for value, pos, block, _certain in stores:
             # A store in the same body, after this one and before the read, always runs in
-            # between. Branches and loop bodies the read sits outside of are left alone.
+            # between, but only if it is guaranteed to bind at all. Branches, loop bodies and
+            # walrus expressions replace nothing.
             superseded = block in around and any(
-                other_block == block and pos < other_pos < read_at
-                for _v, other_pos, other_block in stores
+                other_certain and other_block == block and pos < other_pos < read_at
+                for _v, other_pos, other_block, other_certain in stores
             )
             if not superseded:
                 live.append(value)
@@ -16832,6 +16887,13 @@ def _check_signal_escape_patterns(code: str):
         while isinstance(cur, ast.Attribute):
             parts.insert(0, cur.attr)
             cur = cur.value
+        if isinstance(cur, ast.Call):
+            # An instance stands for the constructor that made it.
+            return list(
+                dict.fromkeys(
+                    ".".join([base, *parts]) for base in _resolved_fqs(cur.func, depth + 1) if base
+                )
+            ) or [""]
         if isinstance(cur, ast.Name):
             bases: list[str] = []
             gave_up = False
@@ -16841,7 +16903,7 @@ def _check_signal_escape_patterns(code: str):
                     continue
                 for alt in _alternatives(value) if isinstance(value, ast.AST) else [value]:
                     # Follow assigned module and function aliases.
-                    if isinstance(alt, (ast.Name, ast.Attribute, ast.IfExp, ast.BoolOp)):
+                    if isinstance(alt, (ast.Name, ast.Attribute, ast.IfExp, ast.BoolOp, ast.Call)):
                         inner = _resolved_fqs(alt, depth + 1)
                         gave_up = gave_up or _UNRESOLVED_FQ in inner
                         bases.extend(fq for fq in inner if fq != _UNRESOLVED_FQ)

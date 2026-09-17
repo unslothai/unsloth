@@ -371,6 +371,40 @@ class TestNetworkTargetResolution:
                 f"import paramiko\nc, = (paramiko.SSHClient(),)\nc.connect(hostname='{_H}')",
                 id = "client_unpack",
             ),
+            # A session or pool sends through its own methods, so the instance is resolved too.
+            pytest.param(
+                f"import requests\ns = requests.Session()\ns.get('http://{_H}/')",
+                id = "requests_session_get",
+            ),
+            pytest.param(
+                f"import requests\nrequests.Session().get('http://{_H}/')",
+                id = "requests_session_inline",
+            ),
+            pytest.param(
+                f"import requests\ns = requests.Session()\ns.request('GET', 'http://{_H}/')",
+                id = "requests_session_request",
+            ),
+            pytest.param(
+                f"import httpx\nc = httpx.Client()\nc.post('http://{_H}/')",
+                id = "httpx_client_post",
+            ),
+            pytest.param(
+                f"import aiohttp\ns = aiohttp.ClientSession()\ns.get('http://{_H}/')",
+                id = "aiohttp_session_get",
+            ),
+            pytest.param(
+                f"import urllib3\nh = urllib3.PoolManager()\nh.request('GET', 'http://{_H}/')",
+                id = "urllib3_pool_manager_request",
+            ),
+            # A binding that may never happen supersedes nothing.
+            pytest.param(
+                f"import requests\nf = requests.get\nFalse and (f := print)\nf('http://{_H}/')",
+                id = "walrus_store_does_not_supersede",
+            ),
+            pytest.param(
+                f"import requests\nf = requests.get\nfor f in []:\n    pass\nf('http://{_H}/')",
+                id = "loop_target_does_not_supersede",
+            ),
             # A store the read can still reach is not superseded, whatever the source order.
             pytest.param(
                 f"import requests\nurl = 'http://{_H}/'\nif flag:\n    url = 'https://pypi.org/'\n"
@@ -497,6 +531,10 @@ class TestNetworkTargetResolution:
             "import requests\nf = requests.get\nf = print\nf('http://203.0.113.5/')",
             # A short starred unpack has no matching source; it must not raise.
             "import requests\nif False:\n    a, *b, c = ()\nprint('ok')",
+            # A session reaching an allowlisted host is as unremarkable as the module function.
+            "import requests\ns = requests.Session()\ns.get('https://pypi.org/simple/')",
+            "import requests\ns = requests.Session()\ns.close()",
+            "import requests\ns = requests.Session()\ns.headers.update({'a': 'b'})",
             # Two functions with a same-named attribute receiver do not contaminate each other.
             "import paramiko\ndef a(obj):\n    obj.client = paramiko.SSHClient()\n"
             "def b(obj):\n    obj.client = get_db()\n    obj.client.connect(host='localhost')",
@@ -521,6 +559,7 @@ class TestNetworkTargetResolution:
             "import socket\nwith socket.socket() as s:\n    s.connect((input(), 22))",
             "import requests\nrequests.get(*[input()])",
             "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = input()",
+            "import requests\ns = requests.Session()\ns.get(input())",
             # A store with no value is an unknown host, so a known store cannot silence it.
             "import requests\ndef fetch(url):\n    if not url:\n        url = 'https://pypi.org/'\n    requests.get(url)",
             "import requests\nurl = 'https://pypi.org/'\nfor url in urls:\n    requests.get(url)",
