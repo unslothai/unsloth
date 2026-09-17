@@ -63,10 +63,13 @@ foreach ($name in @("Test-NvidiaAdapterPresent", "Test-OtherVendorAdapterPresent
 # The scan is stubbed, not run: this host has no Win32_VideoController, and what is under test is
 # the judgement applied to an inventory rather than the ability to fetch one.
 $script:FakeAdapters = @()
+# $null means "derive it from the fixture", which is what every row below job 2b wants. A row
+# that needs a scan which ANSWERED yet listed no healthy NVIDIA adapter sets it explicitly.
+$script:FakeScanOk = $null
 function Invoke-BoundedVideoControllerScan {
     param([int]$TimeoutSec = 15)
     return [pscustomobject]@{
-        Ok = ($script:FakeAdapters.Count -gt 0)
+        Ok = $(if ($null -eq $script:FakeScanOk) { $script:FakeAdapters.Count -gt 0 } else { $script:FakeScanOk })
         Names = @($script:FakeAdapters | ForEach-Object { $_.Name })
         Adapters = $script:FakeAdapters
     }
@@ -257,6 +260,76 @@ Check "setup.ps1 still returns empty for unknown rather than flooring" (
 Check "and install.ps1 is where the floor is consumed" (
     (Get-FunctionText $installPs1 "Get-TorchIndexUrl") -match 'NvidiaPresenceCudaFloor')
 
+# ------------------------------------------------- job 2b, the registry fallback is last resort
+#
+# These display-class keys outlive removed hardware and expose no ConfigManagerErrorCode, so a
+# stale NVIDIA entry cannot be told apart from a working card. Reading one as a verified GPU
+# would promote $HasNvidiaSmi, and that suppresses AMD and Intel detection as well as choosing
+# CUDA wheels. The fallback therefore exists only for a WMI repository that could not answer.
+#
+# The registry is shadowed here rather than left to this host: a Linux runner has no HKLM, so
+# without a stub every row below would pass for the wrong reason.
+$script:RegistryConsulted = $false
+function Get-ChildItem {
+    param([string]$LiteralPath, [switch]$Directory, [string]$Filter, $ErrorAction)
+    if ("$LiteralPath" -match 'Control\\Class') {
+        $script:RegistryConsulted = $true
+        return @([pscustomobject]@{ PSChildName = "0000"; PSPath = "fake::0000" })
+    }
+    return @()
+}
+function Get-ItemProperty {
+    param([string]$LiteralPath, $ErrorAction)
+    if ("$LiteralPath" -eq "fake::0000") {
+        return [pscustomobject]@{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1" }
+    }
+    return $null
+}
+
+# A WMI scan that FAILED is the one case the fallback is for.
+$script:FakeAdapters = @()
+$script:FakeScanOk = $false
+$script:RegistryConsulted = $false
+Check "a WMI scan that could not answer falls back to the registry" ((Test-NvidiaAdapterPresent) -eq $true)
+Check "and the registry really was the source" ($script:RegistryConsulted -eq $true)
+
+# A WMI scan that ANSWERED is evidence, even when the answer is "no NVIDIA here".
+foreach ($case in @(
+    @{ N = "answered with no adapters at all"; A = @() },
+    @{ N = "answered with an AMD adapter only"; A = @(Adapter "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C" 0) },
+    @{ N = "answered with a faulted NVIDIA adapter"; A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 43) },
+    @{ N = "answered with a disabled NVIDIA adapter"; A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 22) }
+)) {
+    $script:FakeAdapters = $case.A
+    $script:FakeScanOk = $true
+    $script:RegistryConsulted = $false
+    Check "a scan that $($case.N) is absence, not a reason to ask the registry" (
+        (Test-NvidiaAdapterPresent) -eq $false)
+    Check "and the registry was never consulted" ($script:RegistryConsulted -eq $false)
+}
+
+# A healthy adapter still short-circuits before the registry is reached at all.
+$script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0)
+$script:FakeScanOk = $true
+$script:RegistryConsulted = $false
+Check "a healthy NVIDIA adapter answers from WMI alone" ((Test-NvidiaAdapterPresent) -eq $true)
+Check "and it did not need the registry either" ($script:RegistryConsulted -eq $false)
+
+# A registry with nothing NVIDIA in it must still be a no, or the gate above is untestable.
+function Get-ItemProperty {
+    param([string]$LiteralPath, $ErrorAction)
+    return [pscustomobject]@{ MatchingDeviceId = "PCI\\VEN_1002&DEV_744C" }
+}
+$script:FakeAdapters = @()
+$script:FakeScanOk = $false
+Check "a failed scan with no NVIDIA in the registry is still absent" ((Test-NvidiaAdapterPresent) -eq $false)
+
+# Both files must carry the gate, or setup.ps1 keeps the defect install.ps1 just lost.
+foreach ($file in @($installPs1, $setupPs1)) {
+    Check "$(Split-Path -Leaf $file) gates the registry fallback on a failed scan" (
+        (Get-FunctionText $file "Test-NvidiaAdapterPresent") -match 'if \(\$Scan\.Ok\) \{ return \$false \}')
+}
+
 # ------------------------------------------------------- job 3, the wheel it actually leads to
 #
 # This is the half that was missing when the branch was first written, and leaving it out made the
@@ -280,9 +353,15 @@ foreach ($case in @(
     # The ordinary non-NVIDIA host. Must stay SILENT and CPU: this branch is reached by every AMD,
     # Intel and CPU-only machine, and making it loud would warn all of them.
     @{ N = "an AMD, Intel or CPU-only host";        Exe = $null; Inv = $null; Pres = $false; Floor = $null; Want = "cpu";   Loud = $false },
-    @{ N = "presence-only with a 12.8 driver";      Exe = $null; Inv = $null; Pres = $true;  Floor = @(12,8); Want = "cu128"; Loud = $true },
+    # A presence-only host has NO compute capability from any source, so the pre-Turing cap
+    # cannot fire: Get-NvidiaCu126Verdict is handed no nvidia-smi and no caps and returns "".
+    # A driver floor of 12.8 or 13.0 would then pick a family whose PyTorch 2.11 wheels start at
+    # sm_75, and a pre-Turing card (a V100 is sm_70) would install torch and fail at the first
+    # kernel. Unknown capability stops at cu126 whatever the driver says it could carry.
+    @{ N = "presence-only with a 12.8 driver";      Exe = $null; Inv = $null; Pres = $true;  Floor = @(12,8); Want = "cu126"; Loud = $true },
     @{ N = "presence-only with a 12.6 driver";      Exe = $null; Inv = $null; Pres = $true;  Floor = @(12,6); Want = "cu126"; Loud = $true },
-    @{ N = "presence-only with a 13.0 driver";      Exe = $null; Inv = $null; Pres = $true;  Floor = @(13,0); Want = "cu130"; Loud = $true },
+    @{ N = "presence-only with a 13.0 driver";      Exe = $null; Inv = $null; Pres = $true;  Floor = @(13,0); Want = "cu126"; Loud = $true },
+    @{ N = "presence-only with an 11.0 driver";     Exe = $null; Inv = $null; Pres = $true;  Floor = @(11,0); Want = "cu118"; Loud = $true },
     @{ N = "presence-only with no driver version";  Exe = $null; Inv = $null; Pres = $true;  Floor = $null;   Want = "cu126"; Loud = $true }
 )) {
     $NvidiaSmiExe = $case.Exe
@@ -296,6 +375,23 @@ foreach ($case in @(
     Check "and it $(if ($case.Loud) { 'says so' } else { 'stays silent' })" (
         [bool]$script:Said -eq $case.Loud)
 }
+
+# The cap is not silent. A host whose driver could carry 13.0 and which nonetheless gets cu126
+# is told why and told the override, or the user has no way to ask for the other answer.
+$NvidiaSmiExe = $null
+$script:Inv = $null
+$script:Banner = ""
+$script:NvidiaPresenceOnly = $true
+$script:NvidiaPresenceCudaFloor = @(13,0)
+$script:Said = ""
+$null = Get-TorchIndexUrl
+Check "the capped row explains the cap" ($script:Said -match 'compute capability')
+Check "the capped row names the override" ($script:Said -match 'UNSLOTH_TORCH_INDEX_FAMILY')
+
+# The floor is still read: a driver too old for cu126 must not be lifted UP to it by the cap.
+$script:NvidiaPresenceCudaFloor = @(11,0)
+$script:Said = ""
+Check "the cap lowers and never raises" ((("" + (Get-TorchIndexUrl)) -replace '^.*/', '') -eq "cu118")
 
 # The rows this must NOT have touched. Every other path into the selector keeps its old answer,
 # which is what makes the change additive rather than a rewrite of wheel selection.

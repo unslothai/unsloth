@@ -3010,6 +3010,11 @@ function Test-NvidiaAdapterPresent {
         if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
         return $true
     }
+    # ONLY when WMI could not answer at all. A scan that succeeded and reported no healthy
+    # NVIDIA adapter is evidence of absence, not a reason to go looking somewhere weaker: these
+    # class keys outlive removed hardware and carry no ConfigManagerErrorCode, so a stale entry
+    # would read as a verified healthy GPU and promote $HasNvidiaSmi for a card that is gone.
+    if ($Scan.Ok) { return $false }
     # The same registry fallback the Intel path already uses, for a host whose WMI repository
     # cannot answer. Guarded per subkey, so one unreadable entry does not discard the rest.
     $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"

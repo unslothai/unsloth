@@ -8153,6 +8153,11 @@ exit 0
             if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
             return $true
         }
+        # ONLY when WMI could not answer at all. A scan that succeeded and reported no healthy
+        # NVIDIA adapter is evidence of absence, not a reason to go looking somewhere weaker: these
+        # class keys outlive removed hardware and carry no ConfigManagerErrorCode, so a stale entry
+        # would read as a verified healthy GPU and promote $HasNvidiaSmi for a card that is gone.
+        if ($Scan.Ok) { return $false }
         # The same registry fallback the Intel path already uses, for a host whose WMI repository
         # cannot answer. Guarded per subkey, so one unreadable entry does not discard the rest.
         $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
@@ -9122,6 +9127,17 @@ exit 0
                     # "at least", never the exact version: the display driver version maps to the
                     # CUDA release its driver is known to CARRY, and a newer toolkit may be present.
                     substep "nvidia-smi and the NVIDIA driver library are both unavailable; the display driver supports at least CUDA $major.$minor, selecting wheels for it" "Yellow"
+                    # Nothing named this GPU's compute capability, so Get-CudaFamilyCappedForPreTuring
+                    # below is handed no caps and no nvidia-smi and cannot apply the pre-Turing cap.
+                    # A driver floor of 12.8 or 13.0 would then pick a family whose PyTorch 2.11
+                    # wheels start at sm_75, and a pre-Turing card (a V100 is sm_70) would install
+                    # torch and fail at the first kernel with no kernel image available. Unknown
+                    # capability therefore stops at cu126, the widest family still built for sm_70,
+                    # which is also the answer the no-floor branch just below already gives.
+                    if ($major -gt 12 -or ($major -eq 12 -and $minor -gt 6)) {
+                        $major = 12; $minor = 6
+                        substep "no source could name the GPU's compute capability, so the family stops at cu126; set UNSLOTH_TORCH_INDEX_FAMILY to override" "Yellow"
+                    }
                 } else {
                     # A GPU, but not even a driver version to floor against. cu126 is the same
                     # conservative family the unreadable-banner branch just below already picks,
