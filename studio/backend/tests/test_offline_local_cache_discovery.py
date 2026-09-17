@@ -369,6 +369,72 @@ def test_a_remembered_denial_is_dropped_once_the_hub_says_yes(monkeypatch, tmp_p
     assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
 
 
+def test_a_repo_fetched_with_a_one_off_token_is_not_served_to_a_tokenless_caller(
+    monkeypatch, tmp_path
+):
+    """The download route takes a ONE-OFF `X-Unsloth-HF-Token` and saves it nowhere.
+
+    So a private repo can be sitting in the cache of a host whose credential set is empty,
+    and the tokenless branch reads an empty credential set as "nothing here needed one". The
+    provenance is recorded per repo at download time instead of inferred afterwards.
+    """
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
+    # A host with no credential of its own, which is the case the fallback exists for.
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ()))
+
+    recorded: dict = {}
+    monkeypatch.setattr(
+        hf_tokens,
+        "_repo_was_fetched_with_a_request_token",
+        lambda repo_id, repo_type: recorded.get(
+            hf_tokens._request_token_repo_key(repo_id, repo_type), False
+        ),
+    )
+    # The caller class this is about: no credential at all, which is the sentinel
+    # `public_cache_read_authorized` answers for.
+    assert public_cache_read_authorized(repo_id = ON_DISK) is True
+
+    recorded[hf_tokens._request_token_repo_key(ON_DISK, "model")] = True
+    hf_tokens._repo_access_cache.clear()
+    assert public_cache_read_authorized(repo_id = ON_DISK) is False, (
+        "a repo downloaded with a one-off token was served to a caller with no token"
+    )
+    # Another repo on the same host is unaffected: the record is per repo.
+    _materialize_repo(root, "acme/other")
+    hf_tokens._repo_access_cache.clear()
+    assert public_cache_read_authorized(repo_id = "acme/other") is True
+
+    # And a record that cannot be read answers nobody.
+    monkeypatch.setattr(
+        hf_tokens, "_repo_was_fetched_with_a_request_token", lambda repo_id, repo_type: None
+    )
+    hf_tokens._repo_access_cache.clear()
+    assert public_cache_read_authorized(repo_id = "acme/other") is False
+
+
+def test_only_a_credential_the_host_does_not_hold_is_recorded(monkeypatch):
+    """The note is about a credential that LEAVES no trace on the host.
+
+    An anonymous download says nothing about anybody, and a download with the host's own
+    credential is the operator either way -- the tokenless branch already refuses on a host
+    that holds any credential at all.
+    """
+    written: list = []
+    monkeypatch.setattr(hf_tokens, "_as_owner", lambda call, *a, **k: written.append(a))
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ("hf_theoperators",)))
+
+    hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/private", "model")
+    hf_tokens.note_repo_fetched_with_a_request_token(False, "acme/private", "model")
+    hf_tokens.note_repo_fetched_with_a_request_token("hf_theoperators", "acme/private", "model")
+    assert written == []
+
+    hf_tokens.note_repo_fetched_with_a_request_token("hf_someoneelses", "acme/private", "model")
+    assert len(written) == 1, written
+    assert written[0][1] == hf_tokens._request_token_repo_key("acme/private", "model")
+
+
 def test_a_repo_that_was_never_refused_still_resolves_against_the_disk(monkeypatch, tmp_path):
     """The memory is per repo and per credential, so an air-gapped host, a Hub outage and a
     mirror with no /auth-check route are all exactly as they were."""

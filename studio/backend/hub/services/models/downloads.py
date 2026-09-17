@@ -19,6 +19,7 @@ from hub.schemas.downloads import (
     DownloadModelRequest,
 )
 from hub.utils import download_registry
+from hub.utils import hf_tokens
 from hub.utils import download_manifest
 from hub.utils import gguf_plan
 from hub.utils import inventory_scan as hf_cache_scan
@@ -189,6 +190,12 @@ async def download_model_response(
         await asyncio.to_thread(account_access.authorize_download, repo_id, "model", hf_token)
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+
+    # A one-off `X-Unsloth-HF-Token` is handed to the downloader and kept nowhere, so a repo
+    # fetched with it can sit in the cache of a host whose credential set is empty -- which
+    # is what the offline fallback reads as "everything here was public". Recorded before the
+    # bytes land, so the window never exists.
+    hf_tokens.note_repo_fetched_with_a_request_token(hf_token, repo_id, "model")
 
     # Avoid concurrent writers to the same HF cache files.
     _reject_if_load_in_flight(repo_id)

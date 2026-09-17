@@ -6,9 +6,13 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import logging
 import threading
 import time
 from typing import Literal, MutableMapping, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 HfTokenArg = Optional[Union[str, Literal[False]]]
 
@@ -473,7 +477,87 @@ def _host_hf_credentials() -> "tuple[bool, tuple]":
     return (True, tuple(value for value in (ambient, saved) if value))
 
 
-def _caller_populated_the_cache(token: Optional[str]) -> bool:
+# Repos this host fetched with a credential it does not hold. The download route accepts a
+# ONE-OFF `X-Unsloth-HF-Token` and hands it to the downloader without saving it anywhere, so
+# a private repo can be sitting in the cache of a host whose credential set is empty -- and
+# the tokenless branch below reads an empty credential set as "everything here was public
+# when it was downloaded". That inference is only sound if no such download ever happened,
+# so the ones that did are recorded, per repo, at the moment they are started.
+_REQUEST_TOKEN_REPOS_SETTING_KEY = "hub_repos_fetched_with_a_request_token"
+
+
+def _request_token_repo_key(repo_id: str, repo_type: Optional[str]) -> str:
+    return f"{(repo_type or 'model').strip().lower()}:{repo_id.strip()}"
+
+
+def _as_owner(call, *args, **kwargs):
+    """Run a settings read or write as the owner, the way every installation-wide setting is.
+
+    A managed account's own row is not the host's record, and this one is about the host.
+    """
+    from utils.account_context import OWNER, is_owner_context, run_as
+
+    if is_owner_context():
+        return call(*args, **kwargs)
+    return run_as(OWNER, call, *args, **kwargs)
+
+
+def note_repo_fetched_with_a_request_token(
+    token: HfTokenArg, repo_id: str, repo_type: Optional[str] = "model",
+) -> None:
+    """Record that *repo_id* was fetched under a credential this host does not hold.
+
+    Called at the start of a download. A token that IS one of the host's credentials records
+    nothing: the tokenless branch already refuses on a host that holds any credential, and
+    the caller presenting that credential is the operator either way. Anonymous downloads
+    record nothing either, since a public repo says nothing about anybody.
+
+    Never raises. A record that could not be written is a record that is not there, and the
+    read side treats an unreadable store as "cannot say", which refuses.
+    """
+    if is_anonymous(token) or not isinstance(token, str) or not token or not repo_id:
+        return
+    try:
+        known, host_tokens = _host_hf_credentials()
+        if known and any(hmac.compare_digest(token, held) for held in host_tokens):
+            return
+        from storage.studio_db import upsert_app_setting_map_entry
+
+        _as_owner(
+            upsert_app_setting_map_entry,
+            _REQUEST_TOKEN_REPOS_SETTING_KEY,
+            _request_token_repo_key(repo_id, repo_type),
+            {"at": time.time()},
+        )
+    except Exception:  # noqa: BLE001 -- a download must never fail on its own bookkeeping
+        logger.debug("could not record the credential a download used", exc_info = True)
+
+
+def _repo_was_fetched_with_a_request_token(
+    repo_id: Optional[str], repo_type: Optional[str],
+) -> Optional[bool]:
+    """True / False / ``None`` for "the record could not be read"."""
+    if not repo_id:
+        return None
+    try:
+        from storage.studio_db import get_app_setting
+
+        recorded = _as_owner(get_app_setting, _REQUEST_TOKEN_REPOS_SETTING_KEY, None)
+    except Exception:  # noqa: BLE001
+        return None
+    if recorded is None:
+        return False          # the store answered, and it holds nothing
+    if not isinstance(recorded, dict):
+        return None
+    return _request_token_repo_key(repo_id, repo_type) in recorded
+
+
+def _caller_populated_the_cache(
+    token: Optional[str],
+    *,
+    repo_id: Optional[str] = None,
+    repo_type: Optional[str] = None,
+) -> bool:
     """Whether this caller's credential is the one this host's cache was filled with.
 
     This is the whole safety of the unaskable fallback. "The repo is on this disk" is a
@@ -530,7 +614,12 @@ def _caller_populated_the_cache(token: Optional[str]) -> bool:
         # "some credential" is not a value a caller's token can be compared against.
         return False
     if token is None:
-        return not host_tokens
+        if host_tokens:
+            return False
+        # An empty credential set means nothing in the cache NEEDED one -- unless a download
+        # was run with a one-off request token, which the host never keeps. Those repos are
+        # recorded, and a record that cannot be read answers nobody.
+        return _repo_was_fetched_with_a_request_token(repo_id, repo_type) is False
     if not isinstance(token, str) or not token or not host_tokens:
         return False
     if len({held for held in host_tokens}) > 1:
@@ -542,8 +631,6 @@ def _caller_populated_the_cache(token: Optional[str]) -> bool:
         # one of them the other's private downloads. Unknown authorizes nobody. The host
         # that holds a single credential, which is every ordinary install, is unaffected.
         return False
-    import hmac
-
     matched = False
     for held in host_tokens:
         if hmac.compare_digest(token, held):
@@ -576,7 +663,7 @@ def _resolve_unaskable(repo_id: str, repo_type: str, *, token: Optional[str]) ->
     online, an API key that cannot reach a private repo is still refused the operator's
     cached copy of it.
     """
-    if not _caller_populated_the_cache(token):
+    if not _caller_populated_the_cache(token, repo_id = repo_id, repo_type = repo_type):
         return False
     return _repo_present_on_disk(repo_id, repo_type)
 
