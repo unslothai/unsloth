@@ -1269,7 +1269,11 @@ def test_start_studio_tunnel_no_url_retries_stop_at_the_budget(monkeypatch):
     # _READY_TIMEOUT per attempt, so the retries must stop once the budget is spent instead of
     # stacking one timeout per delay.
     attempts, waits, clock = [], [], [0.0]
-    fails_after = [15.0, 15.0, 15.0]  # the request is swallowed: every attempt waits out the timeout
+    fails_after = [
+        15.0,
+        15.0,
+        15.0,
+    ]  # the request is swallowed: every attempt waits out the timeout
 
     class _Stub:
         def __init__(
