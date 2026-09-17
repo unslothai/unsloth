@@ -16810,6 +16810,9 @@ def _check_signal_escape_patterns(code: str):
             stores = _name_stores.get((id(tree), name.id))
             return None if stores is None else _reaching(stores, name)
         read_at = _position(name)
+        around = _blocks_around(name)
+        values: list = []
+        found = False
         current: ast.AST | None = scope
         while current is not None:
             key = (id(current), name.id)
@@ -16823,9 +16826,18 @@ def _check_signal_escape_patterns(code: str):
                     if not stores:
                         current = _scope_parent.get(id(current))
                         continue
-                return _reaching(stores, name)
+                    values.extend(_reaching(stores, name))
+                    found = True
+                    # Only a class store that certainly ran hides the enclosing binding.
+                    if not any(cert and blk in around for _v, _p, blk, cert in stores):
+                        current = _scope_parent.get(id(current))
+                        continue
+                    break
+                values.extend(_reaching(stores, name))
+                found = True
+                break
             current = _scope_parent.get(id(current))
-        return None
+        return values if found else None
 
     def _attr_values(expr: ast.Attribute) -> "list | None":
         """Return the stores for an `obj.attr` receiver, nearest owning scope first."""

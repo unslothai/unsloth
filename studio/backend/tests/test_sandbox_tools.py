@@ -321,6 +321,16 @@ class TestNetworkTargetResolution:
                 id = "class_body_read_after_local_store",
             ),
             pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nclass C:\n    if False:\n"
+                "        url = 'https://pypi.org/'\n    requests.get(url)",
+                id = "conditional_class_store_keeps_module_binding",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nclass C:\n    for url in []:\n"
+                "        pass\n    requests.get(url)",
+                id = "class_loop_target_keeps_module_binding",
+            ),
+            pytest.param(
                 f"import urllib3\nurllib3.request('GET', 'http://{_H}/')",
                 id = "urllib3_request_url_position",
             ),
@@ -517,6 +527,7 @@ class TestNetworkTargetResolution:
             "import requests as r\nr.get('https://huggingface.co/api/models')\nr = object()",
             "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = 'https://huggingface.co/'",
             "import requests\nurl = 'https://pypi.org/'\nclass C:\n    requests.get(url)\n    url = 'http://203.0.113.5/'",
+            "import requests\nurl = 'http://203.0.113.5/'\nclass C:\n    url = 'https://pypi.org/'\n    requests.get(url)",
             # urllib3's string helpers open no connection.
             "from urllib3.util import parse_url\nparse_url('https://example.com/')",
             "import urllib3\nurllib3.util.parse_url('https://example.com/')",
