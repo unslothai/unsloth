@@ -163,15 +163,15 @@ def test_a_confirmation_that_would_outlast_the_job_is_not_started():
 def test_a_confirmation_it_can_only_partly_afford_is_still_taken():
     """The other arm: short of seven pairs is a weaker vote, not a reason to skip the retry.
 
-    A big leg of 20s affords five pairs of the 120s budget but not seven, and the path is
-    linear once the stalls stop, so it must still pass -- on five pairs, rather than on the
-    ratio being forgiven. Without this the row above could be satisfied by refusing every
-    confirmation that is not free.
+    Big legs of 30s put 90s of the 240s total into the first sample, so 150s is left and a
+    30s pair affords four of them, not seven. The path is linear once the stalls stop, so it
+    must still pass -- on four pairs, rather than on the ratio being forgiven. Without this
+    the row above could be satisfied by refusing every confirmation that is not free.
     """
-    run, clock, calls = _shaped(1.0, stalls = {1: 20.0, 3: 20.0, 5: 20.0})
+    run, clock, calls = _shaped(1.0, stalls = {1: 30.0, 3: 30.0, 5: 30.0})
     assert assert_linear(run, _build, "affordable in part", 2, clock = clock) == _build(8)
-    # Six legs of the first sample, then five pairs rather than seven.
-    assert calls["n"] == 6 + 10, f"the confirmation ran {(calls['n'] - 6) // 2} pairs"
+    # Six legs of the first sample, then four pairs rather than seven.
+    assert calls["n"] == 6 + 8, f"the confirmation ran {(calls['n'] - 6) // 2} pairs"
 
 
 def test_a_confirmation_sized_from_a_mixed_estimate_still_stops_at_the_budget():
@@ -200,23 +200,22 @@ def test_a_confirmation_sized_from_a_mixed_estimate_still_stops_at_the_budget():
 def test_the_budget_is_asked_before_a_pair_rather_than_after_it():
     """A bound tested once a pair is already home is not a bound on that pair.
 
-    First-sample big legs of 39s, 59s and 59s against 1s small legs: the median ratio is 59
-    and the best big leg is 39s, so the sizing authorises three pairs. The confirmation's own
-    legs then arrive at 59s. Asked AFTER each pair, every one of the three is inside the
-    120s bound at the moment it finishes its predecessor, so all three run and the sample
-    costs 177s -- which on top of the first sample's 157s is past the `--timeout=330` these
-    CI invocations pass, the exact failure the bound was added to prevent.
+    First-sample big legs of 13s, 20s and 20s against 1s small legs cost 56s, so 184s of the
+    240s total is left, and at the sizing's estimated pair cost that authorises all seven.
+    The confirmation's own legs then arrive at 59s, just inside the per-leg backstop.
 
-    Reserving room for one more pair at the cost of the worst seen stops it at two, so the
-    confirmation spends 118s of its 120 and the whole test lands around 275s.
+    Asked AFTER each pair, the fourth one runs: 177s elapsed is under 184 at the moment the
+    third finishes, so the sample reaches 236s and blows a bound it was never tested against
+    while inside it. Reserving room for one more pair at the cost of the worst seen stops it
+    at three, for 177s, and the whole test lands at 233s.
     """
-    stalls = {0: 0.998, 1: 38.992, 2: 0.998, 3: 58.992, 4: 0.998, 5: 58.992}
-    for index in range(6, 6 + 2 * 3):
+    stalls = {0: 0.998, 1: 12.992, 2: 0.998, 3: 19.992, 4: 0.998, 5: 19.992}
+    for index in range(6, 6 + 2 * 7):
         stalls[index] = 0.0 if index % 2 == 0 else 58.992
     run, clock, calls = _shaped(1.0, stalls = stalls)
-    with pytest.raises(AssertionError, match = "confirmation stopped after 2 of 3"):
+    with pytest.raises(AssertionError, match = "confirmation stopped after 3 of 7"):
         assert_linear(run, _build, "pair that would overrun", 2, clock = clock)
-    assert calls["n"] == 6 + 4, f"a pair that could not fit was started anyway: {calls['n']}"
+    assert calls["n"] == 6 + 6, f"a pair that could not fit was started anyway: {calls['n']}"
     assert (
         clock.now - 1000.0 < 330.0
     ), f"the whole test would outlast the runner: {clock.now - 1000.0}"
