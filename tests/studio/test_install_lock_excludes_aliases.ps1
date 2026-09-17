@@ -3,17 +3,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # The install lock must exclude two installers that reach one destination by different spellings.
 #
-# The named mutex alone cannot do that. Its name is a hash of the resolved path, so whenever the
-# path resolver cannot give an exact answer the hash falls back to the normalised spelling, and a
-# junction and its target produce two different mutex names that do not exclude each other. That
-# is written down at install.ps1's Get-StudioPathHash. A lock file held inside the destination has
-# no such failure mode: every alias reaches the same file because the filesystem resolves the
-# alias, with no canonicalisation involved.
+# The named mutex alone cannot: its name hashes the resolved path, so an inexact resolver leaves a
+# junction and its target with two names that do not exclude each other (install.ps1's
+# Get-StudioPathHash). A lock file inside the destination has no such failure mode, because the
+# filesystem resolves the alias.
 #
-# Only the FILE half is exercised here, with the mutex stubbed out. The mutex half is unchanged by
-# this work and is covered by tests/python/test_windows_installer_concurrency_guard.py; mixing the
-# two in would mean dragging in the whole path-resolver apparatus to compute a name this test does
-# not care about.
+# Only the FILE half is exercised here, with the mutex stubbed. The mutex half is unchanged by this
+# work and is covered by tests/python/test_windows_installer_concurrency_guard.py.
 # Run: pwsh -NoProfile -File tests/studio/test_install_lock_excludes_aliases.ps1
 
 $ErrorActionPreference = "Stop"
@@ -122,9 +118,8 @@ try {
     Check "releasing does not delete the lock file" (
         Test-Path -LiteralPath (Join-Path $fresh $lockFileName))
 
-    # The safety half of that marker. A UNSLOTH_STUDIO_HOME pointed at a directory the user
-    # already had must never be claimed as ours, because scripts/uninstall.ps1 deletes what the
-    # marker names. Only a directory this lock created may carry it.
+    # The safety half: uninstall.ps1 deletes what the marker names, so a UNSLOTH_STUDIO_HOME
+    # pointed at a directory the user already had must never carry it.
     $preexisting = Join-Path $tmp "users-own-directory"
     New-Item -ItemType Directory -Force -Path $preexisting | Out-Null
     "keep me" | Set-Content -LiteralPath (Join-Path $preexisting "important.txt")
@@ -183,11 +178,8 @@ try {
             Check "an ALIAS of the held destination is refused" ($null -eq $aliasLock)
             if ($aliasLock) { Exit-StudioInstallLock -Lock $aliasLock }
 
-            # Proof that the check above is not vacuous. Get-StudioPathHash falls back to hashing
-            # the normalised SPELLING when the resolver cannot answer exactly, and these two
-            # spellings differ, so the mutex name derived from them differs too and the mutex
-            # would have let both installers through. That is the regression this file exists to
-            # prevent, restated as an assertion rather than as a claim in a comment.
+            # Not vacuous: these two spellings differ, so the mutex name hashed from them differs
+            # too and the mutex alone would have let both installers through.
             $spellReal = [System.IO.Path]::GetFullPath($real).ToUpperInvariant()
             $spellAlias = [System.IO.Path]::GetFullPath($alias).ToUpperInvariant()
             Check "the two spellings differ, so a name derived from them cannot exclude (bites)" (
@@ -197,11 +189,9 @@ try {
         Stop-Holder $holder
     }
 
-    # 6. A planted link at the lock path must not have its target touched. File.Open follows a
-    #    symbolic or hard link, so anything written through that handle lands in the link's
-    #    TARGET. Another user who can write into a shared or custom root could then have an
-    #    arbitrary writable file emptied merely by someone starting the installer. Taking the
-    #    lock writes nothing at all, which is why this holds.
+    # 6. A planted link at the lock path must not have its target touched. File.Open follows one,
+    #    so anything written through the handle lands in the TARGET. Taking the lock writes
+    #    nothing at all, which is why this holds.
     $victimDir = Join-Path $tmp "victim-root"
     New-Item -ItemType Directory -Force -Path $victimDir | Out-Null
     $victim = Join-Path $tmp "precious.txt"
@@ -218,10 +208,8 @@ try {
     if ($plantedOk) {
         $plantedLock = $null
         try { $plantedLock = Enter-StudioInstallLock -Path $victimDir } catch {}
-        # Checked WHILE the lock is held, which is the point: following the link would leave the
-        # victim opened with FileShare.None for the whole install, so it would be unreadable here
-        # even though nothing was written to it. That is a denial of service on somebody else's
-        # file, and it is why the link is removed rather than merely not written to.
+        # WHILE the lock is held, which is the point: following the link would hold the victim
+        # with FileShare.None for the whole install, unreadable here despite nothing being written.
         $victimReadable = $false
         try { $victimReadable = ((Get-Content -Raw -LiteralPath $victim).Trim() -eq $precious) } catch {}
         Check "a planted link's target stays readable while the lock is held" $victimReadable
@@ -265,10 +253,8 @@ try {
         $hardLock = $null
         try { $hardLock = Enter-StudioInstallLock -Path $hardDir } catch {}
         Check "the lock is still granted with a hard link planted" ($null -ne $hardLock)
-        # Read WHILE the lock is held. Following the hard link would leave the victim open with
-        # FileShare.None until the install finishes, so a second exclusive open of it would be
-        # refused. Get-Content is not enough on its own here, since a shared read can succeed
-        # against a handle opened for reading; ask for the same exclusivity the installer takes.
+        # WHILE the lock is held. Get-Content is not enough on its own, since a shared read can
+        # succeed against a handle opened for reading; ask for the installer's own exclusivity.
         $victimFree = $false
         try {
             $probeStream = [System.IO.File]::Open($hardVictim, [System.IO.FileMode]::Open,
@@ -285,11 +271,9 @@ try {
         Check "a planted hard link's target keeps its length" (
             (Get-Item -LiteralPath $hardVictim).Length -eq $hardVictimLength)
 
-        # 6c. Removing a non-empty entry must never become a way to steal a lock somebody else
-        #     already holds. The file here is BOTH non-empty, which is what the new check keys
-        #     on, and held by a real second process, so a fix that removed first and asked
-        #     questions afterwards would hand out a second lock for one destination. The refusal
-        #     has to come first, and the file has to survive intact.
+        # 6c. Removing a non-empty entry must never steal a lock somebody else holds. This file is
+        #     both non-empty and held by a real second process, so a fix that removed first and
+        #     asked afterwards would hand out a second lock for one destination.
         $stealDir = Join-Path $tmp "steal-root"
         New-Item -ItemType Directory -Force -Path $stealDir | Out-Null
         $stealLockPath = Join-Path $stealDir $lockFileName
@@ -312,10 +296,8 @@ try {
             (Get-Content -Raw -LiteralPath $stealLockPath) -eq $stealBody)
     }
 
-    # 7. A real I/O fault must not be reported as "another installer is running". Only a sharing
-    #    or lock violation means that. Here the lock path already exists as a DIRECTORY, so the
-    #    open fails for a reason that is nobody's concurrent install, and the caller must see the
-    #    failure rather than a misleading "wait for the other install to finish".
+    # 7. A real I/O fault must not read as "another installer is running". The lock path is a
+    #    DIRECTORY here, so the open fails for a reason that is nobody's concurrent install.
     $blockedRoot = Join-Path $tmp "blocked-root"
     New-Item -ItemType Directory -Force -Path (Join-Path $blockedRoot $lockFileName) | Out-Null
     $blockedThrew = $false
@@ -340,14 +322,10 @@ try {
     Check "a killed holder leaves no stale lock" ($null -ne $afterCrash)
     if ($afterCrash) { Exit-StudioInstallLock -Lock $afterCrash }
 
-    # The lock file must not make a fresh root look like somebody else's directory.
-    #
-    # Enter-StudioInstallLock creates the lock inside $StudioHome before anything else runs, and
-    # in env mode Write-StudioRootOwnerMarker refuses to claim a root that is not empty. Counting
-    # the lock as occupancy would mean a fresh UNSLOTH_STUDIO_HOME never gets its owner marker,
-    # and an install that then died before the venv marker was written would leave a root the
-    # uninstaller does not recognise and will not remove. Nothing else pins this, so removing the
-    # exclusion from the occupancy test would otherwise pass silently.
+    # The lock file must not make a fresh root look like somebody else's directory. It is created
+    # inside $StudioHome before anything else runs, and the owner marker refuses a root that is not
+    # empty, so counting it means a fresh UNSLOTH_STUDIO_HOME never gets its marker and a run that
+    # dies before the venv marker leaves a root the uninstaller will not remove.
     $StudioRedirectMode = 'env'
     $freshRoot = Join-Path $tmp "fresh-env-root"
     New-Item -ItemType Directory -Force -Path $freshRoot | Out-Null
@@ -359,11 +337,8 @@ try {
     if ($freshLock) { Exit-StudioInstallLock -Lock $freshLock }
 
     # Stale env-root state from an EARLIER run in the same session must not answer for this one.
-    # Under `irm | iex` a user can run the installer twice in one PowerShell session, and script
-    # scope outlives a run. If the first run recorded that its override root existed, that root
-    # was then removed, and a second run lands on the same path, the stale $true would tell the
-    # lock the directory was already there. It would skip claiming the root it just created, and
-    # a run dying before the venv marker leaves a root the uninstaller will not remove.
+    # Script scope outlives a run and `irm | iex` can install twice, so a stale $true makes the
+    # lock skip claiming a root it just created.
     $StudioRedirectMode = 'env'
     $staleRoot = Join-Path $tmp "stale-env-root"
     # Deliberately NOT created: this is the run where the directory is genuinely new.
@@ -401,13 +376,9 @@ try {
         -not (Test-Path -LiteralPath (Join-Path $occupiedRoot ".unsloth-studio-owned")))
     if ($occupiedLock) { Exit-StudioInstallLock -Lock $occupiedLock }
 
-    # The owner marker must not follow a link either.
-    #
-    # The lock is now the first thing that can create the root, so on a root whose inherited
-    # permissions let another user write to it, that user can plant a `.unsloth-studio-owned` link
-    # between the directory appearing and the marker being written. A bare WriteAllText follows it
-    # and truncates the target under the installer's rights. Same hazard the lock file itself is
-    # guarded against a few checks above, so it gets the same treatment rather than a second one.
+    # The owner marker must not follow a link either. Between the directory appearing and the
+    # marker being written, another user who can write to the root can plant a link there, and a
+    # bare WriteAllText truncates its target under the installer's rights.
     $StudioRedirectMode = 'default'
     $markerVictim = Join-Path $tmp "marker-victim.txt"
     [System.IO.File]::WriteAllText($markerVictim, "keep me")
@@ -429,26 +400,21 @@ try {
         Check "the planted marker link's target is not truncated" (
             (Get-Content -Raw -LiteralPath $markerVictim) -eq "keep me")
         $written = Get-Item -LiteralPath $plantedMarker -Force -ErrorAction SilentlyContinue
-        # Three checks, not one conjunction. A single Check here reports "the marker is wrong"
-        # without saying which part, and this row failed on Windows PowerShell 5.1 while passing
-        # on pwsh 7, so naming the conjunct is the difference between a diagnosis and a guess.
+        # Three checks, not one conjunction: this row failed on 5.1 while passing on pwsh 7, and a
+        # single Check would report "the marker is wrong" without saying which part.
         Check "the marker exists after the claim" ($null -ne $written)
         Check "the marker is empty, as this installer only ever creates it" (
             $null -ne $written -and $written.Length -eq 0)
-        # The ReparsePoint attribute, not .Target. Both PowerShell versions set the attribute on
-        # a link and clear it on an ordinary file, whereas .Target is $null on pwsh 7 but an
-        # EMPTY COLLECTION on 5.1, and an empty collection is not $null, so the old spelling
-        # failed on a marker that was in fact a perfectly ordinary file.
+        # The ReparsePoint attribute, not .Target: .Target is $null on pwsh 7 but an EMPTY
+        # COLLECTION on 5.1, which is not $null, so the old spelling failed on an ordinary file.
         Check "the marker is a real file, not the planted link" (
             $null -ne $written -and
             (($written.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0))
     }
 
-    # And no window between the two. Deleting, confirming the name is free and then writing leaves
-    # a moment in which the same user can plant the link again, and the write lands on its target.
-    # The creation must therefore fail on an entry that is already there rather than overwrite it,
-    # which is what makes the check and the write one operation. Driven by leaving a link in place
-    # with no delete in front of it: that is the state the window produces.
+    # And no window between the two: delete, confirm, write leaves a moment to plant the link
+    # again. The creation must FAIL on an entry already there rather than overwrite it. Driven by
+    # leaving a link in place with no delete in front of it, which is what the window produces.
     $raceVictim = Join-Path $tmp "race-victim.txt"
     [System.IO.File]::WriteAllText($raceVictim, "still here")
     $raceRoot = Join-Path $tmp "race-root"
@@ -508,18 +474,11 @@ try {
         (Get-Content -Raw -LiteralPath $displaced[0].FullName) -eq "somebody else's bytes")
     if ($keepLockObj) { Exit-StudioInstallLock -Lock $keepLockObj }
 
-    # The env-mode ownership branch must not be dead code.
-    #
-    # The override is created where it is read, thousands of lines before the lock, so by the
-    # time Enter-StudioInstallLock asks whether the directory existed the answer is always yes
-    # and the claim never happens for exactly the roots it was written for. A run that died
-    # between taking the lock and the later marker write would then leave a directory holding
-    # only the lock file, which scripts/uninstall.ps1's _IsStudioRoot does not recognise.
-    #
-    # The earlier checks in this file could not catch that: they call Write-StudioRootOwnerMarker
-    # themselves after taking the lock, so they prove the helper works and say nothing about
-    # whether the lock ever reaches it. This one takes the lock and then looks, with nothing in
-    # between.
+    # The env-mode ownership branch must not be dead code. The override root is created thousands
+    # of lines before the lock, so the lock's "did it exist" question always answers yes and the
+    # claim never fires for the roots it was written for. The earlier checks call
+    # Write-StudioRootOwnerMarker themselves, so they prove the helper works and say nothing about
+    # whether the lock reaches it; this one takes the lock and then looks, with nothing between.
     $envFresh = Join-Path $tmp "env-root-created-earlier"
     [System.IO.Directory]::CreateDirectory($envFresh) | Out-Null   # the early override create
     $script:StudioEnvRootPath = $envFresh
@@ -553,13 +512,9 @@ try {
     Check "and does not write the marker itself" (
         $lockFn -notmatch 'WriteAllText\([^)]*\.unsloth-studio-owned')
 
-    # A detected link that will not go must STOP the install.
-    #
-    # The removal sat under an empty catch, so on a root where the link can be inspected but not
-    # deleted the run carried on into File.Open, which follows it. A zero-byte target then also
-    # passed the length check, and the installer held an unrelated file with FileShare.None for
-    # the whole install: the exact denial of service the removal exists to prevent, reached
-    # through the code meant to prevent it. Driven by making the removal fail.
+    # A detected link that will not go must STOP the install. Under the old empty catch the run
+    # carried on into File.Open, which follows it, and a zero-byte target passed the length check
+    # too: the exact denial of service the removal exists to prevent. Driven by making it fail.
     $undeletableRoot = Join-Path $tmp "undeletable-link-root"
     New-Item -ItemType Directory -Force -Path $undeletableRoot | Out-Null
     $linkVictim = Join-Path $tmp "link-victim-empty.txt"
@@ -597,10 +552,8 @@ try {
             (Get-Item -LiteralPath $undeletableLock -Force).Target -eq $linkVictim)
     }
 
-    # A rename that fails for a reason other than contention must surface, not be reported as
-    # another installer. A read-only directory, an ACL, a policy block or a storage fault are none
-    # of them, and calling any of those "already running" sends the user hunting for an installer
-    # that does not exist.
+    # A rename that fails for a reason other than contention must surface: calling a read-only
+    # directory or a storage fault "already running" sends the user hunting a phantom installer.
     $mvRoot = Join-Path $tmp "unmovable-lock-root"
     New-Item -ItemType Directory -Force -Path $mvRoot | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $mvRoot $lockFileName), "not empty")
@@ -635,29 +588,24 @@ try {
 }
 
 Write-Host ""
-# ---------------------------------------------------------------- the swapped-link race
-#
-# The reparse test runs on the pathname BEFORE the lock is opened, so on a root another user can
-# write to, a symbolic link can be swapped in between the check and the open. The stream Length
-# test catches every planted target that has bytes in it; a target that is itself zero bytes does
-# not, which is the gap this guard closes. Drive the SHIPPED expression rather than a retyped
-# copy of it, so a change to the real one cannot leave this passing.
+# The swapped-link race. The reparse test runs on the pathname BEFORE the open, so a link can be
+# swapped in between, and a target that is itself zero bytes slips past the Length test too. Drive
+# the SHIPPED expression, not a retyped copy, so a change to the real one cannot leave this passing.
 $lockSrc = [System.IO.File]::ReadAllText((Join-Path $root "install.ps1"))
 $guardAt = $lockSrc.IndexOf('A link was planted at the install lock path')
 Check "the post-open guard is present" ($guardAt -gt 0)
 
 $openAt = $lockSrc.IndexOf('$stream = [System.IO.File]::Open(')
 Check "the guard runs after the open, not before it" ($openAt -gt 0 -and $guardAt -gt $openAt)
-# Guarded: with the guard gone $guardAt is -1, and Substring would raise instead of failing
-# the check. A suite that dies reports nothing, which is the worst way to signal a regression.
+# Guarded: with the guard gone $guardAt is -1 and Substring would raise. A suite that dies
+# reports nothing at all.
 $guardBlock = if ($openAt -gt 0 -and $guardAt -gt $openAt) { $lockSrc.Substring($openAt, $guardAt - $openAt) } else { "" }
 Check "the guard releases the handle before it throws" ($guardBlock -match '\$stream\.Dispose\(\)[\s\S]*\$stream = \$null')
 
 $predicate = @($lockSrc -split "`n" | Where-Object {
     $_ -match '\$entry -and \(\(\$entry\.Attributes -band \[System\.IO\.FileAttributes\]::ReparsePoint\) -ne 0\)' })
 Check "the predicate is one line of the shipped source" ($predicate.Count -eq 1)
-# Degrade to a failed check rather than an indexing error: a suite that dies when the guard is
-# missing reports nothing at all, and "the run crashed" is not a readable test result.
+# Degrade to a failed check, not an indexing error: "the run crashed" is not a test result.
 $test = $null
 if ($predicate.Count -eq 1) {
     # Two statements, not one expression: [scriptblock]::Create(A -replace B, C) binds C as a
@@ -694,10 +642,9 @@ try {
     Remove-Item -LiteralPath $raceDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# The gate has to be the LAST thing before the success line. Checks appended after it print
-# FAIL and then the suite exits 0 anyway, which is worse than having no checks at all: CI
-# reports green while the regression they were added for is live. That is exactly what happened
-# to the swapped-link checks below, so the shape is asserted rather than trusted.
+# The gate has to be the LAST thing before the success line: checks appended after it print FAIL
+# and the suite exits 0 anyway, so CI reports green while the regression is live. That happened to
+# the swapped-link checks below, so the shape is asserted rather than trusted.
 $selfText = [System.IO.File]::ReadAllText($PSCommandPath)
 $gateAt = $selfText.LastIndexOf('if ($failures -gt 0)')
 $passAt = $selfText.LastIndexOf('All install-lock alias checks passed')

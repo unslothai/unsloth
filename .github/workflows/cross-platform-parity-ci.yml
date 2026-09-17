@@ -312,7 +312,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_nvidia_library_inventory.ps1
-<<<<<<< HEAD
       # Both legs, and both matter: the candidate list is what decides whether a real GPU is
       # seen at all, and 5.1 is the host the Desktop app launches the installer in.
       - name: nvidia-smi discovery tests
@@ -322,7 +321,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_nvidia_smi_discovery.ps1
-=======
       # Spawns a real holder process and takes the lock through a junction (Windows) or a
       # symbolic link (Linux), so it needs both legs: the alias mechanisms differ per OS and
       # .NET enforces FileShare.None through a different mechanism on each.
@@ -333,7 +331,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_install_lock_excludes_aliases.ps1
->>>>>>> 251c91b5f (Unsloth Studio Installer: hold the install lock as a file as well as a mutex)
       # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
       # Windows needed. The 1260 classification is exercised against crafted exceptions:
       # a hosted runner has no Application Control policy to be denied by. The enforced

@@ -2789,13 +2789,8 @@ exit 1
         Join-Path $env:LOCALAPPDATA "Unsloth Studio"
     } else { $null }
 
-    # Cleared per invocation, not just written per invocation. Under `irm | iex` the same
-    # PowerShell session can run the installer more than once, and script scope outlives a run.
-    # A first run under the override records that its root existed; if that root is then removed
-    # and a second run without the override lands on the same path by default, the stale $true
-    # below would tell Enter-StudioInstallLock the directory was already there. It would skip
-    # claiming the root it just created, and a run that died before the later marker write would
-    # leave a lock-only directory scripts/uninstall.ps1 refuses to recognise.
+    # Cleared per invocation: script scope outlives a run, and under `irm | iex` one session can
+    # install twice. A stale $true makes the lock skip claiming a root it just created.
     $script:StudioEnvRootPath = $null
     $script:StudioEnvRootExisted = $false
 
@@ -2805,14 +2800,10 @@ exit 1
             $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
         }
         try {
-            # Recorded BEFORE the create, because this is the only moment anyone can still tell.
-            # Enter-StudioInstallLock decides whether to claim the root by asking whether the
-            # directory existed when it ran, and it runs thousands of lines below here, by which
-            # point this create has already made the answer yes for every env-mode root. Its
-            # ownership branch would therefore never fire for exactly the roots it was written
-            # for, and a run that died between taking the lock and the later marker write would
-            # leave a directory holding only the lock file, which scripts/uninstall.ps1's
-            # _IsStudioRoot does not recognise and so refuses to clean up.
+            # BEFORE the create: this is the only moment anyone can still tell. The lock runs
+            # thousands of lines below and asks whether the root existed, which by then is yes for
+            # every env-mode root, so its ownership branch would never fire for the roots it was
+            # written for.
             $script:StudioEnvRootPath = $envOverride
             $script:StudioEnvRootExisted = [System.IO.Directory]::Exists($envOverride)
             # .NET API: New-Item -Path treats brackets as wildcards (no -LiteralPath on PS 5.1).
@@ -2910,11 +2901,8 @@ exit 1
     # The emptiness test is inline, not Test-DirectoryHasEntries, which is defined below this
     # function's first caller: the name error would land in the catch and skip the claim in
     # silence. An unreadable root counts as occupied, so failure means "do not claim".
-    # Defined here, above its earliest reader, not beside the lock functions that also use it.
-    # Write-StudioRootOwnerMarker filters this name out of its emptiness test, and it runs
-    # thousands of lines before the lock helpers; a $null here would filter nothing and quietly
-    # restore the bug the filter exists to prevent. Same hazard the comment above describes for
-    # Test-DirectoryHasEntries, and it fails just as silently.
+    # Above its earliest reader, not beside the lock helpers: Write-StudioRootOwnerMarker filters
+    # this name out of its emptiness test thousands of lines earlier, and a $null filters nothing.
     $script:StudioInstallLockFileName = ".unsloth-install.lock"
 
     function Write-StudioRootOwnerMarker {
@@ -2927,12 +2915,8 @@ exit 1
             if (Test-Path -LiteralPath $Root) {
                 $occupied = $true
                 try {
-                    # The install lock's own file does not count as occupancy. Enter-StudioInstallLock
-                    # creates it in this very root before anything else runs, so counting it would
-                    # make a fresh env-mode root look like somebody else's directory and refuse the
-                    # claim. An install that then died before the venv marker at
-                    # Write-StudioVenvOwnerMarker would leave a root the uninstaller does not
-                    # recognise, which is the opposite of what the marker is for.
+                    # The lock's own file is not occupancy: it is created in this root before
+                    # anything else, so counting it makes a fresh root look like somebody else's.
                     $occupied = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
                         Where-Object { $_.Name -ne $script:StudioInstallLockFileName } |
                         Select-Object -First 1).Count -gt 0
@@ -2956,18 +2940,11 @@ exit 1
             # Get-Item -Force, not Test-Path: the latter follows a dangling link and answers
             # false, after which WriteAllText follows the link and writes outside the root.
             Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-            # CreateNew, not a check followed by a write. The check-then-write pair above left a
-            # window: the entry is confirmed absent, and a user who can write to this root plants
-            # a link at the name before the write lands, which then truncates the link's target.
-            # CreateNew fails if anything is already at the name, so the test and the creation are
-            # one operation and there is no window to aim at.
-            #
-            # Residual, stated rather than implied away: this closes the truncation, not every
-            # form of following. A link planted at the name makes CreateNew fail, which is the
-            # answer we want, but a DANGLING one is followed and an empty file is created at its
-            # target. That creates a zero-byte file somewhere; it cannot destroy an existing one,
-            # which is the hazard being guarded. Opening with FILE_FLAG_OPEN_REPARSE_POINT is the
-            # complete answer and .NET does not expose it here.
+            # CreateNew, not check-then-write: the pair left a window to plant a link at the name
+            # and have the write truncate its target. Residual, stated rather than implied away: a
+            # DANGLING link is still followed and creates a zero-byte file at its target, which
+            # cannot destroy an existing one. FILE_FLAG_OPEN_REPARSE_POINT is the complete answer
+            # and .NET does not expose it here.
             $markerStream = $null
             try {
                 $markerStream = [System.IO.File]::Open($marker,
@@ -2975,8 +2952,7 @@ exit 1
                     [System.IO.FileAccess]::Write,
                     [System.IO.FileShare]::None)
             } catch {
-                # Something is at the name, or the root refuses the write. No marker is fine; the
-                # venv writes its own later.
+                # No marker is fine; the venv writes its own later.
                 return
             } finally {
                 if ($markerStream) { try { $markerStream.Dispose() } catch {} }
@@ -5247,18 +5223,11 @@ exit 0
         try { $Mutex.ReleaseMutex() } catch {} finally { $Mutex.Dispose() }
     }
 
-    # The install lock, held as a mutex AND a file, because the two exclude different things.
-    #
-    # The mutex is named from a hash of the resolved path, so when the resolver cannot give an
-    # exact answer two spellings of one directory (a junction and its target, an 8.3 name and its
-    # long form) produce different names and fail to exclude each other, exactly as
-    # Get-StudioPathHash says above. A file inside the destination has no such problem: every
-    # alias reaches the same file because the filesystem resolves the alias, so no canonicalisation
-    # is involved at all.
-    #
-    # Both are taken rather than swapping one for the other. The mutex is what an already-released
-    # installer uses, and dropping it would mean a new run and an old run no longer see each other
-    # during an upgrade. Holding both can only exclude more than either alone.
+    # Mutex AND file, because they exclude different things. The mutex is named from a hash of the
+    # resolved path, so two spellings of one directory fail to exclude each other whenever the
+    # resolver is inexact; a file inside the destination has no such problem, because the
+    # filesystem resolves the alias. Both are kept: a released installer only knows the mutex, so
+    # dropping it would stop an old run and a new one seeing each other during an upgrade.
 
     function Enter-StudioInstallLock {
         param([Parameter(Mandatory = $true)][string]$Path)
@@ -5266,22 +5235,16 @@ exit 0
         if ($null -eq $mutex) { return $null }
         $stream = $null
         try {
-            # Idempotent and race-safe: concurrent creators both succeed, and only one of them
-            # goes on to open the file exclusively below. Throwing here (no permission, a file
-            # where the directory should be) surfaces as the caller's install-lock error, which
-            # is a clearer place to fail than the first write further down.
+            # Race-safe: concurrent creators both succeed, and only one opens the file exclusively
+            # below. A throw here surfaces as the caller's install-lock error.
             $existedBefore = [System.IO.Directory]::Exists($Path)
-            # An env-mode root is created where the override is read, thousands of lines above
-            # this, so by the time the lock runs it always exists and the check just above would
-            # answer yes for every one of them. That site records what it found; prefer its
-            # answer when it is speaking about this same directory.
+            # An env-mode root is created thousands of lines above, so the check just above answers
+            # yes for every one of them; that site recorded what it found, so prefer its answer for
+            # this same directory.
             #
-            # One direction only. That record exists to say "I created this root, so treat it as
-            # new", and it can never be used to say the opposite: a record claiming the root
-            # already existed cannot be true while the root is absent right now, so it is a
-            # leftover from an earlier run in the same session and the live answer wins. The
-            # top-level flow clears both variables per invocation as well; this is the half that
-            # holds even when something calls the lock directly.
+            # One direction only. It may say "I created this root, so treat it as new", never the
+            # opposite: a record claiming the root existed cannot be true while the root is absent
+            # now, so it is a leftover from an earlier run in the same session.
             if ($script:StudioEnvRootPath -and
                 $script:StudioEnvRootPath.Equals($Path, [System.StringComparison]::OrdinalIgnoreCase) -and
                 -not $script:StudioEnvRootExisted) {
@@ -5303,37 +5266,24 @@ exit 0
                 ($existingLock.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
                 # A detected link that will NOT go must stop the install, not be shrugged off.
                 #
-                # The removal used to sit under an empty catch, so on a root where the link can be
-                # inspected but not deleted the run carried straight on into File.Open, which
-                # follows it. If the target happened to be zero bytes it also passed the length
-                # check below, and the installer then held an unrelated file with FileShare.None
-                # for the whole install: precisely the denial of service this removal exists to
-                # prevent, reached by the path meant to prevent it.
-                #
-                # The throw is caught by the outer handler, which drops the mutex and rethrows, so
-                # the caller reports a lock-creation failure rather than a phantom second
-                # installer.
+                # Not an empty catch: a link that can be inspected but not deleted would carry on
+                # into File.Open, which follows it, and a zero-byte target passes the length check
+                # too. The throw reaches the outer handler, which drops the mutex and reports a
+                # lock-creation failure rather than a phantom second installer.
                 try {
                     Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
                 } catch {
                     throw "A link is planted at the install lock path $lockPath and cannot be removed."
                 }
             }
-            # The attributes check above cannot see a HARD link. A hard link is a second
-            # directory entry for an existing file, not a reparse point, so it carries no
-            # attribute to test and File.Open follows it just the same: the target would be held
-            # with FileShare.None for the whole install, which is the denial of service the
-            # reparse removal exists to prevent. The discriminator is the opened stream's own
-            # Length. Nothing is ever written to this lock file, so ours is always zero bytes,
-            # while any planted alias to a file worth denying access to is not. Reading it from
-            # the handle rather than from the directory entry also closes the window between the
-            # check above and this open, which an attacker controls.
+            # A HARD link carries no reparse attribute, so the check above cannot see it and
+            # File.Open follows it. The discriminator is the opened stream's Length: nothing is
+            # ever written here, so ours is always zero bytes and a planted alias worth denying
+            # access to is not. Read from the handle, which also closes the check-to-open window.
             #
-            # At most one repair, and the reopen is CreateNew rather than OpenOrCreate. That is
-            # what keeps two installers that spell the destination differently (the mutex only
-            # serialises identical spellings) from each ending up holding a different file: if
-            # somebody re-created the entry between the removal and the reopen, CreateNew fails
-            # instead of silently handing out a second lock, and the run reports a busy lock.
+            # At most one repair, and CreateNew rather than OpenOrCreate: the mutex only serialises
+            # identical spellings, so if somebody re-created the entry in between, this must fail
+            # rather than hand out a second lock.
             $repaired = $false
             while ($true) {
                 if ($repaired) { $mode = [System.IO.FileMode]::CreateNew }
@@ -5345,24 +5295,13 @@ exit 0
                         [System.IO.FileAccess]::ReadWrite,
                         [System.IO.FileShare]::None)
                 } catch [System.IO.IOException] {
-                    # Only a sharing or lock violation means "another installer holds it". Anything
-                    # else, a transient storage fault or a network share dropping out, is a real
-                    # failure and must not be reported as a concurrent install: that hides the fault
-                    # and sends the user looking for a second installer that does not exist.
-                    # HResult's low 16 bits carry the Win32 code on Windows: 32 is
-                    # ERROR_SHARING_VIOLATION and 33 is ERROR_LOCK_VIOLATION. Off Windows .NET
-                    # implements FileShare with flock and reports the errno instead, 11 for
-                    # EAGAIN/EWOULDBLOCK, which is what the test suite exercises on Linux. Measured
-                    # rather than assumed, because the first version of this check only knew the
-                    # Windows codes and turned every real conflict on Linux into a rethrow.
-                    #
-                    # 80 ERROR_FILE_EXISTS, 183 ERROR_ALREADY_EXISTS and 17 EEXIST are how the
-                    # CreateNew reopen reports losing that race, and mean the same thing to the
-                    # caller: somebody else has the lock, come back later.
-                    #
-                    # A directory sitting where the lock file should be raises
-                    # UnauthorizedAccessException, not IOException, so it is never caught here and
-                    # already reaches the caller as the failure it is.
+                    # Only a sharing or lock violation means "another installer holds it"; a
+                    # storage fault reported that way would send the user hunting a second
+                    # installer that does not exist. HResult's low 16 bits carry the Win32 code: 32
+                    # ERROR_SHARING_VIOLATION, 33 ERROR_LOCK_VIOLATION. Off Windows .NET implements
+                    # FileShare with flock and reports errno 11 (EAGAIN) instead, measured rather
+                    # than assumed. 80, 183 and 17 are how the CreateNew reopen reports losing the
+                    # race, which means the same thing to the caller.
                     $code = $_.Exception.HResult -band 0xFFFF
                     $lost = $repaired -and ($code -eq 80 -or $code -eq 183 -or $code -eq 17)
                     if (-not $lost -and $code -ne 32 -and $code -ne 33 -and $code -ne 11) { throw }
@@ -5370,18 +5309,11 @@ exit 0
                     Exit-StudioInstallMutex -Mutex $mutex
                     return $null
                 }
-                # The reparse test above ran on the PATHNAME, before this open, so on a root
-                # another user can write to, a symbolic link can be swapped in between the two.
-                # The Length test below catches every planted target that has bytes in it; a
-                # target that is itself zero bytes does not, and the install would then hold
-                # somebody else's sentinel with FileShare.None for its whole duration.
-                #
-                # Re-read the entry now the handle is held and refuse if it became a link. This
-                # narrows the window rather than closing it: closing it needs the handle's own
-                # identity, which means FILE_FLAG_OPEN_REPARSE_POINT and
-                # GetFileInformationByHandle, and removing native imports is the point of this
-                # workstream. The residual is a zero-byte denial of service on a root that is
-                # already writable by another user, which the root owner marker refuses first.
+                # The reparse test above ran on the PATHNAME, so a link can be swapped in before
+                # this open, and a zero-byte target slips past the Length test below. Re-read now
+                # the handle is held. This narrows the window rather than closing it: closing it
+                # needs FILE_FLAG_OPEN_REPARSE_POINT, and removing native imports is the point of
+                # this workstream. The residual needs a root another user can already write to.
                 if ($stream.Length -eq 0) {
                     $entry = $null
                     try { $entry = Get-Item -LiteralPath $lockPath -Force -ErrorAction Stop } catch { $entry = $null }
@@ -5393,24 +5325,18 @@ exit 0
                     break
                 }
                 if ($repaired) {
-                    # A file this run just created cannot be non-empty, so reaching here means the
-                    # path is not behaving like a file at all. Fail loudly instead of looping.
+                    # A file this run just created cannot be non-empty. Fail loudly, not in a loop.
                     throw "The install lock file at $lockPath is not empty after being replaced."
                 }
-                # Drop the handle, then move the entry ASIDE rather than delete it, and let the
-                # reopen create a real file at the freed name.
+                # Move the entry ASIDE rather than delete it, and let the reopen create a real file
+                # at the freed name.
                 #
-                # Deleting was wrong for one case. A planted hard link loses only its own
-                # directory entry, which is why deleting looked safe, but an ORDINARY non-empty
-                # file at this name that is its own only link loses its contents, and it loses
-                # them merely because somebody started the installer. Nothing this installer
-                # writes can produce such a file, so it is not ours to destroy.
-                #
-                # Refusing instead would hand the other case back: a hard link planted here would
-                # then block every install rather than being repaired, which is the denial of
-                # service the length check exists to prevent. There is no cheap way to tell the
-                # two apart, since the discriminator is the link count and .NET does not expose
-                # it here. A rename needs no discrimination: the planted link leaves the lock
+                # Deleting a planted hard link costs only its own directory entry, which is why it
+                # looked safe, but an ORDINARY non-empty file at this name loses its contents
+                # merely because somebody started the installer. Refusing instead lets a planted
+                # hard link block every install. The discriminator is the link count and .NET does
+                # not expose it here, so there is no cheap way to tell them apart. A rename needs
+                # no discrimination: the planted link leaves the lock
                 # path either way, and the ordinary file keeps its bytes under a name that says
                 # what happened to it.
                 $stream.Dispose()
@@ -5420,14 +5346,9 @@ exit 0
                 try {
                     Move-Item -LiteralPath $lockPath -Destination $displaced -Force -ErrorAction Stop
                 } catch {
-                    # Only a sharing or lock violation means "another installer holds it". A
-                    # read-only directory, an ACL that forbids renaming, a policy block or a
-                    # storage fault are none of those, and reporting them as a concurrent install
-                    # sends the user hunting for a second installer that does not exist. Same
-                    # discrimination, and the same Win32 and errno codes, as the open below.
-                    #
-                    # The code is dug out of the exception chain because a cmdlet failure arrives
-                    # wrapped: the IOException that carries the HResult is not always the outermost.
+                    # Same discrimination and the same codes as the open below: only a sharing or
+                    # lock violation is a concurrent install. The code is dug out of the exception
+                    # chain because a cmdlet failure arrives wrapped.
                     $mvCode = 0
                     $mvEx = $_.Exception
                     while ($mvEx) {
@@ -5443,38 +5364,22 @@ exit 0
                 }
                 $repaired = $true
             }
-            # Residual, stated plainly rather than implied away: a hard link to a genuinely EMPTY
-            # file is indistinguishable from our own lock file and is used as the lock. Nothing is
-            # written to it, so no data is lost and the only thing denied for the length of the
-            # install is access to a zero-byte file. That is not worth a canonicalisation
-            # apparatus, and it is not the hazard the reparse and length checks are here for.
-            # Nothing is written to the handle on purpose. Holding it open exclusively IS the
-            # lock, and writing would be actively unsafe: File.Open follows a symbolic or hard
-            # link, so a `.unsloth-install.lock` planted in the destination by another user would
-            # have its TARGET truncated merely by starting the installer. That matters most for a
-            # shared or custom root under an elevated install, which is exactly where a planted
-            # link is plausible. Write-StudioRootOwnerMarker already guards the same hazard the
-            # same way; this follows it rather than inventing a second answer.
-            # Taking the lock is now the first thing that can create the root, earlier than
-            # anything else writes to it. scripts/uninstall.ps1's _IsStudioRoot reads exactly this
-            # marker so "a partial install identifies itself instead of being guessed at"; without
-            # it, a run that died between here and the first real write would leave a root the
-            # uninstaller refuses to remove as somebody else's.
+            # Residual, stated plainly: a hard link to a genuinely EMPTY file is indistinguishable
+            # from our own and is used as the lock. Nothing is written to it, so the only thing
+            # denied for the install is access to a zero-byte file.
+            # Nothing is written to the handle on purpose: holding it open exclusively IS the
+            # lock, and File.Open follows a link, so a planted lock file would have its TARGET
+            # truncated merely by starting the installer.
+            # The lock is now the first thing that can create the root, so without this marker a
+            # run that died before the first real write leaves a root scripts/uninstall.ps1's
+            # _IsStudioRoot refuses to remove as somebody else's.
             #
-            # Only when this call created the directory. A UNSLOTH_STUDIO_HOME pointed at a
-            # directory the user already had must never be claimed, or uninstall would delete it.
+            # Only when this call created the directory: a UNSLOTH_STUDIO_HOME pointed at one the
+            # user already had must never be claimed, or uninstall would delete it.
             #
-            # Through Write-StudioRootOwnerMarker rather than a WriteAllText here. The paragraph
-            # above says File.Open follows a planted link, and a bare WriteAllText follows one
-            # just the same: a root whose inherited permissions let another user write to it can
-            # have a `.unsloth-studio-owned` link planted between the directory being created and
-            # this line, and the write would truncate its target under the installer's rights.
-            # The helper already removes the entry and confirms its absence before writing, with
-            # Get-Item -Force so a dangling link is not mistaken for nothing there. Reusing it is
-            # the point; a second copy of that sequence is a second thing to get wrong.
-            #
-            # Its occupancy test does not refuse this root: it filters the install lock file by
-            # name, and the lock file is the only entry a root created by this call can hold.
+            # Through the helper, not a bare WriteAllText, which follows a planted link just as
+            # File.Open does. The helper removes the entry and confirms its absence first, with
+            # Get-Item -Force so a dangling link is not mistaken for nothing there.
             if (-not $existedBefore) {
                 Write-StudioRootOwnerMarker -Root $Path
             }
@@ -5489,9 +5394,8 @@ exit 0
     function Exit-StudioInstallLock {
         param($Lock)
         if ($null -eq $Lock) { return }
-        # Closing the handle IS the release, so a process that dies holding it leaves nothing to
-        # clean up: Windows closes the handle for us. The file itself is left in place on purpose,
-        # since deleting it would race another installer that has just opened it.
+        # Closing the handle IS the release, so a dead process leaves nothing to clean up. The
+        # file stays: deleting it would race another installer that has just opened it.
         if ($Lock.Stream) { try { $Lock.Stream.Dispose() } catch {} }
         Exit-StudioInstallMutex -Mutex $Lock.Mutex
     }
