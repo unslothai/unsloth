@@ -553,8 +553,8 @@ class TestAToolResultScreenshotIsNotPricedByItsBase64:
 
 class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
     """`tool_result` content is an untyped list, so an image is only one of the block types
-    that reach it. A document, a search result and a nested `tool_result` are dropped by
-    the same translation filter, and each was charged its base64 as prompt text -- the
+    that reach it. A PDF document, a malformed search result and a nested `tool_result` send
+    at most a short note, and each was charged its base64 as prompt text -- the
     whole of a 32768-token cache for a request that sends a couple of hundred characters.
     """
 
@@ -640,6 +640,41 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
                 assert "the tool answered" in str(
                     estimate_messages
                 ), f"{where}: the text beside it IS sent, so dropping it under-reserves"
+
+    def test_search_result_and_document_text_is_charged_where_it_is_sent(self):
+        search_result = {
+            "type": "search_result",
+            "source": "kb://vault",
+            "title": "Vault",
+            "content": [{"type": "text", "text": "PURPLE-ELEPHANT-42 " * 200}],
+        }
+        document = {
+            "type": "document",
+            "source": {"type": "text", "media_type": "text/plain", "data": "MEMO-BODY " * 200},
+            "title": "Memo",
+        }
+        for block, header in (
+            (search_result, "Title: Vault\nSource: kb://vault\n"),
+            (document, "Title: Memo\n"),
+        ):
+            for payload in (
+                self._request(block, text_first = True),
+                AnthropicMessagesRequest(
+                    model = "default",
+                    max_tokens = 128,
+                    messages = [{"role": "user", "content": [block]}],
+                ),
+            ):
+                sent = anthropic_messages_to_openai([m.model_dump() for m in payload.messages])
+                rendered = sent[-1]["content"].rsplit("the tool answered\n", 1)[-1]
+                estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+                    payload.messages
+                )
+                assert rendered.startswith(header)
+                assert rendered in str(estimate_messages).replace("\\n", "\n")
+                assert image_parts == 0
+                cost = _openai_llama_admission_tokens(payload, budget = 1_000_000, capacity = 4)
+                assert cost > len(rendered) // 8
 
     def test_a_tool_result_the_translation_does_forward_is_still_charged(self):
         """The other side of the boundary: string `tool_result` content is forwarded
@@ -901,3 +936,100 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
             f"round zero shrank the lease from {opened} to {committed}, dropping the "
             f"non-message prompt the reservation charged"
         )
+
+
+class TestARoundStopsPayingForAnEvictedClip:
+    """truncate_oldest can drop the turn that carried a clip. The re-cost reads the CURRENT
+    conversation for text and images, so reading the opening payload for video kept every later
+    round reserved at the full budget for media llama-server is no longer sent.
+    """
+
+    class _Backend:
+        base_url = "http://llama"
+        effective_parallel_slots = 4
+        _kv_cache_context_total = 4096
+        context_length = 4096
+        _mmproj_projector_type = None
+        _extra_args = None
+
+    class _Reservation:
+        def __init__(self, lease):
+            self._lease = lease
+
+        def lease_nowait(self):
+            return self._lease
+
+    def _recost(self, payload, conversation):
+        from routes.inference import (
+            _openai_llama_admission_recost,
+            _openai_llama_admission_tokens,
+        )
+        async def _run():
+            queue = LlamaAdmissionQueue("test")
+            opened = _openai_llama_admission_tokens(
+                payload, budget = 4096, capacity = 4, tool_loop = True
+            )
+            reservation = queue.reserve(
+                capacity = 4,
+                config = LlamaAdmissionConfig(),
+                tokens = opened,
+                budget = 4096,
+            )
+            lease = reservation.lease_nowait()
+            assert lease is not None
+            _openai_llama_admission_recost(
+                self._Reservation(lease),
+                conversation,
+                request = None,
+                llama_backend = self._Backend(),
+                payload = payload,
+                output_tokens = 64,
+            )
+            return queue.snapshot().committed
+
+        return asyncio.run(_run())
+
+    def _payload(self, clip_b64):
+        return _Payload(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": "data:video/mp4;base64," + clip_b64},
+                        }
+                    ],
+                }
+            ],
+            video_base64 = None,
+            audio_base64 = None,
+            image_base64 = None,
+        )
+
+    def test_the_clip_is_charged_while_the_conversation_still_carries_it(self):
+        clip = "A" * 40_000
+        kept = [
+            {
+                "role": "user",
+                "content": [{"type": "input_video", "input_video": {"data": clip}}],
+            }
+        ]
+        assert self._recost(self._payload(clip), kept) > self._recost(
+            self._payload(clip), [{"role": "user", "content": "text only"}]
+        )
+
+    def test_an_evicted_clip_stops_being_charged(self):
+        """The whole point: once the turn is gone the round must not still reserve for it."""
+        clip = "A" * 40_000
+        evicted = self._recost(self._payload(clip), [{"role": "user", "content": "text only"}])
+        no_video_at_all = self._recost(
+            _Payload(
+                messages = [{"role": "user", "content": "text only"}],
+                video_base64 = None,
+                audio_base64 = None,
+                image_base64 = None,
+            ),
+            [{"role": "user", "content": "text only"}],
+        )
+        assert evicted == no_video_at_all

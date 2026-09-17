@@ -2203,19 +2203,20 @@ test("a capped search does not segment the whole index to answer its first pass"
 });
 
 test("a query that matches everywhere stops seeking the segmenter per candidate", () => {
-  // `containing` seeks, which is why it replaced segmenting whole blocks, and a seek per candidate
-  // undoes that: a capped search anchored near the end walks the candidates up to three times, so a
-  // page of one repeated syllable asked for millions. Counted, so the assertion is not the clock.
+  // Fixed seek costs make the budget check independent of host speed.
   const probe = `
     let seeks = 0;
+    let scans = 0;
+    let clock = 1;
+    Object.defineProperty(performance, "now", { value: () => clock });
     const Real = Intl.Segmenter;
     Intl.Segmenter = class {
       constructor(...args) { this.inner = new Real(...args); }
       segment(input) {
         const segments = this.inner.segment(input);
         return {
-          containing: (at) => { seeks += 1; return segments.containing(at); },
-          [Symbol.iterator]: () => segments[Symbol.iterator](),
+          containing: (at) => { seeks += 1; clock += 0.01; return segments.containing(at); },
+          [Symbol.iterator]: () => { scans += 1; return segments[Symbol.iterator](); },
         };
       }
     };
@@ -2236,10 +2237,8 @@ test("a query that matches everywhere stops seeking the segmenter per candidate"
     const index = buildTextIndex(el("DIV", [el("P", nodes)]));
     const found = findMatches(index, "\uac00", MAX_MATCHES, index.text.length);
     if (found.length !== MAX_MATCHES) throw new Error("expected a capped search, got " + found.length);
-    // One pass over the boundaries replaces the seeks, so what is left is what the budget bought
-    // before it. The number is not fixed: the cap is time, and a seek into Hangul is cheap, so
-    // this shape gets tens of thousands where a page of flags would get tens. 1.6M without it.
-    if (seeks > 200000) throw new Error("seeks per candidate: " + seeks);
+    if (scans !== 1) throw new Error("expected one boundary scan, got " + scans);
+    if (seeks > 10000) throw new Error("seeks per candidate: " + seeks);
   `;
   const run = spawnSync(
     process.execPath,

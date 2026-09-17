@@ -19,6 +19,7 @@ import importlib.abc
 import importlib.machinery
 import importlib.util
 from pathlib import Path
+from importlib.metadata import distribution as importlib_distribution
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
@@ -883,6 +884,341 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
 
 
+_ROPE_SCALING_PATCH_FLAG = "_unsloth_patched_rope_scaling_setter"
+
+
+def _rope_scaling_property_owner():
+    """The class that DEFINES a writable ``rope_scaling`` property, or ``None``.
+
+    transformers 5 keeps ``rope_scaling`` as an alias for ``rope_parameters``; 4.x has a
+    plain attribute, so ``None`` there. The MRO is walked because the base config is
+    spelled ``PretrainedConfig`` on 4.x and ``PreTrainedConfig`` on 5.x.
+    """
+    try:
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception:
+        return None
+    for klass in getattr(PretrainedConfig, "__mro__", ()):
+        prop = klass.__dict__.get("rope_scaling", None)
+        if isinstance(prop, property) and prop.fset is not None:
+            return klass
+    return None
+
+
+def _rope_probe_inherits(owner):
+    """Does the config class the probe measures still descend from the LIVE owner?
+
+    False only after a reload has replaced the owner underneath a cached config module,
+    which is exactly when the probe's verdict describes a class nobody will use again.
+    """
+    try:
+        from transformers import LlamaConfig
+    except Exception:
+        return False
+    return isinstance(owner, type) and issubclass(LlamaConfig, owner)
+
+
+def _rope_scaling_setter_is_patched(owner = None):
+    """Is the LIVE ``rope_scaling`` setter ours, right now?
+
+    Asked of the descriptor, not of a class flag: a reload of
+    ``transformers.configuration_utils`` puts the upstream property back while a class
+    attribute survives, so a flag would refuse to re-patch a vulnerable build.
+    """
+    if owner is None:
+        owner = _rope_scaling_property_owner()
+    if owner is None:
+        return False
+    prop = owner.__dict__.get("rope_scaling", None)
+    if not isinstance(prop, property):
+        return False
+    return bool(getattr(prop.fset, _ROPE_SCALING_PATCH_FLAG, False))
+
+
+_ROPE_LABELS_UNSET = object()
+
+
+def _rope_nesting_labels(config):
+    """Where ``rope_parameters`` nests: ``standardize_rope_params`` reads ``_rope_type_labels``,
+    falling back to ``layer_types``. Different axes -- DeepseekV4 keys rope by main/compress."""
+    labels = getattr(config, "_rope_type_labels", _ROPE_LABELS_UNSET)
+    if labels is _ROPE_LABELS_UNSET:
+        labels = getattr(config, "layer_types", None)
+    return labels
+
+
+def _rope_parameters_are_per_layer(config, parameters):
+    """Nested per-label rope dict or one global one? Asked first: a global key inside a nested
+    dict makes transformers read it flat. Its test is ``isdisjoint``, NOT ``issubset`` -- a
+    nested dict may name labels this config's ``layer_types`` omits."""
+    labels = _rope_nesting_labels(config)
+    if not labels or not isinstance(parameters, dict) or not parameters:
+        return False
+    try:
+        return not set(parameters.keys()).isdisjoint(set(labels))
+    except Exception:
+        return False
+
+
+def _rope_theta_snapshot(config):
+    """The base(s) ``rope_parameters`` holds right now, in the shape it holds them.
+
+    Flat -> one base; nested -> a ``{label: base}`` mapping, valid only one level down.
+    """
+    parameters = getattr(config, "rope_parameters", None)
+    if not isinstance(parameters, dict):
+        return None
+    if not _rope_parameters_are_per_layer(config, parameters):
+        return parameters.get("rope_theta", None)
+    snapshot = {}
+    for layer_type, entry in parameters.items():
+        if isinstance(entry, dict) and entry.get("rope_theta", None) is not None:
+            snapshot[layer_type] = entry["rope_theta"]
+    return snapshot or None
+
+
+def _carry_per_layer_rope_theta(config, parameters, carried):
+    """Put each layer type's base back into a per-layer replacement that lost it.
+
+    A top-level ``rope_theta`` would make the dict read as flat, so the base goes back
+    into each nested entry. Copies throughout, never the caller's dicts in place. An
+    entry naming its own base is left alone. ``None`` means nothing was written -- no nested
+    snapshot, OR every entry already named its base, OR refused; never "fall through as scalar".
+    """
+    if not isinstance(carried, dict) or not carried:
+        return None
+    replacement = {}
+    changed = False
+    for layer_type, entry in parameters.items():
+        if (
+            isinstance(entry, dict)
+            and entry.get("rope_theta", None) is None
+            and carried.get(layer_type, None) is not None
+        ):
+            entry = dict(entry)
+            entry["rope_theta"] = carried[layer_type]
+            changed = True
+        replacement[layer_type] = entry
+    if not changed:
+        return None
+    try:
+        config.rope_parameters = replacement
+    except Exception:
+        return None
+    return carried
+
+
+def _carry_rope_theta_across_assignment(config, carried):
+    """Keep the RoPE base frequency across a ``rope_scaling`` replacement.
+
+    Separated from the wrapper so every parameter shape is testable without a live
+    transformers.
+
+    Precedence, so nothing a caller said is overwritten: the NEW parameters' base, then
+    the config's own, then ``carried`` (the base held before the assignment). That order
+    matters because ``unsloth_zoo/empty_model.py`` sets Gemma's local rotary base and
+    then replaces the scaling, and carrying the global base over it would be wrong.
+
+    The base is written to ``rope_parameters`` where 5.x keeps it, so the answer does
+    not depend on ``standardize_rope_params`` running first and ``validate_rope`` and
+    ``save_pretrained`` see a complete dict. A nested per-label dict is left alone: a
+    ``{label: base}`` ``carried`` is restored one level down or dropped, never made a scalar.
+
+    The config's ``rope_theta`` attribute (the 4.x slot) is written only when it is the
+    only slot that can hold the base, which is the non-dict replacement of #2405, or
+    when it already exists and would otherwise go stale. Otherwise a saved config gains
+    no key it did not have. Writes nothing when the new parameters name their own base
+    and the config states none, so this is a no-op on a build that keeps the base.
+    """
+    parameters = getattr(config, "rope_parameters", None)
+    per_layer = _rope_parameters_are_per_layer(config, parameters)
+    if per_layer:
+        # Per-layer bases go back one level down. Falls through to the global attribute
+        # below only when there is no nested snapshot to restore.
+        restored = _carry_per_layer_rope_theta(config, parameters, carried)
+        if restored is not None:
+            return restored
+        if isinstance(carried, dict):
+            # Nothing restored = no-op or refused; a scalar fall-through put the MAPPING here.
+            return None
+    elif isinstance(carried, dict):
+        # Per-layer parameters replaced by a FLAT dict. Passing the mapping through would
+        # write a dict where a number belongs. One base stands for it only when every
+        # layer type agreed; otherwise carry nothing rather than invent a scalar.
+        bases = set(carried.values())
+        carried = bases.pop() if len(bases) == 1 else None
+    is_flat_dict = isinstance(parameters, dict) and not per_layer
+    current = parameters.get("rope_theta", None) if is_flat_dict else None
+    stated = getattr(config, "rope_theta", None)
+
+    base = current
+    if base is None:
+        base = stated
+    if base is None:
+        base = carried
+    if base is None:
+        return None
+    if isinstance(base, dict):
+        # A base is a number. Also reachable from a config SAVED by the #11037 release,
+        # whose own rope_theta holds a mapping: refuse, it needs fixing at rest instead.
+        return None
+
+    readable = current is not None
+    if is_flat_dict and not readable:
+        try:
+            # A COPY, never the dict in place: transformers 5 stores the caller's object
+            # verbatim, so one scaling dict reused across a loop of models would carry the
+            # first config's base into the second. Measured on 5.0.0, 5.5.4 and 5.17.0: a
+            # config declaring 10000.0 came out with 500000.0, silently.
+            replacement = dict(parameters)
+            replacement["rope_theta"] = base
+            config.rope_parameters = replacement
+            parameters = replacement
+            readable = True
+        except Exception:
+            pass
+    if stated is not None or not readable:
+        try:
+            config.rope_theta = base
+        except Exception:
+            return None
+    return base
+
+
+def _transformers_rope_scaling_assignment_drops_theta():
+    """Does replacing ``config.rope_scaling`` on THIS build lose the base frequency?
+
+    Measured, not inferred from a version: the move into ``rope_parameters``, the alias
+    property and the strict validation landed in different 5.x releases and have been
+    backported. Two configs, because ``ROPE_INIT_FUNCTIONS`` mutates the one it is
+    handed. Absent positive evidence answer ``False`` and leave transformers alone.
+    """
+    try:
+        import torch
+        from transformers import LlamaConfig
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+    except Exception:
+        return False
+    try:
+        rope_init_fn = ROPE_INIT_FUNCTIONS["linear"]
+    except Exception:
+        return False
+    scaling = {"rope_type": "linear", "factor": 4.0}
+
+    def build():
+        # Tiny, and a base far from the 10000.0 default so a silent fallback shows up
+        # as a difference rather than a match.
+        return LlamaConfig(
+            hidden_size = 64,
+            num_attention_heads = 2,
+            num_key_value_heads = 2,
+            head_dim = 32,
+            rope_theta = 500000.0,
+            max_position_embeddings = 2048,
+            rope_scaling = dict(scaling),
+        )
+
+    # CPU explicitly: under a "meta" default device the comparison cannot be read, which
+    # would answer "not affected" for a reason unrelated to the bug.
+    device = torch.device("cpu")
+    try:
+        reference, _attention_factor = rope_init_fn(build(), device)
+        subject = build()
+    except Exception:
+        return False
+    try:
+        subject.rope_scaling = dict(scaling)
+    except Exception:
+        return False
+    try:
+        replaced, _attention_factor = rope_init_fn(subject, device)
+    except Exception:
+        # The base came out None and `base ** positions` raised. This is the defect.
+        return True
+    try:
+        return not bool(torch.allclose(replaced.float().cpu(), reference.float().cpu()))
+    except Exception:
+        return False
+
+
+def fix_transformers_rope_scaling_drops_theta():
+    """Stop a replaced ``rope_scaling`` silently unscaling RoPE (issue #2405).
+
+    transformers 5 moved ``rope_theta`` into ``config.rope_parameters`` and kept
+    ``rope_scaling`` as an alias that REPLACES that whole dict, so assigning a
+    normalized scaling dict takes the base with it and
+    ``_compute_linear_scaling_rope_parameters`` raises ``TypeError: unsupported operand
+    type(s) for ** or pow(): 'NoneType' and 'Tensor'``. That assignment is what
+    ``models/llama.py``'s ``_compute_config_rope_inv_freq`` retry does, and unsloth
+    catches the raise and falls back to UNSCALED RoPE, which is #2405's gibberish past
+    the original context.
+
+    Measured here, one venv per transformers minor on torch 2.11.0:
+    ``tests/utils/test_rope_scaling_drift.py`` fails on 5.0.0 through 5.3.0 and passes
+    on 4.57.6, where ``rope_theta`` is an attribute the assignment cannot touch. From
+    5.4.0 a config refuses a non-dict ``rope_parameters``, so the object route is
+    unreachable, but any dict assignment still drops the base and ``save_pretrained``
+    raises ``KeyError: Missing required keys ... {'rope_theta'}`` instead. The probe
+    therefore fires on every 5.x.
+
+    The alias setter is the only site where the outgoing and incoming parameters are
+    both visible. Nothing is normalized or rejected on the way in; the wrapper only puts
+    the base back where it would otherwise be gone. Assignments to ``rope_parameters``
+    itself need no cover: a caller writing that field writes what transformers reads.
+    """
+    owner = _rope_scaling_property_owner()
+    if owner is not None and _rope_scaling_setter_is_patched(owner):
+        return
+    # The probe answers through the cached `transformers.LlamaConfig`. After a reload of
+    # configuration_utils that class still inherits the OLD patched owner while the live
+    # owner is new and unpatched, so the probe would report the base survives and leave
+    # the live owner to lose it. A probe that cannot see the owner is no evidence and
+    # does not get to veto; installing anyway is safe, since the wrapper is a no-op on a
+    # build that keeps the base.
+    probe_can_see_owner = owner is None or _rope_probe_inherits(owner)
+    if probe_can_see_owner and not _transformers_rope_scaling_assignment_drops_theta():
+        return
+    if owner is None:
+        logger.info("Unsloth: Skipping the rope_scaling base-frequency fix (no alias property)")
+        return
+
+    prop = owner.__dict__["rope_scaling"]
+    # Unwrap first, so a reload that restored upstream's property is re-patched rather
+    # than wrapped on top of a wrapper.
+    original = getattr(prop.fset, "__wrapped__", prop.fset)
+
+    @functools.wraps(original)
+    def rope_scaling(self, value):
+        # Both halves are guarded, since this runs on every model load and an unexpected
+        # config shape must not turn an assignment into a traceback. The assignment
+        # itself is not, since swallowing that would be a silent behaviour change.
+        try:
+            carried = _rope_theta_snapshot(self)
+        except Exception:
+            carried = None
+        result = original(self, value)
+        try:
+            _carry_rope_theta_across_assignment(self, carried)
+        except Exception:
+            pass
+        return result
+
+    # Set explicitly as well as by wraps: the unwrap above and the tests read it, so a
+    # wraps-less edit must not make the patch un-probeable.
+    rope_scaling.__wrapped__ = original
+    # The mark travels ON the setter, so a reload that drops it is re-patched.
+    setattr(rope_scaling, _ROPE_SCALING_PATCH_FLAG, True)
+
+    try:
+        setattr(owner, "rope_scaling", property(prop.fget, rope_scaling, prop.fdel, prop.__doc__))
+        logger.info(
+            "Unsloth: Patching transformers `rope_scaling` so replacing it keeps the "
+            "RoPE base frequency (unsloth #2405)"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching rope_scaling ({e})")
+
+
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
@@ -1489,6 +1825,59 @@ _TORCHVISION_ABI_MARKERS = (
 # unrelated reason must keep importing unsloth, not get "reinstall torchvision".
 _LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
 _TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
+# A lazily-imported torchvision with a dead extension surfaces as this, not a loader error.
+# "partially initialized" is load-bearing: without it a typo on a healthy torchvision
+# ("module 'torchvision' has no attribute 'nms'") would be answered with "reinstall". Nothing
+# AFTER the module name is, because CPython words the rest four ways for the one fault:
+#   3.9 - 3.12   partially initialized module 'torchvision' has no attribute 'extension'
+#   3.13, 3.14   partially initialized module 'torchvision' from '<file>' has no attribute
+#   from-import  cannot import name 'extension' from partially initialized module 'torchvision'
+#   submodule    cannot access submodule 'ops' of module 'torchvision'
+# The first three share "partially initialized module 'torchvision'"; the fourth names it as
+# the parent instead, so it gets its own alternative.
+_TORCHVISION_ATTRIBUTE_RE = re.compile(
+    r"partially initialized module 'torchvision(?:\.[\w.]+)?'"
+    r"|cannot access submodule '[\w.]+' of module 'torchvision(?:\.[\w.]+)?'"
+)
+
+
+def _shadowing_torchvision_path():
+    """What is standing in for torchvision, if something is, else None.
+
+    A local `torchvision` earlier on sys.path raises the same "partially initialized" words
+    while the metadata still describes the installed distribution, so the binary check would
+    answer it with "reinstall", which cannot change which sys.path entry is searched first.
+
+    Identity, not shape: a `torchvision/` directory is a package exactly like the real one, so
+    only asking whether the resolved file is the one the metadata installed separates them.
+
+    find_spec, not sys.modules: the caller is in the `except` of the import that failed, and
+    CPython has already removed the half-built module by then.
+    """
+    try:
+        spec = importlib.util.find_spec("torchvision")
+    except Exception:
+        # A shadow can break find_spec itself. No answer is not evidence of shadowing.
+        return None
+    origin = getattr(spec, "origin", None) if spec is not None else None
+    if not origin:
+        return None
+    try:
+        installed = os.fspath(
+            importlib_distribution("torchvision").locate_file("torchvision/__init__.py")
+        )
+    except Exception:
+        return None
+    if not os.path.exists(installed):
+        # Editable install, usually. Cannot tell, so do not send anyone hunting a file.
+        return None
+    try:
+        if os.path.samefile(origin, installed):
+            return None
+    except OSError:
+        if os.path.realpath(origin) == os.path.realpath(installed):
+            return None
+    return origin
 
 
 def _is_broken_torchvision_error(error) -> bool:
@@ -1498,6 +1887,8 @@ def _is_broken_torchvision_error(error) -> bool:
         checked.add(id(current))
         message = str(current)
         if any(marker in message for marker in _TORCHVISION_ABI_MARKERS):
+            return True
+        if _TORCHVISION_ATTRIBUTE_RE.search(message) and _shadowing_torchvision_path() is None:
             return True
         if any(m in message for m in _LOADER_FAILURE_MARKERS) and any(
             m in message for m in _TORCH_LIBRARY_MARKERS
@@ -1614,6 +2005,15 @@ def _probe_torchvision_binary(
         import torchvision  # noqa: F401
         import torchvision.ops  # noqa: F401  where the compiled nms lives
     except Exception as error:
+        shadow = _shadowing_torchvision_path()
+        if shadow is not None and _TORCHVISION_ATTRIBUTE_RE.search(str(error)):
+            # Named: the metadata says torchvision is installed and it is, so a reinstall
+            # changes nothing. The file is the whole fix.
+            raise ImportError(
+                f"Unsloth: {shadow} is being imported as `torchvision`, ahead of the "
+                f"installed package ({type(error).__name__}: {error}). Rename or move that "
+                f"file; reinstalling torchvision will not change which one wins."
+            ) from error
         # Anything else is left for whoever actually needs torchvision.
         if not _is_broken_torchvision_error(error):
             return
@@ -2665,6 +3065,55 @@ def _torchcodec_provenance_hint() -> "str | None":
     )
 
 
+def _ffmpeg_on_loader_path():
+    """Every library torchcodec links (per the shipped libtorchcodec_core*.so NEEDED entries) resolvable by the dynamic loader. Distros package them separately, so a host missing only libswscale cannot load the codec; calling that present sends the user at a torch ABI bug."""
+    import ctypes.util
+    import glob
+    import os
+
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    # A prefix on LD_LIBRARY_PATH may ship only versioned files (libavcodec.so.61), which the loader resolves but find_library never sees: it reads the ld cache and linker names.
+    libdirs = [
+        d
+        for v in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
+        for d in os.environ.get(v, "").split(os.pathsep)
+        if d
+    ]
+    for name in ("avutil", "avcodec", "avformat", "avdevice", "avfilter", "swscale", "swresample"):
+        if ctypes.util.find_library(name):
+            continue
+        # find_library does not glob, so walk PATH for Windows names like avutil-59.dll. Windows only: WSL puts the Windows PATH on the Linux one, and those DLLs cannot load here.
+        if os.name == "nt" and any(glob.glob(os.path.join(d, name + "-*.dll")) for d in dirs):
+            continue
+        if os.name != "nt" and any(
+            glob.glob(os.path.join(d, "lib" + name + ".so*"))
+            or glob.glob(os.path.join(d, "lib" + name + ".*dylib"))
+            for d in libdirs
+        ):
+            continue
+        return False
+    return True
+
+
+def _torchcodec_load_failure(exc):
+    """Why an installed torchcodec did not import: "ffmpeg" (its FFmpeg libraries are not on the loader path), "native" (they are, so the cause is elsewhere) or "broken" (a failure that does not involve libtorchcodec at all)."""
+    import traceback
+
+    # One libtorchcodec message covers a missing FFmpeg, a torch mismatch and other runtime deps, so the text cannot pick between them. Ask the system: FFmpeg missing from the loader path is the one cause establishable here.
+    if "libtorchcodec" not in "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__)
+    ):
+        return "broken"
+    return "native" if _ffmpeg_on_loader_path() else "ffmpeg"
+
+
+_TORCHCODEC_FALLBACK_NOTES = {
+    "ffmpeg": "cannot load its FFmpeg libraries; install an FFmpeg full-shared build only if you need torchcodec itself",
+    "native": "cannot load its native libraries although FFmpeg is on the loader path; likely an FFmpeg major it does not support (it takes 4 to 8), a missing CUDA NPP runtime (nvidia-npp), or a build that does not match this torch",
+    "broken": "fails to import for a reason other than its FFmpeg libraries; reinstall torchcodec against this torch build",
+}
+
+
 def disable_torchcodec_if_broken():
     """Make broken torchcodec behave as if uninstalled (#5446).
 
@@ -2687,9 +3136,10 @@ def disable_torchcodec_if_broken():
         if importlib.util.find_spec("torchcodec") is None:
             return  # absent or already disabled
 
-        # RuntimeError on dlopen failure; OSError covers chained libavutil.so misses.
+        # RuntimeError on dlopen failure, OSError on chained libavutil.so misses, and a damaged or
+        # version-skewed wheel can raise anything else; the package is present, so every shape is "broken".
         from torchcodec.decoders import AudioDecoder
-    except (ImportError, RuntimeError, OSError):
+    except Exception as load_error:
         if mismatch_hint is None:
             # Versions agree, so the load failed for another reason. A mismatched accelerator
             # build is the one this can still name, and the one pinning the index repairs.
@@ -2738,6 +3188,230 @@ def disable_torchcodec_if_broken():
         ]:
             sys.modules.pop(_stale, None)
         sys.modules["torchcodec"] = None
+        decodes = patch_datasets_audio_decoding_without_torchcodec()
+        try:
+            import warnings
+
+            note = _TORCHCODEC_FALLBACK_NOTES[_torchcodec_load_failure(load_error)]
+            tail = (
+                "audio datasets decode through soundfile and PyAV instead (wav/flac/mp3/ogg, m4a/aac/webm)"
+                if decodes
+                else "audio datasets will not decode until soundfile and PyAV are installed (pip install soundfile av)"
+            )
+            warnings.warn(f"Unsloth: torchcodec is installed but {note}; {tail}.", stacklevel = 2)
+        except Exception:
+            pass  # a report must never abort the disable fallback above
+
+
+def _audio_decode_with_av(source, stream_index = None):
+    """Mono float32 at the native rate through PyAV's bundled FFmpeg: every container torchcodec would have read (m4a, aac, webm, wma, amr) without a system FFmpeg. Kept identical to studio/backend/utils/datasets/audio_decode.py; a test holds the two together."""
+    import av
+    import numpy as np
+
+    chunks = []
+    rate = 0
+    resampler = None
+    with av.open(source, mode = "r", metadata_errors = "ignore") as container:
+        if not container.streams.audio:
+            raise ValueError("audio container has no audio stream")
+        # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the best audio stream.
+        try:
+            if stream_index is None:
+                # av_find_best_stream, which torchcodec uses: the default-disposition track wins over the first. PyAV < 13 has no wrapper, so take the first audio track there.
+                best = getattr(container.streams, "best", None)
+                stream = best("audio") if best is not None else container.streams.audio[0]
+            else:
+                stream = container.streams[stream_index]
+        except IndexError:
+            raise ValueError(
+                f"stream {stream_index} is not in the container, which has {len(container.streams)} streams"
+            ) from None
+        if stream.type != "audio":
+            raise ValueError(f"stream {stream_index} is not an audio stream")
+        for frame in container.decode(stream):
+            if resampler is None:
+                rate = int(frame.sample_rate or 0)
+                if rate <= 0:
+                    raise ValueError("decoded audio has an invalid sample rate")
+                resampler = av.AudioResampler(format = "flt", layout = "mono", rate = rate)
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray().reshape(-1))
+        if resampler is not None:
+            for out in resampler.resample(None):
+                chunks.append(out.to_ndarray().reshape(-1))
+    if not chunks:
+        raise ValueError("audio container decoded to no samples")
+    return np.concatenate(chunks).astype(np.float32, copy = False), rate
+
+
+def _audio_read_mono(source, stream_index = None):
+    """soundfile first (wav, flac, mp3, ogg), PyAV for the rest. `source` is a path, a bytes buffer or an open file."""
+    import numpy as np
+    import soundfile as sf
+
+    if stream_index not in (None, 0):
+        # libsndfile only knows single-stream files, so an explicit other stream is PyAV's alone.
+        return _audio_decode_with_av(source, stream_index)
+    try:
+        array, rate = sf.read(source, dtype = "float32", always_2d = False)
+    except Exception as sf_error:  # noqa: BLE001  libsndfile raises its own hierarchy
+        try:
+            import av  # noqa: F401
+        except ImportError:
+            raise sf_error
+        if hasattr(source, "seek"):
+            source.seek(0)
+        try:
+            return _audio_decode_with_av(source, stream_index)
+        except Exception as av_error:  # noqa: BLE001
+            raise RuntimeError(
+                f"audio could not be decoded by soundfile ({sf_error}) or PyAV ({av_error})"
+            ) from av_error
+    if array.ndim > 1:
+        # soundfile returns (frames, channels); torchcodec returns (channels, frames).
+        array = np.mean(array, axis = -1)
+    return array, rate
+
+
+def _audio_resample(array, rate, target):
+    """librosa when installed, else swresample through PyAV; both are already on the audio extras."""
+    try:
+        import librosa
+    except Exception:  # noqa: BLE001  an old librosa beside numpy 2 raises AttributeError at import, not ImportError
+        librosa = None
+    if librosa is not None:
+        return librosa.resample(array, orig_sr = rate, target_sr = target)
+    import av
+    import numpy as np
+
+    frame = av.AudioFrame.from_ndarray(
+        np.ascontiguousarray(array, dtype = np.float32)[np.newaxis, :], format = "flt", layout = "mono"
+    )
+    frame.sample_rate = rate
+    resampler = av.AudioResampler(format = "flt", layout = "mono", rate = target)
+    chunks = [out.to_ndarray().reshape(-1) for out in resampler.resample(frame)]
+    chunks += [out.to_ndarray().reshape(-1) for out in resampler.resample(None)]
+    return np.concatenate(chunks)
+
+
+def patch_datasets_audio_decoding_without_torchcodec():
+    """Keep `datasets` Audio columns decodable when torchcodec is unusable (#8642).
+
+    `datasets` >= 4 decodes audio only through torchcodec, which needs an FFmpeg full-shared
+    install to dlopen its native libraries; with `TORCHCODEC_AVAILABLE` cleared above every
+    audio row raises "please install torchcodec" for a package that is installed. This seats
+    a decoder on `datasets.features.audio.Audio` that reads through soundfile, then PyAV's
+    bundled FFmpeg, and resamples to the cast rate, returning the pre-4.0 dict contract
+    `{"path", "array", "sampling_rate"}`. Studio installs the same decoder from its own copy
+    (utils/datasets/audio_decode.py) because its API process never imports unsloth.
+    No-op on `datasets` < 4, on a working torchcodec, and without soundfile. Idempotent.
+    """
+    try:
+        from datasets import config
+        from datasets.features.audio import Audio
+    except ImportError:
+        return False
+    if not hasattr(config, "TORCHCODEC_AVAILABLE") or config.TORCHCODEC_AVAILABLE:
+        return False
+    if getattr(Audio, "_unsloth_audio_fallback", False):
+        return True
+    try:
+        import soundfile  # noqa: F401
+    except Exception:  # noqa: BLE001  libsndfile absent raises OSError, not ImportError
+        return False
+    original_encode = Audio.encode_example
+
+    def _token_for_url(path, token_per_repo_id):
+        if not token_per_repo_id:
+            return None
+        try:
+            from datasets.utils.py_utils import string_to_dict
+
+            source_url = path.split("::")[-1]
+            pattern = (
+                config.HUB_DATASETS_URL
+                if source_url.startswith(config.HF_ENDPOINT)
+                else config.HUB_DATASETS_HFFS_URL
+            )
+            fields = string_to_dict(source_url, pattern)
+        except Exception:  # noqa: BLE001
+            fields = None
+        if fields is None:
+            values = list(token_per_repo_id.values())
+            return values[0] if len(values) == 1 else None
+        return token_per_repo_id.get(fields["repo_id"])
+
+    def decode_example(
+        self,
+        value,
+        token_per_repo_id = None,
+    ):
+        import io
+
+        from datasets.download.download_config import DownloadConfig
+        from datasets.utils.file_utils import is_local_path, xopen
+
+        if not self.decode:
+            raise RuntimeError(
+                "Decoding is disabled for this feature. Please use Audio(decode=True) instead."
+            )
+        path, raw = value["path"], value["bytes"]
+        if path is None and raw is None:
+            raise ValueError(
+                f"An audio sample should have one of 'path' or 'bytes' but both are None in {value}."
+            )
+        if raw is not None:
+            source = io.BytesIO(raw)
+        elif is_local_path(path):
+            source = path
+        else:
+            source = xopen(
+                path,
+                "rb",
+                download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)),
+            )
+        array, sampling_rate = _audio_read_mono(source, getattr(self, "stream_index", None))
+        target = self.sampling_rate
+        if target and sampling_rate != target:
+            array = _audio_resample(array, sampling_rate, target)
+            sampling_rate = target
+        return {"path": path, "array": array, "sampling_rate": sampling_rate}
+
+    def encode_example(self, value):
+        import io
+        from pathlib import Path
+
+        import soundfile as sf
+
+        if isinstance(value, str):
+            return {"bytes": None, "path": value}
+        if isinstance(value, Path):
+            return {"bytes": None, "path": str(value.absolute())}
+        if isinstance(value, (bytes, bytearray)):
+            return {"bytes": bytes(value), "path": None}
+        if isinstance(value, dict) and value.get("array") is not None:
+            import numpy as np
+
+            array = np.asarray(value["array"])
+            if array.dtype == object:
+                array = np.asarray(
+                    array.tolist(), dtype = "float32"
+                )  # a nested list back from Arrow arrives as an object array
+            if array.ndim == 2 and array.shape[0] < array.shape[1]:
+                array = (
+                    array.T
+                )  # torchcodec hands out (channels, samples); libsndfile writes (frames, channels)
+            buf = io.BytesIO()
+            sf.write(buf, array, value["sampling_rate"], format = "WAV")
+            return {"bytes": buf.getvalue(), "path": value.get("path")}
+        if isinstance(value, dict) and ("bytes" in value or "path" in value):
+            return {"bytes": value.get("bytes"), "path": value.get("path")}
+        return original_encode(self, value)
+
+    Audio.decode_example = decode_example
+    Audio.encode_example = encode_example
+    Audio._unsloth_audio_fallback = True
+    return True
 
 
 def disable_torchaudio_if_cuda_mismatched():

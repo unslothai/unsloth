@@ -412,9 +412,10 @@ def test_the_gguf_route_shrinks_the_clip_after_the_size_check_and_before_injecti
     )
     start = source.index('"Video provided but the current GGUF model cannot take video input. "')
     check = source.index("_video_b64_rejection(payload.video_base64)", start)
-    # Bare name: the call has been reflowed twice, and each time an anchor on the
-    # full call raised ValueError instead of reporting an ordering problem.
-    shrink = source.index("shrink_video_for_llama,", start)
+    # The transcode moved into _shrink_clip_for_llama so the video_url parts can reuse it;
+    # anchor on the route's call to that helper, not on shrink_video_for_llama, which now
+    # only appears inside it (and earlier in the file).
+    shrink = source.index("_shrink_clip_for_llama(video_b64, llama_backend)", start)
     inject = source.index("_inject_video_part(gguf_messages, video_b64)", start)
     assert check < shrink < inject
 
@@ -439,6 +440,9 @@ def test_the_conversions_result_is_what_gets_injected():
         call = node.value if isinstance(node, ast.Await) else node
         if not isinstance(call, ast.Call):
             return False
+        # Either spelling: the route calls the helper, and the helper calls the real thing.
+        if isinstance(call.func, ast.Name) and call.func.id == "_shrink_clip_for_llama":
+            return True
         return any(isinstance(a, ast.Name) and a.id == "shrink_video_for_llama" for a in call.args)
 
     bound_to = {

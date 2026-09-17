@@ -15,6 +15,7 @@
     "bundle:check": "node --experimental-strip-types scripts/check-bundle-budget.ts",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
+    "catalog:refresh": "node scripts/refresh-model-catalog-snapshot.mjs",
     "i18n:check:strict": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts --strict",
     "catalog:check": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts",
     "catalog:check:network": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts --network",

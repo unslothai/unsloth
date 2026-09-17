@@ -724,12 +724,14 @@ def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
     if len(parts) < 3 or not parts[1] or not parts[2]:
         return None
     try:
+        from core.inference.tools import _mcp_raw_tool_name
         from storage import mcp_servers_db
+
         server = mcp_servers_db.get_server_for_tool(parts[1])
+        display = (server or {}).get("display_name")
+        return (str(display), _mcp_raw_tool_name(tool_name)) if display else None
     except Exception:  # noqa: BLE001
         return None
-    display = (server or {}).get("display_name")
-    return (str(display), parts[2]) if display else None
 
 
 def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
@@ -739,6 +741,7 @@ def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
     return tool_event_provenance(
         provisional = True,
         mcp_server = mcp[0] if mcp else None,
+        mcp_tool = mcp[1] if mcp else None,
     )
 
 
@@ -1129,6 +1132,7 @@ class ToolLoopController:
             forced = forced,
             provisional = provisional,
             mcp_server = mcp[0] if mcp else None,
+            mcp_tool = mcp[1] if mcp else None,
         )
         action: ToolAction = "execute"
         noop = ""
