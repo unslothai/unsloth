@@ -39,6 +39,29 @@ from run_ruff_format import (  # noqa: E402
     version_mismatch,
 )
 
+#: What Windows' CreateProcess accepts for a whole command line, in characters. Documented by
+#: Microsoft as the lpCommandLine cap and unchanged since Windows XP. POSIX has no equivalent
+#: single limit (execve fails with E2BIG against ARG_MAX, ~2 MB on the runners), so Windows is
+#: the binding constraint and the only number worth pinning.
+_WINDOWS_COMMAND_LINE_LIMIT = 32767
+
+#: Characters a single formatter invocation may build up to. The whole tracked set is ~2650
+#: files whose copied paths under a pytest tmp_path come to ~325,000 characters -- 9.9x the cap
+#: above -- so the single-invocation form this replaced could never run on Windows at all: it
+#: died at CreateProcess with `[WinError 206] The filename or extension is too long` before ruff
+#: opened one file. Nobody had seen it fail because every job that schedules this file is
+#: ubuntu-24.04, where execve's ARG_MAX is ~2 MB and the same argv fits easily.
+#:
+#: A LENGTH budget rather than a file COUNT. A count has to be re-tuned every time the tracked
+#: set or the path depth moves, and silently loses its margin in between: 200 files measured
+#: 26,687 characters here, only 1.2x under the cap, so a fifth more files would have put it back
+#: over. Accumulating by length is self-adjusting and needs no number kept in step with the
+#: repo. 8000 leaves 4x headroom for the argv-quoting model below being wrong.
+#:
+#: Batching at all is safe because the hook is per-file: it formats each path independently, so
+#: N calls over disjoint batches do exactly what one call over the union does.
+_FORMAT_ARGV_BUDGET = 8000
+
 _HOOK_ID = "ruff-format-with-kwargs"
 # The spacing pass refuses to rewrite itself ("skip modifying this script to
 # avoid self-edit loops"), so it is not a file the hook keeps at a fixed point
@@ -222,6 +245,95 @@ class TestTheGuardCannotGoGreenHavingCheckedNothing:
         assert running_in_ci({"CI": ""}) is False
 
 
+def formatter_argvs(copies: list[str], head: list[str] | None = None) -> "list[list[str]]":
+    """Every command line the fixed-point guard will run, in order.
+
+    Batches are accumulated until adding the next path would take the command line past
+    `_FORMAT_ARGV_BUDGET`, so a single path longer than the budget still gets its own call
+    rather than being dropped -- the caller would rather run one over-long command and see the
+    OS refuse it than silently skip a file.
+
+    The guard and the Windows-limit test below both go through this, deliberately. A test that
+    only checked the budget constant would be measuring a number while the caller did something
+    else, and deleting the batching at the call site would leave it green. Here there is one
+    definition of what actually gets executed, so the limit test cannot drift away from the run.
+    """
+    head = head or [sys.executable, str(_ROOT / "scripts" / "run_ruff_format.py")]
+    base = _command_line_length(head)
+    argvs: list[list[str]] = []
+    batch: list[str] = []
+    used = base
+    for path in copies:
+        cost = _command_line_length([path])
+        if batch and used + cost > _FORMAT_ARGV_BUDGET:
+            argvs.append([*head, *batch])
+            batch, used = [], base
+        batch.append(path)
+        used += cost
+    if batch:
+        argvs.append([*head, *batch])
+    return argvs
+
+
+def _command_line_length(argv: list[str]) -> int:
+    """What Windows counts against its command-line cap for this argv.
+
+    CreateProcess is handed ONE string, so the cost is the arguments joined by the separating
+    spaces, plus a pair of quotes around every argument a runner path forces (the hosted image
+    checks out under `D:\\a\\unsloth\\unsloth`, no spaces, but `C:\\Users\\RUNNER~1\\AppData\\
+    Local\\Temp` is where tmp_path lands and a user name with a space is normal off CI). Counted
+    with the quotes always, because this is a headroom check and the cheap direction to be wrong
+    in is pessimistic.
+    """
+    return sum(len(arg) + 3 for arg in argv)
+
+
+@pytest.mark.skipif(_VERDICT == "skip", reason = _RUFF_REASON or "")
+def test_the_formatter_invocation_fits_in_a_windows_command_line():
+    """The guard below must be able to START on Windows, not only pass on Linux.
+
+    It used to pass every tracked file as one argv. That is ~2650 paths and, under a Windows
+    tmp_path, roughly 325,000 characters against CreateProcess's 32,767 -- 9.9x over, so the
+    call died with `[WinError 206] The filename or extension is too long` before ruff opened a
+    single file. It had never been caught because every job that schedules this file is
+    ubuntu-24.04, where execve's ARG_MAX is ~2 MB and the same argv fits with room to spare.
+
+    So the limit is asserted here rather than left to a Windows runner to discover: this runs
+    in the existing Linux job, needs no second platform, and goes red the moment someone
+    reverts the batching or raises _FORMAT_ARGV_BUDGET past what the cap allows. Computed from the
+    REAL file list and a realistic Windows tmp_path prefix, not from a remembered number, so
+    the file set growing is what moves it.
+    """
+    names = eligible_files(_ROOT)
+    assert len(names) > 1000, f"only {len(names)} files matched; the file list has gone vacuous"
+
+    # A hosted Windows runner's pytest tmp_path. Longer than the Linux equivalent, which is the
+    # point: the platform with the smallest cap also has the longest prefix.
+    prefix = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\pytest-of-runner\\pytest-999\\test_0"
+    copies = [prefix + "\\" + name for name in names]
+
+    argvs = formatter_argvs(copies)
+    # Every path is still formatted: batching may not silently drop the tail.
+    assert [arg for argv in argvs for arg in argv[2:]] == copies, "batching lost or reordered files"
+
+    worst = max(_command_line_length(argv) for argv in argvs)
+    assert worst < _WINDOWS_COMMAND_LINE_LIMIT, (
+        f"the widest of the {len(argvs)} formatter batches builds a {worst}-character command "
+        f"line against Windows' {_WINDOWS_COMMAND_LINE_LIMIT}-character CreateProcess limit, so "
+        f"this guard would die with WinError 206 on Windows before formatting anything. Lower "
+        f"_FORMAT_ARGV_BUDGET (currently {_FORMAT_ARGV_BUDGET} over {len(names)} tracked files)."
+    )
+    # Non-vacuous: the batching has to be doing something. One call with everything on it is the
+    # shape that was broken, and it must still be over the cap -- if it ever fits, this test is
+    # measuring nothing and the batching can go.
+    unbatched = _command_line_length([sys.executable, "run_ruff_format.py", *copies])
+    assert unbatched > _WINDOWS_COMMAND_LINE_LIMIT, (
+        f"the whole tracked set now builds a {unbatched}-character command line, under the "
+        f"{_WINDOWS_COMMAND_LINE_LIMIT} cap, so batching is no longer load-bearing and this "
+        "test no longer proves anything. Delete both, or say why they stay."
+    )
+
+
 @pytest.mark.skipif(_VERDICT == "skip", reason = _RUFF_REASON or "")
 def test_every_tracked_python_file_is_already_formatted(tmp_path):
     """Run the hook over copies of the whole tracked set and expect no rewrite."""
@@ -251,12 +363,11 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
         target.write_bytes(originals[name])
         copies.append(str(target))
 
-    run = subprocess.run(
-        [sys.executable, str(_ROOT / "scripts" / "run_ruff_format.py"), *copies],
-        capture_output = True,
-        text = True,
-    )
-    assert run.returncode == 0, f"the formatter itself failed:\n{run.stdout}\n{run.stderr}"
+    # Batched, and through the same builder the Windows-limit test above measures. One call with
+    # all ~2650 paths on it is 9.9x over Windows' CreateProcess cap and dies with WinError 206.
+    for argv in formatter_argvs(copies):
+        run = subprocess.run(argv, capture_output = True, text = True)
+        assert run.returncode == 0, f"the formatter itself failed:\n{run.stdout}\n{run.stderr}"
 
     drifted = [name for name in names if (tmp_path / name).read_bytes() != originals[name]]
     assert not drifted, (
