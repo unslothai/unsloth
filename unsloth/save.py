@@ -5659,17 +5659,23 @@ def unsloth_generic_save(
         if state_dict is not None:
             _save_kwargs["state_dict"] = state_dict
 
-        # A push has no local folder to repair afterwards, unlike a save.
-        if state_dict is not None:
-            _mtp_tensor_names = list(state_dict.keys())
-        else:
-            # push_to_hub serialises the resident state dict, so None disarms the guard.
-            try:
-                _mtp_tensor_names = list(model.state_dict().keys())
-            except Exception:
-                # Cannot report its tensors: leave the config exactly as the caller had it.
-                _mtp_tensor_names = None
         if push_to_hub:
+            # A push has no local folder to repair afterwards, unlike a save, so the config
+            # has to match the tensors BEFORE they leave. Inside this branch, because that is
+            # the only consumer: a local save reconciles the written folder below, and reading
+            # the resident state dict for it was a second full collection on top of
+            # save_pretrained's own -- which on an offloaded or sharded model materialises
+            # every weight, and on a distributed one is a collective the other ranks are not
+            # making.
+            if state_dict is not None:
+                _mtp_tensor_names = list(state_dict.keys())
+            else:
+                # push_to_hub serialises the resident state dict, so None disarms the guard.
+                try:
+                    _mtp_tensor_names = list(model.state_dict().keys())
+                except Exception:
+                    # Cannot report its tensors: leave the config exactly as the caller had it.
+                    _mtp_tensor_names = None
             print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
             with _mtp_config_matching_tensors(model, _mtp_tensor_names):
                 model.push_to_hub(
