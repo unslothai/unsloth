@@ -1934,7 +1934,13 @@ def _turboquant_status(
         logger.info("MLX TurboQuant not applied: %s", refusal)
         return status
 
-    from mlx_vlm.generate.common import maybe_quantize_kv_cache
+    try:
+        from mlx_vlm.generate.common import maybe_quantize_kv_cache
+    except ImportError:
+        # TurboQuant predates generate.common (mlx-vlm 0.6.0).
+        status["eligibility"] = "refused"
+        status["reason"] = "TurboQuant requires a newer mlx-vlm. Update the MLX packages and retry."
+        return status
     from mlx_vlm.models.cache import make_prompt_cache
     from mlx_vlm.turboquant import TurboQuantKVCache
 
