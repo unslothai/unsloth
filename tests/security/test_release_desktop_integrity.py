@@ -415,6 +415,31 @@ def test_the_two_windows_legs_never_stage_the_same_asset_name(tmp_path):
     assert not set(x64) & set(arm64)
 
 
+def test_no_matrix_leg_shares_a_fixed_artifact_name_with_another(tmp_path):
+    """upload-artifact v4 and later refuse a duplicate name within a run, so a step with a
+    literal name that more than one leg reaches fails the second leg outright and takes the
+    release with it. Two Windows legs on the same `windows-latest` platform make
+    `matrix.platform` too coarse to gate such a step; only `matrix.artifact` is unique.
+    """
+    workflow = _workflow()
+    legs = {
+        entry["artifact"] for entry in workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
+    }
+
+    for step in workflow["jobs"]["build"]["steps"]:
+        if "upload-artifact" not in step.get("uses", ""):
+            continue
+        name = step.get("with", {}).get("name", "")
+        if "matrix.artifact" in name:
+            continue  # already unique per leg
+        condition = step.get("if", "")
+        pinned = [leg for leg in legs if f"matrix.artifact == '{leg}'" in condition]
+        assert len(pinned) == 1, (
+            f"step {step.get('name')!r} uploads the fixed name {name!r} but is gated on "
+            f"{condition!r}, which is not pinned to exactly one matrix leg"
+        )
+
+
 def test_the_updater_manifest_points_windows_arm64_at_its_own_bundle(tmp_path):
     """Tauri looks an update up by {os}-{arch}. Without a windows-aarch64 entry an
     ARM64 install either never sees an update, or takes the x86_64 one and replaces a

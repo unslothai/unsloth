@@ -1239,8 +1239,13 @@ jobs:
 
       # Deliberately not named desktop-release-*: the publish job merges that pattern into one
       # directory and validates it against an exact bundle name list, which these would break.
+      #
+      # x64 only, not every windows-latest leg. The scripts are architecture independent, the name
+      # is fixed, and upload-artifact v4 and later refuse a duplicate name within a run, so with
+      # both Windows legs uploading it whichever finished second would 409 and take the release
+      # down with it.
       - name: Upload signed scripts
-        if: matrix.platform == 'windows-latest'
+        if: matrix.artifact == 'windows-x64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: release-scripts-signed
