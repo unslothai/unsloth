@@ -119,9 +119,21 @@ def _declared_window() -> SpecifierSet:
 
 
 def _ceiling(window: SpecifierSet) -> Version:
-    tops = [Version(str(spec.version)) for spec in window if spec.operator in ("<=", "<")]
+    """The TIGHTEST upper bound, which is the one that decides what resolves.
+
+    `max` was wrong: raising a cap by adding a bound without removing the old one, as in
+    `<=0.24.0,<=1.13.0`, still resolves at 0.24.0, and reporting 1.13.0 let the assertions
+    below pass on exactly the stale cap this file exists to catch. At equal versions `<`
+    excludes more than `<=`, so it wins the tie.
+    """
+    tops = [
+        (Version(str(spec.version)), spec.operator)
+        for spec in window
+        if spec.operator in ("<=", "<")
+    ]
     assert tops, f"the trl window declares no upper bound at all: {window}"
-    return max(tops)
+    version, _operator = min(tops, key = lambda pair: (pair[0], pair[1] == "<="))
+    return version
 
 
 def test_pyproject_declares_one_trl_window() -> None:
