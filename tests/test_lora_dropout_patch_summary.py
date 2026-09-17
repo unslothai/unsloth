@@ -22,7 +22,6 @@ import itertools
 import textwrap
 
 import pytest
-import torch
 import unsloth  # noqa: F401
 
 from real_accelerator import has_real_accelerator
