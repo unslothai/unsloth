@@ -221,8 +221,6 @@ class _Layer:
         self.weight = weight
 
 
-
-
 def test_a_deleted_tensor_subclass_no_longer_ends_dispatch(peft_env, fake_torchao):
     fake_torchao(affine = True, linear_activation = False)
     definer, _ = peft_env(_raiser(MISSING))
@@ -278,8 +276,6 @@ def test_every_spelling_of_the_missing_class_is_handled(peft_env, fake_torchao, 
     definer, _ = peft_env(_raiser(ImportError(message)))
     FIX()
     assert definer.dispatch_torchao(_Layer("plain"), "default") is None
-
-
 
 
 def test_an_affine_quantized_weight_still_gets_the_torchao_lora_layer(peft_env, fake_torchao):
@@ -364,8 +360,6 @@ def test_is_torchao_available_is_still_honoured(peft_env, fake_torchao):
     assert definer.dispatch_torchao(target, "default") is None
 
 
-
-
 @pytest.mark.parametrize(
     "message",
     [
@@ -400,8 +394,6 @@ def test_a_non_import_error_still_raises(peft_env, fake_torchao):
     FIX()
     with pytest.raises(RuntimeError):
         definer.dispatch_torchao(_Layer("plain"), "default")
-
-
 
 
 def test_a_working_dispatcher_still_returns_its_module(peft_env, fake_torchao):
@@ -547,8 +539,6 @@ def test_the_patched_dispatcher_still_pickles():
     FIX()
     restored = pickle.loads(pickle.dumps(definer.dispatch_torchao))
     assert restored is definer.dispatch_torchao
-
-
 
 
 def test_real_plain_lora_survives_this_torchao():
@@ -821,8 +811,6 @@ def test_both_torchao_peft_fixes_can_be_active_at_once():
     )
     assert code == 0, out
     assert "LAYER Linear" in out, out
-
-
 
 
 def test_called_from_gpu_init():
