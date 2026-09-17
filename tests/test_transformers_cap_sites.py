@@ -71,6 +71,12 @@ PINNED_BY_DESIGN = {
     ),
 }
 
+# The ceiling every unsloth_zoo up to and including 2026.9.4 publishes, and the first
+# release expected to carry the lift. pip intersects unsloth's window with the zoo's, so
+# these two decide whether the window above is what a user actually resolves.
+ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT = Version("5.5.0")
+ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP = Version("2026.9.5")
+
 # unsloth's CPU lanes must admit what unsloth_zoo's torch bound admits, or they test a
 # torch users cannot get. 2.14.0 is the newest release the matrix was run against.
 TESTED_TORCH = Version("2.14.0")
@@ -120,6 +126,72 @@ def _ceiling(window: SpecifierSet) -> Version:
     tops = [Version(str(spec.version)) for spec in window if spec.operator in ("<=", "<")]
     assert tops, f"the transformers window declares no upper bound at all: {window}"
     return max(tops)
+
+
+def _pyproject_zoo() -> list[Requirement]:
+    data = _toml()
+    project = data.get("project") or {}
+    raws: list[str] = list(project.get("dependencies") or [])
+    for extra in (project.get("optional-dependencies") or {}).values():
+        raws.extend(extra)
+    out = []
+    for raw in raws:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            continue
+        if req.name.lower().replace("_", "-") == "unsloth-zoo" and req.specifier:
+            out.append(req)
+    return out
+
+
+def test_the_declared_zoo_floor_can_supply_the_declared_transformers_window() -> None:
+    """Widening the window here does nothing while the resolvable zoo still caps lower.
+
+    unsloth_zoo publishes its own transformers requirement and pip intersects the two, so
+    a user installing any extra gets the LOWER of the two ceilings. unsloth_zoo 2026.9.4
+    on PyPI says `transformers<=5.5.0`, which is exactly the cap this PR lifts, so
+    without a matching zoo floor the lift is advertised and not delivered: the bnb-4bit
+    `quant_state` failures and the Gemma 4 E4B LoRA fix stay out of reach, and asking for
+    a newly admitted transformers by hand is a resolver conflict rather than an install.
+    """
+    ceiling = _ceiling(_declared_window())
+    if ceiling <= ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT:
+        pytest.skip(
+            f"declared transformers ceiling {ceiling} is within what zoo "
+            f"<{ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP} already admits"
+        )
+    reqs = _pyproject_zoo()
+    assert reqs, (
+        "pyproject.toml declares a transformers ceiling above what the published "
+        "unsloth_zoo admits, and names no versioned unsloth_zoo requirement at all"
+    )
+    floors = {}
+    for req in reqs:
+        lower = [
+            Version(str(spec.version))
+            for spec in req.specifier
+            if spec.operator in (">=", "==", "~=")
+        ]
+        assert lower, (
+            f"unsloth_zoo requirement {req} has no lower bound, so it admits the release "
+            f"whose own transformers cap is {ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT}"
+        )
+        floors[str(req)] = max(lower)
+    stale = {raw: str(floor) for raw, floor in floors.items()
+             if floor < ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP}
+    assert not stale, (
+        f"pyproject.toml admits transformers up to {ceiling} while still accepting "
+        f"unsloth_zoo {stale}. pip intersects the two requirements, so users would "
+        f"resolve the zoo that caps transformers at "
+        f"{ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT} and the wider window here would "
+        f"never take effect. Move the floor to "
+        f"{ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP} in the same commit as the ceiling."
+    )
+    assert len(set(floors.values())) == 1, (
+        f"pyproject.toml declares more than one unsloth_zoo floor: {floors}. One of them "
+        f"is the one users hit."
+    )
 
 
 def _floor(window: SpecifierSet) -> Version:

@@ -191,7 +191,11 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.9.4",
+    # unsloth_zoo publishes its own transformers window and pip intersects the two, so
+    # the lift below buys nothing until a zoo release carries the same ceiling: 2026.9.4
+    # on PyPI still says transformers<=5.5.0. The floor names the first release expected
+    # to carry it (unslothai/unsloth-zoo#1227), which is why it moves in this commit.
+    "unsloth_zoo>=2026.9.5",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -264,7 +268,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.4",
+    "unsloth_zoo>=2026.9.5",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -883,7 +887,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.4",
+    "unsloth_zoo>=2026.9.5",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
