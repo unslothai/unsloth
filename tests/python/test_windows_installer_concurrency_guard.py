@@ -95,7 +95,7 @@ _FINAL_PATH_CHAIN = (
     "Invoke-StudioEarlyPythonScriptViaCmdlets",
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
-            "Test-StudioPathUnderAdminRoot",
+    "Test-StudioPathUnderAdminRoot",
     "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
