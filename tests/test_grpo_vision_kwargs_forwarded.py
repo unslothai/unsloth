@@ -8,8 +8,22 @@ models without image_grid_thw. unslothai/unsloth#6960."""
 import inspect
 import os
 
+import pytest
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
+
+
+def _zoo_vision_helpers(*names):
+    """The multi image helpers ship with unsloth_zoo. An unsloth_zoo installed from before
+    they landed has none of them, and the static gates in this file already prove this repo
+    asks for them and fails loudly without them, so behaviour that can only be driven
+    through the zoo is skipped rather than reported as this repo being broken."""
+    zoo = pytest.importorskip("unsloth_zoo.rl_replacements")
+    missing = [name for name in names if not hasattr(zoo, name)]
+    if missing:
+        pytest.skip(f"the installed unsloth_zoo has no {', '.join(missing)}")
+    return tuple(getattr(zoo, name) for name in names)
 
 
 def _read_source() -> str:
@@ -71,7 +85,9 @@ def test_compute_loss_hands_the_whole_set_to_the_gradient_pass():
 
 
 def test_both_paths_call_the_same_helper():
-    from unsloth_zoo.rl_replacements import grpo_accumulated_loss, grpo_vision_chunks
+    grpo_accumulated_loss, grpo_vision_chunks = _zoo_vision_helpers(
+        "grpo_accumulated_loss", "grpo_vision_chunks"
+    )
 
     grad_source = inspect.getsource(grpo_accumulated_loss)
     assert "grpo_vision_chunks" in grad_source
@@ -92,7 +108,10 @@ def test_old_zoo_without_the_helper_fails_loudly_for_vision_runs():
 
 def test_lfm2vl_keys_reach_the_forward_kwargs():
     import torch
-    from unsloth_zoo.rl_replacements import grpo_get_vision_inputs, grpo_vision_chunks
+
+    grpo_get_vision_inputs, grpo_vision_chunks = _zoo_vision_helpers(
+        "grpo_get_vision_inputs", "grpo_vision_chunks"
+    )
 
     num_tiles = [2, 3]
     total_tiles = sum(num_tiles)
@@ -114,7 +133,7 @@ def test_legacy_fallback_list_matches_the_zoo_tuple():
     import ast
     import re
 
-    from unsloth_zoo.rl_replacements import GRPO_VISION_KEYS
+    (GRPO_VISION_KEYS,) = _zoo_vision_helpers("GRPO_VISION_KEYS")
 
     src = _read_source()
     match = re.search(
@@ -238,10 +257,9 @@ def test_num_tiles_survives_the_output_dict_rewrite():
 def test_the_trl_1_0_spelling_of_the_gemma_4_position_ids_is_forwarded():
     """TRL 1.0.x emits `pixel_position_ids`, 1.1.0 `image_position_ids`; both are live."""
     import torch
-    from unsloth_zoo.rl_replacements import (
-        GRPO_VISION_KEYS,
-        grpo_get_vision_inputs,
-        grpo_vision_chunks,
+
+    GRPO_VISION_KEYS, grpo_get_vision_inputs, grpo_vision_chunks = _zoo_vision_helpers(
+        "GRPO_VISION_KEYS", "grpo_get_vision_inputs", "grpo_vision_chunks"
     )
 
     assert "pixel_position_ids" in GRPO_VISION_KEYS
@@ -263,7 +281,10 @@ def test_the_trl_1_0_spelling_of_the_gemma_4_position_ids_is_forwarded():
 
 def test_a_multi_image_row_indexes_the_position_ids_by_image():
     import torch
-    from unsloth_zoo.rl_replacements import grpo_get_vision_inputs, grpo_vision_chunks
+
+    grpo_get_vision_inputs, grpo_vision_chunks = _zoo_vision_helpers(
+        "grpo_get_vision_inputs", "grpo_vision_chunks"
+    )
 
     inputs = {
         "pixel_values": torch.randn(3, 3, 16, 16),
@@ -395,8 +416,6 @@ def test_the_gradient_path_refuses_an_old_zoo_without_the_chunker():
     run would have trained on the text alone and said nothing.
     """
     import types
-
-    import pytest
 
     block = _gradient_zoo_gate()
     old_zoo = types.ModuleType("unsloth_zoo.rl_replacements")
