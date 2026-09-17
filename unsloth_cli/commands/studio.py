@@ -1926,6 +1926,7 @@ def studio_default(
             run_kwargs["frontend_path"] = resolved_frontend
         run_server(**run_kwargs)
 
+    _graceful_shutdown_on_sigterm()
     try:
         if run_mod._shutdown_event is not None:
             # Event.wait() with no timeout blocks at C level on Linux and swallows SIGINT.
@@ -2690,6 +2691,7 @@ def run(
         typer.echo(f"API Key: {api_key}")
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
+    _graceful_shutdown_on_sigterm()
     try:
         if run_mod._shutdown_event is not None:
             while not run_mod._shutdown_event.is_set():
@@ -2832,6 +2834,19 @@ def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()
     except Exception:
         return True
     return any(abs(actual - c) < 1.0 for c in known)
+
+
+def _graceful_shutdown_on_sigterm() -> None:
+    """Route SIGTERM (docker stop, `unsloth studio stop`) into the wait loop's Ctrl+C path,
+    which stops and saves a running training job before anything is killed."""
+    import signal as _signal
+
+    def _handler(signum, frame):
+        # Restore the default so a second signal force-quits if the shutdown stalls.
+        _signal.signal(_signal.SIGTERM, _signal.SIG_DFL)
+        raise KeyboardInterrupt
+
+    _signal.signal(_signal.SIGTERM, _handler)
 
 
 def _signal_stop(pid: int) -> "str | None":

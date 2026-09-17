@@ -321,6 +321,19 @@ pub async fn desktop_preflight_result_with_state(
                     );
                     return Ok((choose_preflight(managed, backend), None));
                 }
+                // The spawned arm self-heals too, but only for a child that has actually
+                // exited: a handle with no validated port is usually a cold start still
+                // importing torch, and clearing that would abandon a healthy launch. A
+                // child that died without its stdout reaching EOF is invisible to the
+                // crash detector, and the handle it leaves behind makes every later
+                // launch answer "Backend is already running." (#9756).
+                if crate::process::clear_spawned_backend_if_exited(
+                    state,
+                    snapshot.generation,
+                    "state owner probe no longer verifies",
+                ) {
+                    return Ok((choose_preflight(managed, backend), None));
+                }
                 return Ok((
                     choose_owned_transitional_preflight(&managed, snapshot.port),
                     None,

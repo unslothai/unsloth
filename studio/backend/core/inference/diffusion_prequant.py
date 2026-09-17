@@ -710,6 +710,12 @@ def load_prequantized_transformer(
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
+        try:
+            # The file that really loaded (the fallback name when the primary is absent): the
+            # provenance label has no other way to know which one it was.
+            transformer._unsloth_prequant_path = path
+        except Exception:  # noqa: BLE001 - marker is best-effort
+            pass
         if logger is not None:
             logger.info(
                 "diffusion.prequant: loaded %s checkpoint (%s) onto %s",
@@ -955,6 +961,20 @@ def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logg
         _warn(logger, scheme, ValueError(problem))
         return False
     return True
+
+
+def hosted_fast_accum_conflict(scheme: str, fast_accum: Optional[bool]) -> bool:
+    """Whether a FORCED fp8 accumulate rules out every HOSTED checkpoint for ``scheme``.
+
+    ``scripts/build_prequant_checkpoint.py`` bakes the auto choice (``_resolve_fast_accum(None)``)
+    into the fp8 artifacts, and ``_validate_checkpoint`` refuses a baked value differing from a
+    forced one. A planner that seeds without asking drops the released shards for a checkpoint the
+    load must reject. Only fp8 bakes the field, so every other scheme is False. No IO, no torch."""
+    from .diffusion_transformer_quant import TQ_FP8, _resolve_fast_accum
+
+    if fast_accum is None or scheme != TQ_FP8:
+        return False
+    return bool(fast_accum) != _resolve_fast_accum(None)
 
 
 def _validate_checkpoint(

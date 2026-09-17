@@ -176,12 +176,9 @@ def test_an_unload_of_a_resident_model_still_logs_one_event(backend, monkeypatch
 
 
 def test_the_real_estimator_ignores_both_axes_for_a_dense_embedded_head(backend):
-    """The premise the note now asks about, pinned against the estimator itself.
-
-    Without this the note's tests would only prove it renders whatever a stand-in
-    tells it, and the claim that slots and ubatch really are inert on this branch
-    would rest on reading the code.
-    """
+    """Slots and ubatch leave the dense draft cache unchanged but grow its compute cost."""
+    real_compute = backend._mtp_draft_compute_bytes
+    backend._mtp_draft_compute_bytes = lambda *args, **kwargs: 0
     backend._nextn_predict_layers = 1
     backend._n_kv_heads = 8
     backend._n_heads = 64
@@ -213,3 +210,13 @@ def test_the_real_estimator_ignores_both_axes_for_a_dense_embedded_head(backend)
         8192, spec_draft_n_max = 4, n_parallel = 3, kv_unified = False, n_ubatch = 512
     )
     assert split != base
+
+    # With the compute buffers back, a slot adds verify rows and the micro-batch the
+    # draft context's activations, so the note has both to name.
+    backend._mtp_draft_compute_bytes = real_compute
+    backend._vocab_size = 151936
+    backend._embedding_length = 4096
+    backend._feed_forward_length = 12288
+    moved = _reserve(2, 512)
+    assert _reserve(3, 512) > moved
+    assert _reserve(2, 2048) > moved

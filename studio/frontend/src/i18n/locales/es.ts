@@ -20,6 +20,52 @@ export const es = {
     settings: "Ajustes del redactor",
     preview: "Vista previa con formato",
   },
+  promptQueue: {
+    loading: "Cargando mensajes en cola",
+    listLabel: "Mensajes en cola",
+    regionLabel: "Cola de mensajes, {current} de {total}",
+    itemLabel: "Mensaje en cola {position} de {total}: {prompt}",
+    reorderInstructions: "Arrastra el controlador para reordenar. Con el controlador enfocado, usa Arriba o Abajo para mover una posición, o Inicio o Fin para moverlo al principio o al final.",
+    dragTooltip: "Arrastra para reordenar",
+    reorderLabel: "Reordenar el mensaje en cola {position} de {total}",
+    paused: "En pausa",
+    steer: "Redirigir",
+    steerTooltip: "Interrumpir la respuesta y enviar este mensaje a continuación",
+    steerLabel: "Redirigir con el mensaje en cola {position}",
+    removeTooltip: "Quitar de la cola",
+    removeLabel: "Quitar el mensaje en cola {position}",
+    moreTooltip: "Más opciones",
+    moreLabel: "Más opciones para el mensaje en cola {position}",
+    editItem: "Editar mensaje",
+    copyItem: "Copiar mensaje",
+    editLabel: "Editar el mensaje en cola {position}",
+    cancel: "Cancelar",
+    save: "Guardar",
+    turnOffQueueing: "Desactivar la cola",
+    turnOnQueueing: "Activar la cola",
+    resume: "Reanudar la cola",
+    queueButton: "Poner el mensaje en cola",
+    steerButton: "Redirigir la respuesta",
+    sendTooltip: "Enviar mensaje ({shortcut})",
+    sendLabel: "Enviar mensaje",
+    followUpTooltip: "{action} ({send}) · {opposite} para lo contrario",
+    announceUpdated: "Mensaje en cola actualizado.",
+    announceEditFailed: "Este mensaje ya no se puede editar porque la cola cambió.",
+    announceRemoved: "Mensaje quitado de la cola.",
+    announceSteered: "Este mensaje redirigirá la respuesta a continuación.",
+    announceSteerFailed: "Este mensaje no pudo redirigir la respuesta. Revisa la cola e inténtalo de nuevo.",
+    announceCopied: "Mensaje copiado.",
+    announceCopyFailed: "No se pudo copiar este mensaje. Inténtalo de nuevo.",
+    announceQueueingOn: "Los nuevos mensajes de seguimiento se pondrán en cola después de la respuesta actual.",
+    announceQueueingOff: "Los nuevos mensajes de seguimiento redirigirán la respuesta actual.",
+    announceMoved: "Mensaje movido a la posición {position} de {total}.",
+    announceMoveFailed: "La cola cambió antes de poder mover este mensaje. Inténtalo de nuevo.",
+    announceDragReset: "La cola cambió. Arrastra de nuevo para reordenar los mensajes restantes.",
+    editingHint: "Editando el mensaje",
+    queueingOffHint: "Los mensajes nuevos interrumpen y se ejecutan a continuación.",
+    queueingOnHint: "Los mensajes nuevos esperan su turno.",
+    queueingHintShared: "La cola se conserva.",
+  },
   picker: {
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
@@ -1276,6 +1322,8 @@ export const es = {
           sourceBuild: "Este llama.cpp se compiló desde el código fuente, así que su backend no se puede cambiar desde aquí.",
           customPath: "Hay una carpeta personalizada de llama.cpp seleccionada. Su compilación determina el backend de cómputo.",
           unresolved: "No se pudieron consultar los backends disponibles. Revisa tu conexión e inténtalo de nuevo.",
+          updateChecksDisabled:
+            "Las comprobaciones de actualizaciones están desactivadas (UNSLOTH_DISABLE_UPDATE_CHECK=1), así que no se consultan los backends disponibles.",
         },
         // No se muestra: términos adicionales para la búsqueda de ajustes.
         llamaBackendKeywords:
@@ -1451,6 +1499,30 @@ export const es = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversaciones" },
+        files: { title: "Archivos y pegado" },
+        display: { title: "Visualización" },
+        composer: { title: "Cuadro de mensaje" },
+        menu: { title: "Menú del chat" },
+        advanced: { title: "Avanzado" },
+        contextTitle: "Contexto",
+      },
+      projectAttachmentsHint:
+        "Cambia este ajuste para cada chat desde su menú de archivos adjuntos.",
+      rememberParamsPerModelHint:
+        "Al desactivarlo, todos los modelos usan los mismos ajustes.",
+      autoCompactHint:
+        "Usa la longitud de contexto configurada, no la VRAM disponible.",
+      pastedTextShortDescription:
+        "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
+      pastedTextOffDescription:
+        "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
+      compactionDescriptionInherit: "Sigue la política de contexto del servidor.",
+      compactionDescriptionCheckpoint:
+        "Conserva el último intercambio y las instrucciones permanentes.",
+      compactionDescriptionRolling:
+        "Elimina los turnos más antiguos para conservar el historial reciente y el espacio adicional seleccionado.",
       projectsSection: "Mostrar la sección Proyectos",
       projectsSectionDescription:
         "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",
@@ -1480,7 +1552,8 @@ export const es = {
         exportChat: "Exportar chat",
       },
       pastedTextThreshold: "Condensar pegados largos",
-      pastedTextThresholdDescription: "El texto pegado más largo que esto se convierte en un adjunto .txt en lugar de llenar el cuadro de mensaje. Pulsa {shortcut} para pegar en el cuadro de mensaje de todos modos.",
+      pastedTextThresholdDescription:
+        "Pulsa {shortcut} para pegar directamente en el cuadro de mensaje.",
       pastedTextThresholdOff: "Desactivado",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
@@ -1490,13 +1563,13 @@ export const es = {
         'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
-        "Valor predeterminado para los archivos adjuntos en un chat que pertenece a un proyecto: indexarlos para todo el proyecto para que cualquier chat pueda usarlos. Cada chat puede cambiarlo desde el menú de adjuntos.",
+        "Comparte los nuevos archivos adjuntos con todos los chats del proyecto.",
       rememberParamsPerModel: "Recordar los ajustes por modelo",
       rememberParamsPerModelDescription:
-        "Al cambiar de modelo se restauran la temperatura, el prompt y los demás ajustes que usaste por última vez con ese modelo. Desactivado, se mantiene un único conjunto de ajustes para todos los modelos.",
+        "Restaura el último prompt, la temperatura y los demás ajustes usados con cada modelo.",
       autoCompact: "Compactar automáticamente chats largos",
       autoCompactDescription:
-        "Cuando un chat GGUF local alcance la longitud de contexto configurada, descarta los turnos antiguos en vez de devolver un error. Esto no depende de la VRAM libre.",
+        "Elimina los turnos antiguos cuando un chat GGUF local alcance su límite de contexto.",
       compactionStyle: "Cuando se llena el contexto",
       compactionStyleDescription:
         "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
@@ -1533,7 +1606,7 @@ export const es = {
         title: "Búsqueda web",
         images: "Mostrar imágenes de la búsqueda web",
         imagesDescription:
-          "Permite que la búsqueda web devuelva imágenes y obtiene una por cada elemento que enumera una respuesta. Unsloth descarga y redimensiona las miniaturas, así que el navegador nunca contacta con los servidores de imágenes.",
+          "Incluye imágenes en los resultados de búsqueda.",
       },
       artifacts: {
         title: "Canvas",

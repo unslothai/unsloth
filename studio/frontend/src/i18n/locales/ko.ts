@@ -20,6 +20,52 @@ export const ko = {
     settings: "메시지 입력 설정",
     preview: "서식 미리보기",
   },
+  promptQueue: {
+    loading: "대기열 메시지를 불러오는 중",
+    listLabel: "대기열 메시지",
+    regionLabel: "메시지 대기열, {total}개 중 {current}번째",
+    itemLabel: "대기열 메시지 {total}개 중 {position}번째: {prompt}",
+    reorderInstructions: "핸들을 드래그해 순서를 바꿉니다. 핸들에 포커스가 있을 때 위아래 화살표로 한 칸 이동하고, Home 또는 End로 맨 앞이나 맨 뒤로 이동합니다.",
+    dragTooltip: "드래그해서 순서 변경",
+    reorderLabel: "대기열 메시지 {total}개 중 {position}번째 순서 변경",
+    paused: "일시 중지됨",
+    steer: "방향 변경",
+    steerTooltip: "현재 응답을 중단하고 이 메시지를 다음에 전송합니다",
+    steerLabel: "대기열 메시지 {position}(으)로 방향 변경",
+    removeTooltip: "대기열에서 제거",
+    removeLabel: "대기열 메시지 {position} 제거",
+    moreTooltip: "옵션 더 보기",
+    moreLabel: "대기열 메시지 {position}의 옵션 더 보기",
+    editItem: "메시지 편집",
+    copyItem: "메시지 복사",
+    editLabel: "대기열 메시지 {position} 편집",
+    cancel: "취소",
+    save: "저장",
+    turnOffQueueing: "대기열 사용 안 함",
+    turnOnQueueing: "대기열 사용",
+    resume: "대기열 재개",
+    queueButton: "메시지 대기열에 추가",
+    steerButton: "응답 방향 변경",
+    sendTooltip: "메시지 전송({shortcut})",
+    sendLabel: "메시지 전송",
+    followUpTooltip: "{action}({send}) · {opposite}(으)로 반대 동작",
+    announceUpdated: "대기열 메시지를 업데이트했습니다.",
+    announceEditFailed: "대기열이 변경되어 이 메시지를 더 이상 편집할 수 없습니다.",
+    announceRemoved: "메시지를 대기열에서 제거했습니다.",
+    announceSteered: "이 메시지로 다음 응답의 방향을 변경합니다.",
+    announceSteerFailed: "이 메시지로 방향을 변경하지 못했습니다. 대기열을 확인한 뒤 다시 시도하세요.",
+    announceCopied: "메시지를 복사했습니다.",
+    announceCopyFailed: "이 메시지를 복사하지 못했습니다. 다시 시도하세요.",
+    announceQueueingOn: "새 후속 메시지는 현재 응답 뒤에 대기합니다.",
+    announceQueueingOff: "새 후속 메시지는 현재 응답의 방향을 변경합니다.",
+    announceMoved: "메시지를 {total}개 중 {position}번째로 옮겼습니다.",
+    announceMoveFailed: "옮기기 전에 대기열이 변경되었습니다. 다시 시도하세요.",
+    announceDragReset: "대기열이 변경되었습니다. 남은 메시지를 다시 드래그해 순서를 바꾸세요.",
+    editingHint: "메시지 편집 중",
+    queueingOffHint: "새 메시지가 끼어들어 먼저 실행됩니다.",
+    queueingOnHint: "새 메시지는 순서를 기다립니다.",
+    queueingHintShared: "대기열은 유지됩니다.",
+  },
   picker: {
     onDevice: "기기",
     huggingFace: "Hugging Face",
@@ -1250,6 +1296,8 @@ export const ko = {
           sourceBuild: "이 llama.cpp는 소스에서 빌드되어 여기서 백엔드를 전환할 수 없습니다.",
           customPath: "사용자 지정 llama.cpp 폴더가 선택되어 있습니다. 해당 빌드가 컴퓨팅 백엔드를 결정합니다.",
           unresolved: "사용 가능한 백엔드를 확인하지 못했습니다. 연결을 확인한 뒤 다시 시도하세요.",
+          updateChecksDisabled:
+            "업데이트 확인이 비활성화되어 있어(UNSLOTH_DISABLE_UPDATE_CHECK=1) 사용 가능한 백엔드를 조회하지 않습니다.",
         },
         // 표시되지 않음: 설정 검색용 추가 키워드.
         llamaBackendKeywords:
@@ -1421,6 +1469,28 @@ export const ko = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "대화" },
+        files: { title: "파일 및 붙여넣기" },
+        display: { title: "표시" },
+        composer: { title: "메시지 입력창" },
+        menu: { title: "채팅 메뉴" },
+        advanced: { title: "고급" },
+        contextTitle: "컨텍스트",
+      },
+      projectAttachmentsHint:
+        "각 채팅의 첨부 메뉴에서 이 설정을 개별적으로 변경할 수 있습니다.",
+      rememberParamsPerModelHint: "끄면 모든 모델에 같은 설정을 사용합니다.",
+      autoCompactHint: "남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
+      pastedTextShortDescription:
+        "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
+      pastedTextOffDescription:
+        "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
+      compactionDescriptionInherit: "서버의 컨텍스트 정책을 따릅니다.",
+      compactionDescriptionCheckpoint:
+        "최신 대화 턴과 계속 적용되는 지침을 유지합니다.",
+      compactionDescriptionRolling:
+        "가장 오래된 턴을 삭제해 최근 기록을 유지하고 선택한 만큼의 여유 공간을 확보합니다.",
       projectsSection: "프로젝트 섹션 표시",
       projectsSectionDescription:
         "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
@@ -1450,7 +1520,8 @@ export const ko = {
         exportChat: "채팅 내보내기",
       },
       pastedTextThreshold: "긴 붙여넣기 압축",
-      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다. {shortcut} 를 누르면 그래도 입력창에 붙여넣습니다.",
+      pastedTextThresholdDescription:
+        "{shortcut} 키를 누르면 입력창에 바로 붙여넣습니다.",
       pastedTextThresholdOff: "끄기",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
@@ -1460,13 +1531,13 @@ export const ko = {
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
       projectAttachments: "프로젝트 전체에서 파일 공유",
       projectAttachmentsDescription:
-        "프로젝트에 속한 채팅에서 첨부한 파일의 기본 동작입니다. 프로젝트 전체에 색인하여 해당 프로젝트의 모든 채팅에서 사용할 수 있게 합니다. 채팅마다 첨부 메뉴에서 변경할 수 있습니다.",
+        "새 채팅 첨부 파일을 프로젝트의 모든 채팅에서 사용할 수 있게 합니다.",
       rememberParamsPerModel: "모델별로 설정 기억",
       rememberParamsPerModelDescription:
-        "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
+        "각 모델에서 마지막으로 사용한 프롬프트, 온도 등의 설정을 복원합니다.",
       autoCompact: "긴 채팅 자동 압축",
       autoCompactDescription:
-        "로컬 GGUF 채팅이 설정한 컨텍스트 길이에 도달하면 오류를 반환하는 대신 오래된 턴을 삭제합니다. 사용 가능한 VRAM을 기준으로 하지 않습니다.",
+        "로컬 GGUF 채팅이 컨텍스트 한도에 도달하면 오래된 턴을 삭제합니다.",
       compactionStyle: "컨텍스트가 가득 찼을 때",
       compactionStyleDescription:
         "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
@@ -1499,7 +1570,7 @@ export const ko = {
         title: "웹 검색",
         images: "웹 검색 이미지 표시",
         imagesDescription:
-          "웹 검색이 이미지를 반환하고, 답변에 나열된 항목마다 하나씩 가져옵니다. 썸네일은 Studio가 가져와 축소하므로 브라우저가 이미지 호스트에 접속하지 않습니다.",
+          "검색 결과에 이미지를 포함합니다.",
       },
       artifacts: {
         title: "Canvas",
