@@ -142,6 +142,68 @@ class TestTheNotice:
     def test_nothing_to_report_without_a_request(self, requested):
         assert LlamaCppBackend._unmeasured_context_notice(requested) is None
 
+    def test_it_does_not_cost_the_load_a_memory_warning(self):
+        """``_record_load_warning`` is first-notice-wins with one slot, and both arms
+        that raise an unmeasured ceiling decide it long before the host-RAM and offload
+        advisories. Recording it there took the slot from a memory warning on the one
+        path that simultaneously raises the launched context, so the user who is told
+        their load will page from disk heard only that the ceiling was a guess. It is
+        held in ``_unmeasured_ctx_notice`` and flushed past both, appending when one
+        spoke."""
+        import ast
+        import inspect
+        import textwrap
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        func = ast.parse(textwrap.dedent(source)).body[0]
+
+        # Nothing hands the notice straight to the slot where it is decided.
+        for node in ast.walk(func):
+            if not (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "attr", None) == "_record_load_warning"
+            ):
+                continue
+            for arg in node.args:
+                assert not (
+                    isinstance(arg, ast.Call)
+                    and getattr(arg.func, "attr", None) == "_unmeasured_context_notice"
+                ), f"the notice claims the warning slot at line {node.lineno}"
+
+        held = [
+            node.lineno
+            for node in ast.walk(func)
+            if isinstance(node, ast.Assign)
+            and getattr(node.targets[0], "id", None) == "_unmeasured_ctx_notice"
+            and isinstance(node.value, ast.Call)
+        ]
+        flushed = [
+            node.lineno
+            for node in ast.walk(func)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "_unmeasured_ctx_notice"
+        ]
+        # Both arms hold it, and there is one flush.
+        assert len(held) == 2, held
+        assert len(flushed) == 1, flushed
+
+        # The flush is past this attempt's memory advisories, or it displaces one again.
+        # Named rather than "every _record_load_warning": the arch-crash retry's pair sits
+        # textually below the publish point but belongs to a later attempt, which clears
+        # the slot through _begin_load_warnings before recording anything.
+        advisories = {
+            arg.id: node.lineno
+            for node in ast.walk(func)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "attr", None) == "_record_load_warning"
+            for arg in node.args
+            if isinstance(arg, ast.Name)
+        }
+        for name in ("_ram_msg", "_offload_msg"):
+            assert name in advisories, (name, sorted(advisories))
+            assert flushed[0] > advisories[name], (name, flushed, advisories)
+
 
 class TestTheMetalArm:
     """Simulated with an empty GPU probe; no Metal device is exercised."""

@@ -23166,6 +23166,12 @@ class LlamaCppBackend:
                 # a ``gpu_indices`` the arm rebuilt from a WIDER device set than the
                 # planner's reserve filter admitted, and index a card that is not in it.
                 _tp_planned = False
+                # Held rather than recorded where it is decided: _record_load_warning is
+                # first-notice-wins, and both arms that raise an unmeasured ceiling run
+                # long before the host-RAM and offload advisories, so recording there took
+                # the slot from a memory warning on the one path that also raises the
+                # launched context. Flushed past those two, appending if one spoke.
+                _unmeasured_ctx_notice: Optional[str] = None
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
@@ -24586,8 +24592,8 @@ class LlamaCppBackend:
                         _tp_planned = True
                         if explicit_ctx and not self._can_estimate_kv():
                             # Tensor mode emits --fit off, so nothing downstream catches it.
-                            self._record_load_warning(
-                                self._unmeasured_context_notice(effective_ctx, cache_type_kv)
+                            _unmeasured_ctx_notice = self._unmeasured_context_notice(
+                                effective_ctx, cache_type_kv
                             )
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Compute the largest hardware-aware cap from the model's
@@ -24979,8 +24985,8 @@ class LlamaCppBackend:
                             # This arm never overruled the request but published the floor:
                             # max_context_length 4,096 for a load launched at 262,144 (#9653).
                             max_available_ctx = max(max_available_ctx, effective_ctx)
-                            self._record_load_warning(
-                                self._unmeasured_context_notice(effective_ctx, cache_type_kv)
+                            _unmeasured_ctx_notice = self._unmeasured_context_notice(
+                                effective_ctx, cache_type_kv
                             )
                         elif (
                             (_apple_measured_ceiling is not None or _apple_nothing_fits)
@@ -28713,6 +28719,15 @@ class LlamaCppBackend:
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
+
+                # Past the host-RAM and offload advisories, so it can say the ceiling is
+                # the request without costing the user a memory warning it does not
+                # replace: appended when one of those spoke, recorded when none did.
+                if _unmeasured_ctx_notice:
+                    if self._last_load_warning:
+                        self._amend_load_warning(" " + _unmeasured_ctx_notice)
+                    else:
+                        self._record_load_warning(_unmeasured_ctx_notice)
 
                 # LoadRequest carries this flag, so a stale rollback, an API caller or
                 # a swapped-out runtime can ask for a replay that never happened. Hold
