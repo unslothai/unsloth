@@ -123,7 +123,11 @@ def _stub_diffusers(monkeypatch, *, hook_recorder = None):
         def check_if_exists_or_initialize(cls, module):
             return cls.instances.setdefault(id(module), cls(module))
 
-        def remove_hook(self, name, recurse = True):
+        def remove_hook(
+            self,
+            name,
+            recurse = True,
+        ):
             type(self).removed.append(name)
 
     _Registry.instances = {}
@@ -885,9 +889,11 @@ def test_another_cache_type_is_left_alone(monkeypatch):
 
     # Reports the cache that is actually running, and does not touch it.
     assert apply_step_cache(_pipe(t), mode = "fbcache") == "magcache"
-    assert registry.removed == []            # FBC's names were never touched
-    assert isinstance(t._cache_config, _MagCacheConfig)  # the other cache is still known to diffusers
-    assert t.enabled_with is None            # and FBC was NOT stacked on top of it
+    assert registry.removed == []  # FBC's names were never touched
+    assert isinstance(
+        t._cache_config, _MagCacheConfig
+    )  # the other cache is still known to diffusers
+    assert t.enabled_with is None  # and FBC was NOT stacked on top of it
 
 
 def test_a_lost_marker_does_not_cost_a_healthy_cache(monkeypatch):
@@ -924,6 +930,6 @@ def test_a_lost_marker_does_not_cost_a_healthy_cache(monkeypatch):
     engaged = apply_step_cache(_pipe(t), mode = "fbcache")
 
     assert engaged == TC_FBCACHE
-    assert t.disable_calls == 0             # the healthy cache was never torn down
-    assert registry.removed == []           # and its hooks were never touched
+    assert t.disable_calls == 0  # the healthy cache was never torn down
+    assert registry.removed == []  # and its hooks were never touched
     assert t._unsloth_step_cache == f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"  # marker repaired
