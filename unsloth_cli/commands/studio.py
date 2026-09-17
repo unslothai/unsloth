@@ -1529,6 +1529,7 @@ def _load_model_via_http(
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
     request_host: str = "127.0.0.1",
+    alongside: bool = False,
 ) -> dict:
     import json
     import urllib.request
@@ -1543,6 +1544,8 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if alongside:
+        payload["alongside"] = True
     if gpu_memory_mode == "manual":
         payload["gpu_memory_mode"] = "manual"
         payload["gpu_layers"] = -1
@@ -2054,6 +2057,15 @@ def run(
         rich_help_panel = _RUN_PANEL_MODEL,
         help = "GGUF quant variant (e.g. UD-Q4_K_XL)",
     ),
+    also: Optional[List[str]] = typer.Option(
+        None,
+        "--also",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Another GGUF (`org/repo:variant`) to serve alongside --model; repeatable. "
+            "Requests pick one by its `model` name."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -2483,6 +2495,8 @@ def run(
             args.extend(["--gpu-memory-mode", gpu_memory_mode])
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
+        for extra_model in also or ():
+            args.extend(["--also", extra_model])
         if speculative_type is not None:
             args.extend(["--speculative-type", speculative_type])
         if spec_draft_n_max is not None:
@@ -2580,23 +2594,28 @@ def run(
             typer.echo(f"UNSLOTH_START_PORT: {actual_port}")
             typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
-        if not silent:
-            typer.echo(f"Loading model: {model}...")
         try:
-            result = _load_model_via_http(
-                port = actual_port,
-                api_key = api_key,
-                model = model,
-                gguf_variant = gguf_variant,
-                max_seq_length = max_seq_length,
-                load_in_4bit = load_in_4bit,
-                gpu_memory_mode = gpu_memory_mode,
-                tensor_parallel = tensor_parallel,
-                speculative_type = speculative_type,
-                spec_draft_n_max = spec_draft_n_max,
-                llama_extra_args = extra_llama_args,
-                request_host = request_host,
-            )
+            results = []
+            for repo, variant in [(model, gguf_variant), *map(_split_repo_variant, also or ())]:
+                if not silent:
+                    typer.echo(f"Loading model: {repo}...")
+                results.append(
+                    _load_model_via_http(
+                        port = actual_port,
+                        api_key = api_key,
+                        model = repo,
+                        gguf_variant = variant,
+                        max_seq_length = max_seq_length,
+                        load_in_4bit = load_in_4bit,
+                        gpu_memory_mode = gpu_memory_mode,
+                        tensor_parallel = tensor_parallel,
+                        speculative_type = speculative_type,
+                        spec_draft_n_max = spec_draft_n_max,
+                        llama_extra_args = extra_llama_args,
+                        request_host = request_host,
+                        alongside = bool(results),
+                    )
+                )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)
             raise typer.Exit(1)
@@ -2605,6 +2624,7 @@ def run(
         getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
         raise
 
+    result = results[0]
     loaded_model = result.get("model", model)
     display_variant = f" ({gguf_variant})" if gguf_variant else ""
     context_length_line = _format_context_length_line(result)
@@ -2648,6 +2668,8 @@ def run(
             typer.echo(f"  Unsloth Studio running at {base_url}")
             _emit_run_cloudflare_notice(run_mod, host, display_host, actual_port, secure)
         typer.echo(f"  Model loaded: {loaded_model}{display_variant}")
+        for extra in results[1:]:
+            typer.echo(f"  Also serving: {extra.get('model')}")
         if context_length_line:
             typer.echo(context_length_line)
         typer.echo(f"  API Key:      {api_key}")

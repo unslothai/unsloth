@@ -51,6 +51,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Start a fresh runtime even when the active settings already match",
     )
+    alongside: bool = Field(
+        False,
+        description = "Keep the loaded model and serve this GGUF next to it (GGUF only)",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )

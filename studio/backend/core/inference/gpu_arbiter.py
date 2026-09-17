@@ -38,10 +38,11 @@ def _evict_chat() -> None:
     import time
 
     from core.inference import get_inference_backend
-    from routes.inference import get_llama_cpp_backend
+    from routes.inference import get_llama_cpp_backend, unload_extra_llama_backends
 
     from core.inference.llama_cpp import chat_load_active
 
+    unload_extra_llama_backends()
     llama = get_llama_cpp_backend()
     # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is
     # not healthy. chat_load_active too, since an HF load has no process until its GGUF downloaded. unload_model sets

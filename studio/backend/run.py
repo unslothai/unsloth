@@ -1481,7 +1481,11 @@ def _graceful_shutdown(server = None):
         logger.warning("Error shutting down training subprocess: %s", e)
 
     try:
-        from routes.inference import _llama_cpp_backend, cancel_pending_loads
+        from routes.inference import (
+            _llama_cpp_backend,
+            cancel_pending_loads,
+            unload_extra_llama_backends,
+        )
 
         # Before the kill: a load still in the lifecycle gate or in preflight is not yet
         # holding anything the backend's own flag can see, and would spawn llama-server
@@ -1496,6 +1500,7 @@ def _graceful_shutdown(server = None):
             # teardown = True: an app-level stop, not the retry ladder reaping a child it
             # is about to replace. Only the former may end an in-flight health wait.
             _llama_cpp_backend._kill_process(teardown = True)
+        unload_extra_llama_backends()
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
