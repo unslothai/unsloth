@@ -9,6 +9,7 @@ import base64
 import io
 import json as _json
 import mimetypes
+import random
 import re
 import threading
 import time
@@ -811,8 +812,12 @@ def safe_fetch_remote_image_sync(
         _read_capped_body,
         _resolve_with_budget,
         _SNIHTTPSHandler,
+        _USER_AGENTS,
     )
 
+    # Image hosts refuse a request with no User-Agent (Wikimedia answers 403), and until this
+    # fetch moved here llama-server sent its own. Picked once, as _fetch_url_raw does.
+    user_agent = random.choice(_USER_AGENTS)
     if deadline is None:
         deadline = time.monotonic() + _REMOTE_IMAGE_FETCH_DEADLINE_S
 
@@ -893,7 +898,7 @@ def safe_fetch_remote_image_sync(
         opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(
             pinned_url,
-            headers = {"Host": authority},
+            headers = {"Host": authority, "User-Agent": user_agent},
             method = "GET",
         )
 

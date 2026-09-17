@@ -663,6 +663,28 @@ class TestFetcher:
         assert external_provider.safe_fetch_remote_image_sync(url, "image/png") is None
         assert sent == [authority]
 
+    def test_the_request_carries_a_user_agent(self, monkeypatch):
+        """Wikimedia and friends answer 403 without one, and llama-server used to send its own."""
+        _resolve_publicly(monkeypatch)
+        sent = []
+
+        class _Opener:
+            def open(
+                self,
+                req,
+                timeout = None,
+            ):
+                sent.append(req.get_header("User-agent"))
+                raise urllib.error.URLError("stop after the request is built")
+
+        monkeypatch.setattr("urllib.request.build_opener", lambda *_a, **_k: _Opener())
+        external_provider.safe_fetch_remote_image_sync("https://images.example/a.png", "image/png")
+
+        from core.inference.tools import _USER_AGENTS
+
+        assert sent and sent[0], "the fetch went out with no User-Agent"
+        assert sent[0] in _USER_AGENTS
+
 
 class TestCountingIsNotAFetchSurface:
     def test_openai_count_tokens_still_refuses_an_image(self, monkeypatch):
