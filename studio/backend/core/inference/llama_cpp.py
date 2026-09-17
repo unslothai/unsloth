@@ -6961,6 +6961,8 @@ def _expanded_user_path(value) -> Path:
         return expanded_user_path(value)
     except Exception:
         return Path(os.path.expanduser(str(value)))
+
+
 def _write_direct_stream_key(key: str) -> "Path":
     """Store the direct-streaming key where only the server user can read it."""
     from utils.paths.storage_roots import auth_root
