@@ -323,7 +323,11 @@ def test_a_mirror_for_the_other_load_mode_does_not_skip_the_check(
 def test_the_start_route_passes_the_requested_load_mode(mapper, monkeypatch):
     seen = {}
 
-    def probe(model_name, hf_token, load_in_4bit = True):
+    def probe(
+        model_name,
+        hf_token,
+        load_in_4bit = True,
+    ):
         seen["load_in_4bit"] = load_in_4bit
         return None
 

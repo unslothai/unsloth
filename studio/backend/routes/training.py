@@ -477,7 +477,9 @@ def _preflight_load_in_4bit(request) -> bool:
 
 
 def _remote_untrainable_model_format(
-    model_name: str, hf_token: HfTokenArg, load_in_4bit: bool = True
+    model_name: str,
+    hf_token: HfTokenArg,
+    load_in_4bit: bool = True,
 ) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
