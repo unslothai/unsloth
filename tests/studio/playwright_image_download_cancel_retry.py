@@ -88,6 +88,52 @@ def _entry(repo_id: str) -> dict[str, object]:
     }
 
 
+# The settings fields select their contents a frame after they take focus. select() FOCUSES a
+# blurred input in Chrome, taking focus off whatever holds it, so an unguarded select steals
+# focus back from the field the user moved to -- and since each steal fires focus on the other
+# field, whose handler queues the next steal, two of them lock into a loop that runs for as
+# long as the page is open. Everything downstream of it is unusable: the model picker opened
+# during the loop is dismissed in the frame after it opens, which is how this was found.
+#
+# Deterministic, unlike the loop's arrival in a normal run: both focuses happen in one task, so
+# the first field's queued select is still pending when focus moves on, which is the race a user
+# hits tabbing between the two. Measured against the build before the fix: 60 focus events in
+# the 500ms window, against 0 with it.
+_FOCUS_STEAL_PROBE = """() => new Promise(resolve => {
+    const box = name => document.querySelector(`input[aria-label="${name}"]`);
+    const first = box('Steps'), second = box('Guidance');
+    if (!first || !second) return resolve({error: 'Steps/Guidance inputs are not on the page'});
+    let events = 0;
+    const count = () => { events++; };
+    document.addEventListener('focusin', count, true);
+    first.focus();
+    second.focus();
+    const settled = events;
+    setTimeout(() => {
+        document.removeEventListener('focusin', count, true);
+        resolve({
+            active: document.activeElement?.getAttribute('aria-label') ?? null,
+            churn: events - settled,
+        });
+    }, 500);
+})"""
+
+
+def _assert_a_queued_select_does_not_steal_focus(page) -> None:
+    result = page.evaluate(_FOCUS_STEAL_PROBE)
+    assert not result.get("error"), result["error"]
+    # The end-of-frame answer looks right even while the loop runs, because the second field's
+    # steal is the last one in each frame. The churn is what tells them apart, so assert both.
+    assert (
+        result["active"] == "Guidance"
+    ), f"focus left the field it was moved to: {result['active']}"
+    assert result["churn"] <= 2, (
+        f"the settings fields are stealing focus from each other: {result['churn']} focus "
+        "events in 500ms after focus settled. A queued select() must not re-focus an input "
+        "the user has already left."
+    )
+
+
 def _open_quant(page, *, navigate: bool) -> None:
     if navigate:
         page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
@@ -385,6 +431,7 @@ def main() -> None:
             page.get_by_role("option", name = "Download only", exact = True).click()
             page.get_by_role("textbox", name = "Steps", exact = True).fill("17")
             page.get_by_role("textbox", name = "Guidance", exact = True).fill("2.5")
+            _assert_a_queued_select_does_not_steal_focus(page)
         _open_quant(page, navigate = not DOWNLOAD_ONLY)
         if DOWNLOAD_ONLY:
             with page.expect_request(

@@ -521,16 +521,99 @@ function Get-PathDenialDetail {
     param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-    if (-not $item) { return "" }
-    # Non-filesystem providers do not expose FileSystemInfo attributes.
-    if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
-    if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
-    $target = $null
-    try { $target = $item.Target } catch { $target = $null }
-    # PS 5.1 exposes .Target as a collection; PS 7 as a string.
-    if ($target) { return " (it is a link to $(@($target) -join ', '))" }
-    return " (it is a link)"
+
+    # Read attributes through the filesystem API rather than Get-Item. Getting
+    # attributes needs only FILE_READ_ATTRIBUTES, which survives the ACLs that
+    # deny reading the directory itself, so Get-Item returns nothing in exactly
+    # the case this detail is meant to describe and the caller silently loses
+    # every hint below.
+    $attrs = $null
+    try { $attrs = [System.IO.File]::GetAttributes($Path) } catch { $attrs = $null }
+    if ($null -eq $attrs) { return "" }
+
+    # Ordered by how much each one changes the fix. takeown/icacls cannot help
+    # with any of the first three, so name them before falling back to ACLs.
+    # On a directory this attribute only means new descendants are encrypted
+    # by default, so listing it never needs the key and a denial there is an
+    # ACL. Only a file's own streams are unreadable without the certificate.
+    $isDirectory = ([int]$attrs -band [int][System.IO.FileAttributes]::Directory) -ne 0
+    if (-not $isDirectory -and ($attrs -band [System.IO.FileAttributes]::Encrypted)) {
+        return " (it is EFS-encrypted, so it stays unreadable even elevated unless the encrypting account or its recovery certificate is available)"
+    }
+    # Offline plus either recall attribute is a cloud placeholder, typically
+    # OneDrive Files On-Demand that cannot hydrate.
+    # RECALL_ON_OPEN (0x40000) and RECALL_ON_DATA_ACCESS (0x400000) are absent
+    # from the FileAttributes enum on Windows PowerShell 5.1, so test the bits.
+    $offline = ([int]$attrs -band [int][System.IO.FileAttributes]::Offline) -ne 0
+    $recall = ([int]$attrs -band (0x00040000 -bor 0x00400000)) -ne 0
+    if ($offline -or $recall) {
+        return " (it is a cloud placeholder, e.g. OneDrive Files On-Demand, that cannot be hydrated right now)"
+    }
+    if ($attrs -band [System.IO.FileAttributes]::ReparsePoint) {
+        $target = $null
+        try {
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+            if ($item -is [System.IO.FileSystemInfo]) { $target = $item.Target }
+        } catch { $target = $null }
+        # PS 5.1 exposes .Target as a collection; PS 7 as a string.
+        if ($target) { return " (it is a link to $(@($target) -join ', '))" }
+        return " (it is a link)"
+    }
+    return ""
+}
+
+# Which security software could be denying this path, as a possibility.
+#
+# Worth naming because takeown and icacls cannot clear a filter-driver block
+# and elevation does not either, so a user whose antivirus is holding the
+# folder is otherwise sent round the takeown loop for as long as they are
+# willing. Nothing readable from here attributes the specific denial though,
+# so this names the candidate and the log that settles it and never
+# contradicts the ACL advice it follows.
+#
+# Defender's Controlled folder access modes are 0 Disabled, 1 Enabled,
+# 2 AuditMode, 3 BlockDiskModificationOnly, 4 AuditDiskModificationOnly. Only
+# 1 gates file access; 3 and 4 are direct disk-sector writes rather than
+# files, so neither explains a denied folder.
+#
+# When Defender is not it, name whichever antivirus is registered and running
+# instead: third-party suites ship the same feature under their own names
+# (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
+# user cannot act on advice that does not say which product to open.
+#
+# Answers "" whenever it cannot tell, so a machine with no Defender module
+# and no SecurityCenter registration reads the same as one that says no.
+function Get-SecuritySoftwareNote {
+    $mode = $null
+    try {
+        if (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) {
+            $mode = [int](Get-MpPreference -ErrorAction Stop).EnableControlledFolderAccess
+        }
+    } catch { $mode = $null }
+    if ($mode -eq 1) {
+        return "Controlled folder access is ON here, and it gates writes to protected folders whatever your privileges are, so where it is the cause takeown and icacls will not clear it: Windows Defender Operational events 1123 and 1124 say whether it stopped this path, and Virus & threat protection > Ransomware protection > Allow an app is where to allow Unsloth"
+    }
+    # SecurityCenter2 is the registration every consumer antivirus makes, and
+    # it is absent on Server SKUs, so this stays best-effort. productState
+    # packs the running state in 0xF000: 0x1000 on, 0x2000 snoozed, 0 off.
+    # A product that is not running cannot be holding the folder and naming it
+    # sends the user to the wrong console; a state we cannot read proves
+    # nothing either way, so it is kept.
+    $others = @()
+    try {
+        $others = @(Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -ErrorAction Stop |
+            Where-Object { $state = $_.productState -as [uint32]; ($null -eq $state) -or (($state -band 0xF000) -eq 0x1000) } |
+            ForEach-Object { [string]$_.displayName } |
+            Where-Object { $_ -and $_ -notmatch "Windows Defender" -and $_ -notmatch "Microsoft Defender" })
+    } catch { $others = @() }
+    if ($others.Count -gt 0) {
+        $names = ($others | Select-Object -Unique) -join ", "
+        return "$names is running here, and its ransomware or protected-folder feature can deny a path whatever your privileges are. If takeown and icacls do not clear this, look in $names for a block on this folder, and add an exclusion for it and for Unsloth"
+    }
+    if ($mode -eq 2) {
+        return "Controlled folder access is in audit mode, so it is logging rather than blocking and is not the cause here; Windows Defender Operational events 1123 and 1124 name whatever it did stop"
+    }
+    return ""
 }
 
 # Print guidance; returns the failure reason as its only pipeline output.
@@ -559,6 +642,10 @@ function Write-PathAccessDenied {
     substep "takeown /F `"$Path`" /R /D Y" "Yellow"
     substep "icacls `"$Path`" /reset /T" "Yellow"
     substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+    # After the generic line, since this one either confirms it or rules it
+    # out, and an empty answer must leave the generic advice standing.
+    $securitySoftware = Get-SecuritySoftwareNote
+    if ($securitySoftware) { substep $securitySoftware "Yellow" }
     if ($UserSupplied) {
         return "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
     }
@@ -645,10 +732,71 @@ function Invoke-ManagedLlamaCppPreflight {
     Write-StudioLine ""
     # A denied custom home cannot be claimed as an Unsloth-managed cache.
     $homeIsCustom = Test-StudioHomeIsCustom
-    # Preserve user-supplied wording when either override names this tree.
+    # Preserve user-supplied wording when either override names this tree, or
+    # names a build inside it: moving or deleting this folder takes that build
+    # with it, and the later --with-llama-cpp-dir check then aborts on a path
+    # we made disappear.
     $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
-    $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
-        ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+    # Walking the ancestors beats comparing the two canonical strings: an
+    # override that does not exist yet cannot be resolved, so a prefix test
+    # would compare a resolved path against an unresolved one and miss.
+    $userSupplied = $false
+    if (-not [string]::IsNullOrWhiteSpace($suppliedDir)) {
+        $canonicalDir = [string](Get-CanonicalDir -Path $dir)
+        $probe = [string](Get-CanonicalDir -Path $suppliedDir)
+        while (-not [string]::IsNullOrWhiteSpace($probe)) {
+            if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {
+                $userSupplied = $true
+                break
+            }
+            $parent = ""
+            try { $parent = [string](Split-Path -Parent $probe) } catch { $parent = "" }
+            if ($parent -eq $probe) { break }
+            $probe = $parent
+        }
+    }
+
+    # Only the default branch below tells the user to delete this folder, so
+    # only that case may move it. A user-supplied build is not ours to touch,
+    # and an unreadable custom home cannot be confirmed as a managed cache.
+    # Renaming needs DELETE on the folder plus write on its parent, neither of
+    # which is read access, so this recovers denials that takeown and icacls
+    # do not: the folder is a managed cache that setup reinstalls anyway.
+    # Setup never makes this a link, so a link here is something the user
+    # arranged, pointing at a build we were not told about. Moving it would
+    # silently change which tree they run without touching the one they were
+    # protecting, so it is left alone and named in the guidance instead.
+    $isLink = $false
+    try {
+        $linkAttrs = [System.IO.File]::GetAttributes($dir)
+        $isLink = ([int]$linkAttrs -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0
+    } catch {
+        # Unreadable attributes prove nothing, and "proves nothing" must not
+        # mean "movable": fall through to the guidance rather than guess.
+        $isLink = $true
+    }
+    if (-not $userSupplied -and -not $homeIsCustom -and -not $isLink) {
+        $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
+        $moved = $false
+        try {
+            Move-Item -LiteralPath $dir -Destination $asideDir -ErrorAction Stop
+            $moved = $true
+        } catch {
+            # Expected when the denial also covers rename; fall through to guidance.
+        }
+        if ($moved) {
+            step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
+            substep "Moved to $asideDir; it is a managed cache and setup reinstalls it" "Yellow"
+            substep "Delete the moved folder once access is restored, it is no longer used" "Yellow"
+            Write-StudioLine ""
+            return $null
+        }
+        # This runs before the install lock, so a second run can have moved
+        # the folder in between. Re-probe rather than report a denial for a
+        # path that is no longer there and stop an install that can proceed.
+        if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
+    }
+
     $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `
         -UserSupplied:$userSupplied -OwnershipUnverified:$homeIsCustom
     substep "Stopping here, before phase 1: nothing has been downloaded or installed" "Yellow"
@@ -2647,6 +2795,84 @@ function Invoke-NvidiaSmiBounded {
     }
 }
 
+# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
+# Every directory nvidia-smi might be in, in the order worth trying, filtered to the ones that
+# actually hold the binary. Callers still run their own Test-NvidiaSmiHasGpu over the result:
+# existing is not the same as answering.
+#
+# Only two locations were searched before, and each addition below is a host where a real NVIDIA
+# GPU was reported absent, which sends the installer to CPU-only PyTorch:
+#
+#   SysNative       From a 32-bit process "System32" is redirected to SysWOW64, which has no
+#                   nvidia-smi. SysNative is the alias that reaches the real System32.
+#   ProgramW64      In that same process $env:ProgramFiles is "Program Files (x86)".
+#                   ProgramW6432 is the 64-bit Program Files whatever the process bitness.
+#   x86             Not the driver's own location, but a machine that once had a 32-bit
+#                   toolkit can carry a working copy there.
+#   DriverStore     Where the driver package itself lives. Present on hosts where the copy
+#                   into System32 did not happen, which is the #9255 population.
+#
+# Nothing is removed. One ordering does change, and deliberately: the two call sites disagreed
+# with each other before, one trying System32 first and the other the NVSMI directory first, and
+# a single list cannot keep both. System32 wins, because that is where the current driver puts
+# its copy; NVSMI is the legacy location and a machine carrying both can have an older binary
+# there reporting an older CUDA version. This only affects a host that has both, and only in
+# which of two working binaries answers.
+function Get-NvidiaSmiCandidatePaths {
+    $dirs = @()
+    # Current driver locations first, in BOTH process bitnesses, before any legacy one.
+    # Both bitness spellings before $env:ProgramFiles, which in a 32-bit process is the x86 tree
+    # where a stale toolkit copy can sit and answer first.
+    if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
+    if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "SysNative") }
+    if ($env:ProgramW6432) { $dirs += (Join-Path $env:ProgramW6432 "NVIDIA Corporation\NVSMI") }
+    if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
+    $pfx86 = ${env:ProgramFiles(x86)}
+    if ($pfx86) { $dirs += (Join-Path $pfx86 "NVIDIA Corporation\NVSMI") }
+    # Bounded on purpose. FileRepository holds every driver package the machine has ever had.
+    #
+    # The bound is applied to directories that ACTUALLY HOLD the binary, not to the nv* matches.
+    # NVIDIA ships several packages whose names start nv (HD audio, the virtual audio device,
+    # the network service), so a host with eight of those newer than the display driver would
+    # otherwise spend the whole allowance on directories with no nvidia-smi in them and report
+    # the machine as having none. Test-Path is a file existence check, not a process spawn; the
+    # bound that matters is on the candidates handed back, since each of those costs a probe.
+    try {
+        $repos = @()
+        if ($env:SystemRoot) {
+            # Both spellings, same WOW64 reason as above. At most one resolves in any given process, so
+            # this is not a doubled scan.
+            $repos += (Join-Path $env:SystemRoot "System32\DriverStore\FileRepository")
+            $repos += (Join-Path $env:SystemRoot "SysNative\DriverStore\FileRepository")
+        }
+        $packages = @()
+        foreach ($repo in $repos) {
+            if (-not (Test-Path -LiteralPath $repo -PathType Container)) { continue }
+            $packages += @(Get-ChildItem -LiteralPath $repo -Directory -Filter "nv*" -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "nvidia-smi.exe") -PathType Leaf })
+        }
+        # The bound is on the whole DriverStore contribution rather than per root, so adding
+        # the second spelling cannot double the number of probes this hands back.
+        foreach ($dir in @($packages | Sort-Object LastWriteTime -Descending | Select-Object -First 8)) {
+            $dirs += $dir.FullName
+        }
+    } catch {}
+    $paths = @()
+    $seen = @{}
+    foreach ($dir in $dirs) {
+        if ([string]::IsNullOrWhiteSpace($dir)) { continue }
+        $candidate = Join-Path $dir "nvidia-smi.exe"
+        # Case-insensitive, because the same directory reached two ways must not be probed twice:
+        # each probe is a bounded process spawn with a wall-clock timeout behind it.
+        $key = $candidate.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $paths += $candidate }
+    }
+    return $paths
+}
+# ── END SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
+
 # A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row.
 # 124 is what Invoke-NvidiaSmiBounded reports when it had to kill the probe. Recorded so
 # the banner below can skip a second query: detection already waited out the full bound on
@@ -2672,21 +2898,83 @@ try {
     }
 } catch {}
 if (-not $HasNvidiaSmi) {
-    $nvSmiDefaults = @(
-        "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
-        "$env:SystemRoot\System32\nvidia-smi.exe"
-    )
-    foreach ($p in $nvSmiDefaults) {
-        if (Test-Path $p) {
-            try {
-                if (Test-NvidiaSmiHasGpu $p) {
-                    $HasNvidiaSmi = $true
-                    $NvidiaSmiExe = $p
-                    Write-StudioLine "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
-                    break
-                }
-            } catch {}
-        }
+    # Two passes, not one, and the reason is the ordering this change introduces. Listing a GPU is
+    # not the same as being able to report a CUDA version: a partially installed or stale utility
+    # can answer -L and still print a banner the version ladder cannot parse. Taking the first
+    # binary that merely lists a GPU could hand a newer-capable host an older CUDA family purely
+    # because of which directory is searched first. Prefer a candidate that answers BOTH, and
+    # settle for one that just lists a GPU only if none does.
+    #
+    # One deadline across the whole loop, not just the per-call one. Each candidate gets its own
+    # bounded runner, and on a host with a wedged driver every one of them waits out that bound
+    # before failing. The list is longer than it was, so what used to be two stalls could now be
+    # ten, and all of it is spent in front of the driver-library fallback that would have answered
+    # in milliseconds. The bound is on TIME rather than on the number of candidates because the
+    # cost being controlled is time: a machine where every probe answers at once still gets to
+    # try them all, and one where they hang stops early.
+    #
+    # Get-Date rather than a Stopwatch: Constrained Language Mode refuses the method calls, and
+    # this runs on hosts that enforce it.
+    # Enumerated BEFORE the clock starts. Discovery is Test-Path calls, but on a machine with a
+    # filesystem filter driver or slow storage it is not free, and charging it to the probe
+    # budget is how a slow disk turns into no GPU.
+    $smiCandidates = @(Get-NvidiaSmiCandidatePaths)
+    # Two budgets, because "stop early" means two different things here.
+    #
+    # The soft one applies ONLY once a usable answer is already in hand: there is a working
+    # nvidia-smi, and continuing just looks for a better CUDA banner. Giving that up costs at
+    # most a wheel family.
+    #
+    # The hard one is the only thing allowed to end the search with NOTHING found, because that
+    # outcome is CPU-only PyTorch on a machine with a GPU. The first version of this had a single
+    # budget and broke out of the loop after one slow failure, so a host whose System32 copy is
+    # broken and whose legacy NVSMI copy works lost its GPU entirely. That is strictly worse than
+    # the stall it was added to prevent.
+    $probeDeadline = (Get-Date).AddSeconds(30)
+    $probeHardDeadline = (Get-Date).AddSeconds(60)
+    $firstListing = $null
+    # Captured beside the path, because $script:NvidiaSmiWedged describes the LAST binary probed
+    # and the one this loop settles on can be an earlier one. Captured rather than assumed to be
+    # false: it is false today because a candidate only becomes $firstListing when its -L probe
+    # succeeded, and that is a property of Test-NvidiaSmiHasGpu rather than of this loop.
+    $firstListingWedged = $false
+    foreach ($p in $smiCandidates) {
+        # Only give up early when there is already something to fall back on.
+        if ($null -ne $firstListing -and (Get-Date) -gt $probeDeadline) { break }
+        # With nothing found, keep going to the hard bound. Reporting no GPU is the expensive
+        # answer, so it has to be the one that costs the most before it is reached.
+        if ((Get-Date) -gt $probeHardDeadline) { break }
+        try {
+            if (-not (Test-NvidiaSmiHasGpu $p)) { continue }
+            if (-not $firstListing) {
+                $firstListing = $p
+                $firstListingWedged = $script:NvidiaSmiWedged
+            }
+            # Rechecked here, not only at the top. The listing probe that just returned can have
+            # spent most of its own bound, and the banner probe below has a full bound of its
+            # own, so a candidate starting just inside the deadline could add nearly twice the
+            # per-probe timeout after it. There is already a usable answer in $firstListing at
+            # this point, so stopping costs at most a wheel family.
+            if ((Get-Date) -gt $probeDeadline) { break }
+            $banner = Invoke-NvidiaSmiBounded $p
+            if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
+                $HasNvidiaSmi = $true
+                $NvidiaSmiExe = $p
+                Write-StudioLine "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
+                break
+            }
+        } catch {}
+    }
+    if (-not $HasNvidiaSmi -and $firstListing) {
+        $HasNvidiaSmi = $true
+        $NvidiaSmiExe = $firstListing
+        # Restored for the binary actually selected. A later candidate that timed out leaves the
+        # flag set for ITS path, and the guard downstream reads the flag to decide whether to ask
+        # the selected binary for the name, the compute capability and the driver version. Left
+        # alone, a working nvidia-smi would be treated as wedged and all three queries skipped
+        # because a different binary elsewhere on the machine hung.
+        $script:NvidiaSmiWedged = $firstListingWedged
+        Write-StudioLine "   Found nvidia-smi at $(Split-Path $firstListing -Parent)" -ForegroundColor Gray
     }
 }
 if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
@@ -4355,6 +4643,23 @@ if ($NeedNodeForSetup) {
             Write-StudioLine $nodeOut -ForegroundColor DarkGray
             step "node" "install blocked by another active Unsloth install" "Red"
             Exit-SetupFailure "Node install is blocked by another active Unsloth install" 3
+        } elseif ($nodeExit -eq 4) {
+            # The Node cache could not be written. The generic advice below sends
+            # people to nodejs.org and their router; neither is the fix, and the
+            # same guidance the llama.cpp cache gets is the right one.
+            Write-StudioLine $nodeOut -ForegroundColor DarkGray
+            Write-StudioLine ""
+            # The install lock and the .staging root live in $NodeParent, so the
+            # refused object is not always $NodeDir, which in that case may not
+            # even exist. Deleting it cannot make a parent writable, and the
+            # parent holds more than Node, so it is never ours to offer up for
+            # deletion either. install_node_prebuilt.py classifies which it was.
+            if ($nodeOut -match "denied-scope: parent") {
+                Exit-PathAccessDenied -Path $NodeParent -Label "Node install parent directory" `
+                    -OwnershipUnverified
+            } else {
+                Exit-PathAccessDenied -Path $NodeDir -Label "Node install"
+            }
         } elseif ($nodeExit -ne 0) {
             Write-StudioLine $nodeOut -ForegroundColor DarkGray
             Write-StudioLine "[ERROR] Could not install an isolated Node automatically." -ForegroundColor Red

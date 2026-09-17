@@ -4264,6 +4264,7 @@ class TestTheEarlyNvidiaProbesAreBounded:
             _function_source(INSTALL_SRC, "Invoke-NvidiaSmiBounded"),
             # The probe resolves its executable through this; without it the call is
             # unresolved and the probe answers False for a reason the test is not about.
+            _function_source(INSTALL_SRC, "Get-NvidiaSmiCandidatePaths"),
             _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath"),
             _function_source(INSTALL_SRC, "Test-WoaNvidiaPresent"),
             f"$env:PATH = '{tmp_path}' + [System.IO.Path]::PathSeparator + $env:PATH",
@@ -4283,6 +4284,7 @@ class TestTheEarlyNvidiaProbesAreBounded:
             # Required, and easy to miss: an unresolved lookup makes Get-WoaDriverCudaVersion
             # return $null before it ever calls nvidia-smi, so the "[]" below would pass
             # without the timeout this test exists to bound ever being exercised.
+            _function_source(INSTALL_SRC, "Get-NvidiaSmiCandidatePaths"),
             _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath"),
             _function_source(INSTALL_SRC, "Get-WoaDriverCudaVersion"),
             f"$env:PATH = '{tmp_path}' + [System.IO.Path]::PathSeparator + $env:PATH",
@@ -5736,8 +5738,22 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
     def test_the_shared_helper_lists_every_supported_location(self):
         body = _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath")
         assert "Get-Command nvidia-smi" in body
+        # The candidate list moved into Get-NvidiaSmiCandidatePaths, which install.ps1 and
+        # studio/setup.ps1 share, so the WoA probe and the ordinary Windows probe cannot drift
+        # apart either. What this class is about is unchanged: one list, and both probes on it.
+        assert "Get-NvidiaSmiCandidatePaths" in body, "the WoA probe no longer uses the shared list"
+        candidates = _function_source(INSTALL_SRC, "Get-NvidiaSmiCandidatePaths")
+        assert '"nvidia-smi.exe"' in candidates
+        # The list builds each directory with Join-Path, so a whole path literal never appears in
+        # it. Check the parts, which is what it actually promises. Behaviour, including the
+        # locations added beyond these two, is driven for real against a planted filesystem in
+        # tests/studio/test_nvidia_smi_discovery.ps1.
         for location in self.LOCATIONS:
-            assert location in body, location
+            directory, _, leaf = location.rpartition("\\")
+            assert leaf == "nvidia-smi.exe", location
+            root, _, rest = directory.partition("\\")
+            assert root in candidates, location
+            assert f'"{rest}"' in candidates, location
 
     @pytest.mark.parametrize("name", ("Test-WoaNvidiaPresent", "Get-WoaDriverCudaVersion"))
     def test_neither_probe_keeps_its_own_candidate_list(self, name):
@@ -5765,16 +5781,25 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
             if "Get-WoaNvidiaSmiPath" in _function_source(INSTALL_SRC, name)
         ]
         assert callers, "neither probe routes through the shared lookup any more"
+        # Follow the chain rather than naming one helper: Get-WoaNvidiaSmiPath now calls
+        # Get-NvidiaSmiCandidatePaths, and a composition missing the second one fails in exactly
+        # the silent way this test exists to catch.
+        needed = ["Get-WoaNvidiaSmiPath"]
+        for helper in needed:
+            for callee in ("Get-NvidiaSmiCandidatePaths",):
+                if callee in _function_source(INSTALL_SRC, helper) and callee not in needed:
+                    needed.append(callee)
         own = pathlib.Path(__file__).read_text(encoding = "utf-8")
         for name in callers:
             for match in re.finditer(rf'_function_source\(INSTALL_SRC, "{re.escape(name)}"\)', own):
                 # The _script(...) call this appears in, back to its opening paren.
                 start = own.rindex("_script(", 0, match.start())
                 block = own[start : own.index("\n        )", match.end())]
-                assert '_function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath")' in block, (
-                    f"a composed script injects {name}, which calls Get-WoaNvidiaSmiPath, "
-                    "without injecting that helper"
-                )
+                for helper in needed:
+                    assert f'_function_source(INSTALL_SRC, "{helper}")' in block, (
+                        f"a composed script injects {name}, which reaches {helper}, "
+                        "without injecting that helper"
+                    )
 
     def test_the_guard_this_protects_is_still_there(self):
         # If the CUDA-major check ever goes away, this whole class is pointless; say so loudly.

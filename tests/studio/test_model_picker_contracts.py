@@ -2649,16 +2649,22 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
     src = (WORKDIR / "studio" / "frontend" / "src" / "features" / "auth" / "api.ts").read_text(
         encoding = "utf-8"
     )
-    assert src.count("unslothTransportFailure: true") == 2, "one tag per message, in one helper"
-    tagger = src.split("function asTransportFailure", 1)[1].split("\n}\n", 1)[0]
+    tagger = src.split("async function asTransportFailure", 1)[1].split("\n}\n", 1)[0]
     assert "err instanceof TypeError" in tagger
     assert "navigator.onLine === false" in tagger
+    # Counted against the helper's own raises, not pinned to a number that a new message would trip.
+    assert tagger.count("unslothTransportFailure: true") == tagger.count("new Error(")
+    assert tagger.count("unslothTransportFailure: true") >= 2
+    assert src.count("unslothTransportFailure: true") == tagger.count(
+        "unslothTransportFailure: true"
+    ), "every tag belongs to the one helper"
     retry = src.split("async function retryWithCurrentToken", 1)[1]
     retry = retry.split("\n}\n", 1)[0]
     assert "fetchWithTauriNetworkRetry" in retry
-    assert "throw asTransportFailure(err);" in retry
+    # Awaited since #10520: dropping the await throws a pending promise and the tag is never seen.
+    assert "throw await asTransportFailure(err);" in retry
     first = src.split("export async function authFetch", 1)[1]
-    assert "throw asTransportFailure(err);" in first
+    assert "throw await asTransportFailure(err);" in first
 
 
 def test_adoption_takes_its_own_pin_before_moving_the_checkpoint():

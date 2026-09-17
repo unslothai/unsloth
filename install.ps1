@@ -1134,18 +1134,149 @@ function Install-UnslothStudio {
         }
     }
 
+    # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) ──
+    # Every directory nvidia-smi might be in, in the order worth trying, filtered to the ones that
+    # actually hold the binary. Callers still run their own Test-NvidiaSmiHasGpu over the result:
+    # existing is not the same as answering.
+    #
+    # Only two locations were searched before, and each addition below is a host where a real NVIDIA
+    # GPU was reported absent, which sends the installer to CPU-only PyTorch:
+    #
+    #   SysNative       From a 32-bit process "System32" is redirected to SysWOW64, which has no
+    #                   nvidia-smi. SysNative is the alias that reaches the real System32.
+    #   ProgramW64      In that same process $env:ProgramFiles is "Program Files (x86)".
+    #                   ProgramW6432 is the 64-bit Program Files whatever the process bitness.
+    #   x86             Not the driver's own location, but a machine that once had a 32-bit
+    #                   toolkit can carry a working copy there.
+    #   DriverStore     Where the driver package itself lives. Present on hosts where the copy
+    #                   into System32 did not happen, which is the #9255 population.
+    #
+    # Nothing is removed. One ordering does change, and deliberately: the two call sites disagreed
+    # with each other before, one trying System32 first and the other the NVSMI directory first, and
+    # a single list cannot keep both. System32 wins, because that is where the current driver puts
+    # its copy; NVSMI is the legacy location and a machine carrying both can have an older binary
+    # there reporting an older CUDA version. This only affects a host that has both, and only in
+    # which of two working binaries answers.
+    function Get-NvidiaSmiCandidatePaths {
+        $dirs = @()
+        # Current driver locations first, in BOTH process bitnesses, before any legacy one.
+        # Both bitness spellings before $env:ProgramFiles, which in a 32-bit process is the x86 tree
+        # where a stale toolkit copy can sit and answer first.
+        if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
+        if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "SysNative") }
+        if ($env:ProgramW6432) { $dirs += (Join-Path $env:ProgramW6432 "NVIDIA Corporation\NVSMI") }
+        if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
+        $pfx86 = ${env:ProgramFiles(x86)}
+        if ($pfx86) { $dirs += (Join-Path $pfx86 "NVIDIA Corporation\NVSMI") }
+        # Bounded on purpose. FileRepository holds every driver package the machine has ever had.
+        #
+        # The bound is applied to directories that ACTUALLY HOLD the binary, not to the nv* matches.
+        # NVIDIA ships several packages whose names start nv (HD audio, the virtual audio device,
+        # the network service), so a host with eight of those newer than the display driver would
+        # otherwise spend the whole allowance on directories with no nvidia-smi in them and report
+        # the machine as having none. Test-Path is a file existence check, not a process spawn; the
+        # bound that matters is on the candidates handed back, since each of those costs a probe.
+        try {
+            $repos = @()
+            if ($env:SystemRoot) {
+                # Both spellings, same WOW64 reason as above. At most one resolves in any given process, so
+                # this is not a doubled scan.
+                $repos += (Join-Path $env:SystemRoot "System32\DriverStore\FileRepository")
+                $repos += (Join-Path $env:SystemRoot "SysNative\DriverStore\FileRepository")
+            }
+            $packages = @()
+            foreach ($repo in $repos) {
+                if (-not (Test-Path -LiteralPath $repo -PathType Container)) { continue }
+                $packages += @(Get-ChildItem -LiteralPath $repo -Directory -Filter "nv*" -ErrorAction SilentlyContinue |
+                    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "nvidia-smi.exe") -PathType Leaf })
+            }
+            # The bound is on the whole DriverStore contribution rather than per root, so adding
+            # the second spelling cannot double the number of probes this hands back.
+            foreach ($dir in @($packages | Sort-Object LastWriteTime -Descending | Select-Object -First 8)) {
+                $dirs += $dir.FullName
+            }
+        } catch {}
+        $paths = @()
+        $seen = @{}
+        foreach ($dir in $dirs) {
+            if ([string]::IsNullOrWhiteSpace($dir)) { continue }
+            $candidate = Join-Path $dir "nvidia-smi.exe"
+            # Case-insensitive, because the same directory reached two ways must not be probed twice:
+            # each probe is a bounded process spawn with a wall-clock timeout behind it.
+            $key = $candidate.ToLowerInvariant()
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $paths += $candidate }
+        }
+        return $paths
+    }
+    # ── END SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) ──
+
     # One list, because the presence probe and the driver-version probe must agree: a host only the first finds reports a GPU with no driver version, and the CUDA-major guard is then skipped.
+    # Reset per run: under `irm | iex` the script scope IS the caller's session, so a second
+    # invocation in one shell would otherwise reuse the first run's answer.
+    $script:WoaNvidiaSmiProbed = $false
+    $script:WoaNvidiaSmiPath = $null
+
     function Get-WoaNvidiaSmiPath {
+        # Memoised because the two callers each probe, and without this the whole candidate list
+        # would be walked twice with a bounded process spawn per entry.
+        if ($script:WoaNvidiaSmiProbed) { return $script:WoaNvidiaSmiPath }
+        $script:WoaNvidiaSmiProbed = $true
         $exe = $null
         try { $exe = (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source } catch { $exe = $null }
-        if ($exe) { return $exe }
-        foreach ($candidate in @(
-            "$env:SystemRoot\System32\nvidia-smi.exe",
-            "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
-        )) {
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        if ($exe) { $script:WoaNvidiaSmiPath = $exe; return $exe }
+        $found = @(Get-NvidiaSmiCandidatePaths)
+        if ($found.Count -eq 0) { return $null }
+        # The first candidate that ANSWERS, not the first that exists.
+        #
+        # Both callers immediately probe what this returns, and treat a non-answer as "no NVIDIA
+        # here": Test-WoaNvidiaPresent returns false and Get-WoaDriverCudaVersion returns null,
+        # which between them decide whether the native ARM64 CUDA stack is installed at all. So
+        # handing back a broken copy does not cost a retry, it declines the whole route.
+        #
+        # That was survivable when two locations were searched and is not now that the list is
+        # longer: every location added is another chance that the first entry is a stale copy
+        # sitting in front of a working one. Same reason the main detection loop stopped taking
+        # the first listing candidate.
+        # Same two-budget shape as the main detection loop, and for the same reasons. Each probe
+        # below is a bounded process spawn, and the list can now be eleven entries, so a wedged
+        # driver would otherwise hold Initialize-WoaNativeCudaTorch for minutes before the
+        # install even starts. The soft budget only applies once something has answered; only the
+        # hard one may end the scan with nothing, because that decides the whole ARM64 route.
+        $woaDeadline = (Get-Date).AddSeconds(30)
+        $woaHardDeadline = (Get-Date).AddSeconds(60)
+        $woaListing = $null
+        foreach ($p in $found) {
+            if ($null -ne $woaListing -and (Get-Date) -gt $woaDeadline) { break }
+            if ((Get-Date) -gt $woaHardDeadline) { break }
+            try {
+                $listing = Invoke-NvidiaSmiBounded $p @('-L')
+                if (-not ($LASTEXITCODE -eq 0 -and $listing -match '(?m)^\s*GPU\s+\d+')) { continue }
+                if (-not $woaListing) { $woaListing = $p }
+                # Two passes, because listing a GPU is not enough here. Get-WoaDriverCudaVersion
+                # asks this same binary for the CUDA banner, and a null answer does not merely
+                # lose a version: it skips the CUDA-major compatibility guard in
+                # Initialize-WoaNativeCudaTorch, which is what stops a native wheel newer than
+                # the installed driver being chosen. So prefer a candidate that answers BOTH.
+                if ((Get-Date) -gt $woaDeadline) { break }
+                $banner = Invoke-NvidiaSmiBounded $p
+                if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
+                    $script:WoaNvidiaSmiPath = $p
+                    return $p
+                }
+            } catch {}
         }
-        return $null
+        # One that listed a GPU but never named a version is still better than one that did not
+        # answer at all: the callers' presence check works, and the version check declines.
+        if ($woaListing) {
+            $script:WoaNvidiaSmiPath = $woaListing
+            return $woaListing
+        }
+        # Nothing answered. Hand back the first that exists, which is what this did before, so a
+        # host where the probe cannot run is no worse off than it was.
+        $script:WoaNvidiaSmiPath = $found[0]
+        return $found[0]
     }
 
     function Test-WoaNvidiaPresent {
@@ -2658,15 +2789,28 @@ exit 1
         Join-Path $env:LOCALAPPDATA "Unsloth Studio"
     } else { $null }
 
+    # Cleared per invocation: script scope outlives a run, and under `irm | iex` one session can
+    # install twice. A stale $true makes the lock skip claiming a root it just created.
+    $script:StudioEnvRootPath = $null
+    $script:StudioEnvRootExisted = $false
+
     if ($envOverride) {
         # Tilde expansion: env vars aren't subject to it when quoted on assignment.
         if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
             $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
         }
         try {
+            # BEFORE the create: this is the only moment anyone can still tell. The lock runs
+            # thousands of lines below and asks whether the root existed, which by then is yes for
+            # every env-mode root, so its ownership branch would never fire for the roots it was
+            # written for.
+            $script:StudioEnvRootPath = $envOverride
+            $script:StudioEnvRootExisted = [System.IO.Directory]::Exists($envOverride)
             # .NET API: New-Item -Path treats brackets as wildcards (no -LiteralPath on PS 5.1).
             [System.IO.Directory]::CreateDirectory($envOverride) | Out-Null
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
+            # Re-recorded against the resolved spelling, which is what the lock is handed.
+            $script:StudioEnvRootPath = $StudioHome
         } catch {
             Write-StudioLine "ERROR: $envOverrideVar=$envOverride cannot be created or accessed." -ForegroundColor Red
             # Same as the --tauri rejection above: still before the lock finally.
@@ -2757,6 +2901,10 @@ exit 1
     # The emptiness test is inline, not Test-DirectoryHasEntries, which is defined below this
     # function's first caller: the name error would land in the catch and skip the claim in
     # silence. An unreadable root counts as occupied, so failure means "do not claim".
+    # Above its earliest reader, not beside the lock helpers: Write-StudioRootOwnerMarker filters
+    # this name out of its emptiness test thousands of lines earlier, and a $null filters nothing.
+    $script:StudioInstallLockFileName = ".unsloth-install.lock"
+
     function Write-StudioRootOwnerMarker {
         param([Parameter(Mandatory = $true)][string]$Root)
         try {
@@ -2767,7 +2915,10 @@ exit 1
             if (Test-Path -LiteralPath $Root) {
                 $occupied = $true
                 try {
+                    # The lock's own file is not occupancy: it is created in this root before
+                    # anything else, so counting it makes a fresh root look like somebody else's.
                     $occupied = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
+                        Where-Object { $_.Name -ne $script:StudioInstallLockFileName } |
                         Select-Object -First 1).Count -gt 0
                 } catch { $occupied = $true }
                 $claimable = (
@@ -2789,8 +2940,23 @@ exit 1
             # Get-Item -Force, not Test-Path: the latter follows a dangling link and answers
             # false, after which WriteAllText follows the link and writes outside the root.
             Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-            if (Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue) { return }
-            [System.IO.File]::WriteAllText($marker, "")
+            # CreateNew, not check-then-write: the pair left a window to plant a link at the name
+            # and have the write truncate its target. Residual, stated rather than implied away: a
+            # DANGLING link is still followed and creates a zero-byte file at its target, which
+            # cannot destroy an existing one. FILE_FLAG_OPEN_REPARSE_POINT is the complete answer
+            # and .NET does not expose it here.
+            $markerStream = $null
+            try {
+                $markerStream = [System.IO.File]::Open($marker,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None)
+            } catch {
+                # No marker is fine; the venv writes its own later.
+                return
+            } finally {
+                if ($markerStream) { try { $markerStream.Dispose() } catch {} }
+            }
         } catch { }
     }
 
@@ -3629,16 +3795,99 @@ exit 1
         param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
 
         if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
-        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-        if (-not $item) { return "" }
-        # Non-filesystem providers do not expose FileSystemInfo attributes.
-        if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
-        if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
-        $target = $null
-        try { $target = $item.Target } catch { $target = $null }
-        # PS 5.1 exposes .Target as a collection; PS 7 as a string.
-        if ($target) { return " (it is a link to $(@($target) -join ', '))" }
-        return " (it is a link)"
+
+        # Read attributes through the filesystem API rather than Get-Item. Getting
+        # attributes needs only FILE_READ_ATTRIBUTES, which survives the ACLs that
+        # deny reading the directory itself, so Get-Item returns nothing in exactly
+        # the case this detail is meant to describe and the caller silently loses
+        # every hint below.
+        $attrs = $null
+        try { $attrs = [System.IO.File]::GetAttributes($Path) } catch { $attrs = $null }
+        if ($null -eq $attrs) { return "" }
+
+        # Ordered by how much each one changes the fix. takeown/icacls cannot help
+        # with any of the first three, so name them before falling back to ACLs.
+        # On a directory this attribute only means new descendants are encrypted
+        # by default, so listing it never needs the key and a denial there is an
+        # ACL. Only a file's own streams are unreadable without the certificate.
+        $isDirectory = ([int]$attrs -band [int][System.IO.FileAttributes]::Directory) -ne 0
+        if (-not $isDirectory -and ($attrs -band [System.IO.FileAttributes]::Encrypted)) {
+            return " (it is EFS-encrypted, so it stays unreadable even elevated unless the encrypting account or its recovery certificate is available)"
+        }
+        # Offline plus either recall attribute is a cloud placeholder, typically
+        # OneDrive Files On-Demand that cannot hydrate.
+        # RECALL_ON_OPEN (0x40000) and RECALL_ON_DATA_ACCESS (0x400000) are absent
+        # from the FileAttributes enum on Windows PowerShell 5.1, so test the bits.
+        $offline = ([int]$attrs -band [int][System.IO.FileAttributes]::Offline) -ne 0
+        $recall = ([int]$attrs -band (0x00040000 -bor 0x00400000)) -ne 0
+        if ($offline -or $recall) {
+            return " (it is a cloud placeholder, e.g. OneDrive Files On-Demand, that cannot be hydrated right now)"
+        }
+        if ($attrs -band [System.IO.FileAttributes]::ReparsePoint) {
+            $target = $null
+            try {
+                $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+                if ($item -is [System.IO.FileSystemInfo]) { $target = $item.Target }
+            } catch { $target = $null }
+            # PS 5.1 exposes .Target as a collection; PS 7 as a string.
+            if ($target) { return " (it is a link to $(@($target) -join ', '))" }
+            return " (it is a link)"
+        }
+        return ""
+    }
+
+    # Which security software could be denying this path, as a possibility.
+    #
+    # Worth naming because takeown and icacls cannot clear a filter-driver block
+    # and elevation does not either, so a user whose antivirus is holding the
+    # folder is otherwise sent round the takeown loop for as long as they are
+    # willing. Nothing readable from here attributes the specific denial though,
+    # so this names the candidate and the log that settles it and never
+    # contradicts the ACL advice it follows.
+    #
+    # Defender's Controlled folder access modes are 0 Disabled, 1 Enabled,
+    # 2 AuditMode, 3 BlockDiskModificationOnly, 4 AuditDiskModificationOnly. Only
+    # 1 gates file access; 3 and 4 are direct disk-sector writes rather than
+    # files, so neither explains a denied folder.
+    #
+    # When Defender is not it, name whichever antivirus is registered and running
+    # instead: third-party suites ship the same feature under their own names
+    # (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
+    # user cannot act on advice that does not say which product to open.
+    #
+    # Answers "" whenever it cannot tell, so a machine with no Defender module
+    # and no SecurityCenter registration reads the same as one that says no.
+    function Get-SecuritySoftwareNote {
+        $mode = $null
+        try {
+            if (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) {
+                $mode = [int](Get-MpPreference -ErrorAction Stop).EnableControlledFolderAccess
+            }
+        } catch { $mode = $null }
+        if ($mode -eq 1) {
+            return "Controlled folder access is ON here, and it gates writes to protected folders whatever your privileges are, so where it is the cause takeown and icacls will not clear it: Windows Defender Operational events 1123 and 1124 say whether it stopped this path, and Virus & threat protection > Ransomware protection > Allow an app is where to allow Unsloth"
+        }
+        # SecurityCenter2 is the registration every consumer antivirus makes, and
+        # it is absent on Server SKUs, so this stays best-effort. productState
+        # packs the running state in 0xF000: 0x1000 on, 0x2000 snoozed, 0 off.
+        # A product that is not running cannot be holding the folder and naming it
+        # sends the user to the wrong console; a state we cannot read proves
+        # nothing either way, so it is kept.
+        $others = @()
+        try {
+            $others = @(Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -ErrorAction Stop |
+                Where-Object { $state = $_.productState -as [uint32]; ($null -eq $state) -or (($state -band 0xF000) -eq 0x1000) } |
+                ForEach-Object { [string]$_.displayName } |
+                Where-Object { $_ -and $_ -notmatch "Windows Defender" -and $_ -notmatch "Microsoft Defender" })
+        } catch { $others = @() }
+        if ($others.Count -gt 0) {
+            $names = ($others | Select-Object -Unique) -join ", "
+            return "$names is running here, and its ransomware or protected-folder feature can deny a path whatever your privileges are. If takeown and icacls do not clear this, look in $names for a block on this folder, and add an exclusion for it and for Unsloth"
+        }
+        if ($mode -eq 2) {
+            return "Controlled folder access is in audit mode, so it is logging rather than blocking and is not the cause here; Windows Defender Operational events 1123 and 1124 name whatever it did stop"
+        }
+        return ""
     }
 
     # Print guidance; returns the failure reason as its only pipeline output.
@@ -3667,6 +3916,10 @@ exit 1
         substep "takeown /F `"$Path`" /R /D Y" "Yellow"
         substep "icacls `"$Path`" /reset /T" "Yellow"
         substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+        # After the generic line, since this one either confirms it or rules it
+        # out, and an empty answer must leave the generic advice standing.
+        $securitySoftware = Get-SecuritySoftwareNote
+        if ($securitySoftware) { substep $securitySoftware "Yellow" }
         if ($UserSupplied) {
             return "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
         }
@@ -3733,10 +3986,71 @@ exit 1
         Write-StudioLine ""
         # A denied custom home cannot be claimed as an Unsloth-managed cache.
         $homeIsCustom = Test-StudioHomeIsCustom
-        # Preserve user-supplied wording when either override names this tree.
+        # Preserve user-supplied wording when either override names this tree, or
+        # names a build inside it: moving or deleting this folder takes that build
+        # with it, and the later --with-llama-cpp-dir check then aborts on a path
+        # we made disappear.
         $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
-        $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
-            ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+        # Walking the ancestors beats comparing the two canonical strings: an
+        # override that does not exist yet cannot be resolved, so a prefix test
+        # would compare a resolved path against an unresolved one and miss.
+        $userSupplied = $false
+        if (-not [string]::IsNullOrWhiteSpace($suppliedDir)) {
+            $canonicalDir = [string](Get-CanonicalDir -Path $dir)
+            $probe = [string](Get-CanonicalDir -Path $suppliedDir)
+            while (-not [string]::IsNullOrWhiteSpace($probe)) {
+                if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {
+                    $userSupplied = $true
+                    break
+                }
+                $parent = ""
+                try { $parent = [string](Split-Path -Parent $probe) } catch { $parent = "" }
+                if ($parent -eq $probe) { break }
+                $probe = $parent
+            }
+        }
+
+        # Only the default branch below tells the user to delete this folder, so
+        # only that case may move it. A user-supplied build is not ours to touch,
+        # and an unreadable custom home cannot be confirmed as a managed cache.
+        # Renaming needs DELETE on the folder plus write on its parent, neither of
+        # which is read access, so this recovers denials that takeown and icacls
+        # do not: the folder is a managed cache that setup reinstalls anyway.
+        # Setup never makes this a link, so a link here is something the user
+        # arranged, pointing at a build we were not told about. Moving it would
+        # silently change which tree they run without touching the one they were
+        # protecting, so it is left alone and named in the guidance instead.
+        $isLink = $false
+        try {
+            $linkAttrs = [System.IO.File]::GetAttributes($dir)
+            $isLink = ([int]$linkAttrs -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0
+        } catch {
+            # Unreadable attributes prove nothing, and "proves nothing" must not
+            # mean "movable": fall through to the guidance rather than guess.
+            $isLink = $true
+        }
+        if (-not $userSupplied -and -not $homeIsCustom -and -not $isLink) {
+            $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
+            $moved = $false
+            try {
+                Move-Item -LiteralPath $dir -Destination $asideDir -ErrorAction Stop
+                $moved = $true
+            } catch {
+                # Expected when the denial also covers rename; fall through to guidance.
+            }
+            if ($moved) {
+                step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
+                substep "Moved to $asideDir; it is a managed cache and setup reinstalls it" "Yellow"
+                substep "Delete the moved folder once access is restored, it is no longer used" "Yellow"
+                Write-StudioLine ""
+                return $null
+            }
+            # This runs before the install lock, so a second run can have moved
+            # the folder in between. Re-probe rather than report a denial for a
+            # path that is no longer there and stop an install that can proceed.
+            if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
+        }
+
         $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `
             -UserSupplied:$userSupplied -OwnershipUnverified:$homeIsCustom
         substep "Stopping here, before phase 1: nothing has been downloaded or installed" "Yellow"
@@ -5057,6 +5371,183 @@ exit 0
         try { $Mutex.ReleaseMutex() } catch {} finally { $Mutex.Dispose() }
     }
 
+    # Mutex AND file, because they exclude different things. The mutex is named from a hash of the
+    # resolved path, so two spellings of one directory fail to exclude each other whenever the
+    # resolver is inexact; a file inside the destination has no such problem, because the
+    # filesystem resolves the alias. Both are kept: a released installer only knows the mutex, so
+    # dropping it would stop an old run and a new one seeing each other during an upgrade.
+
+    function Enter-StudioInstallLock {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $mutex = Enter-StudioInstallMutex -Path $Path
+        if ($null -eq $mutex) { return $null }
+        $stream = $null
+        try {
+            # Race-safe: concurrent creators both succeed, and only one opens the file exclusively
+            # below. A throw here surfaces as the caller's install-lock error.
+            $existedBefore = [System.IO.Directory]::Exists($Path)
+            # An env-mode root is created thousands of lines above, so the check just above answers
+            # yes for every one of them; that site recorded what it found, so prefer its answer for
+            # this same directory.
+            #
+            # One direction only. It may say "I created this root, so treat it as new", never the
+            # opposite: a record claiming the root existed cannot be true while the root is absent
+            # now, so it is a leftover from an earlier run in the same session.
+            if ($script:StudioEnvRootPath -and
+                $script:StudioEnvRootPath.Equals($Path, [System.StringComparison]::OrdinalIgnoreCase) -and
+                -not $script:StudioEnvRootExisted) {
+                $existedBefore = $false
+            }
+            $null = [System.IO.Directory]::CreateDirectory($Path)
+            $lockPath = Join-Path $Path $script:StudioInstallLockFileName
+            # A link planted at the lock path is not a lock, it is a way to point our exclusive
+            # handle at somebody else's file: File.Open follows it, so the target would be held
+            # open with FileShare.None for the whole install even though nothing is written to it.
+            # Remove the link itself, never its target, then let the open below create a real
+            # file. Get-Item -Force rather than Test-Path, which follows a dangling link and
+            # answers false; Write-StudioRootOwnerMarker guards the same hazard the same way.
+            $existingLock = $null
+            try {
+                $existingLock = Get-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+            } catch { $existingLock = $null }
+            if ($existingLock -and
+                ($existingLock.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                # A detected link that will NOT go must stop the install, not be shrugged off.
+                #
+                # Not an empty catch: a link that can be inspected but not deleted would carry on
+                # into File.Open, which follows it, and a zero-byte target passes the length check
+                # too. The throw reaches the outer handler, which drops the mutex and reports a
+                # lock-creation failure rather than a phantom second installer.
+                try {
+                    Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
+                } catch {
+                    throw "A link is planted at the install lock path $lockPath and cannot be removed."
+                }
+            }
+            # A HARD link carries no reparse attribute, so the check above cannot see it and
+            # File.Open follows it. The discriminator is the opened stream's Length: nothing is
+            # ever written here, so ours is always zero bytes and a planted alias worth denying
+            # access to is not. Read from the handle, which also closes the check-to-open window.
+            #
+            # At most one repair, and CreateNew rather than OpenOrCreate: the mutex only serialises
+            # identical spellings, so if somebody re-created the entry in between, this must fail
+            # rather than hand out a second lock.
+            $repaired = $false
+            while ($true) {
+                if ($repaired) { $mode = [System.IO.FileMode]::CreateNew }
+                else { $mode = [System.IO.FileMode]::OpenOrCreate }
+                try {
+                    $stream = [System.IO.File]::Open(
+                        $lockPath,
+                        $mode,
+                        [System.IO.FileAccess]::ReadWrite,
+                        [System.IO.FileShare]::None)
+                } catch [System.IO.IOException] {
+                    # Only a sharing or lock violation means "another installer holds it"; a
+                    # storage fault reported that way would send the user hunting a second
+                    # installer that does not exist. HResult's low 16 bits carry the Win32 code: 32
+                    # ERROR_SHARING_VIOLATION, 33 ERROR_LOCK_VIOLATION. Off Windows .NET implements
+                    # FileShare with flock and reports errno 11 (EAGAIN) instead, measured rather
+                    # than assumed. 80, 183 and 17 are how the CreateNew reopen reports losing the
+                    # race, which means the same thing to the caller.
+                    $code = $_.Exception.HResult -band 0xFFFF
+                    $lost = $repaired -and ($code -eq 80 -or $code -eq 183 -or $code -eq 17)
+                    if (-not $lost -and $code -ne 32 -and $code -ne 33 -and $code -ne 11) { throw }
+                    if ($stream) { $stream.Dispose() }
+                    Exit-StudioInstallMutex -Mutex $mutex
+                    return $null
+                }
+                # The reparse test above ran on the PATHNAME, so a link can be swapped in before
+                # this open, and a zero-byte target slips past the Length test below. Re-read now
+                # the handle is held. This narrows the window rather than closing it: closing it
+                # needs FILE_FLAG_OPEN_REPARSE_POINT, and removing native imports is the point of
+                # this workstream. The residual needs a root another user can already write to.
+                if ($stream.Length -eq 0) {
+                    $entry = $null
+                    try { $entry = Get-Item -LiteralPath $lockPath -Force -ErrorAction Stop } catch { $entry = $null }
+                    if ($entry -and (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                        $stream.Dispose()
+                        $stream = $null
+                        throw "A link was planted at the install lock path $lockPath while it was being opened."
+                    }
+                    break
+                }
+                if ($repaired) {
+                    # A file this run just created cannot be non-empty. Fail loudly, not in a loop.
+                    throw "The install lock file at $lockPath is not empty after being replaced."
+                }
+                # Move the entry ASIDE rather than delete it, and let the reopen create a real file
+                # at the freed name.
+                #
+                # Deleting a planted hard link costs only its own directory entry, which is why it
+                # looked safe, but an ORDINARY non-empty file at this name loses its contents
+                # merely because somebody started the installer. Refusing instead lets a planted
+                # hard link block every install. The discriminator is the link count and .NET does
+                # not expose it here, so there is no cheap way to tell them apart. A rename needs
+                # no discrimination: the planted link leaves the lock
+                # path either way, and the ordinary file keeps its bytes under a name that says
+                # what happened to it.
+                $stream.Dispose()
+                $stream = $null
+                $displaced = "$lockPath.displaced-" + (Get-Date -Format "yyyyMMddHHmmss") +
+                    "-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+                try {
+                    Move-Item -LiteralPath $lockPath -Destination $displaced -Force -ErrorAction Stop
+                } catch {
+                    # Same discrimination and the same codes as the open below: only a sharing or
+                    # lock violation is a concurrent install. The code is dug out of the exception
+                    # chain because a cmdlet failure arrives wrapped.
+                    $mvCode = 0
+                    $mvEx = $_.Exception
+                    while ($mvEx) {
+                        if ($mvEx -is [System.IO.IOException]) {
+                            $mvCode = $mvEx.HResult -band 0xFFFF
+                            break
+                        }
+                        $mvEx = $mvEx.InnerException
+                    }
+                    Exit-StudioInstallMutex -Mutex $mutex
+                    if ($mvCode -ne 32 -and $mvCode -ne 33 -and $mvCode -ne 11) { throw }
+                    return $null
+                }
+                $repaired = $true
+            }
+            # Residual, stated plainly: a hard link to a genuinely EMPTY file is indistinguishable
+            # from our own and is used as the lock. Nothing is written to it, so the only thing
+            # denied for the install is access to a zero-byte file.
+            # Nothing is written to the handle on purpose: holding it open exclusively IS the
+            # lock, and File.Open follows a link, so a planted lock file would have its TARGET
+            # truncated merely by starting the installer.
+            # The lock is now the first thing that can create the root, so without this marker a
+            # run that died before the first real write leaves a root scripts/uninstall.ps1's
+            # _IsStudioRoot refuses to remove as somebody else's.
+            #
+            # Only when this call created the directory: a UNSLOTH_STUDIO_HOME pointed at one the
+            # user already had must never be claimed, or uninstall would delete it.
+            #
+            # Through the helper, not a bare WriteAllText, which follows a planted link just as
+            # File.Open does. The helper removes the entry and confirms its absence first, with
+            # Get-Item -Force so a dangling link is not mistaken for nothing there.
+            if (-not $existedBefore) {
+                Write-StudioRootOwnerMarker -Root $Path
+            }
+            return [pscustomobject]@{ Mutex = $mutex; Stream = $stream; Path = $lockPath }
+        } catch {
+            if ($stream) { try { $stream.Dispose() } catch {} }
+            Exit-StudioInstallMutex -Mutex $mutex
+            throw
+        }
+    }
+
+    function Exit-StudioInstallLock {
+        param($Lock)
+        if ($null -eq $Lock) { return }
+        # Closing the handle IS the release, so a dead process leaves nothing to clean up. The
+        # file stays: deleting it would race another installer that has just opened it.
+        if ($Lock.Stream) { try { $Lock.Stream.Dispose() } catch {} }
+        Exit-StudioInstallMutex -Mutex $Lock.Mutex
+    }
+
     function Test-StudioProtectedPathMatch {
         param(
             [Parameter(Mandatory = $true)][string]$Candidate,
@@ -5262,12 +5753,12 @@ exit 0
         }
     }
     try {
-        $studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome
+        $studioInstallLock = Enter-StudioInstallLock -Path $StudioHome
     } catch {
         Write-StudioLine "[ERROR] Could not create the Unsloth install lock: $($_.Exception.Message)" -ForegroundColor Red
         return (Exit-InstallFailure "Could not create the Unsloth install lock")
     }
-    if ($null -eq $studioInstallMutex) {
+    if ($null -eq $studioInstallLock) {
         Write-StudioLine "[ERROR] Another Unsloth Studio install or repair is already running." -ForegroundColor Red
         Write-StudioLine "        Wait for it to finish, then re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Another Unsloth Studio install or repair is already running")
@@ -7521,15 +8012,79 @@ exit 0
         }
     } catch {}
     if (-not $HasNvidiaSmi) {
-        foreach ($p in @(
-            "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
-            "$env:SystemRoot\System32\nvidia-smi.exe"
-        )) {
-            if (Test-Path $p) {
-                try {
-                    if (Test-NvidiaSmiHasGpu $p) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
-                } catch {}
-            }
+        # Two passes, not one, and the reason is the ordering this change introduces. Listing a
+        # GPU is not the same as being able to report a CUDA version: a partially installed or
+        # stale utility can answer -L and still print a banner Get-TorchIndexUrl cannot parse,
+        # and that path falls back to cu126. Taking the first binary that merely lists a GPU
+        # could therefore hand a cu128-capable host cu126 purely because of which directory is
+        # searched first. So prefer a candidate that answers BOTH questions, and only settle for
+        # one that just lists a GPU if none does.
+        #
+        # One deadline across the whole loop, not just the per-call one. Each candidate gets its own
+        # bounded runner, and on a host with a wedged driver every one of them waits out that bound
+        # before failing. The list is longer than it was, so what used to be two stalls could now be
+        # ten, and all of it is spent in front of the driver-library fallback that would have answered
+        # in milliseconds. The bound is on TIME rather than on the number of candidates because the
+        # cost being controlled is time: a machine where every probe answers at once still gets to
+        # try them all, and one where they hang stops early.
+        #
+        # Get-Date rather than a Stopwatch: Constrained Language Mode refuses the method calls, and
+        # this runs on hosts that enforce it.
+        # Enumerated BEFORE the clock starts. Discovery is Test-Path calls, but on a machine with a
+        # filesystem filter driver or slow storage it is not free, and charging it to the probe
+        # budget is how a slow disk turns into no GPU.
+        $smiCandidates = @(Get-NvidiaSmiCandidatePaths)
+        # Two budgets, because "stop early" means two different things here.
+        #
+        # The soft one applies ONLY once a usable answer is already in hand: there is a working
+        # nvidia-smi, and continuing just looks for a better CUDA banner. Giving that up costs at
+        # most a wheel family.
+        #
+        # The hard one is the only thing allowed to end the search with NOTHING found, because that
+        # outcome is CPU-only PyTorch on a machine with a GPU. The first version of this had a single
+        # budget and broke out of the loop after one slow failure, so a host whose System32 copy is
+        # broken and whose legacy NVSMI copy works lost its GPU entirely. That is strictly worse than
+        # the stall it was added to prevent.
+        $probeDeadline = (Get-Date).AddSeconds(30)
+        $probeHardDeadline = (Get-Date).AddSeconds(60)
+        $firstListing = $null
+        # Captured beside the path, because $script:NvidiaSmiWedged describes the LAST binary probed
+        # and the one this loop settles on can be an earlier one. Captured rather than assumed to be
+        # false: it is false today because a candidate only becomes $firstListing when its -L probe
+        # succeeded, and that is a property of Test-NvidiaSmiHasGpu rather than of this loop.
+        $firstListingWedged = $false
+        foreach ($p in $smiCandidates) {
+            # Only give up early when there is already something to fall back on.
+            if ($null -ne $firstListing -and (Get-Date) -gt $probeDeadline) { break }
+            # With nothing found, keep going to the hard bound. Reporting no GPU is the expensive
+            # answer, so it has to be the one that costs the most before it is reached.
+            if ((Get-Date) -gt $probeHardDeadline) { break }
+            try {
+                if (-not (Test-NvidiaSmiHasGpu $p)) { continue }
+                if (-not $firstListing) {
+                    $firstListing = $p
+                    $firstListingWedged = $script:NvidiaSmiWedged
+                }
+                # Rechecked here, not only at the top. The listing probe that just returned can have
+                # spent most of its own bound, and the banner probe below has a full bound of its
+                # own, so a candidate starting just inside the deadline could add nearly twice the
+                # per-probe timeout after it. There is already a usable answer in $firstListing at
+                # this point, so stopping costs at most a wheel family.
+                if ((Get-Date) -gt $probeDeadline) { break }
+                $banner = Invoke-NvidiaSmiBounded $p
+                if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
+                    $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break
+                }
+            } catch {}
+        }
+        if (-not $HasNvidiaSmi -and $firstListing) {
+            $HasNvidiaSmi = $true; $NvidiaSmiExe = $firstListing
+            # Restored for the binary actually selected. A later candidate that timed out leaves the
+            # flag set for ITS path, and the guard downstream reads the flag to decide whether to ask
+            # the selected binary for the name, the compute capability and the driver version. Left
+            # alone, a working nvidia-smi would be treated as wedged and all three queries skipped
+            # because a different binary elsewhere on the machine hung.
+            $script:NvidiaSmiWedged = $firstListingWedged
         }
     }
     if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
@@ -8962,7 +9517,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.4" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.6" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -8970,7 +9525,10 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+            # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
+            # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
+            # (tests/test_installer_zoo_floor_parity.py enforces that).
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -8989,7 +9547,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -9240,7 +9798,8 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+            # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -9260,11 +9819,11 @@ exit 0
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
                 Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
@@ -9301,7 +9860,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.3" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.5" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -10141,7 +10700,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
-        Exit-StudioInstallMutex -Mutex $studioInstallMutex
+        Exit-StudioInstallLock -Lock $studioInstallLock
         # Matters for `irm | iex`, where these are the user's own session variables.
         Restore-StudioTempEnvironment
     }
