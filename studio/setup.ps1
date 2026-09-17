@@ -7063,6 +7063,25 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             $SkipPythonDeps = $false
         }
     }
+    # A GPU found on the PCI bus alone, on a host whose torch is a CPU build. The promotion runs
+    # after the fast path has already decided, and nothing here cleared $SkipPythonDeps for NVIDIA
+    # the way the checks above and below do for Intel and AMD, so an "everything is up to date"
+    # run reported the GPU and then kept CPU PyTorch forever: the entire CUDA routing block sits
+    # behind this flag.
+    #
+    # Gated on a CUDA family being reachable at all, or it re-fires on every run of a host that is
+    # deliberately staying on CPU: a pin pointing elsewhere, no-torch mode, and a pre-R450 driver
+    # each leave it alone. Pre-R450 is the interesting one, because that host HAS a GPU and still
+    # wants CPU wheels, which is the answer the routing gives it a few hundred lines below.
+    $_nvidiaIsReachable = (-not $NoTorchMode) -and
+        ((-not $_pinLeafNow) -or (Test-CudaFamilyLeaf $_pinLeafNow))
+    $_nvidiaPreR450 = ($null -ne $script:NvidiaPresenceDriverRelease -and
+        $script:NvidiaPresenceDriverRelease -lt 450)
+    if ($SkipPythonDeps -and $script:NvidiaPresenceOnly -and $_nvidiaIsReachable -and
+        (-not $_nvidiaPreR450) -and $installedTorchTag -eq "cpu") {
+        substep "NVIDIA GPU found on the PCI bus but the installed PyTorch is a CPU build -- reinstalling CUDA PyTorch" "Cyan"
+        $SkipPythonDeps = $false
+    }
     # The installed wheel as well as the scan: an explicit xpu pin on a mixed NVIDIA + Intel box
     # ends up on XPU with $script:IsIntelXpu false, fast-pathing past the bitsandbytes floor and
     # the Triton replacement forever.
@@ -7754,6 +7773,14 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # PEP 440 ignores +cuXXX, so a cu126 -> cu128 change never applies without --force-reinstall.
     $cudaForce = @()
     if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {
+        $cudaForce = @("--force-reinstall")
+    }
+    # CPU to CUDA on a bus-only host. The stale check deliberately reads the expected family as
+    # unknown there, so $script:PinChangedForceReinstall stays false, and the trio below is bare
+    # torch, which the installed CPU wheel already satisfies: uv would finish without installing
+    # the CUDA build this arm just selected, and the run would report success having changed
+    # nothing. Same transition the XPU arm already forces, for the same reason.
+    if ($script:NvidiaPresenceOnly -and $installedTorchTag -eq "cpu") {
         $cudaForce = @("--force-reinstall")
     }
     # An unknown-leaf custom pin (/simple, /current) routes here with $CuTag as that leaf. Bound

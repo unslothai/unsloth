@@ -414,6 +414,34 @@ if ($nvArm.Success) {
     Check "and only when a CUDA wheel is actually installed" (
         $arm -match 'Test-CudaFamilyLeaf \$installedTorchTag\) \{ \$script:NvidiaPreR450CpuFallback = \$true \}')
 }
+# ------------------------------- the promotion has to reach the code that installs the wheels
+#
+# Two ways it did not. The fast path decides before the promotion runs, and nothing cleared
+# $SkipPythonDeps for NVIDIA the way the Intel and AMD checks do for theirs, so a verified
+# up-to-date CPU environment reported the GPU and kept CPU PyTorch on every subsequent run. And
+# when a pass did run, the CUDA arm asked for bare torch, which the installed CPU wheel already
+# satisfies, so uv kept it and the run reported success having installed nothing.
+$escapes = Get-FunctionText $setupPs1 "Invoke-FastPathEscapes"
+Check "setup.ps1's fast-path escapes were found (bites)" (-not [string]::IsNullOrWhiteSpace($escapes))
+if ($escapes) {
+    Check "a bus-only NVIDIA host with CPU torch forces the dependency pass" (
+        $escapes -match '\$script:NvidiaPresenceOnly' -and
+        $escapes -match '(?s)NvidiaPresenceOnly[^}]*\$SkipPythonDeps = \$false')
+    Check "and only when the installed wheel is a CPU one" (
+        $escapes -match '\$installedTorchTag -eq "cpu"')
+    # Or it re-fires forever on a host that is deliberately staying on CPU.
+    Check "a pre-R450 driver does not trigger it" (
+        $escapes -match '\$_nvidiaPreR450' -and $escapes -match 'NvidiaPresenceDriverRelease -lt 450')
+    Check "nor does a pin that sends this host somewhere else" (
+        $escapes -match '\$_nvidiaIsReachable' -and $escapes -match 'Test-CudaFamilyLeaf \$_pinLeafNow')
+}
+$cudaArm = [regex]::Match($setupText, '(?s)substep "installing PyTorch with CUDA support.{0,1500}')
+Check "setup.ps1's CUDA install arm was found (bites)" ($cudaArm.Success)
+if ($cudaArm.Success) {
+    Check "the CUDA arm replaces an installed CPU wheel on a bus-only host" (
+        $cudaArm.Value -match '(?s)\$script:NvidiaPresenceOnly -and \$installedTorchTag -eq "cpu"[^}]*--force-reinstall')
+}
+
 # The flag has to be READ where the wheels are installed, or setting it changes nothing. Anchored
 # on the CPU arm's own force list, beside the two fallbacks that set theirs for the same reason.
 $cpuArm = [regex]::Match($setupText, '(?s)substep "installing PyTorch \(CPU-only\)\.\.\.".{0,3000}')
