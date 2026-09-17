@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -60,12 +61,12 @@ DISABLE_ENV_VAR = "UNSLOTH_DISABLE_SHELL_ENV_IMPORT"
 # startup it got before this module existed, with no shell spawned.
 DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 
-# Set by the CLI's #7331 guard (unsloth_cli/commands/studio.py) when it drops an
-# HSA_OVERRIDE_GFX_VERSION that names an arch the installed single-ISA ROCm wheels
-# carry no kernels for. Without this marker the guard's pop is indistinguishable
-# from a GUI launch that never had the variable, and importing it back from the
-# shell profile would undo the clear and fail every kernel launch again.
-HSA_OVERRIDE_CLEARED_ENV = "UNSLOTH_HSA_OVERRIDE_CLEARED"
+# The single gfx arch this install carries kernels for, published by the CLI's #7331
+# guard (unsloth_cli/commands/studio.py, ROCM_INSTALLED_ARCH_ENV). That guard runs
+# against the GUI environment, which on a desktop launch never had the override, so
+# it clears nothing and the contradicting value is still in the profile read below.
+# The arbiter has to travel, not just its verdict.
+ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
 HSA_OVERRIDE_ENV = "HSA_OVERRIDE_GFX_VERSION"
 
 # AMD/ROCm runtime knobs only. Deliberately no ``CUDA_*``, no ``ONEAPI_*``, no
@@ -242,17 +243,17 @@ def select_missing_vars(
 ) -> dict:
     """The allowlisted names the shell has and this process does not.
 
-    ``in environ`` and not truthiness: a variable deliberately exported empty is
-    set, and overwriting it would be this module inventing a policy rather than
-    restoring parity.
+    Membership on both sides, never truthiness. A variable deliberately exported
+    empty is set, so it is not overwritten here; and ``ROCR_VISIBLE_DEVICES=``
+    exported empty in the shell hides every agent, so dropping it would leave the
+    desktop launch with the cards the terminal launch does not have.
     """
     out: dict = {}
     for name in allowlist:
         if name in environ:
             continue
-        value = shell_env.get(name)
-        if isinstance(value, str) and value != "":
-            out[name] = value
+        if name in shell_env and isinstance(shell_env[name], str):
+            out[name] = shell_env[name]
     return out
 
 
@@ -283,11 +284,18 @@ def import_rocm_env_from_login_shell(
     if all(name in environ for name in ROCM_SHELL_ENV_ALLOWLIST):
         return {}
 
-    allowlist = ROCM_SHELL_ENV_ALLOWLIST
-    if str(environ.get(HSA_OVERRIDE_CLEARED_ENV, "")).strip():
-        allowlist = tuple(name for name in allowlist if name != HSA_OVERRIDE_ENV)
-
-    imported = select_missing_vars(environ, read_login_shell_env(shell, timeout), allowlist)
+    imported = select_missing_vars(environ, read_login_shell_env(shell, timeout))
+    if HSA_OVERRIDE_ENV in imported and override_contradicts_install(
+        imported[HSA_OVERRIDE_ENV], environ.get(ROCM_INSTALLED_ARCH_ENV)
+    ):
+        logger.info(
+            "Not importing %s=%s from the login shell: this install carries %s kernels "
+            "only (#7331).",
+            HSA_OVERRIDE_ENV,
+            imported[HSA_OVERRIDE_ENV],
+            environ.get(ROCM_INSTALLED_ARCH_ENV),
+        )
+        del imported[HSA_OVERRIDE_ENV]
     for name, value in imported.items():
         environ[name] = value
     if imported:
@@ -297,3 +305,35 @@ def import_rocm_env_from_login_shell(
             ", ".join(sorted(imported)),
         )
     return imported
+
+
+def override_gfx_arch(value):
+    """The gfx arch an ``HSA_OVERRIDE_GFX_VERSION`` value names, or None.
+
+    Kept in step with ``_hsa_override_gfx_arch`` in unsloth_cli/commands/studio.py,
+    studio/install_python_stack.py and install.sh; the parity is tested.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits.
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value.strip()):
+        return None
+    major, minor, step = (int(part) for part in value.strip().split("."))
+    # Steppings are a single hex nibble; anything wider is not a real target.
+    if not (0 <= step <= 15) or major <= 0 or minor > 9:
+        return None
+    return f"gfx{major}{minor}{step:x}"
+
+
+def override_contradicts_install(value, installed_arch) -> bool:
+    """Whether this override names an arch the installed ROCm wheels cannot serve.
+
+    False when the install is not known to be single-ISA, and false for a value
+    that does not parse: the CLI guard leaves an unreadable override alone rather
+    than removing it, and the two have to agree or a launch behaves differently
+    depending on which one saw the variable first.
+    """
+    if not installed_arch:
+        return False
+    named = override_gfx_arch(value)
+    return named is not None and named != installed_arch

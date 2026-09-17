@@ -93,8 +93,10 @@ def test_a_variable_exported_empty_counts_as_set():
     assert dse.select_missing_vars({"HIP_VISIBLE_DEVICES": ""}, shell) == {}
 
 
-def test_an_empty_value_in_the_shell_is_not_imported():
-    assert dse.select_missing_vars({}, {"ROCM_PATH": ""}) == {}
+def test_an_empty_mask_in_the_shell_is_imported_as_empty():
+    # `export ROCR_VISIBLE_DEVICES=` hides every agent. Dropping it would leave the
+    # desktop launch holding cards the terminal launch does not have.
+    assert dse.select_missing_vars({}, {"ROCR_VISIBLE_DEVICES": ""}) == {"ROCR_VISIBLE_DEVICES": ""}
 
 
 def test_only_allowlisted_names_are_imported():
@@ -298,37 +300,73 @@ def test_a_value_the_filesystem_allows_but_utf8_does_not_round_trips(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# The #7331 interaction. The CLI clears an HSA_OVERRIDE_GFX_VERSION that the
-# installed single-ISA wheels cannot satisfy, and that clear runs BEFORE this
-# import. Refilling the name from the same shell profile would undo it.
+# The #7331 interaction. The CLI guard runs against the GUI environment, which on
+# a desktop launch never carried the override, so it clears nothing; the profile
+# that exports it is the one read here. The arbiter travels, not its verdict.
 # --------------------------------------------------------------------------
 
 
-def test_an_override_the_cli_cleared_is_not_imported_back(monkeypatch):
+def _shell_with_the_reporters_override(monkeypatch):
     monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: True)
     monkeypatch.setattr(
         dse,
         "read_login_shell_env",
         lambda *_a, **_k: {"HSA_OVERRIDE_GFX_VERSION": "11.0.0", "ROCM_PATH": "/opt/rocm"},
     )
-    environ = desktop(**{dse.HSA_OVERRIDE_CLEARED_ENV: "gfx1151"})
-    imported = dse.import_rocm_env_from_login_shell(environ = environ)
-    assert imported == {"ROCM_PATH": "/opt/rocm"}
+
+
+def test_an_override_the_install_cannot_serve_is_not_imported(monkeypatch):
+    _shell_with_the_reporters_override(monkeypatch)
+    environ = desktop(**{dse.ROCM_INSTALLED_ARCH_ENV: "gfx1151"})
+    assert dse.import_rocm_env_from_login_shell(environ = environ) == {"ROCM_PATH": "/opt/rocm"}
     assert dse.HSA_OVERRIDE_ENV not in environ
 
 
-def test_without_that_marker_the_override_is_still_imported(monkeypatch):
-    monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: True)
-    monkeypatch.setattr(
-        dse, "read_login_shell_env", lambda *_a, **_k: {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"}
-    )
-    environ = desktop()
-    assert dse.import_rocm_env_from_login_shell(environ = environ) == {
-        "HSA_OVERRIDE_GFX_VERSION": "11.0.0"
-    }
+def test_an_override_the_install_can_serve_is_imported(monkeypatch):
+    # 11.0.0 is gfx1100, and these wheels carry gfx1100 kernels.
+    _shell_with_the_reporters_override(monkeypatch)
+    environ = desktop(**{dse.ROCM_INSTALLED_ARCH_ENV: "gfx1100"})
+    imported = dse.import_rocm_env_from_login_shell(environ = environ)
+    assert imported["HSA_OVERRIDE_GFX_VERSION"] == "11.0.0"
+
+
+def test_an_install_that_is_not_single_arch_arbitrates_nothing(monkeypatch):
+    """No marker means generic or multi-arch wheels, which contradict no override."""
+    _shell_with_the_reporters_override(monkeypatch)
+    imported = dse.import_rocm_env_from_login_shell(environ = desktop())
+    assert imported["HSA_OVERRIDE_GFX_VERSION"] == "11.0.0"
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("11.0.0", "gfx1100"),
+        ("11.5.1", "gfx1151"),
+        ("10.3.0", "gfx1030"),
+        ("9.4.2", "gfx942"),
+        # A stepping is a hex nibble, so 10 is "a" and 16 is not a target at all.
+        ("11.0.10", "gfx110a"),
+        ("11.0.16", None),
+        ("11.0", None),
+        ("", None),
+        ("gfx1100", None),
+        (None, None),
+    ],
+)
+def test_the_override_parser_matches_the_cli(value, expected):
+    """One arbiter, two processes: a launch must not depend on which saw it first."""
+    import unsloth_cli.commands.studio as studio_cli
+
+    assert dse.override_gfx_arch(value) == expected
+    assert studio_cli._hsa_override_gfx_arch(value) == expected
+
+
+def test_an_unreadable_override_is_not_ours_to_drop():
+    """The CLI guard leaves a value it cannot parse alone, so this must too."""
+    assert dse.override_contradicts_install("not-a-version", "gfx1151") is False
 
 
 def test_the_cli_and_this_module_name_the_same_marker():
     """Two files, one contract: a rename on either side must fail here."""
     import unsloth_cli.commands.studio as studio_cli
-    assert studio_cli.HSA_OVERRIDE_CLEARED_ENV == dse.HSA_OVERRIDE_CLEARED_ENV
+    assert studio_cli.ROCM_INSTALLED_ARCH_ENV == dse.ROCM_INSTALLED_ARCH_ENV
