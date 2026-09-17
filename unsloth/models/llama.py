@@ -696,7 +696,7 @@ def LlamaAttention_fast_forward(
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
-    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q, K, V = getattr(self, "apply_qkv", original_apply_qkv)(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -756,7 +756,7 @@ def LlamaAttention_fast_forward(
 
     A = run_attention(config = config, context = context, Q = Q, K = K, V = V)
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
-    attn_output = self.apply_o(self, attn_output)
+    attn_output = getattr(self, "apply_o", original_apply_o)(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
 
@@ -2194,6 +2194,25 @@ def _vllm_will_load_weights(fast_inference, num_labels = None):
     if DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
         return False
     return True
+
+
+def _fused_lora_skip_reason(lora_dropout, bias) -> str:
+    """Why patch_peft_model skipped the fused LoRA kernels, for the patched layers summary.
+
+    Returns "" when nothing disabled them, so the common summary line is unchanged. The
+    conditions mirror the `lora_dropout == 0 and bias == "none"` gate in patch_peft_model.
+    """
+    reasons = []
+    if lora_dropout != 0:
+        reasons.append(f"lora_dropout = {lora_dropout}")
+    if bias != "none":
+        reasons.append(f"bias = '{bias}'")
+    if not reasons:
+        return ""
+    return (
+        f" The fused LoRA kernels were skipped because {' and '.join(reasons)}, "
+        "which is why the counts are zero. Training is unaffected."
+    )
 
 
 class FastLlamaModel:
@@ -3768,9 +3787,11 @@ class FastLlamaModel:
                         "are not enabled or a bias term (like in Qwen) is used."
                     )
 
+        # A zero count reads as a failure, so say why the fused kernels were skipped.
+        unfused_reason = _fused_lora_skip_reason(lora_dropout, bias)
         logger.warning_once(
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "
-            f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.",
+            f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",
         )
         patch_saving_functions(model)
 
