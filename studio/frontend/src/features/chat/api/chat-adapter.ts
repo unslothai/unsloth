@@ -285,6 +285,7 @@ import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
   createContinuationMerger,
+  hasRenderableContent,
   incompleteLabel,
   type IncompleteReason,
   readIncompleteInfo,
@@ -2599,10 +2600,10 @@ const DEFAULT_CHAT_MODEL_LABEL = "Gemma 4 E2B";
 
 function formatDownloadBytes(bytes: number): string {
   if (!(bytes > 0)) return "";
-  const gb = bytes / 1024 ** 3;
+  const gb = bytes / 1000 ** 3;
   return gb >= 1
     ? `${gb.toFixed(1)} GB`
-    : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+    : `${Math.max(1, Math.round(bytes / 1000 ** 2))} MB`;
 }
 
 /** Fetch the default through the Hub download manager rather than inline in /load: that gives
@@ -2986,6 +2987,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     gpu_memory_mode?: "auto" | "manual";
     cache_type_kv?: string | null;
     tensor_parallel?: boolean | null;
+    reasoning_budget?: number;
+    reasoning_budget_message?: string;
     // The projector is part of what the guard sizes: charging for a skipped one refuses loads that fit.
     // A load that skips the projector needs ~1 GB less.
     disable_vision?: boolean | null;
@@ -3216,6 +3219,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // A remembered manual DiffusionGemma split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
               n_parallel: config.nParallel ?? null,
+              reasoning_budget: isDiffusion ? -1 : config.reasoningBudget,
+              reasoning_budget_message: isDiffusion
+                ? ""
+                : config.reasoningBudgetMessage,
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
               ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
@@ -3264,6 +3271,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       mlx_kv_bits: config.mlxKvBits ?? null,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
+      reasoning_budget:
+        candidate.kind === "gguf" && !isDiffusion ? config.reasoningBudget : -1,
+      reasoning_budget_message:
+        candidate.kind === "gguf" && !isDiffusion
+          ? config.reasoningBudgetMessage
+          : "",
       tensor_parallel: effectiveTensorParallel,
       disable_vision: effectiveDisableVision,
       // GGUF-only; the split ratio is never remembered (it is bound to an exact GPU set), so
@@ -3384,6 +3397,30 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // Click-time value, not the resolved backend echo (see performLoad).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
+          reasoningBudget:
+            (loadResp.is_diffusion ?? false)
+              ? -1
+              : (loadResp.reasoning_budget ?? config.reasoningBudget),
+          loadedReasoningBudget:
+            (loadResp.is_diffusion ?? false)
+              ? -1
+              : (loadResp.reasoning_budget ?? config.reasoningBudget),
+          reasoningBudgetMessage:
+            (loadResp.is_diffusion ?? false)
+              ? ""
+              : (loadResp.reasoning_budget_message ??
+                config.reasoningBudgetMessage),
+          loadedReasoningBudgetMessage:
+            (loadResp.is_diffusion ?? false)
+              ? ""
+              : (loadResp.reasoning_budget_message ??
+                config.reasoningBudgetMessage),
+          loadedReasoningBudgetRequested: loadResp.is_diffusion
+            ? -1
+            : (loadResp.requested_reasoning_budget ?? config.reasoningBudget),
+          loadedReasoningBudgetMessageRequested: loadResp.is_diffusion
+            ? ""
+            : (loadResp.requested_reasoning_budget_message ?? config.reasoningBudgetMessage),
           nBatch: committedNBatch,
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
@@ -3432,6 +3469,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // GGUF-only and never sent here: a staged override would be saved for a model that cannot use it.
           nParallel: null,
           loadedNParallel: null,
+          reasoningBudget: -1,
+          loadedReasoningBudget: -1,
+          loadedReasoningBudgetRequested: -1,
+          reasoningBudgetMessage: "",
+          loadedReasoningBudgetMessage: "",
+          loadedReasoningBudgetMessageRequested: "",
           nBatch: null,
           loadedNBatch: null,
           nUbatch: null,
@@ -3698,6 +3741,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
+        reasoning_budget: -1,
+        reasoning_budget_message: "",
         // GPU Memory mode is a standing preference; the per-model layer/MoE/split knobs and context
         // pin stay at their defaults, and the GPU pick is the on-screen one the preflight used.
         // The GPU pick deliberately differs: it is the picker's on-screen selection, which the canAutoLoad
@@ -3768,6 +3813,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // by the next Apply.
           nParallel: null,
           loadedNParallel: null,
+          reasoningBudget: -1,
+          loadedReasoningBudget: -1,
+          loadedReasoningBudgetRequested: -1,
+          reasoningBudgetMessage: "",
+          loadedReasoningBudgetMessage: "",
+          loadedReasoningBudgetMessageRequested: "",
           nBatch: null,
           loadedNBatch: null,
           nUbatch: null,
@@ -3829,11 +3880,12 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
   loadFailureReported?: boolean;
   modelRuntime: QueuedResolvedModelRuntime | null;
 }> {
-  let lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+  // Auto-load does not sweep queues, so follow-ups can be accepted immediately.
+  let lifecycleLease = useChatRuntimeStore.getState().beginModelLoading("loading");
   while (lifecycleLease === null) {
     await waitForModelReady(abortSignal);
     abortSignal.throwIfAborted();
-    lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+    lifecycleLease = useChatRuntimeStore.getState().beginModelLoading("loading");
   }
 
   try {
@@ -4194,6 +4246,8 @@ export function createOpenAIStreamAdapter(
                     researchExternalProvider.providerType,
                     researchExternalSelection.modelId,
                   ),
+                  supportsReasoning: runtime.supportsReasoning,
+                  supportsReasoningOff: runtime.supportsReasoningOff,
                 }
               : undefined,
           temperature: params.temperature,
@@ -7792,16 +7846,18 @@ export function createOpenAIStreamAdapter(
         );
 
         reasoningDurationTracker.finishGroup();
-        const finalIncompleteReason = resolveIncompleteReason(
-          incompleteReason,
-          contextWindowExceeded,
-        );
+        const finalContent = [
+          ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
+          ...sourceParts,
+          ...documentCitationParts,
+        ];
+        const finalIncompleteReason =
+          resolveIncompleteReason(incompleteReason, contextWindowExceeded) ??
+          // A run can stop cleanly on its first token and leave nothing behind.
+          // Saved as complete that is a blank bubble with no way out.
+          (hasRenderableContent(finalContent) ? null : "empty");
         yield {
-          content: [
-            ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
-            ...sourceParts,
-            ...documentCitationParts,
-          ],
+          content: finalContent,
           metadata: {
             timing: finalTiming,
             custom: {

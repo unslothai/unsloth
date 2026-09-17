@@ -78,12 +78,6 @@ class FakeLlama(FakeLlamaCppBackend):
         self._openai_gguf_companion_state = ()
         self.unloaded = False
 
-    def __getattr__(self, name):
-        # Status reads many optional runtime fields; an unset one reads as the real backend's None.
-        if name.startswith("__"):
-            raise AttributeError(name)
-        return None
-
     def adopt_load_intent_if_matched(self, intent):
         return True
 

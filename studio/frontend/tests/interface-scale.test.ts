@@ -149,9 +149,21 @@ test("the latest scale wins while an older native update is pending", async () =
 
 test("first paint is not held hostage by a wedged native bridge", async () => {
   const { mod, control } = await load(true);
+  // Park the abandoned call INSIDE setZoom, not on the dynamic import ahead of it. The stub
+  // reads `__TAURI_WEBVIEW_STUB__` when setZoom is called, so a call still waiting on its
+  // import when this test ends resumes against the NEXT test's control and records a zoom
+  // there. That is one leaked 0.75 in a later assertion, blamed on the test it lands in.
+  let markWedged: () => void = () => undefined;
+  const wedgedEntered = new Promise<void>((resolve) => {
+    markWedged = resolve;
+  });
   // Never resolves: the failure a plain catch() does not cover.
-  control.setZoom = () => new Promise<void>(() => undefined);
+  control.setZoom = () => {
+    markWedged();
+    return new Promise<void>(() => undefined);
+  };
   await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
+  await wedgedEntered;
 });
 
 // Timed, because the regression these two cover is a queue that never drains: without the
@@ -163,8 +175,13 @@ test(
   async () => {
     const { mod, control, styles } = await load(true);
     let wedged = true;
+    let markWedged: () => void = () => undefined;
+    const wedgedEntered = new Promise<void>((resolve) => {
+      markWedged = resolve;
+    });
     control.setZoom = (zoom) => {
       if (wedged) {
+        markWedged();
         return new Promise<void>(() => undefined);
       }
       control.zooms.push(zoom);
@@ -172,6 +189,10 @@ test(
     };
 
     await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
+    // Wait for the abandoned call to be parked inside setZoom before unwedging. Without this
+    // the deadline can fire while it is still on its dynamic import, and it then reaches a
+    // setZoom that is no longer wedged and records the stale 0.75 the assertion forbids.
+    await wedgedEntered;
     // The bridge comes back. Nothing about the abandoned call may keep the queue closed.
     wedged = false;
     await mod.applyInterfaceScale(125);

@@ -23,7 +23,7 @@ from core.training.account_jobs import (
     validate_job_paths,
     worker_alive,
 )
-from utils.account_context import account_thread, current_account
+from utils.account_context import account_thread, current_account, run_as
 import json as _json
 import math
 import multiprocessing as mp
@@ -72,6 +72,9 @@ _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
 # Generous: is_run_finished already unwedges the UI, and a post-run wandb sync can legitimately take a while.
 _COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 120)
+# Also bounded by the stop watchdog above: raising this past _STOP_TIMEOUT_S only waits longer
+# for a worker that gets force-terminated at the watchdog's cap anyway.
+_SHUTDOWN_STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S", 120)
 
 # A few short retries so a transient SQLite lock doesn't lose the terminal state.
 _DB_FINALIZE_RETRIES = 3
@@ -2337,6 +2340,50 @@ class TrainingBackend:
                     # Only if still current; a new run's finalize state is never touched.
                     if self.current_job_id == run_id:
                         self._run_finalized = False
+
+    def stop_for_shutdown(self, timeout: float = _SHUTDOWN_STOP_TIMEOUT_S) -> bool:
+        """Ask a live run to stop and save, then wait for the worker and for the pump's
+        terminal DB write. True once nothing is left to save; False if the stop was refused
+        or the save outlived ``timeout``, in which case the caller's force_terminate() ends it."""
+        with self._lock:
+            proc = self._proc
+            job_id = self.current_job_id
+            account = self._result_account
+        deadline = time.monotonic() + max(0.0, timeout)
+        if proc is None or not proc.is_alive() or not job_id or self.is_run_finished():
+            return self._await_run_record(proc, deadline)
+        # The signal path runs as the owner, which job_control refuses for a managed account's run.
+        if not run_as(account, self.stop_training, save = True, expected_job_id = job_id):
+            return False
+        logger.info("Shutdown: stopping training run %s and saving a checkpoint", job_id)
+        while time.monotonic() < deadline:
+            if not proc.is_alive() or self.is_run_finished():
+                return self._await_run_record(proc, deadline)
+            time.sleep(0.25)
+        logger.warning(
+            "Shutdown: training run %s did not finish saving within %.0fs", job_id, timeout
+        )
+        return False
+
+    def _await_run_record(self, proc: "Optional[mp.Process]", deadline: float) -> bool:
+        """Wait out the pump's terminal DB write, which lands after _complete_seen is set and can
+        outlast force_terminate's join when SQLite is contended. Exiting first leaves the row
+        running, which the next startup's orphan sweep rewrites to an error; the checkpoint and
+        its output_dir survive, the stopped status and the final metrics do not.
+
+        Only a worker that has exited is waited on, since the pump loops while one is alive. A run
+        whose worker lingers past its save still falls back to that join: telling a write that has
+        not started from one that started and failed needs a signal the finalize paths do not
+        publish, and adding one is a change to terminal-state handling, not to shutdown."""
+        while time.monotonic() < deadline:
+            if proc is not None and proc.is_alive():
+                return True
+            pump = self._pump_thread
+            if pump is None or not pump.is_alive():
+                return True
+            time.sleep(0.25)
+        logger.warning("Shutdown: the training run record was still being written at the deadline")
+        return True
 
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
         """Force-kill the training subprocess so state can be reset immediately. With

@@ -6,6 +6,7 @@
 import sys
 import secrets
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,7 +24,15 @@ from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
 from hub.services.models import account_access as access
 from routes import inference, video
 from state import active_generations
-from utils.account_context import bind_account, reset_account
+from utils.account_context import bind_account, current_account_id, reset_account
+
+from ..test_diffusion_backend import _FakePipeline
+from ..test_diffusion_backend import fake_runtime as _fake_runtime
+
+# Re-exported under its own name because pytest resolves a fixture by NAME, not by reference: the
+# tests below take `fake_runtime` as a parameter and never load the import, which reads to
+# scripts/verify_import_hoist.py as a hoisted import nothing uses.
+fake_runtime = _fake_runtime
 
 
 def client_for(account):
@@ -41,6 +50,224 @@ def client_for(account):
     app.include_router(inference.studio_router, prefix = "/api/inference")
     app.include_router(video.router, prefix = "/api/inference")
     return TestClient(app)
+
+
+@pytest.mark.parametrize("unloader", ["alice", "bob", "unsloth"])
+@pytest.mark.parametrize(
+    "load_method,phase",
+    [
+        ("begin_load", "preflight"),
+        ("begin_load", "prefetch"),
+        ("begin_load", "construction"),
+        ("load_pipeline", "preflight"),
+        ("load_pipeline", "construction"),
+    ],
+)
+def test_cpu_load_cancellation_requires_its_owner(
+    monkeypatch, accounts, fake_runtime, tmp_path, unloader, load_method, phase
+):
+    from core.inference import diffusion as diff_mod
+
+    backend = DiffusionBackend()
+    entered, release, response_ready = (threading.Event() for _ in range(3))
+    threads, errors, responses = [], [], []
+    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
+    for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
+        monkeypatch.setattr(access, name, {})
+    monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: backend)
+    monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: (0, []))
+    monkeypatch.setattr(backend, "_prefetch_files", lambda *a, **k: str(tmp_path))
+    real_thread = diff_mod.account_thread
+
+    def tracked_thread(**kwargs):
+        thread = real_thread(**kwargs)
+        threads.append(thread)
+        return thread
+
+    monkeypatch.setattr(diff_mod, "account_thread", tracked_thread)
+    target, name = {
+        "preflight": (backend, "validate_load_request"),
+        "prefetch": (backend, "_prefetch_files"),
+        "construction": (_FakePipeline, "from_pretrained"),
+    }[phase]
+    original = getattr(target, name)
+
+    def parked(*args, **kwargs):
+        entered.set()
+        assert release.wait(10), "load barrier timed out"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, parked)
+
+    def load():
+        try:
+            getattr(backend, load_method)(
+                str(tmp_path), family_override = "z-image", local_files_only = True
+            )
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    def unload():
+        with client_for(accounts[unloader]) as client:
+            responses.append(client.post("/api/inference/images/unload"))
+        response_ready.set()
+
+    account_token = bind_account(accounts["alice"])
+    try:
+        access.note_resident_account("diffusion", str(tmp_path))
+        loader = tracked_thread(target = load, daemon = True)
+    finally:
+        reset_account(account_token)
+    ejector = threading.Thread(target = unload, daemon = True)
+    loader.start()
+    try:
+        assert entered.wait(10), errors
+        assert backend._state is None
+        assert gpu_arbiter.current_owner() is None
+        token, cancel = backend._load_token, backend._cancel_event
+        ejector.start()
+        deadline = time.monotonic() + 5
+        while not response_ready.is_set() and not cancel.is_set() and time.monotonic() < deadline:
+            response_ready.wait(0.01)
+        if unloader == "alice":
+            assert cancel.is_set(), "the owner could not cancel its load"
+        else:
+            assert response_ready.is_set(), "a foreign eject waited on construction"
+            assert responses[0].status_code == 409, responses[0].text
+            assert responses[0].json()["error"] == "gpu_busy"
+            assert not cancel.is_set()
+            assert backend._load_token == token
+    finally:
+        release.set()
+        loader.join(10)
+        for thread in [*threads, ejector]:
+            if thread.ident is not None:
+                thread.join(10)
+                assert not thread.is_alive()
+    if unloader == "alice":
+        assert responses[0].status_code == 200, responses[0].text
+        assert backend._state is None
+        assert all("cancelled" in error for error in errors)
+    else:
+        assert not errors
+        assert backend.is_loaded
+    backend.unload()
+
+
+@pytest.mark.parametrize("phase", ["prefetch", "construction", "resident"])
+@pytest.mark.parametrize("unloader", ["alice", "bob", "unsloth"])
+def test_pending_caller_cannot_block_load_owner_eject(
+    monkeypatch, accounts, fake_runtime, tmp_path, phase, unloader
+):
+    from core.inference import diffusion as diff_mod
+
+    backend = DiffusionBackend()
+    entered, pending, release, response_ready = (threading.Event() for _ in range(4))
+    threads, errors, responses = [], [], {}
+    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
+    for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
+        monkeypatch.setattr(access, name, {})
+    monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: backend)
+    monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: (0, []))
+    monkeypatch.setattr(backend, "_prefetch_files", lambda *a, **k: str(tmp_path))
+    real_thread = diff_mod.account_thread
+
+    def tracked_thread(**kwargs):
+        thread = real_thread(**kwargs)
+        threads.append(thread)
+        return thread
+
+    monkeypatch.setattr(diff_mod, "account_thread", tracked_thread)
+
+    def start(account, target):
+        token = bind_account(accounts[account])
+        try:
+            tracked_thread(target = target, daemon = True).start()
+        finally:
+            reset_account(token)
+
+    target, name = (
+        (backend, "_prefetch_files") if phase == "prefetch" else (_FakePipeline, "from_pretrained")
+    )
+    original = getattr(target, name)
+
+    def parked(*args, **kwargs):
+        if phase != "resident":
+            entered.set()
+            assert release.wait(10), "load barrier timed out"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, parked)
+    validate = backend.validate_load_request
+
+    def pending_validation(*args, **kwargs):
+        if current_account_id() == accounts["bob"].account_id:
+            pending.set()
+            assert release.wait(10), "validation barrier timed out"
+        return validate(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "validate_load_request", pending_validation)
+
+    def load():
+        try:
+            backend.begin_load(str(tmp_path), family_override = "z-image", local_files_only = True)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    def unload(account):
+        with client_for(accounts[account]) as client:
+            responses[account] = client.post("/api/inference/images/unload")
+        response_ready.set()
+
+    try:
+        if phase == "resident":
+            account_token = bind_account(accounts["alice"])
+            try:
+                backend.load_pipeline(
+                    str(tmp_path), family_override = "z-image", local_files_only = True
+                )
+                access.note_resident_account("diffusion", str(tmp_path))
+            finally:
+                reset_account(account_token)
+            assert backend.is_loaded
+            assert backend._loading is None
+        else:
+            start("alice", load)
+            assert entered.wait(10), errors
+            assert backend._loading.account_id == accounts["alice"].account_id
+            assert backend._state is None
+        assert gpu_arbiter.current_owner() is None
+        start("bob", load)
+        assert pending.wait(10), errors
+        token, cancel = backend._load_token, backend._cancel_event
+        start(unloader, lambda: unload(unloader))
+        can_eject = unloader == "alice" or (phase == "resident" and accounts[unloader].is_owner)
+        if not can_eject:
+            assert response_ready.wait(5), "foreign eject waited on construction"
+            if phase == "resident":
+                assert responses[unloader].status_code == 404, responses[unloader].text
+            else:
+                assert responses[unloader].status_code == 409, responses[unloader].text
+                assert responses[unloader].json()["error"] == "gpu_busy"
+            assert not cancel.is_set()
+            assert backend._load_token == token
+            start("alice", lambda: unload("alice"))
+        assert cancel.wait(5), "a pending caller blocked the load owner's eject"
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(10)
+            assert not thread.is_alive()
+    response = responses[unloader if can_eject else "alice"]
+    assert response.status_code == 200, response.text
+    assert backend._state is None
+    assert backend._loading is None
+    assert not backend._load_accounts
+    assert errors and all("cancelled" in error for error in errors)
 
 
 @pytest.mark.parametrize("unloader", ["alice", "unsloth"])

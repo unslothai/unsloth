@@ -75,6 +75,20 @@ def seed_audio(account) -> dict[str, str]:
     return {"audio_id": record["id"]}
 
 
+@seeder("media-transcript")
+def seed_transcript(account) -> dict[str, str]:
+    from core.inference import transcript_gallery
+    from utils.account_context import run_as
+
+    record = run_as(
+        account,
+        transcript_gallery.save,
+        {"text": SENTINEL, "model": "media/none"},
+        "Recording",
+    )
+    return {"transcript_id": record["id"]}
+
+
 def _mp4_bytes() -> bytes:
     import io
 
@@ -219,6 +233,10 @@ FACTORIES = {
         "media-audio", {"archived": True}, fragment = SENTINEL
     ),
     "routes.inference:DELETE:/audio/gallery/{audio_id}": Factory("media-audio"),
+    "routes.inference:PATCH:/audio/transcripts/{transcript_id}": Factory(
+        "media-transcript", {"archived": True}, fragment = SENTINEL
+    ),
+    "routes.inference:DELETE:/audio/transcripts/{transcript_id}": Factory("media-transcript"),
     "routes.video:GET:/video/gallery/{video_id}/file": Factory("media-video"),
     "routes.video:GET:/video/gallery/{video_id}/file-signed": Factory(
         "media-video",
