@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from core.inference.video import VideoBackend, _detect_load_family
+from core.inference import sd_cpp_backend as sd_backend
 
 H3_REPO = "leejet/MiniMax-H3-GGUF"
 H3_FILE = "minimax_h3_fl2va-Q4_K_M.gguf"
@@ -2466,3 +2467,83 @@ def test_a_cancelled_workers_card_does_not_leak_into_the_replacement_load(fake_s
     assert seen == {_CARD_A: _CARD_A, _CARD_B: _CARD_B}, seen
     # Off a load thread -- a generation re-resolving sd-cli -- the last load's card still stands.
     assert backend._loading_card == _CARD_B
+
+
+# ── the host runtime preflight, from the two failure shapes measured on real hardware ──────────
+class TestRocmRuntimePreflight:
+    """The ROCm prebuilt ships no HIP or BLAS runtime and takes all of it from the host, so a host
+    without one can be identified BEFORE the 244 MB download rather than after a failed load.
+
+    Both shapes this guards were measured, not imagined:
+      Linux, no ROCm    ``libggml-hip.so`` fails to dlopen with "libhipblas.so.3: cannot open shared
+                        object file", sd-cli catches it, loads the CPU backend, exits 0 and lists CPU
+                        only. No error text and no non-zero exit, so no marker can ever fire.
+      Windows, no DLLs  exit 0xC0000135, zero bytes, already decisive via the exit status.
+    """
+
+    @staticmethod
+    def _sonames_that(fail: set) -> object:
+        import ctypes
+
+        real = ctypes.CDLL
+
+        def _fake(name, *a, **k):
+            if name in fail:
+                raise OSError(f"{name}: cannot open shared object file: No such file or directory")
+            if name in sd_backend._ROCM_RUNTIME_SONAMES:
+                return object()
+            return real(name, *a, **k)
+
+        return _fake
+
+    def test_a_host_missing_hipblas_is_diverted_without_downloading(self, monkeypatch):
+        import ctypes
+
+        monkeypatch.setattr(sd_backend.os, "name", "posix")
+        monkeypatch.setattr(sd_backend.sys, "platform", "linux")
+        monkeypatch.setattr(ctypes, "CDLL", self._sonames_that({"libhipblas.so.3"}))
+        assert sd_backend.rocm_runtime_resolvable() is False
+        # A negative probe is now EXPLAINED, so one occurrence suffices instead of two.
+        assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is True
+
+    def test_a_host_with_rocm_keeps_rocm(self, monkeypatch):
+        import ctypes
+
+        monkeypatch.setattr(sd_backend.os, "name", "posix")
+        monkeypatch.setattr(sd_backend.sys, "platform", "linux")
+        monkeypatch.setattr(ctypes, "CDLL", self._sonames_that(set()))
+        assert sd_backend.rocm_runtime_resolvable() is True
+        # ROCm is present, so a negative probe stays ambiguous and the two-strike rule protects it.
+        assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is False
+
+    def test_an_unanswerable_host_is_not_diverted(self, monkeypatch):
+        """None must never divert. A host that cannot be asked behaves exactly as it did before,
+        which is what keeps this from being a new way to lose a working GPU."""
+        monkeypatch.setattr(sd_backend, "rocm_runtime_resolvable", lambda: None)
+        assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is False
+
+    def test_windows_is_left_to_the_exit_status(self, monkeypatch):
+        """On Windows the same condition is already decisive from the real binary's 0xC0000135, so
+        the preflight declines to guess at DLL search order."""
+        monkeypatch.setattr(sd_backend.os, "name", "nt")
+        assert sd_backend.rocm_runtime_resolvable() is None
+
+    def test_the_preflight_never_touches_a_non_rocm_accelerator(self, monkeypatch):
+        """Only rocm has a rung below it. A CUDA or Vulkan host must not consult this at all."""
+        called = []
+        monkeypatch.setattr(sd_backend, "rocm_runtime_resolvable",
+                            lambda: called.append(1) or False)
+        assert sd_backend.accelerator_probe_failure_is_decisive("cuda") is False
+        assert sd_backend.accelerator_probe_failure_is_decisive("vulkan") is False
+        assert called == []
+
+    def test_the_off_switch_beats_the_preflight(self, monkeypatch):
+        """UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0 means see the ROCm failure, including this one."""
+        import ctypes
+
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK", "0")
+        monkeypatch.setattr(sd_backend.os, "name", "posix")
+        monkeypatch.setattr(sd_backend.sys, "platform", "linux")
+        monkeypatch.setattr(ctypes, "CDLL", self._sonames_that({"libhipblas.so.3"}))
+        # The off switch removes the rung, so nothing about rocm can be decisive for a fallback.
+        assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is False

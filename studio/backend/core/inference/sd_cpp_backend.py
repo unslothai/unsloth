@@ -22,6 +22,7 @@ import contextlib
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -774,10 +775,86 @@ def _note_failed_upgrade(accelerator: str) -> None:
         pass
 
 
-# The rung between "the ROCm build does not work here" and "give up on the GPU". The ROCm sd.cpp
-# prebuilt is one generic target, not per gfx arch: #9278 (gfx1201) dies in hipblasSetStream, #8814
-# (gfx1100) never gets past tensor loading. One-way and one-deep; CUDA needs no rung.
+# The rung between "the ROCm build does not work here" and "give up on the GPU".
+#
+# NOT because the build lacks kernels for the card. That was the original reading and it is wrong:
+# the upstream archive's libggml-hip.so carries 27 gfx targets (gfx900-gfx950, gfx1010-gfx1036,
+# gfx1100-gfx1103, gfx1150-gfx1153, gfx1200/1201) as real offload-bundle code objects, so both
+# reported cards, gfx1201 (#9278) and gfx1100 (#8814), ARE covered. Verified twice: by reading the
+# shipped archive, and on the gfx1151 CI which re-derived 3591 bundle entries from its own download.
+#
+# The real dependency is PACKAGING. The archive bundles NO HIP or BLAS runtime at all; libggml-hip.so
+# declares NEEDED libhipblas.so.3, librocblas.so.5, libamdhip64.so.7 with RUNPATH $ORIGIN, and takes
+# every one of them from the HOST. rocBLAS's per-arch Tensile kernels come from the host too. So the
+# population that cannot run this build is not two exotic cards, it is any AMD machine whose ROCm
+# userspace is absent or a different major version, and the asset name says so: rocm-7.14.0.
+#
+# The two hosts fail in shapes that share no text, which is why detection cannot be markers alone:
+#   Linux, no ROCm     sd-cli exits 0 and enumerates CPU ONLY. ggml dlopens its backends, the HIP one
+#                      fails with "libhipblas.so.3: cannot open shared object file", and sd.cpp
+#                      degrades silently. Caught by the device probe, never by output text.
+#   Windows, no DLLs   exit 0xC0000135 STATUS_DLL_NOT_FOUND, zero bytes written. Caught by exit
+#                      status, never by output text, because there is no output.
+# One-way and one-deep; CUDA needs no rung.
 _ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan"}
+
+
+# The sonames the upstream ROCm archive imports and does not ship. Checked on the HOST, so a machine
+# that can never run that build is diverted BEFORE paying 244 MB to download and probe it.
+_ROCM_RUNTIME_SONAMES: tuple[str, ...] = (
+    "libamdhip64.so.7",
+    "libhipblas.so.3",
+    "librocblas.so.5",
+)
+
+
+def rocm_runtime_resolvable() -> Optional[bool]:
+    """Whether this host can load the ROCm runtime the prebuilt needs. None when it cannot be asked.
+
+    ``ctypes`` runs the real loader, so this answers the question the sd-cli process will actually
+    face, including RUNPATH and ldconfig. An ldconfig CACHE lookup is NOT equivalent and must not be
+    substituted: on the gfx1151 runner ``ldconfig -p`` omitted hipblas and rocblas while the loader
+    resolved all three from /opt/rocm-7.2.1/lib, so a cache-based check would have diverted a host
+    whose ROCm works perfectly.
+
+    Windows is excluded deliberately. There the same condition is already decisive through the exit
+    status (0xC0000135), which is evidence from the real binary rather than a guess about DLL search
+    order, and there is no soname to dlopen in the POSIX sense.
+    """
+    if os.name != "posix" or sys.platform == "darwin":
+        return None
+    try:
+        import ctypes
+    except Exception:  # noqa: BLE001 - no ctypes, so nothing can be established
+        return None
+    for soname in _ROCM_RUNTIME_SONAMES:
+        try:
+            ctypes.CDLL(soname)
+        except OSError:
+            return False
+        except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
+            return None
+    return True
+
+
+def accelerator_probe_failure_is_decisive(accelerator: Optional[str]) -> bool:
+    """Whether a NEGATIVE device probe for ``accelerator`` is explained, so one occurrence is enough.
+
+    The Linux shape has no error text to match and no failing exit code: ggml dlopens its backends,
+    the HIP one fails on a missing ``libhipblas.so.3``, and sd-cli loads the CPU backend, exits 0 and
+    lists CPU only. Measured on the shipped archive. So "the probe saw no accelerator" is the ONLY
+    signal, and on its own it is ambiguous, since a busy or masked GPU looks the same.
+
+    Asking the loader separates the two. If the runtime the archive needs is provably absent, the
+    silent CPU fallback is explained and no second strike adds information: no amount of retrying
+    installs a ROCm userspace. If it resolves, or cannot be asked, this returns False and the
+    existing two-strike rule stands, which is what keeps a transient fault from evicting a working
+    ROCm host.
+    """
+    klass = _accelerator_class_of(accelerator)
+    if klass != "rocm" or not fallback_accelerator_for(klass):
+        return False
+    return rocm_runtime_resolvable() is False
 
 
 def sd_cpp_vulkan_fallback_enabled() -> bool:
@@ -1332,7 +1409,15 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
 
 
 def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None) -> str:
-    """``accelerator``, or its fallback once shown unrunnable here. Applied at the TOP of an ensure ladder, so a crashed build is not installed and probed again."""
+    """``accelerator``, or its fallback once shown unrunnable here. Applied at the TOP of an ensure ladder, so a crashed build is not installed and probed again.
+
+    Deliberately a function of the RECORD alone, never of the live host. ``rocm_runtime_resolvable``
+    is not consulted here: it reads the real loader, and threading a host property through this
+    funnel made every hermetic test that asks for ``rocm`` on a machine without ROCm divert to
+    Vulkan, which is 63 suites answering a question about the test runner rather than about the code.
+    The preflight is applied where the runtime verdict is INTERPRETED instead, so the decision stays
+    reproducible from stored state.
+    """
     klass = _accelerator_class_of(accelerator) or (accelerator or "auto")
     nxt = fallback_accelerator_for(klass)
     if nxt and accelerator_runtime_failed(klass, card):
