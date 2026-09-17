@@ -3,38 +3,10 @@
 
 """Give the desktop app the ROCm environment a terminal launch already has.
 
-unsloth#9926: training a small Qwen on a Radeon RX 7600 (gfx1102) SIGSEGVs the
-whole backend when Studio is started from the desktop app, and the identical
-model, dataset and machine train fine when it is started from a terminal with
-``unsloth studio``. The reporter's ``~/.bashrc`` carries
-
-    export HSA_OVERRIDE_GFX_VERSION=11.0.0
-    export ROCM_PATH=/opt/rocm
-    export USE_CK=0
-
-and those are what differ. A GUI process does not get them: the desktop app
-calls ``fix_path_env::fix()``, which is ``fix_vars(&["PATH"])`` -- it spawns the
-login shell, reads the whole environment, and then sets exactly one variable
-from it. So PATH arrives and every ROCm variable beside it is dropped. Web mode
-inherits the terminal it was typed in and keeps all of them. That is the whole
-difference between the two modes, and it is why the bug looks like "Desktop is
-broken and Web is fine" rather than like a ROCm problem.
-
-The rule here is parity, not policy:
-
-  * it runs only on the launch that loses the environment, the one the desktop
-    app marks with ``UNSLOTH_DESKTOP_MANAGED=1``. A terminal launch, a service
-    and a container read no shell and set nothing, so they are unchanged by
-    construction rather than by an allowlist that happens not to overlap.
-  * and only when the host has an AMD GPU, read from the KFD topology and vendor
-    checked, so an NVIDIA, Intel or Apple host takes the same early return.
-  * a variable is imported only if it is **absent** from this process, so the two
-    launch modes end in the same environment rather than in two new ones.
-  * only the names in ``ROCM_SHELL_ENV_ALLOWLIST`` are considered, and every one
-    of them is AMD/ROCm specific.
-
-Not needed on Windows: the desktop app there inherits the user environment
-normally, and there is no login shell to read.
+unsloth#9926: ``fix_path_env::fix()`` is ``fix_vars(&["PATH"])``, so src-tauri
+reads the login shell and keeps PATH out of it, dropping every ROCm variable
+beside it. Parity, not policy: only a desktop launch, only an AMD host, only
+allowlisted names that are absent here. Every other launch reads no shell.
 """
 
 from __future__ import annotations
@@ -50,54 +22,36 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
-# Set this to "1" to keep the desktop app's environment exactly as the desktop
-# session handed it over.
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_SHELL_ENV_IMPORT"
 
-# Set by the desktop app on every CLI child it owns (src-tauri/src/process.rs,
-# DESKTOP_MANAGED_ENV). This module exists because that launch loses the shell
-# environment, so this is the launch it runs on: `unsloth studio` from a terminal
-# already has the variables, and a service or container launch gets the same
-# startup it got before this module existed, with no shell spawned.
+# Set by src-tauri on every CLI child it owns (process.rs, DESKTOP_MANAGED_ENV).
 DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 
-# The single gfx arch this install carries kernels for, published by the CLI's #7331
-# guard (unsloth_cli/commands/studio.py, ROCM_INSTALLED_ARCH_ENV). That guard runs
-# against the GUI environment, which on a desktop launch never had the override, so
-# it clears nothing and the contradicting value is still in the profile read below.
-# The arbiter has to travel, not just its verdict.
+# From the CLI's #7331 guard, which ran against a GUI environment that never had
+# the override: the arbiter travels, its verdict would say nothing here.
 ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
 HSA_OVERRIDE_ENV = "HSA_OVERRIDE_GFX_VERSION"
 
-# AMD/ROCm runtime knobs only. Deliberately no ``CUDA_*``, no ``ONEAPI_*``, no
-# ``PYTORCH_*`` general switches and no ``UNSLOTH_*``: the point of this module
-# is the AMD launch gap in #9926, and a wider list would make a GUI launch on an
-# NVIDIA box behave differently from the release before it.
+# AMD/ROCm only: a wider list would change a GUI launch on someone else's stack.
 ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
-    # Arch selection and overrides. The reporter's crash is here.
     "HSA_OVERRIDE_GFX_VERSION",
     "PYTORCH_ROCM_ARCH",
     "AMDGPU_TARGETS",
     "GPU_TARGETS",
-    # Where ROCm lives, for hosts that did not install to /opt/rocm.
     "ROCM_PATH",
     "ROCM_HOME",
     "HIP_PATH",
     "HIP_PLATFORM",
-    # Kernel/library backend selection. USE_CK=0 is the other variable in the
-    # report, and the log shows CK being attempted on an unsupported arch.
+    # CK was being attempted on an arch it was not built for (#9926).
     "USE_CK",
     "TORCH_BLAS_PREFER_HIPBLASLT",
     "MIOPEN_USER_DB_PATH",
     "MIOPEN_CUSTOM_CACHE_DIR",
     "MIOPEN_FIND_MODE",
-    # Which devices ROCm may use, so a GUI launch sees the same cards as a shell.
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
     "GPU_DEVICE_ORDINAL",
-    # HSA runtime behaviour. HSA_ENABLE_DXG_DETECTION is the WSL bridge main.py
-    # already sets for itself; keeping it here means a host that set it by hand
-    # is not second-guessed.
+    # DXG_DETECTION: main.py sets it for WSL, a host that set it by hand wins.
     "HSA_ENABLE_SDMA",
     "HSA_ENABLE_DXG_DETECTION",
     "HSA_XNACK",
@@ -105,23 +59,16 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "AMD_SERIALIZE_KERNEL",
     "GPU_MAX_HW_QUEUES",
 )
-# Deliberately NOT here: HSA_TOOLS_LIB. The HSA runtime dlopens whatever it names,
-# so importing it would load a library into the backend rather than tune it.
+# Not HSA_TOOLS_LIB: HSA dlopens it, which loads a library rather than tuning one.
 
-# AMD's PCI vendor id. NVIDIA's open kernel module registers KFD nodes too, with
-# 4318, so AMD ownership is confirmed rather than assumed -- the same guard as
-# hardware.py::_linux_kfd_reports_an_amd_gpu and install_python_stack.
+# NVIDIA's open kernel module registers KFD nodes too (4318), hence the check.
 _AMD_VENDOR_ID = "4098"
 
 
 def host_has_amd_gpu() -> bool:
-    """Whether the amdgpu kernel driver is presenting a GPU on this host.
+    """Whether the amdgpu driver is presenting a GPU here.
 
-    Read from the KFD topology rather than from torch, because this runs before
-    torch is imported and importing it here would both cost seconds and create a
-    device context on a machine that may not want one. A node counts only when it
-    is a GPU (``gfx_target_version`` above 0, every host has CPU nodes at 0) AND
-    AMD owns it, since an NVIDIA open-driver host presents GPU nodes here too.
+    The KFD topology, not torch: this runs before torch is imported.
     """
     if not sys.platform.startswith("linux"):
         return False
@@ -158,21 +105,12 @@ def _node_is_an_amd_gpu(properties: str) -> bool:
 
 
 def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> dict:
-    """The environment an interactive login shell would have handed us.
+    """The environment an interactive login shell would have handed us, or ``{}``.
 
-    ``-i`` is what makes ``~/.zshrc`` run, and ``-l`` the profile chain; bash
-    reads ``~/.bashrc`` only because the stock ``~/.profile`` sources it, so a
-    host that has replaced that file gets whatever its own profile exports.
-
-    ``env -0`` rather than ``env``, because a value containing a newline splits a
-    line-based parse and silently corrupts the variable after it, and into a FILE
-    rather than a pipe: an rc file that backgrounds a job (an agent, a daemon)
-    leaves that child holding the capture pipe, so reading stdout would wait for
-    the child rather than for the shell, spend the whole timeout and then discard
-    an environment the shell had already written correctly.
-
-    Returns ``{}`` on any failure. A shell that is slow, missing, or noisy is not
-    a reason to fail a launch: the caller's fallback is the status quo.
+    ``-i`` runs ``~/.zshrc`` and ``-l`` the profile chain; bash reaches
+    ``~/.bashrc`` only because the stock ``~/.profile`` sources it. ``env -0``
+    into a FILE: a newline in a value corrupts a line parse, and an rc that
+    backgrounds a job leaves that child holding a capture pipe.
     """
     shell = shell or os.environ.get("SHELL") or "/bin/sh"
     with tempfile.TemporaryDirectory(prefix = "unsloth-shell-env-") as work:
@@ -185,16 +123,13 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
                 stderr = subprocess.DEVNULL,
                 # Oh My Zsh's auto-update prompt can block the shell forever.
                 env = {**os.environ, "DISABLE_AUTO_UPDATE": "true"},
-                # Its own group, so the timeout below can take the shell's
-                # children with it instead of orphaning them onto init.
+                # Its own group, so the cleanup below takes the whole shell.
                 start_new_session = True,
             )
         except Exception as error:
             logger.debug("login shell environment unavailable: %s", error)
             return {}
-        # start_new_session makes the shell its own session leader, so its pgid is
-        # its pid. Kept before the wait below reaps it, because getpgid on a reaped
-        # pid raises.
+        # pgid == pid, read before the wait reaps it: getpgid then raises.
         group = process.pid
         try:
             returncode = process.wait(timeout = timeout)
@@ -202,10 +137,7 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
             logger.debug("login shell did not finish: %s", error)
             returncode = None
         finally:
-            # On EVERY path, not only the timeout. An rc that backgrounds an agent
-            # or a daemon leaves it running here after the shell itself exits
-            # cleanly, and that would be one orphan adopted by init per launch.
-            # This probe is not the login session those were meant to outlive.
+            # Every path: a clean exit still leaves an rc's agent running.
             _terminate_group(group, process)
         if returncode != 0:
             logger.debug("login shell exited %s", returncode)
@@ -218,9 +150,7 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
             return {}
 
     out: dict = {}
-    # surrogateescape, not replace: this is how os.environ itself carries a byte
-    # that is not valid UTF-8, so a path with one round trips instead of picking
-    # up a replacement character.
+    # surrogateescape, as os.environ does: `replace` corrupts a path.
     for record in raw.decode("utf-8", "surrogateescape").split("\0"):
         name, sep, value = record.partition("=")
         if sep and name:
@@ -233,7 +163,6 @@ def _terminate_group(group: int, process) -> None:
     try:
         os.killpg(group, signal.SIGKILL)
     except Exception:
-        # Already empty, or a platform without process groups.
         pass
     try:
         process.wait(timeout = 5)
@@ -248,10 +177,8 @@ def select_missing_vars(
 ) -> dict:
     """The allowlisted names the shell has and this process does not.
 
-    Membership on both sides, never truthiness. A variable deliberately exported
-    empty is set, so it is not overwritten here; and ``ROCR_VISIBLE_DEVICES=``
-    exported empty in the shell hides every agent, so dropping it would leave the
-    desktop launch with the cards the terminal launch does not have.
+    Membership on both sides, never truthiness: exported empty is a statement, and
+    ``ROCR_VISIBLE_DEVICES=`` hides every agent.
     """
     out: dict = {}
     for name in allowlist:
@@ -267,25 +194,17 @@ def import_rocm_env_from_login_shell(
     shell = None,
     timeout: float = 15.0,
 ) -> dict:
-    """Fill in the ROCm variables a desktop launch dropped. Returns what it set.
-
-    Never overwrites a name this process already carries, so calling it twice
-    imports nothing the second time.
-    """
+    """Fill in the ROCm variables a desktop launch dropped. Returns what it set."""
     environ = os.environ if environ is None else environ
     if str(environ.get(DISABLE_ENV_VAR, "")).strip() == "1":
         return {}
-    # Every gate below leaves a launch byte-identical to the release before this
-    # module existed. Not a desktop launch: nothing was lost, so nothing is read
-    # and no shell runs, which is what keeps web mode, a service and a container
-    # unchanged rather than merely allowlisted.
+    # Not a desktop launch: nothing was lost, so nothing is read.
     if str(environ.get(DESKTOP_MANAGED_ENV, "")).strip() != "1":
         return {}
     if not sys.platform.startswith("linux"):
         return {}
     if not host_has_amd_gpu():
         return {}
-    # Nothing to gain from a shell when every name is already set.
     if all(name in environ for name in ROCM_SHELL_ENV_ALLOWLIST):
         return {}
 
@@ -315,8 +234,8 @@ def import_rocm_env_from_login_shell(
 def override_gfx_arch(value):
     """The gfx arch an ``HSA_OVERRIDE_GFX_VERSION`` value names, or None.
 
-    Kept in step with ``_hsa_override_gfx_arch`` in unsloth_cli/commands/studio.py,
-    studio/install_python_stack.py and install.sh; the parity is tested.
+    In step with ``_hsa_override_gfx_arch`` in unsloth_cli/commands/studio.py,
+    install_python_stack.py and install.sh; the parity is tested.
     """
     if not isinstance(value, str) or not value:
         return None
@@ -333,10 +252,8 @@ def override_gfx_arch(value):
 def override_contradicts_install(value, installed_arch) -> bool:
     """Whether this override names an arch the installed ROCm wheels cannot serve.
 
-    False when the install is not known to be single-ISA, and false for a value
-    that does not parse: the CLI guard leaves an unreadable override alone rather
-    than removing it, and the two have to agree or a launch behaves differently
-    depending on which one saw the variable first.
+    False for a value that does not parse, matching the CLI guard, which leaves an
+    override it cannot read alone.
     """
     if not installed_arch:
         return False
