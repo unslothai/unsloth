@@ -23,6 +23,7 @@ const {
   createAutoContinueLeaseKeeper,
   createAutoContinueTab,
   budgetImpliesTruncation,
+  hasRenderableContent,
   incompleteLabel,
   incompleteRemedy,
   isContinuableContent,
@@ -191,6 +192,54 @@ test("every stop reason has a label", () => {
     incompleteLabel("context_window"),
     "Response filled the model's context window",
   );
+  assert.equal(
+    incompleteLabel("empty"),
+    "The model returned an empty response",
+  );
+});
+
+test("only text has to carry weight for a turn to count as rendered", () => {
+  assert.equal(hasRenderableContent([]), false);
+  assert.equal(hasRenderableContent([{ type: "text", text: "" }]), false);
+  assert.equal(hasRenderableContent([{ type: "text", text: " \n\t" }]), false);
+  assert.equal(hasRenderableContent([{ type: "text", text: "hi" }]), true);
+  // A turn that only called a tool or drew an image still answered.
+  assert.equal(hasRenderableContent([{ type: "tool-call" }]), true);
+  assert.equal(hasRenderableContent([{ type: "image" }]), true);
+  assert.equal(
+    hasRenderableContent([{ type: "text", text: "" }, { type: "source" }]),
+    true,
+  );
+});
+
+test("an empty turn is reported, and offers a retry rather than a resume", () => {
+  // No partial means the bar's Resume button would resume nothing, so the remedy
+  // replaces it. Every other reason resumes, bar the one that cannot fit.
+  assert.equal(incompleteRemedy("empty"), "Try again, or pick a different model");
+  assert.equal(incompleteRemedy("cancelled"), null);
+  assert.equal(incompleteRemedy("length"), null);
+  // `cancelled`, not `error`: the bar carries the explanation, so assistant-ui must not
+  // paint a second one over it.
+  assert.deepEqual(
+    restoredAssistantStatus({ custom: { incomplete: { reason: "empty" } } }),
+    { type: "incomplete", reason: "cancelled" },
+  );
+  assert.deepEqual(
+    readIncompleteInfo({ custom: { incomplete: { reason: "empty" } } }),
+    { reason: "empty" },
+  );
+});
+
+test("the adapter marks a finish that rendered nothing", () => {
+  // The run can stop on its first token with nothing to show. Saved as complete that is a
+  // blank bubble, and a queue dispatching behind it moves straight on.
+  const ending = CHAT_ADAPTER.slice(
+    CHAT_ADAPTER.indexOf("const finalContent = ["),
+  );
+  const reason = ending.slice(0, ending.indexOf("yield {"));
+  assert.match(reason, /hasRenderableContent\(finalContent\) \? null : "empty"/);
+  // Read off the parts that are actually yielded, not the raw stream text.
+  assert.match(ending, /yield \{\s*content: finalContent,/);
 });
 
 test("the provider's own reason outranks every reason the client infers", () => {
@@ -261,7 +310,7 @@ test("the adapter latches the backend window-exhaustion event", () => {
   );
   assert.match(
     adapter,
-    /resolveIncompleteReason\(\s*incompleteReason,\s*contextWindowExceeded,\s*\)/,
+    /resolveIncompleteReason\(\s*incompleteReason,\s*contextWindowExceeded,?\s*\)/,
     "the latched signal no longer reaches the stamped reason",
   );
   assert.match(

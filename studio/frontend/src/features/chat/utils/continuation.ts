@@ -6,23 +6,37 @@
  *  and the new text is appended to the partial. */
 
 /** Why a turn ended before the model was done. `context_window` is a `length` cut the same
- *  request can never fit into, hence its own reason. */
+ *  request can never fit into, hence its own reason. `empty` is a clean finish that produced
+ *  nothing, which is a failure to report rather than an answer. */
 export type IncompleteReason =
   | "length"
   | "cancelled"
   | "interrupted"
-  | "context_window";
+  | "context_window"
+  | "empty";
 
 /** Metadata stamped on an assistant message that stopped early. */
 export type IncompleteInfo = {
   reason: IncompleteReason;
 };
 
+/** Whether a finished turn left anything on screen, which is what separates `empty` from a
+ *  real answer. Non-text parts (tool calls, images, sources) always count; text has to be
+ *  more than whitespace. */
+export function hasRenderableContent(
+  content: readonly { type: string; text?: string }[],
+): boolean {
+  return content.some(
+    (part) => part.type !== "text" || (part.text ?? "").trim().length > 0,
+  );
+}
+
 const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "length",
   "cancelled",
   "interrupted",
   "context_window",
+  "empty",
 ];
 
 /** Below this a shared boundary is likely coincidence, and trimming would eat output. */
@@ -78,6 +92,8 @@ const STATUS_REASON: Record<
   length: "length",
   interrupted: "error",
   context_window: "length",
+  // Not `error`: the bar below already explains it, and a red box would repeat that.
+  empty: "cancelled",
 };
 
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
@@ -96,6 +112,7 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   cancelled: "Response stopped",
   interrupted: "Response interrupted",
   context_window: "Response filled the model's context window",
+  empty: "The model returned an empty response",
 };
 
 /** The user-facing explanation of why a turn stopped. */
@@ -107,6 +124,8 @@ export function incompleteLabel(reason: IncompleteReason): string {
  *  levers are a shorter conversation or a new one. */
 const INCOMPLETE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
   context_window: "Start a new chat, or shorten this one, to keep going",
+  // There is no partial to resume from, so the way out is another attempt.
+  empty: "Try again, or pick a different model",
 };
 
 /** What to do about a turn that stopped early, or `null` when resuming is the answer. */
