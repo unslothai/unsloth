@@ -30,7 +30,7 @@ DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
     "flax_model.msgpack.index.json",
     "rust_model.ot",
 )
-ROOT_SAFETENSORS_RE = re.compile(r"model(-\d+-of-\d+)?\.safetensors")
+ROOT_SAFETENSORS_RE = re.compile(r"model([-_]\d+-of-\d+)?\.safetensors")
 SNAPSHOT_WEIGHT_EXTENSIONS = (
     ".safetensors",
     ".bin",

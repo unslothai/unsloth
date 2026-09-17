@@ -33,6 +33,19 @@ GPT_OSS = {
     "metal/model.bin": 13_750,
 }
 
+# bigscience/bloom shards its root safetensors with an underscore, and ships the same
+# 72 shards again as pytorch_model_000NN-of-00072.bin.
+BLOOM = {
+    "config.json": 2,
+    "tokenizer.json": 14,
+    "model_00001-of-00072.safetensors": 4_900,
+    "model_00002-of-00072.safetensors": 4_900,
+    "model.safetensors.index.json": 1,
+    "pytorch_model_00001-of-00072.bin": 4_900,
+    "pytorch_model_00002-of-00072.bin": 4_900,
+    "pytorch_model.bin.index.json": 1,
+}
+
 WHISPER = {
     "config.json": 2,
     "tokenizer.json": 2,
@@ -94,3 +107,14 @@ def test_sibling_formats_are_kept_without_root_safetensors():
     }
     assert _kept(nested_only) == set(nested_only)
     assert "pytorch_model*.bin" not in resolve_snapshot_ignore_patterns_for_files(nested_only)
+
+
+def test_underscore_sharded_safetensors_still_skip_the_bin_copy():
+    assert snapshot_download_size(_siblings(BLOOM)) == 2 + 14 + 4_900 + 4_900 + 1
+    assert _kept(BLOOM) == {
+        "config.json",
+        "tokenizer.json",
+        "model_00001-of-00072.safetensors",
+        "model_00002-of-00072.safetensors",
+        "model.safetensors.index.json",
+    }

@@ -272,7 +272,7 @@ const SNAPSHOT_WEIGHT_FILE_RE =
 const SNAPSHOT_NON_BIN_WEIGHT_FILE_RE =
   /\.(safetensors|pt|pth|ckpt|h5|msgpack|npz)$/i;
 const SNAPSHOT_BIN_WEIGHT_PREFIX_RE = /^(model|pytorch_model|adapter_model).*\.bin$/i;
-const ROOT_SAFETENSORS_RE = /^model(-\d+-of-\d+)?\.safetensors$/;
+const ROOT_SAFETENSORS_RE = /^model([-_]\d+-of-\d+)?\.safetensors$/;
 const DUPLICATE_WEIGHT_FORMAT_RE =
   /^(?:(?:original|metal|coreml)\/|(?:pytorch_model.*\.bin|tf_model.*\.h5|flax_model.*\.msgpack)$|(?:pytorch_model\.bin|tf_model\.h5|flax_model\.msgpack)\.index\.json$|rust_model\.ot$)/s;
 

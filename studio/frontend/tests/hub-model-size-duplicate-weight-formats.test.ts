@@ -71,3 +71,19 @@ test("sibling formats still count when there is no root safetensors", async () =
     weightsBytes: 967 + 967 + 900 + 900,
   });
 });
+
+test("underscore-sharded root safetensors still skip the bin copy", async () => {
+  stubSiblings({
+    "config.json": 2,
+    "model_00001-of-00072.safetensors": 4_900,
+    "model_00002-of-00072.safetensors": 4_900,
+    "model.safetensors.index.json": 1,
+    "pytorch_model_00001-of-00072.bin": 4_900,
+    "pytorch_model_00002-of-00072.bin": 4_900,
+    "pytorch_model.bin.index.json": 1,
+  });
+  assert.deepEqual(await fetchModelSize("acme/bloom-shaped"), {
+    totalBytes: 2 + 4_900 + 4_900 + 1,
+    weightsBytes: 4_900 + 4_900,
+  });
+});
