@@ -621,7 +621,13 @@ async function syncInferenceStatusToStore(options?: {
     // whose answer would have been discarded. The LoRA inventory settles from its own request.
     if (signal?.aborted || superseded()) return;
     // The desktop update stopped the backend itself, and the update screen already says so.
-    if (isBackendDownForDesktopUpdate()) return;
+    if (
+      isBackendDownForDesktopUpdate() &&
+      (error as { unslothTransportFailure?: boolean } | null)
+        ?.unslothTransportFailure === true
+    ) {
+      return;
+    }
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);
