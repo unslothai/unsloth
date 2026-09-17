@@ -260,7 +260,21 @@ def apply_step_cache(
     # settings go through disable_cache first, which is the only way diffusers accepts a new config.
     if getattr(transformer, "is_cache_enabled", False):
         prior = getattr(transformer, "_unsloth_step_cache", None)
-        if prior == f"{mode}@{thr}":
+        # The MODEL decides whether this call is redundant, not our marker. The marker can be absent
+        # or stale on a transformer whose cache someone else engaged, and trusting it there would tear
+        # down a healthy cache running these exact settings and rebuild it, which is the very thing
+        # this guard exists to prevent and loses the cache outright if the rebuild then fails. So ask
+        # the live config, and repair the marker when it was the thing that was wrong.
+        live = getattr(transformer, "_cache_config", None)
+        live_matches = (
+            type(live).__name__ == "FirstBlockCacheConfig"
+            and getattr(live, "threshold", None) == thr
+        )
+        if prior == f"{mode}@{thr}" or live_matches:
+            try:
+                transformer._unsloth_step_cache = f"{mode}@{thr}"
+            except Exception:  # noqa: BLE001 - marker is best-effort
+                pass
             return mode
         try:
             _restore_hooked_block_inners(transformer)

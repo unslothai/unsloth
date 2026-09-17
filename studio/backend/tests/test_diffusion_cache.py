@@ -888,3 +888,42 @@ def test_another_cache_type_is_left_alone(monkeypatch):
     assert registry.removed == []            # FBC's names were never touched
     assert isinstance(t._cache_config, _MagCacheConfig)  # the other cache is still known to diffusers
     assert t.enabled_with is None            # and FBC was NOT stacked on top of it
+
+
+def test_a_lost_marker_does_not_cost_a_healthy_cache(monkeypatch):
+    """The marker can be absent on a transformer whose cache someone else engaged. Trusting it as the
+    source of truth would tear down a cache already running these exact settings and rebuild it, which
+    is what this guard exists to prevent, and loses it outright if the rebuild fails. The live config
+    decides, and the marker is repaired on the way out."""
+    registry = _stub_diffusers(monkeypatch)
+
+    class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME
+        def __init__(self, threshold):
+            self.threshold = threshold
+
+    class _CachedByHand:
+        def __init__(self):
+            self._cache_config = FirstBlockCacheConfig(DEFAULT_FBCACHE_THRESHOLD)
+            self.disable_calls = 0
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def disable_cache(self):
+            self.disable_calls += 1
+            self._cache_config = None
+
+        def enable_cache(self, config):
+            self._cache_config = config
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _CachedByHand()  # note: no _unsloth_step_cache at all
+    engaged = apply_step_cache(_pipe(t), mode = "fbcache")
+
+    assert engaged == TC_FBCACHE
+    assert t.disable_calls == 0             # the healthy cache was never torn down
+    assert registry.removed == []           # and its hooks were never touched
+    assert t._unsloth_step_cache == f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"  # marker repaired
