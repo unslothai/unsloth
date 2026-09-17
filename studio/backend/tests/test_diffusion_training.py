@@ -234,6 +234,52 @@ def test_service_stop_marks_stopped():
     assert svc.stop() is False
 
 
+def test_service_stop_for_shutdown_saves_and_waits():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _stoppable_target)
+    svc.start(dict(_CFG))
+    _wait_status(svc, "running")
+    assert svc.stop_for_shutdown(timeout = 5) is True
+    st = svc.status()
+    assert st["status"] == "stopped"
+    assert st["active"] is False
+
+
+def test_service_stop_for_shutdown_is_immediate_when_idle():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    t0 = time.monotonic()
+    assert svc.stop_for_shutdown(timeout = 5) is True
+    assert time.monotonic() - t0 < 1
+
+
+class _ExitedProc:
+    def is_alive(self):
+        return False
+
+
+def test_service_stop_for_shutdown_waits_for_the_pump_after_the_worker_exits():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    written = threading.Event()
+    svc._proc = _ExitedProc()
+    svc._pump = threading.Thread(target = lambda: (time.sleep(0.5), written.set()), daemon = True)
+    svc._pump.start()
+    assert svc.stop_for_shutdown(timeout = 5) is True
+    assert written.is_set()
+
+
+def _ignores_stop_target(*, event_queue, stop_queue, config):
+    event_queue.put({"type": "model_load_completed"})
+    time.sleep(3)
+
+
+def test_service_stop_for_shutdown_wait_is_bounded():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _ignores_stop_target)
+    svc.start(dict(_CFG))
+    _wait_status(svc, "running")
+    t0 = time.monotonic()
+    assert svc.stop_for_shutdown(timeout = 0.5) is False
+    assert 0.4 < time.monotonic() - t0 < 2
+
+
 def test_service_crash_without_terminal_event_is_error():
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _crashing_target)
     svc.start(dict(_CFG))

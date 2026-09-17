@@ -1383,6 +1383,10 @@ class TestDrafterAccounting:
             return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
 
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+        verify_rows = 7 * 1024 * 1024
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_spec_verify_rows_bytes", lambda *a, **k: verify_rows
+        )
         on_gpu = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 8192)
         assert on_gpu.drafter_runtime_bytes > 0
         # Default placement: all of it, so the row says nothing rather than guessing.
@@ -1391,7 +1395,8 @@ class TestDrafterAccounting:
         on_cpu = ri._gguf_memory_breakdown(
             config, gqa_gguf, n_ctx = 8192, llama_extra_args = ["--spec-draft-ngl", "0"]
         )
-        assert on_cpu.drafter_runtime_gpu_bytes == 0
+        # Only the target's verification rows stay with the GPU target.
+        assert on_cpu.drafter_runtime_gpu_bytes == verify_rows
 
         # --no-kv-offload moves the TARGET cache and leaves the drafter alone. A
         # boolean read off kv_on_gpu would call the whole term host-resident here,
@@ -1687,7 +1692,12 @@ class TestSpeculativeModeTerms:
         probe._read_gguf_metadata(mla)
         return probe._estimate_kv_cache_bytes(n_ctx, "f16")
 
-    def test_a_dspark_drafter_is_not_charged_the_targets_context(self, mla, tmp_path, priced_files):
+    def test_a_dspark_drafter_is_not_charged_the_targets_context(
+        self, mla, tmp_path, priced_files, monkeypatch
+    ):
+        # The two drafters' compute buffers differ with their own headers; this pins
+        # the cache terms.
+        monkeypatch.setattr(ri.LlamaCppBackend, "_mtp_draft_compute_bytes", lambda *a, **k: 0)
         ctx = 131072
         mtp = ri._gguf_memory_breakdown(self._config(mla, tmp_path, "mtp"), mla, n_ctx = ctx)
         dspark = ri._gguf_memory_breakdown(self._config(mla, tmp_path, "dspark"), mla, n_ctx = ctx)
@@ -1699,11 +1709,13 @@ class TestSpeculativeModeTerms:
         assert dspark.total_bytes < mtp.total_bytes
 
     def test_a_gpu_drafter_is_charged_when_the_target_keeps_no_layers(
-        self, mla, tmp_path, priced_files
+        self, mla, tmp_path, priced_files, monkeypatch
     ):
         # A separate drafter does not inherit --gpu-layers: llama.cpp overwrites it
         # with the draft placement, whose default is auto. At --gpu-layers 0 the
-        # drafter is still on the GPU and still holds its cache there.
+        # drafter is still on the GPU and still holds its cache there. Verification
+        # rows follow the target and are pinned in their own test.
+        monkeypatch.setattr(ri.LlamaCppBackend, "_spec_verify_rows_bytes", lambda *a, **k: 0)
         config = self._config(mla, tmp_path, "dspark")
         manual = dict(gpu_memory_mode = "manual", gpu_layers = 0, n_ctx = 131072)
         on_gpu = ri._gguf_memory_breakdown(config, mla, **manual)
@@ -1719,8 +1731,9 @@ class TestSpeculativeModeTerms:
         )
 
     def test_the_target_side_of_the_reserve_stays_with_the_target(
-        self, mla, tmp_path, priced_files
+        self, mla, tmp_path, priced_files, monkeypatch
     ):
+        monkeypatch.setattr(ri.LlamaCppBackend, "_spec_verify_rows_bytes", lambda *a, **k: 0)
         ctx = 131072
         config = self._config(mla, tmp_path, "mtp")
         copy_bytes = self._target_ctx_copy(mla, ctx)
@@ -1749,6 +1762,25 @@ class TestSpeculativeModeTerms:
         # And the copy is still charged with the drafter pinned away, which is what
         # the loader reserves for the same launch.
         assert pinned.gpu_bytes - no_layers_pinned.gpu_bytes > copy_bytes
+
+    def test_verification_rows_follow_the_targets_layers(
+        self, mla, tmp_path, priced_files, monkeypatch
+    ):
+        """They are target compute: on the GPU with the target's layers, whichever
+        device the drafter uses."""
+        verify_rows = 7 * 1024 * 1024
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_spec_verify_rows_bytes", lambda *a, **k: verify_rows
+        )
+        config = self._config(mla, tmp_path, "dspark")
+        pin = ["--spec-draft-ngl", "0"]
+        no_layers = dict(gpu_memory_mode = "manual", gpu_layers = 0)
+        target_gpu = ri._gguf_memory_breakdown(config, mla, n_ctx = 8192, llama_extra_args = pin)
+        target_cpu = ri._gguf_memory_breakdown(config, mla, n_ctx = 8192, **no_layers)
+        assert target_gpu.drafter_runtime_gpu_bytes == verify_rows
+        assert target_cpu.drafter_runtime_gpu_bytes == (
+            target_cpu.drafter_runtime_bytes - verify_rows
+        )
 
     def test_extras_owning_the_spec_block_price_the_builds_depth(self, mla):
         # _build_speculative_flags returns without emitting a depth once the extras
@@ -1848,11 +1880,21 @@ class TestLaunchShapedPricing:
         full = ri._gguf_memory_breakdown(
             spec_config, swa, n_ctx = 131072, llama_extra_args = ["--swa-full"]
         )
-        assert full.kv_bytes > windowed.kv_bytes
-        # Same header on both sides, so the drafter's cache moves exactly as the
-        # target's does rather than staying at the windowed figure.
-        assert full.drafter_runtime_bytes == full.kv_bytes
-        assert windowed.drafter_runtime_bytes == windowed.kv_bytes
+        # Compare GPU cache bytes; checkpoints are host-only and absent under --swa-full.
+        assert full.kv_bytes - full.kv_checkpoint_bytes > (
+            windowed.kv_bytes - windowed.kv_checkpoint_bytes
+        )
+        assert full.kv_checkpoint_bytes == 0
+        assert windowed.kv_checkpoint_bytes > 0
+        # Same header on both sides, so the drafter's cache moves exactly as the target's
+        # GPU cache does. By DIFFERENCE, not equality: the draft decode graph's floor
+        # (_MTP_DRAFT_COMPUTE_BYTES) now rides on top of this figure and does not follow
+        # --swa-full, so the two sides no longer match outright.
+        assert full.drafter_runtime_bytes - windowed.drafter_runtime_bytes == (
+            (full.kv_bytes - full.kv_checkpoint_bytes)
+            - (windowed.kv_bytes - windowed.kv_checkpoint_bytes)
+        )
+        assert windowed.drafter_runtime_bytes > windowed.kv_bytes - windowed.kv_checkpoint_bytes
 
     def test_a_cpu_device_selection_takes_the_weights_off_the_gpu(self, spec_config, swa):
         """``--device none`` runs on the CPU whatever the layer count says.
@@ -1893,8 +1935,9 @@ class TestLaunchShapedPricing:
         assert many.gpu_bytes == none.gpu_bytes
 
     def test_one_card_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
-        # Tensor mode needs two usable GPUs. Below that load_model drops it, so pricing
-        # tensor charged per-device compute buffers for a launch that runs neither.
+        # Tensor mode needs two usable GPUs. Below that load_model drops it, so the
+        # panel prices the layer load. A tensor device holds the single-device compute
+        # buffer, so on one card the two price the same.
         #
         # The cache type is no longer part of this: #8939 removed the gate that rewrote
         # both axes to f16 on a tensor split, so a quantized KV now survives one and the
@@ -1910,8 +1953,8 @@ class TestLaunchShapedPricing:
         assert downgraded.cache_type_kv == "q4_0"
         assert as_tensor.cache_type_kv == "q4_0"
         assert downgraded.kv_bytes == as_tensor.kv_bytes
-        assert downgraded.compute_bytes < as_tensor.compute_bytes
-        assert downgraded.total_bytes < as_tensor.total_bytes
+        assert downgraded.compute_bytes == as_tensor.compute_bytes
+        assert downgraded.total_bytes == as_tensor.total_bytes
 
     def test_manual_auto_layers_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
         # Manual with Auto layers hands the budget to llama.cpp --fit, which load_model

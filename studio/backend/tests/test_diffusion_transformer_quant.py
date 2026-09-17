@@ -1380,7 +1380,6 @@ def test_apply_small_m_padding_is_inert_without_a_pad_list(monkeypatch):
 
 
 def test_the_zero_row_guard_is_nvfp4_only():
-    """The zero-row guard is nvfp4 only."""
     from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
     for scheme in (TQ_FP8, TQ_INT8, TQ_MXFP8, "auto"):
         for family in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
@@ -1388,7 +1387,6 @@ def test_the_zero_row_guard_is_nvfp4_only():
 
 
 def test_both_hunyuan_tiers_guard_their_trimmable_streams():
-    """Both HunyuanVideo-1.5 tiers guard the streams the attention trim can empty."""
     from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
     for family in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
         tokens = zero_row_tokens_for_scheme(TQ_NVFP4, family)
@@ -1404,7 +1402,6 @@ def test_an_unlisted_family_has_no_zero_row_guard():
 
 
 def test_the_guard_list_does_not_double_up_with_the_pad_or_exclude_lists():
-    """The guard list does not double up with the pad or exclude lists."""
     from core.inference.diffusion_transformer_quant import (
         _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS,
         exclude_tokens_for_scheme,
@@ -1419,7 +1416,6 @@ def test_the_guard_list_does_not_double_up_with_the_pad_or_exclude_lists():
 
 
 def test_quantize_transformer_guards_after_padding(monkeypatch):
-    """quantize_transformer applies the guard after the padding."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4})
     order = []
@@ -1449,7 +1445,6 @@ def test_quantize_transformer_guards_after_padding(monkeypatch):
 
 
 def test_a_guard_failure_fails_the_whole_quantise(monkeypatch):
-    """A guard failure fails the whole quantise."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4})
     tqz = types.ModuleType("torchao.quantization")
@@ -1874,7 +1869,6 @@ def test_divisible_for_scheme_matches_each_gemm():
 
 
 def test_quantize_transformer_filters_on_the_scheme_alignment(monkeypatch):
-    """quantize_transformer filters on the alignment divisible_for_scheme publishes."""
     torch_stub = _stub_torch(monkeypatch, cc = (10, 0))
 
     class _Linear:

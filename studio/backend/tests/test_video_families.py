@@ -428,7 +428,6 @@ def _resident_fam(**kwargs):
 
 
 def test_the_per_scheme_row_wins_and_the_float_is_the_fallback():
-    """The per-scheme row wins and the family-wide float is the fallback."""
     from core.inference.video_families import video_family_prequant_resident_gb
 
     fam = _resident_fam(
@@ -460,7 +459,6 @@ def test_the_h3_measurement_still_answers_through_the_helper():
 
 
 def test_every_hosted_nvfp4_denoiser_carries_its_measured_resident_size():
-    """Every hosted nvfp4 denoiser carries its measured resident size."""
     from core.inference.video_families import (
         _FAMILIES,
         video_family_prequant_resident_gb,
@@ -485,7 +483,6 @@ def test_every_hosted_nvfp4_denoiser_carries_its_measured_resident_size():
 
 
 def test_the_measured_nvfp4_size_is_a_4_bit_fraction_of_the_term_it_replaces():
-    """Sanity on direction and magnitude."""
     from core.inference.video_families import (
         _FAMILIES,
         video_family_prequant_resident_gb,

@@ -311,7 +311,6 @@ def test_is_quantized_linear_only_accepts_a_torchao_weight():
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("shape", [(1, 0, 8), (0, 8), (2, 0, 8)])
 def test_an_empty_activation_comes_back_at_the_projected_width(bias, shape):
-    """An empty activation comes back at the projected width instead of reaching the GEMM."""
     inner = _RecordingLinear(8, 6, bias = bias).to(torch.bfloat16)
     wrapped = ZeroRowSafeLinear(inner)
     x = torch.zeros(*shape, dtype = torch.bfloat16)
@@ -324,7 +323,6 @@ def test_an_empty_activation_comes_back_at_the_projected_width(bias, shape):
 
 
 def test_the_guard_is_inert_on_a_non_empty_activation():
-    """A non-empty call goes straight through to the inner Linear."""
     torch.manual_seed(0)
     inner = _RecordingLinear(8, 6)
     wrapped = ZeroRowSafeLinear(inner)
@@ -336,7 +334,6 @@ def test_the_guard_is_inert_on_a_non_empty_activation():
 
 
 def test_the_guard_passes_attributes_and_keys_through():
-    """The wrapper passes attributes and state-dict keys through, as PadToMinM does."""
     plain, guarded = _Tiny(), _Tiny()
     guarded.context_embedder = ZeroRowSafeLinear(guarded.context_embedder)
     assert guarded.context_embedder.in_features == 8
@@ -353,7 +350,6 @@ def test_the_guard_passes_attributes_and_keys_through():
 
 
 def test_wrapping_for_zero_rows_is_idempotent_and_skips_dense_linears():
-    """Wrapping is idempotent and skips dense Linears."""
     model = _Tiny()
     assert wrap_zero_row_linears(model, ["context_embedder"]) == ()
     assert isinstance(model.context_embedder, nn.Linear)
@@ -366,7 +362,6 @@ def test_wrapping_for_zero_rows_is_idempotent_and_skips_dense_linears():
 
 
 def test_the_two_wrappers_never_stack():
-    """The padding wrapper and the zero-row guard never stack."""
     model = _Tiny()
     model.context_embedder = _fake_quantized_linear()
     assert wrap_small_m_linears(model, ["context_embedder"]) == ("context_embedder",)
@@ -376,7 +371,6 @@ def test_the_two_wrappers_never_stack():
 
 
 def test_the_guard_list_is_read_with_the_same_substring_rule():
-    """The guard list is read with the same substring rule as the pad list."""
 
     class _Projection(nn.Module):
         def __init__(self):
