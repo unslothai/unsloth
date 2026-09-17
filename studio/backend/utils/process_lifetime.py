@@ -1047,6 +1047,148 @@ def _windows_collect_descendants_known(
     return found, complete
 
 
+# How long a read-back gives a kill to actually land before it calls a pid a survivor, and
+# how often it looks while it waits.
+#
+# Neither kill on either platform is synchronous. `SIGKILL` returns as soon as the signal
+# is queued, and the process is torn down afterwards -- it stays visible to `kill(pid, 0)`
+# until the kernel finishes, and then keeps its number as a zombie until its parent reaps
+# it. `TerminateProcess` is documented as asynchronous in exactly the same way: it
+# initiates termination and returns immediately, and the process object stays signalable
+# until the last thread is gone. A liveness read on the line after the kill therefore
+# measures the read's own latency, not the outcome.
+#
+# Measured here with eight descendants that ignore SIGTERM and die instantly on SIGKILL:
+# every one of the eight came back as a survivor, and none of the eight was still alive
+# half a second later. What that costs is not the wasted `adopt_pid` calls. A reported
+# survivor KEEPS the lifetime record and the pidfile, so the next launch runs a reap sweep
+# over records naming processes that died during the previous unload -- on Windows, one
+# Toolhelp snapshot per record plus a taskkill each, at startup, forever.
+#
+# Short on purpose: this sits on the teardown path, and the loop leaves the moment the
+# list empties, so a tree that is genuinely gone pays two reads and a tree that is
+# genuinely stuck pays the half second once.
+_KILL_SETTLE_SECONDS = 0.5
+_KILL_SETTLE_POLL_SECONDS = 0.01
+
+# How many passes in a row have to agree a pid is gone before it is dropped from the
+# report, and how fast the wait between passes grows.
+#
+# Two, not one, because the liveness probe FAILS OPEN on Windows: `_pid_alive` reads any
+# `OpenProcess` failure other than ACCESS_DENIED -- out of handles, out of memory -- and
+# any ctypes failure as "gone". A single read has always been able to lie in that
+# direction; polling would multiply the chance of it by the number of passes, and one lie
+# drops a pid that a kill did NOT stop, which is the direction the rest of this module
+# refuses to fail in (it costs the record and the pidfile that are the only handles on a
+# worker still holding the GPU). Requiring two consecutive agreements makes a wrong drop
+# need two consecutive lies, so the polling is strictly SAFER here than the single read it
+# replaces, not just faster to be right.
+#
+# The backoff is for the same predicate's cost rather than its truthfulness: off Linux and
+# Windows `_pid_is_zombie` and `_pid_identity` each fork `ps`, so a flat 10 ms tick would
+# spend the grace forking a hundred times for one stuck pid. Doubling reaches the deadline
+# in about six passes while still taking the second read 10 ms in, which is what the
+# already-dead path actually waits for.
+_KILL_SETTLE_CONFIRMATIONS = 2
+_KILL_SETTLE_POLL_CEILING_SECONDS = 0.1
+
+
+def _survivors_after_settling(
+    candidates: "list[tuple[int, Optional[str]]]",
+    still_a_survivor: "Callable[[int, Optional[str]], bool]",
+    grace: float = _KILL_SETTLE_SECONDS,
+) -> "list[tuple[int, Optional[str]]]":
+    """Which of *candidates* are still survivors once the kills have had *grace* to land.
+
+    Polled rather than read once, and bounded rather than waited out: a pid drops out once
+    `_KILL_SETTLE_CONFIRMATIONS` passes in a row agree it has gone, and a pid that is
+    genuinely stuck is still reported, which is the property the callers depend on. Order
+    is the callers' (deepest first) and is preserved.
+
+    The predicate is re-evaluated only for pids still in the list, so the expensive half of
+    it -- reading an identity to prove the number has not been recycled -- runs only for
+    the ones that look alive, which after a successful kill is none of them. A pid that
+    reads as gone and then as alive again starts its count over: agreements have to be
+    consecutive, because the point of the count is to survive a probe that lied once.
+    """
+    if not candidates:
+        return []
+    agreed: "dict[int, int]" = {}
+
+    def _pass() -> "list[tuple[int, Optional[str]]]":
+        still: "list[tuple[int, Optional[str]]]" = []
+        for pid, identity in candidates:
+            if agreed.get(pid, 0) >= _KILL_SETTLE_CONFIRMATIONS:
+                continue
+            if still_a_survivor(pid, identity):
+                agreed[pid] = 0
+                still.append((pid, identity))
+            else:
+                agreed[pid] = agreed.get(pid, 0) + 1
+                if agreed[pid] < _KILL_SETTLE_CONFIRMATIONS:
+                    still.append((pid, identity))
+        return still
+
+    remaining = _pass()
+    deadline = time.monotonic() + max(0.0, grace)
+    wait = _KILL_SETTLE_POLL_SECONDS
+    while remaining and time.monotonic() < deadline:
+        time.sleep(wait)
+        wait = min(wait * 2, _KILL_SETTLE_POLL_CEILING_SECONDS)
+        remaining = _pass()
+    return remaining
+
+
+def confirm_pid_exited(pid: "Optional[int]", grace: float = _KILL_SETTLE_SECONDS) -> bool:
+    """Whether *pid* can be SHOWN to have exited, with the grace the read-backs use.
+
+    For an owner that has just signalled a pid (or the process group it leads) and has to
+    decide whether the record and the pidfile naming it may be dropped. Asking on the next
+    line answers "the kill has not finished yet" and keeps a record for a process that is
+    already gone.
+
+    False for anything this module will not signal, including a pid it cannot read. Not
+    True: this answer is what authorises deleting the only handles on a process, so
+    "cannot tell" has to come out on the side that keeps them, the same way every other
+    unprovable case in this module does.
+    """
+    if not _signalable(pid):
+        return False
+    return not _survivors_after_settling(
+        [(int(pid), None)], lambda candidate, _identity: pid_is_running(candidate), grace
+    )
+
+
+def _settle_after_the_kill(
+    pid: int,
+    group_leader: bool,
+    grace: float = _KILL_SETTLE_SECONDS,
+) -> None:
+    """Wait, briefly, for a SIGKILL that has just been sent to actually land.
+
+    `_posix_terminate_one` ends on `killpg`/`kill` with SIGKILL and returns, and every one
+    of its callers reads liveness on the next line: `terminate_all` decides whether to
+    write the record straight back, `_reap_one_record` decides whether the file on disk may
+    be deleted, `terminate_pid` decides whether the pid may be forgotten. Measured here,
+    all three answered "still running" for a child that was gone half a second later, and
+    the record survived the process by a launch. Settling once HERE fixes every one of
+    them, and is the POSIX counterpart of the read-back grace on the Windows tree kill.
+
+    Only reached when the SIGTERM timeout was exhausted -- a child that exits politely
+    returns from the poll loop above and never gets here -- so this costs nothing on the
+    ordinary teardown.
+    """
+
+    def _still_there(candidate: int, _identity: "Optional[str]") -> bool:
+        # The group as well as the leader, because that is what the callers go on to ask:
+        # a leader can be gone while the session it started is not.
+        if group_leader and _group_has_members(candidate):
+            return True
+        return _pid_alive(candidate) and not _pid_is_zombie(candidate)
+
+    _survivors_after_settling([(pid, None)], _still_there, grace)
+
+
 def terminate_descendants(
     collected: "list[tuple[int, Optional[str]]]", timeout: float = 5.0
 ) -> "list[tuple[int, Optional[str]]]":
@@ -1098,11 +1240,20 @@ def terminate_descendants(
     # Re-read rather than trusting the signal: SIGKILL is not instantaneous, and an
     # uninterruptible sleep in a driver ioctl outlives it entirely, which is the state a
     # worker holding a GPU is most likely to be in.
-    return [
-        (pid, identity)
-        for pid, identity in live
-        if _pid_alive(pid) and not _pid_is_zombie(pid) and _still_the_same(pid, identity)
-    ]
+    #
+    # And re-read with a grace period rather than on the next line. SIGKILL is not
+    # instantaneous in the other direction either: a process that dies the moment it is
+    # signalled is still visible for the microseconds the kernel spends tearing it down,
+    # so an immediate read reported every one of eight descendants as a survivor when none
+    # of them was alive half a second later. That answer keeps the record and the pidfile,
+    # and the next launch then reaps ghosts. The stuck worker this read-back exists for is
+    # unaffected: it is still there at the end of the grace, and is still reported.
+    return _survivors_after_settling(
+        live,
+        lambda pid, identity: (
+            _pid_alive(pid) and not _pid_is_zombie(pid) and _still_the_same(pid, identity)
+        ),
+    )
 
 
 # How deep the capture-before-kill recursion goes. Each level is one more Toolhelp snapshot
@@ -1295,11 +1446,17 @@ def _windows_terminate_collected(
     # record and the pidfile that were the only handles on a process the kill had failed to
     # stop. Proof is still required before signalling, above; it is not required to say "this
     # is still running".
-    survivors = [
-        (pid, identity)
-        for pid, identity in attempted
-        if _pid_alive(pid) and not _pid_is_zombie(pid) and not _provably_different(pid, identity)
-    ]
+    #
+    # Settled first, for the same reason the POSIX sweep settles: `TerminateProcess` is
+    # asynchronous, so a descendant that died on the spot is still open and still
+    # signalable on the line after the kill, and reporting it keeps the record and the
+    # pidfile that the next launch then sweeps for nothing.
+    survivors = _survivors_after_settling(
+        attempted,
+        lambda pid, identity: (
+            _pid_alive(pid) and not _pid_is_zombie(pid) and not _provably_different(pid, identity)
+        ),
+    )
     # Deepest first throughout, and deduplicated: a pid whose late walk failed is reported
     # unresolved AND may still be alive after its own kill, so the two lists can name it
     # twice and the caller adopts each entry.
@@ -1374,7 +1531,17 @@ def _windows_terminate_validated_tree(pid: int, identity: "Optional[str]" = None
         return False
     # Read back on the root too: a taskkill that reported success still has to have taken
     # effect, and "the leader is gone" was never the question.
-    if _pid_alive(pid) and not _pid_is_zombie(pid):
+    #
+    # With the same grace as the descendants above, and for the same reason.
+    # `TerminateProcess` returns before the process is gone, so on a tree with no
+    # descendants -- the ordinary case -- this read landed microseconds after the kill and
+    # answered False for a leader that was already dying. False here is what keeps the
+    # lifetime record and the pidfile, so the shutdown sweep reported a survivor that did
+    # not exist and the record it wrote outlived the process by a launch.
+    if _survivors_after_settling(
+        [(pid, identity)],
+        lambda candidate, _identity: _pid_alive(candidate) and not _pid_is_zombie(candidate),
+    ):
         return False
     return not survivors
 
@@ -2282,3 +2449,4 @@ def _posix_terminate_one(pid: int, group_leader: bool, timeout: float) -> None:
         killer(pid, signal.SIGKILL)
     except Exception:
         pass
+    _settle_after_the_kill(pid, group_leader)

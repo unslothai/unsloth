@@ -30671,7 +30671,7 @@ class LlamaCppBackend:
         if not _is_signalable_pid(pid):
             return False
         try:
-            from utils.process_lifetime import pid_is_running, terminate_pid
+            from utils.process_lifetime import confirm_pid_exited, terminate_pid
         except Exception:
             return False
         try:
@@ -30679,12 +30679,47 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Could not terminate surviving llama-server {pid}: {e}")
         try:
-            gone = not pid_is_running(pid)
+            # Not a bare `pid_is_running` read: every kill terminate_pid just made is
+            # asynchronous, and asking on the line after one answers its own latency. The
+            # two arms below it settle internally now, so this is belt and braces, but a
+            # read that decides whether to delete the last handle on a live server is worth
+            # spelling the same way everywhere.
+            gone = confirm_pid_exited(pid)
         except Exception:
             return False
         if not gone:
             logger.warning(
                 f"llama-server {pid} is still running after a tree kill; "
+                "keeping its record so the next launch can reap it"
+            )
+        return gone
+
+    @staticmethod
+    def _confirm_group_kill_landed(pid) -> bool:
+        """Did the killpg above actually take the leader with it. True when it is gone.
+
+        The cheap half of `_tree_kill_surviving_process`, for the POSIX case where the
+        expensive half is a second killpg over a group this teardown has already SIGKILLed.
+        No signal is sent from here: the only open question is whether the one already sent
+        has finished landing, and kills are asynchronous, so it is answered with a bounded
+        poll rather than a single read taken microseconds after the signal.
+
+        False keeps the lifetime record and the pidfile, exactly as a failed tree kill does,
+        so a server the group kill could not reach is still reapable by the next launch.
+        """
+        if not _is_signalable_pid(pid):
+            return False
+        try:
+            from utils.process_lifetime import confirm_pid_exited
+        except Exception:
+            return False
+        try:
+            gone = confirm_pid_exited(pid)
+        except Exception:
+            return False
+        if not gone:
+            logger.warning(
+                f"llama-server {pid} is still running after its process group was killed; "
                 "keeping its record so the next launch can reap it"
             )
         return gone
@@ -30899,12 +30934,32 @@ class LlamaCppBackend:
             # own, and signalling that number would take down whoever holds it now.
             _owns_child = terminable and callable(getattr(self._process, "poll", None))
             if _owns_child and _killed_pid is not None and not _exited:
-                # The terminate above is all Popen offers, and on Windows that is
-                # TerminateProcess on the leader alone: a server that ignored it, or
-                # that the escalation could not reach, is still holding the model's
-                # mapping. taskkill /T /F is the only handle left on it there, and
-                # nothing on this path used to reach for it (#9790).
-                _exited = self._tree_kill_surviving_process(_killed_pid)
+                if _pgid is not None and hasattr(os, "killpg"):
+                    # A real process group that `_kill_process_group` could actually
+                    # signal, which only POSIX ever reports here (_leading_process_group
+                    # answers None everywhere else, and that function's own no-op
+                    # condition is repeated so this cannot skip a kill that never
+                    # happened). killpg
+                    # SIGKILL went to this exact group eleven lines above, and the tree
+                    # kill's POSIX arm is killpg SIGTERM, a poll loop, then killpg
+                    # SIGKILL over the same group: no reach this teardown does not
+                    # already have, for a full /proc walk and up to five seconds more
+                    # with _teardown_lock held. Measured at +560 ms of lock hold on the
+                    # survivor path, which is time a lifecycle reopening behind the lock
+                    # spends blocked.
+                    #
+                    # What the call did buy is the read-back, and that is kept. killpg is
+                    # asynchronous like every other kill here, so asking on the next line
+                    # answers "not finished yet" and keeps the record and the pidfile for
+                    # a server that is already gone.
+                    _exited = self._confirm_group_kill_landed(_killed_pid)
+                else:
+                    # The terminate above is all Popen offers, and on Windows that is
+                    # TerminateProcess on the leader alone: a server that ignored it, or
+                    # that the escalation could not reach, is still holding the model's
+                    # mapping. taskkill /T /F is the only handle left on it there, and
+                    # nothing on this path used to reach for it (#9790).
+                    _exited = self._tree_kill_surviving_process(_killed_pid)
             # A descendant the sweep could not kill keeps the leader's record too. It was
             # adopted under its own pid above, but the record here is what the pidfile and
             # the next launch's reap are keyed on, and dropping it while something of this
