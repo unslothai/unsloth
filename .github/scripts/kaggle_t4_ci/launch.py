@@ -3,50 +3,13 @@
 
 """Push the kernels to Kaggle, wait for them, and bring the evidence back.
 
-One invocation handles every kernel of the run. All of them are pushed FIRST
-and only then waited on: pushing one, waiting, then pushing the next would
-serialise sessions Kaggle runs happily at once, and the control/canary pair's
-whole value is that they ran at the same time on the same account. A kernel that
-could not be pushed does not stop the others; the verdict compares the reports
-that came back against the number expected, so a half-launched run reports
-``partial``, a warning rather than a failure, since half a comparison is not
-evidence of a regression.
+All kernels are pushed FIRST and only then waited on: pushing one, waiting, then pushing the next would serialise sessions Kaggle runs happily at once, and the control/canary pair's whole value is that they ran at the same time on the same account. A kernel that could not be pushed does not stop the others; a half-launched run reports ``partial``, a warning rather than a failure.
 
-Failure semantics are the point of this file. Two kinds of bad outcome exit
-differently, because conflating them is how a flaky external service blocks
-merges:
+Failure semantics are the point of this file. ``exit 0`` with ``verdict=infra`` means the test never ran or its result never got back (push throttled, account at its concurrency cap, a kernel that died on Kaggle's side, a download that would not complete, our own wall-clock ceiling), so nothing turns red. ``exit 0`` with ``verdict=pass``/``fail`` means the payload reached a conclusion, which ``report.py`` judges. The only nonzero exit is a usage error.
 
-* ``exit 0`` with ``verdict=infra`` -- the test never ran, or its result never
-  got back: push throttled, account at its concurrency cap, a kernel that died
-  on Kaggle's side, a download that would not complete, our own wall-clock
-  ceiling. Nothing was learned, so nothing turns red.
-* ``exit 0`` with ``verdict=pass`` / ``verdict=fail`` -- the payload ran and
-  reached a conclusion. Judging it is ``report.py``'s job; this file only
-  transports it.
+Wall clock is bounded three times over, and the order of trust is the opposite of what it looks like: DELETING the kernel is the control observed to work (deletion stops the billing, measured as the account's used-hours figure going DOWN when a wedged kernel was deleted), then our polling deadline (``--max-wait``), then Kaggle's own kernel timeout, which is a backstop and NOT sufficient alone: on 2026-08-11 a kernel pushed with ``-t 5400`` whose nbconvert crashed at t=406s sat in RUNNING for over two hours and stopped only on a manual delete. A socket timeout is set globally for the same reason: one status call that never returns stalls the poll loop past every deadline above.
 
-The only nonzero exit is a usage error.
-
-Wall clock is bounded three times over, and the order of trust is the opposite
-of what it looks like:
-
-* **Deleting the kernel**, the control observed to work. Every kernel this
-  process pushed is deleted on the way out, on every path including failures,
-  and deletion stops the billing (measured: the account's used-hours figure went
-  DOWN when a wedged kernel was deleted).
-* **Our polling deadline** (``--max-wait``), which decides when to give up and
-  therefore when to delete.
-* **Kaggle's own kernel timeout**, passed at push time. A backstop, NOT
-  sufficient alone: on 2026-08-11 a kernel pushed with ``-t 5400`` whose
-  nbconvert crashed at t=406s sat in RUNNING for over two hours, past that
-  ceiling and past this process's deadline, and stopped only on a manual delete.
-  The value is still passed, but nothing rests on it.
-
-A socket timeout is set globally for the same reason: one status call that never
-returns stalls the poll loop past every deadline above, which is how that
-two-hour kernel went unnoticed.
-
-No credential is printed. The token is read from the environment by the Kaggle
-client and never echoed.
+No credential is printed.
 """
 
 from __future__ import annotations
@@ -72,9 +35,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# What Kaggle says when a kernel is not there. Defined next to the gate's
-# survey, which has to tell a deleted kernel from an unreadable one for the
-# same reason cleanup does. See _already_gone.
+# What Kaggle says when a kernel is not there. Defined next to the gate's survey, which has to tell a deleted kernel from an unreadable one for the same reason cleanup does. See _already_gone.
 from gate import GONE_MARKERS  # noqa: E402
 
 API_ROOT = "https://www.kaggle.com/api/v1"
@@ -86,42 +47,16 @@ TERMINAL_BAD = {"ERROR", "CANCEL_REQUESTED", "CANCEL_ACKNOWLEDGED"}
 
 _STATUS_RE = re.compile(r"KernelWorkerStatus\.(?P<status>[A-Z_]+)")
 
-# The slug is the ONLY record that survives the runner.
-#
-# Dispatch mode exits minutes after the push and a DIFFERENT job collects,
-# possibly days later, with no artifact or database between them. Kaggle's
-# kernel listing is that database, and a kernel carries exactly one field we
-# control: its name.
-#
-#   unsloth-t4-ci-n1a2b3c4d5e6f-9f8e
-#                 ^^^^^^^^^^^^^^^^^^
-#                 |||||||||||||  uniqueness, so two runs on one commit do not
-#                 ||||||||||||   collide (a re-run, or notebook slot 1 and 2)
-#                 |kind          which workflow to report against
-#                  sha12         which commit the result belongs to. Twelve,
-#                                not eight: two commits sharing eight hex
-#                                characters give indistinguishable kernels, and
-#                                the commits API then 422s the prefix on every
-#                                pass, so the status stays pending forever.
-#
-# `OWN_KERNEL_PREFIX` in gate.py is the first 14 characters and MUST keep
-# matching: it is how the survey tells our kernels from a human's, and one it
-# cannot recognise is not counted against Kaggle's 2-session cap.
+# The slug is the ONLY record that survives the runner: dispatch mode exits minutes after the push and a DIFFERENT job collects, possibly days later, with no artifact or database between them, so Kaggle's kernel listing is that database and a kernel carries exactly one field we control. `unsloth-t4-ci-n1a2b3c4d5e6f-9f8e` is kind, then sha12, then a uid for uniqueness so two runs on one commit do not collide. Twelve hex, not eight: two commits sharing eight characters give indistinguishable kernels, and the commits API then 422s the prefix on every pass so the status stays pending forever. `OWN_KERNEL_PREFIX` in gate.py is the first 14 characters and MUST keep matching: it is how the survey tells our kernels from a human's, and one it cannot recognise is not counted against Kaggle's 2-session cap.
 SLUG_PREFIX = "unsloth-t4-ci-"
 
-# One character each, so the slug survives `_slugify` and stays under Kaggle's
-# length limit. A wire format, not an enum: a collector reads it back days later.
+# One character each, so the slug survives `_slugify` and stays under Kaggle's length limit. A wire format, not an enum: a collector reads it back days later.
 KIND_CODES = {"notebook": "n", "studio": "s"}
 CODE_KINDS = {v: k for k, v in KIND_CODES.items()}
 
-# Legacy slugs (`unsloth-t4-ci-<8 hex>`) are still OURS and must still be
-# reaped, but carry no commit to report against. The alternation reads 8 to 40
-# hex rather than making the collector guess from length.
+# Legacy slugs (`unsloth-t4-ci-<8 hex>`) are still OURS and must still be reaped, but carry no commit to report against. The alternation reads 8 to 40 hex rather than making the collector guess from length.
 SLUG_SHA_LEN = 12
-# The `slot` input, when it is not 1, sits between the dash and the uid:
-# `-2<uid4>`. Slot 2 is a deliberate SECOND session on the same commit, so the
-# duplicate check has to say "this commit, this kind, THIS slot". Absent means
-# slot 1, so every slug pushed before the slot existed still reads.
+# The `slot` input, when it is not 1, sits between the dash and the uid (`-2<uid4>`). Slot 2 is a deliberate SECOND session on the same commit, so the duplicate check has to say "this commit, this kind, THIS slot"; absent means slot 1, so every slug pushed before the slot existed still reads.
 CI_SLUG_RE = re.compile(
     r"^(?:(?P<owner>[^/]+)/)?"
     + re.escape(SLUG_PREFIX)
@@ -131,12 +66,7 @@ CI_SLUG_RE = re.compile(
 
 
 def parse_slug(slug: str) -> dict | None:
-    """What a kernel name says about itself, or None if it is not ours.
-
-    None for anything unrecognised is the collector's safety property: it
-    enumerates a shared ACCOUNT and deletes what it collects, so a collector
-    that guessed would eventually delete someone's work.
-    """
+    """What a kernel name says about itself, or None if it is not ours. None for anything unrecognised is the collector's safety property: it enumerates a shared ACCOUNT and deletes what it collects, so a collector that guessed would eventually delete someone's work."""
     match = CI_SLUG_RE.match(slug or "")
     if match is None:
         return None
@@ -154,11 +84,7 @@ def slug_name(
     commit_sha: str = "",
     slot: str = "1",
 ) -> str:
-    """The name for a kernel about to be pushed.
-
-    Falls back to the legacy random form when no commit is named, as a local
-    probe or an older workflow does. A dispatched run always names one.
-    """
+    """The name for a kernel about to be pushed. Falls back to the legacy random form when no commit is named, as a local probe or an older workflow does; a dispatched run always names one."""
     code = KIND_CODES.get(kind, "")
     sha = (commit_sha or "").strip().lower()[:SLUG_SHA_LEN]
     slot = str(slot or "1").strip()
@@ -171,16 +97,10 @@ def slug_name(
 PUSH_ATTEMPTS = 4
 PUSH_BACKOFF_SEC = 45
 
-# Ceiling on one `kaggle kernels push` subprocess. Named because the workflow's
-# job timeout derives from it, and because exceeding it is a retryable,
-# ambiguous outcome rather than an error -- see push().
+# Ceiling on one `kaggle kernels push` subprocess. Named because the workflow's job timeout derives from it, and because exceeding it is a retryable, ambiguous outcome rather than an error (see push()).
 PUSH_SUBPROCESS_TIMEOUT_SEC = 600
 
-# What a throttled or briefly unavailable push looks like coming back. The
-# JSON-decode message is the common face: Kaggle answers 429 and 503 with an
-# HTML error page, the client decodes it as JSON anyway, and the throttling is
-# never named. Everything else (a bad slug, a rejected accelerator, missing
-# credentials) is deterministic and must not be retried.
+# What a throttled or briefly unavailable push looks like coming back. The JSON-decode message is the common face: Kaggle answers 429 and 503 with an HTML error page, the client decodes it as JSON anyway, and the throttling is never named. Everything else (a bad slug, a rejected accelerator, missing credentials) is deterministic and must not be retried.
 THROTTLED_PUSH = (
     "expecting value: line 1 column 1",
     "429",
@@ -205,61 +125,21 @@ CAPACITY_MARKERS = (
     "no quota for",
 )
 
-# Ceiling on any single network call. urllib takes an explicit timeout and the
-# Kaggle client does not, so this is the only bound on its status and quota
-# calls. Without it, one call that never returns outlasts every deadline in this
-# file while the kernel it was watching keeps billing.
+# Ceiling on any single network call. urllib takes an explicit timeout and the Kaggle client does not, so this is the only bound on its status and quota calls; without it, one call that never returns outlasts every deadline in this file while the kernel it was watching keeps billing.
 SOCKET_TIMEOUT_SEC = 120
 
-# Consecutive unreadable statuses before we stop waiting. One is not enough: the
-# API returns transient 5xx that the client prints exactly like a permanent
-# refusal, and giving up on a blip abandons a kernel still doing the work.
+# Consecutive unreadable statuses before we stop waiting. One is not enough: the API returns transient 5xx that the client prints exactly like a permanent refusal, and giving up on a blip abandons a kernel still doing the work.
 MAX_CONSECUTIVE_UNKNOWN = 10
 
-# Attempts at deleting ONE kernel, and the first gap between them. Deleting is
-# the budget control, so a refused delete is retried rather than written off,
-# against the same transient 5xx and reset connections push() retries.
-#
-# Named, like the push ceiling, because the job timeout is derived from them:
-# ONE delete costs DELETE_ATTEMPTS x DELETE_SUBPROCESS_TIMEOUT_SEC plus its
-# backoffs, and both push() (which discards the previous attempt's slug before
-# each retry) and release() (which reconciles every slug filed) pay it. The
-# harness suite recomputes the total from these three and asserts the workflow's
-# deadline sits above it.
+# Attempts at deleting ONE kernel, and the first gap between them. Deleting is the budget control, so a refused delete is retried rather than written off. Named, like the push ceiling, because the job timeout is derived from them: ONE delete costs DELETE_ATTEMPTS x DELETE_SUBPROCESS_TIMEOUT_SEC plus its backoffs, and both push() and release() pay it. The harness suite recomputes the total from these three and asserts the workflow's deadline sits above it.
 DELETE_ATTEMPTS = 3
 DELETE_BACKOFF_SEC = 5
 DELETE_SUBPROCESS_TIMEOUT_SEC = 180
 
-# Pages of `kernels/output` one listing walks before it stops asking, and the
-# ceiling on the WHOLE evidence phase: every kernel's listing pages and every
-# notebook download, together.
-#
-# ONE budget for all of it, started before the first collection, because that
-# is the only shape the job deadline can be derived from. Per call, the bound
-# was the product of things nobody multiplied out: OUTPUT_PAGE_LIMIT pages at
-# the 120s socket ceiling is 2400s for ONE kernel's listing alone, and each
-# executed notebook is another 300s with no cap on how many Kaggle lists. The
-# workflow header budgeted 600s for two kernels and the harness suite asserted
-# the same 600s as a literal, so the term in the job deadline restated the
-# intention rather than measuring the code: a paginating or slow endpoint spent
-# the job's remaining wall clock HERE, and the runner was then killed before
-# finish() -> release() ran, leaving billable kernels up. That is the exact
-# outcome the deadline exists to prevent.
-#
-# Enforcement is "start no new work past the deadline", each call's own timeout
-# is clamped to what remains, AND the body is read in chunks against the same
-# absolute deadline. The last part is not redundant: the timeout urllib takes is
-# a per-socket-operation timeout ("a timeout in seconds for blocking operations
-# like the connection attempt" -- docs.python.org/3/library/urllib.request.html),
-# not a ceiling on the transfer, so an endpoint that keeps returning bytes
-# resets it forever and a single `resp.read()` outlasts the whole budget while
-# every deadline check sits before the call. Evidence is best effort by design
-# -- whatever arrived is reported and the collection is marked truncated --
-# because the alternative is spending the deletion window on it.
+# Pages of `kernels/output` one listing walks before it stops asking, and the ceiling on the WHOLE evidence phase: every kernel's listing pages and every notebook download together. ONE budget for all of it, started before the first collection, because that is the only shape the job deadline can be derived from: per call the bound was OUTPUT_PAGE_LIMIT pages at the 120s socket ceiling, 2400s for one kernel's listing alone, plus 300s per executed notebook with no cap on how many Kaggle lists, so a slow endpoint spent the job's remaining wall clock here and the runner was killed before finish() -> release() ran, leaving billable kernels up. Enforcement is "start no new work past the deadline", each call's own timeout clamped to what remains, AND the body read in chunks against the same absolute deadline. The last part is not redundant: urllib's timeout is per socket operation, not a ceiling on the transfer, so an endpoint that keeps returning bytes resets it forever and a single `resp.read()` outlasts the whole budget. Evidence is best effort by design, because the alternative is spending the deletion window on it.
 EVIDENCE_BUDGET_SEC = 600
 OUTPUT_PAGE_LIMIT = 20
-# Per read. Small enough that the deadline is re-checked often against a slow
-# stream, large enough not to syscall per kilobyte on a fast one.
+# Per read. Small enough that the deadline is re-checked often against a slow stream, large enough not to syscall per kilobyte on a fast one.
 READ_CHUNK_BYTES = 1 << 16
 
 
@@ -270,22 +150,9 @@ def worst_case_seconds(
 ) -> int:
     """Wall clock ONE invocation of this launcher can take, from its constants.
 
-    Every phase that can keep a pushed kernel UP is in it, because a kernel
-    bills from the moment Kaggle accepts it until a delete is confirmed:
+    Every phase that can keep a pushed kernel UP is in it, because a kernel bills from the moment Kaggle accepts it until a delete is confirmed: ``push()`` per notebook (PUSH_ATTEMPTS attempts at the subprocess ceiling, the backoffs, and the ``_discard()`` of the previous attempt's slug); the polling, which shares ONE deadline started before the first push so it does not stack on top of the pushes; the evidence phase, one budget for every kernel together; and ``release()``, which deletes every slug every push FILED.
 
-    * ``push()``, per notebook: PUSH_ATTEMPTS attempts at the subprocess
-      ceiling, the backoffs between them, and the ``_discard()`` of the previous
-      attempt's slug that rides along with every retry.
-    * the polling, which shares ONE deadline started before the first push, so
-      it does not stack on top of the pushes; the longer of the two is spent.
-    * the evidence phase, ONE budget for every kernel together.
-    * ``release()``, which deletes every slug every push FILED, not just the
-      accepted one.
-
-    Computed here rather than restated by each consumer: the workflow's job
-    deadline, the quota the gate reserves, and the pre-push guard in main() are
-    all wrong by the same amount if a phase is left out, and lowering
-    PUSH_ATTEMPTS or a delete ceiling has to move all three at once.
+    Computed here rather than restated by each consumer: the workflow's job deadline, the quota the gate reserves and the pre-push guard in main() are all wrong by the same amount if a phase is left out.
     """
     one_delete = DELETE_ATTEMPTS * DELETE_SUBPROCESS_TIMEOUT_SEC + sum(
         DELETE_BACKOFF_SEC * 2**i for i in range(DELETE_ATTEMPTS - 1)
@@ -296,9 +163,7 @@ def worst_case_seconds(
         + (PUSH_ATTEMPTS - 1) * one_delete
     )
     if dispatch:
-        # Dispatch stops after the pushes, so the phases below are unreachable
-        # and counting them would make the pre-push guard demand ~2h for a job
-        # that exits in five. The retry _discard()s stay in: those run in push().
+        # Dispatch stops after the pushes, so the phases below are unreachable and counting them would make the pre-push guard demand ~2h for a job that exits in five. The retry _discard()s stay in: those run in push().
         return kernels * per_push
     return (
         max(kernels * per_push, max_wait)
@@ -309,23 +174,12 @@ def worst_case_seconds(
 
 _STDOUT_FD = 1
 
-# Set once, on entry to the signal handler, and never cleared: the process is dying.
-# Below it, NO line written to stdout may either block or raise, and both have to be
-# handled here rather than at the handler's own call sites. release() reports a refused
-# delete and warns about a kernel it could not delete through the ordinary path, so those
-# lines are reached transitively, and either failure strands the cleanup: a block never
-# reaches the retry or the `finally`, and a raise propagates out of delete_kernel() and
-# abandons the remaining delete attempts for a kernel that is still billing.
+# Set once, on entry to the signal handler, and never cleared: the process is dying. Below it, NO line written to stdout may either block or raise, and both have to be handled here rather than at the handler's own call sites: release() reports a refused delete through the ordinary path, and either failure strands the cleanup, since a block never reaches the retry or the `finally` and a raise abandons the remaining delete attempts for a kernel that is still billing.
 _IN_SIGNAL_HANDLER = False
 
 
 def _writable(fd: int) -> bool:
-    """Whether a write to ``fd`` can proceed without blocking, asked without writing.
-
-    A regular file or a terminal always answers yes; a pipe answers no exactly when it
-    has backed up, which is the case worth avoiding. Any error answers no: a closed or
-    unselectable descriptor is not somewhere to risk a stall from a signal handler.
-    """
+    """Whether a write to ``fd`` can proceed without blocking, asked without writing. A regular file or a terminal always answers yes; a pipe answers no exactly when it has backed up. Any error answers no: a closed or unselectable descriptor is not somewhere to risk a stall from a signal handler."""
     try:
         return bool(select.select([], [fd], [], 0)[1])
     except BaseException:  # noqa: BLE001
@@ -335,20 +189,9 @@ def _writable(fd: int) -> bool:
 def _line_from_signal(line: str) -> None:
     """One line out, from a context where the ordinary path can raise OR block.
 
-    It can RAISE: a handler runs on the main thread wherever that thread happened to be,
-    and if it was inside a write to stdout the interpreter refuses the second one
-    outright, ``RuntimeError: reentrant call inside <_io.BufferedWriter name='<stdout>'>``.
-    That is not hypothetical; it was captured on a loaded CI runner, where it escaped the
-    handler and left a cancelled launcher exiting 1 instead of dying of its signal.
-    ``os.write`` goes straight to the descriptor and takes no lock the interrupted frame
-    could already hold, which is what makes it usable as the fallback.
+    It can RAISE: a handler runs on the main thread wherever that thread happened to be, and if it was inside a write to stdout the interpreter refuses the second one outright (``RuntimeError: reentrant call inside <_io.BufferedWriter name='<stdout>'>``), which was captured on a loaded CI runner and left a cancelled launcher exiting 1 instead of dying of its signal. ``os.write`` goes straight to the descriptor and takes no lock the interrupted frame could hold.
 
-    It can also BLOCK, which raising does not cover and no ``except`` or ``finally``
-    catches. stdout in CI is a pipe, and if the collector stops draining it both the
-    buffered flush and the raw write sleep in the kernel. That backpressure is also what
-    leaves the main thread parked mid-write, so the two arrive together. Asking first
-    turns the stall into a dropped line: POSIX reports a pipe writable only when at least
-    PIPE_BUF bytes fit, and these lines are far shorter than that.
+    It can also BLOCK, which no ``except`` or ``finally`` catches: stdout in CI is a pipe, and if the collector stops draining it both the buffered flush and the raw write sleep in the kernel. Asking first turns the stall into a dropped line, since POSIX reports a pipe writable only when at least PIPE_BUF bytes fit and these lines are far shorter.
     """
     if not _writable(_STDOUT_FD):
         return
@@ -366,11 +209,7 @@ def _emit(line: str) -> None:
 
 
 def _write_line(line: str) -> None:
-    """Every line this script puts on stdout goes through here.
-
-    Unconditional on the ordinary path, which is everything before something kills us:
-    nothing dropped, nothing swallowed, no syscall added.
-    """
+    """Every line this script puts on stdout goes through here, unconditionally on the ordinary path: nothing dropped, nothing swallowed, no syscall added."""
     if not _IN_SIGNAL_HANDLER:
         _emit(line)
         return
@@ -382,8 +221,7 @@ def _log(msg: str) -> None:
 
 
 def _log_from_signal(msg: str) -> None:
-    """``_log`` for the handler's own lines. Kept as its own name because the handler
-    runs before the flag it sets can matter to anything else reading this."""
+    """``_log`` for the handler's own lines. Kept as its own name because the handler runs before the flag it sets can matter to anything else reading this."""
     _line_from_signal(f"[launch] {msg}")
 
 
@@ -412,32 +250,14 @@ def _api():
 
 
 def username_of(api) -> str | None:
-    """The account this client authenticated as, as Kaggle itself reports it.
-
-    `_authenticate_with_access_token` introspects the token and records the name
-    that comes back, so this is not a guess. It matters because a kernel id is
-    `<owner>/<slug>`: pushing under a name the token does not own fails, and
-    DELETING under the wrong name silently reaps nothing while the real kernel
-    keeps billing. With more than one account in play the owner cannot be a
-    constant, so it is read from whichever token this process was handed.
-
-    Takes the client the caller already authenticated rather than building one:
-    a second `authenticate()` is a second network round trip on a path that is
-    already bounded, and it could answer for a different token than the one the
-    rest of the run uses.
-    """
+    """The account this client authenticated as, as Kaggle itself reports it. `_authenticate_with_access_token` introspects the token and records the name that comes back, so this is not a guess. It matters because a kernel id is `<owner>/<slug>`: pushing under a name the token does not own fails, and DELETING under the wrong name silently reaps nothing while the real kernel keeps billing. Takes the client the caller already authenticated rather than building one, since a second `authenticate()` is another network round trip and could answer for a different token."""
     try:
         return api.config_values.get(api.CONFIG_NAME_USER) or None
     except Exception:  # noqa: BLE001
         return None
 
 
-# A kernel this process pushed but has not yet deleted is recorded here, so a
-# LATER launch can reclaim it. This is the only cover for `kill -9`, where no
-# handler of ours ever runs. Deliberately keyed on pid: an entry whose owner
-# is still alive belongs to a run in progress and must not be touched, or one
-# launcher would delete a concurrent launcher's kernel and report its absence
-# as a failure of the code under test.
+# A kernel this process pushed but has not yet deleted is recorded here, so a LATER launch can reclaim it. This is the only cover for `kill -9`. Deliberately keyed on pid: an entry whose owner is still alive belongs to a run in progress, or one launcher would delete a concurrent launcher's kernel and report its absence as a failure of the code under test.
 INFLIGHT = (
     Path(os.environ.get("UNSLOTH_WORKSPACE") or Path(__file__).resolve().parents[3])
     / "logs"
@@ -462,15 +282,7 @@ def _inflight_write(entries: list[dict]) -> None:
 
 
 def _inflight_add(slug: str, owner: str | None = None) -> None:
-    """File a slug, WITH the account that owns it.
-
-    The owner is recorded because the sweep below runs with whatever token the
-    NEXT job was handed, and CI now hands out more than one. A slug is
-    `<owner>/<name>`, so an entry filed by one account cannot be deleted by the
-    other; without the owner on the record the sweep cannot tell that it is
-    about to try, and a failed delete reads exactly like a kernel that was
-    already gone.
-    """
+    """File a slug, WITH the account that owns it. The owner is recorded because the sweep below runs with whatever token the NEXT job was handed, and CI now hands out more than one: a slug is `<owner>/<name>`, so an entry filed by one account cannot be deleted by the other, and without the owner on the record a failed delete reads exactly like a kernel that was already gone."""
     entries = [e for e in _inflight_read() if e.get("slug") != slug]
     entry = {"slug": slug, "pid": os.getpid(), "at": time.time()}
     owner = owner or (slug.split("/", 1)[0] if "/" in slug else None)
@@ -485,13 +297,7 @@ def _inflight_drop(slug: str) -> None:
 
 
 def _inflight_mark_kept(slug: str) -> None:
-    """Flag a kernel as deliberately retained, so no later sweep reclaims it.
-
-    ``--keep-kernel`` leaves the kernel up on purpose. Its registry entry
-    still names this process, and this process is about to exit, so the next
-    launcher would see a dead owner, call it an orphan and delete the very
-    thing the flag asked to keep.
-    """
+    """Flag a kernel as deliberately retained, so no later sweep reclaims it. ``--keep-kernel`` leaves the kernel up on purpose, but its registry entry still names this process, which is about to exit, so the next launcher would see a dead owner and delete the very thing the flag asked to keep."""
     entries = _inflight_read()
     for entry in entries:
         if entry.get("slug") == slug:
@@ -512,18 +318,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 def sweep_orphans(owner: str | None = None) -> list[str]:
-    """Delete kernels left behind by a launcher that was killed outright.
-
-    Only entries whose owning process is gone are eligible, so a concurrent
-    run is never disturbed. Returns the slugs reclaimed.
-
-    ``owner``, when given, is the account this process authenticated as, and an
-    entry belonging to a DIFFERENT account is left alone rather than attempted.
-    This token cannot delete that kernel, so trying would turn a real leak into
-    a log line indistinguishable from a kernel that was already gone -- and
-    would drop the record, which is the only thing that still knows the kernel
-    exists. Left filed, it is reclaimed by the next run that holds its account.
-    """
+    """Delete kernels left behind by a launcher that was killed outright, returning the slugs reclaimed. Only entries whose owning process is gone are eligible, so a concurrent run is never disturbed. ``owner``, when given, is the account this process authenticated as, and an entry belonging to a DIFFERENT account is left alone rather than attempted: this token cannot delete that kernel, so trying would turn a real leak into a log line indistinguishable from an already-absent kernel and would drop the only record that still knows the kernel exists."""
     entries = _inflight_read()
     if not entries:
         return []
@@ -534,7 +329,6 @@ def sweep_orphans(owner: str | None = None) -> list[str]:
         if not slug:
             continue
         if entry.get("keep"):
-            # --keep-kernel asked for this one to stay up.
             keep.append(entry)
             continue
         entry_owner = entry.get("owner") or (slug.split("/", 1)[0] if "/" in slug else None)
@@ -561,10 +355,7 @@ def sweep_orphans(owner: str | None = None) -> list[str]:
         except Exception:  # noqa: BLE001
             keep.append(entry)  # try again next time rather than forget it
             continue
-        # A nonzero exit does NOT raise, so the return code is the only thing
-        # that separates "reclaimed" from "Kaggle refused and the kernel is
-        # still running and still billing". Forgetting the entry there is how
-        # one bills to its ceiling unnoticed.
+        # A nonzero exit does NOT raise, so the return code is the only thing that separates "reclaimed" from "Kaggle refused and the kernel is still running and still billing". Forgetting the entry there is how one bills to its ceiling unnoticed.
         if proc.returncode == 0:
             reclaimed.append(slug)
         else:
@@ -575,12 +366,7 @@ def sweep_orphans(owner: str | None = None) -> list[str]:
 
 
 def _pushed(ok: bool, reason: str, out: str, attempted: list[str]) -> dict:
-    """A push outcome, always carrying the slugs the call filed.
-
-    A failed attempt may still have landed, Kaggle answering a committed push
-    with a 5xx often enough to be a known issue, so the slug is reported rather
-    than forgotten and the caller can reconcile it.
-    """
+    """A push outcome, always carrying the slugs the call filed. A failed attempt may still have landed, Kaggle answering a committed push with a 5xx often enough to be a known issue, so the slug is reported rather than forgotten and the caller can reconcile it."""
     return {"ok": ok, "reason": reason, "detail": out.strip()[:400], "attempts": attempted}
 
 
@@ -596,39 +382,16 @@ def push(
 ) -> dict:
     """Push as a fresh private kernel. Every attempt gets its own slug.
 
-    A fresh slug per attempt is not cosmetic: pushing to an id that ALREADY
-    exists does not replace what is there, it files a new version and starts a
-    SECOND batch session while the running one keeps running. ``kernels status``
-    and ``kernels/output`` send no version label, so they answer for the newest
-    session only, and a reused slug means the evidence belongs to whichever
-    execution was latest while the other burns a slot and its quota unseen.
+    A fresh slug per attempt is not cosmetic: pushing to an id that ALREADY exists does not replace what is there, it files a new version and starts a SECOND batch session while the running one keeps running, and since ``kernels status`` and ``kernels/output`` send no version label they answer for the newest session only, so the other burns a slot and its quota unseen.
 
-    The retried failures are exactly the ambiguous ones (a reset connection, an
-    aborted transfer, a 5xx) where Kaggle may have accepted the push whose
-    response never arrived. So each attempt also DELETES the previous attempt's
-    slug first: deletion is kernel-level, costs one call, and frees the session
-    slot the retry is probably waiting on.
+    The retried failures are exactly the ambiguous ones (a reset connection, an aborted transfer, a 5xx) where Kaggle may have accepted the push whose response never arrived, so each attempt also DELETES the previous attempt's slug first: deletion is kernel-level, costs one call, and frees the session slot the retry is probably waiting on.
 
-    Returns the accepted attempt's slug, plus ``attempts``: every slug this call
-    filed, newest last.
-
-    ``attempted`` is that list, and the caller may OWN it: pass a list and every
-    slug appears in it the moment it is filed, rather than on return. Only a
-    return can be lost, and this function reaches the network, so anything it
-    raises other than the timeout it handles (``subprocess.run(text=True)``
-    decodes with strict error handling and raises ``UnicodeDecodeError`` on a
-    malformed response; the runner can also answer with ``OSError`` or
-    ``MemoryError``) would otherwise take the slug of a push Kaggle may have
-    ACCEPTED with it, leaving a kernel nothing will delete. See main().
+    Returns the accepted attempt's slug, plus ``attempts``: every slug this call filed, newest last. ``attempted`` is that list, and the caller may OWN it, so every slug appears in it the moment it is filed rather than on return. Only a return can be lost, and anything this raises other than the timeout it handles (a ``UnicodeDecodeError`` on a malformed response, an ``OSError`` or ``MemoryError`` from the runner) would otherwise take the slug of a push Kaggle may have ACCEPTED with it, leaving a kernel nothing will delete. See main().
     """
     attempted = [] if attempted is None else attempted
 
     def _discard(slug: str) -> None:
-        """Best effort; the attempt usually created nothing at all.
-
-        release() reconciles whatever this leaves, so the outcome is only logged
-        here, but it IS read rather than assumed.
-        """
+        """Best effort; the attempt usually created nothing at all. release() reconciles whatever this leaves, so the outcome is only logged here, but it IS read rather than assumed."""
         if not delete_kernel(slug):
             _log(f"could not discard the previous push attempt {slug}")
 
@@ -639,10 +402,7 @@ def push(
             if attempted:
                 _discard(attempted[-1])
             name = slug_name(kind, commit_sha, slot)
-            # The slug derives from the TITLE, not the metadata id: a mismatch
-            # files the kernel at an unexpected address, every later
-            # status/output call 403s and no collector can attribute it. So
-            # assert the round trip.
+            # The slug derives from the TITLE, not the metadata id: a mismatch files the kernel at an unexpected address, every later status/output call 403s and no collector can attribute it. So assert the round trip.
             title = name.replace("-", " ")
             assert _slugify(title) == name, f"title {title!r} slugifies to {_slugify(title)!r}"
             attempted.append(f"{user}/{name}")
@@ -692,30 +452,16 @@ def push(
                 )
                 out = proc.stdout + proc.stderr
             except subprocess.TimeoutExpired:
-                # A push that ran out of wall clock is the MOST ambiguous
-                # outcome, not the least: the client was killed mid-call, so
-                # whether Kaggle accepted the kernel is unknowable from here,
-                # and letting the exception out loses the slug and with it every
-                # chance of deleting the session it may have started.
-                #
-                # So it is recorded as a failed attempt like any other: the slug
-                # stays in `attempted`, the retry _discard()s it, and release()
-                # reconciles the rest. "timed out" is in THROTTLED_PUSH because
-                # that is what it is, Kaggle under load, so the retry applies.
+                # A push that ran out of wall clock is the MOST ambiguous outcome, not the least: the client was killed mid-call, so whether Kaggle accepted the kernel is unknowable from here, and letting the exception out loses the slug and with it every chance of deleting the session it may have started. So it is recorded as a failed attempt like any other, and "timed out" is in THROTTLED_PUSH because that is what it is, Kaggle under load.
                 out = f"push subprocess exceeded {PUSH_SUBPROCESS_TIMEOUT_SEC}s and was killed; timed out"
                 _log(f"push timed out after {PUSH_SUBPROCESS_TIMEOUT_SEC}s ({attempted[-1]})")
-                # Also recorded on disk. release() covers the paths this process
-                # gets to run; the registry covers the one it does not, a kill
-                # between here and cleanup, by leaving the slug for the next
-                # launcher's sweep.
+                # Also recorded on disk. release() covers the paths this process gets to run; the registry covers the one it does not, a kill between here and cleanup, by leaving the slug for the next launcher's sweep.
                 _inflight_add(attempted[-1])
             lowered = out.lower()
             if "successfully pushed" in lowered:
                 if "does not resolve to the specified id" in lowered:
                     return _pushed(False, "slug_mismatch", out, attempted)
-                # Recorded the instant it exists, before anything can go
-                # wrong downstream: a kernel that is billing but unknown to
-                # the registry is exactly the case the registry is for.
+                # Recorded the instant it exists, before anything can go wrong downstream: a kernel that is billing but unknown to the registry is exactly the case the registry is for.
                 _inflight_add(attempted[-1])
                 return {"ok": True, "slug": attempted[-1], "attempts": attempted}
             if any(m in lowered for m in CAPACITY_MARKERS):
@@ -734,54 +480,20 @@ def push(
 
 
 def _already_gone(text: str) -> bool:
-    """Is this failed delete Kaggle saying the kernel is not there?
-
-    The gate's vocabulary, imported rather than copied: the two files ask the
-    same question of the same account through the same client, and a second
-    list would drift out of agreement with the first without either being wrong
-    on its own.
-    """
+    """Is this failed delete Kaggle saying the kernel is not there? The gate's vocabulary, imported rather than copied: the two files ask the same question of the same account through the same client, and a second list would drift out of agreement with the first without either being wrong on its own."""
     return any(marker in text.lower() for marker in GONE_MARKERS)
 
 
 def delete_kernel(slug: str, deadline: float | None = None) -> bool:
     """Delete one kernel, and answer whether Kaggle actually deleted it.
 
-    ``deadline`` (absolute ``time.time()``) bounds the whole call: attempts are
-    clamped to what is left and none starts past it, so a release phase sharing
-    one deadline ends when it says it will rather than three attempts after.
+    ``deadline`` (absolute ``time.time()``) bounds the whole call: attempts are clamped to what is left and none starts past it, so a release phase sharing one deadline ends when it says it will.
 
-    ``subprocess.run`` does not raise on a nonzero exit, so the caller used to
-    record every slug as released whatever came back: a refused delete, an
-    expired token, or the case that made this visible, where the pinned client
-    had no ``kernels delete`` subcommand at all and argparse exited 2 before any
-    request was sent while the run still reported the kernel released. Cleanup
-    is this workflow's budget control, so an unestablished delete has to read as
-    STILL BILLING.
+    ``subprocess.run`` does not raise on a nonzero exit, so the caller used to record every slug as released whatever came back: a refused delete, an expired token, or the case that made this visible, where the pinned client had no ``kernels delete`` subcommand at all and argparse exited 2 before any request was sent while the run still reported the kernel released. Cleanup is this workflow's budget control, so an unestablished delete has to read as STILL BILLING. The exit code is the signal Kaggle's client offers and means what it says: kaggle/cli.py exits 1 on a failed call and 0 once the kernel is gone.
 
-    The exit code is the signal Kaggle's client offers, and it means what it
-    says: kaggle/cli.py exits 1 on a failed call, commented "This is so that
-    scripts that pick up on error codes can tell when there was a failure", and
-    0 once the kernel is gone.
+    NOT FOUND IS THE OTHER CONFIRMED ANSWER, and a common one: most of the slugs release() reconciles are earlier push attempts, which usually created nothing. Kaggle answering "this kernel is not there" settles the only question cleanup asks, so retrying it three times and then naming it in a "may still be running" warning spends the deletion window on absent kernels ahead of the live one. The gate reads a 404 the same way, through the same GONE_MARKERS; the client surfaces one as `404 Client Error: Not Found for url: ...` on stderr with exit 1.
 
-    NOT FOUND IS THE OTHER CONFIRMED ANSWER, and it is a common one here rather
-    than an edge case: most of the slugs release() reconciles are earlier push
-    attempts, which usually created nothing at all, and one that a retry's
-    _discard() did delete is asked about a second time. Kaggle answering "this
-    kernel is not there" settles the only question cleanup asks -- is the slot
-    still billing -- so retrying it three times and then naming it in a
-    "may still be running, delete them by hand" warning spends the deletion
-    window on absent kernels, ahead of the live one, and points a human at a
-    slug that does not exist. The gate reads a 404 the same way and for the
-    same reason, so it reads it through the same GONE_MARKERS; the client
-    surfaces one as `404 Client Error: Not Found for url: ...` on stderr with
-    exit 1 (requests' raise_for_status, via kagglesdk's response handler).
-
-    Every OTHER nonzero exit keeps its retries: a 5xx, a reset connection or an
-    argparse refusal says nothing about the kernel.
-
-    Returns True only on a confirmed deletion or a confirmed absence. A slug
-    this refuses needs a human, which is what the caller's warning is for.
+    Every OTHER nonzero exit keeps its retries: a 5xx, a reset connection or an argparse refusal says nothing about the kernel. Returns True only on a confirmed deletion or a confirmed absence.
     """
     for attempt in range(DELETE_ATTEMPTS):
         timeout = DELETE_SUBPROCESS_TIMEOUT_SEC
@@ -818,19 +530,7 @@ def delete_kernel(slug: str, deadline: float | None = None) -> bool:
 def _slugs_filed(entry: dict) -> list[str]:
     """Every slug one kernel entry's push filed, in the order it filed them.
 
-    Cleanup reconciles ALL of them, not only the accepted one, and both routes
-    to a leaked slug are ambiguous by construction:
-
-    * The last attempt of a FAILED push. ``push()`` keeps the slug precisely
-      because Kaggle answers an accepted push with a 5xx or a reset connection
-      often enough to be a known issue, and that entry carries no ``slug``.
-    * An EARLIER attempt of a push that later succeeded. ``_discard()`` runs
-      before each retry but is best effort, so a delete Kaggle refuses even
-      after ``delete_kernel``'s retries leaves the previous attempt up.
-
-    Either keeps a session slot and bills GPU quota with nobody reading the
-    result. A delete for a slug Kaggle never created is refused and costs one
-    call.
+    Cleanup reconciles ALL of them, not only the accepted one, and both routes to a leaked slug are ambiguous by construction: the last attempt of a FAILED push (``push()`` keeps the slug precisely because Kaggle answers an accepted push with a 5xx or a reset connection often enough to be a known issue), and an EARLIER attempt of a push that later succeeded (``_discard()`` runs before each retry but is best effort). Either keeps a session slot and bills GPU quota with nobody reading the result. A delete for a slug Kaggle never created is refused and costs one call.
     """
     filed = [*(entry.get("attempted") or []), entry.get("slug")]
     return list(dict.fromkeys(s for s in filed if s))
@@ -847,14 +547,7 @@ def poll(api, slug: str) -> str:
 
 
 def wait(api, slug: str, poll_every: int, max_wait: int) -> str:
-    """Poll to a terminal state.
-
-    An unreadable status must NOT count as "still running" forever: with no
-    status to match, sitting here for the full ceiling on a kernel that long
-    since finished is an hour of wall clock spent learning nothing. So bound the
-    consecutive failures and hand back UNREADABLE, never COMPLETE, since how it
-    ended is genuinely unknown.
-    """
+    """Poll to a terminal state. An unreadable status must NOT count as "still running" forever: with no status to match, sitting here for the full ceiling on a kernel that long since finished is an hour of wall clock spent learning nothing. So bound the consecutive failures and hand back UNREADABLE, never COMPLETE, since how it ended is genuinely unknown."""
     deadline = time.time() + max_wait
     unknowns = 0
     last = "UNKNOWN"
@@ -883,22 +576,12 @@ def _bearer() -> str:
 
 
 def _evidence_deadline(deadline: float | None) -> float:
-    """The shared budget if the caller has one, otherwise a fresh one.
-
-    Never unbounded. ``deadline=None`` used to mean "no ceiling", which is the
-    state this constant exists to end, so the default is a budget of its own:
-    a caller can only make the bound TIGHTER by sharing one, never absent.
-    """
+    """The shared budget if the caller has one, otherwise a fresh one. Never unbounded: ``deadline=None`` used to mean "no ceiling", which is the state this constant exists to end, so a caller can only make the bound TIGHTER by sharing one."""
     return time.time() + EVIDENCE_BUDGET_SEC if deadline is None else deadline
 
 
 def _time_left(deadline: float, timeout: int) -> int | None:
-    """Seconds this call may take, or None when the deadline has passed.
-
-    The single place the evidence budget is applied, so no caller can start a
-    request the phase has no time for and none can outlast it: the timeout
-    handed to urllib is the SMALLER of the call's own ceiling and what is left.
-    """
+    """Seconds this call may take, or None when the deadline has passed. The single place the evidence budget is applied, so no caller can start a request the phase has no time for: the timeout handed to urllib is the SMALLER of the call's own ceiling and what is left."""
     remaining = int(deadline - time.time())
     if remaining <= 0:
         return None
@@ -906,14 +589,7 @@ def _time_left(deadline: float, timeout: int) -> int | None:
 
 
 def _clamp_socket(resp, seconds: float) -> None:
-    """Tighten the live socket's timeout to what is left of the budget.
-
-    The timeout handed to ``urlopen`` is fixed when the response opens, so a
-    read that starts just inside the deadline may still block for all of it.
-    Re-clamping per chunk bounds the overshoot by one chunk rather than by one
-    socket timeout. Best effort: the loop below stops at the deadline whether or
-    not the socket can be reached.
-    """
+    """Tighten the live socket's timeout to what is left of the budget. The timeout handed to ``urlopen`` is fixed when the response opens, so a read that starts just inside the deadline may still block for all of it; re-clamping per chunk bounds the overshoot by one chunk rather than by one socket timeout. Best effort: the loop below stops at the deadline whether or not the socket can be reached."""
     sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
     setter = getattr(sock, "settimeout", None)
     if setter is None:
@@ -929,19 +605,7 @@ def _read_within(
     deadline: float,
     sink = None,
 ) -> bytes:
-    """Read a response body under the ABSOLUTE deadline, not a socket timeout.
-
-    ``urlopen(timeout=...)`` bounds each blocking socket operation, so a server
-    that keeps trickling bytes renews it indefinitely and ``resp.read()`` runs
-    as long as it likes -- past the evidence budget, into the wall clock
-    ``release()`` needs, with billable kernels still up. Checking the deadline
-    only before opening the response therefore bounds nothing about the read.
-
-    So: one chunk at a time, deadline re-checked before each, and ``read1`` so a
-    chunk is at most ONE underlying socket read (``read(n)`` loops until it has
-    n bytes, which a slow trickle can stretch arbitrarily). ``sink`` streams
-    straight to disk, which also keeps a response nobody sized out of memory.
-    """
+    """Read a response body under the ABSOLUTE deadline, not a socket timeout. ``urlopen(timeout=...)`` bounds each blocking socket operation, so a server that keeps trickling bytes renews it indefinitely and ``resp.read()`` runs past the evidence budget into the wall clock ``release()`` needs, with billable kernels still up. So: one chunk at a time, deadline re-checked before each, and ``read1`` so a chunk is at most ONE underlying socket read (``read(n)`` loops until it has n bytes, which a slow trickle can stretch arbitrarily). ``sink`` streams straight to disk, which also keeps a response nobody sized out of memory."""
     reader = getattr(resp, "read1", None) or resp.read
     chunks: list[bytes] = []
     while True:
@@ -964,12 +628,7 @@ def list_outputs(
     timeout: int = 120,
     deadline: float | None = None,
 ) -> dict:
-    """List a kernel's outputs, one page at a time, inside the budget.
-
-    ``truncated`` says the listing is INCOMPLETE -- the page limit or the
-    evidence deadline stopped it -- so a caller can tell "Kaggle listed these
-    files" from "these are the files we got to before the clock ran out".
-    """
+    """List a kernel's outputs, one page at a time, inside the budget. ``truncated`` says the listing is INCOMPLETE (the page limit or the evidence deadline stopped it), so a caller can tell "Kaggle listed these files" from "these are the files we got to before the clock ran out"."""
     deadline = _evidence_deadline(deadline)
     user, _, name = slug.partition("/")
     params = {"userName": user, "kernelSlug": name}
@@ -993,8 +652,7 @@ def list_outputs(
             with urllib.request.urlopen(req, timeout = call_timeout) as resp:
                 data = json.loads(_read_within(resp, deadline))
         except TimeoutError:
-            # The budget ran out mid-body. Same answer as running out between
-            # pages: stop, and say the listing is incomplete.
+            # The budget ran out mid-body. Same answer as running out between pages: stop, and say the listing is incomplete.
             _log(f"evidence budget spent while reading a page of {slug}")
             break
         files.extend(f for f in data.get("files") or [] if f.get("fileName"))
@@ -1008,13 +666,7 @@ def list_outputs(
 
 
 def _dest_name(file_name: str) -> str:
-    """Basename of a listed output, safe on every platform.
-
-    Kaggle lists nested outputs with POSIX separators. Joining a listed name
-    onto the output directory unexamined would let ``../`` walk out of it, and
-    ``Path`` answers for the HOST rather than for the name, so peel POSIX first
-    and Windows second with both pure flavours.
-    """
+    """Basename of a listed output, safe on every platform. Kaggle lists nested outputs with POSIX separators, so joining a listed name onto the output directory unexamined would let ``../`` walk out of it, and ``Path`` answers for the HOST rather than for the name: peel POSIX first and Windows second with both pure flavours."""
     name = PureWindowsPath(PurePosixPath(file_name).name).name
     return name or PurePosixPath(file_name).name
 
@@ -1025,18 +677,7 @@ def fetch_evidence(
     timeout: int = 300,
     deadline: float | None = None,
 ) -> dict:
-    """Pull the executed notebooks and the kernel log by direct URL.
-
-    By direct URL rather than the bulk download: the bulk call returns the WHOLE
-    of /kaggle/working as one stream, and a previous incident lost two PASSING
-    notebooks because a multi-GB saved model sorted alphabetically ahead of them
-    and the stream broke partway through.
-
-    ``deadline`` is the shared evidence budget (EVIDENCE_BUDGET_SEC), an
-    absolute ``time.time()`` value covering every kernel of the run. Nothing
-    starts after it and every call is clamped to what is left of it, so this
-    phase cannot eat the wall clock release() needs to delete the kernels.
-    """
+    """Pull the executed notebooks and the kernel log by direct URL rather than the bulk download: the bulk call returns the WHOLE of /kaggle/working as one stream, and a previous incident lost two PASSING notebooks because a multi-GB saved model sorted alphabetically ahead of them and the stream broke partway through. ``deadline`` is the shared evidence budget (EVIDENCE_BUDGET_SEC), an absolute ``time.time()`` covering every kernel of the run, so this phase cannot eat the wall clock release() needs."""
     deadline = _evidence_deadline(deadline)
     outdir.mkdir(parents = True, exist_ok = True)
     listing = list_outputs(slug, timeout = min(timeout, 120), deadline = deadline)
@@ -1048,8 +689,7 @@ def fetch_evidence(
             continue
         url = entry.get("url") or entry.get("urlNullable")
         if not url:
-            # Listed but not downloadable is missing evidence: judged without
-            # it, a lost failing payload reads as whatever survived.
+            # Listed but not downloadable is missing evidence: judged without it, a lost failing payload reads as whatever survived.
             _log(f"{name} was listed without a download URL; evidence incomplete")
             truncated = True
             continue
@@ -1064,17 +704,12 @@ def fetch_evidence(
             req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-kaggle-t4-ci/1.0"})
             with urllib.request.urlopen(req, timeout = call_timeout) as resp, part.open("wb") as fh:
                 _read_within(resp, deadline, sink = fh)
-            # Only publish once it parses: a download killed mid-write leaves a
-            # file of plausible size, which is evidence that looks present and
-            # is not.
+            # Only publish once it parses: a download killed mid-write leaves a file of plausible size, which is evidence that looks present and is not.
             json.loads(part.read_text(encoding = "utf-8", errors = "replace"))
             part.replace(dest)
             fetched.append(dest.name)
         except Exception as exc:  # noqa: BLE001
-            # A listed notebook that did not land is missing evidence, whether
-            # the budget ran out mid-body or the transfer failed, so the
-            # collection is incomplete and has to say so rather than read as a
-            # complete set that happens to be short.
+            # A listed notebook that did not land is missing evidence, whether the budget ran out mid-body or the transfer failed, so the collection is incomplete and has to say so rather than read as a complete set that happens to be short.
             _log(f"could not fetch {name}: {type(exc).__name__}")
             part.unlink(missing_ok = True)
             truncated = True
@@ -1089,19 +724,7 @@ def fetch_evidence(
 
 
 def flatten_kernel_log(raw: str) -> str:
-    """A kernel log as flat text, whichever shape Kaggle returned it in.
-
-    ``kernels/output`` returns the log as a JSON array of
-    ``{stream_name, time, data}`` records, whose boundaries are not line
-    boundaries. Scanning it as-is finds no line beginning with the report
-    prefix, so a payload whose executed notebook never came back -- the case
-    this fallback exists for -- read as no report and was downgraded to
-    ``infra``.
-
-    ``report.kernel_log_text`` does the same for the summary; both are kept
-    because the two scripts are separate processes and neither imports the
-    other.
-    """
+    """A kernel log as flat text, whichever shape Kaggle returned it in. ``kernels/output`` returns the log as a JSON array of ``{stream_name, time, data}`` records, whose boundaries are not line boundaries, so scanning it as-is finds no line beginning with the report prefix and a payload whose executed notebook never came back read as no report and was downgraded to ``infra``. ``report.kernel_log_text`` does the same for the summary; both are kept because the two scripts are separate processes and neither imports the other."""
     try:
         records = json.loads(raw)
     except ValueError:
@@ -1112,12 +735,7 @@ def flatten_kernel_log(raw: str) -> str:
 
 
 def extract_reports(outdir: Path) -> list[dict]:
-    """Every T4_SMOKE_REPORT payload found in the collected evidence.
-
-    Cell outputs of the executed notebooks first, flat kernel log second. The
-    notebook is the better source (one cell, unambiguous ownership), but the log
-    survives cases where the notebook never got written back.
-    """
+    """Every T4_SMOKE_REPORT payload found in the collected evidence. Cell outputs of the executed notebooks first, flat kernel log second: the notebook is the better source (one cell, unambiguous ownership), but the log survives cases where the notebook never got written back."""
     reports: list[dict] = []
     seen: set[str] = set()
 
@@ -1130,8 +748,7 @@ def extract_reports(outdir: Path) -> list[dict]:
                 parsed = json.loads(blob)
             except json.JSONDecodeError:
                 continue
-            # A report is an object; `.get` on anything else that parses raises
-            # out of the collector and wedges every later pass on this evidence.
+            # A report is an object; `.get` on anything else that parses raises out of the collector and wedges every later pass on this evidence.
             if not isinstance(parsed, dict):
                 continue
             key = f"{parsed.get('label')}|{parsed.get('model')}"
@@ -1140,17 +757,13 @@ def extract_reports(outdir: Path) -> list[dict]:
             seen.add(key)
             reports.append(parsed)
 
-    # rglob, not glob: each kernel collects into its own subdirectory so two
-    # cannot overwrite each other's kernel.log.
+    # rglob, not glob: each kernel collects into its own subdirectory so two cannot overwrite each other's kernel.log.
     for nb_path in sorted(outdir.rglob(f"*{OUTPUT_SUFFIX}")):
         try:
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
-        # Valid JSON is not necessarily a notebook, and one malformed file must
-        # not take its neighbours' reports with it: an exception here used to
-        # reach the collector, which then judged the kernel infra, posted
-        # success and released it, hiding a real failure behind a mangled file.
+        # Valid JSON is not necessarily a notebook, and one malformed file must not take its neighbours' reports with it: an exception here used to reach the collector, which then judged the kernel infra, posted success and released it, hiding a real failure behind a mangled file.
         if not isinstance(nb, dict):
             continue
         for cell in nb.get("cells") or []:
@@ -1172,57 +785,30 @@ def extract_reports(outdir: Path) -> list[dict]:
 
 
 def _install_release_handlers(release: Callable[[], None]) -> None:
-    """Make release survive the ways this process actually dies.
-
-        normal return / handled error   finish() calls it directly
-        unhandled exception             atexit
-        Ctrl-C, kill, Actions cancel    the signal handlers here
-        kill -9                         nothing in-process can; the orphan
-                                        sweep at the next launch reclaims it
-
-    Before this, only the first row worked: `finish()` is reached only on
-    paths that RETURN, KeyboardInterrupt was re-raised past it, and the
-    default SIGTERM disposition exits without running atexit or finally. A
-    cancelled workflow therefore left its kernel running.
-    """
+    """Make release survive the ways this process actually dies: finish() calls it on a normal return or handled error, atexit covers an unhandled exception, the signal handlers here cover Ctrl-C, kill and an Actions cancel, and nothing in-process can cover kill -9, where the orphan sweep at the next launch reclaims it. Before this, only the first worked: `finish()` is reached only on paths that RETURN, KeyboardInterrupt was re-raised past it, and the default SIGTERM disposition exits without running atexit or finally, so a cancelled workflow left its kernel running."""
     atexit.register(release)
 
     def _release_and_die(signum, _frame):
-        # First, and outside the try: from here on every _log in this process drops a
-        # line rather than stalling on a stdout nobody is draining. release() logs
-        # through the ordinary path -- delete_kernel() reports a refused delete that way
-        # -- and a stall there is a stall before the retry and before the `finally`.
+        # First, and outside the try: from here on every _log in this process drops a line rather than stalling on a stdout nobody is draining. release() logs through the ordinary path, and a stall there is a stall before the retry and before the `finally`.
         global _IN_SIGNAL_HANDLER
         _IN_SIGNAL_HANDLER = True
-        # Everything before the `finally` is best effort. The death is not: a handler
-        # that returns normally leaves the process exiting on whatever code main()
-        # computes, and a cancelled job then reads as a completed one.
+        # Everything before the `finally` is best effort. The death is not: a handler that returns normally leaves the process exiting on whatever code main() computes, and a cancelled job then reads as a completed one.
         try:
             _log_from_signal(f"received signal {signum}; deleting kernels before exiting")
             release()
         except BaseException as exc:  # noqa: BLE001
-            # A raise here used to propagate into the main thread, where main()'s
-            # `except BaseException` caught it and finish() called release() again.
-            # A transient first failure (the observed one: an OSError from a
-            # subprocess spawn on a loaded runner) therefore ended in main
-            # RETURNING 0, and the cancelled job read as completed. Deleting is
-            # best effort, the exit status is not. Retried once, since the kernel
-            # is billing meanwhile.
+            # A raise here used to propagate into the main thread, where main()'s `except BaseException` caught it and finish() called release() again, so a transient first failure (the observed one: an OSError from a subprocess spawn on a loaded runner) ended in main RETURNING 0 and the cancelled job read as completed. Deleting is best effort, the exit status is not. Retried once, since the kernel is billing meanwhile.
             _log_from_signal(f"release() failed under signal {signum}: {type(exc).__name__}: {exc}")
             try:
                 release()
             except BaseException as retry_exc:  # noqa: BLE001
-                # Nothing more to try in-process: the slug stays in the registry
-                # for the next launch's orphan sweep, as after a kill -9.
+                # Nothing more to try in-process: the slug stays in the registry for the next launch's orphan sweep, as after a kill -9.
                 _log_from_signal(
                     f"release() failed again: {type(retry_exc).__name__}: {retry_exc}. "
                     f"The kernels stay in the registry for the next launcher's sweep"
                 )
         finally:
-            # Die of the original signal rather than exiting 0, so the status
-            # still reads "killed by signal N". A CI system treats a 0 from a
-            # cancelled job as a completed one. In a `finally` because anything
-            # above can raise -- including the logging, which is how this was found.
+            # Die of the original signal rather than exiting 0, so the status still reads "killed by signal N": a CI system treats a 0 from a cancelled job as a completed one. In a `finally` because anything above can raise, including the logging, which is how this was found.
             signal.signal(signum, signal.SIG_DFL)
             os.kill(os.getpid(), signum)
 
@@ -1232,8 +818,7 @@ def _install_release_handlers(release: Callable[[], None]) -> None:
         try:
             signal.signal(_sig, _release_and_die)
         except (ValueError, OSError, AttributeError):
-            # No SIGHUP on Windows, and signal() only works on the main
-            # thread. One handler failing must not stop the others.
+            # No SIGHUP on Windows, and signal() only works on the main thread. One handler failing must not stop the others.
             pass
 
 
@@ -1246,13 +831,7 @@ def main() -> int:
         help = "kernel notebook to push. Repeatable: all of them "
         "are pushed before any of them is waited on",
     )
-    # NOT required, and not a constant. The owner is a property of the TOKEN
-    # this process was handed, and CI now hands it one of several. Passing the
-    # name is still allowed -- the caller that selected the account knows it --
-    # but it is CHECKED against the token rather than trusted, because the one
-    # failure worth catching here is a name and a credential that disagree: the
-    # push fails, or worse, the cleanup deletes under a name that owns nothing
-    # and the real kernel bills on unwatched.
+    # NOT required, and not a constant: the owner is a property of the TOKEN this process was handed, and CI now hands it one of several. Passing the name is still allowed but is CHECKED against the token rather than trusted, because the failure worth catching is a name and a credential that disagree: the push fails, or worse, the cleanup deletes under a name that owns nothing and the real kernel bills on unwatched.
     ap.add_argument(
         "--user",
         default = "",
@@ -1315,22 +894,16 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    # A dispatched kernel is left running, which is exactly what --keep-kernel
-    # already means down to the registry bookkeeping. Reusing the flag rather
-    # than giving release() a second way not to delete: two conditions guarding
-    # one deletion is how one ends up wrong, and this one bills GPU quota.
+    # A dispatched kernel is left running, which is exactly what --keep-kernel already means down to the registry bookkeeping. Reusing the flag rather than giving release() a second way not to delete: two conditions guarding one deletion is how one ends up wrong, and this one bills GPU quota.
     if args.dispatch:
         args.keep_kernel = True
-        # Refused rather than defaulted: a slug with no commit runs, costs quota
-        # and reports to nobody. A usage error at the only moment it is cheap.
+        # Refused rather than defaulted: a slug with no commit runs, costs quota and reports to nobody. A usage error at the only moment it is cheap.
         if not args.commit_sha or not args.kind:
             ap.error(
                 "--dispatch requires --commit-sha and --kind: without both, the "
                 "kernel runs and no collector can attribute its result"
             )
-        # A commit, not a ref: `slug_name` carries only hex and falls back to
-        # the legacy unattributable form, so a branch or tag here bills and
-        # reports to nobody. The workflows resolve refs; this checks they did.
+        # A commit, not a ref: `slug_name` carries only hex and falls back to the legacy unattributable form, so a branch or tag here bills and reports to nobody. The workflows resolve refs; this checks they did.
         if not re.fullmatch(r"[0-9a-fA-F]{12,40}", args.commit_sha.strip()):
             ap.error(
                 f"--commit-sha must be a hex commit id (12 to 40 characters), got "
@@ -1338,8 +911,7 @@ def main() -> int:
                 "the kernel's result could never be attributed to a commit"
             )
 
-    # Before the first network call, and globally: the Kaggle client has no
-    # per-call timeout of its own. See SOCKET_TIMEOUT_SEC.
+    # Before the first network call, and globally: the Kaggle client has no per-call timeout of its own. See SOCKET_TIMEOUT_SEC.
     socket.setdefaulttimeout(SOCKET_TIMEOUT_SEC)
 
     outdir = Path(args.outdir)
@@ -1353,25 +925,9 @@ def main() -> int:
     }
 
     def release() -> None:
-        """Delete every kernel this process pushed. Idempotent, and on every
-        path out of main().
-
-        The budget control, not a tidy-up: a kernel left behind bills to its own
-        ceiling with nobody reading the result, and Kaggle's push-time timeout
-        has been observed not to stop one that wedged. Deleting a two-hour-old
-        stuck kernel took the account's used-hours figure DOWN.
-
-        Every slug the push FILED is reconciled, not only the accepted one; see
-        ``_slugs_filed`` for the two ways an unaccepted slug can still be
-        running. A slug counts as released only once Kaggle CONFIRMS the delete
-        (see delete_kernel); anything else may still be billing, so it is named
-        in the log, in ``launch_result.json`` and in a workflow annotation
-        rather than quietly counted as cleaned up.
-        """
+        """Delete every kernel this process pushed. Idempotent, and on every path out of main(). The budget control, not a tidy-up: a kernel left behind bills to its own ceiling with nobody reading the result, and Kaggle's push-time timeout has been observed not to stop one that wedged (deleting a two-hour-old stuck kernel took the account's used-hours figure DOWN). Every slug the push FILED is reconciled, not only the accepted one; see ``_slugs_filed``. A slug counts as released only once Kaggle CONFIRMS the delete, and anything else is named in the log, in ``launch_result.json`` and in a workflow annotation rather than quietly counted as cleaned up."""
         if args.keep_kernel:
-            # Flagged, not just skipped: the registry entry still names this
-            # process, and the next launcher would read a dead owner as an
-            # orphan and delete the very kernel the flag asked to keep.
+            # Flagged, not just skipped: the registry entry still names this process, and the next launcher would read a dead owner as an orphan and delete the very kernel the flag asked to keep.
             for entry in result.get("kernels") or []:
                 for slug in _slugs_filed(entry):
                     _inflight_mark_kept(slug)
@@ -1392,11 +948,7 @@ def main() -> int:
             entry["released"] = all(s in done for s in _slugs_filed(entry))
         result["unreleased"] = leaked
         if leaked:
-            # _write_line, not _log: the [launch] prefix would stop GitHub parsing
-            # this as an annotation. Not print: release() runs from the signal handler
-            # too, and this line is emitted on exactly the path where a kernel is still
-            # billing, so a raw write here blocks or raises before the handler can
-            # re-raise its signal.
+            # _write_line, not _log: the [launch] prefix would stop GitHub parsing this as an annotation. Not print: release() runs from the signal handler too, and this line is emitted on exactly the path where a kernel is still billing, so a raw write here blocks or raises before the handler can re-raise its signal.
             _write_line(
                 "::warning title=Kaggle kernels may still be running::"
                 + ", ".join(leaked)
@@ -1404,8 +956,7 @@ def main() -> int:
                 "quota until they hit their own ceiling. Delete them by hand."
             )
 
-    # From here on release() is reachable from a signal and from atexit too,
-    # not only from finish(): a cancelled workflow used to leave its kernel up.
+    # From here on release() is reachable from a signal and from atexit too, not only from finish(): a cancelled workflow used to leave its kernel up.
     _install_release_handlers(release)
 
     def finish(code: int = 0) -> int:
@@ -1418,11 +969,7 @@ def main() -> int:
         return code
 
     def window_fits(after: str) -> bool:
-        """Does the job's remaining wall clock still cover the worst case?
-
-        Asked TWICE, because the answer expires: everything between the two
-        asks is time the guard already granted. See the two call sites.
-        """
+        """Does the job's remaining wall clock still cover the worst case? Asked TWICE, because the answer expires: everything between the two asks is time the guard already granted."""
         if not args.deadline_epoch:
             return True
         need = worst_case_seconds(args.max_wait, len(args.notebook), dispatch = args.dispatch)
@@ -1444,28 +991,7 @@ def main() -> int:
         )
         return False
 
-    # BEFORE authentication and long before the first push: the one question
-    # that has to be answered while the answer can still be acted on.
-    #
-    # The caller (the workflow job) is killed at a fixed time, and killing it
-    # takes finish() -> release() with it: GitHub sends SIGINT to the step's
-    # entry process and kills the process tree about ten seconds later
-    # ("Canceling a workflow", docs.github.com), which is not a window in which
-    # DELETE_ATTEMPTS retries against a slow Kaggle can finish. A kernel nobody
-    # deletes bills accelerator quota to its own ceiling with nobody reading the
-    # result, so the only safe moment to notice that the window has gone is
-    # before anything is pushed.
-    #
-    # Nothing bounds the steps that run BEFORE this one -- a checkout, a pip
-    # install off a slow index, the harness suite -- so "the job deadline sits
-    # above the worst case with room for setup" is an assumption about their
-    # duration rather than a property of the run. This measures what is left
-    # instead, against the same worst case the job deadline and the reserved
-    # quota are derived from.
-    #
-    # Standing down green is the answer the workflow's FAILURE SEMANTICS give
-    # every infrastructure outcome: nothing was learned about the code, and no
-    # quota was spent finding that out.
+    # BEFORE authentication and long before the first push: the one question that has to be answered while the answer can still be acted on. The caller (the workflow job) is killed at a fixed time, and killing it takes finish() -> release() with it, since GitHub sends SIGINT to the step's entry process and kills the process tree about ten seconds later, which is not a window in which DELETE_ATTEMPTS retries against a slow Kaggle can finish. Nothing bounds the steps that run BEFORE this one, so "the job deadline sits above the worst case with room for setup" is an assumption about their duration rather than a property of the run; this measures what is left instead. Standing down green is the answer the workflow's failure semantics give every infrastructure outcome: nothing was learned about the code, and no quota was spent finding that out.
     if not window_fits("after the setup steps"):
         return finish()
 
@@ -1477,17 +1003,7 @@ def main() -> int:
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
         return finish()
 
-    # WHO this token is, settled before anything is pushed and read off the
-    # client just authenticated. CI holds more than one account now, and both
-    # ways to get this wrong are silent: a name the token does not own makes
-    # every push fail for a reason that reads like a bad notebook, and a name
-    # belonging to the OTHER account makes the cleanup delete nothing while the
-    # kernel it filed bills on unwatched.
-    #
-    # Answered through finish() rather than a bare return, so this stand-down
-    # still writes launch_result.json -- the report step reads that file, and a
-    # launcher that exits without one is indistinguishable from a runner that
-    # died, which is the wrong story for a configuration error.
+    # WHO this token is, settled before anything is pushed and read off the client just authenticated. CI holds more than one account now, and both ways to get this wrong are silent: a name the token does not own makes every push fail for a reason that reads like a bad notebook, and a name belonging to the OTHER account makes the cleanup delete nothing while the kernel it filed bills on unwatched. Answered through finish() rather than a bare return, so this stand-down still writes launch_result.json, which the report step reads.
     owner = username_of(api)
     if not owner:
         result["reason"] = "could not determine which Kaggle account this token belongs to"
@@ -1502,69 +1018,28 @@ def main() -> int:
     args.user = owner
     _log(f"authenticated as {owner}")
 
-    # Reclaim anything a previous launcher was killed outright before it
-    # could delete. Done BEFORE pushing, so the freed session slots are
-    # available to this run -- Kaggle allows only two GPU sessions at once,
-    # and an orphan holds one until its ceiling.
+    # Reclaim anything a previous launcher was killed outright before it could delete. Done BEFORE pushing, so the freed session slots are available to this run: Kaggle allows only two GPU sessions at once, and an orphan holds one until its ceiling.
     for _slug in sweep_orphans(owner):
         _log(f"reclaimed orphaned kernel {_slug} from a killed launcher")
-    # AGAIN, now that authentication is paid for and the next thing is a push.
-    # The check above is not enough on its own: authenticate() reaches the
-    # network -- with KAGGLE_API_TOKEN, which is the only credential this
-    # workflow passes, kaggle 2.2.4 introspects the token over HTTP -- and its
-    # only bound is SOCKET_TIMEOUT_SEC. A window that fitted by less than that
-    # is gone by the time the first kernel is pushed, and the guard would have
-    # granted the push on an answer that had expired.
+    # AGAIN, now that authentication is paid for and the next thing is a push. The check above is not enough on its own: authenticate() reaches the network (with KAGGLE_API_TOKEN, kaggle 2.2.4 introspects the token over HTTP) and its only bound is SOCKET_TIMEOUT_SEC, so a window that fitted by less than that is gone by the time the first kernel is pushed.
     if not window_fits("after authenticating"):
         return finish()
 
-    # ANY unforeseen exception from here on still has to delete the kernels.
-    # Everything below may have pushed one already, and a kernel this process
-    # does not delete bills to its own ceiling with nobody reading it (Kaggle's
-    # push-time timeout has been measured not to stop a wedged one, and nothing
-    # in the workflow cleans up after this script). Letting an exception out
-    # costs GPU quota, not just a report.
+    # ANY unforeseen exception from here on still has to delete the kernels. Everything below may have pushed one already, and a kernel this process does not delete bills to its own ceiling with nobody reading it (Kaggle's push-time timeout has been measured not to stop a wedged one, and nothing in the workflow cleans up after this script).
     try:
-        # ONE deadline for the whole invocation, started BEFORE the first push.
-        # A kernel bills from the moment Kaggle accepts it, so the clock that
-        # decides when it is deleted must include the time spent pushing the
-        # others. Started after the push loop instead, a throttled second push
-        # (PUSH_ATTEMPTS attempts at the 600s subprocess ceiling plus backoffs,
-        # about 45 minutes) landed on top of --max-wait for the kernel already
-        # accepted: 135 minutes of billing against a ceiling that reads as 90.
-        # Kaggle's push-time timeout does not cover that gap either (see this
-        # file's docstring for the kernel that ignored it for two hours), so the
-        # deletion deadline is the only bound there is.
+        # ONE deadline for the whole invocation, started BEFORE the first push. A kernel bills from the moment Kaggle accepts it, so the clock that decides when it is deleted must include the time spent pushing the others: started after the push loop instead, a throttled second push (about 45 minutes) landed on top of --max-wait for the kernel already accepted, 135 minutes of billing against a ceiling that reads as 90. Kaggle's push-time timeout does not cover that gap either, so the deletion deadline is the only bound there is.
         deadline = time.time() + args.max_wait
 
-        # Push everything first. See this file's docstring: waiting between
-        # pushes would serialise sessions Kaggle runs happily in parallel and put
-        # an hour between the control leg and the canary leg.
+        # Push everything first. See this file's docstring: waiting between pushes would serialise sessions Kaggle runs happily in parallel and put an hour between the control leg and the canary leg.
         kernels: list[dict] = []
-        # Published BEFORE the loop, as the same list object throughout.
-        # release() reads result["kernels"], so a push that dies part-way (the
-        # subprocess timeout above used to) must not leave the entries already
-        # filed invisible to the cleanup.
+        # Published BEFORE the loop, as the same list object throughout. release() reads result["kernels"], so a push that dies part-way must not leave the entries already filed invisible to the cleanup.
         result["kernels"] = kernels
         for notebook in args.notebook:
             _log(f"pushing {notebook} (kernel ceiling {args.kernel_timeout_sec}s)")
             entry = {
                 "notebook": notebook,
                 "slug": None,
-                # Every slug filed, accepted or not: a push that reported an
-                # error may still have landed, and this is the only record of
-                # what to reconcile against the account afterwards.
-                #
-                # Published EMPTY, before the push, and filled by push() as it
-                # files each slug. Reading the returned list instead meant the
-                # entry existed only if push() RETURNED: an exception it does
-                # not handle (a decode error on a malformed response, an OSError
-                # from the runner) unwound past this line, so release() found no
-                # entry for this notebook and the kernel Kaggle may have just
-                # accepted was left billing. The per-notebook granularity below
-                # was already fixed for the same reason; this is the same bug one
-                # level down, and the list being the caller's own object is what
-                # closes it for every raise rather than for the ones foreseen.
+                # Every slug filed, accepted or not: a push that reported an error may still have landed, and this is the only record of what to reconcile against the account afterwards. Published EMPTY, before the push, and filled by push() as it files each slug: reading the returned list instead meant the entry existed only if push() RETURNED, so an exception it does not handle unwound past this line and the kernel Kaggle may have just accepted was left billing. The list being the caller's own object is what closes that for every raise rather than for the ones foreseen.
                 "attempted": [],
                 "state": None,
                 "push_error": None,
@@ -1592,13 +1067,10 @@ def main() -> int:
         if not live:
             result["reason"] = "; ".join(k["push_error"] for k in kernels if k["push_error"])
             return finish()
-        # Kept for the summary and for anything reading this file's previous
-        # single-kernel shape.
+        # Kept for the summary and for anything reading this file's previous single-kernel shape.
         result["slug"] = live[0]["slug"]
 
-        # DISPATCH MODE ENDS HERE. `dispatched` is deliberately NOT `pass`: all
-        # this job proved is that Kaggle accepted a push. The real verdict comes
-        # later from collect.py as a commit status on the sha in the slug.
+        # DISPATCH MODE ENDS HERE. `dispatched` is deliberately NOT `pass`: all this job proved is that Kaggle accepted a push, and the real verdict comes later from collect.py as a commit status on the sha in the slug.
         if args.dispatch:
             result["verdict"] = "dispatched"
             result["dispatched"] = [{"slug": k["slug"], "notebook": k["notebook"]} for k in live]
@@ -1612,25 +1084,17 @@ def main() -> int:
             )
             return finish()
 
-        # The deadline above is shared, not one per kernel: they run
-        # concurrently, so consuming the ceiling per kernel would let a
-        # two-kernel run wait twice its own stated bound.
+        # The deadline above is shared, not one per kernel: they run concurrently, so consuming the ceiling per kernel would let a two-kernel run wait twice its own stated bound.
         for entry in live:
             remaining = max(0, int(deadline - time.time()))
             entry["state"] = wait(api, entry["slug"], args.poll_every, remaining)
             _log(f"{entry['slug']} terminal state: {entry['state']}")
         result["kernel_state"] = ",".join(k["state"] or "?" for k in live)
 
-        # ONE budget for the whole phase, shared by every kernel and started
-        # here, for the same reason the polling deadline is shared: the kernels
-        # are still billing and release() has not run yet. Per kernel it would
-        # scale with the kernel count, which is what the job deadline could not
-        # then be derived from. See EVIDENCE_BUDGET_SEC.
+        # ONE budget for the whole phase, shared by every kernel and started here, for the same reason the polling deadline is shared: the kernels are still billing and release() has not run yet. Per kernel it would scale with the kernel count, which is what the job deadline could not then be derived from. See EVIDENCE_BUDGET_SEC.
         evidence_deadline = time.time() + EVIDENCE_BUDGET_SEC
         for entry in live:
-            # One directory per kernel: Kaggle names the executed notebooks
-            # after the payloads, so two kernels of a run would otherwise
-            # overwrite each other's kernel.log.
+            # One directory per kernel: Kaggle names the executed notebooks after the payloads, so two kernels of a run would otherwise overwrite each other's kernel.log.
             try:
                 entry["evidence"] = fetch_evidence(
                     entry["slug"],
@@ -1654,10 +1118,7 @@ def main() -> int:
             )
             return finish()
 
-        # A kernel that ended badly but still reported is worth reading: the
-        # payload deliberately does not propagate a nonzero exit, so ERROR here
-        # usually means the SESSION died (timeout, box OOM, Kaggle side), which
-        # is infra unless a report says otherwise.
+        # A kernel that ended badly but still reported is worth reading: the payload deliberately does not propagate a nonzero exit, so ERROR here usually means the SESSION died (timeout, box OOM, Kaggle side), which is infra unless a report says otherwise.
         failing = [r for r in reports if not r.get("passed")]
         if failing:
             result["verdict"] = "fail"
@@ -1678,10 +1139,7 @@ def main() -> int:
         # The kernels are released by finish(), on this path and on every other.
         return finish()
     except BaseException as exc:  # noqa: BLE001
-        # An abort is infra by this file's contract: nothing was learned about
-        # the code under test, so it must not colour the pull request red.
-        # finish() deletes every slug filed so far and still writes
-        # launch_result.json, which the summary and the artifact read.
+        # An abort is infra by this file's contract: nothing was learned about the code under test, so it must not colour the pull request red. finish() deletes every slug filed so far and still writes launch_result.json.
         result["verdict"] = "infra"
         result["reason"] = (
             f"the launcher aborted: {type(exc).__name__}: {str(exc)[:300]}. "

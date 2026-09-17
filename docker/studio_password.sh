@@ -81,10 +81,10 @@ echo "Unsloth Studio login -> ${STUDIO_LINE}"
 studio_ok=""; jupyter_ok=""
 deadline=$(( $(date +%s) + READY_WAIT ))
 while :; do
-    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 http://127.0.0.1:8000/api/health; then
+    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${UNSLOTH_STUDIO_PORT:-8000}/api/health"; then
         studio_ok=1
     fi
-    if [[ -z "$jupyter_ok" ]] && curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${JUPYTER_PORT}/login"; then
+    if [[ -z "$jupyter_ok" ]] && curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${JUPYTER_PORT}/login"; then
         jupyter_ok=1
     fi
     { [[ -n "$studio_ok" && -n "$jupyter_ok" ]] || (( $(date +%s) >= deadline )); } && break
@@ -100,10 +100,20 @@ studio_text="not answering"
 [[ -n "$studio_ok" ]] && studio_text="$STUDIO_LINE"
 jupyter_text="not answering"
 [[ -n "$jupyter_ok" ]] && jupyter_text="${UNSLOTH_JUPYTER_NOTE:-password from JUPYTER_PASSWORD env}"
+# This block is the only part of a long startup log the reader needs, and plain
+# echo left it indistinguishable from the supervisord and Jupyter noise around
+# it, so the URLs and the generated passwords went unread. Colour the rules and
+# title, the links, and the two credential fields. NO_COLOR (no-color.org) turns
+# it off for anything collecting these logs into a file.
+if [[ -n "${NO_COLOR:-}" ]]; then
+    _b=""; _g=""; _y=""; _r=""
+else
+    _b=$'\033[1m'; _g=$'\033[1;32m'; _y=$'\033[1;33m'; _r=$'\033[0m'
+fi
 rule="$(printf '=%.0s' $(seq 1 72))"
-echo "$rule"
-echo "  ${title}"
-echo "  Studio      http://localhost:8000   ${studio_text}"
-echo "  JupyterLab  http://localhost:${JUPYTER_PORT}   ${jupyter_text}"
-echo "  Ports are the container's: use the host side of your -p flags, or an SSH tunnel to a remote host."
-echo "$rule"
+printf '%s\n' "${_g}${rule}${_r}"
+printf '  %s\n' "${_g}${title}${_r}"
+printf '  Studio      %s   %s\n' "${_b}http://localhost:${UNSLOTH_STUDIO_PORT:-8000}${_r}" "${_y}${studio_text}${_r}"
+printf '  JupyterLab  %s   %s\n' "${_b}http://localhost:${JUPYTER_PORT}${_r}" "${_y}${jupyter_text}${_r}"
+printf '  %s\n' "Ports are the container's: use the host side of your -p flags, or an SSH tunnel to a remote host."
+printf '%s\n' "${_g}${rule}${_r}"

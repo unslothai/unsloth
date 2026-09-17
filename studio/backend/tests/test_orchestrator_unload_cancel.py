@@ -231,7 +231,7 @@ def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
-        o, "_subprocess_crash_message", lambda ctx: "inference subprocess restarted"
+        o, "_subprocess_crash_message", lambda ctx, **kwargs: "inference subprocess restarted"
     )
 
     def read_one(timeout):
@@ -2911,6 +2911,7 @@ def test_the_impl_cancel_check_refuses_a_load_once_shutdown_has_latched():
     import ast
     import textwrap
     import threading
+    from types import SimpleNamespace
 
     from fastapi import HTTPException
 
@@ -2925,6 +2926,7 @@ def test_the_impl_cancel_check_refuses_a_load_once_shutdown_has_latched():
         "_scoped_load_attempts_lock": threading.Lock(),
         "_loads_shutting_down": False,
         "load_cancel_event": None,
+        "account_access": SimpleNamespace(require_live_account = lambda: None),
     }
     exec(textwrap.dedent(ast.get_source_segment(src, helper) or ""), ns)
     check = ns["_raise_if_scoped_load_cancelled"]

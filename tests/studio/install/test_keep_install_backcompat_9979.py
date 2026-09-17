@@ -154,6 +154,9 @@ _SHARED_PAYLOAD = {
         "libmtmd.dylib",
     ],
 }
+# Non-empty, because a zero-byte runtime library is now rejected as damage, and long
+# enough for tests that corrupt a payload by halving it to have something left.
+_PAYLOAD_BYTES = "xxxx"
 _BACKEND_PAYLOAD = {
     ("linux", "cuda"): ["libggml-cuda.so"],
     ("linux", "rocm"): ["libggml-hip.so"],
@@ -232,16 +235,16 @@ def build_install(
 
     if payload:
         for name in _SHARED_PAYLOAD[platform]:
-            (runtime_dir / name).write_text("x", encoding = "utf-8")
+            (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
         if payload_backend != "unset":
             for name in _BACKEND_PAYLOAD.get((platform, payload_backend), ()):
-                (runtime_dir / name).write_text("x", encoding = "utf-8")
+                (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
         if visual_server:
             for name in _PUBLISHED_PAYLOAD[platform]:
-                (runtime_dir / name).write_text("x", encoding = "utf-8")
+                (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
         if cudart:
             for name in _CUDART_TRIO:
-                (runtime_dir / name).write_text("x", encoding = "utf-8")
+                (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
     return install_dir
 
 

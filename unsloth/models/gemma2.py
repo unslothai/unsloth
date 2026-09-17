@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -13,7 +10,12 @@
 # limitations under the License.
 
 from .llama import *
+from .llama import (
+    original_apply_qkv,
+    original_apply_o,
+)
 from ._utils import __version__
+from ._utils import move_to_device, per_layer_device
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
@@ -100,7 +102,7 @@ def Gemma2Attention_fast_forward(
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
-    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q, K, V = getattr(self, "apply_qkv", original_apply_qkv)(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -194,7 +196,7 @@ def Gemma2Attention_fast_forward(
             else slow_attention_softcapping
         )
         A = fx(Q, K, V, causal_mask, self, bsz, kv_seq_len)
-    A = self.apply_o(self, A)
+    A = getattr(self, "apply_o", original_apply_o)(self, A)
     return A, None, past_key_value
 
 
@@ -484,8 +486,8 @@ def Gemma2Model_fast_forward_inference(
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         # For pipeline parallelism every tensor must be on the same device; this movement happens once per GPU in PP.
-        device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
-        hidden_states, position_ids = move_to_device(device_index, hidden_states, position_ids)
+        layer_device, device_index = per_layer_device(decoder_layer)
+        hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
 
         use_sliding_window = idx % 2 == 0
 

@@ -527,6 +527,9 @@ def _logical_lines(lines):
 # own cwd, which is what pip always uses. main() sets it for uv.
 _WORKING_DIR = None
 
+# Set for `pip uninstall`, where `pkg[extra]` names pkg itself rather than extras to add.
+_UNINSTALLING = False
+
 
 def _uv_working_dir(tool, argv):
     """The directory uv will change to before resolving a relative requirements
@@ -616,7 +619,11 @@ def _filter_requirements_file(path, _depth = 0):
             # every _KEEP package below, and the sidecar only replaces the version:
             # dropping the whole token loses deepspeed/sentencepiece/... and still
             # reports ok. The pin is stripped, so this can only ADD.
-            extras = _extras_only_target(spec) if _is_installed("transformers") else None
+            extras = (
+                _extras_only_target(spec)
+                if _is_installed("transformers") and not _UNINSTALLING
+                else None
+            )
             if extras is not None:
                 out.append(extras + ("\n" if group[-1].endswith("\n") else ""))
                 changed = True
@@ -625,7 +632,7 @@ def _filter_requirements_file(path, _depth = 0):
             changed = True
             continue
         if _is_protected(name):
-            extras = _extras_only_target(spec)
+            extras = None if _UNINSTALLING else _extras_only_target(spec)
             if extras is not None:
                 out.append(extras + ("\n" if group[-1].endswith("\n") else ""))
                 changed = True
@@ -849,7 +856,11 @@ def _install_index(tool, argv):
     outcome available here: the install runs unfiltered and unconstrained, free to
     replace the baked torch/CUDA stack. _VALUE_FLAGS is the same set the tail scanner
     uses and _selfcheck_value_flags() holds it to the real CLIs at build time."""
-    expect = ["install"] if tool == "pip" else ["pip", "install"]
+    return _subcommand_index(tool, argv, "install")
+
+
+def _subcommand_index(tool, argv, sub):
+    expect = [sub] if tool == "pip" else ["pip", sub]
     got = _positionals(argv)
     if len(got) < len(expect):
         return None
@@ -857,6 +868,82 @@ def _install_index(tool, argv):
         if tok != want:
             return None
     return got[len(expect) - 1][0]
+
+
+def _uninstall_file(path, dropped):
+    """Filtered path, or None when nothing is left: pip errors on an empty file."""
+    filtered, _, drp = _filter_requirements_file(path)
+    dropped.extend(drp)
+    if filtered == path:
+        return filtered
+    with open(filtered, encoding = "utf-8") as f:
+        if any(ln.strip() and not ln.strip().startswith("#") for ln in f):
+            return filtered
+    return None
+
+
+def _uninstall(tool, argv, i):
+    global _UNINSTALLING
+    _UNINSTALLING = True
+    head, tail = argv[: i + 1], _expand_short_clusters(argv[i + 1 :])
+    child_env = None
+    if tool == "pip":
+        env_tail = [x for val in os.environ.get("PIP_REQUIREMENT", "").split() for x in ("-r", val)]
+        if env_tail:
+            tail = env_tail + tail
+            child_env = {k: v for k, v in os.environ.items() if k != "PIP_REQUIREMENT"}
+    keep, dropped = [], []
+    has_target = False
+    pending = None
+    for tok in tail:
+        if pending is not None:
+            if pending in _REQ_FILE_FLAGS:
+                tok = _uninstall_file(tok, dropped)
+                if tok is not None:
+                    keep += [pending, tok]
+                    has_target = True
+            else:
+                keep += [pending, tok]
+            pending = None
+            continue
+        if tok.startswith("--") and "=" in tok:
+            flag, _, val = tok.partition("=")
+            if flag in _REQ_FILE_FLAGS:
+                filtered = _uninstall_file(val, dropped)
+                if filtered is not None:
+                    keep.append(flag + "=" + filtered)
+                    has_target = True
+                continue
+            keep.append(tok)
+            continue
+        if len(tok) > 2 and tok[:2] in _REQ_FILE_FLAGS:
+            filtered = _uninstall_file(tok[2:], dropped)
+            if filtered is not None:
+                keep += [tok[:2], filtered]
+                has_target = True
+            continue
+        if tok in _VALUE_FLAGS:
+            pending = tok
+            continue
+        if tok.startswith("-"):
+            keep.append(tok)
+            continue
+        name = _canon(tok)
+        if _is_protected(name) or (name == "transformers" and _is_installed(name)):
+            dropped.append(tok)
+            continue
+        keep.append(tok)
+        has_target = True
+    if dropped:
+        print("[unsloth-nb] kept baked versions, skipped: " + " ".join(dropped))
+    if not has_target and dropped:
+        print("[unsloth-nb] nothing to uninstall after keeping the baked stack; ok.")
+        return
+    cmd = [REAL[tool]] + head + keep
+    sys.stdout.flush()
+    if child_env is not None:
+        os.execve(REAL[tool], cmd, child_env)
+    os.execv(REAL[tool], cmd)
 
 
 def _positionals(argv):
@@ -984,10 +1071,13 @@ def _installs_elsewhere(tool, argv):
     baked interpreter, so it keeps the protective behaviour. Environment variables
     count only for the tool that actually reads them; a flag is left unscoped because
     a tool that does not accept one fails loudly on it rather than silently."""
+    # pip uninstall has no --target/--prefix/--root and ignores their variables, so
+    # they still leave it pointed at the baked venv
+    dest_env = not (tool == "pip" and _subcommand_index(tool, argv, "uninstall") is not None)
     dirs = _flag_values(argv, _DEST_DIR_FLAGS)
-    dirs += [os.environ[v] for v in _DEST_DIR_ENV[tool] if os.environ.get(v)]
+    dirs += [os.environ[v] for v in _DEST_DIR_ENV[tool] if dest_env and os.environ.get(v)]
     roots = _flag_values(argv, _DEST_ROOT_FLAGS)
-    roots += [os.environ[v] for v in _DEST_ROOT_ENV[tool] if os.environ.get(v)]
+    roots += [os.environ[v] for v in _DEST_ROOT_ENV[tool] if dest_env and os.environ.get(v)]
     # a root re-anchors the venv's OWN paths beneath it, so resolve where each one
     # actually lands rather than classifying the root value itself
     dirs += [_relocated_under_root(r, _base_venv_root()) for r in roots]
@@ -1026,6 +1116,11 @@ def main():
     global _WORKING_DIR
     _wd = _uv_working_dir(tool, argv)
     _WORKING_DIR = os.path.abspath(_wd) if _wd else None
+
+    i = _subcommand_index(tool, argv, "uninstall")
+    if i is not None:
+        _uninstall(tool, argv, i)
+        return
 
     i = _install_index(tool, argv)
     if i is None:

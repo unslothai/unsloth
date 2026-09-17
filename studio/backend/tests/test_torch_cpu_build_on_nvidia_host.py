@@ -47,6 +47,36 @@ import utils.hardware as hardware_pkg
 import utils.hardware.hardware as hw
 from utils.hardware import nvidia
 
+
+def _shared_setup_1(monkeypatch, tmp_path):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    # The fake above is only READ while the import is known good: TORCH_IMPORT_ERROR is a
+    # module global _has_torch() writes as a side effect, and _torch_reports_an_xpu_runtime()
+    # / _torch_reports_a_hip_runtime() / classify_torch_build() read the wheel off DISK
+    # whenever it is set. A sibling that watched a broken import leaves it non-None for the
+    # rest of the xdist worker, so pin it here rather than inherit it, as
+    # cpu_torch_on_an_nvidia_host already does.
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
+    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    return sys
+
+
+def _shared_setup_2(monkeypatch):
+    def _missing(*_a, **_k):
+        raise FileNotFoundError("nvidia-smi")
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+
+
+def _shared_setup_3(monkeypatch):
+    def _hang(*_a, **_k):
+        raise subprocess.TimeoutExpired("nvidia-smi", 10)
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _hang)
+
+
 # nvidia-smi rows for User A's box: two A4000s, the second carrying a comma in its name.
 _TWO_A4000_ROWS = "\n".join(
     [
@@ -735,10 +765,7 @@ def test_a_token_authenticated_cpu_pin_is_still_a_cpu_pin(monkeypatch, tmp_path)
     A raw final-segment split sees "cpu?token=..." there, so the deliberate CPU build on
     a GPU host was reported as broken and offered a repair that would replace it.
     """
-    import sys
-
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
-    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    sys = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
 
     for pinned in (
@@ -1143,10 +1170,7 @@ def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_p
     counting it would report a broken install and offer a repair that reinstalls the
     very CPU build it just replaced.
     """
-    import sys
-
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
-    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    sys = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
 
@@ -1162,11 +1186,32 @@ def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_p
     assert hw._devices_that_can_establish_a_mismatch(others) == others
 
 
-def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, tmp_path):
-    import sys
+def test_an_amd_card_named_only_by_its_marketing_string_establishes_a_mismatch(
+    monkeypatch, tmp_path
+):
+    """With no AdapterFamily from the driver, the name is the only arch source, and a
+    gap in the name table costs both the wheel and the "No visible GPU" panel (#10468).
+    """
+    _shared_setup_1(monkeypatch, tmp_path)
+    monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: False)
 
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
-    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    covered = [
+        {"vendor": "amd", "name": "AMD Radeon RX 6950 XT", "index": 0, "gfx_candidates": []},
+        {"vendor": "amd", "name": "AMD Radeon RX 6850M XT", "index": 0, "gfx_candidates": []},
+        {"vendor": "amd", "name": "AMD Radeon RX 6550M", "index": 0, "gfx_candidates": []},
+    ]
+    for device in covered:
+        assert hw._devices_that_can_establish_a_mismatch([device]) == [device], device["name"]
+
+    # RDNA 1 is declined on purpose: a repair here would reinstall the same CPU wheel.
+    declined = [
+        {"vendor": "amd", "name": "AMD Radeon RX 5700 XT", "index": 0, "gfx_candidates": []}
+    ]
+    assert hw._devices_that_can_establish_a_mismatch(declined) == []
+
+
+def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, tmp_path):
+    sys = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
     nameless = [{"vendor": "intel", "name": None, "index": 0}]
 
@@ -1185,6 +1230,46 @@ def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, 
     xpu_torch.__version__ = "2.9.0+xpu"
     monkeypatch.setitem(sys.modules, "torch", xpu_torch)
     assert hw._devices_that_can_establish_a_mismatch(nameless) == nameless
+
+
+def test_a_leaked_import_error_is_what_stops_the_fake_torch_being_read(monkeypatch, tmp_path):
+    """Why _shared_setup_1 pins TORCH_IMPORT_ERROR: the assertion above is not self-contained.
+
+    _torch_reports_an_xpu_runtime() consults sys.modules only while that global is None;
+    set, it reads the wheel off disk and the fake +xpu torch above is never looked at, so
+    the nameless Intel card stops counting and the last assertion of the previous test
+    reads ``[] == [{...}]``. Nothing in this file writes the global -- _has_torch() does,
+    as a side effect, from whichever test in the xdist worker last watched an import fail,
+    which is why it went red under ``-n 4`` on one shard and green in every serial run.
+    """
+    sys = _shared_setup_1(monkeypatch, tmp_path)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    (tmp_path / "unsloth_install_manifest.json").write_text(
+        '{"schema": 1, "expected_torch_tag": "cpu"}', encoding = "utf-8"
+    )
+    # The on-disk arm is pinned to a CPU wheel, so this does not turn on what torch the
+    # host running the suite happens to have installed.
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.11.0+cpu")
+    monkeypatch.setattr(
+        hw,
+        "_installed_torch_markers_on_disk",
+        lambda: {"cuda": None, "hip": None, "xpu": None},
+    )
+
+    nameless = [{"vendor": "intel", "name": None, "index": 0}]
+    xpu_torch = _fake_torch("cpu")
+    xpu_torch.__version__ = "2.9.0+xpu"
+    monkeypatch.setitem(sys.modules, "torch", xpu_torch)
+
+    # Pinned, as _shared_setup_1 leaves it: the fake in sys.modules is what answers.
+    assert hw._torch_reports_an_xpu_runtime() is True
+    assert hw._devices_that_can_establish_a_mismatch(nameless) == nameless
+
+    # Exactly what a sibling's _has_torch() leaves behind, and the verdict inverts.
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", "OSError('undefined symbol: cudaGetDeviceCount')")
+    assert hw._torch_reports_an_xpu_runtime() is False
+    assert hw._devices_that_can_establish_a_mismatch(nameless) == []
 
 
 def test_an_accelerator_that_came_back_retires_the_cached_verdict(monkeypatch):
@@ -1357,20 +1442,14 @@ def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
     polls, so a warning here is a line a minute on a machine that is working correctly.
     """
 
-    def _missing(*_a, **_k):
-        raise FileNotFoundError("nvidia-smi")
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+    _shared_setup_2(monkeypatch)
     capsys.readouterr()
     assert (
         nvidia._query_gpu_inventory("test") is nvidia.NVIDIA_SMI_ABSENT
     ), "an absent CLI is its own answer, not the None that means a probe failed"
     assert '"level": "warning"' not in capsys.readouterr().out
 
-    def _hang(*_a, **_k):
-        raise subprocess.TimeoutExpired("nvidia-smi", 10)
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _hang)
+    _shared_setup_3(monkeypatch)
     capsys.readouterr()
     assert nvidia._query_gpu_inventory("test") is None
     assert '"level": "warning"' in capsys.readouterr().out
@@ -1448,6 +1527,11 @@ def test_an_unimportable_torch_still_reports_the_cards(monkeypatch, tmp_path):
 
     monkeypatch.delitem(sys.modules, "torch", raising = False)
     monkeypatch.setattr(sys, "meta_path", [_Finder(), *sys.meta_path])
+    # _has_torch() below writes hw.TORCH_IMPORT_ERROR as a side effect and nothing puts it
+    # back, so snapshot-restore it: left set, it sends every later test in this worker down
+    # the on-disk arm of the same three readers. Snapshot rather than None -- nothing here
+    # owns the value.
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", hw.TORCH_IMPORT_ERROR)
     # _has_torch() is NOT forced here: it reports False for a wheel that will not import,
     # and the early return on it used to keep this host from the on-disk fallback below.
     assert hw._has_torch() is False, "the premise: an unimportable torch reads as absent"
@@ -1923,10 +2007,7 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
     reason, while /api/system had already dropped the device rows.
     """
 
-    def _missing(*_a, **_k):
-        raise FileNotFoundError("nvidia-smi")
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda **_kw: [])
@@ -1945,10 +2026,7 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
     hw.torch_build_snapshot()
     assert hw.current_chat_only_verdict() == ("no_gpu", None)
 
-    def _hang(*_a, **_k):
-        raise subprocess.TimeoutExpired("nvidia-smi", 10)
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _hang)
+    _shared_setup_3(monkeypatch)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     assert hw.get_physical_gpu_inventory()["unknown"] is True
 
@@ -2053,10 +2131,7 @@ def test_a_driver_without_the_cli_still_reports_its_cards(monkeypatch):
     the backend insisted there was no card, and the user got no_gpu with no repair.
     """
 
-    def _missing(*_a, **_k):
-        raise FileNotFoundError("nvidia-smi")
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 2)
 
     result = nvidia.get_physical_gpu_inventory()
@@ -2226,10 +2301,7 @@ def test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards(monkeypatch):
     """
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 1)
 
-    def _hang(*_a, **_k):
-        raise subprocess.TimeoutExpired("nvidia-smi", 10)
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _hang)
+    _shared_setup_3(monkeypatch)
     result = nvidia.get_physical_gpu_inventory()
     assert [d["vendor"] for d in result["devices"]] == ["nvidia"]
     assert result["source"] == "proc-driver-nvidia"
