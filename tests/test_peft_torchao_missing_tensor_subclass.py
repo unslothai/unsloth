@@ -405,7 +405,12 @@ def test_an_import_error_naming_a_class_that_is_still_there_still_raises(peft_en
     classes = fake_torchao(affine = True, linear_activation = True)
     built = []
 
-    def dispatch_torchao(target, adapter_name, lora_config = None, **kwargs):
+    def dispatch_torchao(
+        target,
+        adapter_name,
+        lora_config = None,
+        **kwargs,
+    ):
         built.append(adapter_name)
         raise MISSING
 
