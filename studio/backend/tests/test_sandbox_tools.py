@@ -420,6 +420,15 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # A walrus callee is the callable it assigns.
+            pytest.param(
+                f"import requests\n(fetch := requests.get)('http://{_H}/')",
+                id = "walrus_callee",
+            ),
+            pytest.param(
+                f"import requests\n(session := requests.Session()).get('http://{_H}/')",
+                id = "walrus_client_receiver",
+            ),
             # A swap resolves its right-hand side against the bindings it is replacing.
             pytest.param(
                 f"import requests\nf = print\ng = requests.get\nf, g = g, f\nf('http://{_H}/')",
@@ -674,6 +683,7 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
             "import requests\nrequests.options('https://pypi.org/')",
+            "import requests\n(fetch := requests.get)('https://pypi.org/')",
             "import requests\nurl = 'http://203.0.113.5/'; url = 'https://pypi.org/'; requests.get(url)",
             "import aiohttp\naiohttp.ClientSession().ws_connect('https://pypi.org/')",
             "import requests\nrequests.Session().post('https://huggingface.co/', json={'a': 1})",
@@ -712,6 +722,7 @@ class TestNetworkTargetResolution:
             "import requests\ns = requests.Session()\ns.get(input())",
             "import httpx\nhttpx.Client(base_url=input()).get('/')",
             "import httpx\nc = httpx.Client()\nc.send(r)",
+            "import requests\n(fetch := requests.get)(input())",
             "import aiohttp\naiohttp.ClientSession().ws_connect(input())",
             "import requests\nclass A:\n    def __init__(self):\n        self.session = requests.Session()\n"
             "    def go(self):\n        self.session.get(input())",

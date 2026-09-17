@@ -16990,7 +16990,10 @@ def _check_signal_escape_patterns(code: str):
             branches = [fq for alt in _alternatives(func) for fq in _resolved_fqs(alt, depth + 1)]
             return list(dict.fromkeys(branches)) or [""]
         parts: list[str] = []
+        # `(fetch := requests.get)(...)` is the callee it assigns.
         cur = func
+        while isinstance(cur, ast.NamedExpr):
+            cur = cur.value
         while isinstance(cur, ast.Attribute):
             # `self.session.get(...)`: the client lives on the attribute, not in a name.
             stores = (
@@ -17011,6 +17014,8 @@ def _check_signal_escape_patterns(code: str):
                 return list(dict.fromkeys(network))
             parts.insert(0, cur.attr)
             cur = cur.value
+            while isinstance(cur, ast.NamedExpr):
+                cur = cur.value
         if isinstance(cur, ast.Call):
             # An instance stands for the constructor that made it.
             return list(
