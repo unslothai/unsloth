@@ -222,8 +222,9 @@ def test_the_declared_zoo_floor_can_supply_the_declared_trl_window() -> None:
             f"release whose own trl cap is {ZOO_TRL_CEILING_BEFORE_THE_LIFT}"
         )
         floors[str(req)] = max(lower)
-    stale = {raw: str(floor) for raw, floor in floors.items()
-             if floor < ZOO_FLOOR_WITH_LIFTED_TRL_CAP}
+    stale = {
+        raw: str(floor) for raw, floor in floors.items() if floor < ZOO_FLOOR_WITH_LIFTED_TRL_CAP
+    }
     assert not stale, (
         f"pyproject.toml admits trl up to {ceiling} while still accepting unsloth_zoo "
         f"{stale}. pip intersects the two requirements, so users would resolve the zoo "
