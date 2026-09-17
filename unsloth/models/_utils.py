@@ -443,7 +443,8 @@ def _flex_attention_gpu_is_supported():
 # masking_utils.flex_attention_mask carries causality, the 2D padding mask and packed-sequence
 # boundaries exactly as sdpa_mask does, so no packing correctness is re-implemented here.
 #
-# Affects Qwen3.5 / 3.6 / Qwen3-Next (head_dim 256); head_dim <= 128 never enters this path.
+# Affects Qwen3.5 / 3.6 / Qwen3-Next (head_dim 256) and Gemma 4 (256, 512 on its KV-shared
+# layers); head_dim <= 128 (Llama, Qwen2/3, Mistral, gpt-oss) never enters this path.
 _SDPA_FLASH_MAX_HEAD_DIM = 128
 _FLEX_LARGE_HEAD_DIM_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM"
 # head_dim > 128 but keeping SDPA. gemma2 measured SLOWER under flex (14.35 vs 13.19 ms fwd+bwd,
@@ -488,10 +489,12 @@ def _text_attention_head_dim(config):
 def _prefers_flex_for_head_dim(config):
     """True when the decoder's head dim puts every flash kernel out of reach.
 
-    OPT-IN. Default off, because the win is strongly sequence-length dependent and
-    FlexAttention has to be compiled by Inductor while SDPA dispatches a prebuilt
-    kernel. Measured on Qwen3.5-2B, a B200, 40 steps, cold Inductor cache, per-step
-    wall clock:
+    Decided per model from its own config.json: the decoder head dim, and the
+    model_type, are both read from the config, so a model that needs flex gets it
+    without the caller knowing anything about attention backends.
+
+    ON by default for those models. Measured on Qwen3.5-2B, a B200, 40 steps, cold
+    Inductor cache, per-step wall clock:
 
         seqlen   sdpa steady   flex steady   speedup   extra compile   break-even
           2048      184.6 ms      189.7 ms     0.97x         +2.2 s      never
@@ -499,16 +502,17 @@ def _prefers_flex_for_head_dim(config):
           8192      432.6 ms      237.1 ms     1.82x         +0.7 s      ~step 5
 
     The 2048 figure is inside the ~3% run-to-run noise floor, so read it as neutral
-    rather than as a regression; either way there is nothing to repay the compile.
-    At 8192 the quadratic term dominates the step and it pays for itself almost
-    immediately.
+    rather than as a regression; the cost there is the one-off compile, not the step.
+    At 8192 the quadratic term dominates and flex repays that compile by ~step 5,
+    which is why the default favours it: the downside is seconds, the upside is 1.8x.
 
-    Set UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM=1 to enable. That is the right
-    trade for long-context runs and the wrong one for a short-sequence notebook, and
-    the resolver does not see the training sequence length, so the caller chooses.
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM overrides the config in either
+    direction, "0" to keep SDPA on a short-sequence run, "1" to force flex on a model
+    this would otherwise leave alone.
     """
-    if os.environ.get(_FLEX_LARGE_HEAD_DIM_ENV_VAR, "0") == "0":
-        return False
+    _override = os.environ.get(_FLEX_LARGE_HEAD_DIM_ENV_VAR)
+    if _override is not None and _override.strip() != "":
+        return _override.strip() != "0"
     for attention_config in _text_attention_configs(config):
         if (
             _config_get(attention_config, "model_type", "").lower()
