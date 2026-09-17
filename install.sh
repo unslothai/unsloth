@@ -5511,6 +5511,27 @@ case "$TORCH_INDEX_URL" in
                 _amd_probed_family=""
                 _amd_probed_gfx_first=""
             fi
+            # Derived from the SELECTED card when the request resolved one, because
+            # _amd_agreed_index_family requires every physical AMD GPU to share a family and
+            # answers empty for a cross-family pair. On [gfx1033, gfx1100] with
+            # HIP_VISIBLE_DEVICES=1 the runtime hands torch the gfx1100 alone, yet the empty
+            # family left _amd_no_rocm_version_reroute false, the cpu index unrewritten, and
+            # the downgrade guard restoring CUDA -- the request ignored on exactly the host
+            # that resolved a routable target. Probe-resolved only, as everywhere else here:
+            # a declared arch cannot name the card the runtime selected.
+            #
+            # Never when the gate above disqualified the family: a probe-resolved gfx1033 is
+            # a target AND a bad arch, so without that test the family just cleared would be
+            # put straight back.
+            if [ "$_amd_reroute_bad_arch" = false ] && [ -n "$_amd_reroute_target" ] && \
+               [ "${_AMD_REQUEST_TARGET_SOURCE:-}" = probe ]; then
+                _amd_target_family=$(_amd_arch_index_family_for_gfx "$_amd_reroute_target") \
+                    || _amd_target_family=""
+                if [ -n "$_amd_target_family" ]; then
+                    _amd_probed_family="$_amd_target_family"
+                    _amd_probed_gfx_first="$_amd_reroute_target"
+                fi
+            fi
             if [ -n "${_amd_probed_family:-}" ] && \
                [ -z "$(_detect_rocm_version_tag 2>/dev/null)" ]; then
                 _amd_no_rocm_version_reroute=true

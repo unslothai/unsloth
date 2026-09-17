@@ -2590,3 +2590,78 @@ def test_a_probed_target_still_exempts_a_routable_sibling():
 def test_the_gate_still_fires_with_no_request_at_all():
     """The other control: presence remains the rule for every host that has not asked."""
     assert _bad_arch_verdict(declared = "", probed = "gfx1033", request = "0").endswith("/cpu")
+
+
+def _reroute_family_for_target(*, inventory: list, target: str, source: str, bad_arch: str = "false") -> str:
+    """The wheel family the versionless reroute would use, for this host.
+
+    The block is lifted from install.sh rather than restated, so removing it fails this.
+    """
+    lines = (Path(__file__).resolve().parents[3] / "install.sh").read_text(
+        encoding = "utf-8"
+    ).splitlines()
+    # From the bad-arch verdict, not from the target block alone: the gate CLEARS the family
+    # before the target may set it, and a lift that starts below that clearing tests a
+    # sequence install.sh never runs.
+    start = next(i for i, line in enumerate(lines)
+                 if line.strip() == 'if [ "$_amd_reroute_bad_arch" = true ]; then')
+    # To the close of the OUTER if, by indentation: the block nests one, so the first
+    # bare "fi" is the inner one and cutting there left an unterminated script.
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    # Two sibling blocks at this indent: the gate's clearing, then the target's assignment.
+    closes = [i for i in range(start + 1, len(lines))
+              if lines[i].strip() == "fi"
+              and len(lines[i]) - len(lines[i].lstrip()) == indent]
+    block = "\n".join(lines[start : closes[1] + 1])
+    script = "\n".join([
+        _shell_function("_amd_arch_index_family_for_gfx"),
+        _shell_function("_amd_probe_arches"),
+        _shell_function("_amd_agreed_index_family"),
+        _shell_function("_amd_sole_index_arch"),
+        f'_amd_probe_out="{chr(10).join(inventory)}"',
+        '_amd_probed_family=$(_amd_agreed_index_family "$_amd_probe_out") || _amd_probed_family=""',
+        '_amd_probed_gfx_first=$(_amd_sole_index_arch "$_amd_probe_out") || _amd_probed_gfx_first=""',
+        f'_amd_reroute_target="{target}"',
+        f'_AMD_REQUEST_TARGET_SOURCE="{source}"',
+        f'_amd_reroute_bad_arch={bad_arch}',
+        block,
+        'printf "%s\\n" "${_amd_probed_family:-none}"',
+    ])
+    return _bash(script)
+
+
+def test_a_cross_family_pair_routes_to_the_selected_card():
+    """[gfx1033, gfx1100] with the mask selecting the gfx1100.
+
+    _amd_agreed_index_family needs EVERY physical AMD GPU to share a family, so a
+    cross-family pair answered empty, the versionless reroute never fired, the cpu index was
+    left alone and the downgrade guard restored CUDA -- the request ignored on exactly the
+    host that had resolved a routable target.
+    """
+    assert _reroute_family_for_target(
+        inventory = ["gfx1033", "gfx1100"], target = "gfx1100", source = "probe"
+    ) == "gfx110X-all"
+
+
+def test_a_declared_target_does_not_pick_the_family():
+    """Probe-resolved only, as everywhere else in this feature: a declared arch cannot name
+    the card the runtime selected, so the inventory's own answer stands."""
+    assert _reroute_family_for_target(
+        inventory = ["gfx1033", "gfx1100"], target = "gfx1100", source = "declared"
+    ) == "none"
+
+
+def test_a_disqualified_family_is_not_put_back_by_the_target():
+    """The control that matters most here. A probe-resolved gfx1033 is both a target and a
+    bad arch, so without the bad-arch test this would restore the very family the Van Gogh
+    gate had just cleared."""
+    assert _reroute_family_for_target(
+        inventory = ["gfx1033"], target = "gfx1033", source = "probe", bad_arch = "true"
+    ) == "none"
+
+
+def test_a_single_family_host_is_unchanged():
+    """The other control: where the inventory already agrees, the target changes nothing."""
+    assert _reroute_family_for_target(
+        inventory = ["gfx1100", "gfx1101"], target = "gfx1100", source = "probe"
+    ) == "gfx110X-all"
