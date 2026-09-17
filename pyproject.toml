@@ -192,11 +192,14 @@ triton = [
 
 huggingfacenotorch = [
     # unsloth_zoo publishes its own transformers and trl windows and pip intersects the
-    # two, so widening either range below buys nothing until a zoo release carries the
-    # same ceilings: 2026.9.4 on PyPI still says transformers<=5.5.0 and trl<=0.24.0. The
-    # floor names the first release expected to carry both (unslothai/unsloth-zoo#1227 for
-    # transformers, #1260 for trl), which is why it moves with the windows themselves.
-    "unsloth_zoo>=2026.9.5",
+    # two, so widening either range below only reaches users once a zoo release carries the
+    # same ceilings: 2026.9.4, the newest on PyPI, still says transformers<=5.5.0 and
+    # trl<=0.24.0. The release carrying both (unslothai/unsloth-zoo#1227 for transformers,
+    # #1260 for trl) is not published yet, and a floor no release satisfies makes the
+    # package uninstallable, so the floor stays at 2026.9.4 for now. Raise it to the
+    # release that ships #1227 and #1260, and re-enable the deferred gates named in
+    # tests/test_transformers_cap_sites.py and tests/test_trl_cap_sites.py, together.
+    "unsloth_zoo>=2026.9.4",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -269,7 +272,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.5",
+    "unsloth_zoo>=2026.9.4",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -888,7 +891,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.5",
+    "unsloth_zoo>=2026.9.4",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
