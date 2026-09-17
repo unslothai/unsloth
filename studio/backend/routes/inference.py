@@ -8402,9 +8402,10 @@ async def _no_model_loaded_error(
 ):
     """``(status, detail)`` for the /v1 sites that fail because nothing is loaded.
 
-    Changes only the case the generic text gets wrong (auto-switch on, a model
-    named, that name resolving to nothing local, so the switch silently did
-    nothing) into a 404 model_not_found. Everything else keeps ``status`` and the
+    Changes only the cases the generic text gets wrong, both with auto-switch on and a
+    model named: a name resolving to nothing local (the switch silently did nothing)
+    becomes a 404 model_not_found, and a downloaded one a held-back keyless caller may
+    not load keeps ``status`` but says so. Everything else keeps ``status`` and the
     :func:`_no_model_loaded_detail` text verbatim.
     """
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
@@ -8424,6 +8425,11 @@ async def _no_model_loaded_error(
             # Resident but on a backend this endpoint can't use, so "not downloaded" is false.
             return status, _no_model_loaded_detail(base)
         if await asyncio.to_thread(resolve_local_gguf, named) is not None:
+            if fastapi_request is not None and _keyless_caller_held_back(fastapi_request):
+                return status, (
+                    f"No model is loaded, and keyless API access cannot load '{named}' by "
+                    "request. Load it in Unsloth Studio, or send an Unsloth API key."
+                )
             # Resolvable but unloaded: the switch failed, which the generic text covers.
             return status, _no_model_loaded_detail(base)
         message = await _unavailable_model_message(named)
@@ -9027,7 +9033,15 @@ async def _reject_unservable_model(
         gguf_hub_repo = await asyncio.to_thread(_resident_id_is_namespaced)
     if not (quantified or here or gguf_hub_repo):
         return
-    if switchable:
+    if switchable and fastapi_request is not None and _keyless_caller_held_back(fastapi_request):
+        # Switching is on but not for this caller, so a retry can never succeed.
+        status_code, code = 404, "model_not_found"
+        message = (
+            f"The model '{requested_model}' is downloaded but not loaded, and keyless API "
+            "access can only use the loaded model. Send an Unsloth API key to switch "
+            "models by request, or load it in Unsloth Studio."
+        )
+    elif switchable:
         # On disk and switching allowed, so the swap failed: the resident model is wrong weights.
         status_code, code = 503, "model_switch_failed"
         message = (

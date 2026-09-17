@@ -1086,4 +1086,20 @@ def test_keyless_auto_switch_loads_under_the_full_scope_only(monkeypatch, scope,
     monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: False)
     _keyless_switch_hook(scope)("org/A-GGUF")
     assert len(rec.calls) == loads
+
+
+@pytest.mark.parametrize(("loaded", "status"), [(None, 400), ("org/Other-GGUF", 404)])
+def test_a_held_back_keyless_caller_is_told_it_cannot_switch(monkeypatch, loaded, status):
+    from studio.backend.tests import test_openai_auto_switch as auto
+    backend, rec = auto._wired(monkeypatch, auto._FakeBackend(loaded), ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: False)
+    monkeypatch.setattr(auto.inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None, models = {}))
+    seed_user(); set_keyless_api_access("inference")
+    request = request_for(headers = {"Host": "localhost:8888"})
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(auto.inference_route.openai_chat_completions(auto._chat_request(model = "org/A-GGUF"), request, "unsloth"))
+    assert (excinfo.value.status_code, rec.calls) == (status, [])
+    assert "keyless api access" in str(excinfo.value.detail).lower() and not excinfo.value.headers
+    set_keyless_api_access("full")
+    assert asyncio.run(auto.inference_route._no_model_loaded_error("No model loaded.", "org/A-GGUF", request, status = 400)) == (400, "No model loaded.")
 # fmt: on
