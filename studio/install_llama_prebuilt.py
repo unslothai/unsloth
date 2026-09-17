@@ -8537,7 +8537,12 @@ def existing_install_current_without_plan(
         install_runtime_dir(install_dir, host) / f"llama-{name}{extension}"
         for name in ("server", "quantize")
     ]
-    if not all(os.access(binary, os.X_OK) for binary in binaries):
+    # _damaged_entrypoint rather than X_OK over these two, because it is the owner of this
+    # question and also covers the install root's copies, which _find_llama_server_binary
+    # reaches FIRST. Checking build/bin alone made this shortcut accept a tree that
+    # installed_runtime_health rejects: the desktop marked the install stale, the update ran,
+    # this returned True before reinstalling anything, and the next launch was stale again.
+    if _damaged_entrypoint(install_dir, host) is not None:
         return False
     try:
         # Kept, unlike the --version spawns: a preflight answers whether the OS can LOAD the image,

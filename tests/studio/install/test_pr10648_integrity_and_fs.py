@@ -366,35 +366,35 @@ def test_a_non_executable_runtime_binary_is_rejected(tmp_path, monkeypatch, rela
 @POSIX_ONLY
 @NOT_ROOT
 @pytest.mark.parametrize(
-    "relative,still_runs",
+    "relative,is_an_entrypoint",
     (
-        ("llama-server", False),
-        ("llama-quantize", False),
-        ("build/bin/llama-diffusion-gemma-visual-server", True),
+        ("llama-server", True),
+        ("llama-quantize", True),
+        ("build/bin/llama-diffusion-gemma-visual-server", False),
     ),
 )
-def test_the_execute_bit_is_checked_on_the_runtime_copies_only(
-    tmp_path, monkeypatch, relative, still_runs
+def test_the_execute_bit_is_checked_on_every_entrypoint(
+    tmp_path, monkeypatch, relative, is_an_entrypoint
 ):
-    """Where the fast path stops and the full re-validation takes over on this.
+    """Which files losing their execute bit stop an install being kept, and by which check.
 
-    The precheck's os.access(X_OK) covers install_runtime_dir()/llama-{server,quantize}
-    and nothing else, so a root copy or the visual server can lose its execute bit and
-    still read as current -- the fast path answers True in every row below.
+    Both halves ask _damaged_entrypoint now, so they answer together: it covers
+    llama-{server,quantize} under build/bin AND the install root's copies, which
+    _find_llama_server_binary reaches first. The shortcut used to check build/bin only,
+    which let the desktop mark an install stale over a root copy and then have the update
+    keep it unchanged; that loop is what this row pins.
 
-    _existing_install_runs is the half that differs. It now rejects a root llama-server or
-    llama-quantize that cannot be executed, via _damaged_entrypoint; it used to answer True
-    for those too, because _binary_image_runs fails OPEN on EACCES (only ENOEXEC and a
-    loader-level crash are verdicts). The visual server is not an entrypoint it probes, so
-    that row still passes, and the blast radius there is bounded: llama_server_candidates
-    keeps scanning inside the same layout and finds the executable build/bin copy.
+    The visual server is not an entrypoint either check probes, and the blast radius there
+    is bounded: llama_server_candidates keeps scanning the same layout and finds the
+    executable build/bin copy. Its row is the control -- without it the fix could be
+    "reject everything", which would send every install through a needless repair.
     """
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True
     assert LLAMA._existing_install_runs(install_dir, LINUX) is True
     (install_dir / relative).chmod(0o644)
-    assert _fast_path(install_dir) is True
-    assert LLAMA._existing_install_runs(install_dir, LINUX) is still_runs
+    assert _fast_path(install_dir) is not is_an_entrypoint
+    assert LLAMA._existing_install_runs(install_dir, LINUX) is not is_an_entrypoint
 
 
 @pytest.mark.parametrize("relative", SIZE_TIER)
@@ -1064,3 +1064,25 @@ def test_the_llama_marker_survives_a_rewrite_and_the_fast_path_still_accepts_it(
         assert stat.S_IMODE(marker_path.stat().st_mode) == 0o640
     assert _temp_siblings(install_dir) == []
     assert _fast_path(install_dir) is True
+
+
+@POSIX_ONLY
+@NOT_ROOT
+@pytest.mark.parametrize("relative", ("llama-server", "llama-quantize"))
+def test_a_damaged_root_entrypoint_is_not_kept_by_the_shortcut(tmp_path, monkeypatch, relative):
+    """The update has to repair what the launch check calls broken, or the two loop.
+
+    installed_runtime_health rejects a root llama-server that lost its execute bit, so the
+    desktop marks the install stale and offers a repair. This shortcut returns before
+    reinstalling anything, and it used to check X_OK under build/bin ONLY -- so the repair
+    ran, changed nothing, and the next launch was stale again. Measured before the fix:
+    launch health llama_runtime_binaries_missing, shortcut True, full re-validation False.
+
+    _damaged_entrypoint owns the question for all three now, which is what its own docstring
+    asks for.
+    """
+    install_dir = _install(tmp_path, monkeypatch)
+    assert _fast_path(install_dir) is True, "the shortcut must accept a healthy install here"
+    (install_dir / relative).chmod(0o644)
+    assert LLAMA._existing_install_runs(install_dir, LINUX) is False
+    assert _fast_path(install_dir) is False
