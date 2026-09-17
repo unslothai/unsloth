@@ -27,8 +27,8 @@ test("core fields map across", () => {
     pipelineTag: "text-generation",
     createdAt: "2024-07-23T00:00:00.000Z",
     updatedAt: "2025-01-02T00:00:00.000Z",
-    isGguf: false,
   });
+  assert.ok(meta);
   assert.equal(meta.id, "unsloth/Llama-3.1-8B");
   assert.equal(meta.downloads, 42);
   assert.equal(meta.likes, 7);
@@ -47,9 +47,9 @@ test("licence is read out of the tag list", () => {
     id: "x/y",
     downloads: 0,
     likes: 0,
-    isGguf: false,
     tags: ["text-generation", "license:apache-2.0", "en"],
   });
+  assert.ok(meta);
   assert.equal(meta.license, "apache-2.0");
 });
 
@@ -58,9 +58,9 @@ test("a repo with no licence tag reports none", () => {
     id: "x/y",
     downloads: 0,
     likes: 0,
-    isGguf: false,
     tags: ["text-generation"],
   });
+  assert.ok(meta);
   assert.equal(meta.license, null);
 });
 
@@ -69,9 +69,9 @@ test("languages are read out of the tag list", () => {
     id: "x/y",
     downloads: 0,
     likes: 0,
-    isGguf: false,
     tags: ["language:en", "language:de", "text-generation"],
   });
+  assert.ok(meta);
   assert.deepEqual(meta.languages, ["en", "de"]);
 });
 
@@ -83,9 +83,9 @@ test("bare Hugging Face language codes are accepted too", () => {
     id: "x/y",
     downloads: 0,
     likes: 0,
-    isGguf: false,
     tags: ["en", "de", "text-generation", "gguf"],
   });
+  assert.ok(meta);
   assert.deepEqual(meta.languages, ["en", "de"]);
 });
 
@@ -94,9 +94,9 @@ test("prefixed and bare codes mix without duplicating", () => {
     id: "x/y",
     downloads: 0,
     likes: 0,
-    isGguf: false,
     tags: ["language:en", "en", "fr"],
   });
+  assert.ok(meta);
   assert.deepEqual(meta.languages, ["en", "fr"]);
 });
 
@@ -112,9 +112,9 @@ test("short non-language tags are not mistaken for languages", () => {
     id: "x/y",
     downloads: 0,
     likes: 0,
-    isGguf: false,
     tags: ["rl", "4-bit", "gguf", "text-generation", "moe"],
   });
+  assert.ok(meta);
   assert.equal(meta.languages, undefined);
 });
 
@@ -125,9 +125,9 @@ test("region-qualified codes keep their full spelling", () => {
     id: "x/y",
     downloads: 0,
     likes: 0,
-    isGguf: false,
     tags: ["pt-br", "zh-CN"],
   });
+  assert.ok(meta);
   assert.deepEqual(meta.languages, ["pt-br", "zh-CN"]);
 });
 
@@ -140,18 +140,18 @@ test("both gating modes count as gated", () => {
       id: "x/y",
       downloads: 0,
       likes: 0,
-      isGguf: false,
       gated,
     });
+  assert.ok(meta);
     assert.equal(meta.gated, true, gated);
   }
   const open = metaFromHfResult({
     id: "x/y",
     downloads: 0,
     likes: 0,
-    isGguf: false,
     gated: false,
   });
+  assert.ok(open);
   assert.equal(open.gated, false);
 });
 
@@ -160,9 +160,9 @@ test("private maps to isPrivate", () => {
     id: "x/y",
     downloads: 0,
     likes: 0,
-    isGguf: false,
     private: true,
   });
+  assert.ok(meta);
   assert.equal(meta.isPrivate, true);
 });
 
@@ -173,9 +173,9 @@ test("all-time downloads win over the 30-day count", () => {
     id: "x/y",
     downloads: 100,
     likes: 0,
-    isGguf: false,
     downloadsAllTime: 5000,
   });
+  assert.ok(meta);
   assert.equal(meta.downloads, 5000);
 });
 
