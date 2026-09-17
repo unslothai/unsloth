@@ -711,18 +711,18 @@ def test_route_still_splits_real_thinking_when_the_request_leaves_it_on(monkeypa
     assert message["reasoning_content"] == "plan"
 
 
-def test_route_still_splits_a_transformers_image_turn_the_request_asked_to_disable(monkeypatch):
-    """Transformers vision generation ignores both reasoning fields."""
+def test_route_keeps_literal_think_text_on_a_transformers_image_turn(monkeypatch):
+    answer = "Use <think>hi</think> in your prompt."
     message = _sf_route_message(
         monkeypatch,
         _TEMPLATE_DEFAULT_OFF_TPL,
-        ["<think>plan</think>answer"],
+        [answer],
         is_vision = True,
         enable_thinking = False,
         image_base64 = _TINY_PNG_B64,
     )
-    assert message["content"] == "answer"
-    assert message["reasoning_content"] == "plan"
+    assert message["content"] == answer
+    assert not message["reasoning_content"]
 
 
 def test_route_keeps_literal_think_text_on_an_mlx_image_turn(monkeypatch):

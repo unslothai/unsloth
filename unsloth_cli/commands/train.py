@@ -93,6 +93,11 @@ def train(
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
+        # model_dump carries the config file's tokens verbatim, and this goes to stdout: CI logs,
+        # notebook output, scrollback. Mask only what is set, so an unset token still reads as null.
+        for name in ("hf_token", "wandb_token"):
+            if data["logging"].get(name) is not None:
+                data["logging"][name] = "[redacted]"
         typer.echo(yaml.dump(data, default_flow_style = False, sort_keys = False))
         raise typer.Exit(code = 0)
 
@@ -157,6 +162,7 @@ def train(
         typer.echo("Training failed to start", err = True)
         raise typer.Exit(code = 1)
 
+    interrupted = False
     try:
         while trainer.training_thread and trainer.training_thread.is_alive():
             progress = trainer.get_training_progress()
@@ -164,6 +170,7 @@ def train(
                 break
             time.sleep(1)
     except KeyboardInterrupt:
+        interrupted = True
         typer.echo("Stopping training (Ctrl+C detected)...")
         trainer.stop_training()
     finally:
@@ -178,3 +185,5 @@ def train(
     if getattr(final, "error", None):
         typer.echo(f"Training error: {final.error}", err = True)
         raise typer.Exit(code = 1)
+    if interrupted and not getattr(final, "is_completed", False):
+        raise typer.Exit(code = 130)

@@ -765,17 +765,37 @@ function GpuMemorySettings({
   const showGpuPicker = (gpuContext.ids?.length ?? 0) > 1;
   const isGpuChecked = (index: number) =>
     selectedGpuIds === null || selectedGpuIds.includes(index);
-  const toggleGpu = (index: number) => {
-    const all = gpuContext.ids ?? [];
-    const current = selectedGpuIds ?? all;
-    const next = current.includes(index)
-      ? current.filter((i) => i !== index)
-      : [...current, index].sort((a, b) => a - b);
+  // The list order IS the device order the backend pins, so a re-checked GPU goes
+  // to the end rather than back to its numeric slot.
+  const orderedGpuIds = selectedGpuIds ?? gpuContext.ids ?? [];
+  const commitGpuIds = (next: number[]) => {
     if (next.length === 0) return; // keep at least one GPU selected
     update({
       selectedGpuIds: next,
       selectedGpuIndexKind: gpuIndexKind,
     });
+  };
+  const toggleGpu = (index: number) => {
+    commitGpuIds(
+      orderedGpuIds.includes(index)
+        ? orderedGpuIds.filter((i) => i !== index)
+        : [...orderedGpuIds, index],
+    );
+  };
+  // Selected devices in the order they will be given to the model, then the rest.
+  const orderedPinnableDevices = [
+    ...orderedGpuIds
+      .map((id) => pinnableDevices.find((d) => d.index === id))
+      .filter((d): d is SystemGpuDevice => d !== undefined),
+    ...pinnableDevices.filter((d) => !orderedGpuIds.includes(d.index)),
+  ];
+  const moveGpu = (index: number, delta: -1 | 1) => {
+    const from = orderedGpuIds.indexOf(index);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= orderedGpuIds.length) return;
+    const next = [...orderedGpuIds];
+    [next[from], next[to]] = [next[to], next[from]];
+    commitGpuIds(next);
   };
   return (
     <>
@@ -876,12 +896,14 @@ function GpuMemorySettings({
             <span className={LABEL_CLASS}>GPUs</span>
             <InfoHint>
               By default, Unsloth chooses GPUs automatically. Editing this list
-              makes the checked GPUs the explicit candidate pool. At least one
-              GPU must stay selected.
+              makes the checked GPUs the explicit candidate pool.
+              {!isDiffusion &&
+                " Their order here is the order they are given to the model, so the first one takes the prompt."}{" "}
+              At least one GPU must stay selected.
             </InfoHint>
           </div>
           <div className="flex flex-col gap-2">
-            {pinnableDevices.map((d) => (
+            {orderedPinnableDevices.map((d, position) => (
               <div
                 key={d.index}
                 className="flex items-center justify-between gap-3"
@@ -892,6 +914,31 @@ function GpuMemorySettings({
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
                     : ""}
                 </span>
+                {/* Not for diffusion: that runner drives one device and matches_gpu_ids
+                    reduces the request to its lowest id, so the arrows would move a row
+                    without moving the model, under help text promising the opposite. */}
+                {isGpuChecked(d.index) && !singleGpuInUse && !isDiffusion && (
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <button
+                      type="button"
+                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      aria-label={`Move GPU ${d.index} earlier`}
+                      disabled={position === 0}
+                      onClick={() => moveGpu(d.index, -1)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      aria-label={`Move GPU ${d.index} later`}
+                      disabled={position >= orderedGpuIds.length - 1}
+                      onClick={() => moveGpu(d.index, 1)}
+                    >
+                      ↓
+                    </button>
+                  </div>
+                )}
                 <Switch
                   className="panel-switch shrink-0"
                   checked={isGpuChecked(d.index)}

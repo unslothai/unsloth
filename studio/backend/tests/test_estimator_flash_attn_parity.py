@@ -336,3 +336,50 @@ def test_pass_through_adapters_are_charged_and_follow_the_base_placement(
     assert (
         missing is not None and missing.adapters_unsized
     ), "an unsizable adapter has to mark the total a floor rather than vanish"
+
+
+def _runtime(path, extras = None):
+    runtime = ri._gguf_runtime_bytes(path, 32768, extras, 1, None, False)
+    return runtime.kv_bytes, runtime.compute_bytes
+
+
+def _flash_attn_caps(monkeypatch, supported):
+    monkeypatch.setattr(
+        ri.LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"found": True, "supports_flash_attn": supported}),
+    )
+
+
+def test_flash_attention_follows_the_launch_argv_not_the_inherited_env(
+    monkeypatch, qwen3_shaped_gguf
+):
+    """The managed --flash-attn on is parsed after LLAMA_ARG_FLASH_ATTN, so only the
+    extras can turn it off; a build without the flag drops both flag and env."""
+    monkeypatch.delenv("LLAMA_ARG_FLASH_ATTN", raising = False)
+    _flash_attn_caps(monkeypatch, True)
+    on = _runtime(qwen3_shaped_gguf)
+    off = _runtime(qwen3_shaped_gguf, ["--flash-attn", "off"])
+    assert off[1] > on[1]
+
+    monkeypatch.setenv("LLAMA_ARG_FLASH_ATTN", "off")
+    assert _runtime(qwen3_shaped_gguf) == on
+
+    monkeypatch.setenv("LLAMA_ARG_FLASH_ATTN", "on")
+    _flash_attn_caps(monkeypatch, False)
+    assert _runtime(qwen3_shaped_gguf) == off
+
+
+def test_grok_is_priced_without_flash_attention(monkeypatch, qwen3_shaped_gguf):
+    """llama.cpp forces flash attention off for Grok whatever the launch asks for."""
+    monkeypatch.delenv("LLAMA_ARG_FLASH_ATTN", raising = False)
+    _flash_attn_caps(monkeypatch, True)
+    off = _runtime(qwen3_shaped_gguf, ["--flash-attn", "off"])
+    real_read = ri.LlamaCppBackend._read_gguf_metadata
+
+    def read_as_grok(self, path):
+        real_read(self, path)
+        self._architecture = "grok"
+
+    monkeypatch.setattr(ri.LlamaCppBackend, "_read_gguf_metadata", read_as_grok)
+    assert _runtime(qwen3_shaped_gguf) == off

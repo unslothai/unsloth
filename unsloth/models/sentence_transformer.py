@@ -42,12 +42,27 @@ import re
 from transformers import AutoModel, AutoConfig
 import tempfile
 from huggingface_hub import HfApi, get_token
-from ..save import (
-    unsloth_save_pretrained_torchao,
-    unsloth_save_pretrained_gguf,
-    # One definition of what save_method = "lora" means, shared with save.py.
-    _is_adapter_save_method,
-)
+# Deferred to first call: a module-scope bind out of `unsloth.save` closes an import cycle.
+# See the note in unsloth/models/vision.py and tests/test_cold_import_order.py.
+
+
+def unsloth_save_pretrained_torchao(*args, **kwargs):
+    """Hand off to ``unsloth.save.unsloth_save_pretrained_torchao``, imported on first call."""
+    from ..save import unsloth_save_pretrained_torchao as _impl
+    return _impl(*args, **kwargs)
+
+
+def unsloth_save_pretrained_gguf(*args, **kwargs):
+    """Hand off to ``unsloth.save.unsloth_save_pretrained_gguf``, imported on first call."""
+    from ..save import unsloth_save_pretrained_gguf as _impl
+    return _impl(*args, **kwargs)
+
+
+# How unsloth/save.py tells its own shims from functions someone else put here.
+unsloth_save_pretrained_torchao._unsloth_deferred_shim = True
+unsloth_save_pretrained_gguf._unsloth_deferred_shim = True
+
+
 import contextlib
 import shutil
 
@@ -1827,6 +1842,10 @@ class FastSentenceTransformer(FastModel):
                     f"so Unsloth falls back to merge_and_unload, which can only "
                     f"produce 'merged_16bit'."
                 )
+            # Imported here rather than at module scope: a module-scope bind out of
+            # unsloth.save closes an import cycle, which is why the two shims above are
+            # deferred too. See tests/test_cold_import_order.py.
+            from ..save import _is_adapter_save_method
             if _is_adapter_save_method(save_method):
                 # Refused because nothing here writes base weights: self.save_pretrained writes the
                 # sentence-transformers scaffolding and, for a PEFT auto_model, an adapter, and the

@@ -195,6 +195,10 @@ export function pruneProviderModelCapabilities(knownProviderTypes: Iterable<stri
 }
 
 
+// The backend registry marks these supports_vision: false and strips image parts before the request, so a catalog
+// that lists image input must not open the composer to an attachment the model never receives.
+const IMAGE_STRIPPING_PROVIDER_TYPES = new Set<string>(["deepseek"]);
+
 export function providerModelSupportsVision(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -205,6 +209,7 @@ export function providerModelSupportsVision(
     const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
     if (typeof capability?.vision === "boolean") return capability.vision;
   }
+  if (providerType != null && IMAGE_STRIPPING_PROVIDER_TYPES.has(providerType)) return false;
   const catalogVision = modelCatalogSupportsVision(providerType, modelId);
   if (catalogVision != null) return catalogVision;
   return providerTypeSupportsVision(providerType);

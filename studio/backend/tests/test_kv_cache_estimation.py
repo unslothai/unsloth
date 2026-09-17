@@ -207,6 +207,12 @@ class TestGGUFParserNewFields:
             ("_ssm_state_size", "ssm.state_size", 128),
             ("_ssm_group_count", "ssm.group_count", 16),
             ("_ssm_conv_kernel", "ssm.conv_kernel", 4),
+            ("_feed_forward_length", "feed_forward_length", 12288),
+            ("_expert_used_count", "expert_used_count", 8),
+            ("_expert_feed_forward_length", "expert_feed_forward_length", 512),
+            ("_expert_shared_feed_forward_length", "expert_shared_feed_forward_length", 512),
+            ("_expert_shared_count", "expert_shared_count", 1),
+            ("_embedding_length_per_layer_input", "embedding_length_per_layer_input", 256),
         ],
     )
     def test_field_parsed(self, field, gguf_key, value):
@@ -255,6 +261,14 @@ class TestGGUFParserNewFields:
         # get a safe upper bound.
         assert b._n_kv_heads == 8
         assert b._sliding_window_pattern == [True, True, True, True, True, False]
+
+    def test_per_layer_feed_forward_length_keeps_the_widest(self):
+        # Gemma 4 E2B stores one FFN width per layer; the compute buffer is set by
+        # the widest.
+        b = _backend_from_gguf(
+            "gemma4", {"block_count": 3, "feed_forward_length": [6144, 12288, 6144]}
+        )
+        assert b._feed_forward_length == 12288
 
 
 class TestArchSwaPatternDefaults:

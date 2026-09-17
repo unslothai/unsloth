@@ -96,6 +96,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   chat: [
     "settings.general.chatDefaults",
+    "composerSettings.sendShortcut",
+    "composerSettings.followUp",
+    "composerSettings.plainText",
+    "composerSettings.showContext",
+    "settings.chat.pastedTextThreshold",
+    "settings.chat.groups.conversations.title",
+    "settings.chat.groups.display.title",
+    "settings.chat.modelSelection.title",
     "settings.chat.currentDate.label",
     "settings.general.autoTitleNewChats",
     "settings.chat.projectAttachments",
@@ -108,10 +116,10 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
-    "settings.chat.webSearch.title",
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
     "settings.chat.projectsSection",
+    "settings.chat.groups.menu.title",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [

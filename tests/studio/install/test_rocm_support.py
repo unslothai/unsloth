@@ -110,6 +110,22 @@ def _gpu_record_helpers(source: str) -> str:
     )
 
 
+def _visibility_mask_names(source: str) -> tuple[str, ...]:
+    """Every GPU visibility mask install.sh's gfx block honours.
+
+    Read out of the script rather than written down here. The block treats
+    CUDA_VISIBLE_DEVICES as HIP's alias, so a probe test that clears only the masks it
+    happens to remember inherits the rest from whatever host it runs on and selects that
+    host's GPU index. Sourcing the list means a mask added to production cannot go on
+    being inherited silently: it starts being cleared here the moment it is named there.
+    """
+    match = re.search(r'^\s*_vis_masks="([^"]+)"', source, re.M)
+    assert match, "could not find _vis_masks in install.sh -- did the gfx block move?"
+    names = tuple(match.group(1).split())
+    assert names, "_vis_masks is empty"
+    return ("ROCR_VISIBLE_DEVICES", *names)
+
+
 # A dpkg-query -W stand-in that renders whichever showformat string it is handed,
 # so this tests how production ASKS for versions, not only how it parses answers.
 _DPKG_QUERY_STUB = r"""#!/bin/sh
@@ -445,6 +461,13 @@ class TestRuntimePatterns:
                 repo = "", tag = "", name = "", url = "", source_label = "", install_kind = kind
             )
             assert name in runtime_patterns_for_choice(choice)
+
+    def test_fit_params_kept_on_macos(self):
+        for kind in ("macos-arm64", "macos-x64"):
+            choice = AssetChoice(
+                repo = "", tag = "", name = "", url = "", source_label = "", install_kind = kind
+            )
+            assert "llama-fit-params" in runtime_patterns_for_choice(choice)
 
 
 # TEST: install_llama_prebuilt.py -- HostInfo.has_rocm field
@@ -6799,9 +6822,16 @@ class TestStrixRocm71Override:
             )
 
             def run(**extra):
-                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""), **extra)
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
                 env.pop("UNSLOTH_ROCM_GFX_ARCH", None)
-                env.pop("HIP_VISIBLE_DEVICES", None)
+                # Clear every mask the block honours before applying this case's own, not
+                # just the two that used to be named here. CUDA_VISIBLE_DEVICES is HIP's
+                # alias and production reads it, so on any host that sets it -- a GPU box,
+                # a CUDA runner -- the probe picked that host's index and the test failed
+                # for the machine it ran on rather than for the code.
+                for name in _visibility_mask_names(source):
+                    env.pop(name, None)
+                env.update(extra)
                 return subprocess.run(
                     [shell, "-c", script], env = env, capture_output = True, text = True
                 )
@@ -6820,6 +6850,25 @@ class TestStrixRocm71Override:
             r2 = run(ROCR_VISIBLE_DEVICES = "1")
             assert r2.returncode == 0, f"partial-mask probe aborted: {r2.stderr}"
             assert "OK:gfx1201" in r2.stdout, f"partial mask selection lost: {r2.stdout!r}"
+
+    def test_the_probe_clears_every_visibility_mask_production_reads(self):
+        """The masks the probe tests neutralise must be the ones install.sh honours.
+
+        CUDA_VISIBLE_DEVICES was read by production and left set by the tests, so the
+        reroute test selected whatever index the host had exported. Pin the coupling so
+        a mask added to _vis_masks cannot quietly go back to being inherited.
+        """
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        names = _visibility_mask_names(source)
+        assert set(names) == {
+            "ROCR_VISIBLE_DEVICES",
+            "HIP_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+        }, names
+        # Each one is really consulted by the block, so this is not a list of names that
+        # production has stopped caring about.
+        for name in names:
+            assert name in source, name
 
     def test_strix_routing_helpers_cover_rocm714(self):
         # Reroute for any generic pytorch.org index below the 7.13 arch floor (7.0,
