@@ -1084,7 +1084,9 @@ def note_accelerator_runtime_failure(
     previous_per_card = (previous or {}).get("per_card")
     per_card = {
         name: dict(entry)
-        for name, entry in (previous_per_card if isinstance(previous_per_card, dict) else {}).items()
+        for name, entry in (
+            previous_per_card if isinstance(previous_per_card, dict) else {}
+        ).items()
         if isinstance(entry, dict)
     }
     if card:

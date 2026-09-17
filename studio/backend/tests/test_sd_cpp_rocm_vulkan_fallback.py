@@ -2395,9 +2395,7 @@ def test_two_launch_failures_on_one_card_do_not_divert_another(fake_settings, mo
 
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
     for _ in range(sd_cpp_backend._AMBIGUOUS_FAILURE_STRIKES):
-        sd_cpp_backend.note_unlaunchable_accelerator_build(
-            "/opt/sd/rocm/sd-server", card = _CARD_A
-        )
+        sd_cpp_backend.note_unlaunchable_accelerator_build("/opt/sd/rocm/sd-server", card = _CARD_A)
     assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_A) is True
     assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_B) is False
 
@@ -2419,9 +2417,7 @@ def test_the_h3_load_scopes_its_record_lookup_to_the_card_it_selected(fake_setti
     source = inspect.getsource(video_mod)
     load = source[source.index("allow_install = _install_allowed()") :]
     assert "selected_card = selected_card_identity(gpu_ordinal)" in load
-    assert (
-        "preferred_accelerator(_install_accelerator_for(target.backend), selected_card)" in load
-    )
+    assert "preferred_accelerator(_install_accelerator_for(target.backend), selected_card)" in load
     start = 0
     guarded = 0
     while True:
