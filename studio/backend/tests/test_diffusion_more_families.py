@@ -85,8 +85,9 @@ def test_flux1_krea_dev_generation_defaults():
 
 
 def test_flux_dev_and_krea_do_not_inherit_the_schnell_nvfp4_checkpoint():
-    # The NVFP4 artifact is baked from schnell weights. As a family-wide row dev and Krea-dev inherited it, downloaded it, and hit _validate_checkpoint's refusal with the dense fallback already disabled.
-    # The fp8 / int8 rows for those two bases must be untouched.
+    # The NVFP4 artifact is baked from schnell weights and gated on schnell only. As a family-wide row, dev and
+    # Krea-dev inherited it: the plan budgeted a prequant-only load, the download landed, _validate_checkpoint
+    # refused it on base_model_id, and the dense fallback was already disabled. The fp8 / int8 rows stay untouched.
     from core.inference.diffusion_families import family_prequant_repo
 
     fam = detect_family("black-forest-labs/FLUX.1-schnell")

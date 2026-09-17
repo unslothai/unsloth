@@ -181,7 +181,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("black-forest-labs/flux.1-dev", "fp8", "unsloth/FLUX.1-dev-FP8"),
             ("black-forest-labs/flux.1-krea-dev", "int8", "unsloth/FLUX.1-Krea-dev-FP8"),
             ("black-forest-labs/flux.1-krea-dev", "fp8", "unsloth/FLUX.1-Krea-dev-FP8"),
-            # Policy ``flux_mod_single_v1``, schnell ONLY: a family row would hand dev and Krea-dev the schnell artifact, which _validate_checkpoint refuses after the download.
+            # Policy ``flux_mod_single_v1``, schnell ONLY: a family row would hand dev and Krea-dev an artifact _validate_checkpoint refuses after the download.
             ("black-forest-labs/flux.1-schnell", "nvfp4", "unsloth/FLUX.1-schnell-NVFP4"),
         ),
         # Pre-cast T5-XXL (9.52 -> 5.90 GB; CLIP-L stays dense). One artifact serves schnell/dev/Krea-dev (T5 shards
@@ -341,7 +341,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/Z-Image-Turbo-FP8"),
             ("fp8", "unsloth/Z-Image-Turbo-FP8"),
-            # Per-layer policy ``zimg_f8mod_toq34_v1``, GPTQ-corrected on the 4-bit operand, baked activation scales. The RTN build of the same policy is hosted alongside for A/B only.
+            # Per-layer policy ``zimg_f8mod_toq34_v1``: GPTQ-corrected 4-bit operand, baked activation scales. The RTN build alongside it is for A/B only.
             ("nvfp4", "unsloth/Z-Image-Turbo-NVFP4"),
         ),
         # Both hosted checkpoints are baked from the distilled Turbo transformer, so the undistilled base has none and

@@ -131,8 +131,7 @@ def _drop_pool_if_unused() -> None:
 
 
 def _nvfp4_flashinfer_linears(module: Any) -> list:
-    """``(fqn, layer)`` for every FlashInfer NVFP4 Linear under ``module``. Lazy import, so a build
-    without the backend does not lose CUDA graphs over it."""
+    """``(fqn, layer)`` for every FlashInfer NVFP4 Linear under ``module``. Imported lazily, so a build without the backend does not lose CUDA graphs over it."""
     try:
         from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
     except Exception:  # noqa: BLE001 - no backend module, no NVFP4 layers to find
@@ -148,9 +147,9 @@ def _nvfp4_flashinfer_linears(module: Any) -> list:
 
 
 def _protect_keyed(module: Any) -> bool:
-    """Does this module need the per-step precision branch in its graph key? Only when the lever is
-    armed AND the module holds NVFP4 layers, so an fp8 load elsewhere in the process does not
-    double its graph count for a branch it cannot take."""
+    """Does this module need the per-step precision branch in its graph key? Only when the lever is armed
+    AND the module holds NVFP4 layers, so an fp8 load in the same process does not double its graph
+    count for a branch it cannot take."""
     try:
         from .diffusion_nvfp4_protect import protect_controller
         if not protect_controller().armed:
@@ -167,17 +166,16 @@ def protect_graph_key() -> tuple:
 
 
 def _unbaked_nvfp4_layers(layers: list) -> list:
-    """The fqns among ``layers`` whose activation global scale is not baked. A scale still being
-    learned is recorded rather than executed under capture, so every replay runs what the capture
-    saw. Fail closed: no answer counts as unbaked."""
+    """The fqns among ``layers`` whose activation global scale is not baked. A scale still being learned
+    is recorded rather than executed under capture, so every replay runs whatever the capture saw.
+    Fail closed: no answer counts as unbaked."""
     return [name for name, layer in layers if not getattr(layer, "activation_scales_baked", False)]
 
 
 def _prewarm_token_counts(live: list) -> tuple:
-    """Candidate GEMM row counts (M) for this call, smallest first, read off the warm-up's own
-    shapes since the resolution is unknowable at load time. Generous rather than exact (an unused M
-    is inert) but bounded, so a family with many inputs cannot turn a capture into a profiling
-    session."""
+    """Candidate GEMM row counts (M) for this call, smallest first, read off the warm-up's own shapes
+    since the resolution is unknown at load time. Generous but bounded, so a family with many inputs
+    cannot turn a capture into a profiling session."""
     counts = {1}
     for tensor in live:
         try:
@@ -241,7 +239,7 @@ class GraphedForward:
         self.capture_error: Optional[dict] = None
         self.cache: dict = {}
         self.cap_hit = False
-        # Resolved on the first call, not here: the walk is O(modules) and must not run per call.
+        # Resolved on the first call: the walk is O(modules) and must not run per call.
         self.protect_keyed: Optional[bool] = None
         self.stats = {
             "captures": 0,
@@ -364,7 +362,7 @@ class GraphedForward:
             if self.protect_keyed is None:
                 self.protect_keyed = _protect_keyed(self.module)
                 if self.protect_keyed:
-                    # Arming the lever splits every input shape into two calls, so the cap has to double or half of them run eager.
+                    # Arming splits every input shape into two calls, so the same shapes need twice the graphs.
                     self.max_graphs *= 2
                     if self.logger is not None:
                         self.logger.info(

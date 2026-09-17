@@ -333,8 +333,9 @@ class _Bytes:
 
 
 class Float8Tensor:
-    """A quantized fp8 weight as far as this module cares: the class NAME keys the fingerprint's
-    payload table and the activation-floor check that tells fp8 from the 4-bit weights beside it."""
+    """A quantized fp8 weight as far as this module is concerned: the class NAME keys the fingerprint's
+    payload table and the activation-floor check that tells fp8 weights from the 4-bit ones beside
+    them in a policy checkpoint."""
 
     def __init__(
         self,
@@ -2174,7 +2175,7 @@ def test_a_policy_checkpoint_is_validated_end_to_end():
 
 
 def test_the_fp8_invariants_cover_the_fp8_half_of_a_policy_checkpoint():
-    # A policy artifact is declared nvfp4 but is mostly Float8Tensor, so the per-row granularity and activation floor decide whether ITS fp8 layers render or go black. Gating both on scheme == fp8 skipped them all.
+    # A policy artifact is declared nvfp4 yet mostly Float8Tensor, so the per-row granularity and activation floor decide whether ITS fp8 layers render. Gating both on scheme == fp8 skipped all of them.
     logger = _Recorder()
     ckpt = {
         "format": pq.PREQUANT_FORMAT_POLICY,
@@ -2224,11 +2225,10 @@ def test_an_nvfp4_install_must_be_able_to_open_the_fp8_weights_too():
 
 
 def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path):
-    """The CPU checkpoint must be unreferenced by the time ``.to(device)`` allocates.
-
-    ``assign = True`` gives the module the checkpoint's own tensors, so ckpt/state_dict hold only a
-    second reference. On unified memory (DGX Spark) host and device copy are the same physical
-    memory, so keeping it across the move doubles the transient peak.
+    """The CPU checkpoint must be unreferenced by the time ``.to(device)`` allocates. ``assign = True``
+    gives the module the checkpoint's own tensors, so ckpt/state_dict are only a second reference. On
+    a unified-memory host the two copies are the same physical memory, so keeping that reference
+    across the move doubles the transient peak the admission check expected.
     """
     import weakref
 
@@ -2253,7 +2253,7 @@ def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path
 
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, None)
-    # Built per call so the stub itself holds no reference: what stays alive is what the loader kept.
+    # Built per call so the stub holds no reference: what stays alive is what the loader kept.
     monkeypatch.setattr(
         pq,
         "_torch_load_prequant",

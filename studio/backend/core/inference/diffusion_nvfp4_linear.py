@@ -4,10 +4,10 @@
 """The FlashInfer NVFP4 Linear, and the conversion that puts a hosted checkpoint onto it.
 
 ONE artifact, two backends. Nothing here requantizes: torchao's payload IS FlashInfer's, byte for
-byte, with ``per_tensor_scale == 1 / w_gsf`` and ``alpha = per_tensor_scale / a_gsf``. The
-activation global scale is BAKED, never calibrated here: learning it over the first few forwards
-is not capture-safe, is nondeterministic, and is the mechanism behind the flux black-frame latch,
-so a layer whose baked scale is absent is NOT converted.
+byte, with ``per_tensor_scale == 1 / w_gsf`` and ``alpha = per_tensor_scale / a_gsf``. The activation
+global scale is BAKED, never calibrated here: learning it over the first few forwards is not
+capture-safe, is nondeterministic, and is the mechanism behind the flux black-frame latch, so a layer
+whose baked scale is absent is NOT converted.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ ACT_SCALES_KEY = "act_global_scales"
 POLICY_KEY = "nvfp4_policy"
 POLICY_BAKED_KEY = "activation_scales_baked"
 
-# Shared across ALL instances: a per-module cache would pay the profiling pass once per layer for a tactic FlashInfer already caches per shape.
+# Shared across ALL instances: FlashInfer already caches the tactic per shape.
 _TUNED_SHAPES: set = set()
 
 
@@ -46,16 +46,15 @@ def reset_nvfp4_state() -> None:
 
     reset_tuned_shapes()
     _ops.reset_barriers()
-    # Holds transposed VIEWS of the weights, so keeping it would pin a freed model.
+    # Also holds transposed VIEWS of the weight buffers, so keeping it would pin a freed model.
     _dispatch.reset()
-    # verify() runs only in the preflight, so a memoised one would leave _VERIFIED empty next load.
+    # verify() runs only inside the preflight, so a memoised one leaves the next load with _VERIFIED empty.
     _ops.reset_preflight_cache()
 
 
 @lru_cache(maxsize = 1)
 def nvfp4_linear_class():
-    """The ``NVFP4FlashInferLinear`` class, defined on first use so this module imports torch-free
-    and cached so the class object is a singleton."""
+    """The ``NVFP4FlashInferLinear`` class, defined on first use so this module imports torch-free, and cached so the class object is a singleton."""
     import torch
     from torch import nn
     from torch.nn import functional as F
@@ -63,9 +62,8 @@ def nvfp4_linear_class():
     from .diffusion_nvfp4_bias import fused_bias_add_
 
     class NVFP4FlashInferLinear(nn.Module):
-        """A Linear whose weight is already NVFP4 and whose activation is quantized per call. The
-        forward keeps no host synchronize and no branch on a device value, because it runs inside
-        a captured CUDA graph."""
+        """A Linear whose weight is already NVFP4 and whose activation is quantized per call. The forward
+        keeps no host synchronize and no branch on a device value: it runs inside a captured graph."""
 
         def __init__(
             self,
@@ -85,13 +83,13 @@ def nvfp4_linear_class():
             self.in_features = int(in_features)
             self.out_features = int(out_features)
             self.backend = str(backend)
-            # Defaults to False so a calibrating path reads as unbaked: a capture would freeze a scale that is still moving.
+            # Defaults to False so a calibrating path reads as unbaked: a capture would freeze a moving scale.
             self.activation_scales_baked = bool(activation_scales_baked)
             self.register_buffer("wq", wq)
             self.register_buffer("w_sf", w_sf)
             self.register_buffer("alpha", alpha)
             self.register_buffer("a_gsf", a_gsf)
-            # A stored buffer rather than ``alpha * a_gsf``, which reconstructs it only to within a rounding: the protected step must read the weight the GEMM reads, bit for bit.
+            # Stored, not recomputed as ``alpha * a_gsf``: the protected step must read the GEMM's weight bit for bit.
             self.register_buffer(
                 "w_scale",
                 (alpha * a_gsf) if w_scale is None else w_scale,
@@ -104,16 +102,16 @@ def nvfp4_linear_class():
         def forward(self, x):
             shape = x.shape
             flat = x.reshape(-1, self.in_features)
-            # FlashInfer's ``fp4_quantize`` raises on fp32 input while torchao's path accepts it, and Wan2.2's fp32 time embedder feeds exactly that into a quantized layer. Returning the caller's own dtype keeps nn.Linear's contract; both casts are no-ops at bf16.
+            # FlashInfer's ``fp4_quantize`` raises on fp32, which Wan2.2's time embedder feeds in. Returning the caller's dtype keeps nn.Linear's contract; both casts are no-ops at bf16.
             out_dtype = flat.dtype
             if out_dtype not in (torch.bfloat16, torch.float16):
                 flat = flat.to(torch.bfloat16)
             if flat.shape[0] == 0:
-                # torchao's nvfp4 activation path raises on numel() == 0, and an attention trim can hand a quantized Linear an empty batch. A shape check costs no synchronize.
+                # torchao raises on numel() == 0, which an attention trim can produce. A shape check costs no synchronize.
                 return flat.new_zeros((0, self.out_features), dtype = out_dtype).reshape(
                     *shape[:-1], self.out_features
                 )
-            # ``armed`` is fixed for the life of the load, so an unarmed load never guards on ``protected`` and compiles exactly the forward that shipped.
+            # ``armed`` is fixed for the life of the load, so an unarmed load compiles exactly the forward that shipped.
             if self.protect.armed and self.protect.protected:
                 # W4A16 on the SAME bytes, decoded for this call only. No flashinfer kernel here.
                 weight = dequantize_nvfp4_weight(
@@ -121,7 +119,7 @@ def nvfp4_linear_class():
                 )
                 out = F.linear(flat, weight)
             else:
-                # Zero graph breaks under compile; without it a flashinfer launch can hit the wrong card.
+                # Survives torch.compile (zero graph breaks); without it a flashinfer launch can reach the wrong card.
                 with _device_guard(flat):
                     xq, x_sf = torch.ops.unsloth_nvfp4.quantize(flat, self.a_gsf)
                     out = torch.ops.unsloth_nvfp4.mm(
@@ -169,8 +167,7 @@ def nvfp4_linear_from_torchao(
     *,
     backend: str = DEFAULT_MM_BACKEND,
 ):
-    """Re-express one torchao NVFP4 ``nn.Linear`` as an ``NVFP4FlashInferLinear``, never a
-    requantization: every byte is the checkpoint's."""
+    """Re-express one torchao NVFP4 ``nn.Linear`` as an ``NVFP4FlashInferLinear``, never a requantization: every byte is the checkpoint's."""
     import torch
 
     register_ops()
@@ -247,8 +244,7 @@ def convert_nvfp4_backend(
     *,
     logger: Any = None,
 ) -> int:
-    """Move every NVFP4 Linear in ``transformer`` onto the FlashInfer path. Returns how many. All
-    or nothing: a missing baked scale anywhere leaves the whole tree untouched on torchao."""
+    """Move every NVFP4 Linear in ``transformer`` onto the FlashInfer path, returning how many. All or nothing: a missing baked scale anywhere leaves the whole tree on torchao."""
     if backend != BACKEND_FLASHINFER:
         return 0
     scales = _baked_activation_scales(metadata)
@@ -279,7 +275,7 @@ def convert_nvfp4_backend(
         return 0
 
     register_ops()
-    # Build every replacement BEFORE swapping any child in: all or nothing, as the docstring promises.
+    # Build every replacement BEFORE swapping any child in: all or nothing.
     replacements = []
     for name, module in candidates:
         try:
@@ -305,9 +301,9 @@ def nvfp4_prewarm(
     *,
     logger: Any = None,
 ) -> int:
-    """Autotune every converted layer at the given token counts. Returns shapes tuned. Must run
-    before any capture, which would otherwise bake in ``mm_fp4``'s default tactic, and it suspends
-    the per-step precision lever so the pass tunes the FP4 kernel rather than a bf16 forward."""
+    """Autotune every converted layer at the given token counts, returning shapes tuned. Must run before
+    any capture, which would bake in ``mm_fp4``'s default tactic, and it suspends the per-step
+    precision lever so the pass tunes the FP4 kernel rather than a bf16 forward."""
     import torch
 
     try:
@@ -359,8 +355,7 @@ def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
 
 
 def _iter_linears(transformer: Any):
-    """Every leaf that looks like a Linear, keyed on the feature counts: a converted layer has no
-    ``weight``."""
+    """Every leaf that looks like a Linear, keyed on the feature counts: a converted layer has no ``weight``."""
     for name, module in transformer.named_modules():
         if not name:
             continue

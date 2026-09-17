@@ -3,11 +3,10 @@
 
 """Per-layer NVFP4 policies for the image DiTs.
 
-A policy quantises a small, named set of layers to 4 bits and leaves the rest at fp8: a memory
-lever at fp8-parity quality, not a speed win, which is why nvfp4 sits BELOW fp8 in the image auto
-order. Everything FAILS CLOSED: layers are named by exact dotted SUFFIX (never substring) and
-every rule asserts a count, so a diffusers rename raises at build time instead of shipping
-precisions nobody measured.
+A policy puts a small, named set of layers at 4 bits and leaves the rest at fp8: a memory lever at
+fp8-parity quality, not a speed win, which is why nvfp4 sits BELOW fp8 in the image auto order.
+Everything FAILS CLOSED: layers are named by exact dotted SUFFIX and every rule asserts a count, so
+a diffusers rename raises at build time instead of shipping unmeasured per-layer precisions.
 """
 
 from __future__ import annotations
@@ -16,25 +15,23 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
-# Spelled out rather than imported, so reading the tables costs no import.
+# Spelled out rather than imported so reading the tables costs no import.
 PRECISION_NVFP4 = "nvfp4"
 PRECISION_FP8 = "fp8"
 PRECISION_BF16 = "bf16"
 
-# The kind describes the block's SHAPE, so it versions separately from the policy ids.
+# The kind describes the SHAPE of the block, so it is versioned separately from the policy ids.
 NVFP4_POLICY_KEY = "nvfp4_policy"
 NVFP4_POLICY_KIND = "unsloth_nvfp4_layer_policy_v1"
 
 
 class PolicyMismatch(ValueError):
-    """The model this policy was applied to is not the model it was written for. Raised, never
-    warned: a rule selecting a different number of layers is a different model."""
+    """The model this policy was applied to is not the one it was written for. Raised, never warned: a rule selecting a different number of layers is a different model."""
 
 
 @dataclass(frozen = True)
 class Rule:
-    """``suffix`` -> ``precision`` for matching layers. ``expect`` is asserted at assignment time;
-    ``prefix`` narrows the rule to one subtree."""
+    """``suffix`` -> ``precision``. ``expect`` is asserted at assignment time; ``prefix`` narrows the rule to one subtree."""
 
     suffix: str
     precision: str
@@ -42,8 +39,7 @@ class Rule:
     prefix: str = ""
 
     def matches(self, fqn: str) -> bool:
-        """Exact dotted-suffix match, never a substring one: ``norm.linear`` selects neither
-        ``norm1.linear`` nor ``norm_out.linear``."""
+        """Exact dotted-suffix match: ``norm.linear`` selects neither ``norm1.linear`` nor ``norm_out.linear``."""
         if self.prefix and not fqn.startswith(self.prefix):
             return False
         return fqn == self.suffix or fqn.endswith("." + self.suffix)
@@ -52,9 +48,8 @@ class Rule:
 @dataclass(frozen = True)
 class Admit:
     """A linear the shared filter rejects that this policy quantises anyway. ``shape`` is asserted
-    exactly, since the floor is overridden for one measured layer; dropping the floor would admit
-    ``t_embedder.mlp.*``, which must stay bf16 (``TimestepEmbedder.forward`` reads
-    ``mlp[0].weight.dtype``)."""
+    exactly because the floor is overridden for one measured layer; dropping the floor instead would
+    admit ``t_embedder.mlp.*``, which must stay bf16 (``TimestepEmbedder.forward`` reads its dtype)."""
 
     suffix: str
     shape: tuple
@@ -66,8 +61,7 @@ class Admit:
 
 @dataclass(frozen = True)
 class NVFP4Policy:
-    """One measured per-layer precision assignment, keyed on lowercased ``base_repos``: a sibling
-    checkpoint is a different set of weights whose gate has not run."""
+    """One measured per-layer precision assignment, keyed on lowercased ``base_repos``: a sibling checkpoint is a different set of weights whose gate has not run."""
 
     policy_id: str
     version: int
@@ -134,17 +128,16 @@ def policy_by_id(policy_id: Any) -> Optional[NVFP4Policy]:
 
 
 def policy_expected_counts(policy: NVFP4Policy) -> dict:
-    """``policy.expected_counts`` as a ``Counter`` comparison sees it: zero entries dropped, since
-    a Counter never records a precision no layer took."""
+    """``policy.expected_counts`` as a ``Counter`` comparison sees it: zero entries dropped, since a Counter never records a precision no layer took."""
     return {
         str(key): int(value) for key, value in dict(policy.expected_counts).items() if int(value)
     }
 
 
 def resolve_policy(family: Any, base_repo: Any = None) -> Optional[NVFP4Policy]:
-    """The policy for ``(family, base_repo)``, or None. Keyed on the BASE, and an unnamed base
-    answers None even where the family has one policy today: otherwise the day a second base is
-    gated every anonymous load picks up the first one's precisions."""
+    """The policy for ``(family, base_repo)``, or None. Keyed on the BASE, and an unnamed base answers
+    None even where the family has one policy today: otherwise the day a second base is gated, every
+    anonymous load picks up the first one's precisions."""
     fam = str(family or "").strip().lower()
     if not fam:
         return None
@@ -167,8 +160,7 @@ def assign_precisions(
     min_features: Optional[int] = None,
     require_divisible: Optional[int] = None,
 ) -> dict:
-    """``{fqn: precision}`` for EVERY Linear in ``transformer``, or raise ``PolicyMismatch``. Rules
-    apply in order, first claim wins, and four count assertions turn a rename into a failure."""
+    """``{fqn: precision}`` for EVERY Linear in ``transformer``, or raise ``PolicyMismatch``. Rules apply in order, first claim wins, and four count assertions turn a rename into a failure."""
     import torch
 
     from .diffusion_transformer_quant import (
@@ -243,9 +235,7 @@ def policy_metadata(
     activation_scales_baked: bool = False,
     gptq: bool = False,
 ) -> dict:
-    """The metadata fragment an offline builder merges in after applying ``policy``. Sorted, so two
-    builds diff byte for byte, and the fqn list is recorded rather than re-derived from a rule that
-    may have drifted since."""
+    """The metadata fragment an offline builder merges in after applying ``policy``. Sorted, so two builds diff byte for byte, and the fqn list is recorded rather than re-derived from a drifted rule."""
     counts = Counter(assignment.values())
     return {
         NVFP4_POLICY_KEY: {
@@ -264,14 +254,12 @@ def policy_metadata(
 
 
 def declares_policy(metadata: Any) -> bool:
-    """True when ``metadata`` claims a per-layer policy was applied. Keyed on the KEY, not on the
-    block being readable: an unreadable block must refuse, not read as "no policy"."""
+    """True when ``metadata`` claims a per-layer policy was applied. Keyed on the KEY, not on the block being readable: an unreadable block must refuse, not read as "no policy"."""
     return isinstance(metadata, dict) and metadata.get(NVFP4_POLICY_KEY) not in (None, "")
 
 
 def policy_metadata_error(metadata: Any) -> Optional[str]:
-    """Why ``metadata``'s declared policy is unusable, or None. Torch-free, and checks the CONTRACT
-    only; agreement with the resolved policy is the validator's question."""
+    """Why ``metadata``'s declared policy is unusable, or None. Torch-free, and checks the CONTRACT only; agreement with the resolved policy is the validator's question."""
     if not declares_policy(metadata):
         return None
     block = metadata.get(NVFP4_POLICY_KEY)
@@ -309,7 +297,7 @@ def policy_metadata_error(metadata: Any) -> Optional[str]:
     return None
 
 
-# By class NAME: torchao re-exports these under several paths that move between releases, and the name keeps this module torch-lazy.
+# By class NAME: torchao re-exports these under several module paths, and the name keeps this module torch-lazy.
 _EXPECTED_WEIGHT_CLASS = {
     PRECISION_NVFP4: "NVFP4Tensor",
     PRECISION_FP8: "Float8Tensor",
@@ -318,8 +306,7 @@ _EXPECTED_WEIGHT_CLASS = {
 
 
 def _verify_weight_types(transformer: Any, assignment: Mapping) -> None:
-    """Raise unless every assigned layer holds the weight class its precision implies: a torchao
-    that silently skipped a layer would otherwise leave it dense with nothing in the logs."""
+    """Raise unless every assigned layer holds the weight class its precision implies: a torchao that silently skipped one would leave it dense with nothing in the logs."""
     wrong: list = []
     for fqn, module in transformer.named_modules():
         precision = assignment.get(fqn)
@@ -346,10 +333,9 @@ def quantize_with_policy(
     fast_accum: Optional[bool] = None,
     logger: Any = None,
 ) -> dict:
-    """Apply ``policy`` to ``transformer`` in place; returns the assignment applied. Two
-    ``quantize_`` passes over disjoint fqn sets, NVFP4 first: after pass 1 those layers hold no
-    plain ``nn.Parameter``, so pass 2 requires one and nothing is quantised twice. A raise leaves
-    the module partly quantised, so discard it."""
+    """Apply ``policy`` to ``transformer`` in place, returning the assignment. Two ``quantize_`` passes
+    over disjoint fqn sets, NVFP4 first: after pass 1 those layers hold no plain ``nn.Parameter``, so
+    pass 2 requires one and nothing is quantised twice. A raise leaves a partly quantised module."""
     import torch
     from torchao.quantization import quantize_
 
@@ -365,7 +351,7 @@ def quantize_with_policy(
     def fp8_filter(module: Any, fqn: str = "") -> bool:
         if fqn not in fp8_fqns:
             return False
-        # Belt and braces on the disjointness: a quantised weight is no longer a plain Parameter.
+        # Belt and braces: a quantised weight is no longer a plain Parameter.
         weight = getattr(module, "weight", None)
         return type(weight) is torch.nn.Parameter and weight.dtype == torch.bfloat16
 

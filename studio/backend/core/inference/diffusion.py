@@ -119,6 +119,7 @@ from .diffusion_speed import (
     resolve_speed_mode,
     restore_backend_flags,
     snapshot_backend_flags,
+    vae_decode_compile_allowed,
 )
 from .diffusion_attention import (
     apply_attention_backend,
@@ -1074,9 +1075,9 @@ def _planned_quant_scheme(
     base_repo: Optional[str],
     prequant_path: Optional[str],
 ) -> Optional[str]:
-    """The scheme the load will resolve, asked with the base and the hosted-checkpoint probe that
-    gate the auto rungs: leave either out and the plan and the load pick different schemes, which
-    fetches a second denoiser inline past the plan's progress, disk and cancel staging."""
+    """The scheme the load will resolve, asked with the base and the hosted-checkpoint probe that gate
+    the auto rungs: a planner leaving either out plans one scheme while the load takes another,
+    fetching a second denoiser inline past the plan's progress, disk and cancel staging."""
     return select_transformer_quant_scheme(
         target,
         requested,
@@ -4286,7 +4287,7 @@ class DiffusionBackend:
                                 f"the quantised transformer build failed ({exc})"
                             )
                             _clear_exception_frames(exc)
-                            # The NVFP4 caches hold VIEWS of the failed transformer, which clear_gpu_cache() cannot free.
+                            # The NVFP4 cache holds views of the failed transformer that clear_gpu_cache() cannot free.
                             try:
                                 from .diffusion_nvfp4_linear import reset_nvfp4_state
                                 reset_nvfp4_state()
@@ -4641,6 +4642,8 @@ class DiffusionBackend:
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
                                 else "default",
+                                # The decode compiles lazily, so its artifacts reach the bundle only via a key that moves with the decision.
+                                "vae_decode": vae_decode_compile_allowed(pipe),
                             },
                             logger = logger,
                         )
@@ -4888,7 +4891,7 @@ class DiffusionBackend:
                         compile_cache.restore(compile_ctx)
                         gguf_compile.uninstall_all()  # idempotent
                         cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
-                        # After the graphs: the NVFP4 caches hold views that would pin the aborted transformer.
+                        # After the graphs, as in _unload_locked: NVFP4 caches hold views pinning the aborted transformer.
                         try:
                             from .diffusion_nvfp4_linear import reset_nvfp4_state
                             reset_nvfp4_state()
@@ -5007,7 +5010,7 @@ class DiffusionBackend:
                 check_cancelled()
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
-                        # Autotune off the request path: only M = 1 shapes are knowable here, the rest tune in ``GraphedForward``'s warm-up, before any capture.
+                        # Autotune off the request path. Only the M = 1 modulation shapes are knowable here; resolution-dependent ones are tuned in ``GraphedForward``'s pre-capture warm-up.
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
                     pipe = self._assemble_pipe(
@@ -5955,6 +5958,7 @@ class DiffusionBackend:
                     and state.offload_policy == OFFLOAD_NONE,
                     "dynamic": True,
                     "mode": "default",
+                    "vae_decode": vae_decode_compile_allowed(state.pipe),
                 },
                 logger = logger,
             )
@@ -6352,7 +6356,7 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
-                # EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`, and a negative protect index must land on a step the loop reaches.
+                # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`, and a negative protect index must land on a step the loop reaches.
                 strength_applied = effective_request_strength(
                     strength,
                     init_pil is not None,
@@ -6420,7 +6424,7 @@ class DiffusionBackend:
                     # __call__, so a raised call leaves a residual the next forward trips over.
                     if state.transformer_cache:
                         self._reset_step_cache(state.pipe)
-                    # Armed per CHUNK, not per generate: a split batch restarts at step 0. Counts scheduler.step, which a step cache does not skip.
+                    # Armed per CHUNK: a split batch runs one denoise loop each, restarting at step 0. Counts scheduler.step, which a step cache does not skip.
                     protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                     try:
                         # inference_mode is faster than no_grad and numerically identical here.
@@ -6731,7 +6735,6 @@ class DiffusionBackend:
             "device": state.device,
             "dtype": state.dtype,
             "model_kind": state.kind,
-            "gguf_filename": state.gguf_filename,
             "gguf_variant": (
                 extract_quant_token(state.gguf_filename)
                 if state.kind == "gguf" and state.gguf_filename
@@ -6771,9 +6774,9 @@ class DiffusionBackend:
 
 
 def _transformer_quant_backend(state: Any) -> Optional[str]:
-    """Which NVFP4 kernel path the loaded denoiser is actually running, or None. Read from the
-    MODULE TREE, not from what the load intended: the same 'nvfp4' scheme lands on either backend
-    depending on the device and the artifact. Never raises."""
+    """Which NVFP4 kernel path the loaded denoiser is actually running, or None. Read from the MODULE
+    TREE, not from what the load intended: the same 'nvfp4' scheme lands on either backend depending
+    on the device and the artifact. Never raises."""
     if getattr(state, "transformer_quant", None) != TQ_NVFP4:
         return None
     try:

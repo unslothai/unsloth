@@ -37,7 +37,7 @@ _QUANT_STEADY_FACTOR: dict[str, float] = {
     "nvfp4": 0.33,
 }
 
-# A policy artifact is mostly fp8 by weight, so it sizes near the fp8 factor; at 0.33 the planner keeps a model resident that does not fit. Keyed on the POLICY id, since retuning the layer set changes the number.
+# A policy artifact is mostly fp8 by weight, so 0.33 would under-size it and the planner would keep a model resident that does not fit. Keyed on the POLICY id: retuning the layer set changes the number.
 _POLICY_STEADY_FACTOR: dict[str, float] = {
     "zimg_f8mod_toq34_v1": 0.52,
     "flux_mod_single_v1": 0.53,
@@ -46,8 +46,7 @@ _POLICY_STEADY_FACTOR: dict[str, float] = {
 
 
 def policy_steady_factor(family: Any, base_repo: Optional[str] = None) -> Optional[float]:
-    """The steady factor of the NVFP4 POLICY for ``(family, base_repo)``, or None to keep the
-    whole-model factor. Never raises: a sizing estimate must not sink a load."""
+    """The steady factor of the NVFP4 POLICY that resolves for ``(family, base_repo)``, or None to keep the whole-model factor. Never raises: a sizing estimate must not sink a load."""
     try:
         from .diffusion_nvfp4_policy import resolve_policy
         policy = resolve_policy(getattr(family, "name", family), base_repo)
@@ -292,8 +291,7 @@ def _hf_cache_free_mib() -> Optional[int]:
 def _has_usable_prequant(
     fam: Any, scheme: str, prequant_path: Optional[str], base_repo: Optional[str]
 ) -> bool:
-    """Whether a hosted or operator-supplied prequant checkpoint for ``scheme`` is usable here.
-    False on any failure: "cannot tell" is not "yes"."""
+    """Whether a hosted (or operator-supplied) prequant checkpoint for ``scheme`` is usable here. False on any failure: "cannot tell" is not "yes"."""
     try:
         from .diffusion_prequant import usable_prequant_source
         return (
@@ -333,7 +331,7 @@ def resolve_dense_quant_candidate(
         requested,
         family = getattr(fam, "name", None),
         base_repo = base_repo,
-        # usable_, not resolve_: a path override counts only when the loader would accept it.
+        # usable_ (not resolve_): a path override counts only when the loader would accept it.
         has_prequant = lambda candidate: _has_usable_prequant(
             fam, candidate, prequant_path, base_repo
         ),

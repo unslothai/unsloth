@@ -29,7 +29,7 @@ _AVAILABLE: Optional[tuple] = None
 _VERIFIED: dict[int, tuple] = {}
 _QUANT_FN: dict[int, tuple] = {}
 _GEMM_PLAN: dict = {}
-# id(weight) -> (weakref to the weight, (data_ptr, shape), transposed view).
+# id(weight) -> (weakref to the weight, (data_ptr, shape), the kept transposed view).
 _TRANSPOSED: dict = {}
 
 
@@ -80,7 +80,7 @@ def available() -> tuple:
 
 
 def enabled(device: Any) -> bool:
-    """False until ``verify(device)`` passed."""
+    """Whether the fast path may be used on ``device``: false until ``verify(device)`` passed."""
     from .diffusion_nvfp4_ops import _device_index
 
     record = _VERIFIED.get(_device_index(device))
@@ -155,7 +155,7 @@ def _run_verify(device: Any) -> tuple:
             torch.cuda.synchronize(device)
             if not torch.equal(want, got):
                 return False, "the cached GEMM is not bit-identical to mm_fp4"
-    except Exception as exc:  # noqa: BLE001 - a raise is a failed verify
+    except Exception as exc:  # noqa: BLE001 - a verify that raises is a verify that failed
         return False, f"{type(exc).__name__}: {str(exc)[:160]}"
     return True, "verified bit-identical against the public API"
 
@@ -168,7 +168,7 @@ def quant_fn(device: Any, *, force: bool = False):
     """The bound pybind quantiser and its ``enable_pdl`` flag for ``device``, or None."""
     from .diffusion_nvfp4_ops import _device_index
 
-    # Gate before the cache read: verify() forces this entry BEFORE it knows it is bit-identical.
+    # Gate before the cache read: verify() builds this entry with force BEFORE it knows the quantiser is bit-identical.
     if not (force or enabled(device)):
         return None
     index = _device_index(device)
@@ -177,7 +177,7 @@ def quant_fn(device: Any, *, force: bool = False):
         return got
     try:
         return _build_quant_fn(device, index)
-    except Exception:  # noqa: BLE001 - no quantiser means the public API
+    except Exception:  # noqa: BLE001 - a quantiser that will not bind means the public API
         return None
 
 
@@ -210,23 +210,22 @@ def _fast_quantize(
     if got is None:
         return None, None
     fn, pdl = got
-    # Exactly what nvfp4_quantize(do_shuffle = False, sfLayout = 128x4) passes through.
+    # Exactly the arguments nvfp4_quantize(do_shuffle = False, sfLayout = 128x4) passes through.
     xq, sf = fn(x, global_sf, 16, False, True, False, pdl)
     return xq, sf.reshape((-1, x.shape[-1] // 16))
 
 
 def _drop_transposed(key: int, ref: Any) -> None:
-    """Weakref callback, lock-free: a collection can land on a thread already holding the lock, and
-    each step is one atomic dict op."""
+    """Weakref callback: forget the collected weight's entry. No lock, since a collection can land on a thread already holding it; each step is one atomic dict op."""
     entry = _TRANSPOSED.get(key)
     if entry is not None and entry[0] is ref:
         _TRANSPOSED.pop(key, None)
 
 
 def transposed(t: Any):
-    """A kept ``.T`` released with the weight itself: keyed on the weight object (revalidated
-    against data_ptr and shape), over ``t.detach()`` since ``t.T`` would keep ``t`` alive through
-    ``_base`` and the weakref would never fire."""
+    """A kept ``.T`` of a weight buffer, released with the weight: keyed on the weight object
+    (revalidated against data_ptr and shape) and holding a view of ``t.detach()``, since ``t.T``
+    would keep ``t`` alive through ``_base`` and the weakref would never fire."""
     key = id(t)
     stamp = (t.data_ptr(), tuple(t.shape))
     entry = _TRANSPOSED.get(key)
@@ -256,8 +255,7 @@ def gemm_plan(
     *,
     force: bool = False,
 ):
-    """``(runner, tactic, workspace)``, or None (use ``mm_fp4``), including for a COLD key under
-    capture, where ``choose_one`` may profile and bake tactics into the graph."""
+    """``(runner, tactic, workspace)``, or None (use ``mm_fp4``), including for a COLD key under capture, where ``choose_one`` may profile and bake tactics into the graph."""
     from .diffusion_nvfp4_ops import _device_index, _is_capturing
 
     device = xq.device
@@ -269,7 +267,7 @@ def gemm_plan(
         return None
     try:
         return _build_plan(key, device, [xq, wq_t, x_sf, w_sf_t, alpha, out])
-    except Exception:  # noqa: BLE001 - no plan means the public API
+    except Exception:  # noqa: BLE001 - a plan that will not build means the public API
         return None
 
 
@@ -313,7 +311,7 @@ def reset() -> None:
 
 
 def describe() -> dict:
-    """What the caches hold right now, for the preflight record and for tests."""
+    """What the caches hold right now. For the preflight record and for tests."""
     return {
         "available": available()[0],
         "reason": available()[1],

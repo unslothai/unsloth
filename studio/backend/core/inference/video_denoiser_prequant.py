@@ -6,20 +6,19 @@
 The dual-expert MoE's second denoiser is addressed through the ``task`` slot of
 ``prequant_filenames``, which deliberately gets no filename fallback: falling back would load
 expert 1 as expert 2 and pass every check on the way. Seeding is ALL-OR-NOTHING across experts.
-Torch-free at import, so planning can ask what would be seeded without paying for diffusers.
+Torch-free at import so planning code can ask what would be seeded without paying for diffusers.
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-# Filename key, not a workflow: the pipeline attribute and the task string are the same word, so a family row reads as "this is transformer_2's artifact".
+# Filename key, not a workflow: pipeline attribute and task string are the same word, so a family row reads as "transformer_2's artifact".
 MOE_SECOND_DENOISER = "transformer_2"
 
 
 def denoiser_components(fam: Any) -> tuple[str, ...]:
-    """The pipeline attribute name(s) this family's denoiser(s) live under. Registry-only, unlike
-    ``video._transformer_names``, which reads a BUILT pipe."""
+    """The pipeline attribute name(s) this family's denoiser(s) live under. Registry-only, unlike ``video._transformer_names`` which reads a BUILT pipe."""
     if getattr(fam, "is_moe", False):
         return ("transformer", MOE_SECOND_DENOISER)
     return ("transformer",)
@@ -28,11 +27,8 @@ def denoiser_components(fam: Any) -> tuple[str, ...]:
 def denoiser_prequant_sources(
     fam: Any, scheme: Optional[str], base_repo: Optional[str]
 ) -> Optional[dict[str, Any]]:
-    """``{component: PrequantSource}`` for EVERY denoiser this family has, or None.
-
-    None rather than a partial dict when any component is unresolved: a dict missing one expert
-    reads as "some coverage" at every caller. Never raises: it runs on the planning path.
-    """
+    """``{component: PrequantSource}`` for EVERY denoiser this family has, or None rather than a partial
+    dict: one missing expert reads as "some coverage" at every caller. Pure, never raises."""
     wanted = (scheme or "").strip().lower()
     if wanted in ("", "auto", "off", "none"):
         return None
@@ -44,7 +40,7 @@ def denoiser_prequant_sources(
         for component in denoiser_components(fam):
             task = None if component == "transformer" else component
             if task is not None and not video_family_prequant_task_specific(fam, wanted, task):
-                # Without a row of its own, ``task`` resolves the first expert's file, which loads cleanly and denoises the second half of the schedule with the wrong weights.
+                # Without a row of its own, ``task`` resolves the first expert's file: a clean load that denoises the second half of the schedule with the wrong weights.
                 return None
             sources[component] = resolve_prequant_source(
                 fam,
@@ -72,11 +68,9 @@ def denoiser_prequant_pipe_kwargs(
     cache_dir: Optional[str] = None,
     logger: Any = None,
 ) -> dict[str, Any]:
-    """Component overrides for pipeline assembly, or ``{}`` when the model cannot be seeded whole.
-
-    ``{}`` is not a failure: assembly builds the dense bf16 DiT and the caller's runtime
-    ``quantize_transformer`` rewrites it in place, so an artifact-sized memory plan has to be
-    rebuilt at bf16 when this returns empty."""
+    """Component overrides for pipeline assembly, or ``{}`` when the model cannot be seeded whole. ``{}``
+    is not a failure: assembly builds the dense bf16 DiT and runtime ``quantize_transformer``
+    rewrites it, so an artifact-sized memory plan must be rebuilt at bf16 when this returns empty."""
     try:
         import gc
 
@@ -114,7 +108,7 @@ def denoiser_prequant_pipe_kwargs(
                 hf_token = hf_token,
                 scheme = scheme,
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
-                # Which expert this is, on both sides: the two are indistinguishable once loaded, so the stamp turns a mis-addressed artifact into a refusal rather than a wrong picture.
+                # Which expert this is, on both sides: they are indistinguishable once loaded, so the stamp turns a mis-addressed artifact into a refusal rather than a wrong picture.
                 config_subfolder = component,
                 component = component,
                 cache_dir = cache_dir,
@@ -122,7 +116,7 @@ def denoiser_prequant_pipe_kwargs(
                 logger = logger,
             )
             if module is None:
-                # ALL or none: a seeded half beside an unmeasured dense-quantised half. Drop what loaded so the host memory goes back before the dense build starts.
+                # ALL or none: a seeded half plus an unmeasured dense-quantised half. Drop what was loaded so the host memory goes back before the dense build.
                 seeded.clear()
                 gc.collect()
                 if logger is not None:
@@ -135,7 +129,7 @@ def denoiser_prequant_pipe_kwargs(
                     )
                 return {}
             seeded[component] = module
-            # The pickle is ~7 GB per A14B expert, so collect now and the two never coexist.
+            # The pickle is ~7 GB per A14B expert; collect now so two never coexist.
             gc.collect()
         if logger is not None:
             logger.info(

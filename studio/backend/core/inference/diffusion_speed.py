@@ -22,21 +22,27 @@ this). On opt-in it applies the near-lossless speedups in the diffusers-recommen
             the Q4 noise floor) plus TF32 matmul and fused QKV.
 
 ``default`` is the cheap always-amortising compile; ``max`` pays the larger regional tax for the
-bigger warm speedup. The compiled dequant is skipped under ``max`` (the regional compile subsumes
-it; a separate compiled dequant would break that graph). ``supports_torch_compile`` + bf16/CUDA
-checks gate regional compile.
+bigger warm speedup. The compiled dequant is skipped under ``max``, which subsumes it.
 
-NVFP4 flashinfer kernel switches live with their own modules, listed here because this is where an
-operator looks for a speed knob. All are safe to leave unset.
+  ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1``  whether a compiled load also compiles the VAE decode.
+                                        ``auto`` (default) covers U-Nets plus ``_VAE_COMPILE_ALLOW``
+                                        minus ``_VAE_COMPILE_DENY``; ``0`` is U-Net only, ``1`` forces it.
 
-  ``UNSLOTH_NVFP4_FAST_BIAS=auto|0|1`` the Triton bias pass over the FP4 GEMM's output, eager only,
-    bit-identical to ``add_`` and 1.6x to 3.7x faster; ``0`` restores ``add_``.
-  ``UNSLOTH_NVFP4_FAST_DISPATCH=auto|0|1`` cache FlashInfer's per-call dispatch state, 61.8 -> 18.1
-    us of host time per call, bit-identical. Off unless the installed flashinfer is on the exact
-    allowlist AND a runtime bit-identity check passes; ``1`` skips the version check, never the check.
-  ``UNSLOTH_NVFP4_ZERO_BUFFER=1`` the full M x N memset in place of the 1-element PDL ordering
-    barrier. Strictly slower, +3.9 to +97 us per GEMM.
-  ``UNSLOTH_NVFP4_BACKEND=auto|torchao|flashinfer`` which NVFP4 kernels to run at all.
+Kernel-level switches for the NVFP4 flashinfer backend live with their own modules and are listed
+here because this is where an operator looks for a speed knob. All are safe to leave unset.
+
+  ``UNSLOTH_NVFP4_FAST_BIAS=auto|0|1``  the Triton bias pass over the FP4 GEMM's output, eager path
+                                        only, bit-identical to ``add_`` and 1.6x to 3.7x faster
+                                        (``diffusion_nvfp4_bias.py``). ``0`` restores ``add_``.
+  ``UNSLOTH_NVFP4_FAST_DISPATCH=auto|0|1``  cache FlashInfer's per-call dispatch state instead of
+                                        rebuilding it every GEMM: 61.8 -> 18.1 us of host time per
+                                        call, bit-identical (``diffusion_nvfp4_dispatch.py``). Needs
+                                        the exact flashinfer allowlist AND a runtime bit-identity
+                                        check; ``1`` skips the version check only, never the check.
+  ``UNSLOTH_NVFP4_ZERO_BUFFER=1``       restores the full M x N memset in place of the 1-element PDL
+                                        ordering barrier. Strictly slower, +3.9 to +97 us per GEMM
+                                        (``diffusion_nvfp4_ops.py``).
+  ``UNSLOTH_NVFP4_BACKEND=auto|torchao|flashinfer``  which NVFP4 kernels to run at all.
 
 The flags this flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so ``snapshot_backend_flags`` /
 ``restore_backend_flags`` let the caller restore prior values at unload, keeping a later ``off``
@@ -323,10 +329,10 @@ def apply_speed_optims(
             offload_active = offload_active,
         )
 
-    # A compiled U-Net family also compiles the VAE decode (4.98 to 4.25 s over 4 images, LPIPS unchanged). DiTs skip
-    # it. dynamic=True keeps it resolution-robust.
-    if applied["compiled"] and _denoiser_unet(pipe) is not None:
-        applied["compiled_vae_decode"] = _compile_vae_decode(pipe, logger)
+    if applied["compiled"] and _vae_decode_compile_allowed(pipe):
+        applied["compiled_vae_decode"] = _compile_vae_decode(
+            pipe, logger, max_autotune = mode == SPEED_MAX
+        )
 
     if mode == SPEED_MAX:
         if on_cuda:
@@ -393,12 +399,10 @@ def _denoiser_unet(pipe: Any) -> Any:
 
 
 def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
-    """Whether this load's compiled artifacts are per-(width, height, batch).
-
-    ``max`` compiles regional blocks dynamic=False and U-Net whole-module is always static;
-    ``default`` DiT compiles dynamic=True (one artifact across shapes) EXCEPT a stream-merging DiT,
-    static there too (see ``_STREAM_MERGING_BLOCKS``). The compile-cache layer keys on this to
-    re-save its bundle when a session hits an uncovered shape."""
+    """Whether this load's compiled artifacts are per-(width, height, batch). ``max`` compiles regional
+    blocks dynamic=False and U-Net whole-module is always static; ``default`` DiT compiles
+    dynamic=True EXCEPT for a stream-merging DiT. The compile-cache layer keys on this to re-save its
+    bundle when a session hits an uncovered shape."""
     mode = normalize_speed_mode(speed_mode)
     if mode == SPEED_MAX:
         return True
@@ -422,11 +426,11 @@ def _denoiser_dits(pipe: Any) -> list:
     return dits
 
 
-# Repeated blocks MEASURED to raise inductor's CantSplit under dynamic = True: merging the text and image streams gives two dynamic symbols and Mod never cancels an Add over an Add. ``dynamic = False`` is the only escape (mark_static is overridden, ``dynamic = None`` crashes on the second shape).
+# Repeated blocks MEASURED to make inductor raise CantSplit under dynamic = True: merging the text and image streams gives two dynamic symbols and inductor's Mod never cancels an Add over an Add. ``dynamic = False`` is the only escape (mark_static is overridden, ``dynamic = None`` crashes on the second shape).
 # Stream merging is necessary but NOT sufficient, so nothing joins this set on code reading alone.
 _STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({"FluxSingleTransformerBlock"})
 
-# The same cat matched on source. OFF by default since it over-flags: an escape hatch for a new family that crashes before its class is named above.
+# The same cat matched on source. OFF by default because it over-flags: an escape hatch for a new family that crashes before its class is named above.
 _STREAM_MERGE_DETECT_ENV = "UNSLOTH_STATIC_STREAM_MERGE_DETECT"
 _STREAM_MERGE_SOURCE = re.compile(
     r"torch\.cat\(\s*\[\s*(?:encoder_hidden_states\s*,\s*hidden_states"
@@ -436,8 +440,7 @@ _STREAM_MERGE_SOURCE = re.compile(
 
 @lru_cache(maxsize = None)
 def _class_merges_streams(cls: type, broad: bool = False) -> bool:
-    """Whether one repeated-block CLASS is known to need a static compile. ``broad`` is an argument,
-    not an env read in the body, so the memo cannot outlive it."""
+    """Whether one repeated-block CLASS is known to need a static compile. ``broad`` is an argument rather than an env read inside the body, so the memo cannot outlive it."""
     if cls.__name__ in _STREAM_MERGING_BLOCKS:
         return True
     if not broad:
@@ -451,8 +454,7 @@ def _class_merges_streams(cls: type, broad: bool = False) -> bool:
 
 
 def _dits_merge_streams(dits: list) -> bool:
-    """Whether ANY denoiser DiT's repeated blocks merge the streams, forcing a static regional
-    compile. One check per distinct block class, not per instance."""
+    """Whether ANY denoiser DiT's repeated blocks merge the streams, forcing a static regional compile. One check per distinct block class, not per instance."""
     broad = os.environ.get(_STREAM_MERGE_DETECT_ENV) == "1"
     seen: set[type] = set()
     for transformer in dits:
@@ -558,16 +560,61 @@ def _compile_repeated_blocks(
     return engaged
 
 
-def _compile_vae_decode(pipe: Any, logger: Any) -> bool:
-    """torch.compile the VAE ``decode`` bound method in place (U-Net families; caller gates).
-    Instance-level assignment: the pipe owns it and the module object is untouched."""
+COMPILE_VAE_ENV = "UNSLOTH_DIFFUSION_COMPILE_VAE"
+
+_VAE_TRUE_TOKENS = ("1", "true", "yes", "on")
+_VAE_FALSE_TOKENS = ("0", "false", "no", "off")
+
+# Not a correctness list: both decode fine compiled, they just measured SLOWER than eager. AutoencoderKLWan's decode
+# is a Python loop over tiles x latent frames with a mutated feat_cache, so compile trims 572k launches to 493k
+# without fusing it: a 1280x704x121 clip on a B200 goes 35.76 -> 37.41 s p50 for a 193 s cold compile, at max-abs
+# 0.0099 / LPIPS 8.1e-05 against its own eager decode.
+_VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
+
+# ``auto`` compiles only these: the video backend runs apply_speed_optims for every video DiT view, unmeasured.
+_VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
+
+
+def vae_decode_compile_allowed(pipe: Any) -> bool:
+    """Public form for the compile-cache key: a bundle saved without the VAE decode artifacts must not read as a hit once this pipe compiles it, or the decode recompiles on every load."""
+    return _vae_decode_compile_allowed(pipe)
+
+
+def _vae_decode_compile_allowed(pipe: Any) -> bool:
+    """Whether the VAE decode compile covers this pipe; U-Nets always do and ignore the env."""
+    if _denoiser_unet(pipe) is not None:
+        return True
+    raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
+    if raw in _VAE_FALSE_TOKENS:
+        return False
+    if raw in _VAE_TRUE_TOKENS:
+        return True
+    name = type(getattr(pipe, "vae", None)).__name__
+    return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
+
+
+def _compile_vae_decode(
+    pipe: Any,
+    logger: Any,
+    max_autotune: bool = False,
+) -> bool:
+    """torch.compile the VAE ``decode`` bound method in place; caller gates the family. No cudagraphs
+    under ``max_autotune``: the decode runs once per image and capture would pin its activations."""
     vae = getattr(pipe, "vae", None)
     decode = getattr(vae, "decode", None) if vae is not None else None
     if not callable(decode):
         return False
+    # A dual-DiT family calls apply_speed_optims twice over the same pipe.
+    if getattr(vae, "_unsloth_compiled_decode", False):
+        return True
     try:
         import torch
-        vae.decode = torch.compile(decode, fullgraph = False, dynamic = True)
+
+        kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
+        if max_autotune:
+            kwargs["mode"] = "max-autotune-no-cudagraphs"
+        vae.decode = torch.compile(decode, **kwargs)
+        vae._unsloth_compiled_decode = True
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "vae decode compile", exc)

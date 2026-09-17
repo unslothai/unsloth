@@ -3,8 +3,8 @@
 
 """Kernel-side tests for the NVFP4 flashinfer path: the device guard and the ordering barrier.
 
-The hermetic half stubs ``torch`` and ``flashinfer``, because neither which device a launch sees nor
-the call ORDER inside the GEMM op is observable from outside an opaque custom op on one GPU.
+The hermetic half stubs ``torch`` and ``flashinfer``: neither the device a launch sees nor the call
+ORDER inside the GEMM op is observable from outside an opaque custom op on one GPU.
 """
 
 from __future__ import annotations

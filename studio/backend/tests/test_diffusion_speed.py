@@ -87,8 +87,14 @@ def _stub_torch(monkeypatch):
     )
     # Said explicitly so the CUDA-graph arm refuses deterministically, whatever the host has.
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
-    # The VAE-decode compile wraps a bound method; identity wrap is enough for tests.
-    torch.compile = lambda fn, **kwargs: fn
+    # Kwargs are recorded so a test can assert the tier's compile recipe.
+    torch.compile_calls = []
+
+    def _compile(fn, **kwargs):
+        torch.compile_calls.append(kwargs)
+        return fn
+
+    torch.compile = _compile
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
 
@@ -195,6 +201,14 @@ def test_restore_is_independent_per_flag(monkeypatch):
 # ── applier ───────────────────────────────────────────────────────────────────
 
 
+class AutoencoderKL(types.SimpleNamespace):
+    """The class NAME is load bearing: ``auto`` keys the allow list off it."""
+
+
+class AutoencoderKLWan(types.SimpleNamespace):
+    """A video VAE, reached through the same helper by the video backend's per-view calls."""
+
+
 class _Pipe:
     def __init__(
         self,
@@ -202,8 +216,9 @@ class _Pipe:
         with_compile = False,
         with_fuse = False,
         with_second_dit = False,
+        vae_cls = AutoencoderKL,
     ) -> None:
-        self.vae = types.SimpleNamespace(mem_format = None, to = self._vae_to)
+        self.vae = vae_cls(mem_format = None, to = self._vae_to, decode = lambda z: z)
         self.transformer = types.SimpleNamespace()
         if with_compile:
             self.transformer.compile_repeated_blocks = self._compile
@@ -416,16 +431,132 @@ def test_unet_whole_compile_default_tier(monkeypatch):
     assert applied["compiled_vae_decode"] is True
 
 
-def test_dit_default_tier_keeps_fuse_and_vae_decode_off(monkeypatch):
-    # The DiT default tier is unchanged: fused QKV measured exactly neutral so it stays max-only, and the VAE decode stays eager.
-    _stub_torch(monkeypatch)
+def test_dit_default_tier_keeps_fuse_off_and_compiles_the_vae_decode(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True, with_fuse = True)
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
     assert applied["compiled"] is True
     assert applied["fused_qkv"] is False and pipe.fused is False
+    assert applied["compiled_vae_decode"] is True
+    assert torch.compile_calls == [{"fullgraph": False, "dynamic": True}]
+
+
+def test_dit_vae_decode_compile_opts_out_by_env(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "0")
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+
+
+def test_dit_vae_decode_compile_deny_set_and_force(monkeypatch):
+    assert "AutoencoderKLQwenImage" in ds_mod._VAE_COMPILE_DENY
+    _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True)
+    monkeypatch.setattr(
+        ds_mod,
+        "_VAE_COMPILE_DENY",
+        frozenset({type(pipe.vae).__name__}),
+    )
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
     assert applied["compiled_vae_decode"] is False
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert applied["compiled_vae_decode"] is True
+
+
+def test_video_vae_stays_eager_under_auto_and_compiles_once_per_pipe(monkeypatch):
+    # apply_speed_optims runs per video DiT view: `auto` must not reach an unmeasured decode, nor compile a shared VAE twice.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True, vae_cls = AutoencoderKLWan)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    for _ in range(2):
+        applied = apply_speed_optims(
+            pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        )
+        assert applied["compiled_vae_decode"] is True
+    assert torch.compile_calls == [{"fullgraph": False, "dynamic": True}]
+
+
+def test_dit_vae_decode_compile_max_tier_autotunes(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled_vae_decode"] is True
+    assert torch.compile_calls == [
+        {"fullgraph": False, "dynamic": True, "mode": "max-autotune-no-cudagraphs"}
+    ]
+
+
+def test_unet_vae_decode_compile_ignores_the_env(monkeypatch):
+    _stub_torch(monkeypatch)
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "0")
+    pipe = _UNetPipe()
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled_vae_decode"] is True
+
+
+def test_video_wan_vae_decode_is_denied_on_measurement(monkeypatch):
+    # Wan is not merely unmeasured: its decode compiled SLOWER on a B200 (1280x704x121, 35.76 -> 37.41 s p50), so it
+    # is denied as well as unlisted and stays off even if a later pass adds it to the allow set.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    assert "AutoencoderKLWan" in ds_mod._VAE_COMPILE_DENY
+    monkeypatch.setattr(
+        ds_mod, "_VAE_COMPILE_ALLOW", ds_mod._VAE_COMPILE_ALLOW | {"AutoencoderKLWan"}
+    )
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, vae_cls = AutoencoderKLWan),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        cuda_graph_default = False,
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+
+
+def test_video_wan_vae_decode_stays_denied_on_max(monkeypatch):
+    # The deny set beats the tier: `max` must not autotune a decode that is not worth compiling at all.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, vae_cls = AutoencoderKLWan),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_MAX,
+        cuda_graph_default = False,
+    )
+    assert applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
 
 
 def test_unet_whole_compile_offload_drops_fullgraph(monkeypatch):
@@ -1232,3 +1363,15 @@ def test_compiled_shapes_are_static_reports_the_stream_merging_downgrade(monkeyp
     assert ds_mod.compiled_shapes_are_static(plain, SPEED_MAX) is True
     assert ds_mod.compiled_shapes_are_static(merging, SPEED_OFF) is False
     assert ds_mod.compiled_shapes_are_static(merging, SPEED_EAGER) is False
+
+
+def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
+    """Both compile_cache.begin() call sites feed the VAE decode decision into the cache key."""
+    # The decode compiles lazily, so a bundle predating it stays a hit and never saves the VAE artifacts: the key has to move with the decision.
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert src.count('"vae_decode": vae_decode_compile_allowed(') == 2
+    assert ds_mod.vae_decode_compile_allowed is not None

@@ -16,35 +16,29 @@ whole conditioning front end. This is the alternative: pad the flattened row cou
 ``pad_to``, run the GEMM, slice the result back. The module becomes compilable with no change to
 the quantization config, and the rows the caller asked for are returned BITWISE unchanged.
 
-Two properties make the padding exact rather than approximately exact, and both are load-bearing:
+Two properties make the padding exact, and both are load-bearing:
 
-  * The pad rows REPLICATE row 0 rather than being zeros. An all-zero row has amax 0, hence
-    scale 0, hence a division by zero in the activation quantizer. That NaN would stay confined
-    to a row that is then discarded, but replication costs the same and keeps the intermediate
-    finite -- and finite intermediates are what let the equality be checked at all.
-  * The activation scale is PER ROW (torchao quantizes the activations of
-    ``Int8DynamicActivationInt8WeightConfig`` with ``_int8_symm_per_token_...``), so each kept
-    row's scale is computed from that row alone and extra rows cannot perturb it. Replicating
-    row 0 happens to leave a per-TENSOR amax unchanged too, so the two properties overlap for
-    that particular granularity -- but a granularity calibrated on anything other than a plain
-    amax (a percentile, a mean, a running observer) would shift under duplicated rows and
-    silently change every output. ``wrap_small_m_linears`` therefore refuses to wrap a quantized
-    Linear whose activation granularity it cannot prove is per row, and RAISES rather than
-    quietly leaving it unwrapped: a half-padded transformer is the one outcome worse than either
-    end state, since it compiles on the modules that were wrapped and crashes on the rest.
+  * The pad rows REPLICATE row 0 rather than being zeros. An all-zero row has amax 0, hence scale
+    0, hence a division by zero in the activation quantizer. That NaN would stay in a row that is
+    discarded, but replication costs the same and keeps the intermediate finite.
+  * The activation scale is PER ROW (torchao quantizes ``Int8DynamicActivationInt8WeightConfig``
+    activations with ``_int8_symm_per_token_...``), so each kept row's scale comes from that row
+    alone. A granularity calibrated on anything other than a plain amax (a percentile, a mean, a
+    running observer) would shift under duplicated rows and silently change every output.
+    ``wrap_small_m_linears`` therefore RAISES rather than skipping a Linear whose granularity it
+    cannot prove is per row: a half-padded transformer compiles on the wrapped modules and crashes
+    on the rest, which is worse than either end state.
 
-The other end of the range lives here too: ``ZeroRowSafeLinear`` answers an EMPTY activation
-itself instead of handing it to a kernel that cannot reduce over zero elements. Same transparency
-rules, same wrap-once gate, and the two never meet on one module (the row floor is int8's, the
-empty-input raise is nvfp4's).
+``ZeroRowSafeLinear`` is the guard for the opposite end of the range: it answers an EMPTY
+activation itself instead of handing it to a kernel that cannot reduce over zero elements. Same
+transparency and wrap-once rules, and the two can never meet on one module (the row floor is
+int8's, the empty-input raise is nvfp4's).
 
-Ordering invariant: wrapping REPARENTS the Linear, so it must happen AFTER a state dict is
-loaded and BEFORE nothing in particular. The offline prequant builder
-(``scripts/build_prequant_checkpoint.py``) drives ``quantize_`` directly and saves the state
-dict, so it never sees a wrapper. As a second line of defence ``PadToMinM`` is state-dict
-TRANSPARENT: it saves and loads its inner Linear's tensors under the wrapper's own prefix, so a
-checkpoint written from a wrapped transformer still names ``context_embedder.weight`` rather
-than ``context_embedder.inner.weight`` and stays loadable by an unwrapped tree.
+Ordering invariant: wrapping REPARENTS the Linear, so it must happen AFTER a state dict is loaded.
+The offline prequant builder drives ``quantize_`` directly and never sees a wrapper. As a second
+line of defence ``PadToMinM`` is state-dict TRANSPARENT: it saves and loads its inner Linear's
+tensors under the wrapper's own prefix, so a checkpoint written from a wrapped transformer still
+names ``context_embedder.weight`` and stays loadable by an unwrapped tree.
 """
 
 from __future__ import annotations
@@ -225,12 +219,10 @@ class PadToMinM(nn.Module):
 
 
 class ZeroRowSafeLinear(nn.Module):
-    """Wrap ``inner`` so an EMPTY activation is answered here rather than by the GEMM.
-
-    torchao's NVFP4 dynamic-activation path takes its global scale from ``torch.max(torch.abs(x))``
-    over the whole input, and ``max()`` raises on ``numel() == 0``. An empty projection has exactly
-    one answer, an empty tensor at the output width, so this is no approximation. Inert above zero
-    rows.
+    """Wrap ``inner`` so an EMPTY activation is answered here rather than by the GEMM. torchao's NVFP4
+    dynamic-activation path takes its global scale from ``torch.max(torch.abs(x))`` over the whole
+    input, and ``max()`` raises on ``numel() == 0``. An empty projection has one correct answer, an
+    empty tensor at the output width. Inert above zero rows.
     """
 
     def __init__(self, inner: nn.Linear) -> None:
@@ -289,11 +281,10 @@ class ZeroRowSafeLinear(nn.Module):
 
 
 def wrap_zero_row_linears(model: nn.Module, fqns: Iterable[str]) -> tuple[str, ...]:
-    """Replace each Linear named in ``fqns`` with a ``ZeroRowSafeLinear``; returns those wrapped.
-
-    Gated on ``is_quantized_linear``, which makes the wrap idempotent and keeps the two wrappers
-    from stacking: neither is an ``nn.Linear``. Skipping a ``PadToMinM`` is right, not a missed
-    guard, since it answers a zero-row call itself without reaching the GEMM."""
+    """Replace each Linear named in ``fqns`` with a ``ZeroRowSafeLinear``; return those wrapped. Gated on
+    ``is_quantized_linear``, which makes the wrap idempotent and keeps the two wrappers from stacking
+    (neither is an ``nn.Linear``). Skipping a ``PadToMinM`` is right: it answers a zero-row call
+    itself without reaching the GEMM."""
     done: list[str] = []
     for fqn in sorted(set(fqns)):
         parent_name, _, leaf = fqn.rpartition(".")
