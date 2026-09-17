@@ -522,13 +522,20 @@ class TestTheEstimateMatchesTheConfiguredLoad:
             "attention.sliding_window_pattern": [True, True, True, False],
         }
         gguf = _write_gguf(tmp_path / "swa-Q4_K_M.gguf", fields)
-        none = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", n_parallel = 4)
+        # Blank means llama.cpp's default, so use an explicit zero as the baseline.
+        none = _call_std_route(
+            monkeypatch,
+            path = gguf,
+            repo_id = "org/swa",
+            n_parallel = 4,
+            ctx_checkpoints = 0,
+        )
         many = _call_std_route(
             monkeypatch,
             path = gguf,
             repo_id = "org/swa",
             n_parallel = 4,
-            ctx_checkpoints = 32,
+            ctx_checkpoints = 64,
         )
         assert (
             many["kv_bytes"] > none["kv_bytes"]
@@ -677,8 +684,18 @@ class TestHostMemoryIsNotChargedToTheCard:
 
     def test_no_checkpoints_means_no_host_share(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "swa-model-Q4_K_M.gguf", _SWA_MODEL)
-        out = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", ctx_checkpoints = None)
+        out = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", ctx_checkpoints = 0)
         assert out["kv_checkpoint_bytes"] is None
+
+    def test_a_blank_field_reports_the_share_llama_cpp_allocates_anyway(
+        self, monkeypatch, tmp_path
+    ):
+        gguf = _write_gguf(tmp_path / "swa-model-Q4_K_M.gguf", _SWA_MODEL)
+        blank = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", ctx_checkpoints = None)
+        explicit = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", ctx_checkpoints = 32)
+        assert blank["kv_checkpoint_bytes"], "a blank field reported no checkpoint host RAM"
+        assert blank["kv_checkpoint_bytes"] == explicit["kv_checkpoint_bytes"]
+        assert blank["kv_bytes"] == explicit["kv_bytes"]
 
 
 class TestAutoAbstainsOverASidecar:

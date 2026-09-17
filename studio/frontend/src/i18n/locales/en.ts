@@ -17,6 +17,57 @@ export const en = {
     settings: "Composer settings",
     preview: "Formatted preview",
   },
+  promptQueue: {
+    loading: "Loading queued prompts",
+    listLabel: "Queued prompts",
+    regionLabel: "Prompt queue, {current} of {total}",
+    itemLabel: "Queued prompt {position} of {total}: {prompt}",
+    reorderInstructions:
+      "Drag the handle to reorder. With the handle focused, use Up or Down to move one position, or Home or End to move to the front or end.",
+    dragTooltip: "Drag to reorder",
+    reorderLabel: "Reorder queued prompt {position} of {total}",
+    paused: "Paused",
+    steer: "Steer",
+    steerTooltip: "Interrupt the response and send this prompt next",
+    steerLabel: "Steer with queued prompt {position}",
+    removeTooltip: "Remove from queue",
+    removeLabel: "Remove queued prompt {position}",
+    moreTooltip: "More options",
+    moreLabel: "More options for queued prompt {position}",
+    editItem: "Edit message",
+    copyItem: "Copy message",
+    editLabel: "Edit queued prompt {position}",
+    cancel: "Cancel",
+    save: "Save",
+    turnOffQueueing: "Turn off queueing",
+    turnOnQueueing: "Turn on queueing",
+    resume: "Resume queue",
+    queueButton: "Queue message",
+    steerButton: "Steer response",
+    sendTooltip: "Send message ({shortcut})",
+    sendLabel: "Send message",
+    followUpTooltip: "{action} ({send}) · {opposite} for the opposite",
+    announceUpdated: "Queued prompt updated.",
+    announceEditFailed:
+      "This prompt can no longer be edited because the queue changed.",
+    announceRemoved: "Prompt removed from queue.",
+    announceSteered: "This prompt will steer the response next.",
+    announceSteerFailed:
+      "This prompt could not steer the response. Check the queue and try again.",
+    announceCopied: "Prompt copied.",
+    announceCopyFailed: "Could not copy this prompt. Try again.",
+    announceQueueingOn: "New follow-ups will queue after the current response.",
+    announceQueueingOff: "New follow-ups will steer the current response.",
+    announceMoved: "Prompt moved to position {position} of {total}.",
+    announceMoveFailed:
+      "The queue changed before this prompt could be moved. Try again.",
+    announceDragReset:
+      "The queue changed. Drag again to reorder the remaining prompts.",
+    editingHint: "Editing message",
+    queueingOffHint: "New messages stop the current response and run next.",
+    queueingOnHint: "New messages wait their turn and run in order.",
+    queueingHintShared: "Queued prompts are kept.",
+  },
   picker: {
     onDevice: "On Device",
     huggingFace: "Hugging Face",
@@ -744,7 +795,7 @@ export const en = {
       chatDefaults: "Chat defaults",
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
-        "Generate a short title from the first message.",
+        "Generate a title from the first message.",
       helperLlm: {
         sectionTitle: "Helper LLM",
         preloadOnStartup: "Pre-cache Helper LLM on startup",
@@ -1417,22 +1468,45 @@ export const en = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversations" },
+        files: { title: "Files & pasting" },
+        display: { title: "Display" },
+        composer: { title: "Message box" },
+        menu: { title: "Chat menu" },
+        advanced: { title: "Advanced" },
+        contextTitle: "Context",
+      },
+      projectAttachmentsHint:
+        "Override this setting from each chat's attachment menu.",
+      rememberParamsPerModelHint:
+        "When off, use the same settings for every model.",
+      autoCompactHint: "Uses the context length you set, not available VRAM.",
+      pastedTextShortDescription:
+        "Pastes of {count} characters or more become .txt attachments. Shorter pastes stay in the message box.",
+      pastedTextOffDescription:
+        "All pasted text stays in the message box, regardless of length.",
+      compactionDescriptionInherit: "Follow the server's context policy.",
+      compactionDescriptionCheckpoint:
+        "Keep the latest turn and standing instructions.",
+      compactionDescriptionRolling:
+        "Drop the oldest turns to keep recent history and the selected amount of extra room.",
       projectsSection: "Show projects section",
       projectsSectionDescription:
-        "Group project chats under a Projects heading. Turn this off to list them in Recents instead.",
+        "Group project chats under Projects. When off, show them in Recents.",
       title: "Chat",
       description: "Customize how chat behaves on this device.",
       modelSelection: {
-        title: "Select model settings",
+        title: "Model selection",
         expandQuantizations: "Expand quantizations",
         expandQuantizationsDescription:
-          "On: GGUF models in “On Device” show their quantizations right away. Off: click a model to view its quantizations.",
+          "Show GGUF quantizations in On Device without opening each model.",
         showAllQuantizations: "Show all quantizations",
         showAllQuantizationsDescription:
-          "On: list every quantization in “On Device”, including not downloaded. Off: show only downloaded quantizations.",
+          "Include quantizations that are not downloaded in On Device.",
         showMemoryBar: "Show VRAM usage bar",
         showMemoryBarDescription:
-          "Chart each downloaded model's estimated VRAM use under its row: weights, KV cache at the context it will load with, and any speculative draft reserve.",
+          "Show estimated VRAM for model weights, context, and speculative decoding.",
       },
       menu: {
         title: "Chat menu",
@@ -1446,23 +1520,23 @@ export const en = {
         exportChat: "Export chat",
       },
       pastedTextThreshold: "Condense long pastes",
-      pastedTextThresholdDescription: "Pasted text longer than this becomes a .txt attachment instead of filling the message box. Press {shortcut} to paste into the message box anyway.",
+      pastedTextThresholdDescription: "Press {shortcut} to paste directly into the message box.",
       pastedTextThresholdOff: "Off",
       showResponseModel: "Show response model",
       showResponseModelDescription:
-        "Show model metadata in assistant responses.",
+        "Show model details in assistant responses.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
       projectAttachments: "Share files across a project",
       projectAttachmentsDescription:
-        "Default for files attached in a chat that belongs to a project: index them for the whole project so every chat in it can use them. Each chat can override this from the attach menu.",
+        "Make new chat attachments available to every chat in the project.",
       rememberParamsPerModel: "Remember settings per model",
       rememberParamsPerModelDescription:
-        "Switching models restores the temperature, prompt and other settings you last used with that model. Off keeps one set of settings for every model.",
+        "Restore each model's last-used prompt, temperature, and other settings.",
       autoCompact: "Auto-compact long chats",
       autoCompactDescription:
-        "When a local GGUF chat fills the context length you set, drop older turns instead of returning an error. This is not based on free VRAM.",
+        "Remove older turns when a local GGUF chat reaches its context limit.",
       compactionStyle: "When context fills",
       compactionStyleDescription:
         "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
@@ -1477,34 +1551,34 @@ export const en = {
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
-          "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
+          "Keep reasoning collapsed. Expand a block to read it.",
       },
       currentDate: {
         label: "Tell the model today's date",
         description:
-          "Add the current date to the prompt so web search and Deep Research look for recent sources instead of assuming the model's training cutoff.",
+          "Include today's date so search and research find recent sources.",
         loadError: "Failed to load current date settings",
         saveError: "Failed to update current date settings",
       },
       tools: {
         collapseByDefault: "Collapse tool activity by default",
         collapseByDefaultDescription:
-          "Keep tool inputs and outputs collapsed while tools run. Expand any tool row to inspect it.",
+          "Keep tool details collapsed. Expand a row to inspect it.",
       },
       webSearch: {
         title: "Web search",
         images: "Show images from web search",
         imagesDescription:
-          "Let web search return pictures, and fetch one for each thing an answer lists. Thumbnails are downloaded and resized by Unsloth, so the browser never contacts image hosts.",
+          "Include images in search results.",
       },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
         collapseHtmlBlocksDescription:
-          "Canvas mode collapses full HTML automatically. Turn this on to also collapse fenced HTML documents when Canvas is off.",
+          "Also collapse fenced HTML documents when Canvas is off.",
         allowNetworkAccess: "Allow canvas network access",
         allowNetworkAccessDescription:
-          "Let canvas previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
+          "Allow Canvas to load external scripts, styles, fonts, and media. Turn off for offline previews.",
         blockedBanner: "Blocked {count} external resource from {hosts}.",
         blockedBannerPlural: "Blocked {count} external resources from {hosts}.",
         blockedBannerAction: "Allow for this canvas",

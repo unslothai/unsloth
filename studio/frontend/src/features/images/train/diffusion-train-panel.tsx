@@ -1604,6 +1604,7 @@ export function DiffusionTrainPanel({
           {/* the whole field is the drop zone, so a folder can land on the picker, the thumbnails or the
               caption grid. */}
           <div
+            data-tour="images-train-dataset"
             className={cn(
               fieldClass,
               "rounded-lg transition-colors",
@@ -1864,7 +1865,10 @@ export function DiffusionTrainPanel({
         </div>
         {/* In its own footer, as Create's Generate is. The scroll mask provides the fade, so the footer
             stays unpainted to avoid dark-mode banding. */}
-        <div className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8">
+        <div
+          data-tour="images-train-start"
+          className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8"
+        >
           <Button
             type="button"
             className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"

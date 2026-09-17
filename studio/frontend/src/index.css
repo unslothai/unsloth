@@ -1488,6 +1488,11 @@ html[data-chat-font] .aui-root {
 		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-white shadow-md;
 	}
 
+	/* Queue hints must not block menu actions. */
+	[data-radix-popper-content-wrapper]:has(> .prompt-queue-option-tooltip) {
+		pointer-events: none;
+	}
+
 	/* Dialog popups: borderless; chatbox shadow in light, flat card
 	   surface in dark. */
 	.dialog-soft-surface {
