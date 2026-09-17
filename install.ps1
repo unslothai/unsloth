@@ -1099,11 +1099,8 @@ function Install-UnslothStudio {
     function Get-NvidiaSmiCandidatePaths {
         $dirs = @()
         # Current driver locations first, in BOTH process bitnesses, before any legacy one.
-        # System32 is the current driver in a 64-bit process. In a 32-bit process that name is
-        # redirected to SysWOW64, which has no nvidia-smi, and SysNative is the alias that reaches
-        # the real System32; ProgramW6432 is likewise the 64-bit Program Files whatever the
-        # bitness. Both have to come before $env:ProgramFiles, because in a 32-bit process that is
-        # the x86 tree, where a stale toolkit copy can sit and answer first.
+        # Both bitness spellings before $env:ProgramFiles, which in a 32-bit process is the x86 tree
+        # where a stale toolkit copy can sit and answer first.
         if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
         if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "SysNative") }
         if ($env:ProgramW6432) { $dirs += (Join-Path $env:ProgramW6432 "NVIDIA Corporation\NVSMI") }
@@ -1121,10 +1118,8 @@ function Install-UnslothStudio {
         try {
             $repos = @()
             if ($env:SystemRoot) {
-                # Both spellings, for the same WOW64 reason as System32 and SysNative above: in a
-                # 32-bit process System32 redirects to SysWOW64, which has no DriverStore at all,
-                # and SysNative is the only name that reaches the 64-bit driver package. At most
-                # one of the two resolves in any given process, so this is not a doubled scan.
+                # Both spellings, same WOW64 reason as above. At most one resolves in any given process, so
+                # this is not a doubled scan.
                 $repos += (Join-Path $env:SystemRoot "System32\DriverStore\FileRepository")
                 $repos += (Join-Path $env:SystemRoot "SysNative\DriverStore\FileRepository")
             }

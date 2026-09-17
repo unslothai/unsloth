@@ -5,13 +5,11 @@
 #
 # $HasNvidiaSmi does not mean "nvidia-smi exists". It means "an NVIDIA GPU is present", and the
 # whole wheel-index decision hangs off it: a host where nvidia-smi is not found gets CPU-only
-# PyTorch with no warning. Two directories were searched, and there are real hosts where a real
-# GPU sits in neither of them (#9255).
+# PyTorch with no warning. Two directories were searched, and real hosts have a real GPU in
+# neither of them (#9255).
 #
-# The list below is the only thing that decides which binaries get probed, so it is driven here
-# against a fake filesystem rather than asserted by reading the source. Each check plants exactly
-# one copy and asserts the list finds it, so a location that stops being searched fails on its own
-# row rather than being masked by another.
+# Driven against a fake filesystem rather than asserted by reading the source. Each check plants
+# exactly one copy, so a location that stops being searched fails on its own row.
 # Run: pwsh -NoProfile -File tests/studio/test_nvidia_smi_discovery.ps1
 
 $ErrorActionPreference = "Stop"
@@ -131,11 +129,9 @@ try {
     Check "the DriverStore scan is bounded and filtered to NVIDIA's own packages" (
         $found.Count -le 8 -and -not ($found -match "unrelated"))
 
-    # A 32-bit PowerShell on 64-bit Windows is the whole reason SysNative is in the direct list,
-    # and the DriverStore needed the same treatment: in that process "System32" is redirected to
-    # SysWOW64, which carries no DriverStore at all, so a host whose ONLY nvidia-smi is the driver
-    # package would have been reported as having no NVIDIA GPU. That is exactly the population
-    # this discovery change exists to recover.
+    # Same WOW64 reason SysNative is in the direct list: in a 32-bit process "System32" redirects
+    # to SysWOW64, which carries no DriverStore at all, so a host whose ONLY nvidia-smi is the
+    # driver package was reported as having no NVIDIA GPU. That is the population this recovers.
     Reset-FakeMachine
     $planted = Add-FakeSmi "Windows/SysNative/DriverStore/FileRepository/nvmii.inf_amd64_0001/"
     $found = @(Get-NvidiaSmiCandidatePaths)
@@ -151,11 +147,10 @@ try {
     Check "both DriverStore spellings still share one bound of eight" ($found.Count -le 8)
 
     # The bound applies to directories that actually HOLD the binary, not to the nv* name matches.
-    # NVIDIA ships several packages whose names start nv and contain no nvidia-smi at all: the HD
-    # audio driver, the virtual audio device, the network service. A machine that installed any of
-    # those after its display driver has them newer by write time, so a bound applied to the name
-    # match spends the whole allowance on directories with nothing in them and reports the host as
-    # having no nvidia-smi. Plant the real one FIRST so it is the oldest, then bury it.
+    # NVIDIA ships nv-something packages with no nvidia-smi in them (HD audio, virtual audio,
+    # network service); installed after the display driver they are newer by write time, so a
+    # bound on the name match spends the whole allowance on empty directories and reports no
+    # nvidia-smi. Plant the real one FIRST so it is the oldest, then bury it.
     Reset-FakeMachine
     $repo = "Windows/System32/DriverStore/FileRepository"
     $planted = Add-FakeSmi "$repo/nvmii.inf_amd64_0001/"
@@ -168,10 +163,9 @@ try {
     Check "a display driver buried under newer nv* packages that ship no nvidia-smi is still found" (
         $found.Count -eq 1 -and $found[0] -eq $planted)
 
-    # The 32-bit process. $env:ProgramFiles is the x86 tree there, so a stale copy left by an old
-    # 32-bit CUDA toolkit sits in the FIRST Program Files rung unless the 64-bit locations are
-    # searched ahead of it. That copy is a real binary: it lists the GPU and reports its own older
-    # CUDA version, so the two-pass CUDA preference does not rescue this. Only the order does.
+    # The 32-bit process. $env:ProgramFiles is the x86 tree, so a stale copy from an old 32-bit
+    # toolkit sits in the FIRST Program Files rung unless the 64-bit locations come first. It is a
+    # real binary reporting its own older CUDA version, so only the order rescues this.
     Reset-FakeMachine
     $env:ProgramFiles = Join-Path $tmp "Program Files (x86)"
     $env:ProgramW6432 = Join-Path $tmp "Program Files"
@@ -202,10 +196,9 @@ try {
 
 # ------------------------------------------------- which candidate the detection loop settles on
 #
-# The scenario is the one this reordering could have caused, and it was found by an adversarial
-# audit rather than by me. Two binaries both answer -L. The one searched first prints a banner
-# with no parseable CUDA version; the one searched second reports 12.8. Taking the first would
-# send a cu128-capable host to cu126, purely because of which directory is searched first.
+# The scenario this reordering could have caused. Two binaries both answer -L; the first prints a
+# banner with no parseable CUDA version, the second reports 12.8. Taking the first would send a
+# cu128-capable host to cu126 purely because of which directory is searched first.
 $setupAll = Get-Content -Raw -LiteralPath $setupPs1
 $start = $setupAll.IndexOf('$smiCandidates = @(Get-NvidiaSmiCandidatePaths)')
 if ($start -lt 0) { Check "the detection loop still makes two passes" $false }
@@ -232,10 +225,9 @@ function Invoke-NvidiaSmiBounded {
 }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
 function Get-NvidiaSmiCandidatePaths { return @("C:\first\nvidia-smi.exe", "C:\second\nvidia-smi.exe") }
-# Anchored on the deadline, which is the first statement of the loop's setup. Anchoring on
-# $firstListing instead left $probeDeadline undefined inside the slice, and a comparison
-# against $null broke out on the first iteration: every driven check below then passed or
-# failed for the wrong reason. Observed here before it was fixed.
+# Anchored on the deadline, the first statement of the loop's setup. Anchoring on $firstListing
+# left $probeDeadline undefined inside the slice, and comparing against $null broke out on the
+# first iteration, so every driven check below passed or failed for the wrong reason.
 $loopStart = $setupAll.IndexOf('$smiCandidates = @(Get-NvidiaSmiCandidatePaths)')
 $loopEnd = $setupAll.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory))', $loopStart)
 # The slice starts inside setup.ps1's "if (-not $HasNvidiaSmi) {" block, so it carries that
@@ -259,11 +251,10 @@ Check "with no version anywhere, the first listing candidate is still taken" (
 
 # ----------------------------------------------------- and it gives up before setup does
 #
-# Each candidate gets its own bounded runner, and on a host with a wedged NVIDIA driver every one
-# of them waits out that bound before failing. Broadening the search made the list longer, so what
-# used to be two stalls can now be ten, all of it spent in front of a driver-library fallback that
-# answers in milliseconds. Driven with probes that actually sleep, because the thing under test is
-# elapsed time and a stubbed clock would only prove the arithmetic.
+# Each candidate gets its own bounded runner, and on a wedged driver every one waits out that
+# bound. A longer list turns two stalls into ten, all in front of a driver-library fallback that
+# answers in milliseconds. Driven with probes that really sleep: the thing under test is elapsed
+# time, and a stubbed clock would only prove the arithmetic.
 #
 # The deadline in the shipped file is 30 seconds, which no test should sit through. The slice is
 # rewritten to 2 before it is invoked, and the real value is asserted separately just below so
@@ -347,12 +338,10 @@ Check "control: a selected binary that did hang is still reported wedged" (
 
 # ------------------------------------- giving up must never cost a GPU that was there to find
 #
-# This is the regression the first version of the deadline introduced, found by an adversarial
-# audit rather than by me. One budget, and a break in the failure branch, meant that a single
-# slow FAILING probe ended the whole search. A machine whose System32 copy is broken and whose
-# legacy NVSMI copy works lost its GPU entirely and went to CPU-only PyTorch, which is strictly
-# worse than the stall the deadline was added to prevent. The comment above the old break even
-# claimed this could not happen.
+# The regression the first version of the deadline introduced. One budget, and a break in the
+# failure branch, meant a single slow FAILING probe ended the whole search: a machine whose
+# System32 copy is broken and whose legacy NVSMI copy works lost its GPU entirely and went to
+# CPU-only PyTorch, strictly worse than the stall the deadline was added to prevent.
 #
 # Two budgets now: the soft one only applies once there is already a usable answer, and only the
 # hard one may end the search empty-handed.
@@ -391,10 +380,10 @@ Check "control: giving up empty-handed really reports no GPU" ($HasNvidiaSmi -eq
 
 # The banner probe has to respect the deadline too.
 #
-# Checking only at the top of the loop is not enough: the listing probe that just returned can
-# have spent most of its own bound, and the banner probe has a full bound of its own, so a
-# candidate starting just inside the deadline could add nearly twice the per-probe timeout after
-# it. The earlier elapsed-time check missed this because its banner stub returned instantly.
+# Checking only at the top of the loop is not enough: a candidate starting just inside the
+# deadline can add nearly twice the per-probe timeout after it, since the listing probe may have
+# spent most of its bound and the banner probe has a full one. The earlier elapsed-time check
+# missed this because its banner stub returned instantly.
 # Driven with a banner probe that is the slow one.
 $script:Listings = 0
 $script:Banners = 0
@@ -412,11 +401,9 @@ $NvidiaSmiExe = $null
 $t0 = Get-Date
 Invoke-Expression $fastLoop
 $spent = ((Get-Date) - $t0).TotalSeconds
-# Counted, not timed. The first version asserted "fewer than 10 banners" and "under 8 seconds",
-# and BOTH held with the fix reverted: at 1.8 s per candidate the top-of-loop check stops the
-# walk one candidate later either way. The exact count is what separates them. With the recheck,
-# candidate 1 gets a banner and candidate 2 is cut off after its listing, so exactly one banner
-# probe runs; without it, candidate 2 also gets a banner. Mutation-tested both ways.
+# Counted, not timed. "Fewer than 10 banners" and "under 8 seconds" BOTH held with the fix
+# reverted, since at 1.8 s per candidate the top-of-loop check stops one candidate later either
+# way. With the recheck exactly one banner runs; without it candidate 2 gets one too.
 Check "a slow banner probe does not start after the deadline" ($script:Banners -eq 1)
 Check "control: a banner probe did run for the candidate before it" ($script:Listings -ge 2)
 # Loose sanity only; the counter above is the check that bites.
@@ -428,10 +415,9 @@ Check "control: the GPU found before the deadline is still reported" (
 # ------------------------------- the Windows-on-ARM picker must answer with a WORKING binary
 #
 # Get-WoaNvidiaSmiPath fed the first candidate that EXISTS to Test-WoaNvidiaPresent and
-# Get-WoaDriverCudaVersion, both of which treat a non-answer as "no NVIDIA on this machine".
-# Handing back a broken copy therefore does not cost a retry, it declines the native ARM64 CUDA
-# stack outright. Two searched locations made that unlikely; a longer list makes it likely, since
-# every location added is another chance the first entry is stale.
+# Get-WoaDriverCudaVersion, both of which treat a non-answer as "no NVIDIA on this machine", so a
+# broken copy declines the native ARM64 CUDA stack outright rather than costing a retry. A longer
+# list makes that likely rather than unlikely.
 $woaFn = Get-FunctionText $installPs1 "Get-WoaNvidiaSmiPath"
 $script:WoaNvidiaSmiProbed = $false
 $script:WoaNvidiaSmiPath = $null
@@ -473,11 +459,9 @@ Check "with nothing answering it falls back to the first existing copy" (
 
 # The ARM64 picker needs BOTH probes, not just the listing.
 #
-# Get-WoaDriverCudaVersion asks this same binary for the CUDA banner, and a null answer does not
-# merely lose a version: it skips the CUDA-major compatibility guard in
-# Initialize-WoaNativeCudaTorch, which is what stops a native wheel newer than the installed
-# driver being selected. So a candidate that lists a GPU but never names a version must not win
-# over one that does.
+# A null banner from this same binary does not merely lose a version: it skips the CUDA-major
+# guard in Initialize-WoaNativeCudaTorch that stops a native wheel newer than the installed driver
+# being selected. So a listing-only candidate must not win over one that names a version.
 $script:WoaNvidiaSmiProbed = $false
 $script:WoaNvidiaSmiPath = $null
 function Invoke-NvidiaSmiBounded {
