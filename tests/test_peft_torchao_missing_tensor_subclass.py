@@ -529,7 +529,7 @@ def test_repeated_application_never_stacks_wrappers(peft_env, fake_torchao):
 
 
 def test_an_unrelated_decorator_already_wrapping_the_dispatcher_is_preserved(
-    peft_env, fake_torchao,
+    peft_env, fake_torchao
 ):
     """Another library may get to `dispatch_torchao` first.
 
@@ -556,9 +556,7 @@ def test_an_unrelated_decorator_already_wrapping_the_dispatcher_is_preserved(
     assert seen, "the unrelated decorator must still run"
 
 
-def test_the_degraded_path_still_matches_through_an_unrelated_decorator(
-    peft_env, fake_torchao,
-):
+def test_the_degraded_path_still_matches_through_an_unrelated_decorator(peft_env, fake_torchao):
     """The surviving class must still win when a foreign decorator sits in between."""
     import functools
 
@@ -678,7 +676,10 @@ def _in_child(body):
     env["CUDA_VISIBLE_DEVICES"] = ""
     done = subprocess.run(
         [sys.executable, "-c", preamble + textwrap.dedent(body)],
-        capture_output = True, text = True, env = env, timeout = 600,
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 600,
     )
     return done.returncode, (done.stdout or "") + (done.stderr or "")
 
@@ -808,7 +809,8 @@ def test_mixed_module_types_all_resolve_under_the_patch():
 
     FIX()
     built = get_peft_model(
-        model, LoraConfig(r = 4, target_modules = ["q_proj", "emb", "conv"]),
+        model,
+        LoraConfig(r = 4, target_modules = ["q_proj", "emb", "conv"]),
     )
     resolved = {
         name: type(getattr(built.base_model.model, name)).__name__
