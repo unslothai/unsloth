@@ -658,6 +658,9 @@ _active_lock = threading.Lock()
 _start_lock = threading.Lock()
 # Latched by stop_studio_tunnel so a shutdown landing between retries cannot start a tunnel nobody will stop.
 _shutdown_requested = False
+# Set alongside it so a retry already waiting out its delay wakes now: the wait holds _start_lock, so a
+# Stop followed by a Start would otherwise queue the Start behind a delay nobody is waiting for.
+_cancel_retry = threading.Event()
 _tunnel_generation = 0
 _tunnel_lifecycle = 0
 _accepting_starts = True
@@ -822,6 +825,11 @@ def _set_online_locked(url: str) -> None:
     _tunnel_error = None
 
 
+def _wait_before_retry(delay: float) -> bool:
+    """Wait out a no-URL retry delay. True if a stop cancelled it, so the caller gives up at once."""
+    return _cancel_retry.wait(delay)
+
+
 def start_studio_tunnel(
     port: int,
     timeout: float = _READY_TIMEOUT,
@@ -865,6 +873,7 @@ def start_studio_tunnel(
             ):
                 return None
             _shutdown_requested = False
+            _cancel_retry.clear()
             _tunnel_generation += 1
             generation = _tunnel_generation
             prior_at_start, _active_tunnel = _active_tunnel, None
@@ -963,7 +972,7 @@ def start_studio_tunnel(
                 and bool(no_url_delays)
                 # The delay and a whole further attempt have to fit too, or the budget would only
                 # bound where the last retry was authorized and not the sequence it pays for.
-                and time.monotonic() - no_url_started + no_url_delays[0] + _READY_TIMEOUT
+                and time.monotonic() - no_url_started + no_url_delays[0] + timeout
                 <= _NO_URL_RETRY_BUDGET
             )
             tail = tunnel.output_tail() if hasattr(tunnel, "output_tail") else ""
@@ -1009,10 +1018,12 @@ def start_studio_tunnel(
             if retry_no_url:
                 with _active_lock:
                     # A Stop that landed during the attempt above must not pay out the delay: this holds
-                    # _start_lock, so a following Start would queue behind the sleep.
+                    # _start_lock, so a following Start would queue behind the wait.
                     if _shutdown_requested or generation != _tunnel_generation:
                         return None
-                time.sleep(no_url_delays.pop(0))
+                # One that lands during the delay ends it early for the same reason.
+                if _wait_before_retry(no_url_delays.pop(0)):
+                    return None
                 continue
             if not saw_url:
                 _set_failed(generation, managed_by, port, "cloudflared did not produce a URL")
@@ -1036,9 +1047,11 @@ def stop_studio_tunnel(*, admission: Optional[Tuple[int, int]] = None) -> None:
             # Latch so an in-flight start_studio_tunnel won't start a fresh tunnel (e.g. its http2 retry) after
             # we have already torn down.
             _shutdown_requested = True
+            _cancel_retry.set()
             _tunnel_generation += 1
             return
         _shutdown_requested = True
+        _cancel_retry.set()
         _tunnel_generation += 1
         stop_generation = _tunnel_generation
         tunnel = _active_tunnel
