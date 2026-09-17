@@ -337,8 +337,11 @@ jobs:
       # wheels, and setting its flag suppresses AMD and Intel detection, so both legs run it for
       # the same reason the discovery tests do.
       - name: NVIDIA adapter presence tests
+        shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_nvidia_adapter_presence.ps1
       - name: NVIDIA adapter presence tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
         run: powershell -NoProfile -File tests\studio\test_nvidia_adapter_presence.ps1
       # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
       # Windows needed. The 1260 classification is exercised against crafted exceptions:
