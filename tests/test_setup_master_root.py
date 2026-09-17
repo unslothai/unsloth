@@ -799,6 +799,30 @@ def test_the_windows_node_guard_treats_a_file_as_occupied():
     assert "$nodeIsDir" in code and "-not $nodeIsDir -or" in code
 
 
+def test_the_windows_runtime_guard_treats_a_file_as_occupied():
+    """The Node guard above is one of three: llama.cpp and whisper.cpp share
+    Assert-StudioOwnedOrAbsent, which was still container-only.
+
+    install_llama_prebuilt's activate_install_tree moves aside whatever Path.exists() finds, so
+    a regular file named `llama.cpp` under a master root was renamed to a rollback name and
+    replaced. The behaviour is run for real in tests/studio/test_path_probe_access_denied.ps1,
+    which the Linux runners cannot execute; this holds the shape there too.
+    """
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    block = _slice(ps, "function Assert-StudioOwnedOrAbsent", "function Mark-StudioOwned")
+    code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
+    # Get-Item -Force, not another Test-Path: 5.1 answers false for a dangling link.
+    assert "Get-Item -LiteralPath $Path -Force" in code
+    # A non-directory is refused, and only under a root the user chose.
+    assert "if (-not $isCustomRoot) { return }" in code
+    assert "already exists and is not a directory" in block
+    # Fatal even in -NonFatal mode: that mode rescues a denial, not somebody else's file.
+    refusal = code[
+        code.index("Get-Item -LiteralPath $Path -Force") : code.index("Exit-SetupFailure")
+    ]
+    assert "$NonFatal" not in refusal, refusal
+
+
 def test_neither_uninstaller_takes_a_studio_root_that_is_also_the_master_root():
     """The flat layout, UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming one directory.
 

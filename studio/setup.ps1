@@ -4162,7 +4162,20 @@ function Assert-StudioOwnedOrAbsent {
             if ($NonFatal) { return "Denied" }
             Exit-PathAccessDenied -Path $Path -Label $Label -OwnershipUnverified
         }
-        return
+        # A Container probe answers false for a regular file and for a link whose target is
+        # gone, and the caller then rm -rf'd the path or let install_*_prebuilt.py replace it
+        # (activate_install_tree gates the aside-move on Path.exists()). Both shapes are things
+        # the user put in a directory they chose. Get-Item -Force still sees the directory
+        # entry where Test-Path does not, which is the dangling-link case under 5.1.
+        # setup.sh's _assert_studio_owned_or_absent takes the same view of -d against -e and -L.
+        if (-not $isCustomRoot) { return }
+        if (-not (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue)) { return }
+        # Ownership evidence lives inside a directory, so a non-directory can never carry it
+        # and is refused outright rather than asked for markers. Fatal even under -NonFatal:
+        # that mode rescues a denial, not somebody else's file.
+        Write-StudioLine "[ERROR] $Path already exists and is not a directory." -ForegroundColor Red
+        Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
+        Exit-SetupFailure "$Label path is not an Unsloth-owned install: $Path"
     }
     $markerState = Get-PathState -Path (Join-Path $Path $StudioOwnedMarker) -PathType Leaf
     if ($isCustomRoot -and $markerState -eq "Denied") {

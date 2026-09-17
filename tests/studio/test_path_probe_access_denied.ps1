@@ -450,6 +450,28 @@ if ($assertSrc -and $markSrc) {
         try { $null = Assert-StudioOwnedOrAbsent -Path $nfUnowned -Label "whisper.cpp install" -NonFatal }
         catch { $threw = $true; $thrownBy = $_.Exception.Message }
         Check "-NonFatal does not excuse an unowned tree" ($threw -and $thrownBy -eq "EXIT-SETUP")
+
+        # A non-directory at a runtime path under a user-chosen root. install_llama_prebuilt's
+        # activate_install_tree moves aside whatever Path.exists() finds, so a Container-only
+        # probe let a user's file be displaced by the install that followed.
+        $nfFile = Join-Path $nfRoot "llama.cpp"
+        Set-Content -LiteralPath $nfFile -Value "mine"
+        $nfLink = Join-Path $nfRoot "node"
+        New-Item -ItemType SymbolicLink -Path $nfLink -Target (Join-Path $nfRoot "gone") -ErrorAction SilentlyContinue | Out-Null
+        foreach ($shape in @(@("a regular file", $nfFile), @("a dangling link", $nfLink))) {
+            if (-not (Get-Item -LiteralPath $shape[1] -Force -ErrorAction SilentlyContinue)) { continue }
+            $threw = $false
+            $thrownBy = $null
+            try { $null = Assert-StudioOwnedOrAbsent -Path $shape[1] -Label "llama.cpp install" -NonFatal }
+            catch { $threw = $true; $thrownBy = $_.Exception.Message }
+            Check "$($shape[0]) at a custom runtime path stops setup" ($threw -and $thrownBy -eq "EXIT-SETUP")
+            # The legacy default home keeps the behaviour it had: only a chosen root is the
+            # user's directory, and setup.sh draws the line in the same place.
+            $threw = $false
+            try { $null = Assert-StudioOwnedOrAbsent -Path $shape[1] -Label "llama.cpp install" -IsCustom $false }
+            catch { $threw = $true }
+            Check "$($shape[0]) at a default runtime path is left to the caller" (-not $threw)
+        }
     } finally {
         Set-NfDenied $false
         Remove-Item -Recurse -Force -LiteralPath $nfRoot -ErrorAction SilentlyContinue
