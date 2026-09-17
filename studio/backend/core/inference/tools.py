@@ -16810,7 +16810,6 @@ def _check_signal_escape_patterns(code: str):
             values = _attr_stores.get((id(cls) if cls is not None else 0, expr.value.id, expr.attr))
         else:
             return "no"
-        # Ignore None placeholders when classifying client stores.
         states = [
             _holds_client(value, depth + 1) if isinstance(value, ast.AST) else "no"
             for value in values or []
@@ -16909,7 +16908,6 @@ def _check_signal_escape_patterns(code: str):
                     if node.args and isinstance(node.args[0], (ast.Tuple, ast.Constant)):
                         self._check_target(node, True, node.args[0], "host", connects = False)
                     if client == "maybe":
-                        # Ambiguous receivers ask instead of refusing.
                         present, expr = _call_target(node, 0, host_kw or "hostname")
                         self._check_target(node, present, expr, "host", connects = True, refuse = False)
 
