@@ -1903,6 +1903,12 @@ def _is_broken_torchvision_error(error) -> bool:
 # unqualified pin swaps a working wheel for PyPI's and raises the very
 # "operator torchvision::nms does not exist" it was handed out to clear.
 _TORCH_BACKEND_INDEX = re.compile(r"cpu|xpu|cu\d+|rocm\d+(?:\.\d+)*", re.IGNORECASE)
+# The same families, matched as a PREFIX. A vendor build carries more than the family in its
+# local tag: this repo's AMD extras install torch-2.10.0+rocm7.2.0.lw.gitb6ee5fde and
+# triton-3.6.0+rocm7.2.0.gitba5c1517 straight from repo.radeon.com, and neither tag is an
+# index name. Those are not PyPI builds, so advice that treats them as PyPI ones would swap a
+# working Radeon wheel for the default CUDA build.
+_TORCH_BACKEND_FAMILY = re.compile(r"(cpu|xpu|cu\d+|rocm[\d.]*)", re.IGNORECASE)
 # conda keeps the backend in the build string (py3.12_cuda12.4_cudnn9_0) and leaves the version
 # plain, so a conda torch looks like a PyPI one by version alone; its
 # conda-meta/<name>-<version>-<build>.json tells them apart.
@@ -1915,21 +1921,26 @@ def _torch_local_tag(torch_version_raw):
     return torch_version_raw.split("+", 1)[1]
 
 
-def _torch_is_conda_managed(torch_version_raw):
-    """Did conda install this torch, rather than pip?"""
+def _is_conda_managed(names, version_raw):
+    """Did conda install one of `names` at this version, rather than pip?"""
     conda_meta = os.path.join(sys.prefix, "conda-meta")
-    # A conda version never carries the +tag, but strip it so a pip torch inside a conda prefix is
+    # A conda version never carries the +tag, but strip it so a pip install inside a conda prefix is
     # still matched on its release numbers.
-    version = (torch_version_raw or "").split("+", 1)[0]
+    version = (version_raw or "").split("+", 1)[0]
     if not version or not os.path.isdir(conda_meta):
         return False
     # Pinned to this exact version, so an unrelated pytorch-lightning-*.json cannot answer for torch.
-    prefixes = tuple(f"{name}-{version}-" for name in _CONDA_TORCH_PACKAGES)
+    prefixes = tuple(f"{name}-{version}-" for name in names)
     try:
         entries = os.listdir(conda_meta)
     except OSError:
         return False
     return any(e.endswith(".json") and e.startswith(prefixes) for e in entries)
+
+
+def _torch_is_conda_managed(torch_version_raw):
+    """Did conda install this torch, rather than pip?"""
+    return _is_conda_managed(_CONDA_TORCH_PACKAGES, torch_version_raw)
 
 
 def _has_no_matching_public_wheel(torch_version_raw):
@@ -1945,6 +1956,89 @@ def _has_no_matching_public_wheel(torch_version_raw):
         # may be CPU, ROCm or a CUDA family PyPI does not ship.
         return _torch_is_conda_managed(torch_version_raw)
     return not _TORCH_BACKEND_INDEX.fullmatch(local)
+
+
+def _torch_wheel_index(torch_version_raw):
+    """The ` --index-url ...` fragment that keeps an install on torch's own accelerator family.
+
+    pip's `--index-url` defaults to https://pypi.org/simple, which carries exactly one build
+    per release: the default CUDA one. A ROCm or XPU or CPU torch records its family in the
+    local version tag (2.9.0+rocm6.4, 2.9.0+xpu, 2.9.0+cpu) and every one of those builds is
+    published only under https://download.pytorch.org/whl/<tag>, so an unqualified command
+    handed to such a user swaps their working torch for an incompatible default build. An
+    absent or non-family tag means PyPI, where the unqualified command is already right.
+    """
+    local = _torch_local_tag(torch_version_raw)
+    if local and _TORCH_BACKEND_INDEX.fullmatch(local):
+        return f" --index-url https://download.pytorch.org/whl/{local.lower()}"
+    return ""
+
+
+def _torch_companion_specs():
+    """The packages that must move WITH torch, as a `"pkg" ` prefix for the upgrade command.
+
+    `pip install --upgrade` upgrades the packages it is given and nothing else, so naming
+    only torch moves torch and leaves the companion that was built against the old one. Every
+    torchvision wheel requires an exact `torch==X.Y.Z`, which is why `_torchvision_repair_command`
+    above pins the pair; a torch upgrade on its own is how the mismatch it repairs gets created
+    in the first place ("operator torchvision::nms does not exist"). Only packages that are
+    actually installed are named, so an install without torchvision gets the plain command.
+    """
+    return "".join(
+        f' "{name}"'
+        for name in ("torchvision", "torchaudio")
+        if _installed_version(name) != "unknown"
+    )
+
+
+def _torch_accelerator_note(torch_version_raw):
+    """The sentence that keeps an UPGRADE on the right accelerator, without naming an index.
+
+    A repair reinstalls the release that is already here, so the installed torch's own index
+    is guaranteed to carry it and `_torch_wheel_index` can hand over a ready command. An
+    upgrade moves to a release that index may never have had: each
+    download.pytorch.org/whl/<backend> holds only what was built for that backend, and the
+    CUDA families retire (cu124's newest torch is 2.6.0, while torch 2.7 shipped on cu126 and
+    cu128), so pinning the installed tag would hand the reported torch 2.6.0+cu124 user a
+    command with no candidate at all. Naming the family and the selector is the part that is
+    true for every release.
+    """
+    local = _torch_local_tag(torch_version_raw)
+    if not local:
+        # conda never writes a local tag, so an untagged version alone reads like a PyPI
+        # install. `pip install --upgrade torch` into a conda environment overlays the
+        # conda-managed files with a PyPI wheel, and the backend it lands on is whatever
+        # PyPI ships by default rather than the one the channel built.
+        if _torch_is_conda_managed(torch_version_raw):
+            return (
+                "    conda installed this torch, so upgrade it the same way "
+                "(`conda update pytorch` on the channel it came from). `pip install "
+                "--upgrade` would overlay the conda files with a PyPI wheel and can "
+                "change the backend with them."
+            )
+        return ""
+    if not _TORCH_BACKEND_INDEX.fullmatch(local):
+        vendor = _TORCH_BACKEND_FAMILY.match(local)
+        if vendor is None:
+            return ""
+        # A tag that names a family but is not an index name is a vendor build, which is
+        # what this repo's own AMD extras install. PyPI has no such version, and neither
+        # does download.pytorch.org, so the only advice that keeps the accelerator is to
+        # go back to the source the wheel came from.
+        return (
+            f"    That takes the default build from PyPI. This torch is a {local} build, "
+            f"which no public index carries, so upgrade it from wherever it came from "
+            f"(the ROCm builds unsloth's AMD extras install come from repo.radeon.com). "
+            f"An unqualified pip upgrade replaces it with the default build."
+        )
+    family = local.rstrip("0123456789.").lower()
+    family = {"cu": "CUDA", "rocm": "ROCm", "xpu": "XPU", "cpu": "CPU"}.get(family, local)
+    return (
+        f"    That takes the default build from PyPI. This torch is a {local} build, and each "
+        f"https://download.pytorch.org/whl/ index carries only the releases built for it, so "
+        f"pick the {family} index for the release you are moving to at "
+        f"https://pytorch.org/get-started/locally/ and pass it as --index-url."
+    )
 
 
 def _torchvision_repair_advice(required = None, torch_version_raw = None):
@@ -1977,10 +2071,7 @@ def _torchvision_repair_command(required = None, torch_version_raw = None):
         spec = f"torchvision=={required[0]}.{required[1]}.{required[2]}"
     else:
         spec = f"torchvision=={required[0]}.{required[1]}.*"
-    local = _torch_local_tag(torch_version_raw)
-    index = ""
-    if local and _TORCH_BACKEND_INDEX.fullmatch(local):
-        index = f" --index-url https://download.pytorch.org/whl/{local.lower()}"
+    index = _torch_wheel_index(torch_version_raw)
     return f'pip install --force-reinstall --no-deps --no-cache-dir{index} "{spec}"'
 
 
@@ -2250,6 +2341,599 @@ def check_transformers_dependency_versions():
     )
 
     logger.warning("\n".join(lines))
+
+
+# torch releases that first provide a given attribute, used only to name the
+# upgrade in the message below. Measured against the wheels rather than guessed:
+# torch 2.6.0 has neither MX dtype and 2.8.0 has both, and both landed in 2.7.0
+# (pytorch/pytorch#146427 and #146578). An attribute that is not in here still
+# gets the diagnosis, just without a release to name, which is the point: the
+# table is a convenience and never the mechanism.
+_TORCH_ATTRIBUTE_FLOORS = {
+    "float8_e8m0fnu": "2.7.0",
+    "float4_e2m1fn_x2": "2.7.0",
+}
+
+# Packages unsloth imports and cannot add a missing torch attribute to. The same
+# AttributeError raised from user code is a typo, so it is left exactly as torch
+# wrote it.
+_TORCH_ATTRIBUTE_DEPENDENTS = frozenset(
+    (
+        "accelerate",
+        "bitsandbytes",
+        "cut_cross_entropy",
+        "diffusers",
+        "peft",
+        "torchao",
+        "torchaudio",
+        "torchvision",
+        "transformers",
+        "trl",
+        "unsloth_zoo",
+        "vllm",
+        "xformers",
+    )
+)
+
+
+class UnslothTorchTooOldError(AttributeError):
+    """The installed torch is older than a library unsloth imports needs.
+
+    An AttributeError subclass on purpose: it replaces one torch itself raised,
+    so `hasattr(torch, name)` and `getattr(torch, name, default)` keep behaving
+    exactly as they did. Only an unguarded access changes, and only by carrying
+    the diagnosis instead of four words.
+    """
+
+
+@functools.lru_cache(maxsize = None)
+def _installed_version(package):
+    """The installed version of `package`, or "unknown", asked at most once.
+
+    Cached because this sits on a path the interpreter takes for EVERY attribute
+    access on torch that normal lookup missed, and a missing attribute is not
+    always fatal: `hasattr(torch, name)` and `getattr(torch, name, default)` are
+    how these same libraries feature-probe, and both come through here. Measured
+    on this workspace, `importlib.metadata.version` costs about 850 microseconds
+    per call because it walks sys.path, so an uncached lookup turned a failed
+    probe from roughly 0.8 microseconds into roughly 850, a thousandfold, for a
+    string that cannot change inside one process. With the cache the wrapper is
+    back to the cost of building the message.
+    """
+    try:
+        return importlib_version(package)
+    except Exception:
+        return "unknown"
+
+
+def _torch_too_old_message(attribute, package, exception):
+    # torch.__version__ rather than the metadata version, because it carries the
+    # build (2.6.0+cu124) and that is what the user reads in every other message.
+    torch_version = getattr(sys.modules.get("torch"), "__version__", None)
+    if not torch_version:
+        torch_version = _installed_version("torch")
+    package_version = _installed_version(package)
+
+    floor = _TORCH_ATTRIBUTE_FLOORS.get(attribute)
+    requirement = f'"torch>={floor}"' if floor else '"torch"'
+
+    lines = [
+        str(exception),
+        "",
+        f"Unsloth: {package}=={package_version} uses torch.{attribute}, and the "
+        f"installed torch=={torch_version} does not have it, so this environment pairs "
+        f"a {package} with a torch that cannot serve it.",
+    ]
+    if floor is not None:
+        # A known floor is evidence of the direction: the attribute was ADDED in that
+        # release, so the torch here is the older half and upgrading it is the remedy.
+        lines += [
+            f"torch.{attribute} first appears in torch {floor}, so this torch is the "
+            f"older half.",
+            "",
+            f"Upgrade torch, which leaves {package} where it is:",
+            f"    pip install --upgrade {requirement}{_torch_companion_specs()}",
+        ]
+    else:
+        # No floor is no evidence of direction. The attribute may be newer than this
+        # torch, and it may equally have been REMOVED by it, which an older dependency
+        # reaching for a retired API hits; prescribing an upgrade there is the opposite
+        # remedy. So state both directions and prescribe neither.
+        lines += [
+            "",
+            f"torch.{attribute} is not in this release's table of added attributes, so "
+            f"it is either newer than this torch or removed by it. Check which release "
+            f"of torch has torch.{attribute} at "
+            f"https://pytorch.org/docs/stable/torch.html and move whichever half is out "
+            f"of step: upgrade torch when the attribute is newer,",
+            f"    pip install --upgrade {requirement}{_torch_companion_specs()}",
+            f"or install a {package} that matches this torch when the attribute is gone.",
+        ]
+    accelerator = _torch_accelerator_note(torch_version)
+    if accelerator:
+        lines.append(accelerator)
+    lines += [
+        "",
+        f"Installing a {package} that matches this torch works too. Pip allowed the "
+        f"pair because {package} declares a lower torch floor than its own modules "
+        f"actually touch, so there was nothing for the resolver to reject.",
+    ]
+    return "\n".join(lines)
+
+
+def patch_torch_missing_attribute_error():
+    """Name the torch upgrade when a dependency reaches for a dtype torch lacks.
+
+    The reported failure was a Studio training run whose transformers (5.10) was
+    newer than its torch: `import unsloth` died inside unsloth_zoo's temporary
+    patches, importing transformers.processing_utils, on a module-scope
+    `_UE8M0_SF_DTYPE = torch.float8_e8m0fnu` in
+    transformers/integrations/finegrained_fp8.py, as a bare
+
+        AttributeError: module 'torch' has no attribute 'float8_e8m0fnu'
+
+    with no mention of a version and nothing for the user to act on. Both
+    pyprojects still permit the pair, and pip cannot be made to reject it:
+    transformers declares `torch>=2.2` through `torch>=2.5` depending on the
+    release, well below what its own modules touch, so there is no floor for the
+    resolver to enforce. A static transformers-to-torch table here would be no
+    better, because it would have to be wrong somewhere: torch 2.6.0 with
+    transformers 4.57.6 is a supported combination that works.
+
+    So probe the behaviour, at the only place that knows the answer. torch
+    answers a missing attribute through a module-level __getattr__, which the
+    interpreter calls only after normal lookup has already failed, so wrapping
+    that one function costs nothing on every successful attribute access and
+    turns the one failing access into a diagnosis. Idempotent, and the original
+    stays reachable as `__unsloth_original__`.
+    """
+    try:
+        import torch
+    except Exception:
+        # A missing or broken torch has its own, clearer error further down
+        # _gpu_init.py; there is nothing to wrap here.
+        return False
+
+    original = torch.__dict__.get("__getattr__")
+    if original is None:
+        # No module-level __getattr__ to wrap, so torch raises its AttributeError
+        # from the interpreter itself and there is nothing to improve.
+        return False
+    if getattr(original, "__unsloth_patched__", False):
+        return True
+
+    @functools.wraps(original)
+    def __getattr__(name):
+        try:
+            return original(name)
+        except AttributeError as exception:
+            try:
+                # The frame that made the access, and only that one. Walking
+                # further up would blame transformers for a typo in a callback
+                # transformers happened to call.
+                requester = sys._getframe(1).f_globals.get("__name__") or ""
+            except Exception:
+                # sys._getframe is CPython-only and raises an audit event, so a
+                # hardened interpreter can refuse it. A bare `raise` here would
+                # rethrow THAT exception instead of torch's AttributeError, and
+                # `hasattr(torch, name)` only swallows AttributeError, so an
+                # ordinary feature probe would start propagating a RuntimeError.
+                # Unattributable is not fatal: leave it to torch's own error.
+                requester = ""
+            package = requester.split(".", 1)[0]
+            if package not in _TORCH_ATTRIBUTE_DEPENDENTS:
+                raise
+            raise UnslothTorchTooOldError(
+                _torch_too_old_message(name, package, exception)
+            ) from exception
+
+    __getattr__.__unsloth_patched__ = True
+    __getattr__.__unsloth_original__ = original
+    torch.__getattr__ = __getattr__
+    return True
+
+
+# The '#' argument formats in triton's CUDA driver shim need this macro, and
+# CPython stopped requiring it in 3.13.
+_PY_SSIZE_T_CLEAN = "PY_SSIZE_T_CLEAN"
+
+# `#define` / `#undef PY_SSIZE_T_CLEAN` as their own directives, anchored to the start of
+# a line so a mention inside a comment or a string literal is neither.
+_PY_SSIZE_T_CLEAN_DIRECTIVE = re.compile(
+    r"^[ \t]*#[ \t]*(define|undef)[ \t]+" + _PY_SSIZE_T_CLEAN + r"\b",
+    re.M,
+)
+_PYTHON_H_INCLUDE = re.compile(r"^[ \t]*#[ \t]*include[ \t]*[<\"][^>\"]*Python\.h[>\"]", re.M)
+
+
+_C_COMMENT_OR_STRING = re.compile(
+    r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'",
+    re.S,
+)
+
+
+def _blank_c_spans(source: str, keep_strings: bool = False) -> str:
+    """`source` with comment spans blanked, offsets and lines intact, and string literals
+    blanked too unless `keep_strings`.
+
+    The compiler removes comments before the preprocessor ever sees a directive, so a
+    `#define PY_SSIZE_T_CLEAN` that only appears inside a `/* ... */` is not a definition
+    at all, and treating it as one silences the warning on a shim that still dies at the
+    first kernel launch. Blanked rather than deleted so every span keeps its length: the
+    scan below compares directive positions against the `#include <Python.h>` position,
+    and deleting text would move one relative to the other. Newlines are kept for the same
+    reason, since both patterns are line-anchored.
+
+    `keep_strings` is for the caller that has to read inside a literal: the PyArg_Parse
+    scan decides on the format string itself, so blanking literals would make every shim
+    look clean. String spans are still matched either way, since that is what stops a
+    `//` or a `/*` inside a literal from blanking the rest of the file.
+    """
+
+    def blank(match):
+        text = match.group(0)
+        if keep_strings and not text.startswith(("/*", "//")):
+            return text
+        return "".join("\n" if character == "\n" else " " for character in text)
+
+    return _C_COMMENT_OR_STRING.sub(blank, source)
+
+
+_PYARG_CALL = re.compile(r"PyArg_Parse\w*\(")
+_HASH_FORMAT = re.compile(r"\"[^\"]*#")
+
+
+def _parses_a_hash_format(source: str) -> bool:
+    """Does a call the compiler still sees parse a '#' format?
+
+    Two masked copies of the same offsets, because the two halves of the question need
+    opposite things. The CALL has to be real code, so it is located in the copy with both
+    comments and string literals blanked: a documentation string quoting an example
+    `PyArg_ParseTuple(args, "ss#ii", ...)` is not a call, and a commented-out one is not
+    either. The FORMAT then has to be readable, so the argument list is read from the copy
+    that blanks comments only. Blanking preserves length, so one offset serves both.
+    """
+    code_only = _blank_c_spans(source)
+    with_literals = _blank_c_spans(source, keep_strings = True)
+    for call in _PYARG_CALL.finditer(code_only):
+        end = with_literals.find(";", call.end())
+        if end == -1:
+            end = len(with_literals)
+        if _HASH_FORMAT.search(with_literals, call.end(), end):
+            return True
+    return False
+
+
+def _defines_py_ssize_t_clean_before_python_h(source: str) -> bool:
+    """Is the macro in effect where CPython needs it: defined, and still defined, at the
+    point Python.h is included.
+
+    The requirement is positional, not textual. CPython documents
+    `#define PY_SSIZE_T_CLEAN` immediately before `#include <Python.h>`; a definition
+    that lands after the include, one that is undefined again before it, and a bare
+    mention in a comment or a string literal all leave the '#' formats unsafe exactly as
+    if the macro were absent. The `token in source` test this replaces called all four of
+    those fixed, so the warning stayed silent on a shim that still dies at the first
+    kernel launch.
+
+    The LAST directive before the include is the one that decides, which is what makes
+    the `#define` / `#undef` pair read correctly rather than just the presence of either.
+    """
+    source = _blank_c_spans(source)
+    include = _PYTHON_H_INCLUDE.search(source)
+    if include is None:
+        return False
+    state = False
+    for directive in _PY_SSIZE_T_CLEAN_DIRECTIVE.finditer(source):
+        if directive.start() >= include.start():
+            break
+        state = directive.group(1) == "define"
+    return state
+
+
+# Every distribution this repository knows of that provides the `triton` import name. Only a
+# fallback for interpreters without `packages_distributions`; the mapping is asked for first
+# wherever it exists, so a provider added upstream is still found on 3.10 and later.
+# Providers published only on download.pytorch.org, so a reinstall of one needs torch's own
+# accelerator index rather than PyPI. `pytorch-triton*` is matched by prefix; these are the
+# renamed spellings that prefix no longer covers.
+_TORCH_INDEX_TRITON_PROVIDERS = ("triton-xpu", "triton-rocm")
+
+_TRITON_PROVIDERS = (
+    "triton",
+    "triton-windows",
+    "pytorch-triton",
+    "pytorch-triton-rocm",
+    "pytorch-triton-xpu",
+    # The renamed spellings. Both accelerator providers were renamed on
+    # download.pytorch.org: `pytorch-triton-rocm` stops at 3.5.1 and `triton-rocm` carries
+    # 3.7 onwards, the same split `pytorch-triton-xpu` and `triton-xpu` have. Missing here,
+    # a current ROCm or XPU shim reads as `triton==unknown` on the probing fallback, and
+    # the repair command then installs generic CUDA `triton` over the installed provider.
+    "triton-xpu",
+    "triton-rocm",
+)
+
+
+def _canonical_distribution(name):
+    """PEP 503 normalised, so `pytorch_triton_xpu` and `pytorch-triton-xpu` are one name."""
+    return re.sub(r"[-_.]+", "-", str(name)).lower()
+
+
+def _torch_required_triton_distributions():
+    """The Triton distributions the INSTALLED torch declares it needs, normalised.
+
+    torch pins its Triton by name as well as version (`triton~=3.8.0`,
+    `pytorch-triton-xpu==...`), so when a rename leaves the old dist-info in place beside
+    the new one this is the only record that says which of the two belongs to this torch.
+    Empty when torch declares none, or when its metadata cannot be read at all.
+    """
+    try:
+        from importlib.metadata import requires as _requires
+        declared = _requires("torch") or ()
+    except Exception:
+        return frozenset()
+    found = set()
+    for requirement in declared:
+        name = re.split(r"[\s;\[<>=!~(]", str(requirement).strip(), maxsplit = 1)[0]
+        if "triton" in name.lower():
+            found.add(_canonical_distribution(name))
+    return frozenset(found)
+
+
+def _distribution_owning_path(names, path):
+    """The distribution among `names` whose installed file list contains `path`, or None.
+
+    Providers can coexist: `studio/install_python_stack.py::_ensure_xpu_triton` documents
+    generic `triton` beside `pytorch-triton-xpu` on the same paths, and
+    `packages_distributions()` then reports both without saying which one last wrote the
+    file. Taking the first entry can name the CUDA provider for an XPU install and hand the
+    user a command that replaces their working Triton, which is the substitution this whole
+    helper exists to avoid. The offending `driver.c` is a concrete path, so ask which
+    distribution actually ships it.
+    """
+    if not path:
+        return None
+    try:
+        from importlib.metadata import distribution as _distribution
+        target = Path(path).resolve()
+    except Exception:
+        return None
+    claimants = []
+    for name in names:
+        try:
+            files = _distribution(name).files or ()
+        except Exception:
+            continue
+        for entry in files:
+            try:
+                if Path(entry.locate()).resolve() == target:
+                    claimants.append(name)
+                    break
+            except Exception:
+                continue
+    if len(claimants) == 1:
+        return claimants[0]
+    if not claimants:
+        return None
+    # Coexisting providers can both RECORD the same file, and then the first entry is
+    # nothing but ordering. Three tiebreaks, most authoritative first.
+    #
+    # 1. The distribution torch itself requires. A renamed provider leaves the old
+    #    dist-info behind (`pytorch-triton-xpu` beside `triton-xpu` after an upgrade), so
+    #    both claim the file and both name the backend; only torch says which one belongs
+    #    to the torch that is installed.
+    required = _torch_required_triton_distributions()
+    named = [name for name in claimants if _canonical_distribution(name) in required]
+    if len(named) == 1:
+        return named[0]
+    # 2. Failing that, torch's backend family, because the harmful answer is always the one
+    #    that installs a CUDA build over an accelerator one.
+    local = _torch_local_tag(getattr(sys.modules.get("torch"), "__version__", None)).lower()
+    for family in ("xpu", "rocm"):
+        if family in local:
+            matches = [name for name in claimants if family in name.lower()]
+            return matches[0] if len(matches) == 1 else None
+    # 3. And with no accelerator to preserve, the generic provider.
+    generic = [name for name in claimants if name.lower() == "triton"]
+    return generic[0] if len(generic) == 1 else None
+
+
+def _triton_distribution(offending_path = None):
+    """Which distribution owns the imported ``triton`` package, and its version.
+
+    The `triton` PyPI distribution is only one of the providers this repository supports.
+    Windows installs `triton-windows`, ROCm installs `pytorch-triton-rocm`, Intel XPU
+    installs `pytorch-triton-xpu`, and all of them land on the same `triton` import name.
+    Asking `importlib.metadata.version("triton")` on any of those raises
+    PackageNotFoundError, which is how the version used to be reported as "unknown", and
+    telling that user to `pip install --force-reinstall triton` either finds no wheel for
+    their platform or overwrites their platform build with a CUDA one.
+
+    `packages_distributions()` maps top-level import name to the distributions providing
+    it, which is the only mapping that answers this without guessing from the platform.
+    Falls back to the import name so the message still reads sensibly if the metadata is
+    missing entirely (an unpacked or vendored tree).
+    """
+    names = []
+    try:
+        from importlib.metadata import packages_distributions
+        names = list(packages_distributions().get("triton") or [])
+    except Exception:
+        names = []
+    if not names:
+        # `packages_distributions` is Python 3.10+, and pyproject still admits 3.9, where
+        # the import above raises and leaves this empty -- reporting `triton==unknown` and
+        # recommending the CUDA `triton` over the platform build, which is the exact
+        # failure this helper exists to avoid. The backport answers the same question when
+        # it is installed; when it is not, ask each provider directly, which needs no
+        # mapping at all: a provider that is not installed has no version to report.
+        try:
+            from importlib_metadata import packages_distributions as _backport
+            names = list(_backport().get("triton") or [])
+        except Exception:
+            names = []
+    if not names:
+        names = [name for name in _TRITON_PROVIDERS if _installed_version(name) != "unknown"]
+    # The distribution that actually ships the offending file wins over ordering, when the
+    # file is known and the metadata answers.
+    owner = _distribution_owning_path(names, offending_path)
+    if owner is not None:
+        names = [owner] + [name for name in names if name != owner]
+    # Prefer a provider that can actually report a version; a stale empty dist-info
+    # otherwise wins over the real one purely on ordering.
+    for name in names:
+        try:
+            return name, importlib_version(name)
+        except Exception:
+            continue
+    try:
+        return "triton", importlib_version("triton")
+    except Exception:
+        return (names[0] if names else "triton"), "unknown"
+
+
+def _triton_reinstall_command(distribution, triton_version):
+    """The pip command that repairs a broken Triton shim without changing which Triton is installed.
+
+    Pinned to the installed version, because torch pins Triton exactly (torch 2.6.0 requires
+    `triton==3.2.0`) and pip's `--force-reinstall` is documented only as "Reinstall all packages
+    even if they are already up-to-date" -- it still resolves the newest release, so the bare
+    command trades a broken-but-matching Triton for a working one torch cannot load. The
+    pytorch-triton-* providers are published only on download.pytorch.org, so those also need
+    torch's own accelerator index. An "unknown" version (vendored or stripped metadata) has no
+    pin to give, and an invented one would resolve to nothing at all, so that case stays bare.
+    """
+    index = ""
+    # `triton-xpu` as well as `pytorch-triton-*`: torch 2.10 renamed the XPU provider and
+    # pyproject pins the new name straight from download.pytorch.org (studio/setup.ps1
+    # records the rename too). Matching only the old spelling asked PyPI for `triton-xpu`,
+    # where that pinned wheel is not published at all.
+    if distribution.startswith("pytorch-triton") or distribution in _TORCH_INDEX_TRITON_PROVIDERS:
+        torch_version_raw = getattr(sys.modules.get("torch"), "__version__", None)
+        index = _torch_wheel_index(torch_version_raw)
+    if not triton_version or triton_version == "unknown":
+        spec = distribution
+    else:
+        spec = f'"{distribution}=={triton_version}"'
+    return f"pip install --force-reinstall --no-cache-dir{index} {spec}"
+
+
+def _triton_repair_advice(distribution, triton_version):
+    """How to repair this Triton, as one line, or two when no index can serve it.
+
+    A pip command only helps when some index publishes the pinned version. The AMD extras
+    install `triton==3.6.0+rocm7.2.0.gitba5c1517` from a repo.radeon.com URL under the
+    plain `triton` name, and neither PyPI nor download.pytorch.org has that version at
+    all, so a pinned command there resolves to nothing. Name the source instead, the same
+    way the torchvision advice does for a torch with no public wheel.
+    """
+    command = _triton_reinstall_command(distribution, triton_version)
+    if _is_conda_managed((distribution,), triton_version):
+        # conda-forge publishes `triton`, and a pip --force-reinstall over a conda-managed
+        # one overlays conda's own files with a wheel, leaving two package managers owning
+        # the same paths. Same reasoning, and same remedy shape, as the conda branch of the
+        # torch upgrade advice.
+        return (
+            f"conda installed this Triton, so repair it the same way "
+            f"(`conda install --force-reinstall {distribution}={triton_version}` on the "
+            f"channel it came from). A pip reinstall would overlay the conda files with a "
+            f"wheel and can change the backend with them."
+        )
+    local = (triton_version or "").split("+", 1)[1] if "+" in (triton_version or "") else ""
+    if local and "--index-url" not in command:
+        return (
+            f"Reinstall the Triton your torch pins from wherever this one came from: the "
+            f"+{local} tag marks a vendor build that no public index publishes (unsloth's "
+            f"AMD extras take theirs from repo.radeon.com), so a pinned pip command "
+            f"resolves to nothing:\n    {command}"
+        )
+    return f"Reinstall the Triton your torch pins:\n    {command}"
+
+
+def _triton_driver_shims_missing_py_ssize_t_clean():
+    """Installed triton backend driver shims that cannot parse their own
+    arguments on this interpreter, as [(backend, path), ...].
+
+    Static, because the failure is a property of the C source triton compiles at
+    run time: `loadBinary` parses with the format "ss#ii" into a Py_ssize_t, and
+    CPython below 3.13 raises SystemError for a '#' format unless the extension
+    was compiled with PY_SSIZE_T_CLEAN defined before Python.h.
+    """
+    if sys.version_info >= (3, 13):
+        return []
+    try:
+        spec = importlib.util.find_spec("triton")
+    except Exception:
+        return []
+    if spec is None or not spec.submodule_search_locations:
+        return []
+
+    offenders = []
+    for location in spec.submodule_search_locations:
+        backends = Path(location) / "backends"
+        if not backends.is_dir():
+            continue
+        for driver in sorted(backends.glob("*/driver.c")):
+            try:
+                source = driver.read_text(encoding = "utf-8", errors = "replace")
+            except Exception:
+                continue
+            if "Python.h" not in source:
+                continue
+            if _defines_py_ssize_t_clean_before_python_h(source):
+                continue
+            if not _parses_a_hash_format(source):
+                continue
+            offenders.append((driver.parent.name, str(driver)))
+    return offenders
+
+
+def check_triton_py_ssize_t_clean():
+    """Warn when triton's driver shim will fail at the first kernel launch.
+
+    unsloth #2760: training died at the first Triton kernel with
+
+        SystemError: PY_SSIZE_T_CLEAN macro must be defined for '#' formats
+
+    raised from `driver.active.utils.load_binary`, on Python 3.12. Measured
+    against the wheels, every triton on PyPI from 3.0.0 to 3.8.0 defines the
+    macro in `backends/<backend>/driver.c`, so raising the `triton>=3.0.0` floor
+    in pyproject.toml would not have prevented this and cannot: torch pins triton
+    exactly (torch 2.6.0 requires `triton==3.2.0`), so any floor above what the
+    oldest supported torch carries makes that torch unresolvable rather than
+    safe. What is actually broken in these reports is a rebuilt or repackaged
+    triton whose shim lost the macro, which no dependency specifier can describe,
+    so name it here instead. Warns rather than raises: nothing has failed yet,
+    and a process that launches no Triton kernel never will.
+    """
+    if os.environ.get("UNSLOTH_SKIP_TRITON_SHIM_CHECK", "0").lower() in ("1", "true"):
+        return
+    try:
+        offenders = _triton_driver_shims_missing_py_ssize_t_clean()
+    except Exception:
+        return
+    if not offenders:
+        return
+
+    distribution, triton_version = _triton_distribution(offenders[0][1] if offenders else None)
+    python_version = ".".join(str(part) for part in sys.version_info[:3])
+    reinstall = _triton_repair_advice(distribution, triton_version)
+
+    logger.warning(
+        f"Unsloth: {distribution}=={triton_version} ships a "
+        f"{', '.join(backend for backend, _ in offenders)} driver shim that includes "
+        f"Python.h without defining {_PY_SSIZE_T_CLEAN}, and Python {python_version} "
+        f"requires that macro for the '#' argument formats the shim uses. The first "
+        f"Triton kernel launch in this process will fail with\n"
+        f"    SystemError: {_PY_SSIZE_T_CLEAN} macro must be defined for '#' formats\n"
+        f"Every published Triton build defines it, so this is a rebuilt or repackaged one. "
+        f"{reinstall}\n"
+        f"Python 3.13 and later do not need the macro, so moving to a newer Python "
+        f"also clears it. Affected file(s): "
+        f"{', '.join(path for _, path in offenders)}. Set "
+        f"UNSLOTH_SKIP_TRITON_SHIM_CHECK=1 to silence this."
+    )
 
 
 # Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined

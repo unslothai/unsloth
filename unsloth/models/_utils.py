@@ -914,14 +914,31 @@ def resolve_encoder_attention_implementation(
 def _run_temporary_patches(phase):
     import inspect
     for temporary_patch in TEMPORARY_PATCHES:
+        # Two separate questions, kept separate. inspect.signature raises
+        # ValueError or TypeError for a callable whose signature it cannot read,
+        # which only tells us we cannot see a `phase` parameter; catching those
+        # around the CALL as well re-ran a patch that had already half applied,
+        # and let every other exception out of an optional patch step and
+        # straight through `import unsloth` (#3130 ended the import
+        # on a SyntaxError from one of them). A temporary patch is an
+        # optimisation that reports its own failures through raise_error, so a
+        # patch that raises anyway is logged, not fatal.
         try:
-            sig = inspect.signature(temporary_patch)
-            if "phase" in sig.parameters:
+            accepts_phase = "phase" in inspect.signature(temporary_patch).parameters
+        except (ValueError, TypeError):
+            accepts_phase = False
+        try:
+            if accepts_phase:
                 temporary_patch(phase = phase)
             else:
                 temporary_patch()
-        except (ValueError, TypeError):
-            temporary_patch()
+        except Exception as exception:
+            logger.warning(
+                f"Unsloth: temporary patch "
+                f"{getattr(temporary_patch, '__name__', temporary_patch)} failed in "
+                f"phase {phase} and was skipped. "
+                f"({type(exception).__name__}: {exception})"
+            )
 
 
 _run_temporary_patches("init")

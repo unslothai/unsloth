@@ -184,6 +184,15 @@ studio = [
 ]
 
 triton = [
+    # Not raised past 3.0.0 on purpose. torch pins triton exactly, and the oldest
+    # torch supported here, 2.6.0, requires `triton==3.2.0`, so any floor above
+    # that makes torch 2.6.0 unresolvable rather than safe, and a marker cannot
+    # be written against another distribution's version. The two triton defects
+    # that were reported through us are handled where the version is actually
+    # known: the sm_75 cut cross entropy miscompile in triton 3.3.0 and 3.3.1
+    # (#2491) by the gate in unsloth_zoo/loss_utils.py, and the missing
+    # PY_SSIZE_T_CLEAN in a repackaged driver shim (#2760) by
+    # check_triton_py_ssize_t_clean() in unsloth/import_fixes.py.
     "triton>=3.0.0 ; ('linux' in sys_platform)",
     # triton-windows has win_arm64 wheels from 3.8.0.post28, so a floor works here, not a marker.
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
