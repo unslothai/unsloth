@@ -1179,6 +1179,7 @@ def the_vulkan_loader_override_to_blame() -> "str | None":
     paths = _vulkan_icd_manifest_paths()
     if not paths:
         return None
+    blockers: "list[str]" = []
     if not any(_vulkan_loader_allows(path) for path in paths):
 
         def _patterns(var: str) -> "list[str]":
@@ -1198,12 +1199,12 @@ def the_vulkan_loader_override_to_blame() -> "str | None":
             for path in paths
         )
         if select_is_it:
-            return "VK_LOADER_DRIVERS_SELECT"
-        if disable_is_it:
-            return "VK_LOADER_DRIVERS_DISABLE"
-        if select and disable:
+            blockers.append("VK_LOADER_DRIVERS_SELECT")
+        elif disable_is_it:
+            blockers.append("VK_LOADER_DRIVERS_DISABLE")
+        elif select and disable:
             # Both match everything left, so neither one alone is the repair.
-            return "VK_LOADER_DRIVERS_SELECT and VK_LOADER_DRIVERS_DISABLE together"
+            blockers += ["VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE"]
     # Reached only when the filters are not what emptied the set, so the manifests
     # themselves do not resolve. A forced list is to blame for THAT only when the list is
     # what went wrong: a path that is not there, or an ordinary search it hides that would
@@ -1213,12 +1214,18 @@ def the_vulkan_loader_override_to_blame() -> "str | None":
     for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         if not (os.environ.get(var) or "").strip():
             continue
-        if any(not os.path.exists(path) for path in paths) or _loadable_icd_manifests(
-            _searched_vulkan_icd_manifest_paths()
+        # A stale path is a blocker even when a filter is one too: clearing the filter
+        # leaves the loader reading a manifest that is not there. The searched-drivers
+        # question is only asked when no filter is in the way, since a filter would
+        # exclude those as well and the answer would be the same either way.
+        if any(not os.path.exists(path) for path in paths) or (
+            not blockers and _loadable_icd_manifests(_searched_vulkan_icd_manifest_paths())
         ):
-            return var
+            blockers.append(var)
+        break
+    if not blockers:
         return None
-    return None
+    return blockers[0] if len(blockers) == 1 else " and ".join(blockers) + " together"
 
 
 def a_non_amd_render_node_is_open() -> bool:
@@ -1705,6 +1712,11 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             # repair, and one per GID: with two unnamed GIDs a singular instruction repairs
             # at most one of the nodes.
             _each = "it" if len(unnamed) == 1 else "each of them"
+            _pairs = "; ".join(
+                f"sudo groupadd -g {_g} amdgpu{_g} && "
+                f"sudo usermod -a -G amdgpu{_g} {_shell_word(user)}"
+                for _g in unnamed
+            )
             # A pair per GID, not just the first: the sentence already says "each of them",
             # and one groupadd names one numeric owner, so a host whose nodes differ in group
             # had every node after the first left shut by the command it was told to run.
@@ -1715,11 +1727,6 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             # NAME, so the && is load bearing: on a host that already has an amdgpu<GID>
             # group at a different GID, an unchained usermod would SUCCEED against the wrong
             # group and leave the node shut, having reported success.
-            _pairs = "; ".join(
-                f"sudo groupadd -g {_g} amdgpu{_g} && "
-                f"sudo usermod -a -G amdgpu{_g} {_shell_word(user)}"
-                for _g in unnamed
-            )
             if user is None:
                 # The bare-host half needs an account to add and there is none, so the
                 # container half is the whole repair for this shape.

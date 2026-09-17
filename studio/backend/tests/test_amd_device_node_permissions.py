@@ -5681,6 +5681,38 @@ def test_a_forced_list_whose_manifest_is_fine_still_asks_for_a_reinstall(monkeyp
     )
 
 
+def test_a_stale_forced_path_is_named_beside_the_filter_that_also_blocks_it(monkeypatch):
+    """Clearing the filter leaves the loader reading a manifest that is not there, so the
+    filter alone was never the repair. Both blockers are named rather than the first one
+    the counterfactual happens to accept.
+    """
+    monkeypatch.setattr(amd, "_searched_vulkan_icd_manifest_paths", list)
+    assert (
+        _loader_blame(
+            monkeypatch,
+            {"/gone/radeon.json": True},
+            VK_DRIVER_FILES = "/gone/radeon.json",
+            VK_LOADER_DRIVERS_DISABLE = "radeon*",
+        )
+        == "VK_LOADER_DRIVERS_DISABLE and VK_DRIVER_FILES together"
+    )
+    # The control in each direction: neither half is named on its own account when the
+    # other is absent, so this is not "always say both".
+    assert (
+        _loader_blame(monkeypatch, {"/gone/radeon.json": True}, VK_DRIVER_FILES = "/gone/radeon.json")
+        == "VK_DRIVER_FILES"
+    )
+    assert (
+        _loader_blame(
+            monkeypatch,
+            {__file__: True},
+            VK_DRIVER_FILES = __file__,
+            VK_LOADER_DRIVERS_DISABLE = "*",
+        )
+        == "VK_LOADER_DRIVERS_DISABLE"
+    )
+
+
 def test_a_loader_with_no_manifests_at_all_blames_nothing(monkeypatch):
     """The other control. Finding nothing says only that this cannot read the loader's
     configuration, which the_vulkan_loader_has_no_usable_driver already answers False for,
