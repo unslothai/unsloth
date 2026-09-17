@@ -349,6 +349,7 @@ def test_an_in_process_update_does_not_stage(monkeypatch, studio, tmp_path):
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     monkeypatch.setattr(studio.sys, "executable", str(tmp_path / "bin" / "python"))
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda: None)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "studio_home")
     staged = []
     monkeypatch.setattr(studio, "_refuse_staged_update", lambda: staged.append("refused"))
     calls = []
@@ -373,6 +374,36 @@ def test_an_in_process_update_does_not_stage(monkeypatch, studio, tmp_path):
 
     assert staged == []
     assert calls == ["setup", "verify", "refresh"]
+
+
+def test_in_process_update_gates_its_own_studio_home(monkeypatch, studio, tmp_path):
+    """Regression: without a private STUDIO_HOME the runtime gate flock'd the runner's real
+    ~/.unsloth/studio/.studio-runtime.lock, contending with other pytest-xdist workers."""
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(studio.sys, "executable", str(tmp_path / "bin" / "python"))
+    monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda: None)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "studio_home")
+    gated_homes = []
+
+    real_guard = studio._studio_runtime_gate.studio_runtime_launch_guard
+
+    def guard(studio_home, **_kwargs):
+        gated_homes.append(studio_home)
+        return real_guard(studio_home, **_kwargs)
+
+    monkeypatch.setattr(
+        studio._studio_runtime_gate, "studio_runtime_launch_guard", guard, raising = False
+    )
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda *_a, **_k: None)
+    monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda **_kwargs: None)
+    monkeypatch.setattr(studio, "_refuse_staged_update", lambda: None)
+
+    _update(studio)
+
+    assert gated_homes, "the update never entered the runtime gate"
+    for gated_home in gated_homes:
+        assert gated_home == tmp_path / "studio_home"
 
 
 def _shim(studio, payload = ORIGINAL_LAUNCHER):
