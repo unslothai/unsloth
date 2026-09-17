@@ -1269,6 +1269,7 @@ def test_start_studio_tunnel_no_url_retries_stop_at_the_budget(monkeypatch):
     # _READY_TIMEOUT per attempt, so the retries must stop once the budget is spent instead of
     # stacking one timeout per delay.
     attempts, waits, clock = [], [], [0.0]
+    fails_after = [15.0, 15.0, 15.0]  # the request is swallowed: every attempt waits out the timeout
 
     class _Stub:
         def __init__(
@@ -1286,7 +1287,7 @@ def test_start_studio_tunnel_no_url_retries_stop_at_the_budget(monkeypatch):
 
         def wait_for_ready(self, timeout):
             waits.append(timeout)
-            clock[0] += timeout  # the request is swallowed, so every attempt waits out the timeout
+            clock[0] += fails_after[len(attempts) - 1]
             return None
 
         def stop(self):
@@ -1301,10 +1302,52 @@ def test_start_studio_tunnel_no_url_retries_stop_at_the_budget(monkeypatch):
     monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
 
     assert ct.start_studio_tunnel(8080) is None
-    # 15s attempt, 2s delay, 15s attempt -> 32s spent, over budget, so the 5s delay is never taken.
-    assert attempts == [None, None]
-    assert clock[0] == 32.0
+    # One attempt already costs 15s; 15 + 2 + another 15 would overrun the 30s budget, so no retry
+    # is started and the stall stays what it was before the retries existed.
+    assert attempts == [None]
+    assert clock[0] == 15.0
     assert ct.get_studio_tunnel_status()["error"] == "cloudflared did not produce a URL"
+
+
+def test_start_studio_tunnel_no_url_retry_never_overruns_the_budget(monkeypatch):
+    # A retry authorized just inside the budget still pays a delay plus a whole attempt, so the
+    # check has to fit those in as well: failures at 14s and 13s must not buy a third attempt that
+    # would carry the sequence to 49s.
+    attempts, clock = [], [0.0]
+    fails_after = [14.0, 13.0, 15.0]
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+            origin_host = "localhost",
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            pass
+
+        def wait_for_ready(self, timeout):
+            clock[0] += fails_after[len(attempts) - 1]
+            return None
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "_READY_TIMEOUT", 15.0)
+    monkeypatch.setattr(ct, "_NO_URL_RETRY_DELAYS", (2.0, 5.0))
+    monkeypatch.setattr(ct, "_NO_URL_RETRY_BUDGET", 30.0)
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None]
+    assert clock[0] <= ct._NO_URL_RETRY_BUDGET
 
 
 def test_start_studio_tunnel_no_url_retries_survive_a_fast_failure(monkeypatch):

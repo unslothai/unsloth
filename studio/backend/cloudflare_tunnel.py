@@ -961,7 +961,10 @@ def start_studio_tunnel(
             retry_no_url = (
                 not saw_url
                 and bool(no_url_delays)
-                and time.monotonic() - no_url_started < _NO_URL_RETRY_BUDGET
+                # The delay and a whole further attempt have to fit too, or the budget would only
+                # bound where the last retry was authorized and not the sequence it pays for.
+                and time.monotonic() - no_url_started + no_url_delays[0] + _READY_TIMEOUT
+                <= _NO_URL_RETRY_BUDGET
             )
             tail = tunnel.output_tail() if hasattr(tunnel, "output_tail") else ""
             logging.getLogger(__name__).warning(
