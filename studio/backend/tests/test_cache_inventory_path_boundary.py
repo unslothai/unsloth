@@ -1548,6 +1548,47 @@ def test_a_directory_name_with_punctuation_is_removed_whole():
         assert redact_paths_in_text(kept) == kept, kept
 
 
+def test_a_comma_in_a_directory_name_does_not_leave_the_rest_of_the_path():
+    """The run stops at a comma so a list of paths stays a list, and a name like `Acme, Inc`
+    then ended it early: the redaction replaced the head and posted the remainder."""
+    from hub.utils.host_paths import redact_paths_in_text
+
+    for message, expected in (
+        # Trailing prose goes with it, as it does for any name that may contain spaces.
+        ("load /home/operator/Acme, Inc/private/model.bin failed", "load <path>"),
+        ("read /srv/Acme, Inc, Ltd/private/model.bin", "read <path>"),
+        (r"C:\Users\operator\Acme, Inc\private\model.bin", "<path>"),
+        ("read /srv/models; Acme; Inc/private/model.bin", "read <path>"),
+    ):
+        cleaned = redact_paths_in_text(message)
+        assert cleaned == expected, (message, cleaned)
+        for leaked in ("Inc", "private", "model.bin", "operator", "Acme", "Ltd"):
+            assert leaked not in cleaned, (message, cleaned)
+
+    # The terminators still terminate: the reason, the list and the quote are all untouched,
+    # because none of them continues with a separator after the terminator.
+    assert redact_paths_in_text("Skipping /a/b: Permission denied") == (
+        "Skipping <path>: Permission denied"
+    )
+    assert redact_paths_in_text("tried /a/b, /c/d") == "tried <path>, <path>"
+    assert redact_paths_in_text('opened "/a/b" already') == 'opened "<path>" already'
+    assert redact_paths_in_text("Skipping /a/b: denied, see /etc/fstab") == (
+        "Skipping <path>: denied, see <path>"
+    )
+
+
+def test_the_redacted_tail_pass_stays_linear():
+    """Nested quantifiers over caller-influenced text, so a long line has to stay cheap."""
+    import time
+
+    from hub.utils.host_paths import redact_paths_in_text
+
+    text = "/srv/models" + ", filler" * 4000
+    started = time.monotonic()
+    redact_paths_in_text(text)
+    assert time.monotonic() - started < 1.0
+
+
 def test_every_preflight_schema_resolves_an_inventory_handle():
     """A preflight is where the reference arrives FIRST.
 

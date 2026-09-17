@@ -146,17 +146,37 @@ _repo_access_inflight: dict[tuple[str, str, str], threading.Lock] = {}
 # refusal no longer holds, so only an affirmative answer clears it. The size cap below is what
 # bounds the table, and the entries are recorded in insertion order so the cap evicts the
 # oldest refusal rather than an arbitrary one.
+#
+# Eviction is a hole in exactly the same way an expiry is: forget a refusal and the credential
+# it was given against reads as never refused, so the next unaskable probe resolves it against
+# the operator's disk. A caller that can make the Hub refuse it can drive that, since a route
+# taking a repo id refuses one key per id it has never been granted. So the table is bounded by
+# its OWN cap rather than sharing the verdict cache's, and losing an entry is remembered: past
+# that point "the Hub could not be asked" stops meaning "read the disk" for every key, because
+# this can no longer say which refusals it has forgotten. Fail closed, and only for the offline
+# fallback -- an answered Hub, a public repo and a host that never collected a refusal are all
+# untouched, and an air-gapped host never records one in the first place.
+_DENIAL_MEMORY_MAX = 8192
 _denied_repo_access: dict[tuple[str, str, str], float] = {}
+_denial_memory_is_complete = True
 
 
 def _remember_denial(key: tuple[str, str, str], now: float) -> None:
+    global _denial_memory_is_complete
     with _repo_access_lock:
         # Re-insert at the end so a refusal that is still being re-asked is not the first to be
         # evicted. The stored time is the eviction order only; it never expires the entry.
         _denied_repo_access.pop(key, None)
-        while len(_denied_repo_access) >= _REPO_ACCESS_CACHE_MAX:
+        while len(_denied_repo_access) >= _DENIAL_MEMORY_MAX:
             _denied_repo_access.pop(next(iter(_denied_repo_access)), None)
+            _denial_memory_is_complete = False
         _denied_repo_access[key] = now
+
+
+def _denial_memory_lost_an_entry() -> bool:
+    """Whether a refusal this host was given has been dropped to keep the table bounded."""
+    with _repo_access_lock:
+        return not _denial_memory_is_complete
 
 
 def _forget_denial(key: tuple[str, str, str]) -> None:
@@ -170,8 +190,12 @@ def _denial_is_remembered(key: tuple[str, str, str]) -> bool:
 
 
 def _with_remembered_denial(key: tuple[str, str, str], verdict: Optional[bool]) -> Optional[bool]:
-    """A verdict of "could not ask" reads as the last answer the Hub gave, if it was no."""
-    if verdict is None and _denial_is_remembered(key):
+    """A verdict of "could not ask" reads as the last answer the Hub gave, if it was no.
+
+    Once a refusal has been evicted, no key can claim it was never refused, so an unaskable
+    Hub answers no for all of them rather than falling back to the operator's disk.
+    """
+    if verdict is None and (_denial_is_remembered(key) or _denial_memory_lost_an_entry()):
         return False
     return verdict
 
@@ -245,10 +269,12 @@ def reset_repo_access_cache() -> None:
     that only cleared the cache would carry one test's refusal into the next one's unaskable
     probe.
     """
+    global _denial_memory_is_complete
     with _repo_access_lock:
         _repo_access_cache.clear()
         _repo_access_inflight.clear()
         _denied_repo_access.clear()
+        _denial_memory_is_complete = True
 
 
 def cache_reads_authorized(

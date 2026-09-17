@@ -593,6 +593,32 @@ def scrub_paths(text: Any) -> str:
 
 _REDACTED_PATH = "<path>"
 
+# What is left over when a directory name contains one of the terminators. The run has to stop
+# at a comma, a semicolon and a colon, or a message loses its reason along with its path and a
+# list of paths stops being a list -- but a name like `Acme, Inc` then ends the run early and
+# `/home/operator/Acme, Inc/private/model.bin` came back as `<path>, Inc/private/model.bin`,
+# which is most of the host path, in the one place the redaction exists for.
+#
+# So after the absolute runs are replaced, a tail that continues the path is replaced as well: a
+# terminator, then text carrying at least one more separator. That last condition is what keeps
+# the terminators terminating -- `<path>: Permission denied` and `<path>, <path>` have no
+# separator after the terminator and are left exactly as they were, while `<path>, Inc/private`
+# does and goes. `Acme, Inc, Ltd/private` needs more than one hop, so the terminators repeat,
+# and the cost of that is prose between a terminator and a LATER path being removed as well --
+# over-removing, which is the safe direction for text that leaves the host and is what the
+# pattern above already chose for a name containing a bracket. Applied only here, not in
+# ``scrub_paths``: a local log wants its prose, and it is not a boundary.
+_REDACTED_TAIL_TEXT = r"[^\s\\/\":;,][^\\/\":;,]*"
+_REDACTED_TAIL_RE = re.compile(
+    re.escape(_REDACTED_PATH)
+    + r"(?:(?:[:;,][ ]?"
+    + _REDACTED_TAIL_TEXT
+    + r")+"
+    + r"(?:[\\/]"
+    + _REDACTED_TAIL_TEXT
+    + r")+)+"
+)
+
 
 def redact_paths_in_text(text: Any) -> str:
     """Remove every absolute path from a message, rather than shortening it.
@@ -605,7 +631,7 @@ def redact_paths_in_text(text: Any) -> str:
     message = text if isinstance(text, str) else ("" if text is None else str(text))
     if not message:
         return ""
-    return _ABSOLUTE_PATH_RE.sub(_REDACTED_PATH, message)
+    return _REDACTED_TAIL_RE.sub(_REDACTED_PATH, _ABSOLUTE_PATH_RE.sub(_REDACTED_PATH, message))
 
 
 def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:

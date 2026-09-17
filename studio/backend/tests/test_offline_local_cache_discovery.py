@@ -501,6 +501,63 @@ def test_a_repo_that_was_never_refused_still_resolves_against_the_disk(monkeypat
     ), "a second principal inherited the operator's cache through an outage"
 
 
+def test_a_refusal_the_table_had_to_forget_closes_the_outage_path(monkeypatch, tmp_path):
+    """Eviction is the same hole an expiry would be. A route that takes a repo id collects one
+    refusal per id it is not granted, so a caller can push its own earlier refusal out of a
+    bounded table and then ask again while the Hub is unaskable -- and an unaskable Hub with
+    nothing remembered resolves against the operator's disk."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    monkeypatch.setattr(hf_tokens, "_DENIAL_MEMORY_MAX", 4)
+
+    _counting_probe(monkeypatch, False, offline = False)
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    assert not hf_tokens._denial_memory_lost_an_entry()
+
+    # The refusals that push it out are for repos this caller was never granted.
+    for index in range(8):
+        hf_tokens._repo_access_cache.clear()
+        assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = f"acme/filler-{index}") is False
+    assert hf_tokens._denial_memory_lost_an_entry(), "the table dropped nothing"
+
+    hf_tokens._repo_access_cache.clear()
+    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
+    assert (
+        cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    ), "a forgotten refusal read as never refused, and the outage served the cached repo"
+
+
+def test_forgetting_one_refusal_is_not_a_reason_to_refuse_an_answered_hub(monkeypatch, tmp_path):
+    """Fail closed for the offline fallback only: an answer is still an answer, and a public
+    repo is still public."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    monkeypatch.setattr(hf_tokens, "_DENIAL_MEMORY_MAX", 1)
+    hf_tokens._remember_denial(("acme/one", "model", "hash"), 1.0)
+    hf_tokens._remember_denial(("acme/two", "model", "hash"), 2.0)
+    assert hf_tokens._denial_memory_lost_an_entry()
+
+    _counting_probe(monkeypatch, True, offline = False)
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+
+    reset_repo_access_cache()
+    assert (
+        not hf_tokens._denial_memory_lost_an_entry()
+    ), "the reset left the fail-closed marker set for every following test"
+
+
+def test_a_refusal_still_being_re_asked_is_not_the_one_dropped(monkeypatch):
+    """Re-insertion order, so the table sheds the oldest refusal rather than the live one."""
+    monkeypatch.setattr(hf_tokens, "_DENIAL_MEMORY_MAX", 3)
+    keys = [(f"acme/{index}", "model", "hash") for index in range(3)]
+    for at, key in enumerate(keys):
+        hf_tokens._remember_denial(key, float(at))
+    hf_tokens._remember_denial(keys[0], 9.0)
+    hf_tokens._remember_denial(("acme/new", "model", "hash"), 10.0)
+    assert hf_tokens._denial_is_remembered(keys[0])
+    assert not hf_tokens._denial_is_remembered(keys[1])
+
+
 def test_the_denial_memory_is_dropped_by_the_test_reset(monkeypatch, tmp_path):
     """It outlives the verdict cache, so the reset has to clear it or one test's refusal
     decides the next test's outage."""
