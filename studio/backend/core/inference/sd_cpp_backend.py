@@ -547,7 +547,8 @@ def _physical_position_of(hip_index: int) -> "tuple[Optional[str], Optional[int]
     if not hip_by_row:
         return None, None
     physical_index = next(
-        (row for row, hip in hip_by_row.items() if hip == hip_index), None,
+        (row for row, hip in hip_by_row.items() if hip == hip_index),
+        None,
     )
     if physical_index is None:
         return None, None

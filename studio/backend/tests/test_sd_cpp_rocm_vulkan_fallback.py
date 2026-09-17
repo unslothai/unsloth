@@ -1619,7 +1619,11 @@ def _pinned_torch(monkeypatch, names):
     monkeypatch.setitem(__import__("sys").modules, "torch", type("torch", (), {"cuda": _FakeCuda}))
 
 
-def _pinned_inventory(monkeypatch, devices, hip_by_row = None):
+def _pinned_inventory(
+    monkeypatch,
+    devices,
+    hip_by_row = None,
+):
     """The inventory, plus the amd-smi mapping from its probe rows to HIP device ids.
 
     Two index spaces: a visibility mask and torch both speak HIP ids, while the inventory's
@@ -1697,7 +1701,7 @@ def test_a_hip_id_is_translated_into_the_inventorys_own_row(monkeypatch):
     from core.inference import video as video_mod
 
     _no_visibility_mask(monkeypatch)
-    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")          # HIP id 0 ...
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")  # HIP id 0 ...
     _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX"])
     _pinned_inventory(
         monkeypatch,
@@ -2508,9 +2512,7 @@ def test_a_resident_server_does_not_cost_the_reload_its_native_engine(fake_setti
     from core.inference import sd_cpp_backend
 
     monkeypatch.setattr(router, "_install_allowed", lambda: True)
-    monkeypatch.setattr(
-        router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server"
-    )
+    monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server")
     monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
     monkeypatch.setattr(router, "_server_binary_runnable", lambda _b: True)
     monkeypatch.setattr(
@@ -2533,9 +2535,9 @@ def test_a_resident_server_does_not_cost_the_reload_its_native_engine(fake_setti
     family = _detect_load_family(H3_REPO, None, "minimax-h3")
 
     monkeypatch.setattr(router, "_managed_tree_in_use", lambda: True)
-    assert router.select_and_activate_engine(family) == "sd_cpp", (
-        "the reload that should have upgraded to Vulkan behind the teardown went to diffusers"
-    )
+    assert (
+        router.select_and_activate_engine(family) == "sd_cpp"
+    ), "the reload that should have upgraded to Vulkan behind the teardown went to diffusers"
 
     # And with the tree free, nothing changes: an ensure that still hands back the condemned
     # build has no teardown coming to fix it, so it is refused exactly as before.
