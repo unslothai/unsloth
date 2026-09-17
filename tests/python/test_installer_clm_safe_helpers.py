@@ -40,6 +40,7 @@ CLM_REACHABLE = (
     "Resolve-StudioFinalPathsInOneChild",
     "Get-StudioPythonProcessImageTable",
     "Remove-StudioTrailingNewline",
+    "Get-RunningStudioVenvProcesses",
     # The NVIDIA inventory's Python rung. It is REACHED when the emitted probe type declined,
     # and Constrained Language Mode is the commonest reason it declines, so this one runs under
     # CLM more often than any other helper here.
@@ -139,6 +140,22 @@ def _code_lines(body: str) -> list[str]:
     return out
 
 
+def _joined_pipelines(code: str) -> str:
+    """One pipeline per line.
+
+    PowerShell continues a pipeline after a trailing `|`, so the projection that makes a
+    Get-Process safe often sits on the NEXT line. Read line by line, the rule below fired on the
+    formatting rather than on the code.
+    """
+    out: list[str] = []
+    for line in code.split("\n"):
+        if out and out[-1].rstrip().endswith("|"):
+            out[-1] = out[-1].rstrip() + " " + line.strip()
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 SOURCE = INSTALL_PS1.read_text(encoding = "utf-8")
 BODIES = {name: _extent(SOURCE, name) for name in CLM_REACHABLE}
 
@@ -214,6 +231,54 @@ def test_the_checks_are_not_vacuous():
         "New-TemporaryFile"
     ]
     assert re.search(r"\[ref\]\s*\$", code)
+
+
+@pytest.mark.parametrize("name", CLM_REACHABLE)
+def test_no_raw_process_object_is_iterated(name: str):
+    """Get-Process hands back System.Diagnostics.Process, which CLM will not let script read.
+
+    This one is not a static call or a single named property, it is a SHAPE: the objects come out
+    of a cmdlet, so nothing above flags them, and then the loop body reads .Id off each one. Under
+    Constrained Language Mode that throws, and in the one place it mattered it threw inside a
+    `catch { continue }`, so every process was skipped in silence and the live-process guard went
+    blind on exactly the hosts these fallbacks exist for.
+
+    Select-Object projects into a PSCustomObject, which IS on the allowed list, and does the read
+    itself inside compiled code. So the rule is: a Get-Process whose output this code walks must be
+    piped through Select-Object first.
+    """
+    code = _joined_pipelines("\n".join(_code_lines(BODIES[name])))
+    for match in re.finditer(r"Get-Process\b([^\r\n]*)", code):
+        assert "Select-Object" in match.group(1), (
+            f"{name} uses the output of Get-Process without projecting it: "
+            f"{match.group(0).strip()!r}. Constrained Language Mode refuses property reads on "
+            "System.Diagnostics.Process; pipe through Select-Object -Property Id, ProcessName."
+        )
+
+
+def test_the_raw_process_rule_is_not_vacuous():
+    """It must fire on the unprojected spelling and stay quiet on the projected one."""
+    bad = """function Fake-Scan {
+        foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) { $null = $p.Id }
+    }"""
+    good = """function Fake-Scan {
+        foreach ($p in @(Get-Process -ErrorAction SilentlyContinue | Select-Object -Property Id)) { $null = $p.Id }
+    }"""
+    wrapped = """function Fake-Scan {
+        foreach ($p in @(Get-Process -ErrorAction SilentlyContinue |
+            Select-Object -Property Id)) { $null = $p.Id }
+    }"""
+    def offends(sample: str) -> bool:
+        code = _joined_pipelines("\n".join(_code_lines(_extent(sample, "Fake-Scan"))))
+        return any(
+            "Select-Object" not in m.group(1)
+            for m in re.finditer(r"Get-Process\b([^\r\n]*)", code)
+        )
+    assert offends(bad)
+    assert not offends(good)
+    # And a pipeline broken across lines is still one pipeline, which is how the real one is
+    # written; without the join the rule fired on its own formatting.
+    assert not offends(wrapped)
 
 
 def test_the_comment_stripper_keeps_the_code():

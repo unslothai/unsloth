@@ -5705,7 +5705,17 @@ exit 0
         # The cache is script-scoped and keyed on the raw image path, so the repeat scans cost
         # nothing at all. It is a cache of answers, not a second resolver; every entry is what
         # the single-path rung would have returned.
-        $studioScanProcesses = @(Get-Process -ErrorAction SilentlyContinue)
+        # Select-Object, not the raw Get-Process output. Constrained Language Mode permits
+        # property reads only on its allowed type list, and System.Diagnostics.Process is not on
+        # it, so $process.Id THROWS there rather than returning anything. It throws INSIDE the
+        # catch below, so every process was skipped in silence and the live-process guard went
+        # blind on exactly the hosts the ctypes rung exists for: the installer would then find no
+        # running processes and overwrite a managed environment in use. Select-Object projects
+        # into a PSCustomObject, which IS on the allowed list, and does the read itself inside
+        # compiled code where the language mode does not reach. Same reason as the
+        # -ExpandProperty Source in Get-StudioEarlyPython.
+        $studioScanProcesses = @(Get-Process -ErrorAction SilentlyContinue |
+            Select-Object -Property Id, ProcessName)
         $studioScanImages = @{}
         foreach ($process in $studioScanProcesses) {
             $image = $null
