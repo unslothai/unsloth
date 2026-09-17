@@ -177,8 +177,28 @@ test("the row menu carries the connected actions", () => {
   assert.doesNotMatch(pickers, /Use by default in new chats/);
   // Unticking a model belongs to the connection form, which owns that list.
   assert.doesNotMatch(pickers, /Hide from this list/);
-  // Nor is the connection: it is one setting shared by every row under the heading.
-  assert.doesNotMatch(pickers, /label: "Connection settings"/);
+  // The connection is the heading's, not the row's: a row under one would offer the same
+  // destination twice. Only a row with no heading over it carries the entry, and the group
+  // heading's own gear is what every other row reaches it through.
+  assert.match(
+    pickers,
+    /\.\.\.\(headless && onConfigureConnection\s*\? \[\s*\{\s*key: "connection",\s*label: "Connection settings",/,
+  );
+  assert.match(
+    pickers,
+    /onSelect: \(\) => onConfigureConnection\(model\.providerId\),/,
+  );
+});
+
+test("a connection stays reachable when its heading is gone", () => {
+  // The name sort drops every heading, and a connection whose every model is pinned loses its
+  // group entirely, so the heading gear cannot be the only way in.
+  assert.match(pickers, /if \(connectedSort !== "name"\) return groups;/);
+  assert.match(
+    pickers,
+    /for \(const model of connectedMatches\) \{\s*if \(pinnedConnectedSet\.has\(model\.id\)\) continue;/,
+  );
+  assert.match(pickers, /headless && onConfigureConnection/);
 });
 
 test("the connection's own settings hang off the group heading", () => {
@@ -268,6 +288,22 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   assert.match(
     effortStore,
     /window\.addEventListener\("storage", \(event\) => \{/,
+  );
+  // And the chat subscribes to the active model's pin for the same reason: the normalization
+  // reads it through a getState helper, so a cross-tab change reached the dialog but not the
+  // composer. Its own effect, since rerunning that whole block would reset the pills too.
+  const chatPage = readSrc("features/chat/chat-page.tsx");
+  assert.match(
+    chatPage,
+    /const activePinnedEffort = useModelReasoningEffortStore\(\s*\(state\) => state\.effortByModel\[inferenceParams\.checkpoint\],/,
+  );
+  assert.match(
+    chatPage,
+    /if \(appliedPinnedEffort\.current === activePinnedEffort\) return;/,
+  );
+  assert.match(
+    chatPage,
+    /useChatRuntimeStore\.setState\(\{\s*reasoningEffort: resolveExternalReasoningEffort\(\{/,
   );
   // Blank or junk is an absence, not a zero the request would then send as the cap.
   assert.match(

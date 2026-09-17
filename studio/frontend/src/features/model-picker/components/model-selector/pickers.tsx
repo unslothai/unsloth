@@ -5551,6 +5551,26 @@ export function HubModelPicker({
                 ),
                 onSelect: () => copyConnectedModelId(providerModelId),
               },
+              // Only where no heading is carrying it. A group heading has its own gear, so a row
+              // under one would be offering the same destination twice; a pinned row, or one in
+              // the flat list the name sort produces, has no heading at all, and a connection
+              // whose every model is pinned has no group left to hold one.
+              ...(headless && onConfigureConnection
+                ? [
+                    {
+                      key: "connection",
+                      label: "Connection settings",
+                      icon: (
+                        <HugeiconsIcon
+                          icon={Settings02Icon}
+                          strokeWidth={1.75}
+                          className="size-icon"
+                        />
+                      ),
+                      onSelect: () => onConfigureConnection(model.providerId),
+                    },
+                  ]
+                : []),
             ]}
           />
         </span>

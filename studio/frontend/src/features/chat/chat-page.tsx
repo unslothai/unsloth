@@ -22,6 +22,7 @@ import {
   useActiveModelConfig,
   useModelConfigHandoffStore,
   pinnedReasoningEffort,
+  useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
@@ -2644,6 +2645,42 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
+  // Another tab can change the active model's pin (the pin store listens for the storage event),
+  // and the normalization above reads the pin through a getState helper without subscribing, so
+  // the composer kept the old level until a switch. Only the effort here: the pills and the rest
+  // of that block are not this one's to rerun.
+  const activePinnedEffort = useModelReasoningEffortStore(
+    (state) => state.effortByModel[inferenceParams.checkpoint],
+  );
+  const appliedPinnedEffort = useRef(activePinnedEffort);
+  useEffect(() => {
+    if (appliedPinnedEffort.current === activePinnedEffort) return;
+    appliedPinnedEffort.current = activePinnedEffort;
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return;
+    const provider = externalProvidersForChat.find(
+      (p) => p.id === selection.providerId,
+    );
+    const caps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+      {
+        isReasoningProvider: provider?.isReasoningModel === true,
+        baseUrl: provider?.baseUrl ?? null,
+      },
+    );
+    useChatRuntimeStore.setState({
+      reasoningEffort: resolveExternalReasoningEffort({
+        caps,
+        providerType: provider?.providerType,
+        current: useChatRuntimeStore.getState().reasoningEffort,
+        pinned: pinnedReasoningEffort(
+          inferenceParams.checkpoint,
+          caps.reasoningEffortLevels,
+        ),
+      }),
+    });
+  }, [activePinnedEffort, externalProvidersForChat, inferenceParams.checkpoint]);
   // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
   // never the selection defaults above, so a chosen effort and the pills survive the refresh.
   const modelCatalogChange = useSyncExternalStore(
