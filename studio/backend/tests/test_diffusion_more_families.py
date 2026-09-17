@@ -355,6 +355,63 @@ def test_hidream_prequant_wiring():
         assert family_prequant_repo(fam, scheme) == "unsloth/HiDream-I1-Full-FP8"
 
 
+def test_hidream_distilled_variants_have_no_hosted_prequant_to_inherit():
+    # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other
+    # weights. Inheriting it made a Dev / Fast pick plan the Full artifact, drop its own shards,
+    # download several GB and only then hit the base_model_id refusal.
+    from core.inference.diffusion_families import family_prequant_repo
+    for repo_id in ("HiDream-ai/HiDream-I1-Dev", "HiDream-ai/HiDream-I1-Fast"):
+        fam = detect_family(repo_id)
+        for scheme in ("int8", "fp8"):
+            assert family_prequant_repo(fam, scheme, base_repo = repo_id) is None
+            # However the id was typed, and through the mirror the loader actually fetches.
+            assert family_prequant_repo(fam, scheme, base_repo = f"  {repo_id.upper()} ") is None
+            assert (
+                family_prequant_repo(
+                    fam, scheme, base_repo = repo_id.replace("HiDream-ai", "unsloth")
+                )
+                is None
+            )
+
+
+def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
+    # 2512 is a different checkpoint with its own baked artifacts. Falling back to the Qwen-Image ones
+    # made a 2512 pick plan an artifact base_model_id refuses, after its shards had been dropped.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("Qwen/Qwen-Image-2512")
+    assert fam is not None and fam.name == "qwen-image"
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme) == "unsloth/Qwen-Image-FP8"
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = "Qwen/Qwen-Image")
+            == "unsloth/Qwen-Image-FP8"
+        )
+        for base_repo in (
+            "Qwen/Qwen-Image-2512",
+            "unsloth/Qwen-Image-2512",
+            " QWEN/QWEN-IMAGE-2512 ",
+        ):
+            assert (
+                family_prequant_repo(fam, scheme, base_repo = base_repo)
+                == "unsloth/Qwen-Image-2512-FP8"
+            )
+
+
+def test_qwen_image_2512_prequant_filenames_match_its_repo():
+    # The filename derives from the repo name, so the variant repo must serve <Model>-<SCHEME>.pt.
+    from core.inference.diffusion_prequant import resolve_prequant_source
+    fam = detect_family("Qwen/Qwen-Image-2512")
+    for scheme, filename in (
+        ("int8", "Qwen-Image-2512-INT8.pt"),
+        ("fp8", "Qwen-Image-2512-FP8.pt"),
+    ):
+        source = resolve_prequant_source(fam, scheme, base_repo = "Qwen/Qwen-Image-2512")
+        assert source is not None
+        assert source.location == "unsloth/Qwen-Image-2512-FP8"
+        assert source.filename == filename
+
+
 def test_hidream_quant_schemes_not_denied_and_no_extra_excludes():
     # Measured on a B200: int8 and fp8 both engage and render cleanly, including 2-3 token prompts on int8. The routed
     # MoE expert Linears only see the concatenated image+text stream (M >> 16), so torch._int_mm's minimum never binds.

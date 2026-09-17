@@ -355,16 +355,8 @@ def _local_gguf_entry(
 # A LoRA directory can carry a copied config.json and tokenizer beside these, and ModelConfig would then resolve its
 # base model and fetch weights this resolver promises never to download.
 _ADAPTER_MARKERS = ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin")
-# The multimodal sub-configs the repo's own vision detector reads, which is what tells a served VLM apart from a plain
-# seq2seq wearing the same architecture suffix.
-_MULTIMODAL_CONFIG_KEYS = (
-    "vision_config",
-    "img_processor",
-    "image_token_index",
-    "projector_config",
-    "audio_config",
-)
 _SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
+_MODALITY_KEY_WORDS = frozenset({"vision", "image", "img", "audio", "video", "projector"})
 
 
 def _read_json(path):
@@ -436,7 +428,7 @@ def _has_safetensors_weights(load_dir) -> bool:
         return False
 
 
-def _is_generative_chat_config(config: dict) -> bool:
+def _is_generative_chat_config(load_dir, config: dict) -> bool:
     """Whether a config.json describes a checkpoint the chat loader can generate with."""
     architectures = config.get("architectures")
     # model_type cannot stand in for the list: transformers' causal mapping lists bert and bart
@@ -449,13 +441,33 @@ def _is_generative_chat_config(config: dict) -> bool:
         return True
     if not any(name.endswith("ForConditionalGeneration") for name in names):
         return False
-    # ForConditionalGeneration is overloaded: T5 and BART wear it too, and the serving path has no AutoModelForSeq2SeqLM
-    # branch, so require a multimodal sub-config.
-    if any(key in config for key in _MULTIMODAL_CONFIG_KEYS):
-        return True
-    # whisper is the audio model rather than wearing one, so it carries no such sub-config. the MLX worker refuses ASR
-    # and TTS outright, so only a Transformers host serves these.
-    return not _host_serves_mlx() and _model_type_is_audio(config.get("model_type"))
+    # These are the audio model rather than wearing one, so they declare no modality below and the
+    # classifier further down refuses them; chat serves them through the transcription path instead.
+    if _model_type_is_audio(config.get("model_type")):
+        return not _host_serves_mlx()
+    # T5 and BART wear the suffix too, and udop-large shows modality cannot separate them.
+    if config.get("is_encoder_decoder") is True:
+        return False
+    if not _config_declares_multimodality(config):
+        return False
+    # The model picker's own classifier; its None means inconclusive, which must not qualify here.
+    from hub.services.models.common import _local_transformers_can_chat
+
+    return _local_transformers_can_chat(load_dir) is True
+
+
+def _config_declares_multimodality(config: dict) -> bool:
+    """Whether a config declares a non-text modality, by whole key words: substrings admit ``revision``."""
+    import re
+
+    for key in config:
+        if not isinstance(key, str):
+            continue
+        if key == "text_config":
+            return True
+        if _MODALITY_KEY_WORDS & set(re.split(r"[^a-z0-9]+", key.lower())):
+            return True
+    return False
 
 
 def _model_type_is_audio(model_type) -> bool:
@@ -495,10 +507,13 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
     # trust_remote_code needs an approval fingerprint a switch has not got; read as data only.
     for name in REMOTE_CODE_CONFIG_FILES:
         candidate = config if name == "config.json" else _read_json(load_dir / name)
+        if not isinstance(candidate, dict):
+            continue
         # truthiness like the consent gate's _config_has_auto_map: an empty map runs nothing.
-        if isinstance(candidate, dict) and candidate.get("auto_map"):
+        # model_file runs repo code too and bypasses trust_remote_code: MLX loaders exec_module it.
+        if candidate.get("auto_map") or candidate.get("model_file"):
             return False
-    return _is_generative_chat_config(config)
+    return _is_generative_chat_config(load_dir, config)
 
 
 def _host_can_serve_minimax_music3() -> bool:
