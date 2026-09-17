@@ -6,12 +6,12 @@
 from __future__ import annotations
 
 import atexit
+import collections
 import logging
 import os
 import sys
 import tempfile
 import threading
-import time
 
 __all__ = [
     "LOG_RECORD_CONTINUATION_PREFIX",
@@ -213,6 +213,9 @@ def _open_existing_sink(path: str):
 
 _TAIL_POLL_S = 0.05
 
+# 64 x 64 KiB: a stalled operator stderr costs 4 MiB of buffer before the mirror starts dropping.
+_MIRROR_RELAY_CHUNKS = 64
+
 
 def _open_sink_for_append(path: str):
     flags = os.O_WRONLY | os.O_APPEND | _O_NOFOLLOW | _O_BINARY
@@ -245,13 +248,13 @@ def _compact_sink(
     sink,
     cap_bytes: int,
     reader = None,
-    inherited_fd: "int | None" = None,
+    emit = None,
 ) -> int:
     """Rewrite *sink* to roughly its last *cap_bytes* bytes.
 
     fd 2 is ``O_APPEND`` on it, so a plain read-rewrite-truncate loses concurrent appends.
     """
-    if reader is not None and inherited_fd is not None:
+    if reader is not None and emit is not None:
         while True:
             try:
                 pending = reader.read(65536)
@@ -259,10 +262,7 @@ def _compact_sink(
                 break
             if not pending:
                 break
-            try:
-                os.write(inherited_fd, pending)
-            except OSError:
-                pass
+            emit(pending)
     size = sink.seek(0, os.SEEK_END)
     keep = min(size, cap_bytes)
     sink.seek(size - keep)
@@ -273,11 +273,8 @@ def _compact_sink(
         appended = sink.read()
         if not appended:
             break
-        if inherited_fd is not None:
-            try:
-                os.write(inherited_fd, appended)
-            except OSError:
-                pass
+        if emit is not None:
+            emit(appended)
         data += appended
         total += len(appended)
     sink.seek(0)
@@ -289,11 +286,8 @@ def _compact_sink(
         late = sink.read()
         if not late:
             break
-        if inherited_fd is not None:
-            try:
-                os.write(inherited_fd, late)
-            except OSError:
-                pass
+        if emit is not None:
+            emit(late)
         total += len(late)
         sink.seek(end)
         sink.write(late)
@@ -302,11 +296,70 @@ def _compact_sink(
     return end
 
 
+class _MirrorRelay:
+    """Owns the only blocking write, so the thread that bounds the sink never parks in one.
+
+    The operator's stderr is a pipe in the packaged app, and a reader that stops draining it
+    would otherwise stall the pump inside ``os.write`` and leave the sink growing without limit.
+    The mirrored copy is best effort, so a full buffer drops its oldest chunk; the sink keeps
+    the tail, which is the crash record the parent reports.
+    """
+
+    def __init__(self, inherited_fd: int, max_chunks: int) -> None:
+        self._fd = inherited_fd
+        self._chunks = collections.deque(maxlen = max_chunks)
+        self._wake = threading.Event()
+        self._closed = False
+        self._thread = threading.Thread(
+            target = self._run,
+            name = "unsloth-worker-stderr-relay",
+            daemon = True,
+        )
+        self._thread.start()
+
+    def emit(self, data: bytes) -> None:
+        if not data:
+            return
+        self._chunks.append(data)
+        self._wake.set()
+
+    def close(self) -> None:
+        self._closed = True
+        self._wake.set()
+
+    def join(self, timeout: "float | None" = None) -> None:
+        self._thread.join(timeout = timeout)
+
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def _run(self) -> None:
+        while True:
+            try:
+                data = self._chunks.popleft()
+            except IndexError:
+                if self._closed:
+                    return
+                self._wake.wait(_TAIL_POLL_S)
+                self._wake.clear()
+                continue
+            try:
+                os.write(self._fd, data)
+            except OSError:
+                pass
+
+
+def _sink_size(sink) -> int:
+    try:
+        return os.fstat(sink.fileno()).st_size
+    except (OSError, ValueError):
+        return 0
+
+
 def _tail_sink_to_stderr(
-    reader, inherited_fd: int, sink, cap_bytes: int, stop: "threading.Event"
+    reader, relay: "_MirrorRelay", sink, cap_bytes: int, stop: "threading.Event"
 ) -> None:
     """fd 2 must be the SINK, not a pipe: a fatal signal kills anything buffered in a pipe with its writer."""
-    forwarded = 0
     while True:
         try:
             chunk = reader.read(65536)
@@ -315,21 +368,17 @@ def _tail_sink_to_stderr(
         if not chunk:
             if stop.is_set():
                 break
-            time.sleep(_TAIL_POLL_S)
+            stop.wait(_TAIL_POLL_S)
             continue
-        try:
-            os.write(inherited_fd, chunk)
-        except OSError:
-            pass
-        forwarded += len(chunk)
-        if cap_bytes > 0 and forwarded > 2 * cap_bytes:
+        relay.emit(chunk)
+        # Bytes ON DISK, not bytes relayed: the relay can fall arbitrarily far behind.
+        if cap_bytes > 0 and _sink_size(sink) > 2 * cap_bytes:
             try:
-                _compact_sink(sink, cap_bytes, reader = reader, inherited_fd = inherited_fd)
+                _compact_sink(sink, cap_bytes, reader = reader, emit = relay.emit)
                 # The file was rewritten from the front; the old offset is now meaningless.
                 reader.seek(0, os.SEEK_END)
             except (OSError, ValueError):
                 pass
-            forwarded = 0
     try:
         sink.close()
     except OSError:
@@ -344,6 +393,7 @@ def _stop_mirror(
     inherited_fd: int,
     pump: threading.Thread,
     stop = None,
+    relay = None,
 ) -> None:
     """The pump must be a daemon or ``BaseProcess._bootstrap`` waits on it for ever.
 
@@ -361,8 +411,11 @@ def _stop_mirror(
         # fd 2 no longer points at the sink, so the next empty read is the end, not a pause.
         stop.set()
     pump.join(timeout = _PUMP_JOIN_TIMEOUT_S)
-    if pump.is_alive():
-        # The pump may be inside os.write(inherited_fd, ...); closing frees the number for any thread's next open().
+    if relay is not None:
+        relay.close()
+        relay.join(timeout = _PUMP_JOIN_TIMEOUT_S)
+    if pump.is_alive() or (relay is not None and relay.is_alive()):
+        # A thread may be inside os.write(inherited_fd, ...); closing frees the number for any thread's next open().
         return
     try:
         os.close(inherited_fd)
@@ -414,14 +467,15 @@ def install_worker_stderr_mirror(
         return False
     os.close(writer_fd)
     stop = threading.Event()
+    relay = _MirrorRelay(inherited, _MIRROR_RELAY_CHUNKS)
     pump = threading.Thread(
         target = _tail_sink_to_stderr,
-        args = (reader, inherited, sink, cap_bytes, stop),
+        args = (reader, relay, sink, cap_bytes, stop),
         name = "unsloth-worker-stderr-mirror",
         daemon = True,
     )
     pump.start()
-    atexit.register(_stop_mirror, inherited, pump, stop)
+    atexit.register(_stop_mirror, inherited, pump, stop, relay)
     return True
 
 

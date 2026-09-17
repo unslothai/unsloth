@@ -1119,9 +1119,10 @@ def run_inference_process(
         service_name = "unsloth-studio-inference-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
-    # Must follow setup_logging: the traceback logged below with `exc_info = True` for a
-    # RECOVERED failure is otherwise indistinguishable from a dying process's, and on a
-    # shared worker the parent hands it to the NEXT caller as their crash.
+    # Must follow setup_logging. Structlog records go to fd 1, but a third-party library
+    # logging through stdlib `logging` reaches fd 2 via `logging.lastResort`, and that
+    # traceback is byte-identical to a dying process's: unmarked, the parent hands a
+    # RECOVERED failure to the NEXT caller on a shared worker as their crash.
     from utils.worker_stderr import mark_log_record_continuations
 
     mark_log_record_continuations()

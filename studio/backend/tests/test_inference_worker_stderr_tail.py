@@ -265,6 +265,42 @@ def test_the_sink_is_bounded_even_when_the_worker_floods_stderr(tmp_path):
     assert "the last line before the worker died" in capture.tail(max_lines = 200)
 
 
+_STALLED_READER_CHILD = r"""
+import os, sys
+sys.path.insert(0, %(backend)r)
+from utils.worker_stderr import MIRROR_FILE_CAP_BYTES, install_worker_stderr_mirror
+
+assert install_worker_stderr_mirror(%(path)r) is True
+line = b"x" * 1023 + b"\n"
+for _ in range((MIRROR_FILE_CAP_BYTES * 32) // len(line)):
+    os.write(2, line)
+os.write(2, b"the last line before the worker died\n")
+"""
+
+
+def test_the_sink_is_bounded_even_when_nobody_drains_the_operators_stderr(tmp_path):
+    """The mirrored copy is a courtesy; the cap is not. 68 MB landed here when a full pipe
+    parked the pump inside os.write and the cap counted bytes relayed rather than bytes written."""
+    capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
+    script = _STALLED_READER_CHILD % {"backend": _BACKEND_DIR, "path": capture.path}
+    read_end, write_end = os.pipe()
+    try:
+        process = subprocess.Popen([sys.executable, "-c", script], stderr = write_end)
+        os.close(write_end)
+        write_end = None
+        # Nothing ever reads `read_end`, which is what a stalled log consumer looks like.
+        assert process.wait(timeout = 300) == 0
+    finally:
+        if write_end is not None:
+            os.close(write_end)
+        os.close(read_end)
+
+    size = os.path.getsize(capture.path)
+    assert size <= 2 * MIRROR_FILE_CAP_BYTES + 65536, size
+    assert "the last line before the worker died" in capture.tail(max_lines = 200)
+    capture.close()
+
+
 def test_a_caller_that_passes_no_mirror_is_unchanged(tmp_path):
     process = _spawn("exit_one_after_writing_to_stderr", None)
     assert process.exitcode == 1
@@ -358,10 +394,12 @@ def test_a_worker_holding_a_second_handle_on_stderr_still_exits_promptly(tmp_pat
     source = (Path(_BACKEND_DIR) / "utils/worker_stderr.py").read_text(encoding = "utf-8")
     teardown = source.split("def _stop_mirror(", 1)[1].split("\ndef ", 1)[0]
     close_at = teardown.index("os.close(inherited_fd)")
-    assert "if pump.is_alive():" in teardown[:close_at], (
-        "the teardown closes the inherited stderr without first checking that the pump "
-        "thread has finished with it"
-    )
+    # Both threads write to the inherited descriptor, so both must be done with it.
+    for guard in ("pump.is_alive()", "relay.is_alive()"):
+        assert guard in teardown[:close_at], (
+            "the teardown closes the inherited stderr without first checking that the "
+            f"thread behind {guard} has finished with it"
+        )
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason = "fork is POSIX only")
