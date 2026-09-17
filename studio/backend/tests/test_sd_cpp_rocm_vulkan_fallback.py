@@ -2704,3 +2704,47 @@ class TestTheCommittedCardIsPublishedAtTheCommit:
         source = inspect.getsource(sd_cpp_backend)
         commit = source.index("self._state = state\n")
         assert "self._committed_loading_card = self._loading_card" in source[commit : commit + 500]
+
+
+def test_an_ensure_that_hands_back_the_failed_build_is_not_a_working_fallback(
+    h3_amd_host, fake_settings, monkeypatch
+):
+    """When the Vulkan rung cannot be installed, ensure deliberately keeps the usable build it already
+    has, which is the ROCm one that just probed negative. If the second probe of that SAME executable
+    answers yes (the first was transient: a busy card, a masked card), accepting it would record ROCm
+    as failed and pin a preference to a rung that was never installed. The verdict has to be attributed
+    to the class that actually produced it."""
+    from core.inference import sd_cpp_backend
+
+    # No vulkan build to install; the ensure falls back to handing out the rocm one it already has.
+    devices = {"rocm": _DEVICES_ROCM, "cpu": _DEVICES_CPU_ONLY}
+    host = h3_amd_host(platform = "linux", backend = "rocm", device = "cuda", devices = devices)
+
+    real_ensure = sd_cpp_backend.ensure_sd_cpp_binary
+
+    def _ensure(*, allow_install = True, accelerator = "cpu"):
+        if accelerator == "vulkan":
+            return "/opt/sd/rocm/sd-cli"  # the failed build, handed back as "the best we have"
+        return real_ensure(allow_install = allow_install, accelerator = accelerator)
+
+    monkeypatch.setattr(sd_cpp_backend, "ensure_sd_cpp_binary", _ensure)
+    # First probe negative, every later one positive: the transient case this guards.
+    calls = {"n": 0}
+
+    def _verdict(binary, *a, **k):
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    # video.py imports this lazily from sd_cpp_backend inside the load, so the module attribute is
+    # what it resolves at call time.
+    monkeypatch.setattr(sd_cpp_backend, "sd_cpp_accelerator_device_verdict", _verdict)
+
+    # The tree now holds a build that is not the accelerator this load decided on, which the existing
+    # identity check refuses rather than running. That is the right end for a transient cause: the
+    # message asks for a retry, and the retry probes positive and loads ROCm normally.
+    with pytest.raises(RuntimeError, match = "different accelerator"):
+        host.run()
+
+    # The point of the test: NOTHING is persisted. Before the class check, this same run recorded
+    # rocm with proven=True off one transient probe of the very binary that was handed back.
+    assert _noted_accelerators(fake_settings) == [], fake_settings

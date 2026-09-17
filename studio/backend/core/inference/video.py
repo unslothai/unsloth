@@ -2110,11 +2110,18 @@ class VideoBackend:
                         selected_card,
                     )
                     fallback_verdict: Optional[bool] = None
+                    fallback_class: Optional[str] = None
                     if fallback_binary:
                         with _claim_tree(fallback_binary, cancel_event, VIDEO_CANCELLED_MSG):
                             fallback_verdict = sd_cpp_accelerator_device_verdict(fallback_binary)
                             fallback_class = _installed_accelerator_of(fallback_binary)
-                    if fallback_verdict:
+                    # The class too, not just the verdict: an ensure that cannot deliver this rung
+                    # deliberately keeps a usable build of ANOTHER class, so `fallback_binary` can be the
+                    # very ROCm build that just failed. Its second probe answering yes then reads as
+                    # "Vulkan works", records ROCm as failed and pins a preference to a rung that was
+                    # never installed, when all that happened is the first probe was transient. This is
+                    # the same hazard `accelerator_probe_ran` guards on the first probe above.
+                    if fallback_verdict and fallback_class == fallback:
                         # POSITIVE evidence only, so a host that cannot fetch this rung is unchanged.
                         logger.warning(
                             "video.sd_cpp_accelerator_fallback: the %s stable-diffusion.cpp build "
