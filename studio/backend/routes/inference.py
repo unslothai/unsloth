@@ -37250,9 +37250,8 @@ async def load_diffusion_model_gated(
                 fam,
                 hf_token = request.hf_token,
                 model_kind = kind,
-                # The card this request picked. A recorded accelerator failure is a fact about
-                # one card, and without this a host whose second card cannot run the ROCm build
-                # sends the card that can to Vulkan as well.
+                # A recorded accelerator failure is a fact about one CARD: without this, a host
+                # whose second card cannot run the ROCm build sends the first one to Vulkan too.
                 gpu_ids = request.gpu_ids,
             )
         )

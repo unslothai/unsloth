@@ -432,15 +432,8 @@ def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label
 def test_h3_revet_catches_a_managed_tree_rebuilt_for_another_accelerator(
     h3_host, platform, hw_label, backend, device, monkeypatch
 ):
-    """The re-vet asked "does this build enumerate an accelerator device", and two different
-    builds answer that the same way.
-
-    The Vulkan rung is taken because the ROCm build does not run on this card. If another load
-    replaces the managed tree during the multi-tens-of-GB download with a ROCm build that DOES
-    enumerate a device, the boolean matches on both sides and the load commits the very build the
-    fallback was chosen to avoid, to fail minutes later in generation. The class is what changed,
-    so the class is what is compared.
-    """
+    """A ROCm build installed over the tree during the download answers the boolean re-vet the
+    same way the Vulkan rung did, so the class is what has to be compared."""
     host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
 
     def _accelerator_of(binary):
@@ -466,9 +459,8 @@ def test_h3_revet_catches_a_managed_tree_rebuilt_for_another_accelerator(
 def test_h3_revet_does_not_invent_a_change_for_an_unrecorded_tree(
     h3_host, platform, hw_label, backend, device, monkeypatch
 ):
-    """A user's own build has no recorded class, and neither has an install whose record cannot
-    be read. None on either side is "cannot tell", not "it changed": refusing the load on it would
-    refuse every SD_CLI_PATH build there is. Identity and capability already cover those."""
+    """None on either side is "cannot tell", not "it changed": refusing the load on it would
+    refuse every SD_CLI_PATH build there is."""
     host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
 
     import utils.hf_xet_fallback as xet

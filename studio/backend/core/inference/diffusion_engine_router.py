@@ -197,11 +197,8 @@ def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
 def _selected_card(gpu_ids) -> Optional[str]:
     """The identity of the card this request picked, or ``None`` when it cannot be told.
 
-    A recorded accelerator failure is a fact about a CARD -- one ROCm bundle can carry code
-    for one gfx target on this host and not another -- so the selection has to say which card
-    it is about to use, or a single unsupported card sends every later load to Vulkan. None is
-    the honest answer for a caller that named no GPU and for a host whose enumeration cannot
-    be read, and it leaves the record applying exactly as it did.
+    A recorded accelerator failure is a fact about a CARD (one ROCm bundle can carry the gfx
+    target of one card on the host and not another); ``None`` means the record applies to all.
     """
     if not gpu_ids:
         return None
@@ -209,7 +206,7 @@ def _selected_card(gpu_ids) -> Optional[str]:
         from core.inference.diffusion_device import resolve_selected_cuda_ordinal
         from core.inference.sd_cpp_backend import selected_card_identity
         return selected_card_identity(resolve_selected_cuda_ordinal(gpu_ids))
-    except Exception:  # noqa: BLE001 -- a narrowing, never a reason to fail the selection
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -247,11 +244,8 @@ def select_and_activate_engine(
     binary = None
     server_binary = None
     if policy_eligible and fam_ok:
-        # One accelerator for both ensures, and the PREFERRED one: a host that has already been shown it cannot run
-        # the build for its own accelerator (a generic ROCm prebuilt against a card whose hipBLAS kernels it does not
-        # carry, #9278 and #8814) would otherwise install and probe that same build on every selection, then decline
-        # native because the binary will not start. Resolved once so the server and the CLI cannot disagree.
-        # Which card, so one card that cannot run this build does not divert the others.
+        # Resolved once, per card, so the server and the CLI cannot disagree: a card whose ROCm
+        # build will not start (#9278, #8814) must not divert the other cards on the host.
         selected_card = _selected_card(gpu_ids)
         install_accelerator = preferred_accelerator(
             _install_accelerator_for(backend), selected_card
@@ -259,29 +253,14 @@ def select_and_activate_engine(
         # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
         # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
         # load gets the GPU server.
-        # Checked against the record, because the ensure does not promise the accelerator it
-        # was given: offline, with installs disabled, or after a failed download it returns
-        # whatever usable build is already in the managed tree, which on a host that recorded
-        # a ROCm crash and cannot fetch Vulkan is the ROCm build. It answers the runnability
-        # probes below perfectly well and only dies mid-render, so without this the router
-        # selects native and the backend then runs the very build the record condemned. Only
-        # a SUBSTITUTE is refused: with the Vulkan fallback switched off the requested
-        # accelerator is ROCm again on purpose, and that opt-out means run it anyway.
-        # ...unless the substitute is only a substitute because an install cannot run RIGHT
-        # NOW. A resident sd-server that recorded a mid-render failure is still executing out
-        # of the managed tree, and an accelerator upgrade replaces the binaries in it, so both
-        # ensures decline and hand back the very ROCm build the record condemns. Refusing it
-        # here made `native_available` false and sent the first reload after the failure to
-        # diffusers -- downloading unrelated assets, and reaching the Vulkan rung only on some
-        # later load, after that switch happened to unload the server. The load path is the
-        # one that CAN do this: it stops the server and then runs the deferred install through
-        # `_upgrade_server_after_teardown`. So while the tree is busy the native selection is
-        # kept and the upgrade happens behind it.
-        # Only where the replacement can actually happen. With installing switched off, or
-        # on a host that cannot fetch the Vulkan bundle, `_upgrade_server_after_teardown`
-        # hands back the same ROCm path and the load would start the known-failing build
-        # again -- so the bypass is limited to the case where there is an install to wait
-        # for, and everywhere else the condemned substitute is refused exactly as before.
+        # `ensure_*` does not promise the accelerator it was given: offline or after a failed
+        # download it returns whatever is already in the managed tree, which can be the ROCm
+        # build the record condemns -- that build passes the runnability probes below and only
+        # dies mid-render. Only a SUBSTITUTE is refused; with the Vulkan fallback switched off
+        # ROCm is the request again and the opt-out means run it anyway. While the upgrade is
+        # merely deferred (a resident server still executing out of the tree), keep the native
+        # selection and let `_upgrade_server_after_teardown` land it, else the first reload
+        # after a failure goes to diffusers; only where an install is possible at all.
         upgrade_is_deferred = _managed_tree_in_use() and _install_allowed()
 
         def _accept(candidate):
@@ -299,10 +278,8 @@ def select_and_activate_engine(
             logger.warning(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
-            # Counted before it is discarded: this router runs BEFORE the backend's load, so
-            # the two recorders inside `_run_load` never see a build the selection already
-            # rejected -- every forced-native request reinstalled the same ROCm build, failed
-            # the same probe, and the Vulkan rung below it was never reached.
+            # Counted here, not in `_run_load`: the router runs first, so a build it rejects
+            # never reaches the recorders there and the Vulkan rung is never reached.
             note_unlaunchable_accelerator_build(server_binary)
             server_binary = None
         # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
@@ -345,13 +322,9 @@ def native_binary_installed() -> bool:
     counts an absent binary as available whenever installing one is allowed, and a caller that
     must know whether selection could still fall back to diffusers needs the unassumed answer.
 
-    Through the SAME preferred accelerator and the same recorded-failure filter selection uses,
-    because the two are read together: the prediction decides which planner stages the download
-    and selection decides what actually loads. A record that condemns this host's accelerator
-    makes selection refuse a binary that is still on disk and still answers its runnability
-    probe, so counting that binary as available here predicted native while the load went to
-    diffusers -- and an offline load then had none of the diffusers assets, because the planner
-    for that engine was never run.
+    Must use the SAME preferred accelerator and recorded-failure filter as selection: this
+    prediction picks which planner stages the download, so disagreeing with selection leaves an
+    offline load on diffusers with none of the diffusers assets staged.
     """
     install_accelerator = preferred_accelerator(
         _install_accelerator_for(resolve_diffusion_device_target().backend)

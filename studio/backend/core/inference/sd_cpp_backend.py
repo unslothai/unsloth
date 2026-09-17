@@ -352,13 +352,8 @@ def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
 
 
 def accelerator_verdict_keeps_gpu(verdict: Optional[bool]) -> bool:
-    """The conservative collapse ``sd_cpp_lists_accelerator_device`` applies, as a function of a
-    verdict already in hand: "could not tell" keeps the GPU, because an unreadable probe is not
-    evidence that the accelerator is missing.
-
-    Split out so the rule lives in ONE place. A caller that needs the raw verdict for a second
-    question (the H3 load needs it to tell "enumerates the CPU only" from "could not be asked at
-    all") would otherwise re-implement the collapse beside it and the two could drift."""
+    """"Could not tell" keeps the GPU: an unreadable probe is not evidence of no accelerator. One
+    place, so a caller that also needs the raw verdict cannot drift from it."""
     return True if verdict is None else verdict
 
 
@@ -411,20 +406,13 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
     return None
 
 
-# Every namespace ggml names a device in. The physical-index list above is deliberately
-# narrower: these are the prefixes that identify a device LINE, whatever indexing scheme it
-# belongs to, which is what a match by card name needs.
+# Every namespace ggml names a device in; the narrower list above is physical-index schemes only.
 _GGML_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM", "VULKAN", "SYCL", "METAL", "OPENCL")
 
 
 def _normalized_card_name(text: str) -> str:
-    """A card description reduced to the letters and digits in it, lowercased.
-
-    Two spellings of the same card differ in punctuation and in the parenthesised driver
-    tag a Vulkan ICD adds: `AMD Radeon RX 7900 XTX` against
-    `AMD Radeon RX 7900 XTX (RADV NAVI31)`. Comparing the reduced forms by containment is
-    what lets the second be recognised as the first.
-    """
+    """A card description reduced to the letters and digits in it, lowercased, so containment
+    recognises `AMD Radeon RX 7900 XTX (RADV NAVI31)` as `AMD Radeon RX 7900 XTX`."""
     return "".join(character for character in text.lower() if character.isalnum())
 
 
@@ -432,33 +420,22 @@ _DRIVER_TAG_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
 
 def _without_driver_tag(text: str) -> str:
-    """A card description with the trailing parenthesised driver tag removed.
-
-    A Vulkan ICD appends its own: `AMD Radeon RX 7600 (RADV NAVI33)`. Dropping it is what
-    lets the rest be compared for EQUALITY, which containment cannot do -- `AMD Radeon RX
-    7600` is contained in `AMD Radeon RX 7600 XT`, and those are two different cards.
-    """
+    """A card description with the ICD's trailing driver tag removed, so the rest can be compared
+    for EQUALITY, which containment cannot do: `RX 7600` is contained in `RX 7600 XT`."""
     return _DRIVER_TAG_RE.sub("", text).strip()
 
 
-# The masks that make torch's device list something other than the physical one. ROCm applies
-# them in this order, and they COMPOSE: ROCR_VISIBLE_DEVICES filters the agents the ROC runtime
-# reports, and HIP_VISIBLE_DEVICES (for which CUDA_VISIBLE_DEVICES is the alias, so setting both
-# is documented as unsafe) then indexes into what is left rather than into the physical order.
-# Each is "the devices listed, in the order listed", so a mask both filters AND reorders.
-# GPU_DEVICE_ORDINAL is a third spelling at the HIP level; it is not composed here, it only makes
-# the translation decline, which is the safe direction.
+# ROCm applies these in THIS order and they COMPOSE: ROCR filters the agents the runtime reports,
+# then HIP (CUDA_VISIBLE_DEVICES is its alias) indexes into what is left, not into the physical
+# order. Each filters AND reorders. GPU_DEVICE_ORDINAL is not composed, only declined.
 _ROCR_MASK_VAR = "ROCR_VISIBLE_DEVICES"
 _HIP_MASK_VARS = ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 _OPAQUE_MASK_VAR = "GPU_DEVICE_ORDINAL"
 
 
 def _mask_entries(value: Optional[str]) -> "Optional[list[int]]":
-    """A visibility mask as physical indices, or ``None`` if it is not written as indices.
-
-    A mask may name UUIDs (`GPU-...`), which this cannot translate into an enumeration order,
-    so an unreadable mask declines rather than guessing.
-    """
+    """A visibility mask as physical indices, or ``None`` if it is not written as indices
+    (a mask may name UUIDs, `GPU-...`, which say nothing about enumeration order)."""
     if value is None:
         return None
     entries = [part.strip() for part in str(value).split(",")]
@@ -479,12 +456,8 @@ def _mask_entries(value: Optional[str]) -> "Optional[list[int]]":
 
 
 def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optional[int], bool]":
-    """``(HIP device id, a mask was set)`` for a torch-visible *ordinal*.
-
-    With no mask set the two namespaces are the same list, so the ordinal is returned as it
-    arrived. With a mask this composes the levels; when any of them cannot be read as indices
-    the index is ``None`` and the caller declines the tie-break rather than pinning a guess.
-    """
+    """``(HIP device id, a mask was set)`` for a torch-visible *ordinal*; ``None`` where the masks
+    cannot be composed, so the caller declines the tie-break rather than guessing."""
     source = os.environ if env is None else env
     rocr = source.get(_ROCR_MASK_VAR)
     hip = next((source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None), None)
@@ -514,21 +487,9 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
 
 
 def _physical_position_of(hip_index: int) -> "tuple[Optional[str], Optional[int]]":
-    """``(name, position)`` for a HIP device id, read from the host's own card enumeration.
-
-    torch cannot answer this once a mask is set: it can only see the cards it was left. The
-    hardware inventory enumerates every card, so it is what says how many cards of the same
-    kind come before this one in the order the Vulkan build will walk.
-
-    The two numbers are NOT the same number. What a visibility mask names, and what torch
-    reports as `cuda:N`, is the HIP device id, derived from the KFD node id. The inventory's
-    `index` is its own probe row, amd-smi's enumeration order over its KFD/sysfs view, which
-    its docstring says is not a pin. They coincide on most hosts and not on all, which is why
-    `utils.hardware.amd.get_hip_id_by_gpu_index` exists -- amd-smi publishes the mapping for
-    exactly this. Without that mapping there is no way to say which row the mask selected, so
-    this declines and `sd_cpp_device_named` falls back to a name-only pin rather than
-    counting positions in the wrong space.
-    """
+    """``(name, position)`` for a HIP device id, read from the host's own card enumeration, since
+    torch sees only the cards a mask left it. A HIP device id and the inventory's `index` are NOT
+    the same number, so they go through `utils.hardware.amd.get_hip_id_by_gpu_index`."""
     try:
         from utils.hardware.amd import get_hip_id_by_gpu_index
         from utils.hardware.hardware import get_physical_gpu_inventory
@@ -542,7 +503,7 @@ def _physical_position_of(hip_index: int) -> "tuple[Optional[str], Optional[int]
             if isinstance(device, dict) and device.get("index") is not None
         ]
         hip_by_row = get_hip_id_by_gpu_index()
-    except Exception:  # noqa: BLE001 -- no reader, no position; the name alone still pins
+    except Exception:  # noqa: BLE001
         return None, None
     if not hip_by_row:
         return None, None
@@ -556,17 +517,10 @@ def _physical_position_of(hip_index: int) -> "tuple[Optional[str], Optional[int]
     selected = next((d for d in devices if d.get("index") == physical_index), None)
     if selected is None:
         return None, None
-    # Counted on the NAME, because the name is what the matcher counts: `sd_cpp_device_named`
-    # indexes the Vulkan devices whose description matches, and it has nothing else to index
-    # by. Counting on `_card_identity` instead -- which carries the gfx target, for the
-    # fingerprint's purposes -- made a gfx1103 APU and a gfx1151 card that both call
-    # themselves `AMD Radeon(TM) Graphics` two different groups, so selecting the second gave
-    # position 0 and the pin named the first Vulkan device of that name.
+    # Counted on the NAME, what `sd_cpp_device_named` indexes by. `_card_identity` also carries
+    # the gfx target, which split two cards both named `AMD Radeon(TM) Graphics` into two groups.
     name = (selected.get("name") or "").strip() or None
     if name is None:
-        # The grouping the matcher will use cannot be established from a row the OS did not
-        # name, so the tie-break is withheld rather than guessed. A card that is alone of its
-        # name is still pinned, by name.
         return None, None
     wanted = _normalized_card_name(name)
     position = 0
@@ -583,28 +537,11 @@ def _physical_position_of(hip_index: int) -> "tuple[Optional[str], Optional[int]
 
 
 def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional[int]]":
-    """The card at torch-visible index *ordinal* as the driver names it, and its place among
-    the physical cards of that same name. ``(None, None)`` when unreadable.
-
-    For the accelerator fallback, where the build's devices are in a namespace the physical
-    index means nothing in. The name is what the two namespaces agree on, so it is what the
-    pin is matched by. `torch.cuda` is the reader on ROCm as well: HIP is exposed through the
-    same API and reports the same marketing name the Vulkan ICD prints.
-
-    The POSITION is what breaks a tie between identical cards, which a name cannot: two
-    7900 XTXs describe themselves identically in both namespaces, so what is carried instead
-    is "this is the second one". See `sd_cpp_device_named` for the assumption that rests on.
-
-    That count has to be taken over the PHYSICAL cards. `HIP_VISIBLE_DEVICES` and its
-    relatives filter and reorder what torch enumerates, and the Vulkan child gets no
-    equivalent mask -- Vulkan does not read those variables -- so it walks every card. Counted
-    inside the visible list, a mask of `1` on two identical cards made the selected card "the
-    first one of its name", and the pin then named physical card 0 while Studio reserved and
-    accounted for card 1. So the ordinal is translated back to a physical index and the
-    position is taken from the host's own enumeration; where that translation or that
-    enumeration cannot be had, the position is ``None`` and `sd_cpp_device_named` declines the
-    tie-break instead of pinning the wrong card.
-    """
+    """The card at torch-visible index *ordinal* as the driver names it, and its place among the
+    physical cards of that same name (see `sd_cpp_device_named`). ``(None, None)`` when
+    unreadable. The position must be counted over the PHYSICAL cards, since Vulkan reads no HIP
+    visibility mask: counting inside the masked list made a mask of `1` on two identical cards
+    pin physical card 0 while Studio reserved card 1."""
     if ordinal is None:
         return None, None
     try:
@@ -612,12 +549,11 @@ def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional
         if not torch.cuda.is_available() or ordinal >= torch.cuda.device_count():
             return None, None
         names = [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())]
-    except Exception:  # noqa: BLE001 -- no reader, no pin; the load runs as it does today
+    except Exception:  # noqa: BLE001
         return None, None
     name = (names[ordinal] or "").strip()
     physical_index, masked = _physical_index_of(ordinal)
     if not masked:
-        # The visible list IS the physical list, so torch answers both halves.
         if not name:
             return None, None
         return name, sum(1 for index in range(ordinal) if (names[index] or "").strip() == name)
@@ -636,26 +572,13 @@ def sd_cpp_device_named(
     *,
     position: Optional[int] = None,
 ) -> Optional[str]:
-    """The ggml device that IS *card_name*, when exactly one of them is.
+    """The ggml device that IS *card_name*, when exactly one of them is. None unless unambiguous.
 
-    For the accelerator fallback. The Vulkan build's devices are in their own namespace, so
-    the physical ordinal the user picked names nothing in it and `--backend` went unwritten:
-    sd.cpp then chose its own default device, normally the first, while Studio recorded and
-    reserved the card that was selected. On a mixed box the card's own name is the one thing
-    both namespaces agree on, so that is what this matches.
-
-    Two identical cards produce two identical descriptions, and the name alone cannot tell
-    them apart. ``position`` is how many cards of that same name come BEFORE the selected one
-    in the physical enumeration, and the match at that position is taken. Both namespaces
-    enumerate the GPUs of one vendor in the order the driver reports them -- PCI bus order for
-    amdgpu, which is what RADV's `vkEnumeratePhysicalDevices` and HIP's device list both walk
-    -- so the n-th of a run of identical cards is the same card in either. That is an
-    assumption about the driver, not a fact this can read, which is why it is only used to
-    break a tie between devices already agreed to be the right MODEL, and why the counts have
-    to agree: a ``position`` outside the matches pins nothing.
-
-    None unless the match is unambiguous. No name, no position and several candidates means a
-    guess dressed as a pin, which is what this exists to stop.
+    The Vulkan build's devices are in their own namespace, so the physical ordinal names nothing
+    in it, `--backend` went unwritten and sd.cpp used its own default device while Studio
+    reserved the selected card. ``position`` breaks a tie between identical cards on the
+    ASSUMPTION that RADV and HIP walk one vendor's GPUs in the same driver order -- unreadable
+    here, so it is used only among devices already agreed to be the right MODEL.
     """
     if not binary or not card_name:
         return None
@@ -665,10 +588,8 @@ def sd_cpp_device_named(
     text = _sd_cpp_probe_output(binary, "--list-devices")
     if text is None:
         return None
-    # Two readings of every line, because containment alone cannot tell two models apart:
-    # `AMD Radeon RX 7600` is contained in `AMD Radeon RX 7600 XT`. The exact one drops the
-    # driver tag and compares the rest for equality, which is the model; the loose one is the
-    # containment that recognises a tagged spelling of the same card.
+    # Two readings per line: containment alone cannot tell `RX 7600` from `RX 7600 XT`, and
+    # equality alone cannot recognise a driver-tagged spelling of the same card.
     exact: list[str] = []
     loose: "list[tuple[str, str]]" = []
     for line in text.splitlines():
@@ -687,22 +608,15 @@ def sd_cpp_device_named(
         if wanted in described or described in wanted:
             loose.append((name, described))
     if exact:
-        # Every candidate is the selected MODEL, so a run of them is a run of identical cards
-        # and the position means what it says.
         matches, same_model = exact, True
     else:
         matches = [name for name, _described in loose]
-        # Only when the candidates describe one model. `position` counts the cards of the
-        # selected name in the PHYSICAL enumeration, so applying it to a list that mixes a
-        # 7600 with a 7600 XT pins by a count that never included the other model: position 0
-        # can land on the XT when the non-XT was selected, and the load then runs on, and
-        # accounts for, a different GPU. Mixed models are an ambiguity, not a tie.
+        # `position` counted cards of the SELECTED name only, so a list mixing a 7600 with a
+        # 7600 XT would be pinned by a count that never included the other model.
         same_model = len({described for _name, described in loose}) == 1
     if matches and position is not None and not (same_model and 0 <= position < len(matches)):
-        # A position the enumeration cannot honour is UNRESOLVED, including when only one
-        # device answers: nothing says that singleton is the card at that position, and the
-        # selection was made against the physical list. Returning it anyway meant the graph
-        # could run on one card while the arbiter reserved and accounted for the other.
+        # UNRESOLVED even when only one device answers: nothing says that singleton is the card
+        # at that position, and the selection was made against the physical list.
         logger.warning(
             "sd_cpp.device_pin_ambiguous: the selection is card %s of the ones answering to "
             "%r, and this build enumerates %s of them%s, so none is pinned and the graph runs "
@@ -716,9 +630,6 @@ def sd_cpp_device_named(
     if len(matches) == 1:
         return matches[0]
     if matches and same_model and position is not None and 0 <= position < len(matches):
-        # A run of identical cards, and the selection's place in that run. Same vendor, same
-        # driver, same enumeration order on both sides; see the note above for why that is
-        # the assumption and not a reading.
         return matches[position]
     if matches:
         logger.warning(
@@ -881,18 +792,11 @@ def _note_failed_upgrade(accelerator: str) -> None:
         pass
 
 
-# The accelerator to try when the one a host asks for cannot be made to run there, and nothing else.
-#
-# A ROCm sd.cpp prebuilt is published for one generic ROCm target, not per gfx arch, so a card whose
-# hipBLAS that build carries no kernels for cannot start it at all: sd-cli dies in hipblasSetStream
-# with CUBLAS_STATUS_INVALID_VALUE on gfx1201 (#9278) and never gets past tensor loading on gfx1100
-# (#8814). Vulkan runs on both of those cards, the installer already resolves a "vulkan" asset for
-# Linux and Windows alike, and the alternative on this path is the CPU build. So Vulkan is the rung
-# between "the ROCm build does not work here" and "give up on the GPU".
-#
-# One-way and one-deep on purpose: nothing falls back FROM Vulkan (the CPU rung below it already
-# exists), and no other accelerator has a broken-per-arch story to fall back from. CUDA either
-# works or the host has no CUDA asset at all, which the CPU rung has always handled.
+# The rung between "the ROCm build does not work here" and "give up on the GPU". A ROCm sd.cpp
+# prebuilt is published for one generic target, not per gfx arch, so a card it carries no hipBLAS
+# kernels for cannot start it: #9278 (gfx1201) dies in hipblasSetStream, #8814 (gfx1100) never
+# gets past tensor loading. One-way and one-deep: the CPU rung below Vulkan already exists, and
+# CUDA either works or the host has no CUDA asset at all, which that rung has always handled.
 _ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan"}
 
 
@@ -904,110 +808,74 @@ def sd_cpp_vulkan_fallback_enabled() -> bool:
 
 
 def fallback_accelerator_for(accelerator: Optional[str]) -> Optional[str]:
-    """The accelerator to try after ``accelerator`` could not be made to run, or None.
-
-    None whenever there is no next rung, the knob is off, or the answer would be the accelerator
-    that was already asked for, so a caller can ladder on this without special-casing any of them.
-    """
+    """The accelerator to try after ``accelerator`` could not be made to run, or None when there
+    is no next rung, the knob is off, or the answer would be the accelerator already asked for."""
     if not sd_cpp_vulkan_fallback_enabled():
         return None
     try:
         want = _installer_module().accelerator_class(accelerator)
-    except Exception:  # noqa: BLE001 -- cannot classify it, so there is no rung to take
+    except Exception:  # noqa: BLE001
         want = (accelerator or "").strip().lower()
     nxt = _ACCELERATOR_FALLBACK.get(want)
     return nxt if nxt and nxt != want else None
 
 
-# Accelerators whose BUILD could not be run on this host, as distinct from _failed_accelerator_upgrades
-# above, which is about an install that could not be fetched. Persisted as well as memoised: a ROCm
-# build that crashes mid-render (#9278 crashes after tensor loading, minutes in) would otherwise be
-# selected again by the very next load, and again after a restart, because nothing about the install
-# is wrong -- the asset is present, correct for "rocm", and simply does not run on this card.
-#
-# The record is NOT a bare set of accelerator names. A name alone outlives the thing it is a fact
-# about: the claim being stored is "THIS sd.cpp build cannot drive THESE cards through THIS runtime",
-# and a driver upgrade, a new card or a new bundle all make it stale while the name stays the same.
-# So each entry carries the fingerprint it was observed under and is dropped once that provably
-# changes; see _accelerator_fingerprint and _fingerprint_still_applies.
+# Accelerators whose BUILD could not be run here, as distinct from _failed_accelerator_upgrades
+# above, which is about an install that could not be FETCHED. Persisted, because nothing about
+# the install is wrong and the next load would choose it again. The claim stored is "THIS build
+# cannot drive THESE cards through THIS runtime", so each entry carries the fingerprint it was
+# observed under and is dropped once that provably changes (_fingerprint_still_applies).
 _ACCELERATOR_RUNTIME_FAILURES_KEY = "sd_cpp_accelerator_runtime_failures"
-# accelerator class -> record dict, the in-process mirror of the persisted map.
 _accelerator_runtime_failures: dict[str, dict] = {}
 
-# How many AMBIGUOUS failures it takes to divert a host. A decisive one is enough on its own; see
-# _ACCELERATOR_RUNTIME_FAILURE_MARKERS below for which is which. Two rather than one because the
-# ambiguous markers name a GPU fault without proving the BUILD is the cause, and the cost of being
-# wrong is a working ROCm installation bypassed until someone finds the reset.
+# How many AMBIGUOUS failures divert a host; a decisive one is enough alone. Two, because the
+# ambiguous markers name a GPU fault without proving the BUILD caused it, and the cost of being
+# wrong is a working ROCm install bypassed until someone finds the reset.
 _AMBIGUOUS_FAILURE_STRIKES = 2
 
 
 def _accelerator_class_of(accelerator: Optional[str]) -> str:
     try:
         return _installer_module().accelerator_class(accelerator)
-    except Exception:  # noqa: BLE001 -- the raw string is close enough for a preference note
+    except Exception:  # noqa: BLE001
         return (accelerator or "").strip().lower()
 
 
 def _discovered_managed_root() -> Optional[str]:
-    """The managed root of the build this host would actually use, or None when there is none.
-
-    Cheap and never raises: `find_sd_cpp_binary` is a path lookup, and every caller here has a
-    default to fall back on.
-    """
+    """The managed root of the build this host would actually use, or None when there is none."""
     try:
         found = find_sd_cpp_binary()
         return owning_managed_root(found) if found else None
-    except Exception:  # noqa: BLE001 -- a root that cannot be resolved is simply not one
+    except Exception:  # noqa: BLE001
         return None
 
 
 def _accelerator_fingerprint(binary: Optional[str] = None) -> dict:
-    """What the note is a fact ABOUT: the sd.cpp bundle, the GPU runtime and the cards themselves.
-
-    Every component is optional and every one is gathered from something already resolved or
-    already cached, so this adds no probe to the load path. A component that cannot be read is
-    recorded as None rather than omitted, so "we could not tell" is distinguishable from "it was
-    not part of the fingerprint when this was written".
-
-    Never raises. A fingerprint that cannot be built at all is ``{}``, which
-    ``_fingerprint_still_applies`` treats as "cannot tell", i.e. the record keeps applying.
-    """
+    """What the note is a fact ABOUT: the sd.cpp bundle, the GPU runtime and the cards. Every
+    component is best-effort; an unreadable one is None, which keeps the record applying."""
     fp: dict = {"bundle": None}
     try:
-        # The root the BINARY is in when one is named, not the current default. The finder also
-        # serves a tree an older build left beside the Unsloth home, and a failure recorded for
-        # a binary out of that one would otherwise carry the default root's tag -- None, or a
-        # tag belonging to an unrelated install -- so replacing or upgrading the legacy bundle
-        # could never invalidate the record and the host stayed diverted until it was cleared
-        # by hand.
-        # With no binary named -- every consultation -- the root is resolved from the build
-        # that is actually DISCOVERED rather than from the current default. The finder also
-        # serves a tree an older build left beside the Unsloth home, and a failure recorded
-        # against that tree's tag was then compared with the default root's: stale at once if
-        # that root carries any other tag, and never retired at all if it carries none, so
-        # replacing the legacy bundle could not clear the diversion.
+        # The root the named BINARY is in, else the one actually DISCOVERED, never the current
+        # default: the finder also serves a legacy tree beside the Unsloth home, and comparing
+        # that tree's tag against the default root's made the record stale at once, or unretirable
+        # when the default root carries no tag.
         root = owning_managed_root(binary) if binary else _discovered_managed_root()
         record = _installer_module().read_install_record(root or managed_install_root())
         if isinstance(record, dict):
-            # The release the managed tree came from, read LIVE rather than memoised: a new bundle
-            # is a new build, an install can land inside the life of this process, and a new build
-            # is exactly the thing that can start working on a card the old one could not serve.
+            # Read LIVE: an install can land inside the life of this process, and a new build is
+            # exactly what may start working on a card the old one could not serve.
             tag = record.get("tag")
             fp["bundle"] = str(tag) if tag else None
-    except Exception:  # noqa: BLE001 -- no bundle component, not a failure
+    except Exception:  # noqa: BLE001
         pass
     fp.update(_host_fingerprint())
     return fp
 
 
-# The GPU runtime this interpreter is bound to. Memoised because it genuinely cannot change inside
-# one process: it is a string baked into the torch wheel at build time, and the fingerprint is
-# consulted on EVERY load through accelerator_runtime_failed. Cleared by _reset_host_fingerprint.
-#
-# The CARDS are deliberately NOT memoised beside it; see _host_fingerprint.
+# The GPU runtime this interpreter is bound to. Safe to memoise: it is baked into the torch wheel
+# at build time. The CARDS are deliberately NOT memoised beside it; see _host_fingerprint.
 _RUNTIME_FINGERPRINT_MEMO: Optional[dict] = None
-# Retained under its old name so a caller (or a test) that pinned the whole host half still works:
-# when it is set, it wins, exactly as it used to.
+# Kept under its old name, and still wins when set, for a caller that pinned the whole host half.
 _HOST_FINGERPRINT_MEMO: Optional[dict] = None
 
 
@@ -1025,14 +893,11 @@ def _runtime_fingerprint() -> dict:
         return dict(_RUNTIME_FINGERPRINT_MEMO)
     fp: dict = {"runtime": None}
     try:
-        import torch  # noqa: PLC0415 -- already imported by the backend; local to keep this cheap
+        import torch  # noqa: PLC0415
 
-        # torch.version.hip is the ROCm version the torch WHEEL was built against, written into
-        # torch/version.py at build time. Read for what it is: it moves when the user reinstalls
-        # torch from a different ROCm index, and it does NOT move when only the driver or /opt/rocm
-        # is upgraded underneath the same wheel. So it retires a record on a torch swap and it is
-        # not the component that answers a driver-only fix; the cards below, and failing those the
-        # DELETE route, are. It needs no subprocess and no driver call to read.
+        # torch.version.hip is the ROCm the WHEEL was built against: it moves on a torch swap and
+        # NOT on a driver or /opt/rocm upgrade under the same wheel, so a driver-only fix is
+        # answered by the cards component or by the DELETE route, never by this one.
         runtime = getattr(torch.version, "hip", None) or getattr(torch.version, "cuda", None)
         fp["runtime"] = str(runtime) if runtime else None
     except Exception:  # noqa: BLE001
@@ -1044,31 +909,15 @@ def _runtime_fingerprint() -> dict:
 def _card_identity(device: dict) -> Optional[str]:
     """How one enumerated card is named in the fingerprint, falling back when the OS gives no name.
 
-    The marketing name is preferred because it is the most legible and the most specific. But it
-    is frequently absent on exactly the hosts this feature is about: measured on the gfx1151 Linux
-    runner, `get_physical_gpu_inventory` answers from `sysfs-drm` with
-    ``{'vendor': 'amd', 'index': 0, 'name': None, 'memory_total_gb': 64.0,
-    'gfx_candidates': ['gfx11', 'gfx1151']}``. Filtering on ``name`` dropped that device, the list
-    came out empty, and the cards component was None on a machine with a card in it -- so a record
-    written there could never be retired by a card change, which is the one component that answers
-    a driver-side fix (``torch.version.hip`` is baked into the wheel and does not move).
-
-    The gfx target is carried ALONGSIDE the name rather than only as its fallback, because the
-    claim being stored is "this sd.cpp build has no code objects for this card", which is a
-    statement about the gfx target rather than about the retail name -- and AMD ships a great many
-    distinct targets under one generic name. `AMD Radeon(TM) Graphics` is the name both a gfx1103
-    laptop APU and a gfx1151 Strix Halo report, so a name-only identity would let a card swap that
-    genuinely changes the answer leave the fingerprint untouched and keep diverting the new card to
-    Vulkan. Vendor, index and pool size are the last resort so a card that answers with none of the
-    above still contributes something that changes when the hardware does.
-
-    Returns None only for a device that reports nothing at all, which stays filtered out.
+    The marketing name is absent on exactly the hosts this feature is about (gfx1151 answers from
+    `sysfs-drm` with ``name = None``), so filtering on it left the cards component empty. The gfx
+    target is carried ALONGSIDE the name, not only as its fallback: `AMD Radeon(TM) Graphics`
+    names both a gfx1103 APU and a gfx1151 Strix Halo.
     """
     name = device.get("name")
     gfx = device.get("gfx_candidates") or device.get("gfx") or device.get("arch")
     if isinstance(gfx, (list, tuple)):
-        # Most specific last in the inventory's own ordering (['gfx11', 'gfx1151']), and all of it
-        # is kept: a shorter family string alone would make gfx1100 and gfx1151 the same card.
+        # All of it is kept: the family string alone would make gfx1100 and gfx1151 one card.
         gfx = "/".join(str(g) for g in gfx if g)
     if name and gfx:
         return f"{name}@{gfx}"
@@ -1085,16 +934,9 @@ def _card_identity(device: dict) -> Optional[str]:
 
 
 def selected_card_identity(ordinal: "Optional[int]") -> "Optional[str]":
-    """The fingerprint identity of the card at torch-visible index *ordinal*, or ``None``.
-
-    The same ``_card_identity`` the fingerprint is built from -- name AND gfx target -- so a
-    record written about one card can be compared with the card a later load selected. Read
-    off the host's own enumeration through the mask translation `physical_card_name` uses,
-    because a visibility mask filters and reorders what torch sees and the inventory does not.
-
-    ``None`` means "cannot tell", which every consumer treats as "the record still applies":
-    nothing here may narrow a note on a guess.
-    """
+    """The fingerprint identity of the card at torch-visible index *ordinal*, or ``None``. Must be
+    the same ``_card_identity`` the fingerprint is built from, so a record about one card can be
+    compared with the card a later load selected. ``None`` means every record still applies."""
     if ordinal is None:
         return None
     try:
@@ -1113,9 +955,8 @@ def selected_card_identity(ordinal: "Optional[int]") -> "Optional[str]":
             if isinstance(device, dict) and device.get("index") is not None
         ]
         if masked:
-            # A mask names HIP ids; the inventory rows are its own probe order, and amd-smi
-            # publishes the mapping between them. Without it there is no saying which row was
-            # selected, so this declines rather than counting in the wrong space.
+            # A mask names HIP ids; the inventory rows are its own probe order. Without amd-smi's
+            # mapping between them nothing says which row was selected, so this declines.
             hip_by_row = get_hip_id_by_gpu_index()
             if not hip_by_row:
                 return None
@@ -1128,23 +969,14 @@ def selected_card_identity(ordinal: "Optional[int]") -> "Optional[str]":
         if selected is None:
             return None
         return _card_identity(selected)
-    except Exception:  # noqa: BLE001 -- no reader, no narrowing
+    except Exception:  # noqa: BLE001
         return None
 
 
 def _host_fingerprint() -> dict:
-    """``{"runtime": ..., "gpus": ...}``. Never raises.
-
-    The cards are re-read on every call rather than memoised with the runtime. Memoising them was
-    measured to freeze the wrong answer: ``get_physical_gpu_inventory(block = False)`` on a COLD
-    cache returns the unknown sentinel and only schedules the probe, so the first call in a process
-    yields ``gpus = None`` even on a host with cards, and a memo then carried that None for the
-    life of the process -- past the refresh landing a second later, and past any card added or
-    removed while Studio runs. Since the note is written by a load, the record that a card change
-    is supposed to retire is exactly the one most likely to have been written with no cards in it.
-    Re-reading costs a monotonic compare and a dict return once the cache is warm, and the call is
-    still non-blocking, so a wedged driver still cannot stall the load path.
-    """
+    """``{"runtime": ..., "gpus": ...}``. The cards are re-read on every call, NOT memoised with
+    the runtime: ``get_physical_gpu_inventory(block = False)`` on a cold cache returns the unknown
+    sentinel and only schedules the probe, so a memo froze ``gpus = None`` on a host with cards."""
     if _HOST_FINGERPRINT_MEMO is not None:
         return dict(_HOST_FINGERPRINT_MEMO)
     fp: dict = {"gpus": None}
@@ -1152,10 +984,7 @@ def _host_fingerprint() -> dict:
     try:
         from utils.hardware.hardware import get_physical_gpu_inventory
 
-        # Non-blocking, the same call the request path uses: on a load path a wedged driver must
-        # never stall this, and a cold cache answering "unknown" simply leaves this component None.
-        # The cards the OS enumerates are the right grain, since swapping the card is the other way
-        # a note stops being true.
+        # Non-blocking: on a load path a wedged driver must never stall this.
         inventory = get_physical_gpu_inventory(block = False)
         if not (inventory or {}).get("unknown"):
             names = sorted(
@@ -1175,13 +1004,8 @@ def _host_fingerprint() -> dict:
 
 def _fingerprint_still_applies(stored: Optional[dict], current: Optional[dict]) -> bool:
     """Whether a record written under ``stored`` still speaks for a host fingerprinted ``current``.
-
-    A component invalidates the record only when BOTH sides are known and they DIFFER. Unknown on
-    either side counts as matching, deliberately: the components are best-effort reads, and a probe
-    that intermittently answers "unknown" would otherwise make the host flip between ROCm and Vulkan
-    from load to load, which is worse than either answer. The direction that matters is that a real,
-    observed change in driver, bundle or cards does retire the record.
-    """
+    A component invalidates it only when BOTH sides are known and DIFFER: an unknown counts as
+    matching, else a flaky probe flips the host between ROCm and Vulkan from load to load."""
     if not isinstance(stored, dict) or not isinstance(current, dict):
         return True
     for key in ("bundle", "runtime", "gpus"):
@@ -1194,11 +1018,8 @@ def _fingerprint_still_applies(stored: Optional[dict], current: Optional[dict]) 
 
 
 def _normalise_failure_record(key: str, value: object) -> Optional[dict]:
-    """One persisted entry in the shape the readers expect, or None when it is unusable.
-
-    Tolerates the bare-list shape an early build of this feature wrote, reading it as one decisive
-    strike with no fingerprint, which is what it meant. Never raises.
-    """
+    """One persisted entry in the shape the readers expect, or None when it is unusable. Tolerates
+    the bare-list shape an early build wrote, as one decisive strike with no fingerprint."""
     if value is True:
         return {"strikes": _AMBIGUOUS_FAILURE_STRIKES, "proven": True, "fingerprint": {}}
     if not isinstance(value, dict):
@@ -1213,9 +1034,7 @@ def _normalise_failure_record(key: str, value: object) -> Optional[dict]:
         "proven": bool(value.get("proven", False)),
         "fingerprint": fingerprint if isinstance(fingerprint, dict) else {},
     }
-    # The cards this was seen on, when the writer could tell. Dropping them here would read a
-    # card-scoped note back as a host-wide one on the next process, which is the whole of what
-    # the scoping is for; an entry that names none keeps applying to every card, as it did.
+    # Dropping these would read a card-scoped note back as a host-wide one in the next process.
     cards = [str(card).strip() for card in (value.get("cards") or []) if str(card).strip()]
     if cards:
         record["cards"] = sorted(set(cards))
@@ -1229,21 +1048,19 @@ def _stored_accelerator_runtime_failures() -> dict[str, dict]:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
 
-        # Owner-scoped, like every other host-level preference: which sd.cpp build runs on this
-        # machine is a fact about the machine, not about whoever happens to be generating.
+        # Owner-scoped: which sd.cpp build runs here is a fact about the machine, not the user.
         stored = run_as(OWNER, get_app_setting, _ACCELERATOR_RUNTIME_FAILURES_KEY, None)
     except Exception:  # noqa: BLE001
         return {}
     if isinstance(stored, str):
-        # A string is tolerated because the value is written through a JSON column: a row saved by
-        # a caller that pre-serialised it reads back as the text of a mapping, not a mapping.
+        # JSON column: a row saved pre-serialised reads back as the text of a mapping.
         try:
             import json
             stored = json.loads(stored)
         except ValueError:
             return {}
     if isinstance(stored, (list, tuple, set)):
-        # The shape an early build of this feature wrote: a plain list of accelerator names.
+        # The shape an early build wrote: a plain list of accelerator names.
         stored = {str(item).strip().lower(): True for item in stored if str(item).strip()}
     if not isinstance(stored, dict):
         return {}
@@ -1275,28 +1092,12 @@ def note_accelerator_runtime_failure(
 ) -> None:
     """Record that the ``accelerator`` sd.cpp build could not be run on this host.
 
-    Only ever records for an accelerator that has a rung below it: noting one with no fallback
-    would persist a row nothing reads, and noting "cpu" would be a claim that the host cannot run
-    stable-diffusion.cpp at all, which no failure here establishes.
-
-    ``proven`` is the difference between evidence and suspicion. The load path passes True because
-    it has ENUMERATED the answer: the host's own build could not be asked for its devices and the
-    fallback build listed one. A decisive sd-cli message passes True for the same reason, the
-    message names the build having no code for the card. An ambiguous message passes False, and
-    those only divert the host once ``_AMBIGUOUS_FAILURE_STRIKES`` of them have been seen under one
-    fingerprint, so a single transient GPU fault never moves a working installation.
-
-    A record observed under a different fingerprint is REPLACED rather than added to: the strikes
-    counted against the old driver or the old bundle are not evidence about the new one.
-
-    ``fingerprint`` is for a caller that has already CHANGED the thing being fingerprinted. The
-    load path installs the fallback bundle before it gets here, and the bundle tag is read live
-    out of the managed install record, so a fingerprint taken now describes the build that
-    replaced the failed one. That is the wrong fact: the next release's ROCm asset would then
-    match the stored tag and the record would suppress the retry that might have worked. Taking
-    the reading BEFORE the install and passing it in is what keeps the note about the build that
-    actually failed. Omitted, it is read now, which is right for every caller that has installed
-    nothing.
+    Only for an accelerator with a rung below it: noting "cpu" would claim the host cannot run
+    stable-diffusion.cpp at all, which no failure here establishes. A record seen under a
+    different fingerprint is REPLACED, not added to. Pass ``fingerprint`` when the caller has
+    already CHANGED what is fingerprinted: the load path installs the fallback bundle first, so a
+    reading taken here would describe the build that REPLACED the failed one and would suppress a
+    retry the next release might have fixed.
     """
     klass = _accelerator_class_of(accelerator)
     if not klass or klass not in _ACCELERATOR_FALLBACK:
@@ -1310,22 +1111,12 @@ def note_accelerator_runtime_failure(
     ):
         previous = None
     if previous is not None:
-        # Keep what the earlier strike KNEW. A component that cannot be read right now is
-        # recorded as None, and `_fingerprint_still_applies` reads an unknown as compatible,
-        # so overwriting a known GPU or bundle value with None loses the only thing that could
-        # ever invalidate this record: once the record is diverting the host, a later card or
-        # bundle change is compared against an unknown and skipped, and the note becomes
-        # permanent. Merging is safe in the other direction too -- the check above has already
-        # established that nothing known about this host contradicts the stored fingerprint.
+        # Keep what the earlier strike KNEW: overwriting a known value with an unreadable None
+        # loses the only thing that could ever invalidate this record, making the note permanent.
         fingerprint = _fingerprint_with_known_fields_kept(previous.get("fingerprint"), fingerprint)
     strikes = (previous or {}).get("strikes", 0) + 1
-    # WHICH card this was seen on, when the caller could tell. A host can carry cards the same
-    # build serves and cards it does not -- one ROCm bundle, several gfx targets -- and a note
-    # keyed on the accelerator alone moved every later load off ROCm because one card could not
-    # run it. Accumulated rather than overwritten: a second card failing the same build is one
-    # more card it does not serve, not a correction of the first. An unknown card adds nothing
-    # and leaves the record unnarrowed, which is what keeps it applying to every selection this
-    # cannot identify.
+    # One ROCm bundle serves several gfx targets, so a note keyed on the accelerator alone moved
+    # every later load off ROCm because one card could not run it. Accumulated, not overwritten.
     cards = [c for c in ((previous or {}).get("cards") or []) if c]
     if card and card not in cards:
         cards = sorted([*cards, card])
@@ -1346,11 +1137,8 @@ def note_accelerator_runtime_failure(
 def _fingerprint_with_known_fields_kept(
     previous: Optional[dict], current: Optional[dict]
 ) -> Optional[dict]:
-    """*current*, with any component it could not read taken from *previous* instead.
-
-    Only called once the two have been shown not to contradict each other, so the carried
-    value is a fact about this same host that this reading merely failed to re-take.
-    """
+    """*current*, with any component it could not read taken from *previous* instead. Only valid
+    once the two are known not to contradict each other."""
     if not isinstance(previous, dict) or not isinstance(current, dict):
         return current
     merged = dict(current)
@@ -1365,14 +1153,9 @@ def _record_diverts(
     fingerprint: Optional[dict] = None,
     card: Optional[str] = None,
 ) -> bool:
-    """Whether one record is enough to move this host off its own accelerator.
-
-    *card* is the card this selection will actually run on, when the caller knows it. A record
-    that names the cards it was seen on says nothing about a different one, so it does not
-    divert it. Either side unknown, or a record from before the cards were recorded, keeps the
-    record applying: narrowing a note on an unknown is how a card that really cannot run the
-    build gets handed it again.
-    """
+    """Whether one record is enough to move this host off its own accelerator. A record that names
+    the cards it was seen on says nothing about a different *card*; either side unknown keeps it
+    applying, since narrowing on an unknown hands the build back to a card that cannot run it."""
     if not isinstance(record, dict):
         return False
     known_cards = [c for c in (record.get("cards") or []) if c]
@@ -1406,26 +1189,12 @@ def usable_or_recorded_failure(
     requested,
     card = None,
 ):
-    """``binary``, unless it is a build this host has already recorded as unrunnable AND it is
-    not the one that was asked for.
-
-    An ensure does not promise the accelerator it was given: with installing switched off, on
-    an offline host, or after a failed download it returns whatever usable build is already in
-    the managed tree. On a host that recorded a ROCm crash and cannot fetch the Vulkan rung
-    that is the ROCm build, which still answers ``--list-devices``, so the runnability probes
-    pass and the load commits the very build the record exists to avoid -- and the failure the
-    record describes is a crash MID-RENDER, minutes and a full download later.
-
-    The comparison is against what was REQUESTED, not against the record alone. When the
-    fallback is switched off (``UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0``)
-    ``preferred_accelerator`` deliberately asks for ROCm again despite the record, and that
-    opt-out means "run it anyway": rejecting the build that was asked for would send the load
-    to the CPU rung instead of retrying ROCm, which is the opposite of what the switch
-    promises. So only a SUBSTITUTE that is recorded bad is refused.
-
-    A user-supplied binary has no recorded class and is never refused here: unrecorded is
-    unknown, and the identity and capability tests already cover it.
-    """
+    """``binary``, unless it is a build this host has already recorded as unrunnable AND it is not
+    the one that was asked for. An ensure does not promise the accelerator it was given: offline
+    or after a failed download it returns whatever is in the managed tree, which still answers
+    ``--list-devices`` and so passes every runnability probe before dying mid-render. Compared
+    against what was REQUESTED, since with the fallback switched off ``preferred_accelerator``
+    asks for ROCm again on purpose and refusing it would drop the load to CPU."""
     if not binary:
         return binary
     try:
@@ -1443,7 +1212,7 @@ def usable_or_recorded_failure(
                 requested,
             )
             return None
-    except Exception as exc:  # noqa: BLE001 -- cannot tell -> unchanged behaviour
+    except Exception as exc:  # noqa: BLE001
         logger.debug("could not check the sd.cpp accelerator record: %s", exc)
     return binary
 
@@ -1454,19 +1223,9 @@ def accelerator_runtime_failure_state() -> dict:
     fingerprint = _accelerator_fingerprint()
     records = _stored_accelerator_runtime_failures()
     records.update(_accelerator_runtime_failures)
-    # "Diverting" is a claim about what loads are doing right now, and with the knob off they
-    # are not: `fallback_accelerator_for` returns None, so `preferred_accelerator` leaves the
-    # host's own accelerator selected however many strikes the record holds. Reporting the
-    # record's own verdict here produced `enabled: false, diverting: true`, which tells an
-    # operator their loads are being redirected on the one host where they have explicitly
-    # asked that they not be.
-    #
-    # Only the report is gated. `_record_diverts` still answers for the record alone, which is
-    # what `accelerator_runtime_failed` wants: whether this build is known not to run here is a
-    # fact about the host, not about the switch.
-    #
-    # Nothing is hidden by this: `strikes`, `proven` and `stale` are unchanged, so a record
-    # that WOULD divert is still fully visible next to `enabled: false`.
+    # Only the REPORT is gated on the knob, so it cannot say `enabled: false, diverting: true`.
+    # `_record_diverts` still answers for the record alone: whether the build runs here is a fact
+    # about the host, not about the switch.
     enabled = sd_cpp_vulkan_fallback_enabled()
     out = []
     for klass in sorted(records):
@@ -1489,27 +1248,16 @@ def accelerator_runtime_failure_state() -> dict:
 
 
 def clear_accelerator_runtime_failures() -> None:
-    """Forget every note, so the next load tries the host's own accelerator again. This is what a
-    driver update or a new card is: the note is about a build on a host, and both of those change
-    the host.
-
-    Reached from the settings route (``DELETE /settings/diffusion-accelerator-fallback``), which is
-    the point: a preference that outlives the condition that set it has to have a way back that is
-    not "edit the application database". Clearing BOTH halves matters, since the in-process mirror
-    would otherwise keep diverting this process after the persisted record is gone."""
+    """Forget every note, so the next load tries the host's own accelerator again. Reached from
+    ``DELETE /settings/diffusion-accelerator-fallback``. BOTH halves: the in-process mirror would
+    otherwise keep diverting this process after the persisted record is gone."""
     _accelerator_runtime_failures.clear()
     _persist_accelerator_runtime_failures({})
 
 
-# What sd-cli prints when the GPU BACKEND it was built against cannot serve this card, as opposed to
-# the ordinary run-time failures (a bad prompt, a missing file, an out-of-memory) that say nothing
-# about the build. Lower-cased substrings, matched against the tail of the output sd-cli exited on,
-# which ``SdCppEngine._run`` puts in the RuntimeError it raises.
-#
-# DECISIVE: the message names the build having no code for this card, which is the defect itself.
-# The first two are #9278 verbatim ("CUBLAS_STATUS_INVALID_VALUE at hipblasSetStream"); the
-# kernel-image ones are what a generic ROCm build does on a gfx target it carries no code objects
-# for. One of these is enough to divert the host.
+# Lower-cased substrings matched against the output tail ``SdCppEngine._run`` puts in its
+# RuntimeError. DECISIVE: the message names the build having no code for this card, so one is
+# enough to divert the host. The first two are #9278 verbatim.
 _ACCELERATOR_DECISIVE_FAILURE_MARKERS: tuple[str, ...] = (
     "hipblassetstream",
     "cublas_status_invalid_value",
@@ -1518,22 +1266,12 @@ _ACCELERATOR_DECISIVE_FAILURE_MARKERS: tuple[str, ...] = (
     "invalid device function",
 )
 
-# AMBIGUOUS: the message names a GPU fault without establishing that the BUILD is the cause. #9278
-# with offload enabled reports "unspecified launch failure" out of ggml_cuda_mul_mat_q, so these do
-# belong here, but the same strings come out of a wedged queue, a driver reset, a VRAM exhaustion
-# mid-render and a card another process is mistreating. They are counted, not acted on, and it takes
-# _AMBIGUOUS_FAILURE_STRIKES of them under ONE fingerprint before a host is moved.
-#
-# The last two are the same defect class as the decisive list -- ROCm libraries that ship no kernels
-# for this card's gfx target -- printed by a layer that does not say so. "rocBLAS error: Could not
-# initialize Tensile host: No devices found" is what rocBLAS prints when the installed Tensile
-# library carries nothing for the target (ROCm/hipBLASLt#831 for gfx1100; the same line is the
-# standing report for gfx803 and for MI300X inside a container), and the HSA runtime's "Memory
-# access fault by GPU node-N ... Reason: Page not present or supervisor privilege" is how the same
-# situation ends when it reaches a kernel launch. Ambiguous rather than decisive because both also
-# have mundane causes: the rocBLAS line appears when /dev/kfd is simply not passed into a container,
-# and the HSA fault appears from flash attention, from multi-GPU P2P and from a kernel/firmware
-# mismatch on hosts whose ROCm is otherwise fine. Two strikes is the right bar for both.
+# AMBIGUOUS: the message names a GPU fault without establishing the BUILD as the cause. #9278 with
+# offload on prints "unspecified launch failure", but so do a wedged queue, a driver reset and a
+# card another process is mistreating. The last two are the decisive defect class printed by a
+# layer that does not say so (rocBLAS's "Could not initialize Tensile host", ROCm/hipBLASLt#831;
+# the HSA "Memory access fault by GPU node-N"), but they also appear with /dev/kfd missing from a
+# container, from flash attention and from a firmware mismatch, so they stay at two strikes.
 _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS: tuple[str, ...] = (
     "unspecified launch failure",
     "hip error",
@@ -1543,19 +1281,10 @@ _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS: tuple[str, ...] = (
 )
 
 # The failure that prints NOTHING, and the reason a text-only reading is not enough on Windows.
-# Measured on a Strix Halo (gfx1151) Windows 11 runner: the generic Windows ROCm sd.cpp asset
-# (`sd-master-...-bin-win-rocm-7.14.0-x64.zip`) ships `stable-diffusion.dll` and no hipBLAS, and a
-# box with only the driver's `amdhip64_6.dll` -- no HIP SDK -- cannot resolve `hipblas.dll` or
-# `rocblas.dll`. Every invocation, `--list-devices` included, then exits 0xC0000135
-# (STATUS_DLL_NOT_FOUND) in 0.02s having written zero bytes to stdout and stderr, so not one marker
-# above can fire however the tiers are arranged. The Vulkan asset on the same card ships its 17
-# DLLs, loads, and renders.
-#
-# The runner surfaces that exit status as `sd-cli exited <code>` (sd_cpp_engine's generate), which
-# is the only evidence there is. It is DECISIVE rather than ambiguous because an image that never
-# starts is a fact about the BUILD on this host and can never be a fact about the request: a
-# prompt, a resolution or a busy card cannot make the loader fail to find a DLL. Capacity is still
-# checked first, as it is for every other marker.
+# Measured on a gfx1151 Windows 11 runner: the Windows ROCm sd.cpp asset ships no hipBLAS, and a
+# box with only the driver's `amdhip64_6.dll` cannot resolve `hipblas.dll`, so every invocation
+# including `--list-devices` exits 0xC0000135 in 0.02s having written zero bytes. No marker above
+# can fire. DECISIVE, since an image that never starts cannot be a fact about the request.
 _WINDOWS_IMAGE_LOAD_FAILURE_STATUSES: tuple[int, ...] = (
     0xC0000135,  # STATUS_DLL_NOT_FOUND: a DLL the image imports is missing
     0xC0000139,  # STATUS_ENTRYPOINT_NOT_FOUND: it is present but the wrong build
@@ -1566,11 +1295,8 @@ _EXIT_STATUS_RE = re.compile(r"sd-cli exited (-?\d+)")
 
 
 def output_shows_image_load_failure(text: Optional[str]) -> bool:
-    """True when the message reports an exit status meaning the executable never started.
-
-    Windows reports these as unsigned NTSTATUS values; a signed interpretation is accepted too,
-    since the same number reaches python differently depending on who read it.
-    """
+    """True when the message reports an exit status meaning the executable never started. A signed
+    reading of the unsigned NTSTATUS is accepted too, since both spellings reach python."""
     if not text:
         return False
     for raw in _EXIT_STATUS_RE.findall(str(text)):
@@ -1591,23 +1317,11 @@ _ACCELERATOR_RUNTIME_FAILURE_MARKERS: tuple[str, ...] = (
     _ACCELERATOR_DECISIVE_FAILURE_MARKERS + _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS
 )
 
-# CAPACITY, and the reason the markers above cannot be read on their own. ROCm reports an
-# exhausted card as "ROCm error: out of memory", which contains "rocm error" and so counted as an
-# ambiguous strike; two of those under one fingerprint moved the host to Vulkan permanently. That
-# is the opposite of the right answer, because an OOM is a statement about the REQUEST and not
-# about the build: the same build renders the same model at a smaller size, and the fingerprint
-# cannot expire the note because nothing about the host changed.
-#
-# Checked BEFORE either predicate, decisive included, so an allocation failure whose tail also
-# carries a build-shaped string cannot divert the host on one occurrence either. That is the
-# conservative direction this whole path is written in: withholding a diversion leaves the user
-# with the real error, while a wrong diversion is silent and, once persisted, sticky.
-# The forms are the ones this repository's own OOM classifier already recognises, in
-# `utils.utils` -- "cannot allocate memory", "memory allocation failed" and
-# "cublas_status_alloc_failed" among them -- because "out of memory" is not the only way a
-# card says it is full. `ROCm error: CUBLAS_STATUS_ALLOC_FAILED` and `rocBLAS error: memory
-# allocation failed` both carry a build-shaped string and neither said anything about
-# capacity here, so two large requests were enough to divert a host whose ROCm build works.
+# CAPACITY, and why the markers above cannot be read on their own: ROCm reports an exhausted card
+# as "ROCm error: out of memory", which contains "rocm error", so two large requests permanently
+# moved a host whose ROCm build works, and no fingerprint change can expire that note. Checked
+# BEFORE either predicate, decisive included. The forms mirror this repository's own OOM
+# classifier in `utils.utils`; "out of memory" is not the only way a card says it is full.
 _ACCELERATOR_CAPACITY_FAILURE_MARKERS: tuple[str, ...] = (
     "out of memory",
     "outofmemory",
@@ -1636,9 +1350,7 @@ def output_shows_capacity_failure(text: Optional[str]) -> bool:
 
 def output_shows_accelerator_failure(text: Optional[str]) -> bool:
     """True when sd-cli output names a failure of the GPU BUILD rather than of the request.
-
-    Conservative: an unrecognised failure returns False, so a transient error, a bad argument or an
-    out-of-memory never persists a preference away from the host's own accelerator."""
+    Conservative: an unrecognised failure returns False and persists no preference."""
     if not text:
         return False
     if output_shows_capacity_failure(text):
@@ -1664,10 +1376,8 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
 
 def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None) -> str:
     """``accelerator``, or its fallback when this host has already been shown it cannot run it.
-
     Applied at the TOP of an ensure ladder, so a host that has seen the ROCm build crash does not
-    pay for installing and probing it again on every later load. Returns the input unchanged
-    whenever there is no note, no rung, or the knob is off."""
+    install and probe it again on every later load."""
     klass = _accelerator_class_of(accelerator) or (accelerator or "auto")
     nxt = fallback_accelerator_for(klass)
     if nxt and accelerator_runtime_failed(klass, card):
@@ -1830,26 +1540,10 @@ def note_accelerator_failure_from_output(
     card: Optional[str] = None,
 ) -> None:
     """Record that the sd.cpp build ``binary`` came from cannot run on this host, when its own
-    output says so.
-
-    Two gates, because a render can fail for reasons that have nothing to do with the build: the
-    output has to name a GPU-backend failure (``output_shows_accelerator_failure``), and the build
-    has to be one with a rung below it to fall back to. Anything else is left alone, so an ordinary
-    failure never moves a working host off its own accelerator. Never raises: this is a preference,
-    and the caller is on its way to re-raising the real error.
-
-    A third distinction decides whether this ONE failure is allowed to divert the host. A decisive
-    message names the build having no code for this card and is acted on immediately; an ambiguous
-    one names a GPU fault whose cause it does not establish (a wedged queue, a driver reset, a card
-    another process is mistreating all print the same strings) and is only counted. A host has to
-    produce several of those under one fingerprint before it is moved, so a single transient error
-    on a machine whose ROCm works cannot bypass it.
-
-    Here rather than in the video module it grew up in, because the same sd-cli, with the same
-    hipBLAS failure, is run by the image path too: an image-only host was reporting exactly these
-    errors and having none of them recorded, so every retry reinstalled and ran ROCm again and the
-    Vulkan rung below it was never reached.
-    """
+    output says so. Two gates, since a render can fail for reasons unrelated to the build: the
+    output has to name a GPU-backend failure, and the build has to have a rung below it. Never
+    raises; the caller is on its way to re-raising the real error. Here rather than in the video
+    module it grew up in: the image path runs the same sd-cli and recorded none of these."""
     if not binary or not output:
         return
     try:
@@ -1870,7 +1564,7 @@ def note_accelerator_failure_from_output(
             fallback_accelerator_for(accelerator),
         )
         note_accelerator_runtime_failure(accelerator, proven = decisive, card = card)
-    except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the real error
+    except Exception as exc:  # noqa: BLE001
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
 
 
@@ -1880,19 +1574,11 @@ def note_unlaunchable_accelerator_build(
     source: str = "diffusion",
     card: Optional[str] = None,
 ) -> None:
-    """Record that the build ``binary`` came from could not be LAUNCHED on this host.
-
-    The load path's other recorder reads the child's own output, and a build that dies in the
-    dynamic loader produces none: on Windows an unsigned loader status like 0xC0000135 (a
-    dependent DLL missing, which is what a ROCm build on a host without the HIP runtime looks
-    like) is a large POSITIVE exit code, so `_server_binary_runnable` accepts it and the
-    failure surfaces later as a start that never comes up. With nothing recorded, every retry
-    chose the same build and the rung below it was never reached.
-
-    Always an ambiguous strike, never proven: a missing execute bit, an interrupted extraction
-    or a prebuilt for the wrong CPU fail to launch in exactly the same way and say nothing
-    about the accelerator. Several of them under one fingerprint move the host; one does not.
-    """
+    """Record that the build ``binary`` came from could not be LAUNCHED on this host. The other
+    recorder reads the child's own output, and a build that dies in the dynamic loader produces
+    none: on Windows 0xC0000135 arrives as a large POSITIVE exit code, so
+    `_server_binary_runnable` accepts it. Always an ambiguous strike: a missing execute bit or a
+    prebuilt for the wrong CPU fail to launch identically."""
     if not binary:
         return
     try:
@@ -1907,7 +1593,7 @@ def note_unlaunchable_accelerator_build(
             fallback_accelerator_for(accelerator),
         )
         note_accelerator_runtime_failure(accelerator, proven = False, card = card)
-    except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the error
+    except Exception as exc:  # noqa: BLE001
         logger.debug("could not record the sd.cpp launch failure: %s", exc)
 
 
@@ -2059,9 +1745,8 @@ class _SdState:
     # Physical card behind the server's single resolved CUDA/ROCm backend. None for CPU/Metal/Vulkan, an unresolved
     # pin, automatic multi-GPU, and one-shot mode; those shapes cannot safely consume the startup VRAM floor.
     physical_gpu_id: Optional[int] = None
-    # The card this load selected, as the failure record names cards. A generation that fails mid
-    # render is a fact about THAT card, and the generate path is far from the ordinal that chose
-    # it, so the answer is resolved once here and carried.
+    # The card this load selected, as the failure record names cards: the generate path is far
+    # from the ordinal that chose it, so the answer is resolved once and carried.
     selected_card: Optional[str] = None
 
 
@@ -2074,13 +1759,10 @@ def _offload_with_device_pin_impl(
         return flags
     device_name = sd_cpp_device_name_for_ordinal(binary, ordinal)
     if device_name is None:
-        # The fallback build's devices are in their own namespace. `Vulkan0` is not the
-        # physical index the user picked, so the lookup above answers None, no `--backend` is
-        # written, and sd.cpp takes its own default device -- normally the first card -- while
-        # this load's reservation and accounting name the card that WAS selected. On a
-        # multi-GPU host that is a reservation against hardware nothing is running on, and an
-        # overcommit of whatever Vulkan chose. The card's own name is the one thing the two
-        # namespaces agree on, which is what the video path already pins by.
+        # `Vulkan0` is not the physical index the user picked, so the lookup above answers None,
+        # no `--backend` is written, and sd.cpp takes its own default device while this load
+        # reserves and accounts for the card that WAS selected. Pin by name, as the video path
+        # does: the name is what the two namespaces agree on.
         selected_name, selected_position = physical_card_name(ordinal)
         device_name = sd_cpp_device_named(binary, selected_name, position = selected_position)
     return [*flags, *device_backend_flags(device_name, flags)]
@@ -2268,12 +1950,9 @@ class SdCppDiffusionBackend:
         # Set by _resolve_backend when it had to skip an accelerator install because the managed tree was still in
         # use; the load retries it once the tree is free.
         self._deferred_accelerator_install = False
-        # The card THIS load selected, resolved once from its ordinal. Every accelerator
-        # resolution inside the load asks about it, so a failure recorded against another card
-        # on a heterogeneous host does not divert this one: the router keeps ROCm for the
-        # supported card and the backend would otherwise switch the install back to Vulkan.
-        # None outside a load and whenever the selection cannot be identified, which is the
-        # answer that leaves every record applying, as before.
+        # The card THIS load selected. Every accelerator resolution inside the load asks about
+        # it, so on a heterogeneous host the backend does not switch the install back to Vulkan
+        # over a failure recorded against a different card. None means every record applies.
         self._loading_card: Optional[str] = None
         # Servers taken out of _state/_pending_server whose stop() has not returned yet. unload() deliberately stops
         # outside the lock (terminate can take seconds), so between the clear and the stop the fields say idle while
@@ -2315,14 +1994,10 @@ class SdCppDiffusionBackend:
         """The installer accelerator this host's device target resolves to (cpu / cuda / rocm /
         vulkan). Lazy import avoids an import cycle with the engine router.
 
-        Through ``preferred_accelerator``, so a host already shown it cannot run the build for its
-        own accelerator is not handed it again. HERE rather than at the four call sites below
-        (``_resolve_engine``, ``_resolve_backend``, ``_upgrade_server_after_teardown`` and the
-        mid-load re-resolve), because those four have to agree: ``_accelerator_changed`` in the
-        deferred upgrade compares the
-        installed tree against this answer, so a call site that skipped the preference would read
-        the Vulkan tree the other two installed as the wrong accelerator and reinstall ROCm over it
-        on every load."""
+        ``preferred_accelerator`` is applied HERE, not at the four call sites, because those four
+        have to agree: ``_accelerator_changed`` compares the installed tree against this answer,
+        so a site that skipped the preference would read the Vulkan tree the others installed as
+        the wrong accelerator and reinstall ROCm over it on every load."""
         from core.inference.diffusion_engine_router import _install_accelerator_for
         return preferred_accelerator(
             _install_accelerator_for(getattr(resolve_diffusion_device_target(), "backend", "cpu")),
@@ -2405,24 +2080,10 @@ class SdCppDiffusionBackend:
         self, server_binary: Optional[str], *, mode: str, engine: Optional[Any]
     ) -> Optional[str]:
         """Land the deferred install, then answer the question the router could not.
-
-        The router keeps a native selection whose only defence was an install that had not run
-        yet: a resident server executing out of the managed tree cannot be replaced while it
-        runs, so both ensures hand back the build the record condemns and refusing it there
-        would send the first reload after a mid-render failure to diffusers for nothing.
-
-        It has run now. ``_upgrade_server_after_teardown`` is deliberately never fatal and
-        returns the path it was given when the install could not deliver -- an offline host, a
-        failed download, an archive that carries no server -- so the build about to be started
-        can still be the condemned one. That is the point where the answer is real, and the
-        same record check the router skipped decides it: this load fails instead of committing
-        a build that dies mid-render, minutes and a full download later, and by then the server
-        is stopped, so the next selection finds the tree free and routes to diffusers.
-
-        A build that IS the requested accelerator is not refused, here or in the router: with
-        the Vulkan fallback switched off the request is ROCm again on purpose, and that opt-out
-        means run it anyway.
-        """
+        ``_upgrade_server_after_teardown`` is never fatal and returns the path it was given when
+        the install could not deliver, so the build about to start can still be the condemned one:
+        fail now rather than commit a build that dies mid-render, by which point the tree is free
+        and the next selection picks diffusers."""
         upgraded = self._upgrade_server_after_teardown(server_binary)
         running = upgraded if mode == "server" else getattr(engine, "binary", None)
         if running and not usable_or_recorded_failure(
@@ -2589,8 +2250,7 @@ class SdCppDiffusionBackend:
         # leaked _pending_server reads as "the managed tree is busy" for the rest of the process and blocks every
         # later install.
         started: Optional[SdCppServer] = None
-        # Resolved once, before anything asks: the translation reads the host's enumeration and
-        # every resolution in this load has to give the same answer.
+        # Once, before anything asks: every resolution in this load must give the same answer.
         self._loading_card = selected_card_identity(gpu_ordinal)
         try:
             # Resolve mode (server preferred, one-shot fallback) + binary up front so an install failure surfaces
@@ -2614,9 +2274,8 @@ class SdCppDiffusionBackend:
                     except Exception:  # noqa: BLE001
                         usable = False
                     if not usable or fallback is None:
-                        # Neither this accelerator's server nor its one-shot CLI will launch.
-                        # There is no output to classify -- a build that dies in the loader
-                        # prints nothing -- so it is counted rather than acted on.
+                        # Neither the server nor the one-shot CLI will launch, and a build that
+                        # dies in the loader prints nothing to classify.
                         note_unlaunchable_accelerator_build(server_binary, card = self._loading_card)
                         raise RuntimeError("sd-server binary is present but not runnable.")
                     mode, server_binary, engine = "oneshot", None, fallback
@@ -2845,11 +2504,9 @@ class SdCppDiffusionBackend:
                             "sd-server failed to start (%s); falling back to one-shot sd-cli.",
                             start_exc,
                         )
-                        # The load half of the same recording the generate paths do. A server
-                        # that starts and dies carries the build's own output in this error --
-                        # "sd-server exited N. Last output: ..." -- and nothing else on this
-                        # path was reading it, so a ROCm build that cannot come up at all left
-                        # no note and every retry chose it again.
+                        # A server that starts and dies carries the build's own output in this
+                        # error ("sd-server exited N. Last output: ..."), which nothing else on
+                        # this path read, so every retry chose the same ROCm build again.
                         note_accelerator_failure_from_output(
                             server_binary,
                             str(start_exc),
@@ -3519,22 +3176,14 @@ class SdCppDiffusionBackend:
                             cancel = cancel,
                         )
                 except RuntimeError as exc:
-                    # The same failure the video path records, from the same sd-cli: the ROCm
-                    # build starts, loads the tensors and dies in hipBLAS mid-render. Nothing
-                    # about the install is wrong, so without this the next load picks the same
-                    # build again -- and on an image-only host nothing else was recording it,
-                    # so the Vulkan rung below it was never reached however many times it
-                    # failed. A cancellation is not a failure of the build.
+                    # The same mid-render hipBLAS death the video path records, from the same
+                    # sd-cli; on an image-only host nothing else recorded it. A cancellation is
+                    # not a failure of the build.
                     if not cancel.is_set() and DIFFUSION_CANCELLED_MSG not in str(exc):
-                        # The binary that RAN it. On the server path the model is loaded
-                        # inside the resident sd-server and `_resolve_backend` returns no
-                        # engine at all, so reading `self._engine` there passes None and the
-                        # recorder returns immediately -- which is the whole case this is for,
-                        # since a ROCm server that starts and then dies in hipBLAS is exactly
-                        # what the fallback rung exists for. The engine as it stands for the
-                        # one-shot path, never a fresh resolve: resolving here can itself raise
-                        # ("binary is unavailable"), and an exception from inside an except
-                        # block replaces the failure the caller is waiting for.
+                        # The binary that RAN it: on the server path the model is inside the
+                        # resident sd-server and `self._engine` is None, which is the very case
+                        # the rung exists for. Never a fresh resolve, which can itself raise and
+                        # would replace the failure the caller is waiting for.
                         _failed_binary = getattr(
                             getattr(state, "server", None), "binary", None
                         ) or getattr(getattr(self, "_engine", None), "binary", None)
