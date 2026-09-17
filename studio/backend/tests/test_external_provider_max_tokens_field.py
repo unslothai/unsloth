@@ -126,17 +126,17 @@ def test_custom_gateway_retries_with_max_completion_tokens_on_the_wire():
     """Mirrors #10787 (KI:connect): custom provider, GPT-5 gateway rejects max_tokens once."""
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     httpd.recorded = []  # type: ignore[attr-defined]
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread = threading.Thread(target = httpd.serve_forever, daemon = True)
     thread.start()
     base_url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
     try:
-        client = ExternalProviderClient(provider_type="custom", base_url=base_url, api_key="")
+        client = ExternalProviderClient(provider_type = "custom", base_url = base_url, api_key = "")
 
         async def go() -> None:
             async for _ in client.stream_chat_completion(
-                messages=[{"role": "user", "content": "hi"}],
-                model="GPT5-Mitarbeitende",
-                max_tokens=128,
+                messages = [{"role": "user", "content": "hi"}],
+                model = "GPT5-Mitarbeitende",
+                max_tokens = 128,
             ):
                 pass
 
@@ -148,4 +148,4 @@ def test_custom_gateway_retries_with_max_completion_tokens_on_the_wire():
     finally:
         httpd.shutdown()
         httpd.server_close()
-        thread.join(timeout=10)
+        thread.join(timeout = 10)
