@@ -4114,9 +4114,10 @@ class VideoBackend:
             )
             transformer_quant_decline_status = RESOLVED_UNSUPPORTED
         elif transformer_quant_pinned is not None and not dense_transformer_supported(target):
-            transformer_quant_decline = (
-                "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
-            )
+            # Ask the helper rather than repeating its fallback: on ROCm and on the Windows torchao
+            # stub it knows a truer reason, and an AMD owner reading "needs a CUDA GPU" while
+            # holding a working GPU learns nothing about why it declined.
+            transformer_quant_decline = dense_transformer_unsupported_reason(target)
             transformer_quant_decline_status = RESOLVED_UNSUPPORTED
         if (
             kind == "pipeline"
