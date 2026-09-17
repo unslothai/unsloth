@@ -3,20 +3,11 @@
 
 """The launch-time thinking default goes out as --reasoning where the build has it.
 
-llama-server prints "Setting 'enable_thinking' via --chat-template-kwargs is
-deprecated. Use --reasoning on / --reasoning off instead." on every Studio launch
-of a reasoning model (#7526). The warning is per KEY: only enable_thinking has a
-flag of its own, and --chat-template-kwargs is still the only way to set an
-arbitrary template variable, so only that key moves and every other key stays
-where it was.
-
-The gate is the flag catalogue from `llama-server --help`, and it is closed on
-anything short of a positive answer, because a build that predates --reasoning
-exits with "error: invalid argument: --reasoning" rather than starting without it.
-The help text below is copied verbatim out of two real binaries: the bundled
-prebuilt b10909, which has the flag, and the b6277 release tag, which has
---reasoning-format, --reasoning-budget and nothing else, and which really does
-refuse to start when handed --reasoning.
+llama-server deprecates enable_thinking via --chat-template-kwargs (#7526), per KEY, so
+only that key moves. The gate is the `llama-server --help` flag catalogue and is closed
+on anything short of a positive answer: a build predating --reasoning exits with
+"error: invalid argument: --reasoning" rather than starting without it. The help text
+below is verbatim from two real binaries, b10909 and b6277.
 """
 
 from __future__ import annotations
@@ -42,10 +33,7 @@ from core.inference.llama_cpp import (  # noqa: E402
 )
 from core.inference.llama_server_args import strip_shadowing_flags  # noqa: E402
 
-# --- help text, verbatim from the two binaries ----------------------------------------------
-
-# b10909 (the bundled prebuilt). Note the three name-alike flags around it: a
-# substring match on "reasoning" would report the flag on a build that lacks it.
+# b10909. The name-alikes are the point: a substring match would report the flag wrongly.
 MODERN_HELP = """usage: llama-server [options]
 
 -m,    --model FNAME                    model path
@@ -68,7 +56,6 @@ MODERN_HELP = """usage: llama-server [options]
 --jinja, --no-jinja                     whether to use jinja template engine for chat (default: disabled)
 """
 
-# b6277. Same three name-alikes, no --reasoning.
 OLD_HELP = """usage: llama-server [options]
 
 -m,    --model FNAME                    model path
@@ -82,8 +69,6 @@ OLD_HELP = """usage: llama-server [options]
 --jinja, --no-jinja                     whether to use jinja template engine for chat (default: disabled)
 """
 
-# The shape a future llama.cpp removal would take: the flag is still listed, with the
-# description the rename machinery gives a dead name.
 REMOVAL_STUB_HELP = """usage: llama-server [options]
 
 -m,    --model FNAME                    model path
@@ -141,11 +126,8 @@ class TestTheProbeReadsTheFlagAndNotItsNamesakes:
         assert _probe(tmp_path, monkeypatch, **kwargs)["supports_reasoning_flag"] is False
 
     def test_a_parsed_catalogue_counts_even_on_a_nonzero_exit(self, tmp_path, monkeypatch):
-        """Same policy as the sibling flags, rather than a third one.
-
-        A build that prints its whole help and then exits nonzero has still named
-        its flags, and --reasoning-budget is read off that catalogue today. The
-        capabilities carry the doubt separately, in the *_probe_inconclusive keys.
+        """Same policy as the sibling flags: a nonzero exit after a full help still named
+        the flags, and the doubt is carried separately in *_probe_inconclusive.
         """
         caps = _probe(tmp_path, monkeypatch, MODERN_HELP, returncode = 1)
         assert caps["supports_reasoning_flag"] == caps["supports_reasoning_budget"] is True
@@ -222,10 +204,8 @@ class TestOnlyTheDeprecatedKeyMoves:
     def test_an_empty_dict_still_goes_out_as_main_sends_it(self, caps):
         """Nothing moved, so the argument main appends has to be appended.
 
-        `_reasoning_kwargs` returns a non-empty dict today, so this input does not
-        arrive from the launcher. That is exactly why it is worth holding: the
-        untouched path should be byte-identical to main by construction, not
-        because the one input that separates the two spellings is unreachable.
+        Unreachable from the launcher today; held so the untouched path is identical
+        to main by construction rather than by luck.
         """
         assert _build_launch_reasoning_args(caps, {}) == ["--chat-template-kwargs", "{}"]
 
@@ -236,8 +216,6 @@ class TestOnlyTheDeprecatedKeyMoves:
             "on",
         ]
 
-
-# --- the real launch, per host ---------------------------------------------------------------
 
 # enable_thinking style, with preserve_thinking so both channels are exercised at once.
 THINKING_TEMPLATE = (
@@ -316,9 +294,7 @@ _HOSTS = [(o, v) for o in OSES for v in VENDORS]
 class TestTheRealLaunchOnEveryHost:
     """The reasoning arguments are invariant under OS and device.
 
-    They are appended into the same command the placement code then adds -ngl,
-    --device and the split mode to, so this drives the real ``load_model`` on each
-    host rather than the helper alone.
+    Drives the real ``load_model``, since placement appends into the same command.
     """
 
     @pytest.mark.parametrize("os_label,vendor", _HOSTS)
@@ -377,10 +353,8 @@ class TestTheRealLaunchOnEveryHost:
 class TestInheritedExtrasTreatBothSpellingsAlike:
     """Applying a chat template override recomputes the reasoning default.
 
-    An inherited copy of the launch flag is appended after ours and would
-    last-wins-override it, which is why --chat-template-kwargs has always been in
-    the template group. Now that --reasoning carries the same intent, the outcome
-    must not depend on which spelling the user typed.
+    An inherited copy is appended after ours and would last-wins-override it, so both
+    spellings have to be stripped.
     """
 
     @pytest.mark.parametrize(

@@ -3,28 +3,11 @@
 
 """The compressed-tensors drift guard, with nothing but transformers installed.
 
-`test_compressed_tensors_load_error_message.py` re-derives transformers' own refusals and
-matches them, which is the right check. It can only run where the whole Studio backend is
-importable, because it imports fastapi and `models.inference` at module scope and then
-execs `routes/inference.py`. That is one environment, and `studio-backend-ci.yml` pins it
-to `transformers>=4.51,<5.5`:
-
-    .github/workflows/studio-backend-ci.yml:275   pip install 'transformers>=4.51,<5.5'
-    .github/workflows/studio-backend-ci.yml:568   pip install 'transformers>=4.51,<5.5'
-
-The rewording this matcher exists to survive landed in transformers 5.10, outside that
-window. So the guard, as installed, never sees the wording it was built for: it is green
-on the half of the range that was never in danger. That is the same shape as the defect
-the matcher fixes, one level up.
-
-This file closes it by needing only `transformers`. The signatures and `_diagnosis_text`
-are read out of `routes/inference.py` with `ast`, so no fastapi, no PyJWT, no route
-import, no event loop. It therefore runs in any environment that has transformers at all,
-including the 4.57.6 and >=5,<6 legs of `consolidated-tests-ci.yml`, and can be pointed at
-a newer transformers with a bare `pip install -U transformers` and nothing else.
-
-Measured on 4.57.6, 5.0.0, 5.5.4, 5.9.0, 5.10.4, 5.13.1 and 5.17.0: both sites matched at
-every one, and 20 to 24 quantizer modules were scanned for over-acceptance with none found.
+`test_compressed_tensors_load_error_message.py` runs the same check, but only where the
+whole backend imports, and `studio-backend-ci.yml` pins that environment to
+`transformers>=4.51,<5.5` -- outside the 5.10 rewording the matcher exists to survive.
+This file reads the signatures and `_diagnosis_text` out of `routes/inference.py` with
+`ast` instead, so it needs no fastapi and runs on any transformers.
 """
 
 from __future__ import annotations
@@ -42,9 +25,8 @@ _ROUTE = Path(__file__).resolve().parent.parent / "routes" / "inference.py"
 def _route_pieces():
     """`_MISSING_COMPRESSED_TENSORS_SIGNATURES` and `_diagnosis_text`, without importing.
 
-    The matcher is two module-level constants and one small pure function, none of which
-    needs the FastAPI app that surrounds them. Lifting exactly those out with `ast` is what
-    lets this run beside a transformers the backend environment cannot hold.
+    Lifting them out with `ast` is what lets this run beside a transformers the backend
+    environment cannot hold.
     """
     tree = ast.parse(_ROUTE.read_text(encoding = "utf-8"))
     literals = {}
@@ -79,8 +61,7 @@ def _matches(message: str) -> bool:
 def _refusals_from_installed_transformers():
     """The two refusals the INSTALLED transformers raises with the library absent.
 
-    Reached through `is_compressed_tensors_available`, the gate both sites consult, so
-    these are the real `raise` statements and the real strings rather than a copy.
+    Through `is_compressed_tensors_available`, so these are the real strings, not a copy.
     """
     pytest.importorskip("transformers")
     from transformers.quantizers import quantizer_compressed_tensors as quantizer_module
@@ -126,9 +107,8 @@ def test_no_signature_pins_a_version_number():
 def test_no_other_quantizer_family_is_claimed():
     """Every other quantizer's "you are missing a library" message must not match.
 
-    Parsed out of the installed transformers rather than listed, so a family added
-    upstream is covered the day it lands. A parse that finds too little would pass
-    without checking anything, so the module count is asserted.
+    Parsed from the installed transformers, so a family added upstream is covered the day
+    it lands. The module count is asserted: a parse finding too little would pass empty.
     """
     pytest.importorskip("transformers")
     import transformers.quantizers as quantizers_package
@@ -155,9 +135,7 @@ def test_no_other_quantizer_family_is_claimed():
 def test_this_guard_needs_no_studio_backend_dependency():
     """The property that makes it runnable outside the backend's pinned environment.
 
-    If this file grows an import of the route module, fastapi, or anything under
-    `models.`, it goes back to running only where `transformers>=4.51,<5.5` is installed
-    and stops covering the range it exists for.
+    An import of fastapi or the route module puts it back inside the `<5.5` pin.
     """
     tree = ast.parse(Path(__file__).read_text(encoding = "utf-8"))
     imported = set()
@@ -173,10 +151,8 @@ def test_this_guard_needs_no_studio_backend_dependency():
 def test_a_workflow_that_installs_a_modern_transformers_actually_collects_this_file():
     """The guard above is worth nothing in an environment that never runs it.
 
-    Every job that auto-discovers this file pins `transformers>=4.51,<5.5`, and the wording
-    the matcher exists to survive landed in 5.10. The jobs that DO install a modern
-    transformers collect selected paths rather than a tree, so a file nobody lists is a file
-    nobody runs -- which is the same shape as the defect this file guards, one level up.
+    Every auto-discovering job pins `transformers>=4.51,<5.5`; the jobs that install a
+    modern one collect listed paths, not trees, so an unlisted file never runs.
     """
     workflow = (
         Path(__file__).resolve().parents[3] / ".github" / "workflows" / "consolidated-tests-ci.yml"
@@ -185,5 +161,4 @@ def test_a_workflow_that_installs_a_modern_transformers_actually_collects_this_f
     assert (
         "studio/backend/tests/test_compressed_tensors_signature_drift.py" in text
     ), "the modern-transformers matrix does not collect this file"
-    # And that matrix is the one that installs a transformers past the 5.5 ceiling.
     assert 'transformers_spec: "transformers>=5,<6"' in text

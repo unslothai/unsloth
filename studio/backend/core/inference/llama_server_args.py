@@ -518,12 +518,8 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--chat-template",
         "--chat-template-file",
         "--chat-template-kwargs",
-        # The same launch-time thinking default as the enable_thinking kwarg above, in the
-        # spelling llama.cpp now asks for (#7526). It is in this group for the reason the
-        # kwarg is: applying a chat template override recomputes the reasoning default from
-        # the new template, and an inherited copy appended later would last-wins-override
-        # it. Without the entry the outcome would depend on which spelling the user typed.
-        # Takes a value, so it is deliberately NOT in _BOOLEAN_SHADOWING_FLAGS.
+        # enable_thinking's new spelling (#7526); a template override recomputes the default,
+        # so both must strip. Takes a value, so NOT in _BOOLEAN_SHADOWING_FLAGS.
         "--reasoning",
         "-rea",
         "--jinja",

@@ -3,21 +3,13 @@
 
 """A compressed-tensors checkpoint is refused on every host, not only on MLX.
 
-Studio already turns an unsupported NVFP4 load into a short refusal, but the only
-error it recognised is the one the MLX loader raises (unsloth_zoo/mlx/loader.py),
-so it never fired on a CUDA, ROCm or CPU host. There, the load dies inside
-transformers with an ImportError naming ``pip install compressed-tensors``, which
-is advice the user cannot act on: Studio runs from its own environment, and the
-reporter who installed the library into it by hand got a mis-grouped model rather
-than a working one (#8246).
+Studio only recognised the MLX loader's NVFP4 error, so on CUDA, ROCm and CPU the load
+died inside transformers telling the user to ``pip install compressed-tensors`` -- advice
+they cannot act on, since Studio runs from its own environment (#8246).
 
-The messages below are transformers' own. There are two sites, and each has two
-wordings, because transformers reworded both in 5.10 to name a minimum version.
-Read out of every transformers from 4.57.6 to 5.17.0, so a matcher built from one
-wording covers only half of the range Studio supports. The last test in this file
-re-derives the pair from whichever transformers is installed and drives the real
-refusal, so a third rewording fails here rather than quietly restoring the raw
-``pip install compressed-tensors`` advice.
+The messages below are transformers' own: two sites, two wordings each, because both were
+reworded in 5.10 to name a minimum version. A later test re-derives the pair from the
+installed transformers, so a third rewording fails here.
 """
 
 import asyncio
@@ -38,7 +30,6 @@ EXPECTED = (
     "build of this model instead."
 )
 
-# transformers/utils/quantization_config.py, CompressedTensorsConfig.__init__.
 CONFIG_IMPORT_ERROR = (
     "compressed_tensors is not installed and is required for compressed-tensors "
     "quantization. Please install it with `pip install compressed-tensors`."
@@ -47,7 +38,6 @@ CONFIG_IMPORT_ERROR_5_10 = (
     "compressed-tensors>=0.15.0 is required for compressed-tensors quantization. "
     "Please install it with `pip install compressed-tensors>=0.15.0`."
 )
-# transformers/quantizers/quantizer_compressed_tensors.py, validate_environment.
 QUANTIZER_IMPORT_ERROR = (
     "Using `compressed_tensors` quantized models requires the compressed-tensors "
     "library: `pip install compressed-tensors`"
@@ -57,7 +47,6 @@ QUANTIZER_IMPORT_ERROR_5_10 = (
     "`pip install compressed-tensors>=0.15.0`"
 )
 
-# Every wording, tagged with the transformers range it was measured on.
 REFUSALS = {
     "config-pre-5.10": CONFIG_IMPORT_ERROR,
     "config-5.10-plus": CONFIG_IMPORT_ERROR_5_10,
@@ -137,7 +126,6 @@ def test_the_load_route_refuses_with_something_the_user_can_act_on(message, nati
 
     assert error.status_code == 500
     assert error.detail == EXPECTED
-    # The advice that sent the reporter to the wrong Python environment.
     assert "pip install" not in error.detail
 
 
@@ -153,17 +141,13 @@ def test_validate_refuses_the_same_way(message, native):
 def test_no_signature_carries_a_version_number():
     """The token that moved in 5.10 is the one a signature must not contain.
 
-    Both messages changed by swapping "compressed_tensors is not installed" and
-    "the compressed-tensors library" for "compressed-tensors>=0.15.0". A signature
-    that pins the minimum version matches exactly one half of the supported range,
-    which is the defect this test exists to keep out.
+    A signature pinning the minimum version matches exactly half the supported range.
     """
     inference_route = _load_route_module()
 
     for signature in inference_route._MISSING_COMPRESSED_TENSORS_SIGNATURES:
         assert ">=" not in signature
         assert not any(character.isdigit() for character in signature)
-        # Long enough to be this refusal rather than any sentence naming the library.
         assert len(signature) > 30
 
 
@@ -173,15 +157,10 @@ def test_the_exception_class_does_not_matter(exception_type):
     assert _load_failure(CONFIG_IMPORT_ERROR, exception_type = exception_type).detail == EXPECTED
 
 
-# --- the installed transformers, rather than a message copied out of one --------------------
-
-
 def _raise_with_compressed_tensors_absent(call):
     """Run ``call`` with transformers believing the library is not installed.
 
-    The gate both sites consult is ``is_compressed_tensors_available()``, so this
-    reaches the real ``raise`` statements and the real message, instead of
-    asserting against a string this file typed out.
+    Through ``is_compressed_tensors_available()``, so the real message is reached.
     """
     with pytest.raises(ImportError) as exc:
         call()
@@ -191,10 +170,7 @@ def _raise_with_compressed_tensors_absent(call):
 def test_the_message_the_installed_transformers_really_raises_is_recognised():
     """The drift guard. Whatever wording is installed here has to be matched.
 
-    Both sites, both reached through their own gate rather than through a mock of
-    the function under test. If transformers rewords a third time, this fails and
-    names the new sentence, which is the only warning available before a user sees
-    ``pip install compressed-tensors`` again.
+    Both sites, each through its own gate rather than a mock of the code under test.
     """
     transformers = pytest.importorskip("transformers")
     inference_route = _load_route_module()
@@ -227,12 +203,8 @@ def test_the_message_the_installed_transformers_really_raises_is_recognised():
 def test_the_message_survives_the_trip_out_of_the_inference_worker(message):
     """The route can only match what reaches it, and two layers may rewrite it.
 
-    The load runs in a subprocess. InferenceEngine.load_model wraps whatever the
-    load raised in ``format_error_message``, the orchestrator relays the worker's
-    reply verbatim under "message" and re-raises it, and only then does the route
-    see a string. ``format_error_message`` rewrites 404s, auth failures and
-    out-of-memory into its own sentences; this asserts it leaves this one alone, so
-    the signatures above are matched against the text transformers actually wrote.
+    The load runs in a subprocess and its error passes through ``format_error_message``,
+    which rewrites 404s, auth failures and OOM into its own sentences. Not this one.
     """
     from utils.utils import format_error_message
     assert format_error_message(ImportError(message), "unsloth/gemma-4-E2B-it-NVFP4") == message
@@ -241,10 +213,8 @@ def test_the_message_survives_the_trip_out_of_the_inference_worker(message):
 def _quantizer_refusal_messages():
     """Every "you are missing a dependency" message transformers' quantizers raise.
 
-    Parsed out of the installed package's own source rather than listed here, so a
-    family added upstream is covered the day it lands instead of the day someone
-    remembers to add it. Deliberately not executed: most of these sites need a
-    config object and a device, and the string is the whole question.
+    Parsed from the installed package, so a family added upstream is covered the day it
+    lands. Not executed: most sites need a config object and a device.
     """
     import ast
     import re
@@ -272,17 +242,13 @@ def _quantizer_refusal_messages():
 def test_no_other_quantization_family_is_re_routed_into_this_refusal():
     """The families that resolved correctly before must still resolve the same way.
 
-    A widened matcher is only safe if it stayed inside compressed-tensors, so this
-    walks every quantizer transformers ships (bitsandbytes 4 and 8 bit, GPTQ, AWQ,
-    torchao, HQQ, quanto, EETQ, fbgemm FP8, fine-grained FP8, MXFP4, ...) and
-    asserts the route still declines to claim their messages. Only the
-    compressed-tensors quantizer's own may match.
+    A widened matcher is only safe if it stayed inside compressed-tensors, so every
+    quantizer transformers ships is walked and only its own message may match.
     """
     pytest.importorskip("transformers")
     inference_route = _load_route_module()
 
     messages = _quantizer_refusal_messages()
-    # A parse that finds nothing would pass this test without checking anything.
     assert len({module for module, _ in messages}) >= 8, messages
 
     for module, message in messages:
@@ -311,8 +277,7 @@ def test_the_mlx_refusal_is_unchanged():
     "message",
     [
         "Network connection timed out",
-        # Names the library without being about it missing: a user's own note in a
-        # model card, or a log line quoted back. Must not be swallowed.
+        # Names the library without being about it missing. Must not be swallowed.
         "Failed to parse the config of this compressed-tensors export",
     ],
 )
@@ -336,12 +301,8 @@ def test_the_child_process_diagnostics_block_is_not_matched():
 def test_the_refusal_names_no_quantization_scheme():
     """The errors it fires on carry no scheme, so the text may not claim one.
 
-    Both wordings this matcher accepts are raised before transformers looks at the
-    compression config -- CompressedTensorsConfig.__init__ and
-    CompressedTensorsHfQuantizer.validate_environment each test only whether the library
-    imports -- so a W4A16, W8A8, INT8 or MXFP4 checkpoint lands here with exactly the
-    message an NVFP4 one does. Naming NVFP4 or FP8 therefore told most affected users the
-    wrong thing about their own model, and told a W4A16 user to go find a 4-bit build.
+    Both wordings are raised before transformers looks at the compression config, so a
+    W4A16, W8A8, INT8 or MXFP4 checkpoint lands here with the NVFP4 message exactly.
     """
     inference_route = _load_route_module()
     refusal = inference_route._COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE
@@ -351,11 +312,9 @@ def test_the_refusal_names_no_quantization_scheme():
             f"the compressed-tensors refusal names {scheme}, but the errors it matches "
             f"do not identify the scheme"
         )
-    # Still says what it is and what to do instead.
     assert "compressed-tensors" in refusal
     assert "GGUF" in refusal
     # Unqualified "4-bit" reads as a no-op to someone who already picked W4A16.
     assert "bitsandbytes 4-bit" in refusal
 
-    # The scheme IS identified on the MLX path, so that refusal keeps naming it.
     assert "NVFP4" in inference_route._NVFP4_INFERENCE_UNSUPPORTED_MESSAGE

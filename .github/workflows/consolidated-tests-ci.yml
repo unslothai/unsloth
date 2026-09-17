@@ -397,13 +397,9 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
-        # The drift guard is named here for the same reason and a different
-        # one: it reads routes/inference.py with `ast` and needs nothing but
-        # transformers, and the wording it exists to survive landed in
-        # transformers 5.10 -- outside the `>=4.51,<5.5` pin every job that
-        # auto-discovers it installs. Named explicitly because these jobs
-        # collect selected paths rather than a tree, so a file nobody lists is
-        # a file nobody runs, which is the same shape as the defect it guards.
+        # The drift guard is named explicitly (these jobs collect paths, not
+        # trees): it is the only leg with a transformers past the `>=4.51,<5.5`
+        # pin, and the wording it exists to survive landed in 5.10.
         #
         # The Unsloth file runs here rather than in studio-backend-ci, which
         # installs studio.txt and so has no unsloth_zoo at all. Note the policy

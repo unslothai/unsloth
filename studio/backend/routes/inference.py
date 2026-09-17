@@ -14320,17 +14320,8 @@ _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE = (
     "We are working on supporting NVFP4 inference. For now it is not supported"
 )
 
-# Said instead of transformers' own "pip install compressed-tensors", which is advice
-# no user can act on: Studio runs from its own environment, and installing the library
-# into it does not make the checkpoint load correctly either. See #8246.
-# Names no scheme, because the errors this fires on carry none. Both shapes are raised before
-# transformers reads the compression config -- CompressedTensorsConfig.__init__ and
-# CompressedTensorsHfQuantizer.validate_environment both test only whether the library imports --
-# so W4A16, W8A8, INT8 and MXFP4 checkpoints reach this text identically to NVFP4 and FP8, and
-# naming the latter two told most of those users the wrong thing about their own model. It also
-# stops short of advising "a 4-bit build" unqualified, which reads as a no-op to someone who
-# already selected W4A16. The scheme IS known on the MLX path, and that one keeps its specific
-# wording in _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE.
+# Said instead of transformers' "pip install compressed-tensors", which no user can act on:
+# Studio runs from its own environment (#8246). Names no scheme: these errors carry none.
 _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE = (
     "This model is quantized with compressed-tensors, which Unsloth cannot run yet. "
     "Installing compressed-tensors will not help. Try a GGUF or a bitsandbytes 4-bit "
@@ -14364,31 +14355,7 @@ def _is_unsupported_nvfp4_inference_error(msg: str) -> bool:
     return "nvfp4" in lower_msg and "per-module mlx quantization metadata" in lower_msg
 
 
-# The two places transformers refuses a checkpoint that declares quant_method
-# "compressed-tensors" while the library is absent. Both are ImportErrors raised before
-# a single weight is read: the first from CompressedTensorsConfig.__init__
-# (utils/quantization_config.py), the second from the quantizer's validate_environment
-# (quantizers/quantizer_compressed_tensors.py).
-#
-# Each is matched on the part that survived the rewording, not on a whole sentence.
-# Transformers changed both messages in 5.10 to name a minimum version, and a matcher
-# built from either wording alone recognises only half the range. Read out of every
-# transformers from 4.57.6 to 5.17.0:
-#
-#   <= 5.9   "compressed_tensors is not installed and is required for compressed-tensors
-#             quantization. Please install it with `pip install compressed-tensors`."
-#            "Using `compressed_tensors` quantized models requires the compressed-tensors
-#             library: `pip install compressed-tensors`"
-#   >= 5.10  "compressed-tensors>=0.15.0 is required for compressed-tensors quantization.
-#             Please install it with `pip install compressed-tensors>=0.15.0`."
-#            "Using `compressed_tensors` quantized models requires compressed-tensors>=0.15.0:
-#             `pip install compressed-tensors>=0.15.0`"
-#
-# The version token is what moved, so neither substring below contains one. Both are
-# long enough to be this refusal and not an arbitrary sentence that says the words.
-# test_compressed_tensors_load_error_message.py re-derives them from whichever
-# transformers is installed, so a third rewording fails a test instead of silently
-# restoring the raw pip advice.
+# The two transformers sites, reworded in 5.10 to add a version: match only what survived.
 _MISSING_COMPRESSED_TENSORS_SIGNATURES = (
     "is required for compressed-tensors quantization",
     "`compressed_tensors` quantized models requires",
@@ -14398,13 +14365,8 @@ _MISSING_COMPRESSED_TENSORS_SIGNATURES = (
 def _is_missing_compressed_tensors_error(msg: str) -> bool:
     """Whether ``msg`` says the checkpoint needs the compressed-tensors library.
 
-    The refusal above only fires on the MLX loader's own metadata error
-    (unsloth_zoo/mlx/loader.py), so it never reaches a CUDA, ROCm or CPU host.
-    There, a compressed-tensors checkpoint of ANY scheme fails inside transformers
-    instead, and the message it fails with tells the user to run
-    ``pip install compressed-tensors``. Studio runs from its own environment, so
-    that instruction cannot succeed from a shell prompt, and following it moves the
-    failure rather than fixing it (#8246).
+    The NVFP4 matcher above only fires on the MLX loader's metadata error, so it never
+    reaches a CUDA, ROCm or CPU host; there the load dies inside transformers (#8246).
     """
     lower_msg = _diagnosis_text(msg).lower()
     return any(sig in lower_msg for sig in _MISSING_COMPRESSED_TENSORS_SIGNATURES)
@@ -14413,8 +14375,7 @@ def _is_missing_compressed_tensors_error(msg: str) -> bool:
 def _unsupported_quantization_detail(msg: str) -> Optional[str]:
     """The refusal to show for ``msg``, or None when it is not about quantization.
 
-    One place to add a signature to, so the load route, the native-model load route
-    and validate cannot drift apart on which shapes they recognise.
+    One place to add a signature to, so load, native load and validate cannot drift.
     """
     if _is_unsupported_nvfp4_inference_error(msg):
         return _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE

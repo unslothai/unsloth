@@ -6108,61 +6108,30 @@ def _build_launch_reasoning_args(
 ) -> list[str]:
     """The launch flags that carry ``reasoning_kwargs``, per key.
 
-    llama-server deprecated setting ``enable_thinking`` through
-    --chat-template-kwargs and prints a warning naming --reasoning on|off as the
-    replacement (#7526). The deprecation is PER KEY, and only that one key has a
-    flag of its own, so only that key moves: everything else the launch wants to
-    set on the template (preserve_thinking, a reasoning_effort ladder, whatever a
-    future model needs) stays in --chat-template-kwargs, which is still the only
-    channel for an arbitrary template variable.
+    llama-server's --chat-template-kwargs deprecation is PER KEY (#7526), and only
+    ``enable_thinking`` has a flag of its own, so only that key moves; every other
+    template variable stays in --chat-template-kwargs, still the only channel for one.
 
-    Gated on the binary advertising --reasoning, like every other optional flag
-    here, and closed on an inconclusive probe: a build that predates the flag
-    exits with "error: invalid argument: --reasoning" rather than starting without
-    it. Such a build gets the argv it gets on main today, byte for byte.
+    Gated CLOSED on the probe: a build predating the flag exits with "error: invalid
+    argument: --reasoning" rather than starting without it, so an unknown answer keeps
+    main's argv byte for byte.
 
-    The substitution is equivalent in what a request ends up with, not identical
-    in what it sets, and the difference is worth stating because it is the thing
-    that would break if llama.cpp moved either half. Reading common/arg.cpp, the
-    --reasoning handler writes the same
-    ``default_template_kwargs["enable_thinking"]`` entry --chat-template-kwargs
-    writes, AND sets ``params.enable_reasoning`` to 1 or 0, which the kwargs
-    channel leaves at its -1 default. That second field has exactly one consumer,
-    tools/server/server-context.cpp, where it becomes
+    The two spellings are equivalent, not identical. common/arg.cpp's --reasoning
+    handler writes the same ``default_template_kwargs["enable_thinking"]`` entry AND
+    sets ``params.enable_reasoning``, whose only consumer (tools/server/server-context.cpp)
+    folds it into the per-server ``opt.enable_thinking`` default -- which
+    tools/server/server-common.cpp then overrides from the merged kwarg anyway. If
+    llama.cpp stops writing that kwarg, or stops letting it override, this becomes a
+    behaviour change rather than a substitution.
 
-        enable_thinking = params_base.enable_reasoning != 0 && template_supports_thinking
-
-    the per-server default carried into a request as ``opt.enable_thinking``. So
-    --reasoning off lowers that default where the kwargs spelling left it at
-    ``template_supports_thinking``. It makes no difference to the outcome, because
-    tools/server/server-common.cpp assigns ``inputs.enable_thinking =
-    opt.enable_thinking`` and then immediately re-reads the merged
-    ``chat_template_kwargs["enable_thinking"]`` and overrides from it, and both
-    spellings put the same value in that entry. A request that sets the key itself
-    still wins under either spelling, for the same reason and in the same line.
-    Measured on a real llama-server of both vintages; see the PR. If llama.cpp ever
-    stops writing the kwarg from --reasoning, or stops letting the kwarg override
-    ``opt.enable_thinking``, this stops being a substitution and becomes a
-    behaviour change.
-
-    An exported LLAMA_ARG_REASONING, which ``unsloth start`` writes, is left where
-    it already was: the command line beats the environment either way, so a launch
-    overrides it here exactly as the kwargs channel overrides it on main today.
-    Measured, not assumed. What changes is only which warning llama-server prints
-    about it, and the new one is the accurate one. Actually honouring that override
-    is a separate behaviour change, worked out in #8521.
+    An exported LLAMA_ARG_REASONING is still overridden by the command line, exactly as
+    the kwargs channel overrides it on main; honouring it is #8521.
     """
     remaining = dict(reasoning_kwargs)
     args: list[str] = []
     if caps.get("supports_reasoning_flag") and isinstance(remaining.get("enable_thinking"), bool):
         args.extend(["--reasoning", "on" if remaining.pop("enable_thinking") else "off"])
-    # `remaining or not args`, not `remaining`: with nothing moved, the argv has to be
-    # what main emits BY CONSTRUCTION, not because the one input that separates the two
-    # spellings happens to be unreachable. `_reasoning_kwargs` returns a non-empty dict
-    # today, so `{}` never arrives here, but a caller that passed one would otherwise
-    # lose main's `--chat-template-kwargs {}` on a build the probe answered NO for.
-    # Once the flag has taken the only key, an empty remainder is correctly dropped:
-    # that argument did not exist on main either.
+    # `not args`: a caller passing `{}` would otherwise lose main's `-ctk {}` on an old build.
     if remaining or not args:
         args.extend(["--chat-template-kwargs", json.dumps(remaining)])
     return args
@@ -8513,9 +8482,7 @@ class LlamaCppBackend:
                 "supports_reasoning_budget": False,
                 "supports_reasoning_budget_message": False,
                 "reasoning_budget_probe_inconclusive": True,
-                # Fails CLOSED, like the budget flags above and unlike --jinja: a build
-                # that does not know --reasoning exits on it instead of starting degraded,
-                # so "nothing known" has to mean the --chat-template-kwargs channel.
+                # Fails CLOSED, unlike --jinja: a build without --reasoning exits on it.
                 "supports_reasoning_flag": False,
                 "supports_no_mmproj_offload": False,
                 "supports_video_fps": False,
@@ -8796,10 +8763,7 @@ class LlamaCppBackend:
             supports_slot_save = _is_real("--slot-save-path")
             supports_reasoning_budget = _is_real("--reasoning-budget")
             supports_reasoning_budget_message = _is_real("--reasoning-budget-message")
-            # The thinking gate llama.cpp asks for instead of the deprecated
-            # enable_thinking kwarg (#7526). Read off the flag catalogue, not the raw
-            # help text: --reasoning-format, --reasoning-budget and --reasoning-preserve
-            # all contain the string and none of them is this flag.
+            # Catalogue, not help text: --reasoning-format / -budget / -preserve contain it.
             supports_reasoning_flag = _is_real("--reasoning")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
             supports_video_fps = _is_real("--video-fps")
@@ -25598,8 +25562,6 @@ class LlamaCppBackend:
                         reasoning_kw["preserve_thinking"] = self._preserve_thinking_default
                     _reasoning_args = _build_launch_reasoning_args(server_caps, reasoning_kw)
                     cmd.extend(_reasoning_args)
-                    # #7526 was diagnosed from this line, so it keeps naming the resolved
-                    # defaults and now also names the flags they went out as.
                     logger.info(
                         f"Reasoning model: {reasoning_kw} by default "
                         f"(launched as {' '.join(_reasoning_args)})"
