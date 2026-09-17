@@ -5968,16 +5968,16 @@ function Get-UvHostArch {
     return "unknown"
 }
 
-# Writes to the pipeline, not the console: under Invoke-SetupCommand a quiet run swallows this
-# exactly as it swallowed astral's output, and a verbose run shows it. The console lines around
-# the call site are unchanged.
 function Get-SetupUvExecutableVerdict {
     # Mirrors Get-UvExecutableVerdict in install.ps1: "ok", "failed" or "unknown". Only the
     # binary answering non-zero is "failed"; a launch that throws or a wait that times out got
     # no verdict, and the digest already proved the bytes are astral's pinned release.
-    # Returns the verdict ONLY; diagnostics go through substep (a pipeline write rode along in
-    # the return value and `-ne "ok"` read every probe as not ok). A cached exit code decides;
-    # with none (the timed wait can return first), a printed version is "ok".
+    # Returns the verdict ONLY. The reasons used to go to the pipeline, so on the paths that
+    # have one the caller got [reason, verdict] and had to read the last element to get the
+    # verdict; measured, the "ok" path emitted nothing and was always a bare "ok". substep puts
+    # them where the rest of the uv step's lines go instead, which is where a user looks.
+    # A cached exit code decides; with none (the timed wait can return first), a printed
+    # version is "ok".
     param([string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
     $outFile = [System.IO.Path]::GetTempFileName()
@@ -6182,7 +6182,12 @@ function Find-InstalledUv {
     # writes to, plus install.ps1's winget alias directory; it has to run, not merely exist.
     # .NET Combine, not the path cmdlet: under ErrorActionPreference Stop, before the
     # installation branch's try, the cmdlet terminates on a missing drive (XDG_DATA_HOME=Z:\xdg).
-    $candidates = @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)
+    # Get-UvInstallDir first, so the destination the installer WILL write to is the first one
+    # searched however that helper later changes, rather than by two lists agreeing today. It
+    # joins with the cmdlet, hence the try: reached here it is outside the installation branch's.
+    $installerDest = $null
+    try { $installerDest = Get-UvInstallDir } catch { $installerDest = $null }
+    $candidates = @($installerDest, $env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)
     if ($env:XDG_DATA_HOME) { $candidates += [System.IO.Path]::Combine($env:XDG_DATA_HOME, "..", "bin") }
     $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
     if ($userHome) { $candidates += [System.IO.Path]::Combine($userHome, ".local", "bin") }
@@ -6192,8 +6197,13 @@ function Find-InstalledUv {
     $script:InstalledUvLooked = @()
     # Assigned even when no uv.exe exists: unassigned, it terminates under a caller's Set-StrictMode.
     $script:InstalledUvProbeMiss = $null
+    # The installer destination normally IS one of the tiers below, and two variables can point
+    # at one directory: without this, that directory is launched twice and named twice in the
+    # miss diagnostic. Ordinal, since a path that differs only in case is the same directory here.
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($dir in $candidates) {
         if (-not $dir) { continue }
+        if (-not $seen.Add([string]$dir)) { continue }
         $exe = [System.IO.Path]::Combine($dir, "uv.exe")
         $script:InstalledUvLooked += $exe
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
@@ -6207,7 +6217,9 @@ function Find-InstalledUv {
 }
 
 function Get-InstalledUvVerdict {
-    # The verdict alone (Get-SetupUvExecutableVerdict also writes its reason to the pipeline), asked twice.
+    # The verdict alone, asked twice. The last element, not the value itself: the verdict
+    # function is shared with the staged-uv check, and this keeps reading it correctly if a
+    # reason is ever written to the pipeline again.
     param([string]$Path)
     $verdict = @(Get-SetupUvExecutableVerdict -Path $Path)[-1]
     if ($verdict -eq "ok") { return "ok" }
