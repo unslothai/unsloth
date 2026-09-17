@@ -673,9 +673,7 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         # difference between "no projector on the card" and "no vision".
         assert pinned["kv_bytes"] and pinned["kv_bytes"] > 0
 
-    def test_an_inherited_host_pin_is_not_charged_to_the_card_either(
-        self, monkeypatch, tmp_path
-    ):
+    def test_an_inherited_host_pin_is_not_charged_to_the_card_either(self, monkeypatch, tmp_path):
         """The parameter is omitted by every existing client, and the launch still reads the
         environment.
 
@@ -717,9 +715,7 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         # A clean environment and nothing asked is unchanged: the projector is resident.
         monkeypatch.delenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", raising = False)
         monkeypatch.delenv("LLAMA_ARG_MMPROJ_OFFLOAD", raising = False)
-        plain = _call_std_route(
-            monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True
-        )
+        plain = _call_std_route(monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True)
         assert plain["projector_bytes"], "an unasked, uninherited projector is on the card"
 
     def test_flash_attention_off_cannot_take_a_tensor_split(self):
@@ -757,7 +753,9 @@ class TestTheEstimateMatchesTheConfiguredLoad:
 
         body = inspect.getsource(models_module.get_kv_cache_estimate)
         decide = body.index("_tensor_split_can_launch(")
-        assert '"--split-mode", "layer"' in body[decide:decide + 1200], body[decide:decide + 600]
+        assert '"--split-mode", "layer"' in body[decide : decide + 1200], body[
+            decide : decide + 600
+        ]
         # And both priced calls take the resolved split, not the request boolean.
         assert body.count("tensor_parallel = _effective_tp,") == 2, body.count(
             "tensor_parallel = _effective_tp,"

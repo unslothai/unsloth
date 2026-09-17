@@ -2276,7 +2276,12 @@ def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
     assert "self._record_memory_state(cmd,env)" in arm
 
 
-def _no_flash_fit_rewriter(extra_args, *, manual_gpu_layers = None, env = None):
+def _no_flash_fit_rewriter(
+    extra_args,
+    *,
+    manual_gpu_layers = None,
+    env = None,
+):
     """The nested `_enable_managed_fit_for_no_flash` as a callable, bound to `extra_args`.
 
     It closes over load_model's locals, so it cannot be imported; compiling its own source

@@ -4130,7 +4130,6 @@ async def get_kv_cache_estimate(
             # top -- as the launch, so the route cannot answer for a load that cannot happen.
             try:
                 from core.inference.llama_cpp import _resolved_mmproj_offload
-
                 _mmproj_offloaded = _resolved_mmproj_offload(_planner_extras)
             except Exception as e:  # noqa: BLE001 -- cannot resolve -> the asked value stands
                 logger.debug(f"could not resolve the mmproj placement: {e}")

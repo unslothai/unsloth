@@ -303,13 +303,9 @@ class TestAutoIsNotAnAnswer:
         # The toggle, a user --split-mode in the extras, and the inherited env, which are
         # the three ways the launch itself decides the mode.
         assert _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = True) is True
+        assert _planned_flash_attn_state(["-fa", "auto", "--split-mode", "tensor"], env = {}) is True
         assert (
-            _planned_flash_attn_state(["-fa", "auto", "--split-mode", "tensor"], env = {}) is True
-        )
-        assert (
-            _planned_flash_attn_state(
-                ["-fa", "auto"], env = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
-            )
+            _planned_flash_attn_state(["-fa", "auto"], env = {"LLAMA_ARG_SPLIT_MODE": "tensor"})
             is True
         )
         # And an explicit split mode in the extras last-wins over the toggle, so a layer
@@ -388,7 +384,7 @@ class TestTheDowngradesRePlanTheAttention:
                     checked += 1
                     following = [
                         getattr(getattr(later, "targets", [None])[0], "id", None)
-                        for later in block[index + 1:index + 4]
+                        for later in block[index + 1 : index + 4]
                         if isinstance(later, ast.Assign)
                     ]
                     assert "planned_flash_attn" in following, (
@@ -465,14 +461,9 @@ class TestTheReserveWhenTheFitterIsOff:
         assert _reserved_flash_attn_state(True, ["--fit=off"], env = {}) is False
         assert _reserved_flash_attn_state(True, None, env = {"LLAMA_ARG_FIT": "off"}) is False
         # Last-wins, like every other flag: a later --fit on is the state that runs.
+        assert _reserved_flash_attn_state(True, ["--fit", "off", "--fit", "on"], env = {}) is True
         assert (
-            _reserved_flash_attn_state(True, ["--fit", "off", "--fit", "on"], env = {}) is True
-        )
-        assert (
-            _reserved_flash_attn_state(
-                True, ["--fit", "on"], env = {"LLAMA_ARG_FIT": "off"}
-            )
-            is True
+            _reserved_flash_attn_state(True, ["--fit", "on"], env = {"LLAMA_ARG_FIT": "off"}) is True
         )
 
     def test_tensor_mode_keeps_its_answer(self):
@@ -482,15 +473,10 @@ class TestTheReserveWhenTheFitterIsOff:
         from core.inference.llama_cpp import _reserved_flash_attn_state
 
         assert (
-            _reserved_flash_attn_state(
-                True, ["--fit", "off"], tensor_parallel = True, env = {}
-            )
-            is True
+            _reserved_flash_attn_state(True, ["--fit", "off"], tensor_parallel = True, env = {}) is True
         )
         assert (
-            _reserved_flash_attn_state(
-                True, ["--fit", "off", "--split-mode", "tensor"], env = {}
-            )
+            _reserved_flash_attn_state(True, ["--fit", "off", "--split-mode", "tensor"], env = {})
             is True
         )
 
@@ -573,11 +559,7 @@ class TestTheReplanIsAuthoritative:
         inherited = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
         # The state the re-plan used to resolve: a downgraded toggle, a tensor environment.
         assert (
-            _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = False, env = inherited)
-            is True
+            _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = False, env = inherited) is True
         )
         # And the one the child will really run under.
-        assert (
-            _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = False, env = {})
-            is False
-        )
+        assert _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = False, env = {}) is False

@@ -22946,9 +22946,7 @@ class LlamaCppBackend:
                     _planned_flash_attn_state(
                         extra_args,
                         planned_cache_types = _planned_cache_pair,
-                        supports_flash_attn = bool(
-                            server_caps.get("supports_flash_attn", True)
-                        ),
+                        supports_flash_attn = bool(server_caps.get("supports_flash_attn", True)),
                         # The toggle as it stands here; the helper resolves the extras and the
                         # inherited env on top of it, exactly as the line below does.
                         tensor_parallel = tensor_parallel,
@@ -22994,9 +22992,7 @@ class LlamaCppBackend:
                         _planned_flash_attn_state(
                             extra_args,
                             planned_cache_types = _planned_cache_pair,
-                            supports_flash_attn = bool(
-                                server_caps.get("supports_flash_attn", True)
-                            ),
+                            supports_flash_attn = bool(server_caps.get("supports_flash_attn", True)),
                             tensor_parallel = _current_tp,
                             architecture = self._architecture,
                             env = _env,
@@ -23006,6 +23002,7 @@ class LlamaCppBackend:
                         gpu_layers = _manual_gpu_layers,
                         env = _env,
                     )
+
                 # A user --split-mode in extras last-wins-overrides the toggle, and
                 # an inherited tensor LLAMA_ARG_SPLIT_MODE flips it on (the child
                 # would run tensor unbudgeted otherwise). The duplicate-load matchers
@@ -28161,9 +28158,7 @@ class LlamaCppBackend:
                     # LLAMA_ARG_N_GPU_LAYERS -- so the respawn keeps the fixed placement it
                     # was given and `_reserved_flash_attn_state` prices the padded cache
                     # against it rather than against a re-placement that cannot happen.
-                    if _placement_is_fitter_proof(
-                        fa_cmd, gpu_layers = _manual_gpu_layers, env = env
-                    ):
+                    if _placement_is_fitter_proof(fa_cmd, gpu_layers = _manual_gpu_layers, env = env):
                         return fa_cmd
                     index = fa_cmd.index("--fit")
                     if index + 1 >= len(fa_cmd) or str(fa_cmd[index + 1]).strip().lower() == "on":
