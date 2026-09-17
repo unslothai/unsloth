@@ -18,6 +18,10 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # from nvidia-smi can resolve to a different card. setdefault so an override wins; see utils/hardware/hardware.py.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
+# Same ROCm AOTriton opt-in as unsloth/__init__.py, for a backend that defers importing torch;
+# spawned workers inherit it. `setdefault` preserves an explicit override, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
 # before the startup banner so non-ASCII output cannot crash the backend process.
 if sys.platform == "win32":
@@ -218,6 +222,13 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 
     mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
+# huggingface_hub reads HF_ENDPOINT itself, at import, unnormalised and unvalidated.
+# Rewrite it first, before anything imports the library.
+from utils.hf_endpoint import normalize_hf_endpoint_env as _normalize_hf_endpoint_env
+
+_normalize_hf_endpoint_env()
+del _normalize_hf_endpoint_env
+
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
@@ -296,6 +307,7 @@ from routes import (
     inference_router,
     inference_studio_router,
     mcp_servers_router,
+    skills_router,
     models_router,
     providers_router,
     openai_codex_auth_router,
@@ -340,6 +352,7 @@ import utils.hardware.hardware as _hw_module
 from utils.torch_warmup import (
     DISABLE_ENV_VAR,
     join_background_warm,
+    prewarm_diffusers_if_image_models_exist,
     reset_background_warm,
     start_background_warm,
     warm_status,
@@ -349,6 +362,16 @@ from utils.cache_cleanup import (
 )
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
+
+from utils.client_ip import client_ip
+from utils.hf_endpoint import (
+    DEFAULTS_BY_HEALTH_KEY as _HF_ENDPOINT_DEFAULTS,
+    endpoint_is_reachable_by as _endpoint_is_reachable_by,
+    csp_asset_sources,
+    csp_connect_sources,
+    get_hf_endpoint,
+    get_hf_datasets_server,
+)
 from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
@@ -591,12 +614,60 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         return
     _start_linked_folder_auto_sync(generation)
 
+    # Last, and deliberately so: it is the only item here that is pure latency work rather than
+    # correctness, so everything above keeps its place in the queue. Roughly 5.3s of diffusers
+    # import that the first image load would otherwise pay, moved onto this thread, and only on
+    # installs that actually have an image or video model. Self-guarded and never fatal.
+    if _post_warm_retired(generation):
+        return
+    try:
+        prewarm_diffusers_if_image_models_exist()
+    except Exception as _prewarm_exc:  # noqa: BLE001 -- latency work must never end the worker
+        import structlog as _structlog
+        _structlog.get_logger(__name__).debug("diffusers prewarm skipped: %s", _prewarm_exc)
+
 
 def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
     """Clear the compiled cache unless a sibling backend of this install is live. The decision lives in
     cache_cleanup, next to the paths it clears and the lock that serializes it against a sibling's startup;
     run_server puts the probe on app.state because main.py must not import run.py back."""
     _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
+
+
+def banner_autofill_available(app_state, environ) -> bool:
+    """Whether _inject_bootstrap will hand the login page the credential.
+
+    Read from the launch, not the environment: run_server sets UNSLOTH_API_ONLY and never
+    clears it, and an embedded host may call run_server() again in the same process with
+    different flags, so the variable outlives the launch that set it. The environment is
+    only the fallback for a direct uvicorn launch that never went through run_server.
+    """
+    if getattr(app_state, "suppress_bootstrap_injection", False):
+        return False
+    api_only = getattr(app_state, "api_only", None)
+    if api_only is None:
+        api_only = environ.get("UNSLOTH_API_ONLY") == "1"
+    return not api_only
+
+
+def bootstrap_banner_lines(
+    username: str, bootstrap_path, password: Optional[str], *, autofill_available: bool
+) -> "list[str]":
+    """The first-boot banner for a freshly created admin account.
+
+    Printing the password is the exception, not the rule: _inject_bootstrap fills the
+    login form in, so a launch that gets the injection must keep the credential out of
+    a log that ends up in a bug report.
+    """
+    lines = ["=" * 60, "DEFAULT ADMIN ACCOUNT CREATED", f"    username: {username}"]
+    if autofill_available or not password:
+        lines.append(f"    password saved to: {bootstrap_path}")
+    else:
+        lines.append(f"    password: {password}")
+        lines.append(f"    also saved to: {bootstrap_path}")
+    lines.append("    Open the Unsloth UI to sign in and change it.")
+    lines.append("=" * 60)
+    return lines
 
 
 @asynccontextmanager
@@ -742,20 +813,28 @@ async def lifespan(app: FastAPI):
     # run_server's pre-bind gate sets suppress_bootstrap_injection when a public URL is about
     # to serve with the default credential: never capture the bootstrap password into app.state.
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
-    if storage.ensure_default_admin():
-        bootstrap_pw = None if _suppress_bootstrap else storage.get_bootstrap_password()
-        app.state.bootstrap_password = bootstrap_pw
-
+    _created = storage.ensure_default_admin()
+    app.state.bootstrap_password = None if _suppress_bootstrap else storage.get_bootstrap_password()
+    # A tunnel launch runs the pre-bind gate first and that gate seeds the account, so
+    # _created is False there and the whole banner would be skipped on exactly the launch
+    # that needs it. requires_password_change: the gate may also have taken a new password
+    # at its prompt, which retires the bootstrap one.
+    if (_created or storage.admin_created_this_process()) and storage.requires_password_change(
+        storage.DEFAULT_ADMIN_USERNAME
+    ):
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
-        print("\n" + "=" * 60)
-        print("DEFAULT ADMIN ACCOUNT CREATED")
-        print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
-        print(f"    password saved to: {bootstrap_path}")
-        print("    Open the Unsloth UI to sign in and change it.")
-        print("=" * 60 + "\n")
-    else:
-        app.state.bootstrap_password = (
-            None if _suppress_bootstrap else storage.get_bootstrap_password()
+        _autofill = banner_autofill_available(app.state, os.environ)
+        print(
+            "\n"
+            + "\n".join(
+                bootstrap_banner_lines(
+                    storage.DEFAULT_ADMIN_USERNAME,
+                    bootstrap_path,
+                    storage.get_bootstrap_password(),
+                    autofill_available = _autofill,
+                )
+            )
+            + "\n"
         )
 
     # Last, so it never contends for the GIL: the socket binds as soon as this returns, so the login
@@ -920,6 +999,32 @@ _IS_COLAB = os.path.isdir("/content") and (
 )
 
 
+def _reportable_hf_endpoints(request) -> dict:
+    """The endpoints to hand the browser, which are not always the ones we use.
+
+    A loopback endpoint names a proxy on the MACHINE THE BACKEND RUNS ON, and a
+    private-network one an address on the backend's LAN. Handing either to a
+    browser elsewhere makes it fetch its OWN localhost or its OWN 10.0.0.5: the
+    calls either fail, or hit an unrelated service that, if it answers the CORS
+    preflight, is handed the user's Hub bearer token. endpoint_is_reachable_by
+    holds the rule; the backend keeps using its own value either way.
+
+    The client comes from client_ip(), not the socket peer: through the managed
+    Cloudflare tunnel the peer IS loopback, being the local cloudflared process
+    rather than the visitor, and an address it cannot determine reads as remote.
+    """
+    reported = {}
+    for key, value in (
+        ("hf_endpoint", get_hf_endpoint()),
+        ("hf_datasets_server", get_hf_datasets_server()),
+    ):
+        if _endpoint_is_reachable_by(value, client_ip(request)):
+            reported[key] = value
+        else:
+            reported[key] = _HF_ENDPOINT_DEFAULTS[key]
+    return reported
+
+
 def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     script_src = "script-src 'self'"
     style_src = "style-src 'self' 'unsafe-inline'"
@@ -938,23 +1043,38 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     # one level) and null-origin iframes; '*' is safe as Colab is a sandboxed single user.
     frame_ancestors = "*" if _IS_COLAB else "'none'"
 
+    # A mirror has to reach connect-src, or the browser blocks the Hub calls routed
+    # there. img/media carry a bare https:, so only a loopback HTTP one needs those.
+    # Origins only: a host-source with a path is matched exactly unless it ends
+    # in "/", so a path-prefixed mirror would block every request under it.
+    hf_connect_src = " ".join(
+        dict.fromkeys(
+            (
+                "https://huggingface.co",
+                "https://datasets-server.huggingface.co",
+                *csp_connect_sources(),
+            )
+        )
+    )
+    asset_sources = csp_asset_sources()
+    hf_asset_src = (" " + " ".join(asset_sources)) if asset_sources else ""
+
     # In Colab the kernel scaffolding injects scripts and fetch/WS from *.prod.colab.dev and
     # *.googleusercontent.com, so widen script-src/connect-src. Scripts still use a nonce.
     if _IS_COLAB:
         script_src += " https://*.prod.colab.dev https://*.googleusercontent.com"
         connect_src = (
-            "'self' blob: data: "
-            "https://huggingface.co https://datasets-server.huggingface.co "
+            f"'self' blob: data: {hf_connect_src} "
             "https://*.prod.colab.dev wss://*.prod.colab.dev "
             "https://*.googleusercontent.com wss://*.googleusercontent.com"
         )
     else:
-        connect_src = "'self' https://huggingface.co https://datasets-server.huggingface.co"
+        connect_src = f"'self' {hf_connect_src}"
 
     return (
         "default-src 'self'; "
-        "img-src 'self' data: blob: https:; "
-        "media-src 'self' data: blob: https:; "
+        f"img-src 'self' data: blob: https:{hf_asset_src}; "
+        f"media-src 'self' data: blob: https:{hf_asset_src}; "
         f"connect-src {connect_src}; "
         f"{style_src}; "
         f"{script_src}; "
@@ -1456,6 +1576,7 @@ app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = [
 
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
+app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
@@ -1743,6 +1864,9 @@ async def health_check(request: Request):
         # Opaque per-install id; launchers reject sibling Unsloth instances on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
+        # Unauthenticated on purpose: an endpoint URL is not a host fingerprint,
+        # and the frontend needs it before a token exists.
+        **_reportable_hf_endpoints(request),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
     # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old

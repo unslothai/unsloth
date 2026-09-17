@@ -6,6 +6,7 @@ configurations and their API keys, the RSA public key used to encrypt those keys
 listing.
 """
 
+import time
 import uuid
 from typing import Optional
 
@@ -38,10 +39,15 @@ from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import ExternalProviderClient
 
 from core.inference import openai_codex_auth, openai_codex_client
+from core.inference.provider_model_capabilities import (
+    MODEL_CAPABILITY_PROVIDERS,
+    provider_model_capabilities,
+)
 from models.providers import (
     ProviderCreate,
     ProviderCredentialMigration,
     ProviderModelsRequest,
+    ProviderModelCapabilityInfo,
     ProviderModelInfo,
     ProviderResponse,
     ProviderRegistryEntry,
@@ -627,7 +633,7 @@ async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderT
             messages = [{"role": "user", "content": "ping"}],
             model = model_id,
             temperature = 0.0,
-            top_p = 1.0,
+            top_p = None,
             max_tokens = 1,
         )
         return ProviderTestResult(
@@ -729,6 +735,66 @@ async def test_provider(
         )
     finally:
         await client.close()
+
+
+_MODEL_CAPABILITY_CACHE_TTL_SECONDS = 3600.0
+_model_capability_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+@router.post("/model-capabilities", response_model = list[ProviderModelCapabilityInfo])
+async def list_provider_model_capabilities(
+    payload: ProviderModelsRequest,
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    payload = _bind_saved_provider_target(payload)
+    info = get_provider_info(payload.provider_type)
+    if info is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {payload.provider_type}",
+        )
+    if payload.provider_type not in MODEL_CAPABILITY_PROVIDERS:
+        return []
+
+    api_key = resolve_provider_api_key_or_400(
+        payload.provider_id,
+        payload.encrypted_api_key,
+        allow_saved_key = not via_api_key,
+    )
+    base_url = payload.base_url or info["base_url"]
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+    cache_key = f"{payload.provider_type}\n{base_url}"
+    cached = _model_capability_cache.get(cache_key)
+    if cached is not None and time.monotonic() - cached[0] < _MODEL_CAPABILITY_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    client = ExternalProviderClient(
+        provider_type = payload.provider_type,
+        base_url = base_url,
+        api_key = api_key,
+        timeout = 15.0,
+    )
+    try:
+        models = await client.list_models()
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            502,
+            f"Failed to list model capabilities from {payload.provider_type}.",
+            event = "providers.list_model_capabilities_failed",
+            log = logger,
+        )
+    finally:
+        await client.close()
+    capabilities = provider_model_capabilities(payload.provider_type, models)
+    if capabilities:
+        _model_capability_cache[cache_key] = (time.monotonic(), capabilities)
+    return capabilities
 
 
 @router.post("/models", response_model = list[ProviderModelInfo])

@@ -1542,7 +1542,7 @@ class FastSentenceTransformer(FastModel):
             if isinstance(st_device, dict) or (
                 isinstance(st_device, str) and st_device in ["auto", "sequential"]
             ):
-                st_device = "cuda"
+                st_device = None
 
             model_kwargs = {"torch_dtype": dtype}
 

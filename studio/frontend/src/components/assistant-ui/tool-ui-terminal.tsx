@@ -120,10 +120,10 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
               <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
-          {/* Files the command wrote; this card used to show nothing for them */}
-          <SandboxFiles sessionId={sessionId} files={files} />
         </div>
       </ToolFallbackContent>
+      {/* Files stay outside even when the card is collapsed (#10425) */}
+      <SandboxFiles className="ml-5" sessionId={sessionId} files={files} />
     </ToolFallbackRoot>
   );
 };

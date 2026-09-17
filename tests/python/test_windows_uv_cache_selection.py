@@ -428,6 +428,55 @@ def test_a_lost_and_found_does_not_condemn_the_cache(tmp_path):
 
 
 @requires_pwsh
+def test_an_unknown_bucket_kind_does_not_condemn_the_cache(tmp_path):
+    """Bucket-shaped but not a kind uv creates, so uv never opens it. Refusing the whole cache
+    for it redownloaded what the cache already held."""
+    default = _warm(tmp_path / "uvdefault")
+    (default / "unused-v999").mkdir()
+    if os.name != "nt":
+        (default / "unused-v999").chmod(0o000)
+    try:
+        assert _select(tmp_path / "studio", str(default))["mode"] == "shared"
+    finally:
+        if os.name != "nt":
+            (default / "unused-v999").chmod(0o755)
+
+
+@requires_pwsh
+def test_a_read_only_managed_python_bucket_still_condemns_the_cache(tmp_path):
+    """python-v0 IS uv's, since 0.8.16, and the installer installs a managed CPython. Leaving
+    it out of the kind list would select a cache the install then fails to write."""
+    default = _warm(tmp_path / "uvdefault")
+    (default / "python-v0").mkdir()
+    if os.name != "nt":
+        (default / "python-v0").chmod(0o555)
+    try:
+        assert _select(tmp_path / "studio", str(default))["mode"] == "studio"
+    finally:
+        if os.name != "nt":
+            (default / "python-v0").chmod(0o755)
+
+
+@requires_pwsh
+def test_a_differently_cased_bucket_follows_the_filesystem(tmp_path):
+    """Where the directory folds, `Python-V0` IS uv's python-v0 and an unwritable one has to
+    condemn the cache. Where it does not, as on a case-sensitive NTFS directory or the Linux
+    filesystem this runs on, it is a directory uv never opens and must not condemn anything.
+    Measured the same way the selector measures it rather than assumed from the platform."""
+    default = _warm(tmp_path / "uvdefault")
+    (default / "Python-V0").mkdir()
+    folds = (default / "python-v0").exists()
+    if os.name != "nt":
+        (default / "Python-V0").chmod(0o555)
+    try:
+        expected = "studio" if folds else "shared"
+        assert _select(tmp_path / "studio", str(default))["mode"] == expected
+    finally:
+        if os.name != "nt":
+            (default / "Python-V0").chmod(0o755)
+
+
+@requires_pwsh
 def test_a_bucket_that_is_not_a_directory_is_refused(tmp_path):
     """A file where a bucket goes is an existing path to the create uv makes, which fails."""
     default = _warm(tmp_path / "uvdefault")

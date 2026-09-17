@@ -28,6 +28,8 @@ export interface PerModelConfig {
    *  Optional so older blobs parse. */
   specDraftCacheDtype?: string | null;
   nParallel: number | null;
+  reasoningBudget: number;
+  reasoningBudgetMessage: string;
   nBatch: number | null;
   nUbatch: number | null;
   /** --load-mode; null lets the fit decide (`none` when the load fits, else no flag).
@@ -64,6 +66,8 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   specDraftNMax: null,
   specDraftCacheDtype: null,
   nParallel: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   nBatch: null,
   nUbatch: null,
   loadMode: null,
@@ -296,8 +300,10 @@ const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
-// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam); a client from before any of them
-const STORAGE_SCHEMA_VERSION = 5;
+// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair; a
+// client from before any of them
+const STORAGE_SCHEMA_VERSION = 6;
+const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;
 const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;
 const PRE_VISION_SCHEMA_VERSION = 3;
 const PRE_EXTRA_ARGS_SCHEMA_VERSION = 2;
@@ -305,6 +311,25 @@ const PRE_BATCH_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
+export const MAX_REASONING_BUDGET_MESSAGE_BYTES = 8_192;
+
+export function isReasoningBudgetMessageValid(value: string): boolean {
+  if (value.includes("\0")) return false;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      i += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return (
+    new TextEncoder().encode(value).byteLength <=
+    MAX_REASONING_BUDGET_MESSAGE_BYTES
+  );
+}
 
 type StoredPerModelConfig = PerModelConfig & {
   version: number;
@@ -322,6 +347,8 @@ const STORED_CONFIG_FIELDS = new Set([
   "specDraftNMax",
   "specDraftCacheDtype",
   "nParallel",
+  "reasoningBudget",
+  "reasoningBudgetMessage",
   "nBatch",
   "nUbatch",
   "loadMode",
@@ -722,6 +749,8 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
       typeof raw.specDraftNMax === "number" ? raw.specDraftNMax : null,
     // Legacy blobs predate the parallel-slots knob.
     nParallel: null,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel:
       typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
     disableVision:
@@ -941,6 +970,19 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
         ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
         : null,
+    reasoningBudget:
+      typeof partial.reasoningBudget === "number" &&
+      Number.isFinite(partial.reasoningBudget)
+        ? Math.max(
+            -1,
+            Math.min(2_147_483_647, Math.trunc(partial.reasoningBudget)),
+          )
+        : DEFAULT_PER_MODEL_CONFIG.reasoningBudget,
+    reasoningBudgetMessage:
+      typeof partial.reasoningBudgetMessage === "string" &&
+      isReasoningBudgetMessageValid(partial.reasoningBudgetMessage)
+        ? partial.reasoningBudgetMessage
+        : DEFAULT_PER_MODEL_CONFIG.reasoningBudgetMessage,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
@@ -978,28 +1020,40 @@ function normalize(raw: unknown): PerModelConfig {
   return normalizeV1(partial);
 }
 
-function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
-  const normalized = normalize(config);
-  // Stamped with the OLDEST version that still understands every field present, so a record an older client can
-  // safely rewrite stays in its reach. Only a TRUE disableVision needs v4: false is what a pre-vision client
-  // reconstructs anyway, and stamping every record v4 would put the whole store out of reach. The tuning group
-  // follows the same rule.
+/** The OLDEST version that still understands every field present, so a record an older client can
+ *  safely rewrite stays in its reach. Only a TRUE disableVision needs v4: false is what a pre-vision
+ *  client reconstructs anyway, and stamping every record v4 would put the whole store out of reach.
+ *  The tuning group and the reasoning pair follow the same rule. */
+function storedSchemaVersion(normalized: PerModelConfig): number {
+  const hasReasoningBudget =
+    normalized.reasoningBudget !== -1 || normalized.reasoningBudgetMessage !== "";
+  if (hasReasoningBudget) {
+    return STORAGE_SCHEMA_VERSION;
+  }
   const hasServerTuning =
     normalized.loadMode != null ||
     normalized.specDraftCacheDtype != null ||
     normalized.ctxCheckpoints != null ||
     normalized.cacheRam != null;
-  const version = hasServerTuning
-    ? STORAGE_SCHEMA_VERSION
-    : normalized.disableVision
-      ? PRE_SERVER_TUNING_SCHEMA_VERSION
-      : normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0
-        ? PRE_VISION_SCHEMA_VERSION
-        : normalized.nBatch != null || normalized.nUbatch != null
-          ? PRE_EXTRA_ARGS_SCHEMA_VERSION
-          : PRE_BATCH_SCHEMA_VERSION;
+  if (hasServerTuning) {
+    return PRE_REASONING_BUDGET_SCHEMA_VERSION;
+  }
+  if (normalized.disableVision) {
+    return PRE_SERVER_TUNING_SCHEMA_VERSION;
+  }
+  if (normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0) {
+    return PRE_VISION_SCHEMA_VERSION;
+  }
+  if (normalized.nBatch != null || normalized.nUbatch != null) {
+    return PRE_EXTRA_ARGS_SCHEMA_VERSION;
+  }
+  return PRE_BATCH_SCHEMA_VERSION;
+}
+
+function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
+  const normalized = normalize(config);
   return {
-    version,
+    version: storedSchemaVersion(normalized),
     ...normalized,
   };
 }
@@ -1146,6 +1200,9 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&
+    config.reasoningBudget === DEFAULT_PER_MODEL_CONFIG.reasoningBudget &&
+    config.reasoningBudgetMessage ===
+      DEFAULT_PER_MODEL_CONFIG.reasoningBudgetMessage &&
     config.nBatch == null &&
     config.nUbatch == null &&
     // The tuning group, for the same reason as the arguments below: savePerModelConfig deletes an entry it judges

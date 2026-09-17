@@ -617,6 +617,7 @@ _MISTRAL_THINKING_SPECS = (
     ),
 )
 
+_OPENROUTER_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 _OPENROUTER_MANDATORY_REASONING_MODELS = frozenset(
     {
         "~google/gemini-pro-latest",
@@ -1086,7 +1087,7 @@ class ExternalProviderClient:
         messages: list[dict[str, Any]],
         model: str,
         temperature: float = 0.7,
-        top_p: float = 0.95,
+        top_p: Optional[float] = 0.95,
         max_tokens: Optional[int] = None,
         presence_penalty: float = 0.0,
         top_k: Optional[int] = None,
@@ -1240,10 +1241,11 @@ class ExternalProviderClient:
             "messages": messages,
             "stream": stream,
             "temperature": temperature,
-            "top_p": top_p,
             "presence_penalty": presence_penalty,
             **_continue_body,
         }
+        if top_p is not None:
+            body["top_p"] = top_p
         # Only alongside stream=True: the field is rejected on a non-streaming request.
         if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
             body["stream_options"] = {"include_usage": True}
@@ -1297,15 +1299,15 @@ class ExternalProviderClient:
         # (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.
         if self.provider_type == "openrouter":
             normalized_or_model = model.strip().lower()
-            if reasoning_effort in ("low", "medium", "high"):
+            if reasoning_effort in _OPENROUTER_REASONING_EFFORTS:
                 body["reasoning"] = {"effort": reasoning_effort}
-            elif enable_thinking is True:
-                body["reasoning"] = {"enabled": True}
-            elif enable_thinking is False:
+            elif reasoning_effort == "none" or enable_thinking is False:
                 if normalized_or_model in _OPENROUTER_MANDATORY_REASONING_MODELS:
                     body.pop("reasoning", None)
                 else:
                     body["reasoning"] = {"enabled": False}
+            elif enable_thinking is True:
+                body["reasoning"] = {"enabled": True}
 
             # OpenRouter web plugin works on every model id including meta-routers (unlike `:online`). Forced-function
             # tool_choice suppresses it, matching Gemini/Anthropic.
@@ -6174,7 +6176,7 @@ class ExternalProviderClient:
         messages: list[dict[str, Any]],
         model: str,
         temperature: float = 0.7,
-        top_p: float = 0.95,
+        top_p: Optional[float] = 0.95,
         max_tokens: Optional[int] = None,
         presence_penalty: float = 0.0,
     ) -> dict[str, Any]:
@@ -6187,9 +6189,10 @@ class ExternalProviderClient:
             "messages": messages,
             "stream": False,
             "temperature": temperature,
-            "top_p": top_p,
             "presence_penalty": presence_penalty,
         }
+        if top_p is not None:
+            body["top_p"] = top_p
         if max_tokens is not None:
             if self.provider_type == "openai":
                 body["max_completion_tokens"] = max_tokens

@@ -313,3 +313,76 @@ test("a precision refusal is recognised so it can be shown as an actionable toas
   assert.equal(isPrecisionRefusal("A diffusion load is already in progress."), false);
   assert.equal(PRECISION_REFUSAL_TITLE, "Requested precision is not available");
 });
+
+const ENCODER_OPTIONS = ["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const;
+const toEncoderOption = (v: string) =>
+  ENCODER_OPTIONS.find((o) => o === v || (o === "auto" && (v === "none" || v === "off"))) ?? null;
+
+test("the text encoder select follows what the loaded build actually ran", () => {
+  // "off" (and "none", from an older backend) both mean dense, so both seed Default.
+  assert.equal(
+    resolvedSelectValue({ value: "off", source: "auto", reason: "" }, toEncoderOption),
+    "auto",
+  );
+  assert.equal(
+    resolvedSelectValue({ value: "none", source: "auto", reason: "" }, toEncoderOption),
+    "auto",
+  );
+  assert.equal(
+    resolvedSelectValue(
+      { value: "fp8_dynamic", requested: "fp8_dynamic", source: "explicit", status: "applied", reason: "" },
+      toEncoderOption,
+    ),
+    "fp8_dynamic",
+  );
+  // Downgraded: the select follows what engaged, not what was asked.
+  assert.equal(
+    resolvedSelectValue(
+      { value: "fp8", requested: "int8", source: "explicit", status: "fell_back", reason: "int8 needs resident weights" },
+      toEncoderOption,
+    ),
+    "fp8",
+  );
+  assert.equal(
+    resolvedSelectValue(
+      { value: "off", requested: "nvfp4", source: "explicit", status: "fell_back", reason: "no Blackwell GPU" },
+      toEncoderOption,
+    ),
+    "auto",
+  );
+});
+
+test("the reseed key moves when the text encoder build changes, and only then", () => {
+  const atLoad = {
+    transformer_quant: { value: "fp8", requested: "fp8", source: "explicit", status: "applied", reason: "" },
+    text_encoder_quant: { value: "fp8", requested: "fp8", source: "explicit", status: "applied", reason: "" },
+    memory_mode: { value: "balanced", source: "auto", reason: "" },
+    attention_backend: { value: "native", source: "auto", reason: "" },
+  } satisfies Record<string, ResolvedControl>;
+  const key = resolvedSeedKey(atLoad);
+
+  // Same build, new wording: keying on the whole serialized entry re-seeded here and lost the edit.
+  assert.equal(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { ...atLoad.text_encoder_quant, reason: "re-measured after the first image" },
+    }),
+    key,
+    "a reason rewrite must not re-seed",
+  );
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { value: "off", requested: "fp8", source: "explicit", status: "fell_back", reason: "declined" },
+    }),
+    key,
+    "a declined encoder must re-seed",
+  );
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { value: "int8", requested: "int8", source: "explicit", status: "applied", reason: "" },
+    }),
+    key,
+  );
+});

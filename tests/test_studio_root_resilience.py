@@ -16,6 +16,16 @@ STORAGE_ROOTS = REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_
 LLAMA_CPP = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 
+# storage_roots.py imports `loggers`, which is studio/backend/loggers. Nothing in this file put
+# studio/backend on sys.path, so these tests only passed when a tests/studio module happened to
+# have been imported into the same process first -- true while the whole tree ran as one pytest
+# session, and false the moment tests/studio runs on its own runner. Two tests then failed with
+# ModuleNotFoundError: No module named 'loggers', which names neither this file nor the cause.
+_BACKEND = REPO_ROOT / "studio" / "backend"
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+
 def _load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None

@@ -105,6 +105,8 @@ def prepare_device_map():
             torch.cuda.set_device(local_rank)
         elif DEVICE_TYPE_TORCH == "xpu" and hasattr(torch, "xpu"):
             torch.xpu.set_device(local_rank)
+        elif DEVICE_TYPE_TORCH == "npu" and hasattr(torch, "npu"):
+            torch.npu.set_device(local_rank)
     except Exception:
         pass
     return device_map, True

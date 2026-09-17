@@ -567,6 +567,35 @@ def test_native_fallback_preserves_assistant_reasoning_content():
     }
 
 
+def test_native_fallback_keeps_participant_names():
+    InferenceBackend = _inference_backend()
+    seen = {}
+
+    class _Tokenizer:
+        chat_template = "template"
+
+        def apply_chat_template(self, messages, **_kwargs):
+            seen["messages"] = messages
+            return "rendered"
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "m"
+    backend.models = {
+        "m": {
+            "tokenizer": _Tokenizer(),
+            "chat_template_info": {"has_template": False},
+        }
+    }
+
+    conversation = [
+        {"role": "user", "name": "alice", "content": "hi"},
+        {"role": "assistant", "name": "researcher", "content": "hello"},
+        {"role": "user", "content": "again"},
+    ]
+    assert backend.format_chat_prompt(conversation) == "rendered"
+    assert seen["messages"] == conversation
+
+
 def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
     """The merge follows the same rule as the prompt boundary.
 

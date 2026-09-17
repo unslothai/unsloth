@@ -187,7 +187,7 @@ test("the effort scale matches the backend's _REASONING_EFFORT_SCALE", () => {
   // ladders from the backend one, so drift hands the clamp a level it cannot rank.
   const here = path.dirname(fileURLToPath(import.meta.url));
   const frontend = readFileSync(
-    path.join(here, "../src/features/chat/provider-capabilities.ts"),
+    path.join(here, "../src/features/chat/model-catalog.ts"),
     "utf8",
   );
   const backend = readFileSync(

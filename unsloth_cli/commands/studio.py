@@ -771,6 +771,12 @@ def _load_backend_auth_storage():
 
 def _write_auth_secret(path: Path, secret: str) -> None:
     path.parent.mkdir(parents = True, exist_ok = True)
+    # mkdir under a 022 umask leaves auth/ world-readable when this runs before the DB connection does it; the files
+    # below are 0600 either way, but the directory listing names them. Best-effort, like the chmods below.
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     fd, tmp_name = tempfile.mkstemp(prefix = f".{path.name}.", dir = path.parent)
     tmp_path = Path(tmp_name)
     try:
@@ -1920,6 +1926,7 @@ def studio_default(
             run_kwargs["frontend_path"] = resolved_frontend
         run_server(**run_kwargs)
 
+    _graceful_shutdown_on_sigterm()
     try:
         if run_mod._shutdown_event is not None:
             # Event.wait() with no timeout blocks at C level on Linux and swallows SIGINT.
@@ -2570,6 +2577,7 @@ def run(
 
         api_key = _create_api_key_inprocess(api_key_name)
         if start_api_key_marker:
+            typer.echo(f"UNSLOTH_START_PORT: {actual_port}")
             typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
         if not silent:
@@ -2683,6 +2691,7 @@ def run(
         typer.echo(f"API Key: {api_key}")
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
+    _graceful_shutdown_on_sigterm()
     try:
         if run_mod._shutdown_event is not None:
             while not run_mod._shutdown_event.is_set():
@@ -2727,7 +2736,7 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _parse_pid_record(text: str) -> "tuple[int, float | None] | None":
+def _parse_pid_record(text: str) -> "tuple[int, float | None, str | None] | None":
     lines = text.splitlines()
     if not lines or not lines[0].strip().isdigit():
         return None
@@ -2745,10 +2754,12 @@ def _parse_pid_record(text: str) -> "tuple[int, float | None] | None":
             created = float(lines[1].strip())
         except ValueError:
             created = None
-    return pid, created
+    # Third line: the addresses run.py bound, absent in a legacy record.
+    address = lines[2].strip() if len(lines) > 2 and lines[2].strip() else None
+    return pid, created, address
 
 
-def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
+def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None":
     try:
         text = path.read_text(encoding = "utf-8")
     except (OSError, UnicodeDecodeError):
@@ -2804,7 +2815,7 @@ def _pid_file_entries(
             typer.echo(f"Ignoring invalid PID file {path.name}")
             _unlink_quietly(path)
             continue
-        pid, created = record
+        pid, created, _address = record
         created_times, files = by_pid.setdefault(pid, ([], []))
         created_times.append(created)
         files.append(path)
@@ -2823,6 +2834,19 @@ def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()
     except Exception:
         return True
     return any(abs(actual - c) < 1.0 for c in known)
+
+
+def _graceful_shutdown_on_sigterm() -> None:
+    """Route SIGTERM (docker stop, `unsloth studio stop`) into the wait loop's Ctrl+C path,
+    which stops and saves a running training job before anything is killed."""
+    import signal as _signal
+
+    def _handler(signum, frame):
+        # Restore the default so a second signal force-quits if the shutdown stalls.
+        _signal.signal(_signal.SIGTERM, _signal.SIG_DFL)
+        raise KeyboardInterrupt
+
+    _signal.signal(_signal.SIGTERM, _handler)
 
 
 def _signal_stop(pid: int) -> "str | None":
@@ -3172,16 +3196,51 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 
 
 _UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")
+# The subset `uv pip install` CREATES, which is the only uv command studio/setup.sh runs. The
+# rule is what uv is measured to write: a `git+` requirement creates git-v0 and builds-v0, so
+# those are in, while flat-index-v2 is not created even by `--find-links --no-index`, and
+# binaries, environments, osv and python belong to uv self-update, uv venv and uv python.
+# Probing a store uv never touches only throws warm caches away. Re-measure on a pin bump.
+_UV_PIP_STORES = (
+    "archive",
+    "builds",
+    "built-wheels",
+    "git",
+    "interpreter",
+    "sdists",
+    "simple",
+    "wheels",
+)
 _UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
 
 
 def _uv_is_bucket_name(name: str) -> bool:
     """A name uv itself creates: <kind>-v<N>, whole suffix numeric, kind from the LAST `-v`.
-    Mirrors _uv_is_bucket_name in install.sh and Test-StudioUvBucketName in install.ps1."""
+    Same shape rule as _uv_is_bucket_name in install.sh and Test-StudioUvBucketName in
+    install.ps1, over the narrower kind list: this one only answers whether a bucket holds
+    package BYTES, where the installers also probe the kinds uv merely writes."""
     kind, marker, version = name.rpartition("-v")
     # isascii too: str.isdigit() is true for Arabic-Indic and superscript digits, which the sh
     # `*[!0-9]*` case and the PowerShell \A[0-9]+\z both reject. uv writes ASCII.
     return bool(marker) and version.isascii() and version.isdigit() and kind in _UV_CACHE_BUCKETS
+
+
+def _uv_bucket_entry_name(cache_dir: Path, entry: Path) -> Optional[str]:
+    """The name uv opens this entry as, or None if uv does not own it.
+
+    On APFS or NTFS `Archive-V0` IS the directory uv writes at `archive-v0`, so a case-sensitive
+    match called a full cache cold while studio/setup.sh, which folds, called it warm, and the
+    two then chose different caches. samefile rather than a write probe: only existing entries
+    matter here, so the filesystem can be asked without creating anything."""
+    if _uv_is_bucket_name(entry.name):
+        return entry.name
+    lowered = entry.name.lower()
+    if lowered == entry.name or not _uv_is_bucket_name(lowered):
+        return None
+    try:
+        return lowered if (cache_dir / lowered).samefile(entry) else None
+    except OSError:
+        return None
 
 
 def _uv_cache_has_packages(cache_dir: Path) -> bool:
@@ -3193,7 +3252,7 @@ def _uv_cache_has_packages(cache_dir: Path) -> bool:
         buckets = [
             entry
             for entry in cache_dir.iterdir()
-            if _uv_is_bucket_name(entry.name) and entry.is_dir()
+            if entry.is_dir() and _uv_bucket_entry_name(cache_dir, entry) is not None
         ]
     except (OSError, ValueError):
         return False
@@ -3315,24 +3374,161 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         pass
 
 
+def _uv_is_store_name(name: str) -> bool:
+    """The kinds `uv pip install` writes: _uv_is_bucket_name answers warmth, this answers what a
+    write probe has to cover. Narrower than install.sh's list on purpose, since install.sh also
+    runs uv venv and uv python; re-read uv-cache/src/lib.rs on a pin bump."""
+    kind, marker, version = name.rpartition("-v")
+    return bool(marker) and version.isascii() and version.isdigit() and kind in _UV_PIP_STORES
+
+
+def _uv_cache_folds_case(cache_dir: Path) -> bool:
+    """Measured on the cache filesystem, not assumed from the platform, exactly as install.sh
+    does it: default APFS folds, ext4 does not, and a Mac can have either mounted."""
+    probe = cache_dir / f".unsloth-case-probe.{os.getpid()}-A"
+    try:
+        probe.mkdir()
+    except OSError:
+        return False
+    try:
+        return (cache_dir / f".unsloth-case-probe.{os.getpid()}-a").is_dir()
+    finally:
+        try:
+            probe.rmdir()
+        except OSError:
+            pass
+
+
+def _uv_cache_is_writable(cache_dir: Path) -> bool:
+    """A real create, as install.sh's write probe does: mode bits do not answer for a network mount, and uv aborts on a cache it
+    cannot write rather than falling back.
+
+    The stores too, not just the root: uv writes into them, so a root-only probe passes on a
+    cache uv then aborts on. Mirrors install.sh's _uv_cache_is_writable."""
+    probes = [cache_dir]
+    folds = _uv_cache_folds_case(cache_dir)
+    try:
+        # Only the directories uv OWNS: an unrelated read-only one must not disqualify a
+        # usable cache, and that is what the kind list above is for.
+        for entry in cache_dir.iterdir():
+            if not _uv_is_store_name(entry.name):
+                # On APFS or NTFS `Python-V0` is the same path uv opens as `python-v0`, so
+                # skipping it would report a cache writable that uv then aborts on.
+                if not (folds and _uv_is_store_name(entry.name.lower())):
+                    continue
+            if not entry.is_dir():
+                # A file, or a symlink dangling or not, is an existing path to mkdir, so uv
+                # cannot make the store and aborts. Skipping it would report the cache writable.
+                return False
+            probes.append(entry)
+            # One level inside the index stores, and only those. uv REWRITES this metadata on
+            # every resolve, so a shard another account owns aborts it. Measured on BOTH the
+            # pinned uv 0.12.1 and 0.10.7: a 0555 `simple-*/pypi` or `wheels-*/pypi` gives
+            # "Failed to write to the client cache", exit 2. One level is the leaf on both:
+            # 0.12.1 lays this out as `simple-v24/pypi`, not `simple-v24/index/<hash>`, and a
+            # 0555 `wheels-v6/pypi/requests` one deeper installs fine. Bounded on purpose.
+            if entry.name.lower().startswith(("simple-", "wheels-")):
+                # `index/<hash>`, one per CUSTOM index, is where uv puts metadata when
+                # --index-url is set, which Studio does for the torch wheels. Measured on the
+                # pinned uv 0.12.1: a 0555 `simple-v24/index/<hash>` passes a one-level probe
+                # and then aborts with "Failed to write to the client cache".
+                shards = list(entry.iterdir())
+                index_dir = entry / "index"
+                if index_dir.is_dir():
+                    shards.extend(index_dir.iterdir())
+                for shard in shards:
+                    if not shard.is_dir():
+                        # Same rule as the store level: a file, or a symlink dangling or not, is
+                        # an existing path uv can neither open nor mkdir. Measured on the pinned
+                        # uv 0.12.1, both abort with "Failed to write to the client cache".
+                        return False
+                    probes.append(shard)
+    except OSError:
+        return False
+    for target in probes:
+        try:
+            with tempfile.NamedTemporaryFile(dir = target, prefix = ".unsloth-write-probe."):
+                pass
+        except OSError:
+            return False
+    # Only the names uv is measured to need writable: rejecting more throws away the warm cache
+    # this path exists to find. Every control file at 0444 against uv 0.10.7: the root .lock
+    # aborts (exit 2) and sdists-v9/.git aborts (exit 2); root CACHEDIR.TAG and .gitignore, and
+    # .git/.gitignore/.lock under archive-v0, interpreter-v4, simple-v20 and wheels-v6, all
+    # install fine. uv creates only the three root files, so a per-store .git is someone else's.
+    for target in probes:
+        if target == cache_dir:
+            names = (".lock",)
+        elif target.name.lower().startswith("sdists-"):
+            # The one store measured to abort on a read-only .git. Rejecting a cache uv accepts
+            # costs the warm cache this path exists to find, so the rest are left alone.
+            names = (".git",)
+        else:
+            continue
+        for name in names:
+            control = target / name
+            if not control.exists() and not control.is_symlink():
+                continue
+            # Not a regular file, so uv cannot open it at all: measured on uv 0.10.7, a `.lock`
+            # DIRECTORY or a symlink to one exits 2 with "Could not acquire lock ... Is a
+            # directory". is_file() alone skipped it and reported the cache usable.
+            if not control.is_file() or not os.access(control, os.R_OK | os.W_OK):
+                return False
+    return True
+
+
 def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
     """An update reached neither installer nor _setup_cache_env, so uv re-downloaded
     what the install had just fetched."""
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
         return env
     if _uv_no_cache_requested():
-        return env
+        # Removed, not left alone: uv parses an exported EMPTY value as `--cache-dir ''` even
+        # under --no-cache and exits 2, "a value is required for '--cache-dir'". setup.sh unsets
+        # it in its own no-cache branch; setup.ps1 has no cache handling at all, so on Windows a
+        # blank inherited value reached uv and failed the update before no-cache took effect.
+        no_cache = {**(env or os.environ)}
+        no_cache.pop("UV_CACHE_DIR", None)
+        return no_cache
     studio_cache = STUDIO_HOME / "cache" / "uv"
     recorded = _recorded_install_uv_cache()
-    if recorded is not None and _uv_cache_has_packages(recorded):
-        # Only while it holds something: a marker for an emptied cache loses to a warm one.
+    if (
+        recorded is not None
+        and _uv_cache_has_packages(recorded)
+        and _uv_cache_is_writable(recorded)
+    ):
+        # Only while it holds something and uv can still write to it: a marker for an emptied cache loses to a warm one, and setup treats
+        # the value this hands it as the caller's choice, so a cache gone read-only since the install would abort every uv command.
         return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
     # Content cannot settle it: one on-demand wheel warms the Studio cache even in shared mode,
     # so uv's default goes first and a warm Studio cache is the fallback below. The installers
     # order the same three the same way.
     default_cache = _uv_default_cache_dir(cwd)
-    if default_cache is not None and _uv_cache_has_packages(default_cache):
+    if (
+        default_cache is not None
+        and _uv_cache_has_packages(default_cache)
+        and _uv_cache_is_writable(default_cache)
+    ):
         return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
+    # setup.sh treats an inherited UV_CACHE_DIR as the caller's choice and skips its own write
+    # probe, so handing it an unwritable Studio cache aborts every uv command in the update --
+    # the one branch here that was still unprobed. Left unset, setup.sh probes and falls back.
+    #
+    # Only for a root that already exists, and the root is never created here: setup.sh fails
+    # fast on a STUDIO_HOME override that does not, exactly so a typo cannot materialise an
+    # empty workspace, and making the cache under it first would satisfy that guard and let the
+    # update run on against a tree with no venv.
+    if STUDIO_HOME.is_dir():
+        try:
+            studio_cache.mkdir(parents = True, exist_ok = True)
+        except OSError:
+            pass
+        if not _uv_cache_is_writable(studio_cache):
+            # Explicitly absent rather than a bare `return env`: the other branches all hand back
+            # a dict, and setup.sh's own probe wants the variable gone, not inherited from here.
+            unset = {**(env or os.environ)}
+            unset.pop("UV_CACHE_DIR", None)
+            return unset
     return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
 
 

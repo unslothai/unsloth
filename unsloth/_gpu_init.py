@@ -387,6 +387,9 @@ elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation set SUPPORTS_BFLOAT16 as
     # torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+elif DEVICE_TYPE == "npu":
+    # No arm left the name unbound, so consumers fell back to their own False.
+    SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:

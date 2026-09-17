@@ -49,6 +49,7 @@ from utils.account_context import (
     account_thread,
     current_account,
     current_account_id,
+    is_owner_context,
     run_as,
 )
 from utils.security.consent import MANAGED_REMOTE_CODE_REFUSAL, managed_remote_code_refused
@@ -83,6 +84,7 @@ from hub.services.models.ollama import (
     acquire_ollama_model_ref,
     is_ollama_manifest_ref,
     materialize_ollama_model_ref,
+    ollama_model_ref_public_id,
 )
 from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
@@ -95,6 +97,7 @@ from core.inference.context_window import (
     estimate_messages_tokens_dense,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
+from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.memory_contract import (
     build_memory_estimate,
     project_estimate_memory_response,
@@ -124,6 +127,8 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.llama_cpp import requested_video_fps
+from core.inference.llama_video_input import shrink_video_for_llama
 
 
 def _positive_int_or_none(value: Any) -> Optional[int]:
@@ -618,6 +623,8 @@ def _byte_fallback_prompt_tokens(prompt: str) -> int:
 
 
 _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT"
+_OPENAI_COMPAT_STREAM_KEEPALIVE_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_KEEPALIVE_INTERVAL"
+_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT"
 
 
 def _positive_float_env(env_name: str, default):
@@ -1606,12 +1613,12 @@ try:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
+        _planned_flash_attn,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
@@ -1623,7 +1630,11 @@ try:
         drop_managed_flags,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
         parse_split_mode_override,
+        resolve_reasoning_budget,
+        resolve_reasoning_budget_message,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1664,12 +1675,12 @@ except ImportError:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
+        _planned_flash_attn,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
@@ -1681,7 +1692,11 @@ except ImportError:
         drop_managed_flags,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
         parse_split_mode_override,
+        resolve_reasoning_budget,
+        resolve_reasoning_budget_message,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1709,11 +1724,11 @@ except ImportError:
 
 
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
-    return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+    return httpx.Timeout(_first_token_timeout_s())
 
 
 def _llama_streaming_generation_timeout() -> httpx.Timeout:
-    return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+    return httpx.Timeout(_first_token_timeout_s())
 
 
 def _set_stream_response_read_timeout(
@@ -1734,6 +1749,30 @@ _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
+# Deliberately a whole SSE comment FRAME, blank line included, not a bare comment
+# line. A bare line would ride at the head of the next frame, and a client that
+# classifies a frame by its first character -- `startswith(":")` is a comment,
+# else `startswith("data:")` -- then files the whole frame as a comment and drops
+# the chunk. Measured: raw curl and Node undici readers lose the token that way.
+# The cost of the blank line is that openai's and anthropic's Python decoders
+# dispatch one empty event per tick IF the upstream has sent an SSE `id:`, since
+# a retained last-event-id satisfies their "anything to dispatch" test; that is a
+# decoder conformance bug, it costs an ignorable event rather than data, and
+# llama-server does not send `id:`. Losing a token is the worse failure.
+
+
+class _LlamaStreamKeepalive:
+    """Pump wake-up, translated per call site and never treated as an upstream
+    item (no stream state, healer or monitor). An object, not the comment
+    string: every site filters relayed lines on ``startswith("data:")``."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<llama-stream-keepalive>"
+
+
+_LLAMA_STREAM_KEEPALIVE = _LlamaStreamKeepalive()
 # Lets a client tell "queued" from "backend silent"; SSE comments, so readers ignore both.
 _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 # Paired with the above: the slot is ours, so a suspended client clock starts now.
@@ -1747,6 +1786,7 @@ _TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
 # (e.g. prompt prefill between tool iterations). A second layer atop the
 # tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
+_APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
@@ -1887,23 +1927,9 @@ def _openai_llama_admission_output_allowance(
 
 
 def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
-    """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
-
-    Both spellings, since llama-server accepts ``--flag N`` and ``--flag=N``.
-    """
-    args = [str(arg) for arg in (extra_args or ())]
-    found = None
-    for index, raw in enumerate(args):
-        if raw.startswith("--image-max-tokens="):
-            value = raw.partition("=")[2]
-        elif raw == "--image-max-tokens" and index + 1 < len(args):
-            value = args[index + 1]
-        else:
-            continue
-        parsed = _positive_int_or_none(value)
-        if parsed is not None:
-            found = parsed
-    return found
+    """Return the effective ``--image-max-tokens`` value."""
+    from core.inference.llama_server_args import extra_args_image_max_tokens
+    return extra_args_image_max_tokens(extra_args)
 
 
 # Embeddings one image may become, per projector family, from llama.cpp's own
@@ -1961,6 +1987,10 @@ def _openai_llama_admission_image_tokens(llama_backend) -> int:
 
 
 _ADMISSION_IMAGE_PART_TYPES = ("image_url", "image")
+# Both spellings: the server-side tool loop recosts the conversation AFTER
+# _translate_video_parts has renamed the part, so matching video_url alone priced the
+# whole base64 payload as prompt text and inflated the lease toward the KV budget.
+_ADMISSION_VIDEO_PART_TYPES = ("video_url", "input_video")
 
 
 def _openai_llama_admission_compact_image_part(part: dict) -> dict:
@@ -2026,6 +2056,11 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
                     estimate_content.append(part)
                     continue
 
+                # Priced by its own byte allowance, not as an image and not as prompt text.
+                if part_type in _ADMISSION_VIDEO_PART_TYPES:
+                    estimate_content.append({"type": part_type, part_type: {"url": "[video]"}})
+                    continue
+
                 if part_type not in _ADMISSION_IMAGE_PART_TYPES:
                     estimate_content.append(part)
                     continue
@@ -2037,11 +2072,35 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
     return estimate_messages, image_parts
 
 
+def _conversation_video_clips(messages) -> list[str]:
+    """Clips still present in a tool-loop conversation, in either spelling.
+
+    The loop recosts AFTER ``_translate_video_parts`` has renamed the part, so reading
+    ``video_url`` alone would find nothing and charge no video at all.
+    """
+    clips: list[str] = []
+    for msg in messages or []:
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            media = part.get(part.get("type") or "")
+            if part.get("type") not in _ADMISSION_VIDEO_PART_TYPES or not isinstance(media, dict):
+                continue
+            value = media.get("data") or media.get("url") or ""
+            if isinstance(value, str) and value:
+                clips.append(value)
+    return clips
+
+
 def _openai_llama_admission_media_tokens(
     payload,
     *,
     message_image_parts: int = 0,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    message_video_clips: Optional[list[str]] = None,
 ) -> int:
     """Estimate media KV usage without charging transport bytes as prompt tokens.
 
@@ -2058,10 +2117,26 @@ def _openai_llama_admission_media_tokens(
     extra += max(0, message_image_parts) * image_tokens
     if _legacy_image_is_distinct(payload):
         extra += image_tokens
-    for attribute in ("audio_base64", "video_base64"):
+    # _inject_video_part splices the legacy clip into the conversation as input_video before the
+    # loop starts, so during a recost the clips below already include it and charging the field
+    # too priced it exactly twice.
+    fields = (
+        ("audio_base64",) if message_video_clips is not None else ("audio_base64", "video_base64")
+    )
+    for attribute in fields:
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)
+    # Recosting passes the CURRENT conversation: a clip on a turn that truncate_oldest has since
+    # evicted is no longer sent, and charging it from the opening payload kept every later round
+    # reserved at the full budget. Images already come from the conversation via message_image_parts.
+    clips = (
+        message_video_clips
+        if message_video_clips is not None
+        else _message_video_urls(getattr(payload, "messages", None))
+    )
+    for clip in clips:
+        extra += max(1, len(clip) // 4)
     return extra
 
 
@@ -2224,6 +2299,7 @@ def _openai_llama_admission_recost(
     output_tokens: Optional[int] = None,
     cancel_event = None,
     injected_tools = None,
+    cache_is_empty: bool = False,
 ) -> None:
     """Charge a tool loop for what its conversation now is, not what it opened as.
 
@@ -2240,6 +2316,10 @@ def _openai_llama_admission_recost(
     Safe to wait here because it is between rounds and the slot is idle at llama-server.
     Idle is not reclaimed, though, so the yield is gated on
     ``_openai_llama_admission_can_yield``; where it is False this declines instead.
+
+    ``cache_is_empty`` overrides that gate for a round whose cells were explicitly erased.
+    The gate exists because an idle slot's KV stays resident, which an erased slot's does
+    not, so yielding there hands back room that really is free.
     """
     if reservation is None:
         return
@@ -2271,6 +2351,7 @@ def _openai_llama_admission_recost(
             payload,
             message_image_parts = message_image_parts,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            message_video_clips = _conversation_video_clips(conversation),
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
@@ -2286,7 +2367,7 @@ def _openai_llama_admission_recost(
         lease.recost_waiting(
             want,
             cancel_event = cancel_event,
-            allow_yield = _openai_llama_admission_can_yield(llama_backend),
+            allow_yield = cache_is_empty or _openai_llama_admission_can_yield(llama_backend),
         )
     except Exception:  # pragma: no cover - accounting must not break a live run
         logger.debug("llama admission recost failed", exc_info = True)
@@ -2568,6 +2649,47 @@ def _openai_compat_stream_stall_timeout():
     )
 
 
+def _finite_positive_float_env(env_name: str, default):
+    """``_positive_float_env`` with infinities rejected.
+
+    ``float("inf")`` is positive, so the plain parser accepts it and the caller
+    ends up with a deadline that never fires; ``1e309`` parses to it too, which
+    a human writing a large number will not expect. Both fall back to the
+    default here. NaN already does, since no comparison with it is true.
+    """
+    value = _positive_float_env(env_name, default)
+    if isinstance(value, float) and not math.isfinite(value):
+        return default
+    return value
+
+
+def _first_token_timeout_s() -> float:
+    """How long a passthrough waits for llama-server's first token.
+
+    Unlike the stall guard, 0 does NOT disable it: the deadline is unconditional
+    downstream, so a non-positive value keeps the default. Raise it, do not lower
+    it: the same value builds the non-streaming timeout, where httpx.Timeout's
+    positional form also covers connect/read/write/pool.
+    """
+    value = _finite_positive_float_env(
+        _OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV,
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+    )
+    return _DEFAULT_FIRST_TOKEN_TIMEOUT_S if value is None else value
+
+
+def _openai_passthrough_stream_keepalive_interval():
+    """Idle gap before a passthrough relay emits an SSE keepalive comment.
+
+    llama-server is silent for the whole prefill and undici aborts a response
+    after 300s with no bytes. 0 relays in silence like before.
+    """
+    return _finite_positive_float_env(
+        _OPENAI_COMPAT_STREAM_KEEPALIVE_ENV,
+        _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S,
+    )
+
+
 def _openai_passthrough_upstream_headers(*, llama_backend = None) -> dict:
     headers = {}
     auth_headers = getattr(llama_backend, "_auth_headers", None)
@@ -2575,50 +2697,6 @@ def _openai_passthrough_upstream_headers(*, llama_backend = None) -> dict:
         headers.update(auth_headers)
     headers["Connection"] = "close"
     return headers
-
-
-class _CompatSameTaskTimeout:
-    """Same-task timeout fallback for Python versions before asyncio.timeout."""
-
-    def __init__(self, timeout_s: float):
-        self.timeout_s = timeout_s
-        self._task = None
-        self._handle = None
-        self._timed_out = False
-        self._cancelling = 0
-
-    async def __aenter__(self):
-        self._task = asyncio.current_task()
-        if self._task is None:
-            return self
-        if hasattr(self._task, "cancelling"):
-            self._cancelling = self._task.cancelling()
-        loop = asyncio.get_running_loop()
-        self._handle = loop.call_later(max(self.timeout_s, 0), self._cancel_task)
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        if self._handle is not None:
-            self._handle.cancel()
-        if exc_type is not None and issubclass(exc_type, asyncio.CancelledError):
-            if self._timed_out:
-                if self._task is not None and hasattr(self._task, "uncancel"):
-                    if self._task.uncancel() > self._cancelling:
-                        return None
-                raise asyncio.TimeoutError from exc
-        return None
-
-    def _cancel_task(self) -> None:
-        self._timed_out = True
-        if self._task is not None:
-            self._task.cancel()
-
-
-def _same_task_timeout(timeout_s: float):
-    timeout_ctx = getattr(asyncio, "timeout", None)
-    if timeout_ctx is not None:
-        return timeout_ctx(timeout_s)
-    return _CompatSameTaskTimeout(timeout_s)
 
 
 class _SameTaskStreamingResponse(StreamingResponse):
@@ -2781,15 +2859,17 @@ async def _tunnel_safe_json(coro, *, label: str):
 async def _aclose_stream_resources(
     *,
     watchers = (),
+    items = None,
     iterator = None,
     resp = None,
     client = None,
 ) -> None:
     """Tear down an httpx streaming generator's resources in the required order:
-    cancel + bounded-wait each watcher task, then aclose() the byte/line iterator,
-    the response, and the client. Each step swallows its own exceptions so teardown
-    always completes; a close-time CancelledError is re-raised only after every
-    step has run. See _anthropic_passthrough_stream for the ordering rationale."""
+    cancel + bounded-wait each watcher task, then aclose() the relay pump, the
+    byte/line iterator, the response, and the client. Each step swallows its own
+    exceptions so teardown always completes; a close-time CancelledError is
+    re-raised only after every step has run. See _anthropic_passthrough_stream
+    for the ordering rationale."""
     # Bounded: a watcher parked in Request.is_disconnected() can swallow cancel(), so an
     # unbounded await holds the response open. Stopped together, so N watchers cost one
     # bound before the closes, which are what stop llama-server decoding. #7617
@@ -2807,6 +2887,15 @@ async def _aclose_stream_resources(
         except (asyncio.CancelledError, Exception):
             pass
     close_cancelled = False
+    # Before `iterator`, awaited out: cancelling the pump's read is not enough,
+    # the iterator stays ag_running until the pump's finally returns. #7617
+    if items is not None:
+        try:
+            await items.aclose()
+        except asyncio.CancelledError:
+            close_cancelled = True
+        except Exception:
+            pass
     if iterator is not None:
         try:
             await iterator.aclose()
@@ -2973,6 +3062,19 @@ async def _send_stream_with_preheader_cancel(
             pass
 
 
+def _ceiling_for_first_read(
+    first_token_deadline: float, post_first_item_read_timeout_s: Optional[float]
+) -> Optional[float]:
+    """The latched socket read timeout for a fixed post-token bound.
+
+    None means the operator disabled the stall guard, so nothing bounds the
+    socket either.
+    """
+    if post_first_item_read_timeout_s is None:
+        return None
+    return max(first_token_deadline - time.monotonic(), post_first_item_read_timeout_s)
+
+
 async def _aiter_llama_stream_items(
     async_iter,
     *,
@@ -2983,72 +3085,127 @@ async def _aiter_llama_stream_items(
     post_first_item_read_timeout_s: Optional[
         Union[float, Callable[[], Optional[float]]]
     ] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+    keepalive_interval_s: Optional[float] = None,
 ):
+    """Relay upstream items, waking every ``keepalive_interval_s`` to yield
+    ``_LLAMA_STREAM_KEEPALIVE`` while the socket is silent.
+
+    One ``__anext__`` per item, awaited across as many ticks as it takes.
+    ``asyncio.wait`` is used because it does not cancel on timeout, and the read
+    must be neither cancelled nor restarted to tick: httpcore closes the body
+    stream on any streaming exception, so a ReadTimeout here is terminal.
+    """
     if first_token_deadline is None:
-        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+        first_token_deadline = time.monotonic() + _first_token_timeout_s()
     last_item_at: Optional[float] = None
+    item_task: Optional[asyncio.Future] = None
 
     def _post_first_timeout_s() -> Optional[float]:
         if callable(post_first_item_read_timeout_s):
             return post_first_item_read_timeout_s()
         return post_first_item_read_timeout_s
 
-    while True:
-        if cancel_event is not None and cancel_event.is_set():
-            return
-        if request is not None and await request.is_disconnected():
-            if cancel_event is not None:
-                cancel_event.set()
-            return
-        waiting_first_item = last_item_at is None
-        try:
-            if waiting_first_item:
-                remaining_s = first_token_deadline - time.monotonic()
-                if remaining_s <= 0:
-                    raise httpx.ReadTimeout("The model did not produce a first token in time.")
+    try:
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            if request is not None and await request.is_disconnected():
+                if cancel_event is not None:
+                    cancel_event.set()
+                return
+            waiting_first_item = last_item_at is None
+            if item_task is None:
                 if response is not None:
-                    _set_stream_response_read_timeout(response, remaining_s)
-                # Keep httpx/httpcore's AnyIO cancel scope in this task.
-                # asyncio.wait_for would drive __anext__ in a child task.
-                async with _same_task_timeout(remaining_s):
-                    item = await async_iter.__anext__()
-            else:
-                timeout_s = _post_first_timeout_s()
-                if (
-                    request is not None
-                    and response is not None
-                    and timeout_s is not None
-                    and last_item_at is not None
-                ):
-                    stall_remaining_s = timeout_s - (time.monotonic() - last_item_at)
-                    if stall_remaining_s <= 0:
-                        raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
-                    _set_stream_response_read_timeout(response, stall_remaining_s)
-                item = await async_iter.__anext__()
-        except asyncio.TimeoutError as exc:
+                    # httpcore latches this once per body, so the first arm is the
+                    # ceiling for every later read and must not undercut a deadline
+                    # this pump will later enforce. A callable bound can RISE (the
+                    # passthrough switches to the terminal grace on a finish chunk)
+                    # and its range is unknowable here, so it latches nothing and
+                    # leaves the wall clock, authoritative anyway, to enforce.
+                    if waiting_first_item:
+                        ceiling = (
+                            None
+                            if callable(post_first_item_read_timeout_s)
+                            else _ceiling_for_first_read(
+                                first_token_deadline, post_first_item_read_timeout_s
+                            )
+                        )
+                    else:
+                        ceiling = _post_first_timeout_s()
+                    _set_stream_response_read_timeout(response, ceiling)
+                item_task = asyncio.ensure_future(async_iter.__anext__())
+
             if waiting_first_item:
-                raise httpx.ReadTimeout("The model did not produce a first token in time.") from exc
-            raise
-        except StopAsyncIteration:
-            return
-        except httpx.ReadTimeout:
-            now = time.monotonic()
-            if last_item_at is None:
-                if now >= first_token_deadline:
-                    raise
-                continue
-            timeout_s = _post_first_timeout_s()
-            if request is not None and timeout_s is not None and now - last_item_at < timeout_s:
-                continue
-            raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
-        if last_item_at is None and response is not None:
-            # The first-token read deadline no longer applies once a chunk has
-            # arrived: switch to the stall timeout, or clear the read timeout
-            # entirely when the stall guard is disabled (callable returns None)
-            # so a long gap can't trip the stale first-token deadline.
-            _set_stream_response_read_timeout(response, _post_first_timeout_s())
-        last_item_at = time.monotonic()
-        yield item
+                hard_deadline = first_token_deadline
+            else:
+                stall_timeout_s = _post_first_timeout_s()
+                hard_deadline = None if stall_timeout_s is None else last_item_at + stall_timeout_s
+            timed_out_message = (
+                "The model did not produce a first token in time."
+                if waiting_first_item
+                else "The model stopped producing tokens mid-response."
+            )
+
+            remaining_s = (
+                None if hard_deadline is None else max(hard_deadline - time.monotonic(), 0.0)
+            )
+            if keepalive_interval_s:
+                wait_s = (
+                    keepalive_interval_s
+                    if remaining_s is None
+                    else min(keepalive_interval_s, remaining_s)
+                )
+            else:
+                wait_s = remaining_s
+
+            if not item_task.done():
+                # One turn of the loop before paying for a wait. A read whose
+                # bytes are already buffered finishes here, which skips a timer,
+                # a waiter future and two callbacks: 11.7us -> 4.1us per item,
+                # and llama-server at speed lands in this branch every time.
+                await asyncio.sleep(0)
+            if not item_task.done():
+                done, _pending = await asyncio.wait({item_task}, timeout = wait_s)
+                if not done:
+                    # Only ever enforced on an EMPTY `done`: a read that landed
+                    # while the pump was suspended outranks an expired clock.
+                    if hard_deadline is not None and time.monotonic() >= hard_deadline:
+                        raise httpx.ReadTimeout(timed_out_message)
+                    # Must not advance last_item_at, or the stall guard never fires.
+                    if keepalive_interval_s:
+                        yield _LLAMA_STREAM_KEEPALIVE
+                    continue
+            try:
+                item = item_task.result()
+            except StopAsyncIteration:
+                return
+            except (httpx.ReadTimeout, asyncio.TimeoutError) as exc:
+                raise httpx.ReadTimeout(timed_out_message) from exc
+            finally:
+                item_task = None
+            if last_item_at is None and response is not None:
+                # Before yielding, not before the next read: the consumer may sit
+                # on this item while the first-token deadline is still armed.
+                _set_stream_response_read_timeout(response, _post_first_timeout_s())
+            last_item_at = time.monotonic()
+            yield item
+    finally:
+        if item_task is not None:
+            # Bounded, then abandoned; the callback drains it. Cf _aclose_send_task. #7617
+            if not item_task.done():
+                item_task.cancel()
+            item_task.add_done_callback(_discard_task_outcome)
+            stop_cancelled = False
+            try:
+                await asyncio.wait({item_task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
+            except asyncio.CancelledError:
+                # Recorded, not swallowed: _aclose_stream_resources reads a
+                # cancellation out of this aclose() to re-raise once every
+                # resource is shut, and absorbing it here would return the pump
+                # normally and let a cancelled stream run on to emit a finish.
+                stop_cancelled = True
+            if stop_cancelled:
+                raise asyncio.CancelledError()
 
 
 from models.inference import (
@@ -3107,6 +3264,7 @@ from models.inference import (
     InputAudioContentPart,
     UnknownContentPart,
     ImageUrl,
+    VideoContentPart,
     ResponsesRequest,
     ResponsesInputTextPart,
     ResponsesInputImagePart,
@@ -3447,19 +3605,8 @@ async def _authenticate_header_or_query(request: Request, token: Optional[str]) 
 
     Routed through ``credentials_for_token`` so a scope that covers this path serves it
     without a key, the way the routes behind ``security`` already do."""
-    auth_header = request.headers.get("authorization") or ""
-    header_token = auth_header[7:] if auth_header.lower().startswith("bearer ") else ""
-    # A blank header is the absent header, so the `?token=` an <img src> sends is still owed.
-    jwt_token = header_token.strip() or token or None
-    from auth.authentication import credentials_for_token
-
-    creds = await credentials_for_token(request, jwt_token)
-    if creds is None:
-        raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Missing authentication token",
-        )
-    return await get_current_subject(creds)
+    from auth.authentication import subject_for_header_or_query_token
+    return await subject_for_header_or_query_token(request, token)
 
 
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)
@@ -3843,7 +3990,11 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
 
 
-def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> bool:
+def _selects_only_provider_hosted_tools(
+    payload,
+    provider_type: str | None,
+    enabled_skills: list[dict] | None = None,
+) -> bool:
     """True when the request's tool selection is nothing but the provider's own
     hosted builtins, so the provider must execute them as it always has.
 
@@ -3875,6 +4026,15 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # reaches the loop anyway. Neither is a hosted-tool request.
     if not enabled or not isinstance(enabled, list):
         return False
+
+    # Skill tools named with no skill enabled select nothing.
+    if {"read_skill", "create_skill"} & set(enabled):
+        if enabled_skills is None:
+            enabled_skills = _enabled_agent_skills()
+        if not enabled_skills:
+            enabled = [name for name in enabled if name not in {"read_skill", "create_skill"}]
+            if not enabled:
+                return True
     if not provider_hosted_tools(provider_type):
         return False
     # Matched against the whole hosted vocabulary rather than this provider's own
@@ -4848,6 +5008,69 @@ _TOOL_ARTIFACT_TIP = (
 )
 
 
+_AGENT_SKILLS_CACHE_TTL_S = 1.0
+_AGENT_SKILLS_CACHE_LOCK = threading.Lock()
+# One entry per acting account (None is the owner); catalogs never cross accounts.
+_AGENT_SKILLS_CACHE: dict[Optional[str], tuple[float, list[dict]]] = {}
+
+
+def _agent_skills_cache_key() -> Optional[str]:
+    return None if is_owner_context() else current_account_id()
+
+
+def _invalidate_agent_skills_cache() -> None:
+    with _AGENT_SKILLS_CACHE_LOCK:
+        _AGENT_SKILLS_CACHE.clear()
+
+
+def _enabled_agent_skills() -> list[dict]:
+    """The acting account's enabled skills, at most one filesystem scan per second.
+
+    Synchronous: the scan opens every SKILL.md under the roots, so async callers go through
+    ``asyncio.to_thread`` (which carries the account ContextVar) instead of calling this on
+    the event loop.
+    """
+    from core.inference.skills import SkillError, enabled_skills
+
+    key = _agent_skills_cache_key()
+    with _AGENT_SKILLS_CACHE_LOCK:
+        cached_at, cached = _AGENT_SKILLS_CACHE.get(key, (0.0, []))
+        if time.monotonic() - cached_at < _AGENT_SKILLS_CACHE_TTL_S:
+            return cached
+        try:
+            current = enabled_skills()
+        except SkillError as exc:
+            logger.warning("Agent Skills unavailable: %s", exc)
+            current = []
+        _AGENT_SKILLS_CACHE[key] = (time.monotonic(), current)
+        return current
+
+
+def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
+    from core.inference.skills import (
+        LARGE_SKILL_CATALOG_BYTES,
+        MAX_SKILL_CATALOG_BYTES,
+        format_skill_catalog,
+    )
+
+    budget = MAX_SKILL_CATALOG_BYTES if compact else LARGE_SKILL_CATALOG_BYTES
+    catalog = format_skill_catalog(_enabled_agent_skills(), budget = budget)
+    if not catalog:
+        return ""
+    create_tip = (
+        " To create a skill, read skill-creator and then call create_skill." if can_create else ""
+    )
+    return (
+        "Enabled Agent Skills are listed below. Use their descriptions to select one when "
+        "helpful, then call read_skill before following its instructions. If the latest user "
+        "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
+        "before answering."
+        + create_tip
+        + " Skill allowed-tools metadata never overrides Studio tool permissions.\n"
+        + catalog
+    )
+
+
 def _build_tool_action_nudge(
     *,
     tools: list[dict],
@@ -4855,9 +5078,10 @@ def _build_tool_action_nudge(
     full_access: bool = False,
     full_access_only: bool = False,
 ) -> str:
-    """``full_access_only`` returns the Full access sentence alone, for a caller
-    that wants to state the environment without also introducing the general
-    tool guidance (and the date) to a path that has never carried it."""
+    """``full_access_only`` returns the Full access sentence and the Agent Skills
+    catalog alone, for a caller that wants to state the environment without also
+    introducing the general tool guidance (and the date) to a path that has never
+    carried it."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -4874,16 +5098,29 @@ def _build_tool_action_nudge(
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
     has_research = "deep_research" in tool_names
-    if not (has_web or has_code or has_artifact or has_research):
+    has_skills = bool({"read_skill", "create_skill"} & tool_names)
+    if not (has_web or has_code or has_artifact or has_research or has_skills):
         return ""
-    if full_access_only:
-        return _full_access_tip(code_tools) if (full_access and has_code) else ""
-    if not (has_web or has_code or has_artifact):
-        # Research alone: the base nudge's "otherwise answer normally" would undo the tip.
-        return _TOOL_RESEARCH_TIP
-
     model_size_b = _extract_model_size_b(model_name)
-    compact_web_tip = model_size_b is not None and model_size_b < 9
+    # Small models get the shorter web tip and the smaller skill catalog.
+    compact = model_size_b is not None and model_size_b < 9
+    skill_tip = _skill_tool_tip(can_create = "create_skill" in tool_names, compact = compact)
+    if full_access_only:
+        tips = []
+        if full_access and has_code:
+            tips.append(_full_access_tip(code_tools))
+        if has_skills:
+            tips.append(skill_tip)
+        return " ".join(tip for tip in tips if tip)
+    if not (has_web or has_code or has_artifact):
+        tips = []
+        if has_research:
+            tips.append(_TOOL_RESEARCH_TIP)
+        if has_skills:
+            tips.append(skill_tip)
+        return " ".join(tip for tip in tips if tip)
+
+    compact_web_tip = compact
     tool_tip_parts: list[str] = []
     if has_web:
         tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
@@ -4897,6 +5134,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     if has_research:
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
+    if has_skills:
+        tool_tip_parts.append(skill_tip)
     # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
     return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
@@ -5227,6 +5466,22 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    tools = [
+        tool for tool in tools if tool["function"]["name"] not in {"read_skill", "create_skill"}
+    ]
+    # Inline on purpose: an await here escapes the api_monitor cancel handling; the cache bounds it.
+    enabled_skills = _enabled_agent_skills() if tools_on else []
+    if enabled_skills:
+        from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL
+
+        skill_tools = (READ_SKILL_TOOL,)
+        if any(skill["name"] == "skill-creator" for skill in enabled_skills):
+            skill_tools += (CREATE_SKILL_TOOL,)
+        if payload.enabled_tools is not None:
+            skill_tools = tuple(
+                tool for tool in skill_tools if tool["function"]["name"] in payload.enabled_tools
+            )
+        tools.extend(skill_tools)
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
@@ -7107,6 +7362,8 @@ def _active_gguf_intent(
             strip_spec = False,
             strip_template = False,
             strip_split_mode = False,
+            strip_reasoning_budget = "reasoning_budget" in request_fields_set,
+            strip_reasoning_budget_message = "reasoning_budget_message" in request_fields_set,
             strip_batch = "n_batch" in request_fields_set,
             strip_ubatch = "n_ubatch" in request_fields_set,
             strip_ctx_checkpoints = "ctx_checkpoints" in request_fields_set,
@@ -7158,6 +7415,25 @@ def _active_gguf_intent(
 
 def _public_model_identifier(requested: str, resolved: str) -> str:
     return requested if is_ollama_manifest_ref(requested) else resolved
+
+
+def _as_ollama_manifest_request(request):
+    """*request* with a materialized Ollama ``.gguf`` link rewritten to the tag that produced it."""
+    from hub.services.models.ollama import ollama_manifest_ref_for_path, ollama_model_ref_files
+
+    # An authorized request keeps its path: the tag names whatever its manifest names now, so a
+    # managed account would load weights its check never saw and a lease would lose its artifact.
+    if account_access.managed_account() or getattr(request, "native_path_lease", None):
+        return request
+    ref = ollama_manifest_ref_for_path(request.model_path)
+    if not ref or ref == request.model_path:
+        return request
+    try:
+        ollama_model_ref_files(ref)
+    except Exception:
+        # A tag whose manifest no longer reads is no improvement on a link that still resolves.
+        return request
+    return request.model_copy(update = {"model_path": ref})
 
 
 async def _lease_ollama_model_ref(
@@ -7381,9 +7657,7 @@ async def _wait_for_model_switch_idle(
 
 
 def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Optional[str]:
-    """The id to report for the loaded GGUF in API responses: the advertised repo
-    id from an auto-switch load, else the cleaned public id, never the on-disk
-    .gguf path (see core.inference.model_ids.public_model_id)."""
+    """API-facing id for the loaded GGUF: a recorded advertised id, else the public id, never a path."""
     return (
         getattr(llama_backend, "_openai_advertised_id", None)
         or public_model_id(getattr(llama_backend, "model_identifier", None))
@@ -7481,6 +7755,12 @@ def _target_is_vision(
     # but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
     try:
+        if is_ollama_manifest_ref(load_path):
+            from hub.services.models.ollama import ollama_model_ref_files
+            from utils.models.gguf_metadata import mmproj_accepts_image
+
+            _, projector = ollama_model_ref_files(load_path)
+            return projector is not None and (not need_image or mmproj_accepts_image(projector))
         # Deliberately unguarded: the resolver only yields local paths, so this returns
         # from the mmproj filesystem branch without touching the hub. A reachability
         # probe here would add seconds per request and prevent nothing.
@@ -7520,6 +7800,37 @@ def _target_accepts_audio_input(load_path: str) -> bool:
         return True
 
 
+def _names_video_token(config) -> bool:
+    if not isinstance(config, dict):
+        return False
+    return any(
+        (key in ("video_token_id", "video_token_index") and value is not None)
+        or _names_video_token(value)
+        for key, value in config.items()
+    )
+
+
+def _target_accepts_video_input(load_path: str) -> bool:
+    """Whether an MLX target's config names a video placeholder token; a config that cannot
+    be read is left to the load."""
+    from utils.hardware import DeviceType, get_device
+
+    if get_device() != DeviceType.MLX:
+        return False
+    from core.inference.mlx_inference import _mlx_vlm_decodes_video
+
+    if not _mlx_vlm_decodes_video():
+        return False
+    try:
+        config = json.loads(
+            (Path(load_path).expanduser() / "config.json").read_text(encoding = "utf-8")
+        )
+    except Exception as exc:
+        logger.debug("auto-switch: video probe failed for %s: %s", load_path, exc)
+        return True
+    return _names_video_token(config)
+
+
 def _target_accepts_request_input(
     load_path: str,
     is_gguf: bool,
@@ -7535,7 +7846,7 @@ def _target_accepts_request_input(
     A local GGUF takes both capabilities from its companion mmproj, so one probe
     answers for either, modality-aware through ``need_image``. Other checkpoints
     declare them apart: vision in the config architecture, audio input in the
-    tokenizer's special tokens.
+    tokenizer's special tokens, video input as a placeholder token in the config.
     """
     if is_gguf:
         if not gguf_companion_roots:
@@ -7546,8 +7857,7 @@ def _target_accepts_request_input(
             need_image,
             gguf_companion_roots,
         )
-    # input_video is llama.cpp's own part type, so a clip is refused right after the load.
-    if needs_video:
+    if needs_video and not _target_accepts_video_input(load_path):
         return False
     if needs_audio and not _target_accepts_audio_input(load_path):
         return False
@@ -7560,6 +7870,9 @@ def _target_accepts_request_input(
 def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Optional[str]:
     from utils.models.model_config import _find_local_gguf_by_variant, detect_gguf_model
 
+    if is_ollama_manifest_ref(load_path):
+        from hub.services.models.ollama import ollama_model_ref_files
+        return ollama_model_ref_files(load_path)[0]
     local_path = os.path.expanduser(load_path)
     if gguf_variant and Path(local_path).is_dir():
         return _find_local_gguf_by_variant(local_path, gguf_variant)
@@ -7794,6 +8107,7 @@ def _preflight_speech_codec_for_switch(
 _AUDIO_IMAGE_INPUT_DETAIL = (
     "This model takes audio or an image in one message, not both. Send the image on its own turn."
 )
+_AUDIO_VIDEO_INPUT_DETAIL = "This model takes audio or a video in one message, not both."
 
 
 async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: bool) -> None:
@@ -7831,6 +8145,8 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
                 ),
             ) from None
         return
+    if audio_preflight.get("has_video"):
+        raise HTTPException(status_code = 400, detail = _AUDIO_VIDEO_INPUT_DETAIL)
     if audio_preflight.get("continue_final"):
         raise HTTPException(
             status_code = 400,
@@ -8270,10 +8586,20 @@ def _loaded_satisfies(requested: str) -> bool:
             )
             if candidate
         ]
-        if not _matches_any(base, candidates):
+        identifier = getattr(llama_backend, "model_identifier", None)
+        if identifier and is_ollama_manifest_ref(identifier):
+            # A re-pull keeps a spelling and replaces its blobs: the tag vouches for itself only.
+            own = [name for name in (identifier, _ollama_public_id(identifier)) if name]
+            still_tagged = _resident_is_still_tagged(identifier, llama_backend)
+            if _matches_any(requested, own):
+                return still_tagged
+            if _matches_any(base, own):
+                # The tag itself is the whole name, so a quant suffix on top of it names nothing.
+                return still_tagged and not looks_like_quant(variant)
+            return _ollama_request_is_resident(requested, llama_backend)
+        if not _matches_any(requested, candidates) and not _matches_any(base, candidates):
             return False
         if not looks_like_quant(variant):
-            # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
             return True
         return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
     backend = get_inference_backend()
@@ -8398,13 +8724,69 @@ def _resident_quant_is(variant: Optional[str]) -> bool:
     return bool(variant) and resident.lower() == variant.strip().lower()
 
 
+def _blob_identity(identity: Optional[tuple]) -> Optional[tuple]:
+    """A load identity reduced to (device, inode, size, mtime): link, hardlink and blob then match."""
+    return tuple(part[-4:] for part in identity) if identity else None
+
+
+def _ollama_public_id(ref: str) -> Optional[str]:
+    try:
+        return ollama_model_ref_public_id(ref)
+    except (OSError, ValueError):
+        return None
+
+
+def _ollama_source_identity(ref: str) -> Optional[tuple]:
+    """Blob identity of every file *ref*'s manifest names now, projector included, or None."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    from hub.services.models.ollama import ollama_model_ref_files
+
+    try:
+        model_path, projector_path = ollama_model_ref_files(ref)
+        return _blob_identity(
+            LlamaCppBackend._gguf_load_source_identity(model_path, projector_path)
+        )
+    except (OSError, ValueError):
+        return None
+
+
+def _resident_is_still_tagged(ref: str, llama_backend) -> bool:
+    # The load identity survives a failed load, so it describes a resident model only while one is.
+    if not getattr(llama_backend, "is_loaded", False):
+        return False
+    source = _ollama_source_identity(ref)
+    loaded = _blob_identity(getattr(llama_backend, "_gguf_load_identity", None))
+    return bool(source and source == loaded)
+
+
+def _ollama_request_is_resident(requested: str, llama_backend) -> bool:
+    """Whether *requested*'s blobs are the resident ones. Reads the built index, never a scan."""
+    identifier = getattr(llama_backend, "model_identifier", None)
+    if not identifier or not is_ollama_manifest_ref(identifier):
+        return False
+    if is_ollama_manifest_ref(requested):
+        return _resident_is_still_tagged(requested, llama_backend)
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    try:
+        load_path = (resolve_local_gguf(requested, allow_scan = False) or (None,))[0]
+    except Exception as e:
+        logger.debug("inference.ollama_alias_resolve_failed: %s", e)
+        return False
+    return bool(
+        load_path
+        and is_ollama_manifest_ref(load_path)
+        and _resident_is_still_tagged(load_path, llama_backend)
+    )
+
+
 def _resolves_to_resident(
     load_path: Optional[str],
     *,
     llama_only: bool = False,
     exact_only: bool = False,
 ) -> bool:
-    """Whether a resolved on-disk path is what is already loaded.
+    """Whether a resolver result -- a path, or an Ollama manifest reference -- is already loaded.
 
     ``llama_only`` drops the Transformers backend: only llama.cpp carries a quant
     identity, so a Transformers model active from a directory that also holds GGUF
@@ -8416,6 +8798,9 @@ def _resolves_to_resident(
         return False
     target = _norm_path(load_path)
     llama_backend = get_llama_cpp_backend()
+    # A reference and the .gguf link the picker loaded share no spelling, so only the blobs decide.
+    if is_ollama_manifest_ref(load_path):
+        return _resident_is_still_tagged(load_path, llama_backend)
     orchestrator_model = (
         None if llama_only else getattr(get_inference_backend(), "active_model_name", None)
     )
@@ -8465,6 +8850,28 @@ def _classify_and_probe_residency(
 
     is_gguf = local_target_is_gguf(load_path, alias)
     return is_gguf, _resolves_to_resident(load_path, llama_only = llama_only, exact_only = not is_gguf)
+
+
+def _validated_target_is_resident(
+    request: "ValidateModelRequest",
+    *,
+    model_identifier: str,
+    config,
+    is_gguf: bool,
+    native_grant_backed: bool,
+) -> bool:
+    """Whether the artifact this validation resolved -- not the spelling asked for -- is loaded.
+
+    A lease picks the file and a variant the quant, so ``model_path`` names neither.
+    """
+    if is_ollama_manifest_ref(request.model_path):
+        return _resolves_to_resident(request.model_path, llama_only = is_gguf)
+    if native_grant_backed or not is_gguf:
+        target = model_identifier
+    else:
+        from hub.utils.gguf import resolve_local_gguf_path
+        target = config.gguf_file or resolve_local_gguf_path(model_identifier, request.gguf_variant)
+    return _resolves_to_resident(target, llama_only = is_gguf, exact_only = True)
 
 
 def _innermost_indexed_owner(path: str) -> Optional[str]:
@@ -8563,12 +8970,18 @@ async def _reject_unservable_model(
             return
         downloaded = resolved is not None
         # /v1/models may have advertised this id off its own scan while the index is cold.
-        advertised = _advertised_local_path(base)
+        advertised_alias = requested_model
+        advertised = _advertised_local_path(requested_model)
+        if advertised is None:
+            advertised_alias = base
+            advertised = _advertised_local_path(base)
         # classified from the advertised path itself, since a resolver miss left the pair above safe.
         advertised_is_resident = (
             advertised is not None
             and (
-                await asyncio.to_thread(_classify_and_probe_residency, advertised, base, quantified)
+                await asyncio.to_thread(
+                    _classify_and_probe_residency, advertised, advertised_alias, quantified
+                )
             )[1]
         )
         if advertised_is_resident and (not quantified or _resident_quant_is(variant)):
@@ -8730,8 +9143,8 @@ async def _maybe_auto_switch_model(
     can't strand a preview-owned model as Unsloth-owned. ``require_image`` makes that
     rejection modality-aware for a GGUF, whose one projector carries both, and
     ``require_audio_input`` covers a non-GGUF checkpoint, which declares the two
-    separately, and ``require_video`` rules a non-GGUF target out entirely, since
-    only llama.cpp takes a clip. ``modality_label`` names the inputs attached, so the
+    separately, and ``require_video`` asks a non-GGUF target for a video placeholder
+    token. ``modality_label`` names the inputs attached, so the
     rejection does not report a modality the request never carried. ``gguf_only``
     marks an endpoint that reads llama.cpp alone, where loading a non-GGUF model
     would unload the resident one and leave the handler with nothing to serve.
@@ -9007,6 +9420,11 @@ async def _maybe_auto_switch_model(
         _, _requested_variant = split_model_ref(requested_model)
         bare = not looks_like_quant(_requested_variant)
 
+        ollama_target = target_is_gguf and is_ollama_manifest_ref(target_id)
+        ollama_source_identity = (
+            await asyncio.to_thread(_ollama_source_identity, target_id) if ollama_target else None
+        )
+
         def _already_serving() -> bool:
             # Match against both the concrete load path and the advertised repo id,
             # so a model loaded manually by repo id (identifier = repo id) and one
@@ -9032,7 +9450,12 @@ async def _maybe_auto_switch_model(
             advertised = getattr(backend, "_openai_advertised_id", None)
             if advertised:
                 loaded_keys.add(advertised.lower())
-            if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
+            if ollama_target:
+                # The blobs, not the keys: an alias shares no spelling with the resident tag.
+                loaded_source = _blob_identity(getattr(backend, "_gguf_load_identity", None))
+                if not ollama_source_identity or loaded_source != ollama_source_identity:
+                    return False
+            elif loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
                 return False
             loaded_companion_roots = tuple(
                 getattr(backend, "_openai_gguf_companion_roots", ()) or ()
@@ -9220,6 +9643,11 @@ async def _maybe_auto_switch_model(
                     # Hold the keep-warm gate across the swap so no new inference can
                     # start on the model while it is being torn down and replaced.
                     async with inference_lifecycle_gate():
+                        # Re-read under the gate: the snapshot above predates the wait.
+                        if ollama_target:
+                            ollama_source_identity = await asyncio.to_thread(
+                                _ollama_source_identity, target_id
+                            )
                         if _already_serving():
                             if claim_resident:
                                 _set_preview_resident(None)
@@ -10066,10 +10494,6 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
         return 0
 
 
-# Upper bound on any current tokenizer, used to rebuild the compute buffer when a
-# truncated header drops the token array. Above Llama 4 / Gemma 3 (256k), the widest shipping.
-_ASSUMED_MAX_VOCAB = 262144
-
 # Canonical speculative modes whose launch opens no drafter file at all:
 # _build_speculative_flags returns out of each before it reaches --model-draft.
 _SPEC_MODES_WITHOUT_A_DRAFTER = frozenset({"off", "ngram", "ngram-simple"})
@@ -10129,6 +10553,60 @@ def _inherited_ctx_size() -> int:
         return 0
 
 
+def _launch_required_ubatch_for_config(
+    config,
+    llama_extra_args: Optional[list[str]] = None,
+    disable_vision: bool = False,
+) -> int:
+    """Return the required micro-batch for a local GGUF config."""
+    from core.inference.llama_cpp import _launch_required_ubatch
+    from utils.models.gguf_metadata import read_gguf_embedding_length
+
+    gguf_file = str(getattr(config, "gguf_file", "") or "")
+    own = getattr(config, "gguf_mmproj_file", None)
+    resolved = None
+    if own and getattr(config, "is_vision", False) and not disable_vision:
+        resolved = _probe_backend()._resolve_launch_mmproj_path(
+            model_path = gguf_file,
+            mmproj_path = str(own),
+        )
+    return _launch_required_ubatch(
+        resolved,
+        # The text embedding size identifies the causal Gemma 4 variants.
+        read_gguf_embedding_length(gguf_file) if gguf_file else None,
+        llama_extra_args,
+        is_vision = bool(getattr(config, "is_vision", False)),
+        vision_off = disable_vision,
+    )
+
+
+def _remote_required_ubatch(
+    config,
+    llama_extra_args: Optional[list[str]] = None,
+    disable_vision: bool = False,
+) -> int:
+    """Return a conservative micro-batch for an undownloaded GGUF config."""
+    from core.inference.llama_cpp import _launch_required_ubatch, extra_args_disable_mmproj
+
+    from core.inference.llama_cpp import _unknown_projector_ubatch
+
+    if (
+        bool(getattr(config, "is_vision", False))
+        and not disable_vision
+        and not extra_args_disable_mmproj(llama_extra_args)
+    ):
+        # Match the worst-case post-download allocation.
+        return _unknown_projector_ubatch(llama_extra_args)
+    # No repo projector in play, but the extras or the environment may still name one.
+    return _launch_required_ubatch(
+        None,
+        None,
+        llama_extra_args,
+        is_vision = False,
+        vision_off = disable_vision,
+    )
+
+
 def _gguf_runtime_bytes(
     gguf_path: str,
     max_seq_length: int,
@@ -10143,6 +10621,7 @@ def _gguf_runtime_bytes(
     is_diffusion: bool = False,
     ctx_last_wins: bool = False,
     model_identifier: Optional[str] = None,
+    launch_required_ubatch: int = 0,
 ) -> _GgufRuntimeBytes:
     """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -10158,15 +10637,31 @@ def _gguf_runtime_bytes(
     over-reserves on purpose; a panel quoting a number to a user wants the other
     one, since a smaller ``-c`` in the extras is the context the user gets."""
     try:
+        from core.inference.llama_cpp import _ASSUMED_MAX_VOCAB, _batch_ubatch_for_mmproj
+        from core.inference.llama_cpp import effective_ctx_checkpoints_for_caps
         from core.inference.llama_server_args import (
             parse_ctx_override,
-            resolve_ctx_checkpoints,
             resolve_requested_ctx,
         )
 
         probe = _probe_backend()
         probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
+        # An older llama.cpp reserves an output row per micro-batch token; priced as
+        # the loader prices it. getattr: a stand-in backend has no probe.
+        try:
+            probe._reserves_micro_batch_outputs = bool(
+                getattr(LlamaCppBackend, "reserves_micro_batch_outputs", lambda: False)()
+            )
+        except Exception as _rows_exc:
+            logger.debug("llama-server build probe failed: %s", _rows_exc)
+        # Price the same batch sizes used by load_model.
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+            0 if is_diffusion else launch_required_ubatch,
+            n_batch,
+            n_ubatch,
+            llama_extra_args,
+        )
         # Carried out even when the cache cannot be sized: block_count is a separate
         # key and is usually there, and a caller that loses it prices a manual offload
         # split as fully GPU-resident (_gguf_offloaded_layer_fraction has nothing to
@@ -10224,7 +10719,6 @@ def _gguf_runtime_bytes(
         # llama-server b10632, Qwen3-0.6B at 32k with -ctk/-ctv q4_0: 2296 MiB reserved
         # against 1008 MiB allocated, identical on the CPU and Vulkan builds.
         planned_v_type = planned_cache_types[1]
-        v_forces_flash_attn = planned_v_type not in {"f16", "bf16", "f32"}
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,
@@ -10275,46 +10769,44 @@ def _gguf_runtime_bytes(
             llama_extra_args,
             default = managed_kv_unified,
         )
-        _resolved_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)
-        if _resolved_checkpoints:
-            # A build predating both --ctx-checkpoints aliases has the request skipped
-            # by the command builder, which logs and moves on, so charging for the
-            # snapshots reserves memory the process never allocates. Same capability
-            # probe the builder itself asks, and the same default-deny on an
-            # unanswerable one: this figure also guards a running training job, so an
-            # unreadable probe keeps the charge rather than dropping it.
-            try:
-                _cc_caps = LlamaCppBackend.probe_server_capabilities()
-                # ``found`` is what separates "this build lacks the flag" from "no
-                # binary was read": the defaults dict reports every capability False,
-                # so keying on the flag alone would drop the charge whenever the probe
-                # simply could not run.
-                if _cc_caps.get("found") and not _cc_caps.get("ctx_checkpoints_flag"):
-                    _resolved_checkpoints = 0
-            except Exception as _cc_exc:
-                logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        # Resolve the same capability-dependent count that load_model emits.
+        _cc_caps: dict = {}
+        try:
+            _cc_caps = LlamaCppBackend.probe_server_capabilities() or {}
+        except Exception as _cc_exc:
+            logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        # Older lightweight probes may not provide the new sizing helpers.
+        _per_checkpoint = getattr(probe, "_rollback_state_bytes", lambda _n: 0)(1)
+        _host_mib = getattr(probe, "_host_memory_capacity_mib", lambda: None)()
+        _resolved_checkpoints = effective_ctx_checkpoints_for_caps(
+            _cc_caps,
+            llama_extra_args,
+            ctx_checkpoints,
+            per_checkpoint_bytes = _per_checkpoint,
+            n_parallel = slots,
+            total_host_bytes = (_host_mib * 1024 * 1024) if _host_mib else None,
+        )
         # load_model appends --flash-attn on to every launch whose build has the flag,
         # so the default here is ON, not off. The false arm pads variable-width V
         # tensors to the model-wide maximum (_max_kv_value_width), which on an
         # architecture whose global and SWA layers disagree about n_embd_v_gqa
-        # inflates the whole cache and can call a load that fits an overflow. Resolved
-        # the way the launch resolves it: the managed default, narrowed by the
-        # capability probe, then llama.cpp's own env-then-last-wins-argv rule. A
-        # quantized V still forces it on top of all that, because llama-context.cpp
-        # turns it on itself rather than refusing the load.
-        _fa_default = True
+        # inflates the whole cache and can call a load that fits an overflow.
+        # Resolved the way the launch resolves it, narrowed by the capability probe.
+        _fa_supported = True
         try:
             _fa_caps = LlamaCppBackend.probe_server_capabilities()
             # Same ``found`` test as the checkpoint probe above: the defaults dict
             # reports nothing supported, so keying on the flag alone would size every
             # unprobed host as flash-attention-less.
             if _fa_caps.get("found") and not _fa_caps.get("supports_flash_attn", True):
-                _fa_default = False
+                _fa_supported = False
         except Exception as _fa_exc:
             logger.debug("flash-attention capability probe failed: %s", _fa_exc)
-        flash_attn = (
-            _flash_attn_enabled_from_args(llama_extra_args, default = _fa_default, env = os.environ)
-            or v_forces_flash_attn
+        flash_attn = _planned_flash_attn(
+            llama_extra_args,
+            _fa_supported,
+            planned_v_type,
+            getattr(probe, "_architecture", None),
         )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
@@ -10364,38 +10856,13 @@ def _gguf_runtime_bytes(
         devices = max(1, int(n_devices))
 
         def _flat_buffer(per_device_tensor: bool) -> int:
-            """Flat compute buffer, rebuilt when the header is short of a vocab size.
-
-            _estimate_compute_buffer_bytes returns 0 when vocab_size or embedding_length is
-            missing. Only the first is reachable: _vocab_size is set solely from the
-            tokenizer.ggml.tokens array length, which a truncated header drops while keeping
-            the dims. So rebuild from the real formula with a vocab ceiling rather than
-            substituting the loader's flat reserve. The loader can afford that reserve
-            because over-reserving there just shrinks the context; here it denies the load.
-            """
-            flat = probe._estimate_compute_buffer_bytes(
+            """Use a vocabulary ceiling when a truncated header omits the token array."""
+            return probe._estimate_compute_buffer_bytes(
                 n_ubatch = effective_ubatch,
                 n_parallel = slots,
                 per_device_tensor = per_device_tensor,
+                vocab_ceiling = _ASSUMED_MAX_VOCAB,
             )
-            if flat > 0:
-                return flat
-            # getattr: a bare backend double carries neither dims nor constants.
-            n_embd = getattr(probe, "_embedding_length", None) or 0
-            if n_embd <= 0:
-                return 0  # nothing to rebuild from; the total is floored below instead
-            ub = max(1, int(effective_ubatch or probe._DEFAULT_N_UBATCH))
-            act_scratch = 4 * n_embd * ub * 4
-            out_buffer = _ASSUMED_MAX_VOCAB * ub * 4
-            output_slots = (
-                slots if getattr(probe, "is_embedding_gguf", False) else max(0, slots - 1)
-            )
-            raw = (
-                2 * act_scratch + out_buffer * slots
-                if per_device_tensor
-                else act_scratch + out_buffer * output_slots
-            )
-            return int(raw * probe._COMPUTE_BUFFER_SAFETY)
 
         if tensor_parallel:
             # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
@@ -10420,6 +10887,8 @@ def _gguf_runtime_bytes(
                     effective_ubatch,
                     cache_type_for_scratch,
                     layer_split = devices > 1 and not pipeline_parallel_off,
+                    flash_attn = flash_attn,
+                    n_parallel = slots,
                 )
             )
         if compute <= 0:
@@ -10446,11 +10915,20 @@ def _estimate_gguf_kv_gb(
     n_devices: int = 1,
     is_diffusion: bool = False,
     model_identifier: Optional[str] = None,
+    launch_required_ubatch: int = 0,
+    shared_memory_pool: bool = True,
 ) -> float:
     """``_gguf_runtime_bytes`` summed into GB, for the training guard.
 
     An unreadable header is 0 GB, as it always was: a cache the guard cannot size
     must not become a refusal on its own.
+
+    Context checkpoints leave this figure only when ``shared_memory_pool`` is False,
+    i.e. the caller has CONFIRMED the pool it checks against is separate from host
+    RAM. On an iGPU or a unified-memory APU the driver's "free VRAM" IS the host
+    heap, so dropping a host-resident allocation there admits a load beside training
+    that the one pool cannot hold. Defaults to keeping them, like the rest of this
+    guard, which refuses what it cannot size.
     """
     runtime = _gguf_runtime_bytes(
         gguf_path,
@@ -10465,8 +10943,14 @@ def _estimate_gguf_kv_gb(
         n_devices = n_devices,
         is_diffusion = is_diffusion,
         model_identifier = model_identifier,
+        launch_required_ubatch = launch_required_ubatch,
     )
-    return (runtime.kv_bytes + runtime.compute_bytes) / (1024**3)
+    gpu_kv_bytes = (
+        runtime.kv_bytes
+        if shared_memory_pool
+        else max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
+    )
+    return (gpu_kv_bytes + runtime.compute_bytes) / (1024**3)
 
 
 def _remote_gguf_compute_reserve_gb(
@@ -10478,15 +10962,30 @@ def _remote_gguf_compute_reserve_gb(
     n_devices: int = 1,
     tensor_parallel: bool = False,
     is_diffusion: bool = False,
+    required_ubatch: int = 0,
 ) -> float:
     """Compute buffers a remote GGUF will reserve, in GB.
 
     Split out of _estimate_gguf_required_gb so a caller that is pricing something
     else, a drafter for instance, can hold it at zero the way it already holds
     _estimate_gguf_kv_gb at zero. The arithmetic is unchanged.
+
+    ``required_ubatch`` matches the post-download launch.
     """
-    # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
+    # remote dims are unreadable: the kq mask is sized exactly, the activations at a ceiling
+    from core.inference.llama_cpp import (
+        _ASSUMED_MAX_ACTIVATION_WIDTH,
+        _ASSUMED_MAX_VOCAB,
+        _batch_ubatch_for_mmproj,
+    )
     from core.inference.llama_server_args import parse_ctx_override
+
+    n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+        0 if is_diffusion else required_ubatch,
+        n_batch,
+        n_ubatch,
+        llama_extra_args,
+    )
 
     try:
         ctx_override = parse_ctx_override(llama_extra_args) or 0
@@ -10525,34 +11024,74 @@ def _remote_gguf_compute_reserve_gb(
             and not _pipeline_parallel_disabled_by_args(llama_extra_args, n_layers = None)
             else 1
         )
-        mask_bytes = (
-            budget_ctx
-            * effective_ubatch
-            * 2
-            * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
-            * devices
-            * split_mult
+        mask_bytes = budget_ctx * effective_ubatch * 2 * devices * split_mult
+        # Unknown dimensions require an activation ceiling. Reserve output rows for the
+        # maximum assumed draft depth. Tensor mode replicates both on every device.
+        activation_bytes = _ASSUMED_MAX_ACTIVATION_WIDTH * effective_ubatch * 4
+        output_rows = min(
+            effective_ubatch,
+            max(1, n_parallel) * (1 + LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX),
         )
-        # The mask is only the context-linear half. The flat half needs dims that are
-        # unreadable remotely, but its dominant term needs only a vocab ceiling:
-        # llama.cpp reserves n_vocab * ubatch * 4 per slot past the first (every slot
-        # under tensor mode), so n_batch = n_ubatch = 32768 on two slots is ~32 GiB the
-        # mask does not cover, and omitting it let the guard admit an uncached load that
-        # then OOMs the training job. The activation scratch needs embedding_length and
-        # stays uncharged: the small half, and over-reserving denies the load outright.
-        # Scaled per device only in tensor mode, mirroring the local branch. The remote
-        # header is unknown, so reserve as if it enables embeddings.
-        _out_slots = max(1, n_parallel)
-        out_buffer_bytes = (
-            _ASSUMED_MAX_VOCAB
-            * effective_ubatch
-            * 4
-            * _out_slots
-            * (devices if tensor_parallel else 1)
+        try:
+            if LlamaCppBackend.reserves_micro_batch_outputs():
+                output_rows = effective_ubatch
+        except Exception as _rows_exc:
+            logger.debug("llama-server build probe failed: %s", _rows_exc)
+        flat_bytes = (
+            (activation_bytes + _ASSUMED_MAX_VOCAB * output_rows * 4)
             * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+            * (devices if tensor_parallel else 1)
         )
-        return (mask_bytes + out_buffer_bytes) / (1024**3)
+        return (mask_bytes + flat_bytes) / (1024**3)
     return 0.0
+
+
+def _admission_pool_shares_host_ram(
+    *,
+    is_vulkan_backend: bool,
+    vulkan_gpu_memory: Optional[list] = None,
+    requested_gpu_ids: Optional[list[int]] = None,
+    gpu_ids_are_vulkan_ordinals: bool = False,
+) -> bool:
+    """Whether the pool the training guard checks against is also the host heap.
+
+    Fails CLOSED. An unreadable inventory, a selection this cannot map to devices,
+    or any candidate that turns out to be integrated all answer True, so a figure
+    that must not under-charge keeps its host-resident terms.
+    """
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        if is_vulkan_backend:
+            # total 0 means integrated, as _shared_gpu_ids reads it. Narrowed to the pin
+            # only when it is confirmed to be in Vulkan's own index space; a physical id
+            # read as an ordinal would answer for the wrong adapter.
+            rows = list(vulkan_gpu_memory or [])
+            if gpu_ids_are_vulkan_ordinals and requested_gpu_ids:
+                pinned = {int(i) for i in requested_gpu_ids}
+                rows = [row for row in rows if int(row[0]) in pinned]
+            return not rows or any(int(total) <= 0 for _idx, _free, total in rows)
+        import torch
+
+        if LlamaCppBackend._torch_is_rocm(torch):
+            # An empty unified set means "no APU" and "could not read them" alike, since
+            # the classifier skips what it cannot query. Only the first is evidence.
+            if not LlamaCppBackend._rocm_classification_answered():
+                return True
+            unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+        else:
+            # Jetson and DGX Spark are CUDA and unified too, but NEVER probe here:
+            # _integrated_cuda_gpu_ids pins ~700 MiB per card for the process, and
+            # training holds them. Cached answers only, else keep the charge.
+            if not LlamaCppBackend._integrated_cuda_probe_is_free():
+                return True
+            unified = LlamaCppBackend._integrated_cuda_gpu_ids()
+        if not unified:
+            return False
+        return not requested_gpu_ids or any(int(i) in unified for i in requested_gpu_ids)
+    except Exception as e:  # noqa: BLE001 -- an unreadable device keeps the charge
+        logger.debug("Could not classify the admission pool: %s", e)
+        return True
 
 
 def _estimate_gguf_required_gb(
@@ -10576,6 +11115,9 @@ def _estimate_gguf_required_gb(
     # every settings change. This skips that listing; the caller marks the total a
     # floor instead, exactly as it already does for a drafter it cannot weigh.
     local_only: bool = False,
+    # Passed straight to _estimate_gguf_kv_gb: only a caller that has confirmed a
+    # discrete pool may drop the host-resident checkpoint share.
+    shared_memory_pool: bool = True,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -10591,6 +11133,7 @@ def _estimate_gguf_required_gb(
             _extra_args_requests_dspark,
             _extra_args_set_spec_type,
             _mmproj_env_is_audio_only,
+            _mtp_drafter_loads_standalone,
             extra_args_disable_mmproj,
         )
 
@@ -10774,7 +11317,13 @@ def _estimate_gguf_required_gb(
                 ):
                     _sized_attrs.append("gguf_dflash_file")
             else:
-                _sized_attrs.append("gguf_mtp_file")
+                # The launch drops a drafter it cannot open, so charging one would refuse
+                # a load that fits.
+                _mtp = getattr(config, "gguf_mtp_file", None)
+                if not (
+                    _mtp and Path(_mtp).is_file() and not _mtp_drafter_loads_standalone(str(_mtp))
+                ):
+                    _sized_attrs.append("gguf_mtp_file")
 
         for attr in _sized_attrs:
             f = getattr(config, attr, None)
@@ -10868,6 +11417,10 @@ def _estimate_gguf_required_gb(
                 n_devices = n_devices,
                 is_diffusion = is_diffusion,
                 model_identifier = getattr(config, "identifier", None),
+                launch_required_ubatch = _launch_required_ubatch_for_config(
+                    config, llama_extra_args, disable_vision
+                ),
+                shared_memory_pool = shared_memory_pool,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -10922,6 +11475,7 @@ def _estimate_gguf_required_gb(
                 n_devices = n_devices,
                 tensor_parallel = tensor_parallel,
                 is_diffusion = is_diffusion,
+                required_ubatch = _remote_required_ubatch(config, llama_extra_args, disable_vision),
             )
             return total_gb
         return None
@@ -10969,6 +11523,8 @@ class _GgufMemoryBreakdown(NamedTuple):
     n_parallel: int
     layer_count: Optional[int]
     gpu_layers: Optional[int]
+    # Host-resident checkpoint share of kv_bytes. Keep last for positional callers.
+    kv_checkpoint_bytes: int = 0
 
 
 def _gguf_offloaded_layer_fraction(
@@ -11349,11 +11905,16 @@ def _gguf_resident_file_gb(
             0,
             llama_extra_args,
             model_identifier = getattr(config, "identifier", None),
+            # Subtract the same runtime term added above.
+            launch_required_ubatch = _launch_required_ubatch_for_config(
+                config, llama_extra_args, disable_vision
+            ),
         )
     else:
         context_term_gb = _remote_gguf_compute_reserve_gb(
             llama_extra_args = llama_extra_args,
             max_seq_length = 0,
+            required_ubatch = _remote_required_ubatch(config, llama_extra_args, disable_vision),
         )
     files_gb = max(0.0, required_gb - context_term_gb)
     # Under the lock: the route body runs in an asyncio.to_thread worker, so two panel
@@ -11906,6 +12467,9 @@ def _gguf_memory_breakdown(
         # An embedding model is recognised from its identifier, not its header, so the
         # panel has to hand over the same one /load does or it prices a generation model.
         model_identifier = getattr(config, "identifier", None),
+        launch_required_ubatch = _launch_required_ubatch_for_config(
+            config, llama_extra_args, disable_vision
+        ),
     )
     files_gb = _gguf_resident_file_gb(
         config,
@@ -11996,6 +12560,8 @@ def _gguf_memory_breakdown(
     # The part of that reserve allocated in the TARGET's context rather than the
     # drafter's, so it stays with the target when the two are placed apart.
     target_spec_bytes = 0
+    # The verification output rows in that reserve: target compute, not target KV.
+    target_verify_bytes = 0
     drafter_on_gpu = host_drafter_bytes == 0
     charged_drafter = _charged_drafter_path(
         config, host_drafter_bytes or gpu_drafter_bytes, extras = extras
@@ -12070,7 +12636,9 @@ def _gguf_memory_breakdown(
             n_ubatch = runtime.n_ubatch,
             flash_attn = bool(_draft_v_type) and _draft_v_type not in {"f16", "bf16", "f32"},
         )
-        drafter_runtime_bytes = (
+        # The draft context's decode graph is charged on top, as the loader charges it:
+        # the helper prices only what that graph grows beyond this floor.
+        drafter_runtime_bytes = getattr(probe, "_MTP_DRAFT_COMPUTE_BYTES", 0) + (
             probe._estimate_mtp_overhead_bytes(
                 runtime.n_ctx,
                 spec_draft_n_max = draft_n_max,
@@ -12102,6 +12670,10 @@ def _gguf_memory_breakdown(
                 probe._mamba_recurrent_state_bytes(runtime.n_parallel) * draft_n_max
             )
         target_spec_bytes = min(target_spec_bytes, drafter_runtime_bytes)
+        target_verify_bytes = min(
+            probe._spec_verify_rows_bytes(runtime.n_parallel, draft_n_max),
+            drafter_runtime_bytes - target_spec_bytes,
+        )
 
     layer_count = runtime.layer_count
     gpu_fraction = _gguf_offloaded_layer_fraction(
@@ -12177,7 +12749,8 @@ def _gguf_memory_breakdown(
     if gpu_fraction > 0.0:
         # Compute buffers land on the devices running layers.
         gpu_bytes += runtime.compute_bytes
-    # Target-side spec terms are target KV allocations and follow the target cache. The
+    # Target-side spec KV follows the target cache, and its verification rows follow the
+    # target's layers like the other compute buffers. The
     # drafter's own KV follows the drafter: a separate one does not inherit
     # --gpu-layers (llama.cpp overwrites it with the draft placement, default auto), so
     # at --gpu-layers 0 it is still on the GPU holding that cache. An embedded head is
@@ -12185,8 +12758,14 @@ def _gguf_memory_breakdown(
     # drafter_on_gpu said yes even for a CPU-placed target -- but it is part of the
     # target's tensors and takes the target's context, so it goes where the target goes.
     _drafter_on_gpu = (gpu_fraction > 0.0) if embedded_mtp else drafter_on_gpu
-    drafter_runtime_gpu_bytes = (target_spec_bytes if kv_on_gpu else 0) + (
-        (drafter_runtime_bytes - target_spec_bytes) if _drafter_on_gpu else 0
+    drafter_runtime_gpu_bytes = (
+        (target_spec_bytes if kv_on_gpu else 0)
+        + (target_verify_bytes if gpu_fraction > 0.0 else 0)
+        + (
+            (drafter_runtime_bytes - target_spec_bytes - target_verify_bytes)
+            if _drafter_on_gpu
+            else 0
+        )
     )
     gpu_bytes += drafter_runtime_gpu_bytes
     # The encoder's buffers sit with the projector, so --no-mmproj-offload takes them
@@ -12222,6 +12801,7 @@ def _gguf_memory_breakdown(
         n_parallel = runtime.n_parallel,
         layer_count = layer_count,
         gpu_layers = gpu_layers if gpu_memory_mode == "manual" else None,
+        kv_checkpoint_bytes = runtime.kv_checkpoint_bytes,
     )
 
 
@@ -12407,6 +12987,60 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     except Exception as e:
         logger.debug("Could not identify diffusion GGUF for training guard: %s", e)
     return True if name_says_diffusion else None
+
+
+async def _validate_reasoning_budget_preflight(
+    config: ModelConfig,
+    diffusion_kind: Optional[bool],
+    extra_args: Optional[list[str]],
+    request: LoadRequest | ValidateModelRequest,
+) -> None:
+    """Reject unsupported reasoning controls before any resident model is torn down.
+
+    Explicit config only, exactly as LlamaCppBackend gates the load itself. Counting
+    an inherited LLAMA_ARG_THINK_BUDGET* as a request rejected every undownloaded
+    GGUF and every DiffusionGemma, naming a setting the UI already shows as default.
+    """
+    if not config.is_gguf:
+        return
+    effective_budget = resolve_reasoning_budget(extra_args, request.reasoning_budget)
+    effective_message = resolve_reasoning_budget_message(
+        extra_args, request.reasoning_budget_message
+    )
+    requested = any(
+        LlamaCppBackend.reasoning_budget_settings_requested(
+            extra_args = extra_args,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
+        )
+    )
+    if diffusion_kind and requested:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Reasoning Budget settings are not supported for DiffusionGemma models.",
+        )
+    if diffusion_kind is None and requested:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Reasoning Budget settings cannot be applied until this GGUF is "
+                "downloaded and its architecture can be verified. Load it once with "
+                "the default reasoning budget, then apply these settings."
+            ),
+        )
+    if not requested:
+        return
+    backend = get_llama_cpp_backend()
+    try:
+        await asyncio.to_thread(
+            backend.validate_reasoning_budget_capabilities,
+            backend._find_llama_server_binary(),
+            extra_args = extra_args,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
 async def _override_gpu_ids_still_resolve(
@@ -13511,6 +14145,12 @@ def _guard_chat_load_against_training(
             # getattr for the same reason as the batch flags above: an older caller
             # hands this guard a bare request double that does not carry the field.
             disable_vision = bool(getattr(request, "disable_vision", False)),
+            shared_memory_pool = _admission_pool_shares_host_ram(
+                is_vulkan_backend = is_vulkan_backend,
+                vulkan_gpu_memory = vulkan_gpu_memory,
+                requested_gpu_ids = requested_gpu_ids,
+                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
+            ),
         )
     # A confirmed-diffusion positive split puts only ngl/n_layers of the weights on the GPU (a
     # split the loader would drop was nulled above). Unknown classification keeps the full
@@ -13677,6 +14317,8 @@ def _resolve_inherited_extra_args(
             # must not last-wins-override it. auto leaves a user's inherited -ngl
             # alone. getattr: a validate request reuses this resolver, no offload fields.
             strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+            strip_reasoning_budget = "reasoning_budget" in fields_set,
+            strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
             # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
             strip_batch = "n_batch" in fields_set,
             strip_ubatch = "n_ubatch" in fields_set,
@@ -13924,7 +14566,21 @@ def _names_the_resident_model(resident: Optional[str], model_path: str) -> bool:
     client reads back reports the repo id it maps to. Both name the same model, and an unload
     arriving under either has to find it.
     """
-    return bool(resident) and model_id_matches(model_path, resident)
+    if not resident:
+        return False
+    if model_id_matches(model_path, resident):
+        return True
+    # A load rewrites a materialized Ollama link to the tag that made it, so the id the picker
+    # still holds names the same model under a spelling no string compare reaches.
+    return is_ollama_manifest_ref(resident) and _ollama_ref_for_link(model_path) == resident
+
+
+def _ollama_ref_for_link(model_path: str) -> Optional[str]:
+    from hub.services.models.ollama import ollama_manifest_ref_for_path
+    try:
+        return ollama_manifest_ref_for_path(model_path)
+    except (OSError, ValueError):
+        return None
 
 
 def _names_the_loading_model(loading: str, model_path: str) -> bool:
@@ -14459,6 +15115,7 @@ async def _load_model_impl(
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    request = await asyncio.to_thread(_as_ollama_manifest_request, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -14517,6 +15174,14 @@ async def _load_model_impl(
             None if request.llama_extra_args is None else extra_llama_args
         )
 
+        _reasoning_updates = {}
+        _reasoning_budget_override = parse_reasoning_budget_override(extra_llama_args)
+        if _reasoning_budget_override is not None:
+            _reasoning_updates["reasoning_budget"] = _reasoning_budget_override
+        _reasoning_message_override = parse_reasoning_budget_message_override(extra_llama_args)
+        if _reasoning_message_override is not None:
+            _reasoning_updates["reasoning_budget_message"] = _reasoning_message_override
+
         # Manual mode owns the offload flags. Preserve an explicit layer count
         # by translating its last-wins value into the first-class field before
         # stripping the raw flags. This keeps CLI pass-through such as
@@ -14550,6 +15215,8 @@ async def _load_model_impl(
         # particular, the already-loaded comparator must not compare the raw
         # request's managed offload flags against the stripped launch state.
         request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
+        if _reasoning_updates:
+            request = request.model_copy(update = _reasoning_updates)
 
         resolved_ollama_path = await _lease_ollama_model_ref(
             request,
@@ -14568,6 +15235,11 @@ async def _load_model_impl(
 
         # Keep the inventory ref public while loading the materialized artifact.
         public_model_identifier = _public_model_identifier(request.model_path, model_identifier)
+        ollama_advertised_id = (
+            await asyncio.to_thread(ollama_model_ref_public_id, request.model_path)
+            if resolved_ollama_path is not None
+            else None
+        )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 
@@ -14617,8 +15289,8 @@ async def _load_model_impl(
                 # Case-sensitive filesystems keep two checkpoint paths that differ only by
                 # case distinct, so they must not dedup onto the already-loaded fast path
                 # (the intent match lowercases the identifier). Checked before the adopt so
-                # a mismatch never adopts the caller's placement.
-                _same_loaded_identifier(llama_backend.model_identifier, model_identifier)
+                # a mismatch never adopts the caller's placement. An Ollama load records the ref.
+                _same_loaded_identifier(llama_backend.model_identifier, public_model_identifier)
                 and tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
                 == tuple(request._gguf_companion_roots)
                 and getattr(llama_backend, "_openai_gguf_companion_state", ())
@@ -14631,6 +15303,8 @@ async def _load_model_impl(
             logger.info("Model already loaded (GGUF): %s, skipping reload", model_log_label)
             # A no-op Unsloth load of a preview-owned checkpoint still claims it.
             _set_preview_resident(None)
+            if ollama_advertised_id:
+                llama_backend._openai_advertised_id = ollama_advertised_id
             account_access.join_resident("chat")
             return _gguf_load_response(
                 llama_backend,
@@ -14710,6 +15384,7 @@ async def _load_model_impl(
                     is_audio = _model_info.get("is_audio", False),
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
+                    has_video_input = _model_info.get("has_video_input", False),
                     is_mlx = bool(_model_info.get("is_mlx", False)),
                     mlx_kv_bits = _model_info.get("mlx_kv_bits"),
                     mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
@@ -14781,6 +15456,11 @@ async def _load_model_impl(
 
         # Invalid GPU IDs must fail before the training coexistence guard.
         placement = await _prepare_load_placement(config, request, extra_llama_args)
+        # Ahead of the diffusion drop below: an explicit reasoning flag is a refusal, not a
+        # silent no-op, and the check needs the authoritative classification.
+        await _validate_reasoning_budget_preflight(
+            config, placement.diffusion_kind, extra_llama_args, request
+        )
         if placement.diffusion_kind is True and extra_llama_args:
             # The visual runner builds its own command and appends none of these, so
             # keeping them would record a load as running arguments the process never
@@ -15253,9 +15933,8 @@ async def _load_model_impl(
             llama_backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
             llama_backend._openai_gguf_companion_state = gguf_companion_state
             await asyncio.to_thread(note_model_loaded, llama_backend)
-            # A plain load advertises its own identifier; auto-switch overwrites
-            # this with the repo id right after _load_model_impl returns.
-            llama_backend._openai_advertised_id = None
+            # None elsewhere: only an Ollama load has an identifier no client should be handed.
+            llama_backend._openai_advertised_id = ollama_advertised_id
 
             # Audio detection moved into load_model under _serial_load_lock (#5642).
             _gguf_audio = llama_backend._audio_type
@@ -15502,6 +16181,7 @@ async def _load_model_impl(
             is_audio = _model_info.get("is_audio", config.is_audio),
             audio_type = _model_info.get("audio_type", config.audio_type),
             has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
+            has_video_input = _model_info.get("has_video_input", False),
             is_mlx = bool(_model_info.get("is_mlx", False)),
             mlx_kv_bits = _model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
@@ -15743,6 +16423,7 @@ async def validate_model(
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    request = await asyncio.to_thread(_as_ollama_manifest_request, request)
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
         _hf_offline_if_unreachable_for,
@@ -15848,6 +16529,11 @@ async def validate_model(
         # Apply the same placement policy as /load before the frontend unloads
         # the current model.
         placement = await _prepare_load_placement(config, request, effective_extra_args)
+        # Same ordering as /load: judged before the diffusion drop, or an explicit
+        # pass-through flag would be ignored rather than refused.
+        await _validate_reasoning_budget_preflight(
+            config, placement.diffusion_kind, effective_extra_args, request
+        )
         if placement.diffusion_kind is True and effective_extra_args:
             # Same drop as /load, and for the same reason: the diffusion runner appends
             # none of these, so an estimate that reads a --ctx-size out of them approves
@@ -16069,6 +16755,14 @@ async def validate_model(
             valid = True,
             message = "Model identifier is valid.",
             identifier = model_log_label if native_grant_backed else config.identifier,
+            resident = await asyncio.to_thread(
+                _validated_target_is_resident,
+                request,
+                model_identifier = model_identifier,
+                config = config,
+                is_gguf = is_gguf,
+                native_grant_backed = native_grant_backed,
+            ),
             display_name = model_log_label
             if native_grant_backed
             else getattr(config, "display_name", config.identifier),
@@ -17616,6 +18310,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                     llama_backend, _native_grant_backed, _model_id
                 ),
                 gguf_variant = llama_backend.hf_variant,
+                memory_warning = llama_backend.last_load_warning,
                 loading = _loading,
                 # Plus anything the Unsloth registry still holds: the GGUF load
                 # only unloaded the ACTIVE one, so a model cached behind it is
@@ -17658,6 +18353,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         is_audio = False
         audio_type = None
         has_audio_input = False
+        has_video_input = False
         model_info = {}
         if backend.active_model_name:
             model_info = backend.models.get(backend.active_model_name, {})
@@ -17665,6 +18361,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
+            has_video_input = model_info.get("has_video_input", False)
         chat_template_info = model_info.get("chat_template_info", {})
         chat_template = (
             chat_template_info.get("template") if isinstance(chat_template_info, dict) else None
@@ -17695,6 +18392,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
+            has_video_input = has_video_input,
             is_mlx = bool(model_info.get("is_mlx", False)),
             mlx_kv_bits = model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = model_info.get("mlx_kv_bits_requested"),
@@ -18073,6 +18771,13 @@ async def generate_audio(
         _raise_unsupported_openai_parameter(
             "messages",
             "Audio input is not supported here; this route speaks the message text.",
+        )
+    # A known tag now, so the guard above no longer covers it: the clip would be dropped and
+    # the text spoken alone.
+    if _request_has_video(payload):
+        _raise_unsupported_openai_parameter(
+            "messages",
+            "Video input is not supported here; this route speaks the message text.",
         )
 
     # Extract text from the last user message
@@ -19145,6 +19850,7 @@ async def _transcribe_audio_result(
     engine: Optional[str] = None,
     request: Optional[Request] = None,
     device: Optional[str] = None,
+    on_progress = None,
 ) -> dict:
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
     Returns the sidecar's result dict so callers own the response shape."""
@@ -19178,7 +19884,7 @@ async def _transcribe_audio_result(
         model,
     )
     sidecar = _stt_sidecar_for(serving_engine)
-    cancel_event = threading.Event() if request is not None else None
+    cancel_event = threading.Event() if request is not None or on_progress is not None else None
     disconnect_watcher = (
         asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
         if request is not None and cancel_event is not None
@@ -19198,7 +19904,17 @@ async def _transcribe_audio_result(
         loaded = getattr(sidecar, "loaded_model", None)
         if loaded is not None and loaded == _stt_resolved_model_id(model, serving_engine):
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)
-        if cancel_event is None:
+        if on_progress is not None and serving_engine in ("transformers", "mtmd"):
+            result = await asyncio.to_thread(
+                sidecar.transcribe,
+                raw,
+                model,
+                language,
+                fast,
+                cancel_event,
+                on_progress = on_progress,
+            )
+        elif cancel_event is None:
             result = await asyncio.to_thread(sidecar.transcribe, raw, model, language, fast)
         else:
             result = await asyncio.to_thread(
@@ -19293,6 +20009,8 @@ async def transcribe_audio_raw(
     # would silently put the model back on the GPU. 422 instead.
     device: Optional[Literal["auto", "cpu", "gpu"]] = None,
     current_subject: str = Depends(get_current_subject),
+    stream: bool = False,
+    title: str = Query("Recording", max_length = 255),
 ):
     """Transcribe a raw audio body without base64 or JSON conversion overhead."""
     chunks: list[bytes] = []
@@ -19302,6 +20020,19 @@ async def transcribe_audio_raw(
         if size > _MAX_AUDIO_RAW_BYTES:
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
         chunks.append(chunk)
+    if stream:
+        from core.inference.transcript_stream import stream_transcript
+        raw = b"".join(chunks)
+        return StreamingResponse(
+            stream_transcript(
+                lambda on_progress: _transcribe_audio_result(
+                    raw, model, language, fast, engine, None, device, on_progress
+                ),
+                title,
+            ),
+            media_type = "application/x-ndjson",
+            headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
     return JSONResponse(
         content = await _transcribe_audio_result(
             b"".join(chunks), model, language, fast, engine, request, device
@@ -19424,7 +20155,22 @@ _MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
 _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 # The composer's 64 MB cap as padded base64: 4 chars per 3 bytes, rounded up.
 # Flooring instead refused a file of exactly the size the composer allows.
-_MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
+_MAX_VIDEO_BYTES = 64 * 1024 * 1024
+_MAX_VIDEO_B64_CHARS = 4 * math.ceil(_MAX_VIDEO_BYTES / 3)
+# Longest scheme named back to the caller; bounds the scan over a megabytes-long clip.
+_MAX_VIDEO_SCHEME_CHARS = 16
+# llama-server, not Studio, would fetch a remote clip, and its downloader sets
+# set_follow_location(true) (common/http.h), so a public URL redirecting to a private address
+# defeats any host check made here. Refuse the whole shape; #11010 tracks a pinned fetch that
+# would let images and video both accept one.
+# Each clip is a separate ffprobe + ffmpeg pair, so this bounds process launches per request.
+# Four rather than one: GGUF genuinely serves several clips, and the non-GGUF path already
+# refuses more than one on its own.
+_MAX_VIDEO_CLIPS_PER_REQUEST = 4
+_REMOTE_VIDEO_REFUSAL = (
+    400,
+    "Remote video URLs are not supported. Send the clip as a data URI instead.",
+)
 _MAX_AUDIO_SECONDS = 30 * 60
 # The duration cap alone is rate-relative, so a high-rate container retains far
 # more memory for the same 30 minutes: at 48 kHz that is 86M float32 samples,
@@ -20080,6 +20826,72 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
 
 
+_VIDEO_INPUT_REFUSAL = (
+    "Video input is only supported on a local GGUF or MLX model with video support."
+)
+
+
+def _local_video_clip(payload, model_info) -> str:
+    """The clip, as bare base64, that a non-GGUF backend is handed, else a refusal by name.
+
+    Reads both spellings, so MLX serves a ``video_url`` part exactly as it serves the field.
+    """
+    if not model_info.get("has_video_input"):
+        raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
+    clips = _request_video_clips(payload)
+    if not clips:
+        raise HTTPException(status_code = 400, detail = "Could not read the provided video file.")
+    # Generation takes one video kwarg, so a second clip would be dropped in silence and the
+    # same request would mean different things on this backend and on GGUF, which forwards all.
+    if len(clips) > 1:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Only one video is supported per request on this model.",
+        )
+    # Generation is handed one clip and no turn, so MLX would move it onto the newest turn and
+    # answer as though it had just been attached.
+    if _video_is_on_an_older_turn(payload):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A video must be attached to the latest message on this model.",
+        )
+    # Refused everywhere, so the message must not send the caller to GGUF for it.
+    if _is_remote_video(clips[0]):
+        raise HTTPException(status_code = _REMOTE_VIDEO_REFUSAL[0], detail = _REMOTE_VIDEO_REFUSAL[1])
+    # _request_video_rejection runs only when a pre-switch validation happens, so an unsupported
+    # scheme reached here and was decoded as base64 instead of earning the 400 GGUF returns.
+    scheme_rejection = _video_scheme_rejection(clips[0])
+    if scheme_rejection is not None:
+        raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
+    video_b64, rejection = _video_b64_rejection(clips[0])
+    if rejection is not None:
+        raise HTTPException(status_code = rejection[0], detail = rejection[1])
+    return video_b64
+
+
+def _video_payload_chars(clip: str) -> int:
+    """Base64 length without the data URI header, measured rather than sliced."""
+    if clip[:5].lower() != "data:":
+        return len(clip)
+    comma = clip.find(",")
+    return len(clip) - comma - 1 if comma != -1 else 0
+
+
+def _video_size_rejection(clip: str) -> Optional[tuple[int, str]]:
+    """``_video_b64_rejection``'s verdict, measured rather than sliced.
+
+    Validation runs twice per request, before the switch and again after the load, and only
+    wants the verdict. Slicing the header off to get it copied the whole payload each time:
+    89 MB and 47 ms for a clip at the 64 MB limit, against 0 MB here.
+    """
+    payload_len = _video_payload_chars(clip)
+    if not payload_len:
+        return (400, "Could not read the provided video file.")
+    if payload_len > _MAX_VIDEO_B64_CHARS:
+        return (413, "Video file is too large (max 64 MB).")
+    return None
+
+
 def _video_b64_rejection(video_b64: str) -> tuple[str, Optional[tuple[int, str]]]:
     """The clip's base64 without its data URI header, plus why it is refused.
 
@@ -20087,7 +20899,7 @@ def _video_b64_rejection(video_b64: str) -> tuple[str, Optional[tuple[int, str]]
     size the composer allows. Returned rather than raised so the pre-switch and
     post-load checks share one rule while raising their own way.
     """
-    if video_b64.startswith("data:"):
+    if video_b64[:5].lower() == "data:":
         video_b64 = video_b64.split(",", 1)[1] if "," in video_b64 else ""
     if not video_b64:
         return "", (400, "Could not read the provided video file.")
@@ -20100,7 +20912,7 @@ def _inject_video_part(messages: list[dict], video_b64: str) -> None:
     """Append an input_video part to the last user message, in place.
 
     llama-server samples the clip into frames itself (ffmpeg via mtmd), so the
-    container is forwarded untouched. Rides the message list like image_url and
+    part carries a container, not frames. Rides the message list like image_url and
     input_audio, so it flows through the plain and tool-calling paths alike.
     Ref: llama.cpp tools/server/server-common.cpp, `type == "input_video"`.
     """
@@ -20212,6 +21024,172 @@ def _normalise_chat_content_parts(payload) -> None:
         payload.audio_base64 = lifted
 
 
+def _message_video_urls(messages) -> list[str]:
+    urls: list[str] = []
+    for msg in messages or []:
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, VideoContentPart):
+                urls.append(part.video_url.url)
+            elif isinstance(part, dict) and part.get("type") == "video_url":
+                video_url = part.get("video_url")
+                url = video_url.get("url") if isinstance(video_url, dict) else video_url
+                urls.append(url if isinstance(url, str) else "")
+    return urls
+
+
+def _video_is_on_an_older_turn(payload) -> bool:
+    """True when a ``video_url`` part sits anywhere before the newest user turn.
+
+    GGUF keeps a part on the turn that carried it. The non-GGUF path flattens the parts away and
+    hands generation one video kwarg, which MLX attaches to the newest user turn, so the same
+    request would put the clip on a different turn per backend.
+    """
+    messages = getattr(payload, "messages", None) or []
+    roles = [m.get("role") if isinstance(m, dict) else getattr(m, "role", None) for m in messages]
+    if "user" not in roles:
+        return False
+    return bool(_message_video_urls(messages[: len(roles) - 1 - roles[::-1].index("user")]))
+
+
+def _request_video_clips(payload) -> list[str]:
+    legacy = getattr(payload, "video_base64", None)
+    return ([legacy] if legacy else []) + _message_video_urls(getattr(payload, "messages", None))
+
+
+def _request_has_video(payload) -> bool:
+    return bool(_request_video_clips(payload))
+
+
+def _is_remote_video(url: str) -> bool:
+    # Schemes are case-insensitive and a clip is megabytes: read the prefix, not a copy.
+    return url[:8].lower().startswith(("http://", "https://"))
+
+
+def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
+    """Refuse a clip whose URL names a scheme neither we nor llama-server should honour.
+
+    ``handle_media`` reads ``input_video`` as ``data`` else ``url`` and treats the one string it
+    finds the same way, honouring ``file://`` under ``--media-path``. Forwarding such a clip as
+    opaque payload is therefore still a local file read, so refuse it by name instead.
+    """
+    if not clip or clip[:5].lower() == "data:" or _is_remote_video(clip):
+        return None
+    # ':' is not in the base64 alphabet, so an early colon marks a URL, not payload.
+    head = clip[: _MAX_VIDEO_SCHEME_CHARS + 1]
+    if ":" not in head:
+        return None
+    return (
+        400,
+        f"Unsupported video URL scheme ('{head.split(':', 1)[0]}:'). "
+        "Send the clip as a data URI.",
+    )
+
+
+def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
+    clips = _request_video_clips(payload)
+    # Bytes alone do not bound the work: each clip costs its own ffprobe and ffmpeg (30s and
+    # 300s ceilings), so thousands of tiny clips stay under the byte cap while holding the
+    # request, and its admission lease, for hours. Count is the bound on process launches.
+    if len(clips) > _MAX_VIDEO_CLIPS_PER_REQUEST:
+        return (
+            400,
+            f"Too many videos in one request (max {_MAX_VIDEO_CLIPS_PER_REQUEST}).",
+        )
+    total = 0
+    for clip in clips:
+        if _is_remote_video(clip):
+            return _REMOTE_VIDEO_REFUSAL
+        rejection = _video_scheme_rejection(clip)
+        if rejection is not None:
+            return rejection
+        rejection = _video_size_rejection(clip)
+        if rejection is not None:
+            return rejection
+        total += _video_payload_chars(clip)
+        # And bytes bound the per-clip transcode cost the count cannot see.
+        if total > _MAX_VIDEO_B64_CHARS:
+            return (413, "Videos are too large (max 64 MB per request).")
+    return None
+
+
+async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
+    """Transcode one clip down to the cap, as the legacy field's path does.
+
+    The transcode runs BEFORE llama-server samples and the server can only duplicate what was
+    dropped, so an explicit rate must reach it.
+    """
+    try:
+        return await asyncio.to_thread(
+            shrink_video_for_llama,
+            video_b64,
+            _MAX_VIDEO_BYTES,
+            sampled_fps = requested_video_fps(getattr(llama_backend, "extra_args", None)),
+        )
+    except Exception as e:
+        # The helper absorbs its own ffmpeg failures, so reaching here means something it does
+        # not model went wrong. Reject like the audio path, rather than letting a raw 500 leak
+        # the monitor entry with it.
+        logger.warning("Video preprocessing failed: %s", e, exc_info = True)
+        raise HTTPException(
+            status_code = 400, detail = "Could not process the provided video file."
+        ) from None
+
+
+async def _shrink_video_parts(messages: list[dict], llama_backend) -> None:
+    """Transcode every ``video_url`` part in place, before translation renames them.
+
+    The legacy field is shrunk on its own path. Doing it here as well is what keeps the two
+    spellings identical: a part-carried clip would otherwise reach llama-server untranscoded and
+    at a different resolution than the same clip sent as the field.
+    """
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "video_url":
+                continue
+            video_url = part.get("video_url")
+            url = video_url.get("url") if isinstance(video_url, dict) else video_url
+            url = url if isinstance(url, str) else ""
+            if _is_remote_video(url) or _video_scheme_rejection(url) is not None:
+                continue  # _translate_video_parts refuses these by name a moment later.
+            clip, rejection = _video_b64_rejection(url)
+            if rejection is not None:
+                continue
+            part["video_url"] = {"url": await _shrink_clip_for_llama(clip, llama_backend)}
+
+
+def _translate_video_parts(messages: list[dict]) -> None:
+    """Rewrite ``video_url`` parts in place as llama-server's ``input_video``, always as bytes."""
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "video_url":
+                continue
+            video_url = part.get("video_url")
+            url = video_url.get("url") if isinstance(video_url, dict) else video_url
+            url = url if isinstance(url, str) else ""
+            # Restated: _request_video_rejection only runs when a pre-switch validation happens,
+            # so no caller reaching here by another route may hand llama-server a URL to dial.
+            if _is_remote_video(url):
+                raise HTTPException(
+                    status_code = _REMOTE_VIDEO_REFUSAL[0], detail = _REMOTE_VIDEO_REFUSAL[1]
+                )
+            scheme_rejection = _video_scheme_rejection(url)
+            if scheme_rejection is not None:
+                raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
+            part.clear()
+            part.update(
+                {"type": "input_video", "input_video": {"data": _video_b64_rejection(url)[0]}}
+            )
+
+
 def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
     """Append an input_audio part to the last user message, in place.
 
@@ -20303,6 +21281,8 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         if combined_text is None:
             continue
         chat_message = {"role": msg.role, "content": combined_text}
+        if msg.name:
+            chat_message["name"] = msg.name
         if msg.role == "assistant" and msg.reasoning_content:
             chat_message["reasoning_content"] = msg.reasoning_content
         chat_messages.append(chat_message)
@@ -20928,7 +21908,8 @@ async def _proxy_to_external_provider(
         # a request for this loop. Checked here rather than inside the loop so the
         # whole path (catalog selection, nudge, confirm gate) is skipped and the
         # request proxies through byte-for-byte as it did before the loop existed.
-        and not _selects_only_provider_hosted_tools(payload, provider_type)
+        # Last, so a request that never asked for tools never scans the skill roots.
+        and not _selects_only_provider_hosted_tools(payload, provider_type, _enabled_agent_skills())
     )
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
     # The loop relays the same control frames the local routes gate (see UI_STREAM_EVENTS_HEADER).
@@ -21180,19 +22161,14 @@ async def _proxy_to_external_provider(
             tool_payloads = studio_tool_payloads
             # This path runs python/terminal locally too (disable_sandbox =
             # bypass_permissions), so it has the same false-isolation problem.
-            # Only the Full access sentence is added: the path has never carried
-            # the general tool nudge, and widening it would change every
-            # non-Full-access Codex run as a side effect.
-            if payload.bypass_permissions:
-                _codex_full_access_nudge = _build_tool_action_nudge(
-                    tools = studio_tool_payloads,
-                    model_name = model,
-                    full_access = True,
-                    full_access_only = True,
-                )
-                chat_messages = _append_to_codex_instructions(
-                    chat_messages, _codex_full_access_nudge
-                )
+            # Only the Full access sentence and the skill catalog; this path never carried the general nudge.
+            _codex_nudge = _build_tool_action_nudge(
+                tools = studio_tool_payloads,
+                model_name = model,
+                full_access = bool(payload.bypass_permissions),
+                full_access_only = True,
+            )
+            chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
         chat_messages = _prepend_current_date_to_messages(
             chat_messages,
             request,
@@ -21500,6 +22476,7 @@ async def _proxy_to_external_provider(
     # Schema defaults are non-None (20, 0.01, 1.0) for the local path, so only
     # `model_fields_set` separates "asked for 20" from "said nothing", and the provider keeps
     # its own default for the latter. Read before ANY write: a setattr marks a field explicit.
+    _top_p_explicit = payload.top_p if "top_p" in payload.model_fields_set else None
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
     _min_p_explicit = payload.min_p if "min_p" in payload.model_fields_set else None
     _repetition_penalty_explicit = (
@@ -21526,13 +22503,13 @@ async def _proxy_to_external_provider(
         )
     # Built before the date, because whether a nudge exists decides whether the Modelfile
     # exemption is worth claiming: _append_to_system_message below displaces that prompt anyway.
-    # Full access disables the sandbox at execution time, so the schemas must say so too.
+    # Full access disables the sandbox, so the schemas say so; the general nudge stays off this path.
     _external_nudge = ""
-    if run_studio_tool_loop and payload.bypass_permissions:
+    if run_studio_tool_loop:
         _external_nudge = _build_tool_action_nudge(
             tools = external_studio_tools,
             model_name = model,
-            full_access = True,
+            full_access = bool(payload.bypass_permissions),
             full_access_only = True,
         )
     chat_messages = _prepend_current_date_to_messages(
@@ -21559,7 +22536,7 @@ async def _proxy_to_external_provider(
     async def _stream():
         _provider_kwargs = dict(
             temperature = payload.temperature,
-            top_p = payload.top_p,
+            top_p = _top_p_explicit,
             # Honor max_completion_tokens when max_tokens is absent, so a
             # provider-routed request capped only by the newer field still gets
             # a limit instead of falling back to the provider default.
@@ -22186,13 +23163,10 @@ async def produce_openai_chat_completions(
         untrack_current_request(request.scope)
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
-        # input_video is llama.cpp's own part type, so the proxy has nowhere to
-        # put the clip. Say so rather than answering as if there were no video.
-        if payload.video_base64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Video input is only supported on a local GGUF model with video support.",
-            )
+        # The proxy has nowhere to put the clip; say so rather than answering without it. Both
+        # spellings, so a video_url part is refused here the way the legacy field is.
+        if _request_has_video(payload):
+            raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
         # _build_external_messages carries no input_audio case, so the recording would be
         # stripped and the provider would answer the text alone -- a plausible reply to a
         # question about audio nobody heard. Refuse it the way video is refused.
@@ -22359,7 +23333,7 @@ async def produce_openai_chat_completions(
         # Video rides that projector too. Its own /props gate can only run after
         # the load, so this at least keeps a text-only target from evicting a
         # working model to serve a clip it could never take.
-        _needs_video = bool(payload.video_base64)
+        _needs_video = _request_has_video(payload)
         _needs_vision = _needs_image or bool(payload.audio_base64) or _needs_video
         # Name what is actually attached, so the refusal does not report a
         # modality the request never carried.
@@ -22369,7 +23343,7 @@ async def produce_openai_chat_completions(
                 for name, present in (
                     ("image", _needs_image),
                     ("audio", bool(payload.audio_base64)),
-                    ("video", bool(payload.video_base64)),
+                    ("video", _needs_video),
                 )
                 if present
             )
@@ -22377,10 +23351,9 @@ async def produce_openai_chat_completions(
         )
         # Size is knowable now and the switch is not cheap: refuse an oversized
         # clip before it costs a model load.
-        if payload.video_base64:
-            _, _video_rejection = _video_b64_rejection(payload.video_base64)
-            if _video_rejection is not None:
-                raise HTTPException(status_code = _video_rejection[0], detail = _video_rejection[1])
+        _video_rejection = _request_video_rejection(payload)
+        if _video_rejection is not None:
+            raise HTTPException(status_code = _video_rejection[0], detail = _video_rejection[1])
         _needs_audio_input = bool(payload.audio_base64)
 
     # the rest of the audio checks depend on the target's format, so the switch runs them.
@@ -22390,6 +23363,7 @@ async def produce_openai_chat_completions(
             "continue_final": _continue_final_message(payload),
             "has_image": _images_in_last_user_message(payload.messages)
             or _legacy_image_is_distinct(payload),
+            "has_video": _needs_video,
         }
         if _needs_audio_input
         else None
@@ -22534,6 +23508,14 @@ async def produce_openai_chat_completions(
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
         model_name = _orchestrator_public_model_id(backend) or payload.model
+        model_info = backend.models.get(backend.active_model_name, {})
+        # Before the speech and audio-input dispatches, which return before the clip is attached.
+        _video_clip = None
+        if _request_has_video(payload):
+            _video_clip = _local_video_clip(payload, model_info)
+            # Settled here: a model without audio input never enters the audio-input path.
+            if payload.audio_base64:
+                raise HTTPException(status_code = 400, detail = _AUDIO_VIDEO_INPUT_DETAIL)
         # Restated here because the pre-switch check runs only when an automatic
         # load may: one SSE stream carries a single choice either way.
         if payload.stream and _wants_multiple_choices(payload):
@@ -22889,15 +23871,6 @@ async def produce_openai_chat_completions(
             ),
         )
 
-    # Injection lives in the GGUF branch below, since input_video is llama.cpp's
-    # own part type. Without this a transformers model answers as if the clip
-    # were never attached.
-    if payload.video_base64 and not using_gguf:
-        raise _reject(
-            400,
-            "Video input is only supported on a local GGUF model with video support.",
-        )
-
     # Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to the
     # fields the client omitted, so agents and API clients get the model's tuned defaults
     # unless they set the field explicitly. Placed after external-provider routing (which
@@ -22999,7 +23972,7 @@ async def produce_openai_chat_completions(
                 400,
                 "Audio input is not supported together with guided decoding or client-supplied tools yet.",
             )
-        if payload.video_base64:
+        if _request_has_video(payload):
             # Same shape: _build_openai_passthrough_body forwards an explicit
             # field list, so the clip would be dropped and the model would
             # answer without it.
@@ -23099,19 +24072,21 @@ async def produce_openai_chat_completions(
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
 
-        # Forwarded whole: llama-server owns the frame sampling, and takes the
-        # clip only when /props reports modalities.video.
+        # llama-server samples frames but encodes each at the clip's resolution.
         video_b64 = None
-        if payload.video_base64:
+        if _request_has_video(payload):
             if not getattr(llama_backend, "_has_video_input", False):
                 raise _reject(
                     400,
                     "Video provided but the current GGUF model cannot take video input. "
                     "It needs an mmproj with video support, and ffmpeg/ffprobe installed.",
                 )
-            video_b64, video_rejection = _video_b64_rejection(payload.video_base64)
+            video_rejection = _request_video_rejection(payload)
             if video_rejection is not None:
                 raise _reject(*video_rejection)
+            if payload.video_base64:
+                video_b64, _ = _video_b64_rejection(payload.video_base64)
+                video_b64 = await _shrink_clip_for_llama(video_b64, llama_backend)
 
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
@@ -23123,6 +24098,8 @@ async def produce_openai_chat_completions(
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
         if video_b64:
             _inject_video_part(gguf_messages, video_b64)
+        await _shrink_video_parts(gguf_messages, llama_backend)
+        _translate_video_parts(gguf_messages)
 
         cancel_event = _chat_cancel_event(request)
 
@@ -23298,8 +24275,19 @@ async def produce_openai_chat_completions(
             # reservation exists but not ITERATED until after, so the callback always sees
             # a reservation by the time a round can call it.
             _gguf_admission_hold: dict = {"reservation": None}
+            _gguf_decode_lock = threading.Lock()
+            _gguf_decode: dict = {"slot": None, "erased": False}
+
+            def _gguf_record_decode_slot(base_url: str, slot: int) -> None:
+                with _gguf_decode_lock:
+                    _gguf_decode["slot"] = (base_url, slot)
+                    _gguf_decode["erased"] = False
 
             def _gguf_recost(conversation) -> None:
+                with _gguf_decode_lock:
+                    erased = _gguf_decode["erased"]
+                    _gguf_decode["slot"] = None
+                    _gguf_decode["erased"] = False
                 _openai_llama_admission_recost(
                     _gguf_admission_hold["reservation"],
                     conversation,
@@ -23316,6 +24304,8 @@ async def produce_openai_chat_completions(
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
+                    # Erased cells make yielding honest, so a grown round may wait.
+                    cache_is_empty = erased,
                 )
 
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.
@@ -23381,6 +24371,10 @@ async def produce_openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
+                    # Only the streaming path parks and reclaims, so only it can use a slot.
+                    on_decode_slot = _gguf_record_decode_slot
+                    if payload.stream and _effective_confirm and not payload.bypass_permissions
+                    else None,
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
@@ -23433,6 +24427,77 @@ async def produce_openai_chat_completions(
                 # otherwise unanswered prompts hold every slot.
                 _parked = False
 
+                _reclaim_task = None
+                _reclaim_stop = asyncio.Event()
+
+                def _erase_and_record(target) -> bool:
+                    if not llama_backend.release_idle_chat_slot(*target):
+                        return False
+                    with _gguf_decode_lock:
+                        _gguf_decode["erased"] = True
+                    return True
+
+                async def _reclaim_approval_cache(lease):
+                    """Erase this round's cached context once a queued chat needs its room.
+
+                    On demand only: the engine drops the cells rather than spilling them,
+                    so this costs the approved chat a full reprocess. Stopping is honoured
+                    only before the erase is sent; past that the cells are going regardless.
+                    """
+                    try:
+                        while not lease.reclaim_would_admit():
+                            try:
+                                await asyncio.wait_for(
+                                    _reclaim_stop.wait(), _APPROVAL_CACHE_RECLAIM_POLL_S
+                                )
+                            except asyncio.TimeoutError:
+                                continue
+                            return
+                        with _gguf_decode_lock:
+                            target = _gguf_decode["slot"]
+                            erased = _gguf_decode["erased"]
+                        if target is None or _reclaim_stop.is_set():
+                            return
+                        if not erased and not await asyncio.to_thread(_erase_and_record, target):
+                            return
+                        lease.release_parked_cache()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug("Approval cache reclamation failed", exc_info = True)
+
+                def _watch_for_reclaim(lease) -> None:
+                    nonlocal _reclaim_task
+                    with _gguf_decode_lock:
+                        known = _gguf_decode["slot"] is not None
+                    if not known or _reclaim_task is not None:
+                        return
+                    _reclaim_stop.clear()
+                    _reclaim_task = asyncio.create_task(_reclaim_approval_cache(lease))
+
+                async def _settle_reclaim_watch() -> None:
+                    """Wait out a reclamation that is already sending, before resuming.
+
+                    Cancelling would not stop it: the worker runs on and the erase lands
+                    anyway, leaving the resumed round priced against cells mid-drop.
+                    """
+                    nonlocal _reclaim_task
+                    task, _reclaim_task = _reclaim_task, None
+                    if task is None:
+                        return
+                    _reclaim_stop.set()
+                    try:
+                        await task
+                    except Exception:
+                        logger.debug("Approval cache reclamation failed", exc_info = True)
+
+                def _stop_reclaim_watch() -> None:
+                    nonlocal _reclaim_task
+                    _reclaim_stop.set()
+                    if _reclaim_task is not None:
+                        _reclaim_task.cancel()
+                        _reclaim_task = None
+
                 async def _park_admission(on: bool, *, wait: bool = True):
                     nonlocal _parked
                     if on == _parked:
@@ -23443,16 +24508,15 @@ async def produce_openai_chat_completions(
                     if lease is None:
                         return
                     if on:
-                        # Refused when the budget is spent: the slot stays here,
-                        # so there is nothing to take back afterwards.
                         if not lease.park():
                             return
+                        _watch_for_reclaim(lease)
                     elif wait:
-                        # Resuming: park() may have handed our slot to a waiter, so wait for room instead
-                        # of putting two holders on one slot.
+                        await _settle_reclaim_watch()
                         await lease.unpark_async(cancel_event = cancel_event)
                     else:
                         # Tearing down; the lease is released separately.
+                        _stop_reclaim_watch()
                         lease.unpark()
                     _parked = on
 
@@ -24911,11 +25975,6 @@ async def produce_openai_chat_completions(
     except Exception:
         _sf_probe_messages = None
 
-    # Transformers vision generation drops both reasoning fields; MLX forwards them.
-    _sf_vision_drops_reasoning = image is not None and not _sf_model_info.get("is_mlx", False)
-    _sf_gate_enable_thinking = None if _sf_vision_drops_reasoning else payload.enable_thinking
-    _sf_gate_reasoning_effort = None if _sf_vision_drops_reasoning else payload.reasoning_effort
-
     def _sf_response_protocol(
         tools = None,
         template = None,
@@ -24942,8 +26001,8 @@ async def produce_openai_chat_completions(
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
         parse_think = _sf_parse_think_markers(
             features,
-            _sf_gate_enable_thinking,
-            _sf_gate_reasoning_effort,
+            payload.enable_thinking,
+            payload.reasoning_effort,
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
@@ -25001,6 +26060,7 @@ async def produce_openai_chat_completions(
         (_sf_tools_on or _sf_mcp_allowed)
         and _sf_features.get("supports_tools", False)
         and image is None
+        and _video_clip is None
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )
@@ -25513,6 +26573,8 @@ async def produce_openai_chat_completions(
         logit_bias = payload.logit_bias,
         stop = normalized_stop,
     )
+    if _video_clip is not None:
+        gen_kwargs["video"] = _video_clip
     # Forward reasoning kwargs; the worker/template wrapper peels off any the
     # template doesn't accept.
     if payload.enable_thinking is not None:
@@ -25530,9 +26592,10 @@ async def produce_openai_chat_completions(
     # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
     # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
+    # A clip renders through the processor as an image does.
     _sf_image_tpl = (
         (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
-        if image is not None
+        if image is not None or _video_clip is not None
         else None
     )
     # Differs from processor_template: a template-less processor still places the image.
@@ -25555,9 +26618,8 @@ async def produce_openai_chat_completions(
         # Read the resolved value, not a fresh _effective_enable_tools: the gate
         # above withdraws the launcher default for exactly these requests, and
         # recomputing here would hide that and drop the client catalog.
-        # Once an image rules out the server loop the passthrough takes the request, or
-        # image-plus-tools is answered with prose and no schemas at all (#10092).
-        (not _sf_tools_on or (image is not None and not _sf_use_tools))
+        # An image or a clip rules out the server loop, so the passthrough takes the request (#10092).
+        (not _sf_tools_on or ((image is not None or _video_clip is not None) and not _sf_use_tools))
         and not _sf_use_tools
         and not _sf_is_gptoss
         and _sf_supports_tools
@@ -26033,11 +27095,15 @@ async def produce_openai_chat_completions(
                                 # Mark the owning turn before the correction is appended,
                                 # or the reverse scan attaches the picture to it (#10092).
                                 _nudge_base = gen_kwargs["messages"]
-                                if _sf_renders_image:
+                                if _sf_renders_image or _video_clip is not None:
                                     from core.inference.chat_template_helpers import (
                                         messages_with_attached_image as _nudge_attach,
                                     )
-                                    _nudge_base = _nudge_attach(_nudge_base)
+                                    _nudge_base = _nudge_attach(
+                                        _nudge_base,
+                                        image = _sf_renders_image,
+                                        video = _video_clip is not None,
+                                    )
                                 retry_messages = [
                                     *_nudge_base,
                                     *nudge_messages(_data, _sf_heal),
@@ -26544,7 +27610,8 @@ _OWNED_BY = "unsloth-studio"
 
 
 def _openai_model_objects() -> list[dict]:
-    """The model objects GET /v1/models exposes (one per loaded local backend).
+    """The model objects GET /v1/models exposes, one per loaded local backend still answering to
+    the id it is advertised under.
 
     Shared by the LIST and RETRIEVE handlers so both report the same ids and
     field shape.
@@ -26558,12 +27625,20 @@ def _openai_model_objects() -> list[dict]:
 
     # Check GGUF backend
     llama_backend = get_llama_cpp_backend()
-    if llama_backend.is_loaded:
+    # Claiming a re-pulled tag would displace the scanned row holding its weights, and the id
+    # about to be published is not always the tag the load recorded: an alias is its own name.
+    _resident_identifier = getattr(llama_backend, "model_identifier", None) or ""
+    _stale_ollama_resident = (
+        llama_backend.is_loaded
+        and is_ollama_manifest_ref(_resident_identifier)
+        and not _loaded_satisfies(_llama_public_model_id(llama_backend))
+    )
+    if llama_backend.is_loaded and not _stale_ollama_resident:
         # Advertise the repo id an auto-switch load recorded, not the concrete
         # on-disk load path, so /v1/models never leaks a host path or lists a
         # model twice (path plus repo id).
         entry = {
-            # Advertised repo id after an auto-switch load, else a clean public id,
+            # Advertised id recorded by an auto-switch or Ollama load, else a clean public id,
             # never the absolute .gguf path (which leaks the host filesystem layout).
             "id": _llama_public_model_id(llama_backend),
             "object": "model",
@@ -26590,9 +27665,10 @@ def _openai_model_objects() -> list[dict]:
             entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
-    # Check Unsloth backend
-    backend = get_inference_backend()
-    if backend.active_model_name:
+    # Describing residency must not construct an unused orchestrator: its cold
+    # initialization runs device detection even when only llama.cpp is loaded.
+    backend = _peek_inference_backend()
+    if backend is not None and backend.active_model_name:
         model_info = backend.models.get(backend.active_model_name, {})
         entry = {
             # The alias, or an LM Studio model switched to by repo id loses its publisher.
@@ -26987,7 +28063,7 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
 
 
 async def _cached_local_catalog() -> list:
-    """Locally available models (models dir + HF caches + LM Studio + scan
+    """Locally available models (models dir + HF caches + LM Studio + Ollama + scan
     folders), cached for a few seconds. Returns a list of LocalModelInfo.
 
     The scan walks several directories and stats many files, so it runs in a
@@ -27009,8 +28085,12 @@ async def _cached_local_catalog() -> list:
             return _account_catalog_cache()["models"]
         try:
             from routes.models import collect_local_models
+
+            # By manifest reference: this catalog resolves rows rather than opening their ids.
             _account_catalog_cache()["models"] = await asyncio.to_thread(
-                lambda: _classified_catalog(collect_local_models(Path("./models").resolve()))
+                lambda: _classified_catalog(
+                    collect_local_models(Path("./models").resolve(), materialize_ollama_links = False)
+                )
             )
         except Exception as exc:
             logger.debug("model catalog scan failed: %s", exc)
@@ -27139,7 +28219,16 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
             # The source path, not the resolved load dir: an HF repo's snapshot pointer can
             # move within the catalog's lifetime, and a cached snapshot path would then
             # report a freshly loaded model as unloaded. Residency resolves it per call.
-            scanned.append((info, is_gguf, quants, getattr(info, "path", None)))
+            # An Ollama row's path is the blob a read-only scan found, and only its tag is judged.
+            row_id = getattr(info, "id", None)
+            scanned.append(
+                (
+                    info,
+                    is_gguf,
+                    quants,
+                    row_id if is_ollama_manifest_ref(row_id or "") else getattr(info, "path", None),
+                )
+            )
         if catalog_at is not None:
             # The generation read BEFORE the scan, not after: an invalidation that
             # landed while the scan ran would otherwise be stamped in as if the scan
@@ -27188,8 +28277,8 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
-    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
-    # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
+    # Off-loop: _openai_model_objects() is sync and its per-entry quant probe reads the
+    # resolver index. Inline, an early GET /v1/models held the loop for that work.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
     orchestrator = _peek_inference_backend()
@@ -27244,6 +28333,18 @@ async def _openai_catalog_objects() -> list[dict]:
     return list(by_id.values())
 
 
+@studio_router.get("/loaded-models")
+async def loaded_inference_models(current_subject: str = Depends(get_current_subject)):
+    """Loaded llama.cpp/orchestrator models for agent startup, without a disk catalog scan.
+
+    Keep the public ids and context fields shared with /v1/models. The full catalog
+    also discovers unloaded and media models, which an attaching coding agent does
+    not need and which can take longer than its HTTP deadline on slow scan folders.
+    """
+    models = await asyncio.to_thread(_openai_model_objects)
+    return {"object": "list", "data": [{**entry, "loaded": True} for entry in models]}
+
+
 # Some OpenAI-compatible clients (notably DEVONthink) probe ``/v1/models/``
 # literally and do not follow FastAPI's automatic slash redirect. Register the
 # slash form directly so model discovery reaches authentication and returns the
@@ -27277,7 +28378,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
-    # Off-loop like the catalog helper: the singleton's cold build waits on detection.
+    # Off-loop like the catalog helper, and for the same sync resolver-index work.
     _loaded = await asyncio.to_thread(_openai_model_objects)
     for entry in _loaded:
         eid = entry["id"]
@@ -27463,6 +28564,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             )
             resp = None
             bytes_iter = None
+            items_iter = None
             disconnect_event = threading.Event()
             disconnect_watcher = None
             # This proxy relays straight from llama-server, so the swap gate has to see it: without an
@@ -27479,7 +28581,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 req = client.build_request(
                     "POST", target_url, json = upstream_body, headers = {"Connection": "close"}
                 )
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 # Same event the relay loop polls, so a forced swap ends the request during prefill
                 # instead of only once headers arrive.
                 resp = await _send_stream_with_preheader_cancel(
@@ -27498,13 +28600,20 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
-                async for chunk in _aiter_llama_stream_items(
+                # Bound, not inlined: teardown must aclose() this before bytes_iter.
+                items_iter = _aiter_llama_stream_items(
                     bytes_iter,
                     cancel_event = disconnect_event,
                     request = request,
                     first_token_deadline = first_token_deadline,
                     response = resp,
-                ):
+                    keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
+                )
+                async for chunk in items_iter:
+                    # Out of `buffer`: the split below would hand it to the monitor.
+                    if chunk is _LLAMA_STREAM_KEEPALIVE:
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
+                        continue
                     buffer += chunk
                     while b"\n\n" in buffer:
                         event, buffer = buffer.split(b"\n\n", 1)
@@ -27573,6 +28682,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 try:
                     await _aclose_stream_resources(
                         watchers = (disconnect_watcher,),
+                        items = items_iter,
                         iterator = bytes_iter,
                         resp = resp,
                         client = client,
@@ -27815,18 +28925,24 @@ def _resident_absent(llama_backend) -> bool:
 def _stashed_gguf_embeds() -> bool:
     from core.inference.llama_keepwarm import get_last_unloaded_model
     from core.inference.local_model_resolver import resolve_local_gguf
+    from hub.services.models.ollama import ollama_model_ref_files
 
     last = get_last_unloaded_model()
     if not last:
         return False
     target_id, variant = last[0], last[1]
     try:
+        # The variant beside a manifest reference is its tag, so pinning it asks for no quant.
+        pin_variant = variant and not is_ollama_manifest_ref(target_id)
         resolved = resolve_local_gguf(
-            f"{target_id}:{variant}" if variant else target_id, allow_scan = False
+            f"{target_id}:{variant}" if pin_variant else target_id, allow_scan = False
         )
         path = resolved[0] if resolved else None
         if not path:
             return False
+        # Read the blob out rather than materializing a link: this only asks what was stashed.
+        if is_ollama_manifest_ref(path):
+            path = ollama_model_ref_files(path)[0]
         probe = _probe_backend()
         probe._read_gguf_metadata(path)
         return bool(probe.is_embedding_gguf)
@@ -29218,6 +30334,12 @@ async def _responses_non_streaming(
             request_state.skip_api_monitor = previous_skip_monitor
 
 
+def _responses_error_code(exc: Exception) -> str:
+    if _classify_llama_generation_error(exc):
+        return "context_length_exceeded"
+    return "server_error"
+
+
 async def _responses_stream(
     payload: ResponsesRequest,
     messages: list[ChatMessage],
@@ -29322,7 +30444,7 @@ async def _responses_stream(
         api_monitor.fail(monitor_id, str(exc))
         raise _openai_admission_http_exception(exc, status_code = 429)
 
-    def _responses_admission_failed_sse(exc: Exception, *, status_code: int) -> str:
+    def _responses_admission_failed_sse(exc: Exception, *, code: str) -> str:
         # Emitted in-band after the 200 headers, so flag failed: the middleware must not
         # treat this failed stream as a success and claim a preview-owned model.
         mark_response_failed(getattr(request, "scope", None))
@@ -29346,7 +30468,7 @@ async def _responses_stream(
                             "total_tokens": 0,
                         },
                         "error": {
-                            "code": status_code,
+                            "code": code,
                             "message": str(exc),
                         },
                     },
@@ -29720,7 +30842,7 @@ async def _responses_stream(
                 )
             return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
 
-        def _failed_response_payload(exc: Exception, status_code: int) -> dict:
+        def _failed_response_payload(exc: Exception) -> dict:
             # Built only for in-band response.failed events after the 200 headers, so
             # flag failed: the middleware must not treat a failed stream as a success.
             mark_response_failed(getattr(request, "scope", None))
@@ -29739,7 +30861,7 @@ async def _responses_stream(
                         "total_tokens": input_tokens + output_tokens,
                     },
                     "error": {
-                        "code": status_code,
+                        "code": _responses_error_code(exc),
                         "message": _friendly_error(exc),
                     },
                 },
@@ -29774,6 +30896,7 @@ async def _responses_stream(
         )
         resp = None
         lines_iter = None
+        items_iter = None
         disconnect_watcher = None
         # Tracked per-run event: a client disconnect and a forced reload both land here.
         disconnect_event = cancel_event
@@ -29781,7 +30904,7 @@ async def _responses_stream(
             req = client.build_request(
                 "POST", target_url, json = body, headers = {"Connection": "close"}
             )
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            first_token_deadline = time.monotonic() + _first_token_timeout_s()
             try:
                 # Same event the loop below polls: prefill can run for the whole first-token window,
                 # and only the send watcher can end it early.
@@ -29808,7 +30931,7 @@ async def _responses_stream(
                             "status": "failed",
                             "model": _clean_model,
                             "output": [],
-                            "error": {"code": 502, "message": _friendly_error(e)},
+                            "error": {"code": "server_error", "message": _friendly_error(e)},
                         },
                     },
                 )
@@ -29838,7 +30961,7 @@ async def _responses_stream(
                             "model": _clean_model,
                             "output": [],
                             "error": {
-                                "code": resp.status_code,
+                                "code": _responses_error_code(RuntimeError(err_text)),
                                 "message": _friendly_upstream_error(err_text[:500]),
                             },
                         },
@@ -29850,13 +30973,18 @@ async def _responses_stream(
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_close(request, resp, disconnect_event)
             )
-            async for raw_line in _aiter_llama_stream_items(
+            items_iter = _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = disconnect_event,
                 request = request,
                 first_token_deadline = first_token_deadline,
                 response = resp,
-            ):
+                keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
+            )
+            async for raw_line in items_iter:
+                if raw_line is _LLAMA_STREAM_KEEPALIVE:
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
                 if not raw_line:
                     continue
                 if not raw_line.startswith("data: "):
@@ -29882,7 +31010,7 @@ async def _responses_stream(
                         api_monitor.fail(monitor_id, error_message)
                         yield _sse(
                             "response.failed",
-                            _failed_response_payload(RuntimeError(error_message), 502),
+                            _failed_response_payload(RuntimeError(error_message)),
                         )
                         return
                     _apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))
@@ -29979,10 +31107,9 @@ async def _responses_stream(
             if not disconnect_event.is_set():
                 logger.error("responses stream error: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                status_code = 400 if _classify_llama_generation_error(e) is not None else 500
                 yield _sse(
                     "response.failed",
-                    _failed_response_payload(e, status_code),
+                    _failed_response_payload(e),
                 )
                 return
         except Exception as e:
@@ -29992,15 +31119,15 @@ async def _responses_stream(
                 return
             logger.error("responses stream error: %s", e)
             api_monitor.fail(monitor_id, _friendly_error(e))
-            status_code = 400 if _classify_llama_generation_error(e) is not None else 500
             yield _sse(
                 "response.failed",
-                _failed_response_payload(e, status_code),
+                _failed_response_payload(e),
             )
             return
         finally:
             await _aclose_stream_resources(
                 watchers = (disconnect_watcher,),
+                items = items_iter,
                 iterator = lines_iter,
                 resp = resp,
                 client = client,
@@ -30328,7 +31455,7 @@ async def _responses_stream(
                 level = "warning",
             )
             api_monitor.fail(monitor_id, str(exc))
-            yield _responses_admission_failed_sse(exc, status_code = 503)
+            yield _responses_admission_failed_sse(exc, code = "server_is_overloaded")
         except LlamaAdmissionCancelled:
             _llama_admission_log(
                 "cancelled-before-upstream",
@@ -30496,6 +31623,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
     "web_fetch_20260209": "web_search",
     "python": "python",
     "terminal": "terminal",
+    "read_skill": "read_skill",
 }
 # Server tools that never need a confirmation prompt (read-only / non code-
 # executing; mirrors the unconditional-safe names in is_potentially_unsafe_tool_call).
@@ -30504,7 +31632,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
 _ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation"}
+    {"web_search", "search_knowledge_base", "search_conversation", "read_skill"}
 )
 
 
@@ -30571,14 +31699,18 @@ def _select_anthropic_server_tools(
     all_tools: list[dict], requested_studio_tools: set[str], enabled_tools: Optional[list[str]]
 ) -> list[dict]:
     """Select Unsloth tools requested through Anthropic tools and extensions."""
+    available = list(all_tools)
+    if _enabled_agent_skills():
+        from core.inference.tools import READ_SKILL_TOOL
+        available.append(READ_SKILL_TOOL)
     if not requested_studio_tools and enabled_tools is None:
-        return all_tools
+        return available
 
     selected_names = set(requested_studio_tools)
     if enabled_tools is not None:
         selected_names.update(enabled_tools)
 
-    return [tool for tool in all_tools if tool["function"]["name"] in selected_names]
+    return [tool for tool in available if tool["function"]["name"] in selected_names]
 
 
 def _image_bytes_to_png_b64(raw: bytes) -> str:
@@ -31072,7 +32204,7 @@ async def chat_count_tokens(
             detail = "Cannot count tokens for messages containing audio.",
         )
     # And video, whose frames llama-server samples at completion time.
-    if getattr(payload, "video_base64", None):
+    if _request_has_video(payload):
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens for messages containing video.",
@@ -31343,12 +32475,49 @@ async def anthropic_count_tokens(
         and bool(_count_openai_client_tools)
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
-    if not _count_client_tools:
+    if _count_client_tools:
+        from core.inference.chat_template_helpers import (
+            forced_tool_catalog,
+            neutralize_tool_descriptions,
+        )
+
+        # Pick the forced tool from the sanitized catalog, as the passthrough body does (#7066).
+        _count_safe_tools = neutralize_tool_descriptions(
+            openai_tools, None, getattr(llama_backend, "markup_profile", None)
+        )
+        openai_tools = (
+            forced_tool_catalog(
+                anthropic_tool_choice_to_openai(payload.tool_choice), _count_safe_tools
+            )
+            or openai_tools
+        )
+    else:
         openai_messages = _prepend_current_date_to_messages(
             openai_messages,
             request,
             include_api_key = _count_server_tools,
         )
+    if _count_server_tools:
+        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
+
+        openai_tools = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                _ANTHROPIC_COUNT_TOOLS,
+                _count_studio_tools,
+                payload.enabled_tools,
+            )
+        )
+        _count_full_access = bool(getattr(payload, "bypass_permissions", False))
+        if _count_full_access:
+            # Same schemas /messages renders under Full access, or the count prices a different prompt.
+            from core.inference.tools import apply_full_access_tool_descriptions
+            openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        _count_nudge = _build_tool_action_nudge(
+            tools = openai_tools,
+            model_name = _llama_public_model_id(llama_backend, payload.model),
+            full_access = _count_full_access,
+        )
+        openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
     # Render with the same reasoning controls generation will use: on switchable
     # templates thinking / reasoning_effort / preserve_thinking change the
@@ -31398,7 +32567,12 @@ def _set_or_prepend_system_message(
     # Drop existing system/developer turns so the backend never sees duplicate
     # or conflicting system instructions, then prepend the resolved prompt.
     others = [dict(msg) for msg in safe_messages if msg.get("role") not in ("system", "developer")]
-    return [{"role": "system", "content": system_prompt}, *others]
+    system = {"role": "system", "content": system_prompt}
+    # One shared name or none: a single turn cannot answer to two.
+    names = {msg.get("name") for msg in safe_messages if msg.get("role") in ("system", "developer")}
+    if len(names) == 1 and (name := names.pop()):
+        system["name"] = name
+    return [system, *others]
 
 
 @router.post("/messages")
@@ -33071,6 +34245,7 @@ def _build_passthrough_payload(
     markup = None,
 ):
     from core.inference.chat_template_helpers import (
+        forced_tool_catalog,
         neutralize_control_markup_in_messages,
         neutralize_tool_descriptions,
         reconciled_tool_choice,
@@ -33092,11 +34267,15 @@ def _build_passthrough_payload(
     # "tools": [] would still advertise tool use.
     safe_tools = neutralize_tool_descriptions(openai_tools, None, _pt_markup)
     if safe_tools:
-        body["tools"] = _llama_compatible_tools(safe_tools)
         # A mixed catalog keeps safe_tools non-empty while dropping the one tool the client
         # forced; forwarding that choice would name an unadvertised function and hand
         # llama-server back the raw markup. Fall back to "auto" to stay consistent (#7066).
         tool_choice = reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
+        # llama-server reads tool_choice only as a string and treats an object as "auto".
+        forced_tools = forced_tool_catalog(tool_choice, safe_tools)
+        if forced_tools:
+            safe_tools, tool_choice = forced_tools, "required"
+        body["tools"] = llama_grammar_tools(_llama_compatible_tools(safe_tools))
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     _apply_seeded_llama_request(body, seed)
@@ -33257,6 +34436,23 @@ async def _anthropic_passthrough_stream(
         markup = getattr(llama_backend, "markup_profile", None),
     )
 
+    from core.inference.chat_template_helpers import (
+        forced_tool_catalog,
+        neutralize_tool_descriptions,
+    )
+
+    # Pick the forced tool from the sanitized catalog, as the body does: a dropped forced tool
+    # leaves the rest of the catalog under "auto" (#7066).
+    _count_tools = (
+        forced_tool_catalog(
+            tool_choice,
+            neutralize_tool_descriptions(
+                openai_tools, None, getattr(llama_backend, "markup_profile", None)
+            ),
+        )
+        or openai_tools
+    )
+
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
     # Pass the tools through so tool-schema tokens are counted (otherwise the
@@ -33267,7 +34463,7 @@ async def _anthropic_passthrough_stream(
         lambda: llama_backend.count_chat_tokens(
             openai_messages,
             None,
-            openai_tools,
+            _count_tools,
             chat_template_kwargs = _reasoning_template_kwargs(
                 llama_backend, enable_thinking, reasoning_effort, preserve_thinking
             ),
@@ -33307,7 +34503,7 @@ async def _anthropic_passthrough_stream(
         # was already sent as "auto", and gating on the stale name would intersect the safe
         # names with a removed one and disable healing outright. "none" survives
         # reconciliation, so it still forbids promotion (#7066).
-        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
+        _allowed_tools = heal_gate(auto_heal_tool_calls, body.get("tools"), body.get("tool_choice"))
         if _allowed_tools:
             emitter.enable_healing(
                 _allowed_tools,
@@ -33354,13 +34550,14 @@ async def _anthropic_passthrough_stream(
         )
         resp = None
         lines_iter = None
+        items_iter = None
         cancel_watcher = None
         disconnect_watcher = None
         try:
             url = target_url
             try:
                 req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
                 )
@@ -33371,7 +34568,7 @@ async def _anthropic_passthrough_stream(
                 if url is None:
                     raise
                 req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
                 )
@@ -33413,13 +34610,18 @@ async def _anthropic_passthrough_stream(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
             lines_iter = resp.aiter_lines()
-            async for raw_line in _aiter_llama_stream_items(
+            items_iter = _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = cancel_event,
                 request = request,
                 first_token_deadline = first_token_deadline,
                 response = resp,
-            ):
+                keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
+            )
+            async for raw_line in items_iter:
+                if raw_line is _LLAMA_STREAM_KEEPALIVE:
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
                 if not raw_line or not raw_line.startswith("data: "):
                     continue
                 data_str = raw_line[6:]
@@ -33478,6 +34680,7 @@ async def _anthropic_passthrough_stream(
             try:
                 await _aclose_stream_resources(
                     watchers = (cancel_watcher, disconnect_watcher),
+                    items = items_iter,
                     iterator = lines_iter,
                     resp = resp,
                     client = client,
@@ -33627,7 +34830,7 @@ async def _anthropic_passthrough_non_streaming(
         # was already sent as "auto", and gating on the stale name would intersect the safe
         # names with a removed one and disable healing outright. "none" survives
         # reconciliation, so it still forbids promotion (#7066).
-        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
+        _allowed_tools = heal_gate(auto_heal_tool_calls, body.get("tools"), body.get("tool_choice"))
 
         # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
         # unusable; re-ask with the prompt prefix intact so the KV cache is reused.
@@ -33825,6 +35028,8 @@ def _coalesce_consecutive_user_turns(messages: list[dict]) -> list[dict]:
         if m.get("role") == "user" and out and out[-1].get("role") == "user":
             prev = dict(out[-1])
             prev["content"] = _merge_user_content(prev.get("content"), m.get("content"))
+            if prev.get("name") != m.get("name"):
+                prev.pop("name", None)
             out[-1] = prev
             continue
         out.append(m)
@@ -33889,6 +35094,9 @@ def _merge_stranded_local_assistant_turns(messages: list[tuple[dict, bool]]) -> 
             continue
 
         merged = dict(message)
+        # One shared name or none: the fragments fold into a single turn.
+        if pending.get("name") != message.get("name"):
+            merged.pop("name", None)
         old_content = pending.get("content")
         new_content = merged.get("content")
         if old_content or new_content:
@@ -34576,7 +35784,7 @@ async def _openai_passthrough_stream_admitted(
         while True:
             try:
                 req = client.build_request("POST", target_url, json = body, headers = upstream_headers)
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 send_task = asyncio.create_task(
                     _send_stream_with_preheader_cancel(
                         client,
@@ -34698,6 +35906,7 @@ async def _openai_passthrough_stream_admitted(
             # save resp.aiter_lines() so the finally block can aclose() it on
             # our task. See that function for full rationale.
             lines_iter = None
+            items_iter = None
             # Watchers unblock aiter_lines() during prefill, before in-loop
             # cancel/disconnect checks can run.
             cancel_watcher = None
@@ -34954,7 +36163,7 @@ async def _openai_passthrough_stream_admitted(
                                             )
                                         )
                                         first_token_deadline = (
-                                            time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                                            time.monotonic() + _first_token_timeout_s()
                                         )
                                         continue
                                 logger.error(
@@ -34993,7 +36202,7 @@ async def _openai_passthrough_stream_admitted(
                         req = client.build_request(
                             "POST", target_url, json = body, headers = upstream_headers
                         )
-                        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                        first_token_deadline = time.monotonic() + _first_token_timeout_s()
                         send_task = asyncio.create_task(
                             _send_stream_with_preheader_cancel(
                                 client,
@@ -35032,14 +36241,19 @@ async def _openai_passthrough_stream_admitted(
                     _await_disconnect_then_close(request, resp, cancel_event)
                 )
                 lines_iter = resp.aiter_lines()
-                async for raw_line in _aiter_llama_stream_items(
+                items_iter = _aiter_llama_stream_items(
                     lines_iter,
                     cancel_event = cancel_event,
                     request = request,
                     first_token_deadline = first_token_deadline,
                     response = resp,
                     post_first_item_read_timeout_s = _terminal_read_timeout_s,
-                ):
+                    keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
+                )
+                async for raw_line in items_iter:
+                    if raw_line is _LLAMA_STREAM_KEEPALIVE:
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
                     if not raw_line:
                         continue
                     if not raw_line.startswith("data:"):
@@ -35288,6 +36502,7 @@ async def _openai_passthrough_stream_admitted(
                     try:
                         await _aclose_stream_resources(
                             watchers = (cancel_watcher, disconnect_watcher),
+                            items = items_iter,
                             iterator = lines_iter,
                             resp = resp,
                             client = client,
@@ -36697,6 +37912,60 @@ async def clear_gallery_audio(current_subject: str = Depends(get_current_subject
             status_code = 503,
             detail = "Could not read the gallery's archive data, so clearing was stopped to "
             "avoid deleting archived clips.",
+        )
+    return {"removed": removed}
+
+
+@studio_router.get("/audio/transcripts")
+async def list_gallery_transcripts(
+    limit: int = Query(50, ge = 1, le = 200),
+    before: Optional[str] = Query(None, max_length = 100),
+    archived: bool = False,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import transcript_gallery
+    return await asyncio.to_thread(transcript_gallery.list_transcripts, limit, before, archived)
+
+
+@studio_router.patch("/audio/transcripts/{transcript_id}")
+async def archive_gallery_transcript(
+    transcript_id: str,
+    patch: AudioGalleryFlagsPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import transcript_gallery
+
+    if patch.archived is None:
+        raise HTTPException(status_code = 422, detail = "Specify whether to archive this transcript.")
+    record = await asyncio.to_thread(transcript_gallery.set_archived, transcript_id, patch.archived)
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Transcript not found.")
+    return record
+
+
+@studio_router.delete("/audio/transcripts/{transcript_id}")
+async def delete_gallery_transcript(
+    transcript_id: str, current_subject: str = Depends(get_current_subject)
+):
+    from core.inference import transcript_gallery
+    if not await asyncio.to_thread(transcript_gallery.delete, transcript_id):
+        raise HTTPException(status_code = 404, detail = "Transcript not found.")
+    return {"deleted": True}
+
+
+@studio_router.delete("/audio/transcripts")
+async def clear_gallery_transcripts(current_subject: str = Depends(get_current_subject)):
+    from core.inference import transcript_gallery
+    from core.inference.gallery_flags import FlagsUnavailable
+
+    try:
+        removed = await asyncio.to_thread(transcript_gallery.clear)
+    except FlagsUnavailable as exc:
+        logger.warning("transcript_gallery.clear_blocked: %s", exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not read the transcript archive data, so clearing was stopped "
+            "to avoid deleting archived transcripts.",
         )
     return {"removed": removed}
 

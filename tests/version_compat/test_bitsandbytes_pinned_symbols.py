@@ -13,8 +13,6 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-
-
 def _super_init_call(source: str, class_name: str) -> ast.Call | None:
     """The ``super().__init__(...)`` Call node inside ``class_name``'s __init__.
 
@@ -34,6 +32,7 @@ def _super_init_call(source: str, class_name: str) -> ast.Call | None:
                 return sub
     return None
 
+
 def first_match_signature(src: str, class_name: str) -> str | None:
     """The text of ``class_name``'s __init__ parameter list, or None."""
     at = src.find(f"class {class_name}")
@@ -51,6 +50,7 @@ def first_match_signature(src: str, class_name: str) -> str | None:
             if depth == 0:
                 return src[src.index("(", at) : i + 1]
     return None
+
 
 # pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 Test floor + each safe minor since.
 BNB_TAGS = [
@@ -287,7 +287,7 @@ def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
     removed = [n for n in ("percentile_clipping", "block_wise") if n not in signature]
     caller = (
         Path(__file__).resolve().parents[2] / "unsloth" / "optimizers" / "q_galore_adamw.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
 
     call = _super_init_call(caller, "QGaLoreAdamW8bit")
     assert call is not None, "could not find QGaLoreAdamW8bit's super().__init__ call"
@@ -306,6 +306,6 @@ def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
     for name in ("percentile_clipping", "block_wise"):
         if name in signature:
             continue
-        assert name not in passed, (
-            f"{tag}: Optimizer2State no longer accepts {name}, but it is still passed."
-        )
+        assert (
+            name not in passed
+        ), f"{tag}: Optimizer2State no longer accepts {name}, but it is still passed."

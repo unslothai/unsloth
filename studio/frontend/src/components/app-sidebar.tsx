@@ -201,8 +201,8 @@ import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
-import { clearAuthTokens, logout } from "@/features/auth";
-import { TOUR_OPEN_EVENT } from "@/features/tour";
+import { AUTH_SESSION_ENDING_EVENT, clearAuthTokens, logout } from "@/features/auth";
+import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
 import {
   deleteTrainingRun,
   emitTrainingRunDeleted,
@@ -254,13 +254,6 @@ function renderEmphasizedTranslation(
     }
   });
   return nodes;
-}
-
-function getTourId(pathname: string): string | null {
-  if (pathname.startsWith("/studio")) return "studio";
-  if (pathname.startsWith("/export")) return "export";
-  if (pathname.startsWith("/chat")) return "chat";
-  return null;
 }
 
 // Optional user-menu shortcuts that jump to a settings tab; the id is the tab id.
@@ -773,6 +766,10 @@ export function AppSidebar() {
       href: s.location.href,
     }),
   });
+  // Route alone is not enough: a page can gate its tour behind a capability check, and an entry
+  // that dispatches to nobody does nothing when clicked.
+  const routeTourId = getTourId(pathname);
+  const tourAvailable = useTourAvailable(routeTourId);
   const {
     pinned,
     togglePinned,
@@ -2829,6 +2826,7 @@ export function AppSidebar() {
       // Desktop signs out through the OS account menu, not here.
       if (isTauri) return;
       void (async () => {
+        if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
         try {
           await logout();
         } catch {
@@ -3051,16 +3049,14 @@ export function AppSidebar() {
           : showWorkSpinner
             ? // A spinner glyph cannot truncate, so clear the kebab's 30px inset (pr-1.5 + size-6).
               "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-10"
-            : // Hover room for the kebab only; title keeps one more character.
-              // Touch rows clear the full always-visible kebab hit area (pr-10).
-              "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-10",
-      // A focused kebab is revealed without hover, so a spinner row reserves the same room.
-      showWorkSpinner &&
-        (variant === "project"
-          ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
-          : isPinned
-            ? "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16"
-            : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-8"),
+            : // Clear the full menu circle only while it is visible.
+              "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-10",
+      // Keyboard focus reveals the action without hover.
+      variant === "project"
+        ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
+        : isPinned
+          ? "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16"
+          : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-8",
     );
 
     const isRenamingThis =
@@ -4407,16 +4403,14 @@ export function AppSidebar() {
                     );
                   }
                   if (item.id === "guidedTour") {
-                    if (!getTourId(pathname)) return null;
+                    if (!routeTourId || !tourAvailable) return null;
                     return (
                       <DropdownMenuItem
                         key={item.id}
                         onSelect={() => {
-                          const tourId = getTourId(pathname);
-                          if (!tourId) return;
                           window.dispatchEvent(
                             new CustomEvent(TOUR_OPEN_EVENT, {
-                              detail: { id: tourId },
+                              detail: { id: routeTourId },
                             }),
                           );
                         }}
@@ -4450,6 +4444,7 @@ export function AppSidebar() {
               {!isTauri && (
                 <DropdownMenuItem
                   onSelect={async () => {
+                    if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
                     // Best-effort server revocation; ignore network errors so the local clear still runs.
                     try {
                       await logout();

@@ -303,7 +303,7 @@ class TestTorchIndexOverrideParity:
         # A pinned cu* index skips ALL host-GPU probing, so the CUDA repair must clear the
         # CUDA_VISIBLE_DEVICES hide gate too (else the GPU-less CI case bails).
         text = STACK_PY.read_text(encoding = "utf-8")
-        m = re.search(r"def _ensure_cuda_torch\(\).*?(?=\ndef )", text, re.DOTALL)
+        m = re.search(r"def _ensure_cuda_torch\(.*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cuda_torch"
         body = m.group(0)
         assert "_cuda_pinned" in body, (
@@ -830,6 +830,12 @@ class TestPinnedIndexClearsUvEnvParity:
             "_install_env_for_cmd must point PIP_CONFIG_FILE at os.devnull for "
             "pinned installs (pip fallback isolation)"
         )
+        # devnull is all or nothing, so the transport and only-binary it removes are put
+        # back key by key.
+        assert "_pinned_pip_config_overrides()" in stack, (
+            "the pinned scrub must re-assert the operator's transport and binary policy "
+            "that PIP_CONFIG_FILE=devnull removes"
+        )
         setup = SETUP_PS1.read_text(encoding = "utf-8")
         assert "$env:PIP_CONFIG_FILE = 'nul'" in setup, (
             "setup.ps1 Fast-Install pinned scrub must point PIP_CONFIG_FILE at nul "
@@ -998,8 +1004,13 @@ class TestNoTorchPersistenceParity:
         # Written after the manifest is dropped and before the dependency pass, so
         # a pass killed part-way still leaves the mode recorded somewhere.
         assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
-            "if not install_manifest.remove_manifest():"
+            "if install_manifest.remove_manifest():"
         )
+        # And the parked copy goes with it before the pass starts, so a pass killed part-way leaves
+        # no evidence of a finished one.
+        removed_at = text.index("if install_manifest.remove_manifest():")
+        consumed_at = text.index("install_manifest.consume_previous_manifest()", removed_at)
+        assert consumed_at < text.index("install_manifest.set_no_torch_marker(NO_TORCH)")
 
     def test_both_sides_use_the_same_marker_filename(self):
         manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
@@ -1235,8 +1246,54 @@ class TestInstallUvCacheRootParity:
         # rejected it from the start, so this was a real split.
         bucket_sh = sh.split("_uv_is_bucket_name() {", 1)[1].split("\n}", 1)[0]
         assert "''|*[!0-9]*) return 1 ;;" in bucket_sh, bucket_sh
-        bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split("\n}", 1)[0]
+        # To the NEXT function: the body is indented, so splitting on "\n}" ran two
+        # functions on and every assertion below it read the wrong code.
+        bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
+            "function Test-StudioUvCacheWritable", 1
+        )[0]
         assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
+        # Both sides MEASURE whether to fold: default APFS folds and ext4 does not, NTFS
+        # folds unless fsutil setCaseSensitiveInfo says otherwise. Blind folding condemns.
+        assert "ToLowerInvariant()" in bucket_ps1, bucket_ps1
+        assert "-cin" not in bucket_ps1, bucket_ps1
+        assert "[switch]$Fold" in bucket_ps1, bucket_ps1
+        writable_ps1 = ps1.split("function Test-StudioUvCacheWritable", 1)[1].split(
+            "function Test-StudioUvCachePopulated", 1
+        )[0]
+        assert ".unsloth-case-probe." in writable_ps1, writable_ps1
+        assert "-Fold:$fold" in writable_ps1, writable_ps1
+        writable_sh = sh.split("_uv_cache_is_writable() {", 1)[1].split("\n}", 1)[0]
+        assert "tr '[:upper:]' '[:lower:]'" in writable_sh, writable_sh
+        # By a directory the probe MAKES: an existing pair cannot say whether it is one.
+        assert ".unsloth-case-probe." in writable_sh, writable_sh
+        assert "_uv_w_fold=1" in writable_sh, writable_sh
+        # and it decides only the NAME: a colliding file must reach the rejection below.
+        assert writable_sh.index("_uv_w_fold") < writable_sh.index('[ ! -d "$_uv_w_dir" ]')
+        probe_kinds = {
+            "archive",
+            "binaries",
+            "builds",
+            "built-wheels",
+            "environments",
+            "flat-index",
+            "git",
+            "interpreter",
+            "osv",
+            "python",
+            "sdists",
+            "simple",
+            "wheels",
+        }
+        assert 'UV_PINNED_VERSION="0.12.1"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
+        case_body = re.search(
+            r'case "\$\{1%-v\*\}" in\n(.*?)\n\s*\*\) return 1', bucket_sh, re.S
+        ).group(1)
+        kinds_sh = set(re.findall(r"[a-z\-]+", case_body))
+        assert kinds_sh == probe_kinds, sorted(kinds_sh ^ probe_kinds)
+        kinds_ps1 = set(
+            re.findall(r'"([a-z\-]+)"', bucket_ps1.split("-in @(", 1)[1].split("))", 1)[0])
+        )
+        assert kinds_ps1 == probe_kinds, sorted(kinds_ps1 ^ probe_kinds)
         # and the CLI validates the whole suffix too, or `unsloth studio update` prefers a
         # cache the installers just rejected. Its docstring claimed the same rule long before
         # it had it.

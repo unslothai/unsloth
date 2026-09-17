@@ -4,20 +4,57 @@
 #
 # Usage:
 #   ./build.sh                 # builds unsloth-blackwell:latest pinned to unsloth main
+#   ./build.sh --rocm          # builds unsloth-rocm:latest for AMD GPUs
 #   TAG=2026.05.1 ./build.sh   # custom tag
 #   UNSLOTH_REF=v2026.5.6 UNSLOTH_ZOO_REF=v2026.5.4 ./build.sh   # pin git refs
+#
+# ROCm: the default is the ROCm 7.2.4 base with the pytorch.org rocm7.2 wheels
+# (RDNA2, RDNA3, RDNA4, CDNA). Strix APUs and RDNA4 cards get AMD's per-arch
+# wheels with --gfx (or ROCM_GFX=...), which switches the index to
+# repo.amd.com/rocm/whl/<family>/ and the torch 2.11 line, as install.sh does:
+#   ./build.sh --rocm --gfx gfx1151        # Strix Halo
+#   ROCM_GFX=gfx1201 ./build.sh --rocm     # RX 9070 XT
+# gfx906 (Radeon VII / MI50) needs the last base that carries it, and --gfx gfx906
+# leaves out bitsandbytes (no prebuilt gfx906 kernels):
+#   ROCM_VERSION=6.3.4 ./build.sh --rocm --gfx gfx906
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-IMAGE_NAME="${IMAGE_NAME:-unsloth-blackwell}"
+ROCM=0
+ROCM_GFX="${ROCM_GFX:-}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --rocm) ROCM=1 ;;
+        --gfx)  [[ $# -ge 2 ]] || { echo "--gfx needs an arch (e.g. gfx1151)" >&2; exit 2; }
+                ROCM_GFX="$2"; shift ;;
+        --gfx=*) ROCM_GFX="${1#--gfx=}" ;;
+        *) echo "unknown option: $1 (build.sh takes --rocm [--gfx <arch>])" >&2; exit 2 ;;
+    esac
+    shift
+done
+if [[ -n "$ROCM_GFX" && $ROCM -eq 0 ]]; then
+    echo "--gfx / ROCM_GFX only applies to --rocm builds" >&2
+    exit 2
+fi
+
 TAG="${TAG:-latest}"
-CUDA_VERSION="${CUDA_VERSION:-12.8.1}"
-UBUNTU_VERSION="${UBUNTU_VERSION:-24.04}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 UNSLOTH_REF="${UNSLOTH_REF:-main}"
 UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 UNSLOTH_NOTEBOOKS_REF="${UNSLOTH_NOTEBOOKS_REF:-main}"
+if [[ $ROCM -eq 1 ]]; then
+    IMAGE_NAME="${IMAGE_NAME:-unsloth-rocm}"
+    # 7.2 is the floor: rocm6.4 tops out at torch 2.9.1, below what unsloth-zoo
+    # wants, and RDNA4 (gfx1200/1201) has no kernels before 7.x.
+    ROCM_VERSION="${ROCM_VERSION:-7.2.4}"
+    # the index follows the base unless named (7.2.4 -> rocm7.2)
+    TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm${ROCM_VERSION%.*}}"
+else
+    IMAGE_NAME="${IMAGE_NAME:-unsloth-blackwell}"
+    CUDA_VERSION="${CUDA_VERSION:-12.8.1}"
+    UBUNTU_VERSION="${UBUNTU_VERSION:-24.04}"
+fi
 
 # Frozen to a commit here, for the same reason LLAMA_PREBUILT_TAG is resolved below and
 # the publish workflow freezes both refs with git ls-remote: docker matches a RUN layer
@@ -46,6 +83,9 @@ UNSLOTH_ZOO_REF="$(resolve_git_ref https://github.com/unslothai/unsloth-zoo "$UN
 # workflow already freezes this one; leaving it out here meant a rebuild after
 # unslothai/notebooks moved silently kept the old set, and stamped the old commit
 # into .unsloth_template_commit so the image misreported which set it carried.
+# Dockerfile.rocm carries neither the notebooks nor the llama.cpp prebuilt, so the
+# ROCm build skips both lookups rather than printing a tag it never passes.
+if [[ $ROCM -eq 0 ]]; then
 UNSLOTH_NOTEBOOKS_REF="$(resolve_git_ref https://github.com/unslothai/notebooks "$UNSLOTH_NOTEBOOKS_REF")"
 
 # Resolved to a concrete tag here, so the build-arg changes only on a new release and
@@ -63,6 +103,41 @@ if [ -z "${LLAMA_PREBUILT_TAG:-}" ]; then
         LLAMA_PREBUILT_TAG="latest"
         echo "Could not resolve latest llama.cpp tag here; passing 'latest' (resolved inside the build)"
     fi
+fi
+fi
+
+if [[ $ROCM -eq 1 ]]; then
+    echo "Building ${IMAGE_NAME}:${TAG}  [AMD ROCm]"
+    echo "  ROCm           ${ROCM_VERSION}  Python ${PYTHON_VERSION}"
+    if [[ "$ROCM_GFX" == gfx906 ]]; then
+        echo "  torch index    ${TORCH_INDEX_URL} (gfx906: no bitsandbytes)"
+    elif [[ -n "$ROCM_GFX" ]]; then
+        echo "  torch index    AMD per-arch wheels for ${ROCM_GFX} (repo.amd.com/rocm/whl)"
+    else
+        echo "  torch index    ${TORCH_INDEX_URL}"
+    fi
+    echo "  unsloth        @${UNSLOTH_REF}"
+    echo "  unsloth-zoo    @${UNSLOTH_ZOO_REF}"
+    echo
+
+    DOCKER_BUILDKIT=1 docker build \
+        --progress=plain \
+        -f Dockerfile.rocm \
+        --build-arg ROCM_VERSION="${ROCM_VERSION}" \
+        --build-arg PYTHON_VERSION="${PYTHON_VERSION}" \
+        --build-arg TORCH_INDEX_URL="${TORCH_INDEX_URL}" \
+        --build-arg ROCM_GFX="${ROCM_GFX}" \
+        --build-arg UNSLOTH_REF="${UNSLOTH_REF}" \
+        --build-arg UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF}" \
+        -t "${IMAGE_NAME}:${TAG}" \
+        .
+
+    echo
+    echo "Built ${IMAGE_NAME}:${TAG}"
+    echo
+    echo "Smoke test on an AMD host (run.sh defaults to the published image, so name this one):"
+    echo "  UNSLOTH_IMAGE=${IMAGE_NAME}:${TAG} bash run.sh --rocm python /workspace/smoke_test_rocm.py"
+    exit 0
 fi
 
 echo "Building ${IMAGE_NAME}:${TAG}"

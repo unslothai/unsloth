@@ -1617,9 +1617,88 @@ def _block_image(block: Any) -> Optional[tuple[str, str]]:
     return None
 
 
+def _block_attachment(block: Any) -> Optional[tuple[str, str]]:
+    # presence, not truthiness: a zero-byte file arrives as ""
+    data = getattr(block, "data", None)
+    if data is not None:
+        kind = getattr(block, "type", "binary")
+        mime = _resource_mime(block)
+        uri = None
+    else:
+        resource = getattr(block, "resource", None)
+        data = getattr(resource, "blob", None) if resource is not None else None
+        if data is None:
+            return None
+        kind = "file"
+        mime = _resource_mime(resource)
+        uri = getattr(resource, "uri", None)
+    label = f"{kind} attachment"
+    if mime:
+        label += f" ({mime})"
+    if uri and not str(uri).lower().startswith("data:"):
+        label += f" <{uri}>"
+    return f"{label} not shown to the model", str(data)
+
+
+_MIRRORED = object()
+# fields MCP defines on image/audio and embedded resource blocks; anything else is the tool's own
+_MEDIA_FIELDS = frozenset({"type", "data", "mimeType", "mime_type", "annotations", "_meta"})
+_RESOURCE_BLOCK_FIELDS = frozenset({"type", "resource", "annotations", "_meta"})
+_RESOURCE_FIELDS = frozenset({"uri", "blob", "mimeType", "mime_type", "_meta"})
+
+
+def _is_payload(value: Any, payloads: set[str]) -> bool:
+    return isinstance(value, str) and value in payloads
+
+
+def _mirrored_extras(value: dict, payloads: set[str]) -> Optional[dict]:
+    # the tool's own fields on a content block copied from result.content; None if it is not one
+    kind = value.get("type")
+    if kind in ("image", "audio") and _is_payload(value.get("data"), payloads):
+        return {k: v for k, v in value.items() if k not in _MEDIA_FIELDS}
+    resource = value.get("resource")
+    if (
+        kind == "resource"
+        and isinstance(resource, dict)
+        and _is_payload(resource.get("blob"), payloads)
+    ):
+        extras = {k: v for k, v in value.items() if k not in _RESOURCE_BLOCK_FIELDS}
+        inner = {k: v for k, v in resource.items() if k not in _RESOURCE_FIELDS}
+        if inner:
+            extras["resource"] = inner
+        return extras
+    return None
+
+
+def _strip_payloads(value: Any, payloads: set[str]) -> Any:
+    # drop mirrored payloads and the MCP fields of the blocks carrying them, then containers left empty
+    if isinstance(value, str):
+        return _MIRRORED if value in payloads else value
+    if isinstance(value, dict):
+        extras = _mirrored_extras(value, payloads)
+        if extras is not None:
+            if not extras:
+                return _MIRRORED
+            value = extras
+        kept = {}
+        for key, item in value.items():
+            item = _strip_payloads(item, payloads)
+            if item is not _MIRRORED:
+                kept[key] = item
+    elif isinstance(value, (list, tuple)):
+        kept = [
+            s for s in (_strip_payloads(item, payloads) for item in value) if s is not _MIRRORED
+        ]
+    else:
+        return value
+    return _MIRRORED if value and not kept else kept
+
+
 def _flatten_result(result: Any) -> str:
     parts = []
     images = []
+    unshown = []
+    payloads = set()
     omitted = 0
     has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
@@ -1636,23 +1715,34 @@ def _flatten_result(result: Any) -> str:
         image = _block_image(block)
         if image is not None:
             data, mime = image
+            payloads.add(data)
             if len(data) > budget:
                 omitted += 1
                 continue
             budget -= len(data)
             images.append({"data": data, "mimeType": mime})
+            continue
+        attachment = _block_attachment(block)
+        if attachment is not None:
+            note, data = attachment
+            unshown.append(note)
+            if data:
+                payloads.add(data)
     body = "\n".join(parts)
-    if not has_text:
-        structured = getattr(result, "structured_content", None)
-        if structured is not None:
-            body = f"{structured}\n{body}" if body else str(structured)
-    if images or omitted:
+    # the filesystem server mirrors binary blocks in structured_content; keep everything else
+    structured = None if has_text else getattr(result, "structured_content", None)
+    if structured is not None and payloads:
+        structured = _strip_payloads(structured, payloads)
+    if structured is not None and structured is not _MIRRORED:
+        body = f"{structured}\n{body}" if body else str(structured)
+    if images or omitted or unshown:
         notes = []
         if images:
             n = len(images)
             notes.append(f"{n} image{'s' if n > 1 else ''} attached; displayed to the user")
         if omitted:
             notes.append(f"{omitted} image{'s' if omitted > 1 else ''} omitted (too large)")
+        notes.extend(unshown)
         note = f"[{'; '.join(notes)}]"
         body = f"{body}\n{note}" if body else note
 

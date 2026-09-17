@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from unsloth_pwsh_runner import pwsh_env, run_pwsh
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
@@ -41,7 +43,10 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     os.close(handle)
     try:
         Path(name).write_text(script, encoding = "utf-8-sig")
-        result = subprocess.run(
+        # run_pwsh, not subprocess.run: the assertion below reads a non-zero exit as the
+        # mutex helpers failing, which is exactly what a pwsh killed at startup by the
+        # shared profile cache looks like from here. See tests/_shared/unsloth_pwsh_runner.py.
+        result = run_pwsh(
             [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
             # check = False, then asserted below with the output attached. check = True
             # reports only "exit status 1" and discards the PowerShell error, which on a
@@ -668,6 +673,9 @@ Write-Output "READY"
 [Console]::ReadLine() | Out-Null
 Exit-StudioInstallMutex -Mutex $mutex
 """
+    # pwsh_env, not run_pwsh: the holder is a long-lived process that this test writes to
+    # over its stdin while a second shell races it for the mutex, so it cannot be a
+    # subprocess.run call at all. It still takes the private startup cache.
     holder = subprocess.Popen(
         [
             shell,
@@ -684,7 +692,7 @@ Exit-StudioInstallMutex -Mutex $mutex
         text = True,
         encoding = "utf-8",
         errors = "replace",
-        env = env,
+        env = pwsh_env(env),
     )
     try:
         assert holder.stdout is not None
@@ -814,6 +822,9 @@ if ($null -eq $mutex) {{ Write-Output "BLOCKED"; exit 0 }}
 Write-Output "ACQUIRED"
 Exit-StudioInstallMutex -Mutex $mutex
 """
+    # pwsh_env, not run_pwsh: the holder is a long-lived process that this test writes to
+    # over its stdin while a second shell races it for the mutex, so it cannot be a
+    # subprocess.run call at all. It still takes the private startup cache.
     holder = subprocess.Popen(
         [
             shell,
@@ -830,7 +841,7 @@ Exit-StudioInstallMutex -Mutex $mutex
         text = True,
         encoding = "utf-8",
         errors = "replace",
-        env = env,
+        env = pwsh_env(env),
     )
     try:
         assert holder.stdout is not None

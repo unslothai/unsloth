@@ -24,7 +24,13 @@ class RecipeDatasetPublishError(ValueError):
 
 def _resolve_recipe_artifact_path(artifact_path: str) -> Path:
     root = recipe_datasets_root().expanduser().resolve()
-    candidate = resolve_dataset_path(artifact_path).expanduser()
+    try:
+        candidate = resolve_dataset_path(artifact_path).expanduser()
+    except ValueError as exc:
+        # Outside every dataset root, so it never reaches the check below: a 500, not a refusal.
+        raise RecipeDatasetPublishError(
+            "This execution artifact is outside the Recipe Studio dataset storage."
+        ) from exc
     resolved = candidate.resolve(strict = False)
 
     try:
@@ -49,6 +55,7 @@ def publish_recipe_dataset(
     description: str,
     hf_token: str | None = None,
     private: bool = False,
+    link_endpoint: str | None = None,
 ) -> str:
     hf_token = account_hf_token(hf_token)
     dataset_path = _resolve_recipe_artifact_path(artifact_path)
@@ -118,6 +125,11 @@ def publish_recipe_dataset(
             builder_config_path = builder_config_path,
         )
 
-        return f"https://huggingface.co/datasets/{repo_id}"
+        from utils.hf_endpoint import get_hf_endpoint
+
+        # The upload went to get_hf_endpoint(); this URL is for the browser, where
+        # a loopback mirror is not the same host. The caller passes what its client
+        # can reach.
+        return f"{link_endpoint or get_hf_endpoint()}/datasets/{repo_id}"
     except HuggingFaceHubClientUploadError as exc:
         raise RecipeDatasetPublishError(str(exc)) from exc

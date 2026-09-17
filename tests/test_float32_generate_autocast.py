@@ -42,7 +42,7 @@ from pathlib import Path
 
 import pytest
 from real_accelerator import (
-    has_real_accelerator,
+    has_real_cuda,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
@@ -103,7 +103,7 @@ def test_the_gate_by_execution(dtype, expected):
     assert (dtype in (torch.float16, torch.bfloat16)) is expected
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_cuda_really_does_accept_float32_as_an_autocast_dtype():
     """The premise. If torch ever starts rejecting or ignoring this, the fix
     above is no longer load-bearing and this test says so rather than letting
@@ -113,7 +113,7 @@ def test_cuda_really_does_accept_float32_as_an_autocast_dtype():
         assert torch.get_autocast_dtype("cuda") == torch.float32
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_the_gate_turns_that_into_a_no_op():
     dtype = torch.float32
     with torch.autocast(

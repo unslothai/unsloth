@@ -588,7 +588,8 @@ def test_a_mac_driving_a_remote_daemon_is_sent_to_that_host(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    "endpoint", ["tcp://localhost:2375", "tcp://127.0.0.1:2375", "tcp://[::1]:2375", "localhost:2375"]
+    "endpoint",
+    ["tcp://localhost:2375", "tcp://127.0.0.1:2375", "tcp://[::1]:2375", "localhost:2375"],
 )
 def test_a_loopback_tcp_endpoint_is_this_machine(tmp_path: Path, endpoint: str):
     """Docker Desktop can expose its daemon on tcp://localhost:2375, and a socket can be

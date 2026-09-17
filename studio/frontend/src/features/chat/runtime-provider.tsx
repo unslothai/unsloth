@@ -130,6 +130,7 @@ import {
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
+import { registerLiveThreadView } from "./utils/live-thread-head";
 import {
   createRecoveryReplay,
   seededParkedApprovals,
@@ -1747,6 +1748,8 @@ function useStudioRuntimeAdapters(
 ): StudioRuntimeAdapters {
   const signalReady = useAppShellReadySignal();
   const aui = useAui();
+
+  useEffect(() => registerLiveThreadView(aui), [aui]);
 
   useEffect(() => {
     const recoverCurrentThread = () => {
