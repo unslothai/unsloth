@@ -695,9 +695,14 @@ def _vulkan_loader_allows(path: str) -> bool:
     """Whether the loader's own driver filters leave this manifest loadable.
 
     They apply to every driver the loader knows, a forced list included, and match the
-    manifest's basename, so a list naming AMD alone and then disabling it leaves the loader
-    with no driver at all. Disable is read before select precisely so "disable everything,
-    then name one back" works, hence select answering alone when it is set.
+    manifest's basename. Select is an allowlist and disable is a denylist that WINS over it:
+    "The values from the disable environment variable will be considered before the enable
+    or select environment variable", and VK_LOADER_DRIVERS_DISABLE is "also checked before
+    other driver environment variables (such as VK_LOADER_DRIVERS_SELECT)" (Vulkan-Loader,
+    LoaderInterfaceArchitecture.md). Drivers have no VK_LOADER_LAYERS_ALLOW counterpart to
+    name one back, so selecting radeon* while also disabling radeon* leaves the loader with
+    no driver at all, where treating a set select list as the whole answer counted Radeon as
+    usable and reported only the device-node repair.
 
     install_llama_prebuilt._vulkan_loader_allows is the same rule for the same reason; a
     test below runs the two against one table so they cannot drift.
@@ -708,11 +713,11 @@ def _vulkan_loader_allows(path: str) -> bool:
         return [entry.strip() for entry in value.split(",") if entry.strip()]
 
     name = PurePath(path).name
-    select = _globs("VK_LOADER_DRIVERS_SELECT")
-    if select:
-        return any(_vulkan_glob_matches(pattern, name) for pattern in select)
     disable = _globs("VK_LOADER_DRIVERS_DISABLE")
-    return not any(_vulkan_glob_matches(pattern, name) for pattern in disable)
+    if any(_vulkan_glob_matches(pattern, name) for pattern in disable):
+        return False
+    select = _globs("VK_LOADER_DRIVERS_SELECT")
+    return any(_vulkan_glob_matches(pattern, name) for pattern in select) if select else True
 
 
 # ld.so's own defaults, plus the multiarch directories Debian and Ubuntu install into.
@@ -1395,12 +1400,20 @@ _RENDER_NODE_GLOB = "/dev/dri/renderD*"
 def _amd_nodes_the_runtime_lacks(*, needs_kfd: bool = True) -> "list[str]":
     """The AMD device nodes this backend opens that do not exist at all.
 
-    Gated on the KFD topology, which is world-readable sysfs and names the vendor, so this
-    cannot fire on a host with no AMD card -- the trap a bare "no render node" test would
-    fall into, since every vendor's nodes live under the same glob. A host that cannot show
-    the topology either reports nothing rather than guessing.
+    Gated on AMD evidence, so this cannot fire on a host with no AMD card -- the trap a bare
+    "no render node" test would fall into, since every vendor's nodes live under the same
+    glob. The KFD topology is the first source: world-readable sysfs that names the vendor.
+
+    A container given --device /dev/dri and not --device /dev/kfd commonly masks
+    /sys/class/kfd as well, and there the topology proves nothing while DRM still names an
+    AMD render node outright. That host is exactly the one a HIP caller cannot run on, so it
+    falls back to the same confirmed-DRM evidence the closed-node path already trusts.
+    Confirmed, not assumed: _a_confirmed_amd_render_node_exists reads the vendor rather than
+    accepting an unreadable one, or an NVIDIA-only box could claim an AMD node.
     """
-    if not _kfd_topology_has_an_amd_gpu():
+    if not _kfd_topology_has_an_amd_gpu() and not (
+        _kfd_topology_amd_state() is None and _a_confirmed_amd_render_node_exists()
+    ):
         return []
     lacks = []
     if needs_kfd and not os.path.exists(_KFD_NODE):
@@ -1709,18 +1722,27 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     # Group membership cannot create a device node, so these stand whether or not anything
     # above was said. install.sh says the same two things; this is the runtime half.
     if _KFD_NODE in missing:
-        # NOT "install the ROCm kernel stack". _amd_nodes_the_runtime_lacks only reports a
-        # missing node once the KFD topology names an AMD GPU, and that topology is the
-        # amdkfd driver's own sysfs -- so on every host this branch can reach, the kernel
-        # stack is already loaded and installing it again changes nothing. What is missing
-        # is the node in THIS mount namespace, which is the container shape of the problem.
-        parts.append(
-            "ROCm needs /dev/kfd, which is not present here, but the KFD topology already "
-            "names an AMD GPU, so the kernel driver is loaded and reinstalling ROCm "
-            "changes nothing: the node itself is missing. Under Docker, recreate the "
-            "container with --device /dev/kfd --device /dev/dri; on a bare host it is a "
-            "udev or devtmpfs problem. No group membership creates it."
-        )
+        # Two wordings, because only one of the two ways in here proves anything about the
+        # driver. A topology that NAMES an AMD GPU is the amdkfd driver's own sysfs, so the
+        # stack is loaded and reinstalling it changes nothing. Reached instead off a
+        # confirmed DRM render node with the topology masked, that claim is unsupported --
+        # the node may be missing because the stack is not loaded -- so the sentence says
+        # what is true of both: the mapping is what to fix first.
+        if _kfd_topology_amd_state() is True:
+            parts.append(
+                "ROCm needs /dev/kfd, which is not present here, but the KFD topology "
+                "already names an AMD GPU, so the kernel driver is loaded and reinstalling "
+                "ROCm changes nothing: the node itself is missing. Under Docker, recreate "
+                "the container with --device /dev/kfd --device /dev/dri; on a bare host it "
+                "is a udev or devtmpfs problem. No group membership creates it."
+            )
+        else:
+            parts.append(
+                "ROCm needs /dev/kfd, which is not present here, while an AMD render node "
+                "is. Under Docker, recreate the container with --device /dev/kfd --device "
+                "/dev/dri; on a bare host, check that the amdgpu kernel module is loaded. "
+                "No group membership creates it."
+            )
     if _RENDER_NODE_GLOB in missing:
         # The mapping this caller needs, not both nodes always: Vulkan never opens /dev/kfd,
         # so naming it here hands a container another host device for nothing.

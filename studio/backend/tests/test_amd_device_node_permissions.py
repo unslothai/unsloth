@@ -5740,3 +5740,80 @@ def test_an_amd_node_still_wins_over_an_unreadable_sibling(monkeypatch, tmp_path
         "2": "simd_count 256\nvendor_id 4098\n",
     })
     assert state is True
+
+
+@pytest.mark.parametrize(
+    "select,disable,allowed",
+    [
+        ("", "", True),
+        ("radeon*", "", True),
+        ("nvidia*", "", False),
+        ("", "radeon*", False),
+        # The case Khronos settles: disable is considered BEFORE select, and drivers have no
+        # VK_LOADER_LAYERS_ALLOW counterpart to name one back, so the real loader ends up
+        # with no driver here. Read as "select answers alone" this counted Radeon usable and
+        # reported only the device-node repair for a host groups cannot fix.
+        ("radeon*", "radeon*", False),
+        ("radeon*", "nvidia*", True),
+        ("radeon*,nvidia*", "nvidia*", True),
+    ],
+)
+def test_the_loader_filters_are_an_allowlist_then_a_denylist(monkeypatch, select, disable, allowed):
+    """Vulkan-Loader, LoaderInterfaceArchitecture.md: "The values from the disable
+    environment variable will be considered before the enable or select environment
+    variable", and VK_LOADER_DRIVERS_DISABLE is "also checked before other driver
+    environment variables (such as VK_LOADER_DRIVERS_SELECT)"."""
+    monkeypatch.setenv("VK_LOADER_DRIVERS_SELECT", select)
+    monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", disable)
+    assert amd._vulkan_loader_allows("/usr/share/vulkan/icd.d/radeon_icd.x86_64.json") is allowed
+
+
+def _lacking(monkeypatch, *, topology, confirmed_drm, kfd_present, render_present):
+    monkeypatch.setattr(amd, "_kfd_topology_amd_state", lambda: topology)
+    monkeypatch.setattr(amd, "_kfd_topology_has_an_amd_gpu", lambda: topology is True)
+    monkeypatch.setattr(amd, "_a_confirmed_amd_render_node_exists", lambda: confirmed_drm)
+    monkeypatch.setattr(amd, "_amd_render_node_exists", lambda: render_present)
+    monkeypatch.setattr(amd.os.path, "exists",
+                        lambda p: kfd_present if p == amd._KFD_NODE else os.path.exists(p))
+    return amd._amd_nodes_the_runtime_lacks(needs_kfd = True)
+
+
+def test_a_masked_topology_still_reports_kfd_when_drm_confirms_amd(monkeypatch):
+    """`docker run --device /dev/dri` without `--device /dev/kfd`, which commonly masks
+    /sys/class/kfd too. The topology proves nothing there, but DRM names an AMD render node
+    outright, and a HIP caller cannot run without /dev/kfd -- so suppressing the diagnosis
+    left that host with the generic "no GPU" reading of its own missing device mapping."""
+    assert _lacking(monkeypatch, topology = None, confirmed_drm = True,
+                    kfd_present = False, render_present = True) == [amd._KFD_NODE]
+
+
+def test_a_masked_topology_with_no_confirmed_amd_node_still_says_nothing(monkeypatch):
+    """The control, and the reason the DRM evidence must be the CONFIRMED kind: an
+    NVIDIA-only host has render nodes under the same glob, and reading an unreadable vendor
+    as AMD would hand it a ROCm device-mapping repair for a card it does not have."""
+    assert _lacking(monkeypatch, topology = None, confirmed_drm = False,
+                    kfd_present = False, render_present = True) == []
+
+
+def test_a_topology_that_names_no_amd_gpu_still_says_nothing(monkeypatch):
+    """The other control: READ and denied is not unknown, so a host whose KFD nodes all
+    report another vendor gets nothing whatever DRM says."""
+    assert _lacking(monkeypatch, topology = False, confirmed_drm = True,
+                    kfd_present = False, render_present = True) == []
+
+
+def test_the_wording_does_not_claim_a_loaded_driver_it_cannot_prove(monkeypatch):
+    """The masked-topology route has not read the amdkfd driver's own sysfs, so it must not
+    say the kernel driver is loaded and a reinstall is pointless. The confirmed-topology
+    route still does, which is the control."""
+    monkeypatch.setattr(amd, "_amd_nodes_the_runtime_lacks", lambda **_k: [amd._KFD_NODE])
+    monkeypatch.setattr(amd, "amd_nodes_closed_to_this_user", lambda **_k: [])
+
+    monkeypatch.setattr(amd, "_kfd_topology_amd_state", lambda: None)
+    masked = amd.amd_node_permission_hint(needs_kfd = True) or ""
+    assert "the kernel driver is loaded" not in masked
+    assert "/dev/kfd" in masked and "--device /dev/kfd" in masked
+
+    monkeypatch.setattr(amd, "_kfd_topology_amd_state", lambda: True)
+    named = amd.amd_node_permission_hint(needs_kfd = True) or ""
+    assert "the kernel driver is loaded" in named
