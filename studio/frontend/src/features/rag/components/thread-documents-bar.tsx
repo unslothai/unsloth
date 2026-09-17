@@ -24,6 +24,7 @@ import {
   getStoredChatThread,
   isThreadIncognito,
 } from "@/features/chat";
+import { isChatThreadDeleted } from "@/features/chat/utils/chat-thread-tombstones";
 import {
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
@@ -50,6 +51,7 @@ import {
   type RagDocument,
   isLinkedFolderManaged,
 } from "../types/rag";
+import { materializeThreadScope } from "../utils/materialize-thread-scope";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -459,12 +461,7 @@ export function ThreadDocumentsBar({
 
   // Materialize the thread id on first use; ref-deduped so a double-click can't
   // start two threads. A thread switch gets separate work even if the prior request is pending.
-  const ensureThreadId = useCallback((): Promise<string> => {
-    if (effectiveThreadId) {
-      return requireStoredThread(effectiveThreadId).then(
-        () => effectiveThreadId,
-      );
-    }
+  const initializeThreadItem = useCallback((): Promise<string> => {
     const current = initPromiseRef.current;
     if (current) {
       return current;
@@ -500,7 +497,20 @@ export function ThreadDocumentsBar({
     };
     pending.then(clear, clear);
     return pending;
-  }, [aui, effectiveThreadId]);
+  }, [aui]);
+
+  const ensureThreadId = useCallback((): Promise<string> => {
+    return materializeThreadScope({
+      threadId: effectiveThreadId,
+      readCurrentThreadItem: () => {
+        const state = aui.threadListItem().getState();
+        return { id: state.id, remoteId: state.remoteId };
+      },
+      isThreadDeleted: isChatThreadDeleted,
+      requireStoredThread,
+      initialize: initializeThreadItem,
+    });
+  }, [aui, effectiveThreadId, initializeThreadItem]);
 
   // One entry point for the picker and desktop drops: project files go straight
   // there, per-chat files materialize the thread first. The probe caches for 30s,
