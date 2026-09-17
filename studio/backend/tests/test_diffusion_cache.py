@@ -109,7 +109,34 @@ def _stub_diffusers(monkeypatch, *, hook_recorder = None):
             hook_recorder["config"] = config
 
     hooks.apply_first_block_cache = _apply_first_block_cache
+
+    # The real teardown path: diffusers removes FBCache by name through HookRegistry, NOT through
+    # _cache_config, which is exactly why a partial hook install is still removable.
+    class _Registry:
+        instances: dict = {}
+        removed: list = []
+
+        def __init__(self, module):
+            self.module = module
+
+        @classmethod
+        def check_if_exists_or_initialize(cls, module):
+            return cls.instances.setdefault(id(module), cls(module))
+
+        def remove_hook(self, name, recurse = True):
+            type(self).removed.append(name)
+
+    _Registry.instances = {}
+    _Registry.removed = []
+    hooks.HookRegistry = _Registry
     monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
+
+    fbc = types.ModuleType("diffusers.hooks.first_block_cache")
+    fbc._FBC_LEADER_BLOCK_HOOK = "fbc_leader_block_hook"
+    fbc._FBC_BLOCK_HOOK = "fbc_block_hook"
+    monkeypatch.setitem(sys.modules, "diffusers.hooks.first_block_cache", fbc)
+    hooks.first_block_cache = fbc
+    return _Registry
 
 
 def test_disabled_mode_is_noop(monkeypatch):
@@ -661,16 +688,64 @@ class _CleanupAlsoFailsTransformer:
         raise AssertionError("not used")
 
 
-def test_a_failed_cleanup_keeps_the_marker_rather_than_claiming_uncached(monkeypatch):
-    """If disable_cache ALSO raises, hooks may still be live. Clearing the marker there would let the
-    CUDA graph wrapper capture a cache-hooked forward: wrong output, where keeping it only forces eager."""
-    _stub_diffusers(monkeypatch)
+def test_a_failed_cleanup_removes_the_hooks_itself_then_clears_the_marker(monkeypatch):
+    """disable_cache raising does not end it: the hooks come off by NAME through the registry, which is
+    the layer under diffusers' own teardown, so the marker can be cleared on evidence rather than hope."""
+    registry = _stub_diffusers(monkeypatch)
     t = _CleanupAlsoFailsTransformer(enabled_after_failure = True)
     t._unsloth_step_cache = "fbcache@0.1"
 
     assert apply_step_cache(_pipe(t), mode = "fbcache") is None
     assert t.disable_attempted is True
-    # Preserved: the transformer is still caching, so nothing downstream may treat it as uncached.
+    assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
+    assert t._unsloth_step_cache is None
+
+
+def test_a_silently_partial_engage_still_has_its_hooks_taken_off(monkeypatch):
+    """The shape diffusers actually produces. CacheMixin.enable_cache assigns _cache_config as its LAST
+    statement, after apply_first_block_cache returns, and disable_cache returns early with a warning when
+    _cache_config is None. So a raise part-way through hooking leaves hooks LIVE while is_cache_enabled
+    reads False and disable_cache does nothing: every signal says uncached about a transformer that is
+    partly hooked. Removing by name is the only thing here that does not depend on those signals."""
+    registry = _stub_diffusers(monkeypatch)
+
+    class _PartlyHooked:
+        # _cache_config never gets set, exactly as when apply_first_block_cache raises.
+        _cache_config = None
+        disable_calls = 0
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def enable_cache(self, config):
+            raise RuntimeError("apply_first_block_cache died after hooking 3 of 57 blocks")
+
+        def disable_cache(self):
+            type(self).disable_calls += 1  # the real one would warn and return; nothing is unhooked
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _PartlyHooked()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
+    assert t._unsloth_step_cache is None
+
+
+def test_an_unverifiable_teardown_keeps_the_marker(monkeypatch):
+    """No registry to remove through means the hooks cannot be shown to be gone. Clearing the marker
+    there would let the graph wrapper capture a partly-hooked forward, so it stays set and the
+    transformer keeps the eager path: slower, and not wrong."""
+    _stub_diffusers(monkeypatch)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks.first_block_cache", raising = False)
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", types.ModuleType("diffusers.hooks"))
+    sys.modules["diffusers.hooks"].apply_first_block_cache = lambda *_a, **_k: None
+    sys.modules["diffusers.hooks"].FirstBlockCacheConfig = _Config
+
+    t = _CleanupAlsoFailsTransformer(enabled_after_failure = True)
+    t._unsloth_step_cache = "fbcache@0.1"
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
     assert t._unsloth_step_cache == "fbcache@0.1"
 
 

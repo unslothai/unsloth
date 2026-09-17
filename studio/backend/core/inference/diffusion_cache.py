@@ -134,6 +134,35 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
     return armed
 
 
+def _unhook_first_block_cache(transformer: Any) -> bool:
+    """Take the First-Block-Cache hooks off directly, and say whether they are KNOWN to be gone.
+
+    Needed because after a failed ``enable_cache`` diffusers cannot be asked. ``CacheMixin.enable_cache``
+    sets ``_cache_config`` only once ``apply_first_block_cache`` has returned, and ``disable_cache``
+    logs a warning and returns when ``_cache_config`` is None, so a raise part-way through hooking
+    leaves hooks live behind ``is_cache_enabled is False`` and a no-op ``disable_cache``.
+
+    ``HookRegistry.remove_hook`` is the layer under both: it skips a name that is not registered and
+    recurses into every submodule, so calling it for both FBCache hooks is safe whatever got installed.
+    False when the registry or the hook names cannot be reached, which is the caller's cue to keep the
+    marker rather than assume an uncached transformer.
+    """
+    try:
+        from diffusers.hooks import HookRegistry
+        from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, _FBC_LEADER_BLOCK_HOOK
+    except Exception:  # noqa: BLE001 - private names; an unknown layout means we cannot verify
+        return False
+    try:
+        registry = HookRegistry.check_if_exists_or_initialize(transformer)
+        registry.remove_hook(_FBC_LEADER_BLOCK_HOOK, recurse = True)
+        registry.remove_hook(_FBC_BLOCK_HOOK, recurse = True)
+        # Left dangling by a partial engage, and it is what diffusers keys every later call on.
+        transformer._cache_config = None
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def _restore_hooked_block_inners(transformer: Any) -> None:
     """Undo ``_compile_hooked_block_inners``: restore the bound methods and clear the markers.
     MUST run before ``disable_cache`` -- ``remove_hook`` splices ``original_forward`` back into
@@ -270,22 +299,27 @@ def apply_step_cache(
         disabled = True
         try:
             transformer.disable_cache()
-        except Exception:  # noqa: BLE001 - hooks may still be live; the marker below is what says so
+        except Exception:  # noqa: BLE001 - _unhook_first_block_cache below is what actually decides
             disabled = False
-        # The marker has to track the HOOKS, not this function's intent. It is read as "this transformer
+        # NEITHER `disabled` NOR is_cache_enabled can be trusted after a failed engage, so do not ask
+        # them. diffusers' CacheMixin.enable_cache assigns `_cache_config` as its LAST statement, after
+        # apply_first_block_cache returns, and disable_cache returns early with only a warning when
+        # `_cache_config` is None. So a raise part-way through hooking leaves the hooks LIVE while
+        # is_cache_enabled reads False and the disable_cache above is a silent no-op: both signals say
+        # "not caching" about a transformer that is. Take the hooks off directly instead.
+        del disabled
+        removed = _unhook_first_block_cache(transformer)
+        # The marker tracks the HOOKS, not this function's intent. It is read as "this transformer
         # step-caches" well away from here (the CUDA graph wrapper short-circuits to eager on it), so it
-        # comes off only once the hooks are known to be gone. The two ways to be wrong are not equally
-        # bad: a marker left set on an uncached transformer forces eager and costs speed, while a marker
-        # cleared over live hooks lets the graph wrapper capture a cache-hooked forward, which is wrong
-        # output. So when disable_cache itself raised, keep the marker unless the model still says the
-        # cache is off, and let the slow path be the one we fall back to.
-        if not disabled and getattr(transformer, "is_cache_enabled", False):
-            _warn(logger, mode, exc)
-            return None
-        try:
-            transformer._unsloth_step_cache = None
-        except Exception:  # noqa: BLE001 - marker is best-effort
-            pass
+        # comes off only once the hooks are KNOWN gone. The two ways to be wrong are not equally bad: a
+        # marker left set on an uncached transformer forces eager and costs speed, while a marker cleared
+        # over live hooks lets the wrapper capture a partly-hooked forward, which is wrong output. So an
+        # unverified teardown keeps the marker and takes the slow path.
+        if removed:
+            try:
+                transformer._unsloth_step_cache = None
+            except Exception:  # noqa: BLE001 - marker is best-effort
+                pass
         _warn(logger, mode, exc)
         return None
 
