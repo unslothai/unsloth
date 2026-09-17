@@ -357,6 +357,15 @@ def _local_gguf_entry(
 _ADAPTER_MARKERS = ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin")
 _SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
 _MODALITY_KEY_WORDS = frozenset({"vision", "image", "img", "audio", "video", "projector"})
+# transformers 5 placeholder token ids, read for their VALUE not by the word match: a serialiser emits
+# ``"image_token_id": null`` for a model with none. video_token_index is the transformers 4 spelling (VideoLlava).
+_VISUAL_TOKEN_ID_KEYS = (
+    "image_token_id",
+    "video_token_id",
+    "video_token_index",
+    "vision_start_token_id",
+    "vision_end_token_id",
+)
 
 
 def _read_json(path):
@@ -463,10 +472,29 @@ def _config_declares_multimodality(config: dict) -> bool:
     for key in config:
         if not isinstance(key, str):
             continue
-        if key == "text_config":
-            return True
+        # Neither counts alone: transformers 5 nests a text_config in TEXT-ONLY configs too (ClvpConfig), and
+        # audio_token_id would route HiggsAudioV2 and VibeVoiceAsr around the audio allowlist above.
+        if key in ("text_config", "audio_token_id"):
+            continue
+        if key in _VISUAL_TOKEN_ID_KEYS:
+            if _is_placeholder_token_id(config[key]):
+                return True
+            continue
         if _MODALITY_KEY_WORDS & set(re.split(r"[^a-z0-9]+", key.lower())):
             return True
+    return False
+
+
+def _is_placeholder_token_id(value) -> bool:
+    """A token id a tokenizer could emit: a non-negative int, or a non-empty list of them. ``bool`` is excluded by
+    hand, or ``"image_token_id": true`` reads as token 1; transformers 5 writes the list form for multi-slot models.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value >= 0
+    if isinstance(value, (list, tuple)):
+        return bool(value) and all(_is_placeholder_token_id(item) for item in value)
     return False
 
 
