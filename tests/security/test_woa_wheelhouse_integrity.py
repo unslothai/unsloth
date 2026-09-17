@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Every input to a wheel we Authenticode sign has to be immutable.
 
 woa-wheelhouse.yml builds pyarrow and sqlite-vec for win_arm64, signs the native images
