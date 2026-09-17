@@ -37,11 +37,13 @@ cleanly is a normal return, raising never is.
 """
 
 import ast
+import gc
 import json
 import os
 import pathlib
 import subprocess
 import sys
+import weakref
 
 import pytest
 
@@ -275,6 +277,44 @@ def test_a_repeated_pass_replaces_rather_than_grows_its_phase():
         run("pre_compile")
 
     assert len(outcomes["pre_compile"]["completed"]) == 1
+
+
+def test_a_repeated_pass_releases_what_the_previous_failure_was_holding():
+    # The count check above uses a patch that returns cleanly, which is the
+    # cheap half of the question. The half that can actually cost memory is a
+    # patch that RAISES: `raised` stores the exception object, the exception
+    # carries its __traceback__, and the traceback keeps the raising frame and
+    # every local in it alive. Measured: the frame's local is still reachable
+    # for as long as the phase entry lives, and is released the moment the next
+    # pass of that phase replaces the entry. So the bound on this record is not
+    # just its length, it is that one pass never keeps the previous pass's
+    # frames. Pinned here because a record that accumulated history would still
+    # satisfy every other test in this file.
+    class _Held:
+        pass
+
+    def explodes():
+        heavy = _Held()  # noqa: F841  the local the traceback pins alive
+        raise RuntimeError("boom")
+
+    outcomes = {}
+    run = _isolated([explodes], _CollectingLogger(), outcomes)
+    run("pre_compile")
+
+    _, exception = outcomes["pre_compile"]["raised"][0]
+    traceback = exception.__traceback__
+    assert traceback is not None, "the stored exception lost its traceback"
+    frame = (traceback.tb_next or traceback).tb_frame
+    held = weakref.ref(frame.f_locals["heavy"])
+    del exception, traceback, frame
+    assert held() is not None, "the probe never had a live reference to hold"
+
+    run("pre_compile")
+    gc.collect()
+    assert held() is None, (
+        "a second pass did not release the frames the previous failure was holding, so "
+        "TEMPORARY_PATCH_OUTCOMES retains one traceback per failing model load"
+    )
 
 
 def test_an_unnamed_callable_does_not_break_the_recording():
