@@ -2812,3 +2812,80 @@ def test_both_routes_predict_with_the_ordinal_they_already_resolved():
     resolved = plan.index("_selected_gpu_ordinal(")
     predicted = plan.index("predict_engine(")
     assert training < resolved < predicted, (training, resolved, predicted)
+
+
+def test_an_unmasked_ordinal_is_still_a_hip_id_not_an_inventory_row(monkeypatch):
+    """Unmasked does not make the ordinal the inventory position. HIP orders by node id and amd-smi
+    by discovery row, so counting same-name cards in torch order names the OTHER card of a matched
+    pair and pins Vulkan to a GPU the request never selected."""
+    from core.inference import video as video_mod
+
+    _no_visibility_mask(monkeypatch)
+    _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX", "AMD Radeon RX 7900 XTX"])
+    _pinned_inventory(
+        monkeypatch,
+        [
+            {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX"},
+            {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 7900 XTX"},
+        ],
+        # The two spaces disagree: HIP id 0 is inventory row 1 and vice versa.
+        hip_by_row = {0: 1, 1: 0},
+    )
+
+    assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", 1)
+    assert video_mod._physical_card_name(1) == ("AMD Radeon RX 7900 XTX", 0)
+
+
+def test_an_unmasked_ordinal_still_counts_when_no_mapping_exists(monkeypatch):
+    """amd-smi missing, or older than the ROCm 6.4 that added ``list -e``: the torch-order count is
+    the only answer there is, and it stays the answer."""
+    from core.inference import video as video_mod
+    from utils.hardware import amd, hardware
+
+    _no_visibility_mask(monkeypatch)
+    _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX", "AMD Radeon RX 7900 XTX"])
+    monkeypatch.setattr(hardware, "get_physical_gpu_inventory", lambda *, block = True: None)
+    monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: {})
+
+    assert video_mod._physical_card_name(1) == ("AMD Radeon RX 7900 XTX", 1)
+
+
+def test_the_loading_card_does_not_outlive_the_load_on_a_pooled_thread(monkeypatch):
+    """The card is the LOAD's, not the worker's. Load threads are pooled, so a thread-local left set
+    makes a later off-load resolution on the same worker -- one-shot generation re-resolving sd-cli
+    -- answer with a finished load's card instead of the committed one, and pick the fallback for a
+    card that never failed."""
+    from core.inference import sd_cpp_backend
+
+    backend = sd_cpp_backend.SdCppDiffusionBackend.__new__(sd_cpp_backend.SdCppDiffusionBackend)
+    backend._committed_loading_card = "AMD Radeon RX 7900 XTX@0"
+
+    # Off any load: the committed card is the answer.
+    assert backend._loading_card == "AMD Radeon RX 7900 XTX@0"
+
+    # During a load on this thread the load's own selection wins, including an explicit None.
+    backend._loading_card = "AMD Radeon RX 7600@1"
+    assert backend._loading_card == "AMD Radeon RX 7600@1"
+    backend._loading_card = None
+    assert backend._loading_card is None
+
+    # And once the load is over the worker has no own answer again.
+    backend._clear_loading_card()
+    assert backend._loading_card == "AMD Radeon RX 7900 XTX@0"
+
+
+def test_constructing_the_backend_does_not_claim_a_card_for_its_thread():
+    """``__init__`` runs on whichever executor thread built the backend. An explicit None written
+    there would be that thread's own answer for the life of the process, so a generate later
+    scheduled onto the same worker would read None rather than the committed card."""
+    import inspect
+
+    from core.inference import sd_cpp_backend
+
+    source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.__init__)
+    assert "self._loading_card =" not in source
+
+    # And the load clears it on the way out, on every path.
+    run_load = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
+    finally_block = run_load[run_load.rindex("finally:"):]
+    assert "_clear_loading_card()" in finally_block

@@ -550,6 +550,13 @@ def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional
     if not masked:
         if not name:
             return None, None
+        # Unmasked does NOT mean the ordinal is the inventory position. It is still a HIP device id,
+        # and HIP orders by node id while amd-smi (and, by assumption, RADV) walks the inventory rows,
+        # so counting same-name cards in torch order names the other card of a matched pair. Ask the
+        # same mapping the masked branch does, and only count here when it cannot answer.
+        physical_name, position = _physical_position_of(physical_index)
+        if position is not None:
+            return name or physical_name, position
         return name, sum(1 for index in range(ordinal) if (names[index] or "").strip() == name)
     physical_name, position = (None, None)
     if physical_index is not None:
@@ -2006,8 +2013,10 @@ class SdCppDiffusionBackend:
         # Set by _resolve_backend when it had to skip an accelerator install because the managed tree was still in
         # use; the load retries it once the tree is free.
         self._deferred_accelerator_install = False
-        # Every accelerator resolution in the load asks about it, so a heterogeneous host is not moved over a failure on a different card.
-        self._loading_card = None
+        # Every accelerator resolution in the load asks about it, so a heterogeneous host is not moved over a failure
+        # on a different card. NOT initialised here: the store is thread-local and __init__ runs on whatever thread
+        # built the backend, so an explicit None would be that thread's own answer forever, and a later generate
+        # scheduled onto the same executor worker would read it instead of falling back to the committed card.
         # Servers taken out of _state/_pending_server whose stop() has not returned yet. unload() deliberately stops
         # outside the lock (terminate can take seconds), so between the clear and the stop the fields say idle while
         # the process is still running its own executable.
@@ -2047,6 +2056,16 @@ class SdCppDiffusionBackend:
         # committed card naming a load that never took while `_state` still held card A's. On a
         # heterogeneous host that resolves the other card's build and then fails the identity check.
         self._loading_card_store().card = value
+
+    def _clear_loading_card(self) -> None:
+        """Put this thread back to having no own answer, which is not the same as answering None.
+        Load threads are pooled: without this the worker that ran a load keeps naming that card for
+        every later off-load resolution on the same worker, including one-shot generation, long
+        after the load is over and possibly after a different load committed."""
+        try:
+            del self._loading_card_store().card
+        except AttributeError:
+            pass
 
     def _reserve_stop(self, count: int = 1) -> None:
         """Claim ``count`` pending stops. MUST be called under ``_lock`` in the same block that
@@ -2723,6 +2742,8 @@ class SdCppDiffusionBackend:
                 with self._lock:
                     if self._pending_server is started:
                         self._pending_server = None
+            # The card was this LOAD's, not this worker's. Past here the committed card is the answer again.
+            self._clear_loading_card()
 
     def download_plan(
         self,
