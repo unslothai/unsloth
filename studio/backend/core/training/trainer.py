@@ -690,6 +690,8 @@ class UnslothTrainer:
         if save_steps_val and save_steps_val > 0:
             config["save_steps"] = save_steps_val
             config["save_strategy"] = "steps"
+        else:
+            config["save_strategy"] = "no"
 
         if extra_args:
             config.update(extra_args)
@@ -4085,6 +4087,8 @@ class UnslothTrainer:
             if save_steps_val and save_steps_val > 0:
                 config_args["save_steps"] = save_steps_val
                 config_args["save_strategy"] = "steps"
+            else:
+                config_args["save_strategy"] = "no"
 
             max_steps_val = training_args.get("max_steps", 0)
             if max_steps_val and max_steps_val > 0:
