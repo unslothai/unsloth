@@ -1635,11 +1635,13 @@ def test_the_load_path_reads_the_fingerprint_before_it_installs_the_fallback():
     install = source.index("fallback_binary = usable_or_recorded_failure(")
     note = source.index("note_accelerator_runtime_failure(\n")
     assert read < install < note, (read, install, note)
-    assert "fingerprint = failed_fingerprint" in source[note : note + 400]
-    assert (
-        "proven = accelerator_probe_ran and accelerator_verdict is not None"
-        in source[note : note + 400]
-    )
+    assert "fingerprint = failed_fingerprint" in source[note : note + 900]
+    window = source[note : note + 700]
+    # `proven` still needs the probe to have RUN and ANSWERED, and now also that a bare negative
+    # answer is explained: "CPU only" reads the same whether the runtime is missing or the card busy.
+    assert "accelerator_probe_ran" in window
+    assert "accelerator_verdict is not None" in window
+    assert "accelerator_probe_failure_is_decisive(accelerator)" in window
 
 
 def test_a_singleton_match_does_not_answer_for_a_position_it_cannot_hold(monkeypatch):
@@ -2431,7 +2433,7 @@ def test_the_h3_load_scopes_its_record_lookup_to_the_card_it_selected(fake_setti
         start = found + 1
     assert guarded == load.count("ensure_h3_sd_cpp_binary("), guarded
     note = load.index("note_accelerator_runtime_failure(")
-    assert "card = selected_card" in load[note : note + 400], load[note : note + 400]
+    assert "card = selected_card" in load[note : note + 900], load[note : note + 900]
 
 
 def test_a_cancelled_workers_card_does_not_leak_into_the_replacement_load(fake_settings):
@@ -2461,8 +2463,13 @@ def test_a_cancelled_workers_card_does_not_leak_into_the_replacement_load(fake_s
     first.join(10)
     second.join(10)
     assert seen == {_CARD_A: _CARD_A, _CARD_B: _CARD_B}, seen
-    # Off a load thread -- a generation re-resolving sd-cli -- the last load's card still stands.
-    assert backend._loading_card == _CARD_B
+    # Off a load thread -- a generation re-resolving sd-cli -- the last COMMITTED load's card stands.
+    # Neither worker here reached the _state commit, so there is none, and None is the honest answer:
+    # a started load is not a loaded model, and naming card B while nothing is loaded is what sends a
+    # one-shot generation to the wrong build. Committing publishes it, which the next test pins.
+    assert backend._loading_card is None
+    backend._committed_loading_card = _CARD_A
+    assert backend._loading_card == _CARD_A
 
 
 # ── the host runtime preflight, from the two failure shapes measured on real hardware ──────────
@@ -2631,3 +2638,69 @@ class TestSelectedCardIndexSpaces:
 
         # Composing the stale ROCR mask in would have made this 3 rather than 2.
         assert sd_cpp_backend._physical_index_of(0, env = env) == (2, True)
+
+
+def _recorded_proven(store: dict, klass: str = "rocm") -> bool:
+    record = (store.get("sd_cpp_accelerator_runtime_failures") or {}).get(klass) or {}
+    return bool(record.get("proven", False))
+
+
+class TestACpuOnlyAnswerIsOnlyProofWhenItIsExplained:
+    """The ROCm build answering ``--list-devices`` with CPU only is the Linux failure shape: exit 0, no
+    GPU enumerated. A busy or masked card produces the same text, so on its own it is one strike, not
+    proof. It becomes proof when the HIP/BLAS runtime the prebuilt needs cannot be loaded at all."""
+
+    def _run(self, h3_amd_host, monkeypatch, *, resolvable):
+        from core.inference import sd_cpp_backend
+
+        monkeypatch.setattr(
+            sd_cpp_backend, "rocm_runtime_resolvable", lambda: resolvable, raising = False
+        )
+        host = h3_amd_host(
+            platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_CPU_ONLY
+        )
+        host.run()
+
+    def test_a_loadable_runtime_makes_it_ambiguous(self, h3_amd_host, fake_settings, monkeypatch):
+        """The runtime IS there, so CPU-only says nothing conclusive: one strike, two needed to divert."""
+        self._run(h3_amd_host, monkeypatch, resolvable = True)
+        assert _recorded_proven(fake_settings) is False
+        assert _recorded_strikes(fake_settings) == 1
+
+    def test_an_unloadable_runtime_makes_it_decisive(self, h3_amd_host, fake_settings, monkeypatch):
+        """No hipblas / rocblas / amdhip64 on this host explains the CPU-only answer, so one is enough."""
+        self._run(h3_amd_host, monkeypatch, resolvable = False)
+        assert _recorded_proven(fake_settings) is True
+
+
+class TestTheCommittedCardIsPublishedAtTheCommit:
+    """``_committed_loading_card`` is what a caller OFF the load thread reads. It must name the load
+    that took, not the one that started, or a one-shot generation resolves the other card's build."""
+
+    def test_a_load_in_flight_does_not_publish_its_card(self):
+        from core.inference import sd_cpp_backend
+
+        backend_obj = sd_cpp_backend.SdCppDiffusionBackend.__new__(sd_cpp_backend.SdCppDiffusionBackend)
+        backend_obj._loading_card_store = lambda: types.SimpleNamespace()
+        backend_obj._committed_loading_card = "Card A@gfx1100"
+
+        # A worker starting on card B writes only its own thread-local view.
+        backend_obj._loading_card = "Card B@gfx1201"
+        assert backend_obj._committed_loading_card == "Card A@gfx1100"
+
+    def test_the_setter_is_thread_local_only(self):
+        """Pinned on the source: the publish belongs beside the _state commit, past the supersession
+        check, not in the setter, which a superseded worker can still reach late."""
+        import inspect
+
+        from core.inference import sd_cpp_backend
+
+        setter = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._loading_card.fset)
+        code = "\n".join(
+            line for line in setter.splitlines() if not line.strip().startswith("#")
+        )
+        assert "_committed_loading_card" not in code, code
+
+        source = inspect.getsource(sd_cpp_backend)
+        commit = source.index("self._state = state\n")
+        assert "self._committed_loading_card = self._loading_card" in source[commit : commit + 500]

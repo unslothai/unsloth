@@ -2008,6 +2008,7 @@ class VideoBackend:
             _accelerator_fingerprint,
             _install_allowed,
             _installed_accelerator_of,
+            accelerator_probe_failure_is_decisive,
             accelerator_verdict_keeps_gpu,
             usable_or_recorded_failure,
             ensure_h3_sd_cpp_binary,
@@ -2123,9 +2124,22 @@ class VideoBackend:
                         )
                         # Only now, so what survives is a preference SHOWN to be better. `proven`
                         # only when the host's own build ANSWERED, else a timeout diverts for good.
+                        # An answer of "CPU only" is not by itself proof: on Linux the ROCm build
+                        # exits 0 and enumerates no GPU when the HIP/BLAS runtime it needs is absent,
+                        # but a busy or masked card reads exactly the same. So a bare negative is
+                        # decisive only when the runtime is provably unloadable on this host, which
+                        # is what accelerator_probe_failure_is_decisive answers; otherwise it stays
+                        # ambiguous and takes the usual two strikes.
                         note_accelerator_runtime_failure(
                             accelerator,
-                            proven = accelerator_probe_ran and accelerator_verdict is not None,
+                            proven = (
+                                accelerator_probe_ran
+                                and accelerator_verdict is not None
+                                and (
+                                    accelerator_verdict is not False
+                                    or accelerator_probe_failure_is_decisive(accelerator)
+                                )
+                            ),
                             fingerprint = failed_fingerprint,
                             card = selected_card,
                         )

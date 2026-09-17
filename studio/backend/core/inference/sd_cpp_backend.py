@@ -2040,8 +2040,13 @@ class SdCppDiffusionBackend:
 
     @_loading_card.setter
     def _loading_card(self, value: Optional[str]) -> None:
+        # Thread-local ONLY. `_committed_loading_card` is what off-load-thread callers read, and it is
+        # published where `_state` is, not here: a load that starts is not a load that commits. Writing
+        # it here made a replacement load on card B the answer for one-shot generation the moment the
+        # worker started, so a failure before teardown, or a superseded worker arriving late, left the
+        # committed card naming a load that never took while `_state` still held card A's. On a
+        # heterogeneous host that resolves the other card's build and then fails the identity check.
         self._loading_card_store().card = value
-        self._committed_loading_card = value
 
     def _reserve_stop(self, count: int = 1) -> None:
         """Claim ``count`` pending stops. MUST be called under ``_lock`` in the same block that
@@ -2679,6 +2684,9 @@ class SdCppDiffusionBackend:
                             orphan = server
                     else:
                         self._state = state
+                        # Same block as _state, under the same lock and past the supersession check:
+                        # this is the point at which the card becomes the fact off-thread readers want.
+                        self._committed_loading_card = self._loading_card
                         self._loading = None
                     # The exchange the started server stayed published for: it is _state's now, or reserved for the
                     # stop below, and either way _tree_in_use still sees it.
