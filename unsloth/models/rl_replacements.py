@@ -1103,9 +1103,21 @@ def _unsloth_grpo_image_cell(value):
     return [value]
 
 
-def _unsloth_reject_grpo_image_list(inputs):
+def _unsloth_reject_grpo_image_list(inputs, trainer = None):
     """Refuse it where the rewrite above missed TRL's spelling: the processor's own error
-    names neither the column nor the fix."""
+    names neither the column nor the fix.
+
+    `trainer` narrows the refusal to the one runtime mode a legacy TRL cannot carry a multi
+    image row through. Its vLLM server path sends the raw cells to `VLLMClient.generate`,
+    which does `[pil_to_base64(img) for img in images]` over the top level entries, so a cell
+    holding two images reaches `list.save(...)` and dies with an AttributeError naming neither.
+    Colocate mode and the no vLLM path both go through the processor, which this change fixed,
+    so they keep working and must not be refused."""
+    if trainer is not None:
+        if not getattr(trainer, "use_vllm", False):
+            return
+        if getattr(trainer, "vllm_mode", None) != "server":
+            return
     # Every row, not just the first: one list cell anywhere in the batch is enough to put the
     # images and the placeholders out of step, and a dataset that mixes a bare image with a
     # list is exactly the shape that puts the list somewhere other than row 0.
@@ -1666,6 +1678,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         '                _unsloth_cell == [] for _unsloth_cell in kwargs["images"]\n'
         "            ):\n"
         "                kwargs = {}\n"
+        "                has_images = False\n"
         '            for prompt, _unsloth_cell in zip(prompts, kwargs.get("images", [])):\n'
         "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
         "                    prepare_multimodal_messages(\n"
@@ -1688,7 +1701,20 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     # index and all but the first are dropped. That surfaces as a token/feature mismatch
     # raised inside the model, naming neither the column nor the fix, so refuse it here
     # instead. A single image cell is unaffected either way and keeps working.
+    # `self` and not nothing: on a legacy TRL every other path now carries a multi image row,
+    # so the refusal has to narrow to the vLLM server mode that still cannot. Passing the
+    # trainer moves that decision to runtime, where `vllm_mode` is actually known.
+    _guard_argument = ""
     if not _image_cell_normalised or _legacy_vision_unplumbed or not _placeholder_sized:
+        pass
+    elif _legacy_image_cell:
+        _guard_argument = ", self"
+    if (
+        _guard_argument
+        or not _image_cell_normalised
+        or _legacy_vision_unplumbed
+        or (not _placeholder_sized)
+    ):
         _signature = re.search(
             r"([ \t]*)def _generate_and_score_completions\((?:[^()]|\([^()]*\))*\)[^\n]*:\n",
             function,
@@ -1704,7 +1730,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             _indent = _signature.group(1) + "    "
             function = (
                 function[: _signature.end()]
-                + f"{_indent}_unsloth_reject_grpo_image_list(inputs)\n"
+                + f"{_indent}_unsloth_reject_grpo_image_list(inputs{_guard_argument})\n"
                 + function[_signature.end() :]
             )
 

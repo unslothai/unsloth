@@ -305,3 +305,90 @@ def test_a_none_cell_is_left_to_fail_exactly_as_it_does_on_main():
     images, calls = _run_legacy_placeholders([None, None])
     assert images == [None, None], images
     assert calls == [0, 0]
+
+
+class _VllmTrainer:
+    def __init__(self, use_vllm, vllm_mode):
+        self.use_vllm = use_vllm
+        self.vllm_mode = vllm_mode
+
+
+def test_the_guard_refuses_a_multi_image_row_only_in_legacy_vllm_server_mode():
+    """A legacy TRL's vLLM server path hands the raw cells to VLLMClient.generate, which does
+    `[pil_to_base64(img) for img in images]` over the top level entries, so a cell holding two
+    images reaches `list.save(...)`. Colocate mode and the no vLLM path both go through the
+    processor, which this change fixed, so they must keep working."""
+    a, b = _Img("a"), _Img("b")
+    rows = [{"image": [a, b]}, {"image": a}]
+
+    with pytest.raises(ValueError) as excinfo:
+        _unsloth_reject_grpo_image_list(rows, _VllmTrainer(True, "server"))
+    assert "3605" in str(excinfo.value)
+
+    # The modes that do carry it: no refusal.
+    _unsloth_reject_grpo_image_list(rows, _VllmTrainer(True, "colocate"))
+    _unsloth_reject_grpo_image_list(rows, _VllmTrainer(False, "server"))
+    _unsloth_reject_grpo_image_list(rows, _VllmTrainer(False, None))
+    _unsloth_reject_grpo_image_list(rows, object())
+
+    # A single image row is carried by every mode, server included.
+    _unsloth_reject_grpo_image_list([{"image": a}], _VllmTrainer(True, "server"))
+
+    # No trainer means the anchors did not land at all, so nothing is known to carry it.
+    with pytest.raises(ValueError):
+        _unsloth_reject_grpo_image_list(rows)
+
+
+def test_the_legacy_guard_is_installed_with_the_trainer_and_the_modern_one_is_not():
+    trl_grpo = pytest.importorskip("trl.trainer.grpo_trainer")
+    with open(trl_grpo.__file__, "r", encoding = "utf-8") as fh:
+        module_source = fh.read()
+    start = module_source.find("    def _generate_and_score_completions(")
+    source = module_source[start:]
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", source
+    )
+    if 'kwargs = {"images": [[img] for img in images]}' in source:
+        assert "_unsloth_reject_grpo_image_list(inputs, self)" in patched
+    else:
+        assert "_unsloth_reject_grpo_image_list(inputs" not in patched
+
+
+def test_demoting_an_all_empty_column_also_clears_the_image_flag():
+    """Emptying `kwargs` is not enough: `has_images` gates the legacy vLLM paths, which read
+    the raw cells rather than `kwargs`, so a still-true flag submits `[[], ...]` as an image
+    payload and server mode calls `.save()` on an empty list."""
+    source = (
+        '        has_images = "image" in inputs[0]\n'
+        "        if has_images:\n"
+        '            images = [example.get("image") for example in inputs]\n'
+        '            kwargs = {"images": [[img] for img in images]}\n'
+        "            for prompt in prompts:\n"
+        "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
+        "                    prepare_multimodal_messages(prompt, num_images=1)\n"
+    )
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", source
+    )
+    assert "has_images = False" in patched
+
+    namespace = {
+        "inputs": [{"image": []}, {"image": []}],
+        "prompts": [[{"role": "user", "content": "x"}] for _ in range(2)],
+        "prepare_multimodal_messages": lambda prompt, num_images: None,
+        "_unsloth_grpo_image_cell": _unsloth_grpo_image_cell,
+    }
+    exec(textwrap.dedent(patched), namespace)
+    assert namespace["has_images"] is False
+    assert namespace["kwargs"] == {}
+
+    # An image bearing batch keeps the flag, so the vLLM paths still run for it.
+    namespace = {
+        "inputs": [{"image": _Img("a")}, {"image": _Img("b")}],
+        "prompts": [[{"role": "user", "content": "x"}] for _ in range(2)],
+        "prepare_multimodal_messages": lambda prompt, num_images: None,
+        "_unsloth_grpo_image_cell": _unsloth_grpo_image_cell,
+    }
+    exec(textwrap.dedent(patched), namespace)
+    assert namespace["has_images"] is True
+    assert len(namespace["kwargs"]["images"]) == 2

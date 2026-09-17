@@ -142,6 +142,7 @@ def _run_legacy(processor_output, inputs, completion_ids):
     from unsloth.models.rl_replacements import (
         _unsloth_grpo_image_cell,
         _unsloth_grpo_vision_inputs,
+        _unsloth_reject_grpo_image_list,
         grpo_trainer__generate_and_score_completions,
     )
 
@@ -152,6 +153,9 @@ def _run_legacy(processor_output, inputs, completion_ids):
         "torch": torch,
         "_unsloth_grpo_vision_inputs": _unsloth_grpo_vision_inputs,
         "_unsloth_grpo_image_cell": _unsloth_grpo_image_cell,
+        # Injected on this TRL too now: its vLLM server path cannot carry a multi image row,
+        # so the guard is handed the trainer and decides at runtime.
+        "_unsloth_reject_grpo_image_list": _unsloth_reject_grpo_image_list,
         "prepare_multimodal_messages": lambda prompt, num_images = 1: prompt.append(num_images),
         # Injected by the same rewrite for the text-only branch; TRL never sees it.
         "calculate_pad_tokens_in_prompt": lambda ids, keep, pad: torch.zeros(
