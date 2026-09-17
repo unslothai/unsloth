@@ -270,6 +270,15 @@ def _composite_actions():
 #: the PR's ref as surely as if it declared the trigger itself.
 _PR_REACHABLE_TRIGGERS = frozenset({"pull_request", "pull_request_target", "workflow_call"})
 
+#: The only triggers that cannot put a workflow anywhere near a pull request's ref.
+#: `schedule` and `repository_dispatch` are documented to run the default branch and nothing
+#: else; `workflow_dispatch` takes a ref, but only from a human who asked for that ref by
+#: name, which is not the "every PR writes its own copy" harm this rule is about. Everything
+#: NOT named here -- `merge_group`, which runs on its own `gh-readonly-queue/...` ref, and
+#: any event added to Actions after this was written -- stays indicted, which is what the
+#: docstring below promises and what a guard whose failure mode is silence has to do.
+_REF_SAFE_TRIGGERS = frozenset({"schedule", "repository_dispatch", "workflow_dispatch"})
+
 
 def _triggers(doc: dict) -> dict:
     """A workflow's `on:` block as a mapping, whatever shape it was written in.
@@ -311,10 +320,12 @@ def _pull_request_reachable(doc: dict) -> bool:
     for event, spec in triggers.items():
         if event in _PR_REACHABLE_TRIGGERS:
             return True
-        if event != "push":
+        if event == "push":
+            branches = (spec or {}).get("branches") if isinstance(spec, dict) else None
+            if not branches or [b for b in branches if b != "main"]:
+                return True
             continue
-        branches = (spec or {}).get("branches") if isinstance(spec, dict) else None
-        if not branches or [b for b in branches if b != "main"]:
+        if event not in _REF_SAFE_TRIGGERS:
             return True
     return False
 
@@ -336,6 +347,12 @@ def _pull_request_reachable(doc: dict) -> bool:
         ({"push": {"tags": ["v*"]}}, True),
         # A dispatch-only workflow that also builds every PR is not dispatch-only.
         ({"workflow_dispatch": None, "pull_request": {"paths": ["x"]}}, True),
+        # Default-branch-only, so exempt for the same reason schedule is.
+        ({"repository_dispatch": {"types": ["x"]}}, False),
+        # The merge queue runs on refs/heads/gh-readonly-queue/..., which is not main.
+        ({"merge_group": None}, True),
+        # An event this predicate has never heard of says nothing about its ref.
+        ({"release": {"types": ["published"]}}, True),
         # Unparseable says nothing, so it does not get to be called unreachable.
         ({}, True),
     ],
