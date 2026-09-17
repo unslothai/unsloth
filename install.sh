@@ -6144,7 +6144,11 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
     # `docker run --user 1234`, and the inherited USER there commonly still says root. So
     # empty means "no account to name" and the branches below print the container repair
     # instead of a usermod that would succeed against an identity nothing is running as.
-    _amd_repair_user=$(id -un 2>/dev/null || printf '')
+    # Status, not stdout: GNU id PRINTS the uid and then exits 1 for an unresolvable one
+    # (coreutils id.c print_user falls back to uidtostr), so `|| printf ''` never runs and
+    # the substitution captured "1234" -- the numeric form usermod rejects, prescribed on
+    # exactly the container hosts the paragraph above is about.
+    _amd_repair_user=$(id -un 2>/dev/null) || _amd_repair_user=''
     # The documented pair is the fallback for nodes that could not be stat'd at all, where
     # some advice beats none. A node that WAS read and offers no joinable group gets the
     # sentences below instead of a command that would fail.

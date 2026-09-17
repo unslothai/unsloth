@@ -541,17 +541,23 @@ def _kfd_topology_amd_state() -> "bool | None":
     except OSError:
         return None
     _read_one = False
+    _missed_one = False
     for entry in entries:
         try:
             with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
                 properties = fh.read()
         except (OSError, UnicodeDecodeError):
+            _missed_one = True
             continue
         _read_one = True
         if re.search(r"\bvendor_id\s+4098\b", properties):
             return True
-    # A directory that lists but whose properties will not open says nothing either.
-    return False if _read_one else None
+    # A directory that lists but whose properties will not open says nothing either, and
+    # neither does a PARTIAL read: the CPU node opening while the GPU node does not is one
+    # entry short of "names none", and False there drops /dev/kfd from the closed list, so a
+    # host whose KFD is video and whose render node is render is told to join only render
+    # and left with KFD shut. install.sh's _kfd_gfx_targets states the same rule.
+    return None if _missed_one or not _read_one else False
 
 
 def _a_confirmed_amd_render_node_exists() -> bool:

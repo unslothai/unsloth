@@ -5642,3 +5642,101 @@ def test_the_reinstall_sentence_survives_where_it_is_right(monkeypatch, linux, t
     _icd_manifest(tmp_path, "radeon_icd.json", present = False)
     reason = _vulkan_node_hint_under_icd_list(monkeypatch, None, search_dirs = [str(tmp_path)])
     assert "reinstall the Vulkan driver" in reason
+
+
+def _repair_user_under(id_stub: str) -> str:
+    """What install.sh captures as the account to name, given this `id`.
+
+    The assignment is lifted from the file rather than restated, so reverting it fails this.
+    """
+    lines = _install_sh_lines()
+    i = _install_sh_anchor(lines, "_amd_repair_user=$(id -un")
+    script = "\n".join([id_stub, lines[i].strip(), 'printf "%s" "$_amd_repair_user"'])
+    return subprocess.run(
+        ["sh", "-c", script], capture_output = True, text = True, check = True
+    ).stdout
+
+
+def test_a_uid_with_no_passwd_entry_names_no_account():
+    """`docker run --user 1234`, which is the shape the paragraph above this line is about.
+
+    GNU id PRINTS the uid and THEN exits 1 for a uid it cannot resolve (coreutils id.c,
+    print_user falls back to uidtostr), so a `|| printf ''` fallback never runs and the
+    captured value was the number. The callers read empty as "no account to name" and print
+    the container repair; a numeric one reached `sudo usermod -a -G render 1234`, which
+    usermod rejects with "user '1234' does not exist". Verified against real GNU coreutils
+    in a container before this was written.
+    """
+    assert _repair_user_under('id() { echo 12345; return 1; }') == ""
+
+
+def test_a_resolvable_account_is_still_named():
+    """The control. Without it the fix could be "never name an account", which removes the
+    usermod prescription on every ordinary host."""
+    assert _repair_user_under('id() { echo ada; return 0; }') == "ada"
+
+
+def _topology_state(monkeypatch, tmp_path, entries: "dict[str, str | None]"):
+    """_kfd_topology_amd_state over a fabricated node tree.
+
+    A value of None is a properties file that will not open, which is what a masked sysfs
+    and an LSM both produce; the others are the file's contents. os.listdir and open are
+    redirected on the MODULE rather than on builtins: a global open patch recurses, since
+    pathlib opens files to answer the patch.
+    """
+    real = tmp_path / "nodes"
+    for name, body in entries.items():
+        node = real / name
+        node.mkdir(parents = True)
+        properties = node / "properties"
+        properties.write_text(body or "", encoding = "utf-8")
+        if body is None:
+            properties.chmod(0o000)
+    prefix = "/sys/class/kfd/kfd/topology/nodes"
+
+    def _redirect(path):
+        return str(path).replace(prefix, str(real))
+
+    real_listdir, real_open = os.listdir, open
+    monkeypatch.setattr(amd.os, "listdir", lambda p: real_listdir(_redirect(p)))
+    monkeypatch.setattr(amd, "open", lambda p, *a, **k: real_open(_redirect(p), *a, **k),
+                        raising = False)
+    return amd._kfd_topology_amd_state()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason = "root opens a 0000 file, so nothing is unreadable")
+def test_a_partly_unreadable_topology_is_unknown_not_a_denial(monkeypatch, tmp_path):
+    """The CPU node opens, the GPU node does not: one entry short of "names none".
+
+    False here drops /dev/kfd from the closed list, so a host whose KFD is owned by video
+    and whose render node is owned by render is told to join render alone and left with KFD
+    shut -- the node the ROCm caller actually needs. install.sh states the same rule for the
+    same decision: a topology that could not be READ is not one that named another vendor.
+    """
+    state = _topology_state(monkeypatch, tmp_path, {
+        "0": "cpu_cores_count 16\nsimd_count 0\nvendor_id 0\n",
+        "1": None,
+    })
+    assert state is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason = "root opens a 0000 file, so nothing is unreadable")
+def test_a_fully_read_topology_with_no_amd_is_still_a_denial(monkeypatch, tmp_path):
+    """The control. Without it the fix could be "never answer False", which would let an
+    NVIDIA-only host whose KFD nodes all read as 4318 claim an AMD card."""
+    state = _topology_state(monkeypatch, tmp_path, {
+        "0": "cpu_cores_count 16\nvendor_id 0\n",
+        "1": "simd_count 128\nvendor_id 4318\n",
+    })
+    assert state is False
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason = "root opens a 0000 file, so nothing is unreadable")
+def test_an_amd_node_still_wins_over_an_unreadable_sibling(monkeypatch, tmp_path):
+    """The other control: a confirmed AMD node answers True however many siblings failed."""
+    state = _topology_state(monkeypatch, tmp_path, {
+        "0": "cpu_cores_count 16\nvendor_id 0\n",
+        "1": None,
+        "2": "simd_count 256\nvendor_id 4098\n",
+    })
+    assert state is True
