@@ -1028,12 +1028,7 @@ function Get-NvidiaProbePythonExe {
     return ""
 }
 
-# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
-# nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
-# name reaches only the former, so name the file, as studio/nvidia_probe.py does.
-# A directory for a program this installer is about to hand a child interpreter.
-#
-# Writing the program into the shared %TEMP% and then naming that path to Start-Process leaves a
+## Writing the program into the shared %TEMP% and then naming that path to Start-Process leaves a
 # time-of-check to time-of-use gap: any process of the same user can watch the directory and
 # swap the file between the write and the launch. That only becomes a privilege question when
 # THIS shell is elevated, and then it is the whole of one, because the child runs our program
@@ -1043,22 +1038,58 @@ function Get-NvidiaProbePythonExe {
 # High on it. An unelevated process of the same user runs at medium integrity and cannot write
 # into a High-labelled directory. A DACL cannot express that: the attacker is the owner, and an
 # owner can always rewrite its own DACL. icacls is the in-box tool for the label and stays
-# reachable under Constrained Language Mode, where the managed ACL APIs do not. On an unelevated
-# run the label cannot be raised and the call simply fails, which costs nothing, since an
-# unelevated child has no token worth stealing.
+# reachable under Constrained Language Mode, where the managed ACL APIs do not.
+#
+# The label is READ BACK rather than assumed. icacls can be missing, blocked by application
+# control, or fail for its own reasons, and none of that throws: the directory would come back
+# looking protected while still being writable by the same user's medium-integrity processes,
+# which is exactly the escalation this helper exists to close. So when the label did not take,
+# ask whether it MATTERS: an unelevated run cannot raise the label and does not need to, since
+# a medium-integrity child has no token worth stealing, while an elevated run that could not
+# raise it must refuse rather than hand back the directory. Every caller already treats "" as
+# "this rung declined" and falls to the one below it.
+#
+# Declared here, above its first caller, and not beside the NVIDIA inventory it was written
+# for. All of this file is one function, so these declarations run in order: a helper defined
+# further down does not exist yet when an earlier statement calls it, and the throw is caught
+# and read as "the rung declined" rather than as a missing definition.
 #
 # New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
 # or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
+function Test-StudioChildScriptDirectoryElevated {
+    # whoami is in-box and prints the token's own mandatory label. The WindowsPrincipal route
+    # the rest of this file uses for elevation is a managed type Constrained Language Mode
+    # refuses, and CLM is the population this ladder exists for. Only consulted when the label
+    # did not take, so the ordinary run pays nothing for it.
+    $groups = ""
+    try { $groups = "$(& whoami.exe /groups 2>&1)" } catch { return $false }
+    return ($groups -match "S-1-16-(12288|16384)")
+}
+
 function New-StudioChildScriptDirectory {
     $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
     $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N"))
     try { $null = New-Item -ItemType Directory -Path $dir -ErrorAction Stop } catch { return "" }
     if ($env:OS -eq "Windows_NT") {
-        try { $null = & icacls.exe "$dir" /setintegritylevel "(OI)(CI)H" 2>&1 } catch { }
+        $labelled = $false
+        try {
+            $null = & icacls.exe "$dir" /setintegritylevel "(OI)(CI)H" 2>&1
+            $labelled = ("$(& icacls.exe "$dir" 2>&1)" -match "High Mandatory Level|S-1-16-12288")
+        } catch { $labelled = $false }
+        if ((-not $labelled) -and (Test-StudioChildScriptDirectoryElevated)) {
+            try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+            return ""
+        }
     }
     return $dir
 }
 
+# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
+# nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
+# name reaches only the former, so name the file, as studio/nvidia_probe.py does.
+# A directory for a program this installer is about to hand a child interpreter.
+#
+#
 function Get-NvidiaNvmlLibraryPath {
     $dirs = @()
     if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }

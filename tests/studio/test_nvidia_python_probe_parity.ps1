@@ -67,7 +67,9 @@ $blockNames = @(
     "Get-NvidiaNvmlLibraryPath",
     "Read-NvidiaLibraryRawViaPython",
     "Read-NvidiaLibraryRaw",
-    "Get-NvidiaLibraryInventory"
+    "Get-NvidiaLibraryInventory",
+    # Appended rather than inserted: the indices below are positional.
+    "Test-StudioChildScriptDirectoryElevated"
 )
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
@@ -287,6 +289,7 @@ Invoke-Expression ($setupParts[1])   # Get-NvidiaNvmlLibraryPath
 Invoke-Expression ($setupParts[2])   # Read-NvidiaLibraryRawViaPython
 Invoke-Expression ($setupParts[3])   # Read-NvidiaLibraryRaw
 Invoke-Expression ($setupParts[4])   # Get-NvidiaLibraryInventory
+Invoke-Expression ($setupParts[5])   # Test-StudioChildScriptDirectoryElevated
 # The emitted rung declines, which is the whole point: this is what a Constrained Language Mode
 # or WDAC host sees, and the capabilities below are recovered with nothing emitted.
 function Get-NvidiaLibraryProbeType { return $null }
@@ -313,6 +316,26 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $dirFn -notmatch 'New-Item -ItemType Directory[^\r\n]*-Force')
     Check "$leaf raises the integrity label rather than trusting a DACL" (
         $dirFn -match 'icacls' -and $dirFn -match 'setintegritylevel')
+    # icacls can be absent, blocked by application control, or fail for its own reasons, and none
+    # of that throws. Setting the label and assuming it took hands back a directory that looks
+    # protected and is not, which is the whole of the escalation this closes. So the label is read
+    # back, and a run that could not raise it while elevated refuses instead of returning a path.
+    Check "$leaf reads the label back rather than assuming it took" (
+        $dirFn -match '\$labelled' -and $dirFn -match 'High Mandatory Level')
+    Check "$leaf refuses an unlabelled directory when it is elevated" (
+        $dirFn -match 'Test-StudioChildScriptDirectoryElevated' -and
+        $dirFn -match 'Remove-Item[^\r\n]*\$dir')
+    $elevFn = @(Get-HelperSources $file @("Test-StudioChildScriptDirectoryElevated"))[0]
+    # Comments stripped first. The helper's own comment NAMES the construct it avoids, so the
+    # check below read the explanation and failed on it rather than on any code.
+    $elevCode = (($elevFn -split "`r?`n") | Where-Object { $_.Trim() -notmatch '^#' }) -join "`n"
+    # whoami, not WindowsPrincipal: the managed identity types are not reachable under
+    # Constrained Language Mode, which is the population this whole ladder exists for.
+    Check "$leaf asks the token for its own label with an in-box tool" (
+        $elevCode -match 'whoami' -and $elevCode -match 'S-1-16-')
+    Check "$leaf does not use the managed principal types for it" (
+        $elevCode -notmatch 'WindowsPrincipal')
+    Check "$leaf comment stripper kept the code (bites)" ($elevCode -match 'return')
     # And every launcher in the file uses it, rather than naming the shared root itself. The
     # shared-root spelling is what the finding was about, so its absence is the check.
     $whole = [System.IO.File]::ReadAllText($file)

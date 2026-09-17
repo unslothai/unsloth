@@ -54,7 +54,7 @@ $setupPs1 = Join-Path $root "studio\setup.ps1"
 
 Write-Host ""
 Write-Host "=== shared inventory helper ==="
-$blockNames = @("New-StudioChildScriptDirectory", "Get-NvidiaNvmlLibraryPath", "Read-NvidiaLibraryRawViaPython", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory")
+$blockNames = @("New-StudioChildScriptDirectory", "Get-NvidiaNvmlLibraryPath", "Read-NvidiaLibraryRawViaPython", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory", "Test-StudioChildScriptDirectoryElevated")
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
 $installBlock = $installParts[4]

@@ -37,6 +37,7 @@ foreach ($name in @(
     "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython",
     "New-StudioChildScriptDirectory", "Get-StudioEarlyPython",
     "New-StudioChildScriptDirectory",
+    "Test-StudioChildScriptDirectoryElevated",
     "Get-StudioPythonProcessImageTable", "Get-StudioProcessImagePath"
 )) {
     $fn = $ast.FindAll({ param($n)
@@ -267,6 +268,7 @@ Check "the cmdlet launcher kills a hung child too" (
 # did not degrade, it failed. Every function between the entry point and the answer runs here.
 $clmFunctions = (@(
     "New-StudioChildScriptDirectory",
+    "Test-StudioChildScriptDirectoryElevated",
     "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
     "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython",
     "Get-StudioEarlyPython", "Get-StudioPythonFinalPath", "Get-StudioPythonProcessImageTable"

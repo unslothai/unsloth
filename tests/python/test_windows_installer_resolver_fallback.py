@@ -110,6 +110,7 @@ LOCK_CHAIN = (
     "Invoke-StudioEarlyPythonScript",
     "Invoke-StudioEarlyPythonScriptViaCmdlets",
     "New-StudioChildScriptDirectory",
+    "Test-StudioChildScriptDirectoryElevated",
     "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",

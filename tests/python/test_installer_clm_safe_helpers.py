@@ -34,6 +34,7 @@ INSTALL_PS1 = ROOT / "install.ps1"
 CLM_REACHABLE = (
     "Invoke-StudioEarlyPythonScriptViaCmdlets",
     "New-StudioChildScriptDirectory",
+    "Test-StudioChildScriptDirectoryElevated",
     "Get-StudioEarlyPython",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",

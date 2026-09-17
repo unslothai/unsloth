@@ -34,6 +34,7 @@ $wanted = @(
     "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPythonScriptViaCmdlets", "Get-StudioPythonFinalPath",
     "New-StudioChildScriptDirectory",
+    "Test-StudioChildScriptDirectoryElevated",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo", "Resolve-StudioFinalPathsInOneChild",
     # Called by Resolve-StudioFinalPathInfo on the rung below this one. Extracted rather than
