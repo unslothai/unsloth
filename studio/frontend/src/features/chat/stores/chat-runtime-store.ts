@@ -3481,6 +3481,13 @@ export function noteEffortDisplacedByPin(current: ReasoningEffort): void {
   effortDisplacedByPin ??= current;
 }
 
+/** Whether the live effort is a pin's rather than the chat's own. Recorded when a pin displaced
+ *  the chat's level and cleared the moment the user states a level themselves, so it says what a
+ *  stored pin cannot: that the level on screen actually came from one. */
+export function pinHoldsLiveEffort(): boolean {
+  return effortDisplacedByPin !== null;
+}
+
 /** The level to resolve from when a pin is cleared, or null when neither source has one. The
  *  chat's own level first: the snapshot keeps it because buildThreadScopedSnapshot holds the pin
  *  back, so it survives a reload and a thread switch, which the in-memory record does not. */

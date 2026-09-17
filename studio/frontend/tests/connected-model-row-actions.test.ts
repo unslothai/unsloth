@@ -318,11 +318,28 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
     chatPage,
     /reasoningFieldsAfterCatalogRefresh\(useChatRuntimeStore\.getState\(\), caps\),\s*\);[\s\S]{0,220}?reconcilePinnedReasoningEffort\(\{[\s\S]{0,160}?clearsToChatEffort: false,/,
   );
-  // A refresh cannot tell a cleared pin from one it never had, so only the pin effect, whose
-  // guard fires on the stored string changing, restores the chat's own level.
+  // A refresh cannot tell a cleared pin from one it never had, so absence alone is not a clear.
+  // A ladder that withdrew the pin in force is, though: the live level is then a clamp of the
+  // withdrawn pin, and leaving it would also store the clamp as the chat's own level next.
   assert.match(
     chatPage,
-    /if \(!pinned && !opts\.clearsToChatEffort\) return;/,
+    /if \(!pinned && !opts\.clearsToChatEffort && !pinHoldsLiveEffort\(\)\) return;/,
+  );
+  // Switching to an unpinned model resolves from the chat's own level, not from the outgoing
+  // model's pin, which is what the live value holds.
+  assert.match(
+    chatPage,
+    /current:\s*!pinnedEffort && pinHoldsLiveEffort\(\)\s*\? \(takeEffortDisplacedByPin\(\) \?\? store\.reasoningEffort\)\s*: store\.reasoningEffort,/,
+  );
+  assert.match(
+    chatPage,
+    /current:\s*!pinnedEffort && pinHoldsLiveEffort\(\)\s*\? \(takeEffortDisplacedByPin\(\) \?\? state\.reasoningEffort\)\s*: state\.reasoningEffort,/,
+  );
+  // The record, not the stored pin: a level the user set through the composer clears it, so it is
+  // the one signal that says the level on screen actually came from a pin.
+  assert.match(
+    readSrc("features/chat/stores/chat-runtime-store.ts"),
+    /export function pinHoldsLiveEffort\(\): boolean \{\s*return effortDisplacedByPin !== null;/,
   );
   // Blank or junk is an absence, not a zero the request would then send as the cap.
   assert.match(

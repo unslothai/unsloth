@@ -224,6 +224,7 @@ import {
   PENDING_CHAT_ATTACHMENT_KEY,
   loadOptionalBool,
   noteEffortDisplacedByPin,
+  pinHoldsLiveEffort,
   readPendingAttachmentTargetClaim,
   takeEffortDisplacedByPin,
   threadScopedOverride,
@@ -283,7 +284,7 @@ function getExternalProviderDropdownRank(providerType: string): number {
  * Puts the selected model's pinned effort back in force in the live store. Called from every
  * trigger that can dislodge it: the pin changing in another tab, and a catalogue refresh, which
  * changes which levels the same stored pin is legal against and so can make a pin that was
- * ignored at selection time the valid one.
+ * ignored at selection time the valid one, or withdraw the one in force.
  */
 function reconcilePinnedReasoningEffort(opts: {
   checkpoint: string;
@@ -298,7 +299,10 @@ function reconcilePinnedReasoningEffort(opts: {
     opts.checkpoint,
     opts.caps.reasoningEffortLevels,
   );
-  if (!pinned && !opts.clearsToChatEffort) return;
+  // A ladder that no longer offers the pin has taken it away as surely as clearing it: the level
+  // in the store is a clamp of the withdrawn pin, not the chat's, so the chat's own comes back.
+  // That is also what keeps the next thread snapshot from storing the clamp as the chat's level.
+  if (!pinned && !opts.clearsToChatEffort && !pinHoldsLiveEffort()) return;
   const next = resolveExternalReasoningEffort({
     caps: opts.caps,
     providerType: opts.providerType,
@@ -2590,7 +2594,12 @@ export function ChatPage({
     const nextReasoningEffort = resolveExternalReasoningEffort({
       caps: reasoningCaps,
       providerType: provider?.providerType,
-      current: state.reasoningEffort,
+      // Same as the switch below: a checkpoint that changed without going through it leaves the
+      // previous model's pin in the live level, which an unpinned model must not inherit.
+      current:
+        !pinnedEffort && pinHoldsLiveEffort()
+          ? (takeEffortDisplacedByPin() ?? state.reasoningEffort)
+          : state.reasoningEffort,
       pinned: pinnedEffort,
     });
     // The chat's own level, before the pin takes its place, so clearing the pin can put it back.
@@ -3259,7 +3268,12 @@ export function ChatPage({
         const nextReasoningEffort = resolveExternalReasoningEffort({
           caps: reasoningCaps,
           providerType: selectedProvider?.providerType,
-          current: store.reasoningEffort,
+          // The outgoing model's pin is what the live level holds, so an unpinned target resolves
+          // from the chat's own effort rather than inheriting one model's override.
+          current:
+            !pinnedEffort && pinHoldsLiveEffort()
+              ? (takeEffortDisplacedByPin() ?? store.reasoningEffort)
+              : store.reasoningEffort,
           pinned: pinnedEffort,
         });
         // The chat's own level, before the pin takes its place, so clearing it can put it back.
