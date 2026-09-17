@@ -222,7 +222,9 @@ import {
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   PENDING_CHAT_ATTACHMENT_KEY,
   loadOptionalBool,
+  noteEffortDisplacedByPin,
   readPendingAttachmentTargetClaim,
+  takeEffortDisplacedByPin,
   threadScopedOverride,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -2544,12 +2546,20 @@ export function ChatPage({
     // Through the shared resolver, pin included: this runs on reload and on every provider
     // resync, and resolving it without the pin is what put the provider default back over a
     // level the user had set on the model's row.
+    const pinnedEffort = pinnedReasoningEffort(
+      inferenceParams.checkpoint,
+      effortLevels,
+    );
     const nextReasoningEffort = resolveExternalReasoningEffort({
       caps: reasoningCaps,
       providerType: provider?.providerType,
       current: state.reasoningEffort,
-      pinned: pinnedReasoningEffort(inferenceParams.checkpoint, effortLevels),
+      pinned: pinnedEffort,
     });
+    // The chat's own level, before the pin takes its place, so clearing the pin can put it back.
+    if (pinnedEffort && nextReasoningEffort !== state.reasoningEffort) {
+      noteEffortDisplacedByPin(state.reasoningEffort);
+    }
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
       selection.modelId,
@@ -2669,17 +2679,24 @@ export function ChatPage({
         baseUrl: provider?.baseUrl ?? null,
       },
     );
-    useChatRuntimeStore.setState({
-      reasoningEffort: resolveExternalReasoningEffort({
-        caps,
-        providerType: provider?.providerType,
-        current: useChatRuntimeStore.getState().reasoningEffort,
-        pinned: pinnedReasoningEffort(
-          inferenceParams.checkpoint,
-          caps.reasoningEffortLevels,
-        ),
-      }),
+    const live = useChatRuntimeStore.getState().reasoningEffort;
+    const pinned = pinnedReasoningEffort(
+      inferenceParams.checkpoint,
+      caps.reasoningEffortLevels,
+    );
+    const next = resolveExternalReasoningEffort({
+      caps,
+      providerType: provider?.providerType,
+      current: pinned ? live : (takeEffortDisplacedByPin() ?? live),
+      pinned,
     });
+    if (pinned && next !== live) noteEffortDisplacedByPin(live);
+    // The epoch too: a prompt waiting on startup captured the old level, and this is what tells
+    // it the settings it captured are no longer current.
+    useChatRuntimeStore.setState((state) => ({
+      reasoningEffort: next,
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    }));
   }, [activePinnedEffort, externalProvidersForChat, inferenceParams.checkpoint]);
   // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
   // never the selection defaults above, so a chosen effort and the pills survive the refresh.
@@ -3204,12 +3221,17 @@ export function ChatPage({
           },
         );
         const effortLevels = reasoningCaps.reasoningEffortLevels;
+        const pinnedEffort = pinnedReasoningEffort(value, effortLevels);
         const nextReasoningEffort = resolveExternalReasoningEffort({
           caps: reasoningCaps,
           providerType: selectedProvider?.providerType,
           current: store.reasoningEffort,
-          pinned: pinnedReasoningEffort(value, effortLevels),
+          pinned: pinnedEffort,
         });
+        // The chat's own level, before the pin takes its place, so clearing it can put it back.
+        if (pinnedEffort && nextReasoningEffort !== store.reasoningEffort) {
+          noteEffortDisplacedByPin(store.reasoningEffort);
+        }
         // Clear any cached router-picked openrouter/free model unless staying on openrouter/free, else
         // the chip keeps a stale ":<chosen>" suffix.
         const stillOnOpenRouterFree =

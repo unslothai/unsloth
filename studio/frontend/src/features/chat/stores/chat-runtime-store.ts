@@ -3429,6 +3429,26 @@ function localQwenMigrationSettings(
   };
 }
 
+// The chat's own effort, kept when a per-model pin took its place in the live store so that
+// clearing the pin can put it back. A pin is applied with a plain setState and persists nothing,
+// and the thread snapshot is read off the live store, so nothing else records what it displaced.
+// Session only: after a reload the live level already IS the pin's and nothing preceded it here,
+// so clearing then resolves without it.
+let effortDisplacedByPin: ReasoningEffort | null = null;
+
+/** Called before a per-model pin overwrites the live effort. The first displacement wins, so
+ *  pinning twice and then clearing returns to the chat's own level, not to the earlier pin. */
+export function noteEffortDisplacedByPin(current: ReasoningEffort): void {
+  effortDisplacedByPin ??= current;
+}
+
+/** The level to resolve from when a pin is cleared, or null when none was recorded. */
+export function takeEffortDisplacedByPin(): ReasoningEffort | null {
+  const displaced = effortDisplacedByPin;
+  effortDisplacedByPin = null;
+  return displaced;
+}
+
 function installationReasoningEnabled(state: ChatRuntimeStore): boolean {
   return threadScopedOverride("reasoningEnabled") !== undefined
     ? (globalThreadScopedDefaults?.reasoningEnabled ?? state.reasoningEnabled)
@@ -5052,6 +5072,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setReasoningEffort: (reasoningEffort) =>
     set((state) => {
+      // The user has just stated their own level, so whatever a pin displaced before is history.
+      effortDisplacedByPin = null;
       setScalarSettingVersion(
         "reasoningEffort",
         reasoningEffort,

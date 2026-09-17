@@ -28,7 +28,9 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   modelCatalogVersion,
+  noteEffortDisplacedByPin,
   subscribeModelCatalog,
+  takeEffortDisplacedByPin,
   useChatRuntimeStore,
 } from "@/features/chat";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
@@ -159,14 +161,22 @@ export function ConnectedModelSettingsDialog({
       // pin exists to override. The pin is stored by setModelReasoningEffort above; all this
       // does is apply it to the model on screen, the way the normalization effect does.
       if (isLiveModel) {
-        useChatRuntimeStore.setState({
-          reasoningEffort: resolveExternalReasoningEffort({
-            caps: reasoning,
-            providerType,
-            current: chatEffort,
-            pinned,
-          }),
+        // Clearing resolves from the level the pin displaced, not from the live one: the live one
+        // IS the pin, and a ladder with no catalogue default and no "medium" falls back to
+        // clamping it, so "Follow chat" would have kept the level just cleared.
+        const next = resolveExternalReasoningEffort({
+          caps: reasoning,
+          providerType,
+          current: pinned ? chatEffort : (takeEffortDisplacedByPin() ?? chatEffort),
+          pinned,
         });
+        if (pinned && next !== chatEffort) noteEffortDisplacedByPin(chatEffort);
+        // The epoch too: a prompt waiting on startup captured the old level, and this is what
+        // tells it the settings it captured are no longer current.
+        useChatRuntimeStore.setState((state) => ({
+          reasoningEffort: next,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+        }));
       }
     }
     onOpenChange(false);
