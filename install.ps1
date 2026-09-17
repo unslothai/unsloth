@@ -2502,21 +2502,47 @@ function Install-UnslothStudio {
         # escaped spelling creates a directory whose NAME contains the backticks, somewhere else
         # entirely. Hence the confirmation below rather than trusting either call to have made
         # the directory the caller is about to be handed.
+        # Success is "the path we are about to hand back exists", never "New-Item did not throw".
+        # A pattern can MATCH SOMETHING ELSE: with a %TEMP% of "C:\Users\Mike [work]" a sibling
+        # "C:\Users\Mike w" satisfies it, and the create then succeeds under that other directory.
+        # Taking that as done would skip the escaped spelling, hand back a path with nothing behind
+        # it, and leave a directory behind somewhere the caller never named. The created path is
+        # read back through Select-Object, not off the object: property reads on DirectoryInfo are
+        # refused under Constrained Language Mode, and cmdlets are not.
         $made = $false
-        try { $null = New-Item -ItemType Directory -Path $dir -ErrorAction Stop; $made = $true } catch { }
+        try {
+            $createdPath = "$(New-Item -ItemType Directory -Path $dir -ErrorAction Stop |
+                Select-Object -ExpandProperty FullName)"
+            $made = (Test-Path -LiteralPath $dir -PathType Container)
+            if ((-not $made) -and $createdPath) {
+                Remove-Item -LiteralPath $createdPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
         if ((-not $made) -and $dir -match '[\[\]]') {
             $escaped = $dir -replace '([\[\]])', '`$1'
-            try { $null = New-Item -ItemType Directory -Path $escaped -ErrorAction Stop; $made = $true } catch { }
+            try {
+                $null = New-Item -ItemType Directory -Path $escaped -ErrorAction Stop
+                $made = (Test-Path -LiteralPath $dir -PathType Container)
+            } catch { }
         }
         # Created by THIS call. New-Item without -Force throws on a directory that already exists,
         # which is the point: a pre-created one carrying an attacker's ACL is refused, not adopted.
         if (-not $made) { return "" }
-        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return "" }
         if ($env:OS -eq "Windows_NT") {
             $labelled = $false
             try {
                 $null = & icacls.exe "$dir" /setintegritylevel "(OI)(CI)H" 2>&1
-                $labelled = ("$(& icacls.exe "$dir" 2>&1)" -match "High Mandatory Level|S-1-16-12288")
+                # Two signals, both locale-independent. icacls reports through its exit code that
+                # it wrote the ACE, and the label's SID is the same text in every language. The
+                # English name is accepted as well, for a host that resolves it that way.
+                #
+                # Matching only the English name was wrong: icacls renders the well-known account
+                # name in the OS language, so an elevated non-English host read its own correctly
+                # applied label as missing and the helper deleted the directory it had just made.
+                $labelled = ($LASTEXITCODE -eq 0)
+                if (-not $labelled) {
+                    $labelled = ("$(& icacls.exe "$dir" 2>&1)" -match "S-1-16-12288|High Mandatory Level")
+                }
             } catch { $labelled = $false }
             if ((-not $labelled) -and (Test-StudioChildScriptDirectoryElevated)) {
                 try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }

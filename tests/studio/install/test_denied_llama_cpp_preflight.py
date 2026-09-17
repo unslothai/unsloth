@@ -288,6 +288,28 @@ def test_both_entrypoints_resolve_and_reuse_the_same_managed_directory() -> None
     assert "$LlamaCppDir =" not in phase
 
 
+# Labelling a directory the installer just created is not repairing anyone's permissions.
+#
+# The rule below is about the user's files: a denied path is REPORTED, never taken over, because
+# an installer that quietly rewrites ACLs on a directory it does not own is both a support
+# problem and a privilege one. Raising the mandatory integrity level on a freshly created,
+# randomly named directory of our own is the opposite: it is what stops a same-user process at
+# medium integrity writing a program into it between the write and the launch, which an elevated
+# installer would then run with its own token. A DACL cannot express that, since the attacker is
+# the owner, so icacls is the in-box way to say it and it stays reachable under Constrained
+# Language Mode where the managed ACL APIs do not.
+#
+# Two spellings, both on that directory: setting the label, and reading it back to confirm it
+# took. The read changes nothing at all, and it is there because icacls can be missing or blocked
+# and neither throws, so an unverified label would leave a directory looking protected and not be.
+#
+# Spelled tightly on purpose: this variable, and either this verb or no verb at all. A grant, a
+# reset, any other target, and any takeown still fail.
+_LABELS_OUR_OWN_DIRECTORY = re.compile(
+    r'icacls\.exe "\$dir"(?: /setintegritylevel\b| 2>&1)'
+)
+
+
 def test_the_installer_never_repairs_permissions_by_itself() -> None:
     """Print ACL repair commands but never run them."""
     # Match direct, chained, captured, and delegated invocation forms.
@@ -299,7 +321,31 @@ def test_the_installer_never_repairs_permissions_by_itself() -> None:
             code = line.split("#", 1)[0].strip()
             if "takeown" not in code and "icacls" not in code:
                 continue
+            if _LABELS_OUR_OWN_DIRECTORY.search(code):
+                continue
             assert not invocation.search(code), f"{label}: {line.strip()}"
+
+
+def test_the_label_exemption_is_narrow() -> None:
+    """The exemption must not cover an ACL change on anything but our own new directory.
+
+    Without this, widening it to `icacls` would read as a passing test while the rule it is
+    carved out of stopped applying at all.
+    """
+    forbidden = (
+        'icacls.exe "$LlamaCppDir" /setintegritylevel (OI)(CI)H',
+        'icacls.exe "$dir" /grant "$env:USERNAME:(F)"',
+        'takeown.exe /f "$dir"',
+        '& icacls "$StudioHome" /reset',
+    )
+    for line in forbidden:
+        assert not _LABELS_OUR_OWN_DIRECTORY.search(line), line
+    assert _LABELS_OUR_OWN_DIRECTORY.search(
+        '$null = & icacls.exe "$dir" /setintegritylevel "(OI)(CI)H" 2>&1'
+    )
+    assert _LABELS_OUR_OWN_DIRECTORY.search(
+        '$labelled = ("$(& icacls.exe "$dir" 2>&1)" -match "S-1-16-12288")'
+    )
 
 
 def test_setup_sh_reports_a_denied_default_home_cache() -> None:

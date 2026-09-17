@@ -322,6 +322,17 @@ foreach ($file in @($installPs1, $setupPs1)) {
     # back, and a run that could not raise it while elevated refuses instead of returning a path.
     Check "$leaf reads the label back rather than assuming it took" (
         $dirFn -match '\$labelled' -and $dirFn -match 'High Mandatory Level')
+    # And reads it in a way a non-English Windows can answer. icacls renders the well-known
+    # account name in the OS language, so matching only the English spelling made an elevated
+    # non-English host delete the directory it had just correctly labelled.
+    Check "$leaf does not depend on the English spelling of the label" (
+        $dirFn -match '\$LASTEXITCODE -eq 0' -and $dirFn -match 'S-1-16-12288')
+    # And the create is accepted on the path it will HAND BACK, not on New-Item not throwing:
+    # a bracketed %TEMP% is a pattern, and a pattern can match a different existing directory.
+    Check "$leaf confirms the directory it returns really exists" (
+        $dirFn -match 'Test-Path -LiteralPath \$dir -PathType Container')
+    Check "$leaf cleans up a directory the pattern created elsewhere" (
+        $dirFn -match 'Remove-Item -LiteralPath \$createdPath')
     Check "$leaf refuses an unlabelled directory when it is elevated" (
         $dirFn -match 'Test-StudioChildScriptDirectoryElevated' -and
         $dirFn -match 'Remove-Item[^\r\n]*\$dir')
