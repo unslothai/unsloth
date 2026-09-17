@@ -1085,6 +1085,9 @@ VLLM_SUPPORTED_VLM = [
     # reaches this gate even for the text-only checkpoints.
     "qwen3_5",
     "idefics3",
+    # The MoE checkpoints report qwen3_5_moe, which the exact-membership gate below does
+    # not reach via "qwen3_5".
+    "qwen3_5_moe",
 ]
 
 
