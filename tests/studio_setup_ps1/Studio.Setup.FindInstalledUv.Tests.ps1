@@ -37,8 +37,49 @@ BeforeAll {
         return $dir
     }
 
+    function Copy-RunnableExe {
+        # A stand-in for "a uv that runs": copied ALONE into a candidate directory, it still has
+        # to launch and exit 0 for `--version`. pwsh.exe does not qualify, however obvious it
+        # looks: on Windows it cannot start without its runtime files beside it, so a fixture
+        # built from it made the finder correctly return nothing and the tests fail for a reason
+        # that had nothing to do with setup.ps1. Windows' own curl.exe and tar.exe are ordinary
+        # console binaries that link only against System32 and take --version for real.
+        param([Parameter(Mandatory)][string]$Destination)
+        foreach ($src in $script:RunnableExeCandidates) {
+            if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
+            try { Copy-Item -LiteralPath $src -Destination $Destination -Force -ErrorAction Stop } catch { continue }
+            if (Test-ExeAnswers -Path $Destination) { return $src }
+        }
+        throw ("no stand-in executable on this host answers --version with exit 0; tried: " +
+               ($script:RunnableExeCandidates -join ', '))
+    }
+
+    function Test-ExeAnswers {
+        param([Parameter(Mandatory)][string]$Path)
+        $out = [System.IO.Path]::GetTempFileName()
+        $err = [System.IO.Path]::GetTempFileName()
+        try {
+            $p = Start-Process -FilePath $Path -ArgumentList "--version" -NoNewWindow -PassThru `
+                -RedirectStandardOutput $out -RedirectStandardError $err -ErrorAction Stop
+            if (-not $p.WaitForExit(15000)) { try { $p.Kill() } catch {}; return $false }
+            $p.WaitForExit()
+            return ($p.ExitCode -eq 0)
+        } catch {
+            return $false
+        } finally {
+            Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $sys = if ($env:SystemRoot) { Join-Path $env:SystemRoot 'System32' } else { '' }
+    $script:RunnableExeCandidates = if ($IsWindows) {
+        @((Join-Path $sys 'curl.exe'), (Join-Path $sys 'tar.exe'))
+    } else {
+        @()
+    }
+
     function New-FakeUv {
-        # -Kind ok      : a real executable that exits 0
+        # -Kind ok      : an executable that really runs and exits 0
         # -Kind broken  : a file that exists and cannot be launched
         # -Kind folder  : a directory named uv.exe
         param([Parameter(Mandatory)][string]$Dir, [string]$Kind = 'ok')
@@ -53,13 +94,34 @@ BeforeAll {
             return $exe
         }
         if ($IsWindows) {
-            # pwsh itself: a genuine PE that answers --version and exits 0.
-            Copy-Item -LiteralPath (Get-Process -Id $PID).Path -Destination $exe -Force
+            Copy-RunnableExe -Destination $exe | Out-Null
         } else {
             Set-Content -LiteralPath $exe -Value "#!/bin/sh`nprintf 'uv 0.12.1\n'`nexit 0`n"
             & chmod +x $exe
         }
         return $exe
+    }
+}
+
+Describe "the fixtures themselves" {
+    It "has a stand-in that really runs, so a finder miss cannot be blamed on the fixture" {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('fixtureprobe_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        try {
+            $exe = New-FakeUv -Dir $dir
+            Test-ExeAnswers -Path $exe | Should -BeTrue
+        } finally {
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "has a broken stand-in that really cannot run" {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('fixtureprobe_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        try {
+            $exe = New-FakeUv -Dir $dir -Kind broken
+            Test-ExeAnswers -Path $exe | Should -BeFalse
+        } finally {
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
