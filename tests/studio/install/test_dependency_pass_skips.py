@@ -1478,9 +1478,7 @@ def test_the_fingerprint_names_everything_a_verdict_depends_on(monkeypatch) -> N
     fingerprint = stack._mlx_health_fingerprint()
     # The narrowed mlx-vlm range, not the static one: the installed zoo is part of what a
     # recorded verdict is valid for, so changing the zoo must invalidate it.
-    assert fingerprint["pins"] == list(stack._MLX_PINS) + [
-        stack._mlx_vlm_spec_for_installed_zoo()
-    ]
+    assert fingerprint["pins"] == list(stack._MLX_PINS) + [stack._mlx_vlm_spec_for_installed_zoo()]
     assert fingerprint["pins"][-1].startswith(stack._MLX_VLM_SPEC)
     assert fingerprint["python"] == stack._installer_python_tag()
     assert fingerprint["imports"] == {n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES}
