@@ -5838,3 +5838,39 @@ def test_the_wording_does_not_claim_a_loaded_driver_it_cannot_prove(monkeypatch)
     monkeypatch.setattr(amd, "_kfd_topology_amd_state", lambda: True)
     named = amd.amd_node_permission_hint(needs_kfd = True) or ""
     assert "the kernel driver is loaded" in named
+
+
+def test_the_pasteable_command_is_the_last_thing_in_the_message(monkeypatch):
+    """The membership sentence ends in a command a user copies, and nothing may follow it.
+
+    Rendered in place it ran straight into the next sentence: "... -a -G render ada ROCm
+    needs /dev/kfd ...", where the command a reader selects to end-of-line picks up the word
+    after it. Ending the whole message with it is what keeps the command copyable as written;
+    a full stop would be selected along with the account name instead.
+    """
+    monkeypatch.setattr(amd, "amd_nodes_closed_to_this_user", lambda **_k: ["/dev/dri/renderD128"])
+    monkeypatch.setattr(amd, "_amd_nodes_the_runtime_lacks", lambda **_k: [amd._KFD_NODE])
+    monkeypatch.setattr(amd, "_kfd_topology_amd_state", lambda: True)
+    monkeypatch.setattr(amd, "_repair_account", lambda: "ada")
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda _paths: (["render"], [], [], [], [], [], [])
+    )
+    hint = amd.amd_node_permission_hint(needs_kfd = True) or ""
+
+    assert "sudo usermod -a -G render ada" in hint
+    assert hint.rstrip().endswith("sudo usermod -a -G render ada")
+    # The sentence that used to follow it is still present, just no longer glued on.
+    assert "/dev/kfd" in hint
+
+
+def test_the_command_is_still_the_whole_message_when_it_is_the_only_finding(monkeypatch):
+    """The control: with nothing else to say, the hint is still the repair and nothing is
+    lost by holding it back to the end."""
+    monkeypatch.setattr(amd, "amd_nodes_closed_to_this_user", lambda **_k: ["/dev/dri/renderD128"])
+    monkeypatch.setattr(amd, "_amd_nodes_the_runtime_lacks", lambda **_k: [])
+    monkeypatch.setattr(amd, "_repair_account", lambda: "ada")
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda _paths: (["render"], [], [], [], [], [], [])
+    )
+    hint = amd.amd_node_permission_hint(needs_kfd = True) or ""
+    assert hint.rstrip().endswith("sudo usermod -a -G render ada")

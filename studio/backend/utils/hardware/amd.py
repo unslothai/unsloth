@@ -1604,6 +1604,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     # to be reachable only after a closed node had already produced a sentence.
     missing = _amd_nodes_the_runtime_lacks(needs_kfd = needs_kfd)
     parts: "list[str]" = []
+    trailing_command = ""
     if closed:
         # Claim only what the closed set actually blocks, and only for the devices it is
         # about. A render node shut beside an OPEN sibling leaves both runtimes a complete
@@ -1638,7 +1639,13 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                     f"as an account this system knows."
                 )
             else:
-                parts.append(
+                # Held back to the END of the message rather than appended in place. It
+                # is the one sentence that terminates in a command a user pastes, so
+                # anything joined after it ran straight on, rendering as
+                # "-a -G render ada ROCm needs /dev/kfd ...". Ending the message with it
+                # keeps the command copyable as written, where a full stop would be
+                # selected along with the account name.
+                trailing_command = (
                     f"Add the account to the {joined} {plural} and then log out and back "
                     f"in: sudo usermod -a -G {_shell_word(joined)} {_shell_word(user)}"
                 )
@@ -1752,4 +1759,6 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             f"open one, so the device mapping needs fixing; under Docker that is "
             f"{_devices}."
         )
+    if trailing_command:
+        parts.append(trailing_command)
     return " ".join(parts) or None
