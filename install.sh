@@ -3966,6 +3966,14 @@ _amd_request_has_a_wheel_route() {
     # miscomputing-arch gate, which has only the unmasked inventory to judge on. Cleared
     # here so a previous call can never answer for this one.
     _AMD_REQUEST_TARGET_GFX=""
+    # Where that target came from, because only one of the two may clear a safety gate. A
+    # target resolved from the PROBED device list is a statement about the silicon; a
+    # DECLARED one is a build target the user typed, and a stale or copied gfx1030 beside a
+    # physical gfx1033 would otherwise exempt a Steam Deck from the Van Gogh gate and install
+    # ROCm on hardware measured to diverge to NaN. Declared still routes -- the documented
+    # Strix Halo workaround declares gfx1100 on a gfx1151 -- it just cannot vouch for what
+    # is in the machine.
+    _AMD_REQUEST_TARGET_SOURCE=""
     # A mask exposing no device is a deliberate no-GPU selection rather than a detection
     # miss, so there is nothing for the request to swap TO and CUDA stays.
     _amd_visible_masks_select_no_gpu && return 1
@@ -3996,6 +4004,7 @@ _amd_request_has_a_wheel_route() {
         fi
         if _amd_gfx_has_wheel_route "$_arwr_decl"; then
             _AMD_REQUEST_TARGET_GFX="$_arwr_decl"
+            _AMD_REQUEST_TARGET_SOURCE=declared
             return 0
         fi
         return 1
@@ -4068,6 +4077,7 @@ _amd_request_has_a_wheel_route() {
     [ "$_arwr_sel" = gfx906 ] && [ "$_arwr_count" -gt 1 ] && return 1
     _amd_gfx_has_wheel_route "$_arwr_sel" || return 1
     _AMD_REQUEST_TARGET_GFX="$_arwr_sel"
+    _AMD_REQUEST_TARGET_SOURCE=probe
     return 0
 }
 
@@ -4811,9 +4821,19 @@ get_torch_index_url() {
         # already resolved the one card this run hands torch, composing both mask layers
         # (_amd_request_has_a_wheel_route), so answering on a sibling it hid took the cpu
         # index for a routable gfx1100 and the CUDA fallback then undid the request entirely.
+        # Only a PROBE-resolved target exempts the host: it names the card the runtime
+        # selected out of the real device list. A declared one is a build target and says
+        # nothing about what is installed, so gfx1030 typed beside a physical gfx1033 must
+        # not clear this.
         case "${_AMD_REQUEST_TARGET_GFX:-}" in
             ""|gfx1033) : ;;
-            *) _amd_gfx_bad_arch=false ;;
+            *)
+                # if/fi rather than `[ ... ] &&`: under set -e a failing test as the last
+                # command of the arm would abort the installer.
+                if [ "${_AMD_REQUEST_TARGET_SOURCE:-}" = probe ]; then
+                    _amd_gfx_bad_arch=false
+                fi
+                ;;
         esac
         if [ "$_amd_gfx_bad_arch" = true ]; then
             echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
@@ -5477,9 +5497,14 @@ case "$TORCH_INDEX_URL" in
                      | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')" in
                 *" gfx1033 "*) _amd_reroute_bad_arch=true ;;
             esac
+            # Probe-resolved only, exactly as the gate inside get_torch_index_url.
             case "$_amd_reroute_target" in
                 ""|gfx1033) : ;;
-                *) _amd_reroute_bad_arch=false ;;
+                *)
+                    if [ "${_AMD_REQUEST_TARGET_SOURCE:-}" = probe ]; then
+                        _amd_reroute_bad_arch=false
+                    fi
+                    ;;
             esac
             if [ "$_amd_reroute_bad_arch" = true ]; then
                 echo "[WARN] AMD gfx1033 (Van Gogh) is in the probed inventory -- not routing torch to the shared $_amd_probed_family index (studio/ROCM_RDNA2_APU.md)." >&2

@@ -2470,3 +2470,123 @@ def test_a_suffixed_declaration_naming_an_unroutable_arch_is_still_declined(stac
         )
         is False
     )
+
+
+# ── The feature suffix rocminfo prints, which users copy verbatim ───────────────────────
+
+
+@pytest.mark.parametrize(
+    "declared,family",
+    [
+        ("gfx1100", "gfx110X-all"),
+        ("gfx1100:sramecc-:xnack-", "gfx110X-all"),
+        ("gfx1151", "gfx1151"),
+        ("gfx1151:xnack-", "gfx1151"),
+    ],
+)
+def test_a_feature_suffix_routes_to_the_same_index_as_the_bare_arch(
+    stack, monkeypatch, declared, family
+):
+    """rocminfo prints gcnArchName as gfx1100:sramecc-:xnack- and that is what people paste
+    into UNSLOTH_ROCM_GFX_ARCH, but both arch tables are keyed on the bare arch.
+
+    Unstripped this answered None for a routable card. Under the request that was a dead
+    end: _forced_rocm_route_is_viable strips the suffix, so it approved the swap and
+    _ensure_cuda_torch stood down, while _ensure_rocm_torch looked the suffixed spelling up,
+    missed, and on a host with no readable ROCm version installed nothing at all -- leaving
+    CPU torch on a machine with both GPUs.
+    """
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    url = stack._amd_arch_index_url(declared)
+    assert url is not None and family in url
+
+
+def test_a_suffixed_miscomputing_arch_is_still_refused(stack, monkeypatch):
+    """The control that keeps the normalisation from opening a door.
+
+    gfx1033 miscomputes under ROCm and must never be routed. It was refused before only
+    because the suffixed spelling missed the table as well; now the guard sees it, so this
+    asserts the refusal is deliberate rather than incidental.
+    """
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    assert stack._amd_arch_index_url("gfx1033") is None
+    assert stack._amd_arch_index_url("gfx1033:xnack-") is None
+
+
+def test_an_unknown_arch_is_still_unrouted(stack, monkeypatch):
+    """The other control: normalising must not invent a route for an arch no index carries."""
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    assert stack._amd_arch_index_url("gfx1010") is None
+    assert stack._amd_arch_index_url("gfx1010:xnack-") is None
+
+
+# ── The Van Gogh gate, and what may exempt a host from it ──────────────────────────────
+
+
+def _bad_arch_verdict(*, declared: str, probed: str, request: str = "1") -> str:
+    """Which index get_torch_index_url's miscomputing-arch gate leaves, for this host.
+
+    The gate is lifted from install.sh by its own markers rather than restated, so removing
+    it fails this instead of quietly testing a shorter script.
+    """
+    lines = (Path(__file__).resolve().parents[3] / "install.sh").read_text(
+        encoding = "utf-8"
+    ).splitlines()
+    end = next(i for i, line in enumerate(lines)
+               if "end of the miscomputing-arch gate" in line)
+    # The gate opens at its own header sentence; anchoring on the first
+    # `_amd_gfx_bad_arch=false` walking back would land inside the exemption branch.
+    start = next(i for i in range(end, 0, -1)
+                 if "Archs measured to compute INCORRECTLY under ROCm" in lines[i])
+    # Wrapped in a function, because the lifted block ends in `return` and bash refuses
+    # that at top level -- unwrapped, execution ran on past the verdict.
+    gate = "_gate() {\n" + "\n".join(lines[start : end]) + "\n}"
+    script = "\n".join([
+        _shell_function("_rocm_torch_explicitly_requested"),
+        *_wheel_route_defs(arch_family = False),
+        "_amd_arch_index_family_for_gfx() { case $1 in gfx1030|gfx1033) echo gfx103X-all ;;"
+        " gfx1100) echo gfx110X-all ;; *) return 1 ;; esac; }",
+        "_has_usable_nvidia_gpu() { return 0; }",
+        "_amd_gpu_present_via_pci() { return 0; }",
+        f"_probe_amd_gfx_arch() {{ echo {probed}; }}",
+        f"_kfd_gfx_targets() {{ echo {probed}; }}",
+        f"_infer_linux_amd_gfx_arch() {{ echo {declared or probed}; }}",
+        "_detect_rocm_version_tag() { echo rocm7.1; }",
+        "_ensure_rocm_probe_env() { :; }",
+        '_base="https://download.pytorch.org/whl"',
+        f'_amd_gfx_probe="{probed}"',
+        "_amd_request_has_a_wheel_route || true",
+        gate,
+        # The gate either PRINTS an index and returns, or falls through printing nothing.
+        '_verdict=$(_gate || true)',
+        'printf "%s\\n" "${_verdict:-kept}"',
+    ])
+    env = _clean_env({"UNSLOTH_FORCE_ROCM_TORCH": request})
+    if declared:
+        env["UNSLOTH_ROCM_GFX_ARCH"] = declared
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
+    return (out.stdout.strip().splitlines() or [""])[-1]
+
+
+def test_a_declared_arch_cannot_exempt_a_physical_gfx1033():
+    """A Steam Deck beside an NVIDIA card, with a stale or copied UNSLOTH_ROCM_GFX_ARCH.
+
+    The declared gfx1030 is published as the request's target, and the gate used to read any
+    non-gfx1033 target as "the selected card is fine". The only AMD GPU in the machine is
+    still the gfx1033 the probe found, which studio/ROCM_RDNA2_APU.md records as diverging to
+    NaN, so ROCm would be installed on hardware this gate exists to keep it off. A declared
+    value is a build target and cannot vouch for what is in the machine.
+    """
+    assert _bad_arch_verdict(declared = "gfx1030", probed = "gfx1033").endswith("/cpu")
+
+
+def test_a_probed_target_still_exempts_a_routable_sibling():
+    """The control, and the case the target was published for: the probe itself resolved a
+    gfx1100, so the gfx1033 in the inventory is a card the runtime did not select. Without
+    this the fix would be "never exempt", which is what the target exists to avoid."""
+    assert _bad_arch_verdict(declared = "", probed = "gfx1100") == "kept"
+
+
+def test_the_gate_still_fires_with_no_request_at_all():
+    """The other control: presence remains the rule for every host that has not asked."""
+    assert _bad_arch_verdict(declared = "", probed = "gfx1033", request = "0").endswith("/cpu")

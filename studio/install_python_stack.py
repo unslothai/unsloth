@@ -2204,6 +2204,14 @@ def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
     mirrored/air-gapped Linux repair reaches the index install.sh chose rather
     than falling back to repo.amd.com. Both default to repo.amd.com when unset.
     """
+    # rocminfo prints gcnArchName WITH its feature suffix (gfx1100:sramecc-:xnack-), which is
+    # the spelling users copy into UNSLOTH_ROCM_GFX_ARCH, while both tables below are keyed on
+    # the bare arch. Unstripped, this answered None for a routable card: the caller then took
+    # the generic wheel, or on a host with no readable ROCm version installed nothing at all
+    # while _forced_rocm_route_is_viable -- which strips it -- had already stood the CUDA
+    # repair down. Normalised here so every caller asks one question. It also makes the
+    # gfx1033 guard below see a suffixed spelling, which it previously fell straight past.
+    gfx_arch = (gfx_arch or "").strip().split(":")[0] or None
     if IS_WINDOWS:
         return _windows_rocm_index_url(gfx_arch)
     # gfx1033 (Van Gogh) miscomputes under ROCm (studio/ROCM_RDNA2_APU.md). Without this,
