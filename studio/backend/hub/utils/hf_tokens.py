@@ -436,7 +436,6 @@ def _request_token_repo_key(repo_id: str, repo_type: Optional[str]) -> str:
 
 def _as_owner(call, *args, **kwargs):
     from utils.account_context import OWNER, is_owner_context, run_as
-
     if is_owner_context():
         return call(*args, **kwargs)
     return run_as(OWNER, call, *args, **kwargs)

@@ -118,7 +118,6 @@ def _counting_probe(
 
 
 def _probe_against(monkeypatch, response_factory):
-
     class _Session:
         def get(
             self,
@@ -904,8 +903,6 @@ def test_one_unreadable_cache_root_does_not_make_every_repo_present(monkeypatch,
     assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
 
 
-
-
 def _offline_route_guard(monkeypatch, tmp_path, repo_id: str, *, on_disk: bool):
     import utils.utils as utils_module
 
@@ -1220,7 +1217,6 @@ def test_a_media_load_records_at_entry_because_its_fetch_is_on_a_worker_thread()
     import inspect
 
     from core.inference import diffusion, video as video_core
-
     for begin in (diffusion.DiffusionBackend.begin_load, video_core.VideoBackend.begin_load):
         doc = inspect.getdoc(begin) or ""
         assert "Returns at once" in doc or "daemon thread" in doc, (

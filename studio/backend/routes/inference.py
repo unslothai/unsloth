@@ -27824,8 +27824,8 @@ _SANDBOX_MEDIA_TYPES = {
     # A raster codec, not a document type: `nosniff` below pins the type either way, and a model
     # that writes `photo.avif` should get an image rather than an attachment it cannot see.
     ".avif": "image/avif",
-# `.svg` stays OUT on purpose. The filename is model-chosen, so an inline SVG would be
-# same-origin script execution; it stays octet-stream + attachment (a download card).
+    # `.svg` stays OUT on purpose. The filename is model-chosen, so an inline SVG would be
+    # same-origin script execution; it stays octet-stream + attachment (a download card).
 }
 
 

@@ -767,7 +767,6 @@ def test_every_compat_mirror_of_an_inventory_route_takes_the_caller_class():
 
 def _local_row():
     from hub.services.models.common import _local_model_info
-
     load_path = Path(HOST_ROOT) / "my models" / "Llama-3.2-1B"
     return _local_model_info(
         scan_path = load_path,
@@ -778,7 +777,6 @@ def _local_row():
 
 
 def test_a_filesystem_backed_row_is_not_named_by_its_path(monkeypatch):
-
     async def _response(models_dir = "./models"):
         return LocalModelListResponse(
             models_dir = f"{HOST_ROOT}/models",
@@ -1288,7 +1286,6 @@ def test_every_route_that_consumes_an_inventory_identity_resolves_the_handle():
     import inspect
 
     from routes import models as model_routes
-
     for name in ("get_model_config", "scan_model_remote_code"):
         body = inspect.getsource(getattr(model_routes, name))
         assert "resolve_inventory_handle(" in body, name
@@ -1811,6 +1808,5 @@ def test_a_caller_named_path_is_echoed_not_referenced():
 
 def test_the_config_route_passes_the_caller_identifier_as_echo():
     import inspect
-
     source = inspect.getsource(models_routes.get_model_config)
     assert "echo = (model_name,)" in source
