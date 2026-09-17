@@ -16943,6 +16943,23 @@ def _check_signal_escape_patterns(code: str):
         parts: list[str] = []
         cur = func
         while isinstance(cur, ast.Attribute):
+            # `self.session.get(...)`: the client lives on the attribute, not in a name.
+            stores = (
+                _attr_values(cur)
+                if isinstance(cur.value, ast.Name) and _scope_model_ready()
+                else None
+            )
+            attr_fqs = [
+                fq
+                for value in stores or []
+                if isinstance(value, ast.AST)
+                for fq in _resolved_fqs(value, depth + 1)
+            ]
+            network = [
+                fq for fq in (".".join([b, *parts]) for b in attr_fqs if b) if _is_network_fq(fq)
+            ]
+            if network:
+                return list(dict.fromkeys(network))
             parts.insert(0, cur.attr)
             cur = cur.value
         if isinstance(cur, ast.Call):

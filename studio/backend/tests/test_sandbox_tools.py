@@ -420,6 +420,17 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # A client kept on an attribute sends just like one kept in a name.
+            pytest.param(
+                "import requests\nclass A:\n    def __init__(self):\n"
+                "        self.session = requests.Session()\n"
+                f"    def go(self):\n        self.session.get('http://{_H}/')",
+                id = "client_on_self_attribute",
+            ),
+            pytest.param(
+                f"import requests\nobj.session = requests.Session()\nobj.session.get('http://{_H}/')",
+                id = "client_on_module_attribute",
+            ),
             # OPTIONS is a request verb like the rest.
             pytest.param(
                 f"import requests\nrequests.Session().options(url='http://{_H}/')",
@@ -637,6 +648,8 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
             "import requests\nrequests.options('https://pypi.org/')",
+            "import requests\nclass A:\n    def __init__(self):\n        self.session = requests.Session()\n"
+            "    def go(self):\n        self.session.get('https://pypi.org/')",
             "import httpx\nc = httpx.Client()\nc.send(c.build_request('GET', 'https://pypi.org/'))",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': 'https://pypi.org'})",
             "import requests\ns = requests.Session()\ns.headers.update({'a': 'b'})",
@@ -667,6 +680,8 @@ class TestNetworkTargetResolution:
             "import requests\ns = requests.Session()\ns.get(input())",
             "import httpx\nhttpx.Client(base_url=input()).get('/')",
             "import httpx\nc = httpx.Client()\nc.send(r)",
+            "import requests\nclass A:\n    def __init__(self):\n        self.session = requests.Session()\n"
+            "    def go(self):\n        self.session.get(input())",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': input()})",
             # A caller can override the default, so the unknown value survives beside it.
             "import requests\ndef fetch(url='https://pypi.org/'):\n    requests.get(url)",
