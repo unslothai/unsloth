@@ -18,6 +18,7 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    ValidationInfo,
     field_serializer,
     field_validator,
 )
@@ -524,13 +525,14 @@ class ChatSettingsPayload(BaseModel):
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
     compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
 
-    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @field_validator("researchModelTimeoutSeconds", "maxToolCallsPerMessage", mode = "before")
     @classmethod
-    def _not_a_boolean(cls, value: Any) -> Any:
-        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
-        # unlimited for every later run. The run route rejects booleans for the same reason.
+    def _not_a_boolean(cls, value: Any, info: ValidationInfo) -> Any:
+        # bool subclasses int, so False coerces to the 0 sentinel -- research time unlimited, tool
+        # calls off -- and would persist for every later run. The run route rejects booleans for the
+        # same reason.
         if isinstance(value, bool):
-            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+            raise ValueError(f"{info.field_name} must be an integer, not a boolean")
         return value
 
     @field_validator("researchModelTimeoutSeconds")

@@ -163,6 +163,20 @@ def test_tool_call_limits_below_their_floor_are_rejected(payload):
         assert client.put("/api/chat/settings", json = payload).status_code == 400
 
 
+@pytest.mark.parametrize("value", [False, True])
+def test_max_tool_calls_rejects_a_boolean(value):
+    # bool subclasses int, so with the floor at 0 a False would have persisted as Off and
+    # silently stopped every later run from calling a tool.
+    with _settings_client() as client:
+        assert (
+            client.put(
+                "/api/chat/settings", json = {"maxToolCallsPerMessage": value}
+            ).status_code
+            == 400
+        )
+        assert "maxToolCallsPerMessage" not in client.get("/api/chat/settings").json()["settings"]
+
+
 @pytest.mark.parametrize(
     "payload",
     [
