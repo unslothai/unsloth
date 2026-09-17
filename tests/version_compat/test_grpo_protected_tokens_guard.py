@@ -3,34 +3,18 @@
 """The injected GRPO prompt-trim block must only replace a block that can host it.
 
 `grpo_trainer__generate_and_score_completions` in `unsloth/models/rl_replacements.py`
-substitutes a `if self.max_prompt_length is not None:` block into TRL's
-`_generate_and_score_completions`. What it substitutes is a TRL 0.20.0+ block: it calls
-`truncate_with_protected_tokens` and reads `self.pad_token`, `self.image_token` and three
-vision token ids. The regex that selects the block matches TRL releases that have none of
-those, and the declared window `trl>=0.18.2,!=0.19.0,<=0.24.0` still admits two of them.
-Driving the real substitution against each release's actual source:
+substitutes a TRL 0.20.0+ block -- it calls `truncate_with_protected_tokens` and reads
+`self.pad_token`, `self.image_token` and three vision token ids -- into TRL's
+`_generate_and_score_completions`. Driving the real substitution against each release's
+actual source, the selecting regex matches 0.18.2 through 0.23.1 and stops matching at
+0.24.0, while all four symbols exist only from 0.20.0, so on 0.18.2 and 0.19.1 (both inside
+the declared window `trl>=0.18.2,!=0.19.0,<=0.24.0`) it replaced working native slicing with
+names that do not resolve. TRL's own call to the helper inside the block being replaced is
+the discriminator, so the substitution is gated on it; `getattr(..., None)` for the three ids
+covers a fork or subclass that does not set one.
 
-    trl 0.18.2   block matched, helper + pad_token + image_token + ids ABSENT
-    trl 0.19.1   block matched, helper + pad_token + image_token + ids ABSENT
-    trl 0.20.0   block matched, all present
-    trl 0.21.0   block matched, all present
-    trl 0.22.0   block matched, all present
-    trl 0.22.2   block matched, all present
-    trl 0.23.0   block matched, all present
-    trl 0.23.1   block matched, all present
-    trl 0.24.0   block NOT matched (the regex no longer matches)
-    trl 1.13.0   block NOT matched
-
-So the break is the bottom of the declared window, not the ceiling: on 0.18.2 and 0.19.1 the
-substitution replaced working native slicing with code naming four symbols that do not exist
-there, and GRPO training with `max_prompt_length` set died inside generated code. TRL's own
-call to `truncate_with_protected_tokens` inside the block it is about to lose is the exact
-discriminator between the two groups, so the substitution is now gated on it and those two
-releases keep TRL's own slicing. `getattr(..., None)` for the three ids stays as belt and
-braces for a fork or subclass that does not set one.
-
-This test reads the substitution's OUTPUT and executes the statements it emits, so it fails
-on any platform and any transformers, and it does not need the affected TRL installed.
+Reads the substitution's OUTPUT and executes the statements it emits, so it needs neither the
+affected TRL nor a GPU.
 """
 
 from __future__ import annotations
@@ -47,9 +31,7 @@ import pytest
 os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
-# daily-fresh-fetch collects tests/version_compat/ with only pytest installed; the spoof below
-# imports torch, and the rewriter this exercises imports it too. Skip the module cleanly there
-# rather than failing collection for the whole directory.
+# daily-fresh-fetch collects this directory with only pytest installed.
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed", allow_module_level = True)
 
@@ -60,10 +42,8 @@ import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 _spoof.apply()
 
 
-# The two block shapes that matter, held here as fixtures rather than read from the installed
-# TRL so this covers both groups on a runner that has neither. Both match the selecting regex
-# and both carry exactly two statements at the block indent, which is the rest of the guard.
-# They differ only in what 0.18.2 and 0.19.1 do not have: TRL's own call to the helper.
+# Fixtures, not the installed TRL, so both groups are covered on a runner that has neither.
+# Both satisfy the selecting regex and the two-statement rule; they differ only in the helper.
 _TRL_0_18_BLOCK = """
     def _generate_and_score_completions(self, inputs):
         device = self.accelerator.device
