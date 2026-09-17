@@ -1618,9 +1618,10 @@ try:
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
-        _planned_flash_attn,
+        _planned_flash_attn_state,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
+        _reserved_flash_attn_state,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
         paravirtual_normalized_request,
@@ -1680,9 +1681,10 @@ except ImportError:
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
-        _planned_flash_attn,
+        _planned_flash_attn_state,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
+        _reserved_flash_attn_state,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
         paravirtual_normalized_request,
@@ -10733,6 +10735,10 @@ def _gguf_runtime_bytes(
     ctx_last_wins: bool = False,
     model_identifier: Optional[str] = None,
     launch_required_ubatch: int = 0,
+    # False prices the plan the launch runs, which is what the panel shows. True also
+    # keeps load_model's reserve for a flash-attention-off respawn that the fitter cannot
+    # re-place, which is what a guard admitting a load beside training has to hold.
+    reserve_no_flash_respawn: bool = False,
 ) -> _GgufRuntimeBytes:
     """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -10829,7 +10835,6 @@ def _gguf_runtime_bytes(
         # pads V to f16 and charges the whole quantized saving back. Measured on
         # llama-server b10632, Qwen3-0.6B at 32k with -ctk/-ctv q4_0: 2296 MiB reserved
         # against 1008 MiB allocated, identical on the CPU and Vulkan builds.
-        planned_v_type = planned_cache_types[1]
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,
@@ -10901,8 +10906,8 @@ def _gguf_runtime_bytes(
         # so the default here is ON, not off. The false arm pads variable-width V
         # tensors to the model-wide maximum (_max_kv_value_width), which on an
         # architecture whose global and SWA layers disagree about n_embd_v_gqa
-        # inflates the whole cache and can call a load that fits an overflow.
-        # Resolved the way the launch resolves it, narrowed by the capability probe.
+        # inflates the whole cache and can call a load that fits an overflow. Resolved
+        # the way the launch resolves it, Grok's forced-off exception first.
         _fa_supported = True
         try:
             _fa_caps = LlamaCppBackend.probe_server_capabilities()
@@ -10913,12 +10918,30 @@ def _gguf_runtime_bytes(
                 _fa_supported = False
         except Exception as _fa_exc:
             logger.debug("flash-attention capability probe failed: %s", _fa_exc)
-        flash_attn = _planned_flash_attn(
+        # Shared with load_model so the estimate and the launch cannot answer differently
+        # (#9697, #10489).
+        flash_attn = _planned_flash_attn_state(
             llama_extra_args,
-            _fa_supported,
-            planned_v_type,
-            getattr(probe, "_architecture", None),
+            planned_cache_types = planned_cache_types,
+            supports_flash_attn = _fa_supported,
+            tensor_parallel = bool(tensor_parallel),
+            architecture = getattr(probe, "_architecture", None),
+            env = os.environ,
         )
+        if reserve_no_flash_respawn:
+            # load_model holds the reading down where a flash-attention-off respawn cannot
+            # be re-placed, and the training guard is admitting a load against the worst
+            # this placement can reach rather than what it opens with. Resolving only the
+            # plan admitted it against the smaller cache that the same placement then
+            # reserves the larger one for, so the respawn could take VRAM the guard never
+            # admitted and take a training run with it. The panel keeps the plan: its total
+            # is what the launch uses, and is placement-independent.
+            flash_attn = _reserved_flash_attn_state(
+                flash_attn,
+                llama_extra_args,
+                tensor_parallel = bool(tensor_parallel),
+                env = os.environ,
+            )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,
@@ -11055,6 +11078,7 @@ def _estimate_gguf_kv_gb(
         is_diffusion = is_diffusion,
         model_identifier = model_identifier,
         launch_required_ubatch = launch_required_ubatch,
+        reserve_no_flash_respawn = True,
     )
     gpu_kv_bytes = (
         runtime.kv_bytes
