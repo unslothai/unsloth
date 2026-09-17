@@ -430,8 +430,13 @@ test("a partial pick carries no load identity", () => {
   // snapshot told that page the weights were there and skipped the download.
   assert.equal(
     PICKERS.split("loadId: isPartial ? undefined : c.load_id,").length - 1,
-    3,
-    "every cached-row pick drops it when the snapshot is torn",
+    2,
+    "both multi-quant cached-row picks drop it when the snapshot is torn",
+  );
+  assert.equal(
+    PICKERS.split("loadId: isDownloaded ? c.load_id : undefined,").length - 1,
+    1,
+    "the sole-quant pick carries it only when that quant is complete",
   );
   // The GGUF variant select set this rule first; the two must not diverge.
   assert.ok(

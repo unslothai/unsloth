@@ -919,7 +919,7 @@ def test_a_pip_that_cannot_run_is_bootstrapped_again(monkeypatch) -> None:
 
 
 def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
-    versions = {"mlx": "0.32.1", "mlx-metal": "0.32.1", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
+    versions = {"mlx": "0.32.2", "mlx-metal": "0.32.2", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
     # The closure of a stack that is not installed on this host is its own test below.
     monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: False)
@@ -940,7 +940,7 @@ def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
 def test_a_satisfied_mlx_pin_with_a_broken_closure_is_not_current(monkeypatch, tmp_path) -> None:
     """This step installs WITH dependencies, so it is what repairs an mlx-vlm whose own
     miniaudio or mlx-audio is gone. Versions alone would skip that repair."""
-    versions = {"mlx": "0.32.1", "mlx-metal": "0.32.1", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
+    versions = {"mlx": "0.32.2", "mlx-metal": "0.32.2", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
     monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: True)
     assert stack._mlx_stack_is_current() is False
@@ -977,6 +977,7 @@ def test_the_mlx_audit_does_not_fight_the_bundled_override(monkeypatch) -> None:
 
 def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_path) -> None:
     seen: list[str] = []
+    written: list[pathlib.Path] = []
 
     def _closure(
         req,
@@ -985,14 +986,26 @@ def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_pat
     ):
         seen.append(req.read_text(encoding = "utf-8"))
         assert req.exists()
+        written.append(pathlib.Path(req))
         return ["miniaudio"]
 
+    # mkstemp with no dir lands in the SHARED system temp dir, so globbing that for
+    # leftovers also sees files this test did not create. Four other tests in this file
+    # call _mlx_closure_unmet, and under xdist one of them can be inside the call -- with
+    # its own unsloth-mlx-*.txt on disk -- at the moment this globs. That is a cross-worker
+    # race, not a leak, and it is what turned this test red on main. Give the audit a
+    # private temp dir so the leftover check can only ever see this test's own files.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", _closure)
     monkeypatch.setattr(stack, "_installed_index", lambda: {})
     assert stack._mlx_closure_unmet() is True
     assert seen and all(spec in seen[0] for spec in [*stack._MLX_PINS, stack._MLX_VLM_SPEC])
     # A temp file per update, on a path the step is not allowed to leave behind.
-    assert not list(pathlib.Path(tempfile.gettempdir()).glob("unsloth-mlx-*.txt"))
+    assert not list(tmp_path.glob("unsloth-mlx-*.txt"))
+    # Name the exact file rather than resting on an empty directory: an audit that stopped
+    # creating one would leave the glob empty too, and that must not read as cleanup.
+    assert written and written[0].parent == tmp_path
+    assert not written[0].exists()
 
     def _raises(*_a, **_k):
         raise RuntimeError("metadata unreadable")
@@ -1032,7 +1045,7 @@ def test_a_resident_codec_inside_the_window_needs_no_install(spec, installed, ex
 
 
 def test_the_pip_fallback_never_names_one_project_twice() -> None:
-    """pip refuses `mlx==0.32.1 mlx` outright with "Double requirement given", which
+    """pip refuses `mlx==0.32.2 mlx` outright with "Double requirement given", which
     would fail the very step the fallback exists to rescue."""
     cmd = stack._build_pip_cmd(
         (
@@ -1040,13 +1053,13 @@ def test_the_pip_fallback_never_names_one_project_twice() -> None:
             "mlx",
             "--upgrade-package",
             "mlx-vlm",
-            "mlx==0.32.1",
-            "mlx-vlm>=0.4.4,<0.7.0",
+            "mlx==0.32.2",
+            "mlx-vlm>=0.4.4,<=0.7.1",
         )
     )
     assert "--upgrade" in cmd and "--upgrade-package" not in cmd
     assert cmd.count("mlx") == 0 and cmd.count("mlx-vlm") == 0
-    assert "mlx==0.32.1" in cmd and "mlx-vlm>=0.4.4,<0.7.0" in cmd
+    assert "mlx==0.32.2" in cmd and "mlx-vlm>=0.4.4,<=0.7.1" in cmd
 
 
 def test_a_package_named_only_by_the_flag_is_still_passed() -> None:
@@ -1463,7 +1476,12 @@ def test_no_evidence_at_all_is_probed(mlx, monkeypatch) -> None:
 def test_the_fingerprint_names_everything_a_verdict_depends_on(monkeypatch) -> None:
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "0.4.5")
     fingerprint = stack._mlx_health_fingerprint()
-    assert fingerprint["pins"] == list(stack._MLX_PINS) + [stack._MLX_VLM_SPEC]
+    # The narrowed mlx-vlm range, not the static one: the installed zoo is part of what a
+    # recorded verdict is valid for, so changing the zoo must invalidate it.
+    assert fingerprint["pins"] == list(stack._MLX_PINS) + [
+        stack._mlx_vlm_spec_for_installed_zoo()
+    ]
+    assert fingerprint["pins"][-1].startswith(stack._MLX_VLM_SPEC)
     assert fingerprint["python"] == stack._installer_python_tag()
     assert fingerprint["imports"] == {n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES}
     assert {"transformers", "tokenizers", "numpy", "huggingface-hub"} <= set(fingerprint["imports"])

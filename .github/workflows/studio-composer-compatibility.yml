@@ -1,0 +1,164 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Composer compatibility
+
+on:
+  pull_request:
+    paths:
+      - 'studio/frontend/src/components/assistant-ui/**'
+      - 'studio/frontend/src/features/chat/**'
+      - 'studio/frontend/src/features/settings/components/composer-settings.tsx'
+      - 'studio/frontend/src/index.css'
+      # playwright_queue_localization.py drives the queue surface in ja and asserts the
+      # shipped Japanese, so a translation-only edit is exactly the change that can break
+      # it, and this workflow is its only invocation. index.ts is in scope with the
+      # catalogs because the driver calls setLocale through it.
+      - 'studio/frontend/src/i18n/**'
+      - 'studio/frontend/smoke-*'
+      - 'studio/frontend/tests/**'
+      - 'studio/frontend/package*.json'
+      - 'studio/frontend/vite.config.ts'
+      - 'tests/studio/*composer*'
+      - 'tests/studio/*prompt_queue*'
+      # `*` does not cross a `/` and matches literally otherwise, so neither pattern above
+      # reaches playwright_queue_localization.py: it carries no "prompt_queue". Without this
+      # line a PR that changes only the driver never runs the driver.
+      - 'tests/studio/*queue_localization*'
+      - 'tests/studio/_playwright_robust.py'
+      - '.github/workflows/studio-composer-compatibility.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  composer:
+    name: Composer (${{ matrix.os }}, ${{ matrix.suite }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            suite: browsers
+          - os: macos-latest
+            suite: browsers
+          - os: windows-latest
+            suite: browsers
+          - os: macos-latest
+            suite: safari
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/temp/queue-validation/browsers
+      PIP_CACHE_DIR: ${{ github.workspace }}/temp/queue-validation/pip-cache
+      npm_config_cache: ${{ github.workspace }}/temp/queue-validation/npm-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Audit dependencies
+        run: python scripts/lockfile_supply_chain_audit.py
+      - name: Install frontend dependencies without lifecycle scripts
+        working-directory: studio/frontend
+        run: npm ci --ignore-scripts --no-fund --no-audit
+      - name: Create isolated test environment
+        run: |
+          mkdir -p temp/queue-validation/tmp
+          echo "TMPDIR=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
+          echo "TMP=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
+          echo "TEMP=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
+          python -m venv temp/queue-validation/venv
+          python - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          folder = "Scripts" if os.name == "nt" else "bin"
+          executable = "python.exe" if os.name == "nt" else "python"
+          bin_dir = (Path("temp/queue-validation/venv") / folder).resolve()
+          subprocess.check_call([str(bin_dir / executable), "-m", "pip", "install", "playwright==1.62.0", "selenium==4.49.0"])
+          with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as path_file:
+              path_file.write(str(bin_dir) + "\n")
+          PY
+      - name: Install browser engines
+        if: matrix.suite == 'browsers'
+        timeout-minutes: 10
+        run: python -m playwright install chromium firefox webkit
+      - name: Install Linux browser libraries
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        env:
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          if python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              for name in ("chromium", "firefox", "webkit"):
+                  browser = getattr(p, name).launch()
+                  browser.close()
+          PY
+          then
+            echo "Browser libraries are already installed"
+          else
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install-deps chromium firefox webkit
+          fi
+      - name: Queue engine and composer regressions
+        if: matrix.suite == 'browsers'
+        working-directory: studio/frontend
+        run: node --experimental-strip-types --test tests/composer-*.test.ts tests/prompt-queue-*.test.ts tests/model-lifecycle-gate.test.ts tests/loading-model-selection.test.ts tests/pre-stream-run-reservation.test.ts tests/auto-compaction-settings.test.ts
+      - name: Browser simulations
+        if: matrix.suite == 'browsers'
+        run: |
+          mkdir -p temp/queue-validation/compatibility
+          status=0
+          for browser in chromium firefox webkit chrome msedge; do
+            export PW_ENGINE=chromium
+            unset PW_CHANNEL PW_EXECUTABLE
+            case "$browser" in
+              firefox|webkit) export PW_ENGINE="$browser" ;;
+              chrome|msedge) export PW_CHANNEL="$browser" ;;
+            esac
+            python tests/studio/playwright_prompt_queue_actions.py \
+              > "temp/queue-validation/compatibility/$browser-queue.log" 2>&1 || status=1
+            python tests/studio/playwright_composer_settings.py \
+              > "temp/queue-validation/compatibility/$browser-composer.log" 2>&1 || status=1
+            # Added by #11117 and left unrun until now, which
+            # tests/studio/test_playwright_suites_run_in_ci.py failed on. It belongs in this
+            # loop rather than a job of its own: it drives the same
+            # /smoke-prompt-queue-actions.html fixture as the queue suite above, and what it
+            # asserts -- IME composition, Escape-during-composition and the send-shortcut
+            # chord in the queued-prompt editor -- is exactly the per-engine behaviour this
+            # matrix exists for. Verified green on chromium 153, firefox 155 and webkit 26.6
+            # before being wired in, so this adds coverage and not a new red.
+            python tests/studio/playwright_queue_localization.py \
+              > "temp/queue-validation/compatibility/$browser-queue-localization.log" 2>&1 || status=1
+          done
+          exit "$status"
+      - name: Native Safari simulations
+        if: ${{ !cancelled() && matrix.suite == 'safari' }}
+        run: |
+          sudo safaridriver --enable
+          python tests/studio/selenium_composer_safari.py
+      - name: Upload simulation reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: composer-${{ runner.os }}-${{ matrix.suite }}
+          path: temp/queue-validation/compatibility
+          retention-days: 7
+          if-no-files-found: warn

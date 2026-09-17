@@ -445,14 +445,29 @@ class _VideoGenerationCancelled(Exception):
 
 
 @contextlib.contextmanager
-def _scheduler_step_progress(pipe: Any, on_step: Any):
+def _scheduler_step_progress(
+    pipe: Any,
+    on_step: Any,
+    on_step_done: Any = None,
+):
     """Progress + cancellation for pipelines WITHOUT callback_on_step_end.
 
     HunyuanVideo15Pipeline exposes no per-step callback, but every denoise step
     makes exactly one ``scheduler.step`` call, so wrapping that method gives the
-    same per-step tick the callback path gets. ``on_step`` receives the 1-based
-    step count and may raise (_VideoGenerationCancelled) to abort the loop. The
-    original method is always restored, even when the pipeline raises.
+    same per-step tick the callback path gets. The original method is always
+    restored, even when the pipeline raises.
+
+    Two hooks, because they want opposite sides of the call:
+
+    ``on_step`` runs BEFORE the scheduler step and receives the 1-based step count. It is the
+    cancellation check, and may raise (_VideoGenerationCancelled) to abort the loop -- which has to
+    happen before the step's work is submitted, not after.
+
+    ``on_step_done`` runs AFTER the original step returns, with the same count. It is the progress
+    tick, and it belongs here because ``scheduler.step`` is what enqueues the step's latent update
+    (and on MiniMax-H3 the audio scheduler update after it). Marking the step from the pre-hook
+    would place the marker ahead of kernels that step still owes, so the marker could signal while
+    that step was still running -- the same lie this wrapper exists to remove, one step wide.
     """
     scheduler = pipe.scheduler
     original = scheduler.step
@@ -461,13 +476,273 @@ def _scheduler_step_progress(pipe: Any, on_step: Any):
     def _step(*args: Any, **kwargs: Any) -> Any:
         count["n"] += 1
         on_step(count["n"])
-        return original(*args, **kwargs)
+        result = original(*args, **kwargs)
+        if on_step_done is not None:
+            on_step_done(count["n"])
+        return result
 
     scheduler.step = _step
     try:
         yield
     finally:
         scheduler.step = original
+
+
+def _record_cuda_event() -> Any:
+    """A ``torch.cuda.Event`` recorded on the current stream, or None when that is not possible.
+
+    Never raises and never synchronises: an event recorded here is only ever polled with
+    ``query()``, so it costs one enqueued marker and nothing on the critical path. Returns None on
+    a CPU/MPS host, and refuses to record inside a CUDA-graph capture -- an event recorded there
+    becomes part of the graph, and querying such an event is prohibited in every capture mode.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        if torch.cuda.is_current_stream_capturing():
+            return None
+        event = torch.cuda.Event()
+        event.record()
+        return event
+    except Exception:  # noqa: BLE001 -- progress reporting must never fail a render
+        return None
+
+
+class _CompletedStepTicker:
+    """The denoise step the GPU has FINISHED, not the one the CPU has enqueued.
+
+    With the denoiser's forward replayed from a captured CUDA graph the Python loop enqueues every
+    step and returns long before the GPU has run them: on MiniMax-H3 at 960x544x124 over 30 steps
+    the 29 host-side ticks land in 0.9 s and the GPU is still 26 s from done. A counter driven by
+    ``scheduler.step`` or ``callback_on_step_end`` therefore runs the bar to the end of the denoise
+    while no denoising has happened, and the user watches an apparent freeze at the far right of a
+    bar that claims a second remains.
+
+    So mark each step's place in the stream with a ``torch.cuda.Event`` and report the last one
+    that has completed. ``query()`` does not block and does not serialise, which is the whole
+    point: a ``synchronize()`` per step would give the same honest number and hand back the
+    CUDA-graph win that the video speed path exists for.
+
+    Falls back to the enqueued count on any host without usable CUDA events (CPU, MPS), which is
+    exactly today's behaviour and is correct there -- without a graph to run ahead of, the host
+    count IS the progress.
+    """
+
+    def __init__(self, total: int) -> None:
+        self.total = max(0, int(total))
+        self._lock = threading.Lock()
+        self._events: list = []
+        self._event_backed = False
+        self._enqueued = 0
+        self._done = 0
+        self._scanned = 0
+        self._boundary: Any = None
+        self._boundary_marked = False
+
+    @property
+    def event_backed(self) -> bool:
+        """Whether any step is being tracked by a real GPU event."""
+        with self._lock:
+            return self._event_backed
+
+    def mark_boundary(self) -> bool:
+        """Mark the end of the denoise in the stream, from the host position that knows it.
+
+        Returns True when a real event was recorded, meaning the caller must WAIT for
+        ``boundary_reached()`` before calling the denoise finished. False means there is no event
+        to wait on (a host with no CUDA events), and the boundary is reached the moment it is
+        marked, because there is no queue for the host to have run ahead of.
+        """
+        event = _record_cuda_event()
+        with self._lock:
+            self._boundary = event
+            self._boundary_marked = True
+        return event is not None
+
+    @property
+    def boundary_marked(self) -> bool:
+        """Whether the end of the denoise has been marked yet."""
+        with self._lock:
+            return self._boundary_marked
+
+    def boundary_reached(self) -> bool:
+        """Whether the GPU has actually reached the marked end of the denoise.
+
+        True when nothing was marked or the marker cannot be read: this gates a phase label, so an
+        unreadable marker must not strand the bar in the denoise phase forever.
+        """
+        with self._lock:
+            if not self._boundary_marked:
+                return False
+            event = self._boundary
+        if event is None:
+            return True
+        try:
+            return bool(event.query())
+        except Exception:  # noqa: BLE001 -- an unqueryable marker counts as reached
+            return True
+
+    def record(self, enqueued: int) -> None:
+        """Note that step ``enqueued`` (1-based) has been submitted to the device."""
+        enqueued = int(enqueued)
+        with self._lock:
+            if enqueued <= self._enqueued:
+                return
+            self._enqueued = enqueued
+            if len(self._events) >= self.total:
+                return
+        event = _record_cuda_event()
+        if event is None:
+            return
+        with self._lock:
+            # The step number travels WITH the event, so a step that could not be marked costs its
+            # own tick and never shifts the ones after it.
+            self._events.append((enqueued, event))
+            self._event_backed = True
+
+    def completed(self) -> int:
+        """Steps the GPU has finished. Never decreases, never exceeds what was enqueued, never
+        blocks, and never raises."""
+        with self._lock:
+            if not self._event_backed:
+                return self._enqueued
+            pending = self._events[self._scanned :]
+            done, scanned = self._done, self._scanned
+        for enqueued, event in pending:
+            try:
+                if not event.query():
+                    break
+            except Exception:  # noqa: BLE001 -- an unqueryable event just stops the scan
+                break
+            done = max(done, enqueued)
+            scanned += 1
+        with self._lock:
+            self._done = max(self._done, done)
+            self._scanned = max(self._scanned, scanned)
+            return self._done
+
+
+@contextlib.contextmanager
+def _hold_off_cuda_graph_capture():
+    """Yield True while it is safe to query a CUDA event, holding off any capture that would start.
+
+    Delegates to the CUDA-graph layer, which owns the lock capture entry takes. A missing graph
+    layer means there is no capture to collide with, so the answer is True.
+    """
+    try:
+        from . import diffusion_cuda_graph
+        guard = diffusion_cuda_graph.hold_off_capture
+    except Exception:  # noqa: BLE001 -- no graph layer means no capture to avoid
+        yield True
+        return
+    with guard() as clear:
+        yield clear
+
+
+@contextlib.contextmanager
+def _completed_step_poller(pump: Any, poll_seconds: float = 0.1):
+    """Keep advancing the reported progress from the GPU while the caller sits inside ``pipe()``.
+
+    The host-side ticks stop the moment the loop has enqueued its last step, so after that nothing
+    would ever ask the events again -- which is precisely the stretch the bar used to lie through.
+    A daemon thread polling at 10 Hz costs a couple of ``cudaEventQuery`` calls per tick. ``pump``
+    must not raise, but is guarded anyway: no progress update may fail a render.
+
+    The whole pump runs inside the capture hold-off, not just a check before it. Reading a flag and
+    then querying would leave a window for a capture to begin in between, and that query would land
+    inside the capture and invalidate it, poisoning the graph wrapper and dropping the load to the
+    eager path for the rest of its life.
+    """
+    stop = threading.Event()
+
+    def _run() -> None:
+        while not stop.is_set():
+            stop.wait(poll_seconds)
+            try:
+                with _hold_off_cuda_graph_capture() as clear:
+                    if not clear:
+                        continue
+                    pump()
+            except Exception:  # noqa: BLE001 -- progress must never fail a render
+                pass
+
+    thread = threading.Thread(target = _run, name = "video-denoise-progress", daemon = True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout = 2.0)
+
+
+# The decoders a video pipeline may run after its denoise loop, in the order the modular MiniMax-H3
+# workflow runs them. Wrapping the bound method is the one hook every family shares.
+_DECODE_ATTRS = ("vae", "audio_vae")
+
+# How hard the end-of-denoise marker tries before it gives up and flips the phase at the host
+# position. The hold-off refuses without blocking, so most refusals are the 10 Hz poller holding
+# the lock for a couple of event queries; 20 tries 20 ms apart covers several poll ticks and costs
+# nothing when uncontended, while a real capture outlasts it and takes the host-position fallback.
+_BOUNDARY_MARK_ATTEMPTS = 20
+_BOUNDARY_MARK_RETRY_SECONDS = 0.02
+
+
+@contextlib.contextmanager
+def _decode_phase(pipe: Any, on_decode: Any):
+    """Flip the reported phase to "decode" the instant the decoder is entered.
+
+    HunyuanVideo-1.5, Wan and MiniMax-H3's modular workflow all run the decode INSIDE the pipeline
+    call with nothing between the denoise loop and it, so a phase set only after ``pipe()`` returns
+    reports the whole decode as the last denoise step. On H3 that decode plus its post-processing
+    is ~3.9 s of the render, and the VAE decode is the memory peak.
+
+    Note what this hook is and is not: it is the one HOST position that knows the denoise loop is
+    over, and nothing more. On a family where the host runs ahead of the device, the denoise
+    kernels can still be queued when it fires, so the caller must treat it as "mark the boundary",
+    not as "the denoise finished" -- see ``_CompletedStepTicker.mark_boundary``.
+
+    ``on_decode`` fires at most once per generation and must not raise. Every wrapper installed
+    here is removed again, including when the decode raises -- and restored to whatever was there,
+    since the speed layer may have already put a compiled decode in the instance ``__dict__``.
+    """
+    fired = {"done": False}
+    restore: list = []
+
+    def _wrap(original: Any):
+        def _decode(*args: Any, **kwargs: Any) -> Any:
+            if not fired["done"]:
+                fired["done"] = True
+                on_decode()
+            return original(*args, **kwargs)
+
+        return _decode
+
+    for name in _DECODE_ATTRS:
+        owner = getattr(pipe, name, None)
+        original = getattr(owner, "decode", None) if owner is not None else None
+        if not callable(original):
+            continue
+        had_own = "decode" in getattr(owner, "__dict__", {})
+        try:
+            owner.decode = _wrap(original)
+        except Exception:  # noqa: BLE001 -- a decoder that refuses assignment goes unreported
+            continue
+        restore.append((owner, original, had_own))
+    try:
+        yield
+    finally:
+        for owner, original, had_own in restore:
+            try:
+                if had_own:
+                    owner.decode = original
+                else:
+                    # Nothing was shadowing the class method, so leave nothing behind -- a bound
+                    # method parked in a module's __dict__ is a reference cycle back to the module.
+                    del owner.decode
+            except Exception:  # noqa: BLE001 -- cleanup is best-effort
+                pass
 
 
 def _assert_pick_is_not_speech(
@@ -1208,6 +1483,8 @@ class VideoBackend:
                     f"load asked for {h3_task}. Pick the matching checkpoint."
                 )
         else:
+            # assert_pipeline_class_available closes the dynamo window itself, ahead of its own
+            # `import diffusers`, which covers this validation and the training preflight too.
             # Refuse a too-old diffusers here rather than deep in the load.
             from .diffusion_families import assert_pipeline_class_available
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
@@ -3455,6 +3732,15 @@ class VideoBackend:
             )
             return self.status()
 
+        # Below the H3 native return, which is the one video path that never imports diffusers,
+        # and above every consumer that does. Same window as diffusion.py: `import diffusers`
+        # is itself a torch._dynamo importer, and so is the offload step further down.
+        try:
+            from utils.torch_warmup import close_dynamo_import_window
+            close_dynamo_import_window(logger)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            logger.debug("dynamo pre-import skipped: %r", exc)
+
         import diffusers
         import torch
 
@@ -5660,36 +5946,124 @@ class VideoBackend:
                     "error": None,
                 }
 
-                def _tick(done: int) -> None:
+                ticker = _CompletedStepTicker(steps)
+
+                def _report(done: int) -> None:
+                    """Publish a step the GPU has actually finished. Monotonic, and silent once the
+                    denoise is over so a late poll cannot walk the bar back under a later phase."""
+                    done = max(0, min(int(done), steps))
+                    if self._gen.get("phase") != "denoise":
+                        return
+                    if done <= int(self._gen.get("step") or 0):
+                        return
                     elapsed = time.monotonic() - started
                     self._gen.update(
                         step = done,
                         eta_seconds = (elapsed / max(1, done)) * max(0, steps - done),
                     )
 
+                def _tick(enqueued: int) -> None:
+                    """One denoise step has now been fully SUBMITTED, latent update included. What
+                    gets reported is what the GPU has completed; only a host with no usable CUDA
+                    events falls back to this count.
+
+                    Inside the capture hold-off for the same reason the poller is: recording and
+                    querying an event are both prohibited while ANOTHER thread is capturing a graph,
+                    because torch captures in cudaStreamCaptureModeGlobal, under which a concurrent
+                    capture in any thread bars every thread from potentially unsafe calls. This
+                    pipeline's own capture is caught by ``is_current_stream_capturing``; a second
+                    pipeline's is not, and Studio runs image and video renders side by side. A tick
+                    skipped here costs that step its marker and nothing else: the step number travels
+                    with the event, so the later ones do not shift, and the poller keeps reporting."""
+                    with _hold_off_cuda_graph_capture() as clear:
+                        if not clear:
+                            return
+                        ticker.record(enqueued)
+                        _report(ticker.completed())
+
+                def _finish_denoise() -> None:
+                    """The denoise is provably over, so complete the bar rather than leaving it
+                    wherever the last event landed. Also why the bar no longer stops one short:
+                    MiniMax-H3's loop makes 29 ``scheduler.step`` calls for a 30-step render, and
+                    nothing else ever reported the last step."""
+                    self._gen.update(step = steps, eta_seconds = None)
+
+                def _enter_decode_phase() -> None:
+                    _finish_denoise()
+                    self._gen.update(phase = "decode", eta_seconds = None)
+
+                def _on_decode() -> None:
+                    """The decoder was entered, which is a HOST position: on a family whose host
+                    runs ahead the denoise kernels may still be queued, and flipping here would
+                    jump the bar to steps/steps while the GPU was still denoising. So mark the
+                    boundary in the stream and let the poller flip when the GPU reaches it. With no
+                    event to wait on there is no queue to have run ahead of, so flip at once.
+
+                    Marking records an event, so it takes the capture hold-off too, and it RETRIES:
+                    the hold-off acquires its lock without blocking, so a refusal can mean nothing
+                    worse than the 10 Hz poller holding it for its own queries at that instant, and
+                    giving up there would flip the bar to steps/steps with the denoise queue still
+                    draining, which is the exact lie this boundary exists to remove. The retries are
+                    short and only run when contended. A capture that outlasts them really does leave
+                    nothing to wait on, and the host position is then the only answer there is."""
+                    marked = False
+                    for _ in range(_BOUNDARY_MARK_ATTEMPTS):
+                        with _hold_off_cuda_graph_capture() as clear:
+                            if clear:
+                                marked = ticker.mark_boundary()
+                                break
+                        time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
+                    if not marked:
+                        _enter_decode_phase()
+
+                def _pump() -> None:
+                    """One poll, inside the capture hold-off. Advances the step from the GPU, and
+                    takes the denoise to complete only once the GPU has reached the marked end."""
+                    if self._gen.get("phase") != "denoise":
+                        return
+                    if ticker.boundary_marked and ticker.boundary_reached():
+                        _enter_decode_phase()
+                        return
+                    _report(ticker.completed())
+
                 def _on_step(p, step_index, timestep, callback_kwargs):
+                    # diffusers calls this at the END of a loop iteration, after scheduler.step, so
+                    # the step's latent update is already submitted when the marker goes down.
                     if cancel.is_set():
                         p._interrupt = True
                         return callback_kwargs
                     _tick(step_index + 1)
                     return callback_kwargs
 
-                def _on_scheduler_step(done: int) -> None:
-                    # No cooperative _interrupt here, so cancellation must unwind the denoise loop via an exception
+                def _on_scheduler_step_cancel(done: int) -> None:
+                    # Runs BEFORE the scheduler step. No cooperative _interrupt here, so
+                    # cancellation must unwind the denoise loop via an exception, and it has to do
+                    # that before the step's work is submitted rather than after.
                     if cancel.is_set():
                         raise _VideoGenerationCancelled()
-                    _tick(done)
 
-                if "callback_on_step_end" in call_params:
+                has_step_callback = "callback_on_step_end" in call_params
+                if has_step_callback:
                     kwargs["callback_on_step_end"] = _on_step
-                    progress_ctx = contextlib.nullcontext()
-                else:
-                    # HunyuanVideo-1.5 has no step callback, so wrap scheduler.step for progress + cancel and restore
-                    # afterwards. Same for H3's modular workflow: ModularPipeline takes no callback (an unknown input is
-                    # only warned about), but MiniMaxH3LoopSchedulerStep calls components.scheduler.step --
-                    # pipe.scheduler -- once per denoise step, so the wrapper ticks and can unwind a multi-minute run on
-                    # Cancel.
-                    progress_ctx = _scheduler_step_progress(pipe, _on_scheduler_step)
+
+                @contextlib.contextmanager
+                def progress_ctx():
+                    """Everything that reports on a denoise, entered as one unit around ``pipe()``."""
+                    with contextlib.ExitStack() as stack:
+                        if not has_step_callback:
+                            # HunyuanVideo-1.5 has no step callback, so wrap scheduler.step for progress + cancel and
+                            # restore afterwards. Same for H3's modular workflow: ModularPipeline takes no callback (an
+                            # unknown input is only warned about), but MiniMaxH3LoopSchedulerStep calls
+                            # components.scheduler.step -- pipe.scheduler -- once per denoise step, so the wrapper ticks
+                            # and can unwind a multi-minute run on Cancel. Cancel before the step, tick after it.
+                            stack.enter_context(
+                                _scheduler_step_progress(pipe, _on_scheduler_step_cancel, _tick)
+                            )
+                        # Family-agnostic: no video family has a callback between its denoise loop and its decode, so
+                        # every one of them gets its decode phase from the decoder itself.
+                        stack.enter_context(_decode_phase(pipe, _on_decode))
+                        stack.enter_context(_completed_step_poller(_pump))
+                        yield
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle
                 if state.cache_auto:
@@ -5716,7 +6090,7 @@ class VideoBackend:
                 if state.transformer_cache:
                     self._reset_step_cache(pipe)
                 try:
-                    with torch.inference_mode(), progress_ctx, sigma_ctx:
+                    with torch.inference_mode(), progress_ctx(), sigma_ctx:
                         output = pipe(**kwargs)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would
@@ -5731,6 +6105,9 @@ class VideoBackend:
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 
+                # The pipeline returned, so every step ran whatever the last event said. This is
+                # also the only place a latent-only render (no decoder entered) can complete.
+                _finish_denoise()
                 self._gen.update(phase = "export", eta_seconds = None)
                 if fam.modular_workflow:
                     video_frames = output["videos"][0]

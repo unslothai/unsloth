@@ -30,6 +30,46 @@ from typing import Any, Callable, Generator
 
 from loggers import get_logger
 
+# Split across two chunks, neither half matches the key pattern and the credential is painted whole.
+_SECRET_PREFIXES = ("sk-unsloth-", "desktop-")
+# A prefix plus a generous token: bounds the reverse search on a multi-megabyte chunk.
+_SECRET_SCAN_TAIL = 128
+# What ends a credential token in tool output: whitespace, quoting and closing punctuation.
+_SECRET_TERMINATORS = frozenset(" \t\r\n\"'`,;)]}")
+
+
+def _hold_back_partial_secret(text: str) -> int:
+    """Index at which `text` may hold a credential token still open at its end.
+
+    Everything from the returned index is carried to the next chunk. Returns ``len(text)`` when the
+    tail is safe to emit whole. Conservative on purpose: holding back a few bytes that turn out to
+    be ordinary text only delays them until the next chunk or the final flush.
+    """
+    tail_start = max(0, len(text) - _SECRET_SCAN_TAIL)
+    tail = text[tail_start:]
+    best = len(text)
+    for prefix in _SECRET_PREFIXES:
+        index = tail.rfind(prefix)
+        while index != -1:
+            absolute = tail_start + index
+            rest = text[absolute + len(prefix) :]
+            # A terminator ANYWHERE after the token ends it, so the regex has had its chance and
+            # the text is safe to emit. Read only at the ends, `sk-unsloth-<key> done` looked open
+            # and held the chunk (and every chunk after it) back until the tool finished.
+            if not rest or not _SECRET_TERMINATORS.intersection(rest):
+                best = min(best, absolute)
+            # Keep going left: a terminated occurrence says nothing about an EARLIER one, and
+            # stopping at the first one found hid an open token behind it.
+            index = tail.rfind(prefix, 0, index)
+    # Also a tail that is a PREFIX of a prefix ("...sk-unslo"), which no rfind above can see.
+    for prefix in _SECRET_PREFIXES:
+        for length in range(min(len(prefix) - 1, len(text)), 0, -1):
+            if text.endswith(prefix[:length]):
+                best = min(best, len(text) - length)
+                break
+    return best
+
+
 logger = get_logger(__name__)
 
 
@@ -220,6 +260,21 @@ def stream_tool_execution(
                 finished = True
                 return
 
+    # tool_end is masked downstream, but these chunks are what the frontend paints and persists
+    # first. A key can straddle a chunk boundary, so `_hold_back_partial_secret` returns the index
+    # where a still-open token begins and everything from there is carried into the next chunk.
+    carry = ""
+
+    def _masked(text: str, *, final: bool) -> "tuple[str, str]":
+        """Return (emit, carry) for `text`, with credentials masked and partials held back."""
+        from core.inference.tool_loop_controller import redact_studio_credentials
+
+        combined = carry + text
+        if final:
+            return redact_studio_credentials(combined), ""
+        split = _hold_back_partial_secret(combined)
+        return redact_studio_credentials(combined[:split]), combined[split:]
+
     abnormal_exit = False
     try:
         while not finished:
@@ -265,11 +320,24 @@ def stream_tool_execution(
                 stream_capped = True
             streamed_chars += len(chunk)
             if chunk:
+                # The capped chunk is the last one sent, so flush the carry with it.
+                emit, carry = _masked(chunk, final = stream_capped)
+                if emit:
+                    yield {
+                        "type": "tool_output",
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                        "text": emit,
+                    }
+        # Deferred text that turns out to be ordinary: emit it, or the output is truncated.
+        if carry:
+            emit, carry = _masked("", final = True)
+            if emit:
                 yield {
                     "type": "tool_output",
                     "tool_name": tool_name,
                     "tool_call_id": tool_call_id,
-                    "text": chunk,
+                    "text": emit,
                 }
     except BaseException:
         # The loop only raises when the consumer closes us early: an SSE disconnect calls gen.close() (GeneratorExit at
