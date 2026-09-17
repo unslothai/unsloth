@@ -173,9 +173,29 @@ def _shell_function(name: str) -> str:
     raise AssertionError(f"unterminated function {name}")
 
 
+def _clean_env(extra: "dict | None" = None) -> dict:
+    """The runner's environment minus the two things that decide these cases by themselves.
+
+    A declared UNSLOTH_ROCM_GFX_ARCH answers before any probe, and a visible-device mask
+    resolves against a device list the case never described -- CUDA_VISIBLE_DEVICES is HIP's
+    alias, so a runner that sets it (any GPU CI box, and this suite's own AMD runners) turned
+    six of these into a stubbed host answering about the runner's card. Cases that need a mask
+    pass it here, which still wins.
+    """
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.endswith("VISIBLE_DEVICES") and k != "UNSLOTH_ROCM_GFX_ARCH"
+    }
+    env.update(extra or {})
+    return env
+
+
 def _bash(script: str, *, env: "dict | None" = None) -> str:
     """Run a lifted script under bash and return its stdout, failing with its own stderr."""
-    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
+    out = subprocess.run(
+        ["bash", "-c", script], capture_output = True, text = True, env = env or _clean_env()
+    )
     assert out.returncode == 0, out.stderr
     return out.stdout.strip()
 
@@ -268,6 +288,7 @@ def _index_url(env: str, stubs: str) -> str:
         ["bash", "-c", script],
         capture_output = True,
         text = True,
+        env = _clean_env(),
     ).stdout
 
 
@@ -425,7 +446,9 @@ def _nvidia_wins(env: str, stubs: str) -> bool:
             f"{env} _nvidia_gpu_wins_over_amd && echo NVIDIA || echo AMD",
         ]
     )
-    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    out = subprocess.run(
+        ["bash", "-c", script], capture_output = True, text = True, env = _clean_env()
+    )
     assert out.stdout.strip() in ("NVIDIA", "AMD"), out
     return out.stdout.strip() == "NVIDIA"
 
@@ -587,7 +610,7 @@ def _index_after_the_guard(env: str, resolved: str, cuda_answer: str) -> str:
             'printf "%s\\n" "$TORCH_INDEX_URL"',
         ]
     )
-    return _bash(script, env = {**os.environ, **dict([env.split("=", 1)] if "=" in env else [])})
+    return _bash(script, env = _clean_env(dict([env.split("=", 1)] if "=" in env else [])))
 
 
 _CUDA = "https://download.pytorch.org/whl/cu130"
@@ -823,10 +846,7 @@ def _route_shell(probe: str, inferred: str, pci_ok: bool) -> bool:
             "_amd_request_has_a_wheel_route && echo yes || echo no",
         ]
     )
-    # A declared arch decides before the inventory, so one inherited from the runner's
-    # environment would answer every case here instead of the probe under test.
-    env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_ROCM_GFX_ARCH"}
-    return _bash(script, env = env) == "yes"
+    return _bash(script, env = _clean_env()) == "yes"
 
 
 def test_an_arch_no_index_can_serve_does_not_depose_the_nvidia_card():
@@ -1158,13 +1178,7 @@ _ROUTE_TARGET = (
 
 
 def _route_env(mask: dict) -> dict:
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if not k.endswith("VISIBLE_DEVICES") and k != "UNSLOTH_ROCM_GFX_ARCH"
-    }
-    env.update(mask)
-    return env
+    return _clean_env(mask)
 
 
 def _route_target_masked(
