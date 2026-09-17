@@ -396,6 +396,30 @@ def test_a_non_import_error_still_raises(peft_env, fake_torchao):
         definer.dispatch_torchao(_Layer("plain"), "default")
 
 
+def test_an_import_error_naming_a_class_that_is_still_there_still_raises(peft_env, fake_torchao):
+    """REGRESSION. The name matching is on the MESSAGE, so a failure from elsewhere in the
+    dispatcher that happens to mention one of the classes reached the degraded path with nothing
+    actually missing. That swallowed a real error and re-ran whatever construction had already
+    happened, so the layer was built twice.
+    """
+    classes = fake_torchao(affine = True, linear_activation = True)
+    built = []
+
+    def dispatch_torchao(target, adapter_name, lora_config = None, **kwargs):
+        built.append(adapter_name)
+        raise MISSING
+
+    definer, _ = peft_env(dispatch_torchao)
+    FIX()
+
+    weight = classes["AffineQuantizedTensor"]()
+    with pytest.raises(ImportError) as raised:
+        definer.dispatch_torchao(_Layer(weight), "default")
+
+    assert raised.value is MISSING, "the original error must survive, not a rewritten one"
+    assert built == ["default"], f"the dispatcher ran {len(built)} times, not once"
+
+
 def test_a_working_dispatcher_still_returns_its_module(peft_env, fake_torchao):
     sentinel = object()
     fake_torchao(affine = True, linear_activation = True)

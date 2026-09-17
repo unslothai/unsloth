@@ -5513,7 +5513,12 @@ def _guard_peft_torchao_dispatcher(original):
             message = str(exc)
             if _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS.search(message) is None:
                 raise
-        classes, missing = _peft_torchao_tensor_subclasses()
+            classes, missing = _peft_torchao_tensor_subclasses()
+            if not missing:
+                # The message named one of the two classes but both are there, so this came from
+                # somewhere else in the dispatcher and is a real failure. Redoing the dispatch
+                # would swallow it and re-run whatever construction already happened.
+                raise
         if not warned[0]:
             warned[0] = True
             kept = ", ".join(cls.__name__ for cls in classes) or "none of them"
