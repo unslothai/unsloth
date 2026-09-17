@@ -549,7 +549,8 @@ class TestRocmEntrypoint:
     def test_dxg_refuses_a_torch_bundling_librocprofiler_sdk(self, tmp_path):
         """That library enumerates GPUs from a KFD topology WSL does not have, and aborts."""
         rc, ran, err = self._dxg_with_torch(
-            tmp_path, ["librocprofiler-register.so", "librocprofiler-sdk.so"],
+            tmp_path,
+            ["librocprofiler-register.so", "librocprofiler-sdk.so"],
         )
         assert rc == 1 and not ran, err
         assert "librocprofiler-sdk.so" in err, err
