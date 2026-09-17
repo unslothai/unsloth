@@ -14,7 +14,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useChatRuntimeStore } from "@/features/chat";
+import {
+  modelCatalogVersion,
+  subscribeModelCatalog,
+  useChatRuntimeStore,
+} from "@/features/chat";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import { resolveModelCatalogEntry } from "@/features/chat/model-catalog";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
@@ -22,7 +26,7 @@ import {
   getExternalReasoningCapabilities,
   getPublishedExternalMaxOutputTokens,
 } from "@/features/chat/provider-capabilities";
-import type { ReactNode } from "react";
+import { type ReactNode, useSyncExternalStore } from "react";
 import { connectedModelMarks } from "./connected-model-meta";
 import { useModelReasoningEffortStore } from "./model-reasoning-effort";
 
@@ -85,6 +89,8 @@ export function ConnectedModelInfoDialog({
   /** A vLLM connection flagged as serving a reasoning model: the only signal a self-host gives. */
   isReasoningProvider?: boolean;
 }) {
+  // Every figure below is read from the catalogue, which can land after this renders.
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const entry = resolveModelCatalogEntry(providerType, modelId);
   const marks = connectedModelMarks({ providerType, modelId, baseUrl });
   // The resolver behind the composer's Thinking chip, not the catalogue alone.

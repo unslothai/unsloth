@@ -4379,6 +4379,18 @@ export function HubModelPicker({
       ),
     [externalProviders],
   );
+  // A connection's own output cap, which lowers the model's documented one. The bounds the
+  // per-model editor offers have to be the ones every request is clamped to.
+  const externalMaxOutputById = useMemo(
+    () =>
+      new Map(
+        externalProviders.map((provider) => [
+          provider.id,
+          provider.maxOutputTokens ?? null,
+        ]),
+      ),
+    [externalProviders],
+  );
   // A self-hosted OpenAI-compatible endpoint publishes no reasoning signal, so a vLLM connection
   // carries the answer itself. It is the only place that answer lives.
   const externalReasoningFlagById = useMemo(
@@ -4425,6 +4437,7 @@ export function HubModelPicker({
     providerModelId: string;
     baseUrl: string | null;
     isReasoningProvider: boolean;
+    connectionMaxOutputTokens: number | null;
   } | null>(null);
 
   const copyConnectedModelId = useCallback((providerModelId: string) => {
@@ -5493,6 +5506,8 @@ export function HubModelPicker({
                 baseUrl,
                 isReasoningProvider:
                   externalReasoningFlagById.get(model.providerId) === true,
+                connectionMaxOutputTokens:
+                  externalMaxOutputById.get(model.providerId) ?? null,
               })
             }
           />
@@ -7520,6 +7535,7 @@ export function HubModelPicker({
           providerType={settingsModel.model.providerType}
           baseUrl={settingsModel.baseUrl}
           isReasoningProvider={settingsModel.isReasoningProvider}
+          connectionMaxOutputTokens={settingsModel.connectionMaxOutputTokens}
         />
       ) : null}
       {infoModel ? (

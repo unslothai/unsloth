@@ -26,13 +26,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useChatRuntimeStore } from "@/features/chat";
+import {
+  modelCatalogVersion,
+  subscribeModelCatalog,
+  useChatRuntimeStore,
+} from "@/features/chat";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import {
+  getExternalMaxOutputTokens,
+  getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   resolveExternalReasoningEffort,
 } from "@/features/chat/provider-capabilities";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useModelReasoningEffortStore } from "./model-reasoning-effort";
 
 /** Follows the chat's own level. A Select cannot carry an empty value, so absence needs a name. */
@@ -47,6 +53,7 @@ export function ConnectedModelSettingsDialog({
   providerType,
   baseUrl,
   isReasoningProvider,
+  connectionMaxOutputTokens,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -59,6 +66,8 @@ export function ConnectedModelSettingsDialog({
   baseUrl?: string | null;
   /** A vLLM connection flagged as serving a reasoning model. */
   isReasoningProvider?: boolean;
+  /** The connection's own output cap, which lowers the model's documented one. */
+  connectionMaxOutputTokens?: number | null;
 }) {
   const remembered = useChatRuntimeStore(
     (state) => state.paramsByModel[checkpointId],
@@ -97,24 +106,43 @@ export function ConnectedModelSettingsDialog({
     ? reasoning.reasoningEffortLevels.filter((level) => level !== "none")
     : [];
 
-  const [systemPrompt, setSystemPrompt] = useState(
-    remembered?.systemPrompt ?? "",
+  // An OpenRouter cap comes from the live catalogue, which can land after this renders, and the
+  // bounds below are read from it.
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
+  // The bounds the chat's own Max Tokens control uses and the adapter clamps every request to, so
+  // a value stored here cannot differ from the one the provider is actually sent.
+  const minCap = getExternalMinOutputTokens(providerType);
+  const maxCap = getExternalMaxOutputTokens(
+    providerType,
+    modelId,
+    connectionMaxOutputTokens,
   );
-  // Seeded from what this model runs at now, so the field always holds a real number. A blank
-  // would have to mean "forget the cap", and nothing can express that: paramsByModel merges per
-  // key here and the settings row deep-merges on the server, so an omitted key keeps the old
-  // value and the clear would be dropped without saying so.
-  const [maxTokens, setMaxTokens] = useState(
-    String(remembered?.maxTokens ?? chatMaxTokens),
-  );
+  const clampCap = (value: number) =>
+    Math.min(Math.max(value, minCap), maxCap);
+
+  // null is untouched, so an untouched field keeps reading the store. The dialog can open before
+  // chat settings hydrate, and a useState seeded from the empty store then held that emptiness
+  // after the response landed -- and Save wrote it back over the prompt the server had.
+  const [promptDraft, setPromptDraft] = useState<string | null>(null);
+  const [capDraft, setCapDraft] = useState<string | null>(null);
   const [effort, setEffort] = useState(pinnedEffort ?? FOLLOW_CHAT);
+  const systemPrompt = promptDraft ?? remembered?.systemPrompt ?? "";
+  // Always a real number. A blank would have to mean "forget the cap", and nothing can express
+  // that: paramsByModel merges per key here and the settings row deep-merges on the server, so an
+  // omitted key keeps the old value and the clear would be dropped without saying so.
+  const maxTokens =
+    capDraft ?? String(clampCap(remembered?.maxTokens ?? chatMaxTokens));
 
   function save() {
-    const cap = Number.parseInt(maxTokens, 10);
+    const typedCap = Number.parseInt(maxTokens, 10);
+    // Only what the user actually touched: this is a patch, and writing an untouched field would
+    // put whatever the dialog happened to be showing over the stored value.
     setRememberedParamsForModel(checkpointId, {
-      systemPrompt,
+      ...(promptDraft !== null ? { systemPrompt: promptDraft } : {}),
       // A blank or junk field leaves the cap alone rather than sending a zero as the limit.
-      ...(Number.isFinite(cap) && cap > 0 ? { maxTokens: cap } : {}),
+      ...(capDraft !== null && Number.isFinite(typedCap) && typedCap > 0
+        ? { maxTokens: clampCap(typedCap) }
+        : {}),
     });
     setModelReasoningEffort(
       checkpointId,
@@ -161,20 +189,26 @@ export function ConnectedModelSettingsDialog({
             <Textarea
               id="connected-model-system-prompt"
               value={systemPrompt}
-              onChange={(event) => setSystemPrompt(event.target.value)}
+              onChange={(event) => setPromptDraft(event.target.value)}
               rows={5}
             />
           </div>
 
           <div className="flex items-center justify-between gap-4">
-            <Label htmlFor="connected-model-max-tokens">Max output tokens</Label>
+            <Label htmlFor="connected-model-max-tokens">
+              Max output tokens
+              <span className="ml-1 font-normal text-muted-foreground">
+                ({minCap.toLocaleString()} to {maxCap.toLocaleString()})
+              </span>
+            </Label>
             <Input
               id="connected-model-max-tokens"
               type="number"
-              min={1}
+              min={minCap}
+              max={maxCap}
               inputMode="numeric"
               value={maxTokens}
-              onChange={(event) => setMaxTokens(event.target.value)}
+              onChange={(event) => setCapDraft(event.target.value)}
               className="w-28"
             />
           </div>

@@ -242,10 +242,18 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // been restoring per checkpoint all along.
   assert.match(settingsDialog, /setRememberedParamsForModel\(checkpointId, \{/);
   assert.doesNotMatch(settingsDialog, /localStorage/);
-  // Blank is an absence, not a zero the request would then send as the cap.
+  // Only the fields the user touched: this is a patch, and an untouched one would put whatever
+  // the dialog happened to be showing over the stored value. null is untouched, so an untouched
+  // field keeps reading the store even when hydration lands while the dialog is open.
+  assert.match(settingsDialog, /const systemPrompt = promptDraft \?\? remembered\?\.systemPrompt \?\? "";/);
   assert.match(
     settingsDialog,
-    /Number\.isFinite\(cap\) && cap > 0 \? \{ maxTokens: cap \} : \{\}/,
+    /\.\.\.\(promptDraft !== null \? \{ systemPrompt: promptDraft \} : \{\}\),/,
+  );
+  // Blank or junk is an absence, not a zero the request would then send as the cap.
+  assert.match(
+    settingsDialog,
+    /capDraft !== null && Number\.isFinite\(typedCap\) && typedCap > 0\s*\? \{ maxTokens: clampCap\(typedCap\) \}\s*: \{\}/,
   );
   // And it says so when the setting that restores them is switched off.
   assert.match(settingsDialog, /"Remember settings per model" is off/);
@@ -256,9 +264,44 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // settings row, so an omitted key keeps the old value and the clear goes nowhere.
   assert.match(
     settingsDialog,
-    /useState\(\s*String\(remembered\?\.maxTokens \?\? chatMaxTokens\),\s*\)/,
+    /capDraft \?\? String\(clampCap\(remembered\?\.maxTokens \?\? chatMaxTokens\)\)/,
   );
   assert.doesNotMatch(settingsDialog, /blank follows the connection/);
+});
+
+test("the cap offers the bounds every request is clamped to", () => {
+  const settingsDialog = readSrc(
+    "features/model-picker/components/model-selector/connected-model-settings-dialog.tsx",
+  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
+  // The same two helpers the chat's own Max Tokens control bounds itself with, and the adapter
+  // clamps every outbound request to, so a stored cap cannot differ from the one actually sent.
+  assert.match(sheet, /getExternalMaxOutputTokens\(/);
+  assert.match(adapter, /getExternalMinOutputTokens\(externalProvider\?\.providerType\),/);
+  assert.match(
+    settingsDialog,
+    /const minCap = getExternalMinOutputTokens\(providerType\);/,
+  );
+  assert.match(
+    settingsDialog,
+    /const maxCap = getExternalMaxOutputTokens\(\s*providerType,\s*modelId,\s*connectionMaxOutputTokens,\s*\)/,
+  );
+  // Clamped on save, not just hinted by the input's attributes.
+  assert.match(
+    settingsDialog,
+    /const clampCap = \(value: number\) =>\s*Math\.min\(Math\.max\(value, minCap\), maxCap\);/,
+  );
+  // The connection's own cap lowers the model's documented one, so it has to reach the editor.
+  assert.match(
+    pickers,
+    /provider\.maxOutputTokens \?\? null,/,
+  );
+  // And an OpenRouter cap arrives with the live catalogue, after this has rendered.
+  assert.match(
+    settingsDialog,
+    /useSyncExternalStore\(subscribeModelCatalog, modelCatalogVersion\);/,
+  );
 });
 
 test("editing the live model's effort reaches the chat now", () => {
