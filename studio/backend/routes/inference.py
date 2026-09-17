@@ -37408,19 +37408,7 @@ async def diffusion_download_plan(
             model_kind = kind,
             base_repo = request.base_repo,
         )
-        # Plan for the engine /images/load will pick, not diffusers unconditionally: a GGUF on a GPU-less host routes to native
-        # sd.cpp, which reads different files. predict_engine applies the policy without activating anything.
         planner = backend
-        # The SAME card /images/load will select: the accelerator failure records are card-scoped, so
-        # predicting host-wide here can stage diffusers files for a load that goes native on a card
-        # that works.
-        plan_ordinal = await _selected_gpu_ordinal(getattr(request, "gpu_ids", None))
-        if (
-            fam is not None
-            and predict_engine(fam, model_kind = kind, gpu_ordinal = plan_ordinal) == ENGINE_SD_CPP
-        ):
-            from core.inference.sd_cpp_backend import get_sd_cpp_backend
-            planner = get_sd_cpp_backend()
         # BEFORE the plan is handed back and staged. The load route refuses a precision this
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
         # unsupported host paid for the GGUF and its companions -- or tens of GB of video
@@ -37435,11 +37423,25 @@ async def diffusion_download_plan(
         # the training guard below exists to prevent, so the RANKING waits until training is known
         # idle. The ids are validated and translated either way -- that costs no CUDA context, and
         # skipping it entirely let the plan accept a GPU the load would refuse, and size its file
-        # set for the wrong card. ONE resolution for the whole request, reused by preflight + plan.
+        # set for the wrong card. ONE resolution for the whole request, reused by the engine
+        # prediction below, the preflight and the plan.
         gpu_ordinal = None
         training = fam is not None and await asyncio.to_thread(_training_is_active)
         if fam is not None:
             gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
+        # Plan for the engine /images/load will pick, not diffusers unconditionally: a GGUF on a
+        # GPU-less host routes to native sd.cpp, which reads different files. predict_engine applies
+        # the policy without activating anything. Given the ordinal resolved above, because the
+        # accelerator failure records are card-scoped and a host-wide answer here stages diffusers
+        # files for a load that goes native on a card that works. Resolving a SECOND time instead
+        # would rank free VRAM ahead of the training check and could name a different card than the
+        # plan and the load then use.
+        if (
+            fam is not None
+            and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
+        ):
+            from core.inference.sd_cpp_backend import get_sd_cpp_backend
+            planner = get_sd_cpp_backend()
         if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
@@ -37645,7 +37647,15 @@ async def load_diffusion_model_gated(
         # afterwards destroys the model this preserves. Fails open on offline/transient, and runs
         # only where something is at stake -- a GPU handoff, or an engine switch.
         try:
-            pending_name = predict_engine(fam, model_kind = kind) if fam is not None else None
+            # The ordinal resolved above, for the same reason the activation below takes it: the
+            # records are per CARD, so a host-wide prediction reads one card's failure as every
+            # card's. It would then run the wrong engine's preflight, and could discover that only
+            # after _activate had already unloaded the resident model.
+            pending_name = (
+                predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal)
+                if fam is not None
+                else None
+            )
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
         # Same bar, same reason, for an EXPLICIT precision this host can never honor. begin_load

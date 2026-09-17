@@ -2791,3 +2791,24 @@ def test_the_download_plan_predicts_for_the_card_the_load_will_select():
     source = inspect.getsource(router.native_binary_installed)
     assert "_selected_card(gpu_ordinal)" in source
     assert source.count("selected_card") >= 3  # accelerator + both usable_or_recorded_failure calls
+
+
+def test_both_routes_predict_with_the_ordinal_they_already_resolved():
+    """The records are per card, so a host-wide prediction reads one card's failure as every card's.
+    Both routes resolve an ordinal for other reasons already, so the fix costs no second resolution --
+    and must not add one: ranking reads free VRAM per candidate and opens a CUDA context on each,
+    which the download plan defers until training is known idle."""
+    import inspect
+
+    from routes import inference as routes
+
+    source = inspect.getsource(routes)
+    # Every prediction is card-scoped.
+    assert "predict_engine(fam, model_kind = kind)" not in source
+    # And the download plan resolves exactly once, after the training state is known.
+    plan = inspect.getsource(routes.diffusion_download_plan)
+    assert plan.count("_selected_gpu_ordinal(") == 1, plan.count("_selected_gpu_ordinal(")
+    training = plan.index("training = fam is not None")
+    resolved = plan.index("_selected_gpu_ordinal(")
+    predicted = plan.index("predict_engine(")
+    assert training < resolved < predicted, (training, resolved, predicted)
