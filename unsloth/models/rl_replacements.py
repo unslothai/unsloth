@@ -1106,20 +1106,24 @@ def _unsloth_grpo_image_cell(value):
 def _unsloth_reject_grpo_image_list(inputs):
     """Refuse it where the rewrite above missed TRL's spelling: the processor's own error
     names neither the column nor the fix."""
+    # Every row, not just the first: one list cell anywhere in the batch is enough to put the
+    # images and the placeholders out of step, and a dataset that mixes a bare image with a
+    # list is exactly the shape that puts the list somewhere other than row 0.
     try:
-        first = inputs[0]
-        value = first.get("image", None) if isinstance(first, dict) else None
+        rows = list(inputs)
     except Exception:
         return
-    if isinstance(value, (list, tuple)) and len(value) > 1:
-        raise ValueError(
-            f"Unsloth: GRPO received a singular `image` column holding {len(value)} "
-            "images, and this TRL version cannot carry more than one image per row "
-            "through to the model. "
-            "Rename the column to `images`, which TRL reads as the per example list of "
-            "images, or keep one image per row. "
-            "See https://github.com/unslothai/unsloth/issues/3605"
-        )
+    for _row_index, _row in enumerate(rows):
+        value = _row.get("image", None) if isinstance(_row, dict) else None
+        if isinstance(value, (list, tuple)) and len(value) > 1:
+            raise ValueError(
+                f"Unsloth: GRPO received a singular `image` column holding {len(value)} "
+                f"images in row {_row_index}, and this TRL version cannot carry more than "
+                "one image per row through to the model. "
+                "Rename the column to `images`, which TRL reads as the per example list of "
+                "images, or keep one image per row. "
+                "See https://github.com/unslothai/unsloth/issues/3605"
+            )
 
 
 def grpo_trainer__prepare_inputs(function_name, function):

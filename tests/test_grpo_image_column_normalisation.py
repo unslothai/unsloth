@@ -111,6 +111,34 @@ def test_guard_names_the_column_and_the_issue():
     assert "3605" in message
 
 
+def test_the_guard_reads_every_row_not_only_the_first():
+    """One list cell anywhere puts that row's images and placeholders out of step, and a
+    dataset mixing a bare image with a list is exactly the shape that puts the list somewhere
+    other than row 0. Reading only `inputs[0]` would let it through to the processor, which is
+    the outcome this guard exists to replace."""
+    a, b = _Img("a"), _Img("b")
+    for rows in (
+        [{"image": [a, b]}, {"image": a}],
+        [{"image": a}, {"image": [a, b]}],
+        [{"image": a}, {"image": a}, {"image": [a, b]}],
+        [{"image": None}, {"image": [a, b]}],
+    ):
+        with pytest.raises(ValueError) as excinfo:
+            _unsloth_reject_grpo_image_list(rows)
+        assert "3605" in str(excinfo.value)
+
+    # Nothing that works today starts failing, including shapes the guard must not choke on.
+    for rows in (
+        [{"image": a}, {"image": a}],
+        [{"image": [a]}, {"image": [a]}],
+        [{"prompt": "x"}, {"prompt": "y"}],
+        ["not a dict", 7],
+        [],
+        None,
+    ):
+        _unsloth_reject_grpo_image_list(rows)
+
+
 def test_guard_is_injected_when_no_anchor_matches():
     source = "    def _generate_and_score_completions(self, inputs):\n        return inputs\n"
     patched = grpo_trainer__generate_and_score_completions(
