@@ -16011,24 +16011,32 @@ def _check_signal_escape_patterns(code: str):
         "asyncssh.connect",
     )
     # Network target location: (positional index, keyword, target kind).
+    _HTTP_VERBS = ("get", "post", "put", "delete", "patch", "head", "options")
     _NETWORK_TARGET_ARGS = {
         "socket.create_connection": (0, "address", "host"),
         "socket.getaddrinfo": (0, "host", "host"),
         "urllib.request.urlopen": (0, "url", "url"),
         "urllib.request.urlretrieve": (0, "url", "url"),
+        # `requests.api` and `httpx` are the modules the top-level verbs actually live in, and
+        # an explicit import of either keeps that path.
         **{
-            f"requests.{m}": (0, "url", "url")
-            for m in ("get", "post", "put", "delete", "patch", "head")
+            f"{module}.{m}": (0, "url", "url")
+            for module in ("requests", "requests.api", "httpx")
+            for m in _HTTP_VERBS
         },
-        "requests.request": (1, "url", "url"),
+        **{
+            f"{module}.request": (1, "url", "url")
+            for module in ("requests", "requests.api", "httpx")
+        },
         "urllib3.request": (1, "url", "url"),
         "urllib3.connection_from_url": (0, "url", "url"),
         "urllib3.proxy_from_url": (0, "url", "url"),
         "urllib3.ProxyManager": (0, "proxy_url", "url"),
-        "urllib3.HTTPConnectionPool": (0, "host", "host"),
-        "urllib3.HTTPSConnectionPool": (0, "host", "host"),
-        **{f"httpx.{m}": (0, "url", "url") for m in ("get", "post", "put", "patch", "delete")},
-        "httpx.request": (1, "url", "url"),
+        **{
+            f"{module}.{pool}": (0, "host", "host")
+            for module in ("urllib3", "urllib3.connectionpool")
+            for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
+        },
         "http.client.HTTPConnection": (0, "host", "host"),
         "http.client.HTTPSConnection": (0, "host", "host"),
         "paramiko.Transport": (0, "sock", "host"),
@@ -16049,8 +16057,14 @@ def _check_signal_escape_patterns(code: str):
         "httpx.Client",
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
+        "aiohttp.client.ClientSession",
     )
-    _POOL_CLIENTS = ("urllib3.PoolManager", "urllib3.ProxyManager")
+    _POOL_CLIENTS = (
+        "urllib3.PoolManager",
+        "urllib3.ProxyManager",
+        "urllib3.poolmanager.PoolManager",
+        "urllib3.poolmanager.ProxyManager",
+    )
     # Request objects built ahead of the call: where the URL sits in the builder.
     _REQUEST_BUILDERS = {
         "urllib.request.Request": (0, "url"),
@@ -16068,7 +16082,7 @@ def _check_signal_escape_patterns(code: str):
             **{
                 f"{client}.{method}": (0, "url", "url")
                 for client in _VERB_CLIENTS
-                for method in ("get", "post", "put", "delete", "patch", "head")
+                for method in _HTTP_VERBS
             },
             **{
                 f"{client}.request": (1, "url", "url")

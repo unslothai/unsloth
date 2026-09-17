@@ -420,6 +420,34 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # OPTIONS is a request verb like the rest.
+            pytest.param(
+                f"import requests\nrequests.Session().options(url='http://{_H}/')",
+                id = "session_options_keyword_url",
+            ),
+            pytest.param(
+                f"import requests\nrequests.options('http://{_H}/')",
+                id = "module_options",
+            ),
+            # An import from the defining module keeps that path, so the specs carry both.
+            pytest.param(
+                "from urllib3.poolmanager import PoolManager\n"
+                f"PoolManager().request(method='GET', url='http://{_H}/')",
+                id = "canonical_pool_manager",
+            ),
+            pytest.param(
+                "from urllib3.connectionpool import HTTPSConnectionPool\n"
+                f"HTTPSConnectionPool(host='{_H}')",
+                id = "canonical_connection_pool",
+            ),
+            pytest.param(
+                f"from requests.api import get\nget('http://{_H}/')",
+                id = "canonical_requests_api",
+            ),
+            pytest.param(
+                f"from aiohttp.client import ClientSession\nClientSession().get('http://{_H}/')",
+                id = "canonical_aiohttp_client",
+            ),
             # A request built ahead of the call still carries its URL.
             pytest.param(
                 f"import httpx\nc = httpx.Client()\nr = c.build_request('GET', 'http://{_H}/')\n"
@@ -608,6 +636,7 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client().stream('GET', 'https://pypi.org/')",
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
+            "import requests\nrequests.options('https://pypi.org/')",
             "import httpx\nc = httpx.Client()\nc.send(c.build_request('GET', 'https://pypi.org/'))",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': 'https://pypi.org'})",
             "import requests\ns = requests.Session()\ns.headers.update({'a': 'b'})",
