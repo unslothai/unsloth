@@ -1637,10 +1637,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         ),
     )
     _image_cell_normalised = False
-    for _old_cell, _new_cell in _image_cell_anchors:
+    _legacy_image_cell = False
+    for _index, (_old_cell, _new_cell) in enumerate(_image_cell_anchors):
         if _old_cell in function:
             function = function.replace(_old_cell, _new_cell)
             _image_cell_normalised = True
+            # The legacy spelling is the only one whose placeholders are sized elsewhere.
+            _legacy_image_cell = _index == 1
 
     # TRL 0.22.x-0.23.x hardcodes one image placeholder per example.
     _placeholder_old = (
@@ -1655,15 +1658,23 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         "                        prompt, num_images=len(_unsloth_cell) if _unsloth_cell else 1\n"
         "                    )"
     )
+    # TRL 0.24.0 and up size the placeholders themselves, off the cell they were handed, so the
+    # rewrite above is the whole job there. TRL 0.20.0 and 0.21.0 are the gap: they take the
+    # legacy cell spelling but predate `prepare_multimodal_messages` entirely and inline one
+    # `{"type": "image"}` per user message with no count, so a normalised two image cell would
+    # reach the processor with one placeholder. Nothing else in the batch disagrees, because the
+    # prologue counts the same cells, so it surfaces inside the processor.
+    _placeholder_sized = not _legacy_image_cell
     if _placeholder_old in function:
         function = function.replace(_placeholder_old, _placeholder_new)
+        _placeholder_sized = True
 
     # Rewriting the cell is only half of a multi image row: on a legacy TRL the reference
     # logprob call sites have to carry the counts too, or the images are sliced by sample
     # index and all but the first are dropped. That surfaces as a token/feature mismatch
     # raised inside the model, naming neither the column nor the fix, so refuse it here
     # instead. A single image cell is unaffected either way and keeps working.
-    if not _image_cell_normalised or _legacy_vision_unplumbed:
+    if not _image_cell_normalised or _legacy_vision_unplumbed or not _placeholder_sized:
         _signature = re.search(
             r"([ \t]*)def _generate_and_score_completions\((?:[^()]|\([^()]*\))*\)[^\n]*:\n",
             function,

@@ -162,3 +162,67 @@ def test_guard_stays_off_a_trl_whose_reference_calls_do_take_the_counts():
         # A legacy TRL: every reference call site must have taken the counts.
         assert 'pixel_values=prompt_inputs.get("pixel_values")' not in patched
         assert "**_unsloth_legacy_vision," in patched
+
+
+def _legacy_source(*, with_placeholder_helper):
+    """TRL 0.20.0/0.21.0 against TRL 0.22.x. Both take the legacy `[[img] for img in images]`
+    cell spelling; only 0.22.x factored the placeholders out into a helper that takes a count.
+    0.20.0 and 0.21.0 inline one {"type": "image"} per user message, with no count at all."""
+    head = (
+        "    def _generate_and_score_completions(self, inputs):\n"
+        "        prompts = [x['prompt'] for x in inputs]\n"
+        "        kwargs = {}\n"
+        '        has_images = "image" in inputs[0]\n'
+        "        if has_images:\n"
+        '            images = [example.get("image") for example in inputs]\n'
+        '            kwargs = {"images": [[img] for img in images]}\n'
+    )
+    if with_placeholder_helper:
+        placeholders = (
+            "            for prompt in prompts:\n"
+            "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
+            "                    prepare_multimodal_messages(prompt, num_images=1)\n"
+        )
+    else:
+        placeholders = (
+            "            for prompt in prompts:\n"
+            "                if isinstance(prompt, list):\n"
+            "                    for message in prompt:\n"
+            "                        if message.get('role') == 'user':\n"
+            "                            message['content'] = [{'type': 'image'}, message['content']]\n"
+        )
+    tail = (
+        "        ref = self._get_per_token_logps_and_entropies(\n"
+        "            self.model,\n"
+        '            pixel_values=prompt_inputs.get("pixel_values"),\n'
+        '            image_grid_thw=prompt_inputs.get("image_grid_thw"),\n'
+        '            pixel_attention_mask=prompt_inputs.get("pixel_attention_mask"),\n'
+        '            image_sizes=prompt_inputs.get("image_sizes"),\n'
+        "        )\n"
+        "        return inputs\n"
+    )
+    return head + placeholders + tail
+
+
+def test_a_trl_that_cannot_size_its_placeholders_refuses_the_multi_image_row():
+    """The cell rewrite alone would hand the processor two images while the prompt still
+    carries one placeholder, and nothing else in the batch disagrees, because the prologue
+    counts the same cells. That surfaces inside the processor naming neither the column nor
+    the fix, which is exactly what the guard exists to replace."""
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", _legacy_source(with_placeholder_helper = False)
+    )
+    assert "_unsloth_grpo_image_cell(img)" in patched
+    assert "_unsloth_reject_grpo_image_list(inputs)" in patched
+    assert patched.splitlines()[1].strip() == "_unsloth_reject_grpo_image_list(inputs)"
+
+
+def test_a_trl_that_can_size_its_placeholders_is_not_refused():
+    """The control, and the reason the guard cannot simply key on the legacy cell spelling:
+    0.22.x takes the same spelling and does size its placeholders, so it must keep working."""
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", _legacy_source(with_placeholder_helper = True)
+    )
+    assert "_unsloth_grpo_image_cell(img)" in patched
+    assert "len(_unsloth_cell) if _unsloth_cell else 1" in patched
+    assert "_unsloth_reject_grpo_image_list(inputs)" not in patched
