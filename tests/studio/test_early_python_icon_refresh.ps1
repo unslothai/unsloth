@@ -174,6 +174,17 @@ try {
     Check "New-StudioShortcuts passes its own interpreter to the refresh" (
         $shortcutFn -match '(?s)Invoke-StudioPythonShellIconRefresh[^\r\n]*[\r\n\s`]*-Paths \$createdShortcutPaths -Exe \$ManagedPythonPath')
 
+    # And it does not hand that interpreter over on an ELEVATED run when it sits where a standard
+    # user can write it, which a per-user Studio root does. Launching it there would run whatever
+    # is at that path with the administrator token, and this refresh is cosmetic: a stale icon
+    # until Explorer notices is the entire cost of skipping it. Same rule as the early-Python
+    # ladder applies to the interpreters it discovers.
+    Check "an elevated run does not launch a user-writable interpreter for it" (
+        $shortcutFn -match 'Test-StudioChildScriptDirectoryElevated' -and
+        $shortcutFn -match 'Test-StudioPathUnderAdminRoot -Path "\$ManagedPythonPath"')
+    Check "and the refresh is behind that decision, not beside it" (
+        $shortcutFn -match '(?s)if \(\$iconRefreshSafe\) \{[^}]*Invoke-StudioPythonShellIconRefresh')
+
     # The kill switch must still win, even with an interpreter handed straight in.
     #
     # UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter on this host". That is a

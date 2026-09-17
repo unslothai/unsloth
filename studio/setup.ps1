@@ -1057,13 +1057,23 @@ function Get-NvidiaProbePythonExe {
 # New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
 # or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
 function Test-StudioChildScriptDirectoryElevated {
-    # whoami is in-box and prints the token's own mandatory label. The WindowsPrincipal route
-    # the rest of this file uses for elevation is a managed type Constrained Language Mode
-    # refuses, and CLM is the population this ladder exists for. Only consulted when the label
-    # did not take, so the ordinary run pays nothing for it.
+    # whoami is in-box and prints the token's own mandatory label, as a SID, which is the same
+    # text in every language. The WindowsPrincipal route the rest of this file uses for
+    # elevation is a managed type Constrained Language Mode refuses, and CLM is the population
+    # this ladder exists for.
+    #
+    # Unknown answers YES. whoami can be missing or blocked by application control, and
+    # neither is evidence of a medium token: reading that as "not elevated" hands back an
+    # unlabelled directory on a host that may well be elevated, which is the whole of the
+    # escalation this is here to stop. The only confirmed no is a token that names a
+    # mandatory label below High. Costs an unelevated host with whoami blocked the Python
+    # rungs, which degrade to the lexical resolver and say so.
     $groups = ""
-    try { $groups = "$(& whoami.exe /groups 2>&1)" } catch { return $false }
-    return ($groups -match "S-1-16-(12288|16384)")
+    try { $groups = "$(& whoami.exe /groups 2>&1)" } catch { return $true }
+    if ([string]::IsNullOrWhiteSpace($groups)) { return $true }
+    if ($groups -match "S-1-16-(12288|16384)") { return $true }
+    if ($groups -match "S-1-16-\d+") { return $false }
+    return $true
 }
 
 function New-StudioChildScriptDirectory {

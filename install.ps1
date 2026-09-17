@@ -2533,13 +2533,23 @@ function Install-UnslothStudio {
     # New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
     # or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
     function Test-StudioChildScriptDirectoryElevated {
-        # whoami is in-box and prints the token's own mandatory label. The WindowsPrincipal route
-        # the rest of this file uses for elevation is a managed type Constrained Language Mode
-        # refuses, and CLM is the population this ladder exists for. Only consulted when the label
-        # did not take, so the ordinary run pays nothing for it.
+        # whoami is in-box and prints the token's own mandatory label, as a SID, which is the same
+        # text in every language. The WindowsPrincipal route the rest of this file uses for
+        # elevation is a managed type Constrained Language Mode refuses, and CLM is the population
+        # this ladder exists for.
+        #
+        # Unknown answers YES. whoami can be missing or blocked by application control, and
+        # neither is evidence of a medium token: reading that as "not elevated" hands back an
+        # unlabelled directory on a host that may well be elevated, which is the whole of the
+        # escalation this is here to stop. The only confirmed no is a token that names a
+        # mandatory label below High. Costs an unelevated host with whoami blocked the Python
+        # rungs, which degrade to the lexical resolver and say so.
         $groups = ""
-        try { $groups = "$(& whoami.exe /groups 2>&1)" } catch { return $false }
-        return ($groups -match "S-1-16-(12288|16384)")
+        try { $groups = "$(& whoami.exe /groups 2>&1)" } catch { return $true }
+        if ([string]::IsNullOrWhiteSpace($groups)) { return $true }
+        if ($groups -match "S-1-16-(12288|16384)") { return $true }
+        if ($groups -match "S-1-16-\d+") { return $false }
+        return $true
     }
 
     function New-StudioChildScriptDirectory {
@@ -5239,10 +5249,22 @@ exit 0
                     # and the icon stayed stale until something else invalidated Explorer's
                     # cache. ctypes reaches the same shell32 entry point everywhere. Cosmetic
                     # either way: a failure here leaves stale icons and cannot fail the install.
-                    try {
-                        $null = Invoke-StudioPythonShellIconRefresh `
-                            -Paths $createdShortcutPaths -Exe $ManagedPythonPath
-                    } catch {}
+                    #
+                    # Skipped outright on an elevated run whose interpreter sits where a standard
+                    # user can write it, which a per-user Studio root does: launching it here
+                    # would run whatever is at that path with the administrator token, and this
+                    # refresh is worth nothing like that much. Same rule as the early-Python
+                    # ladder, and the cost of skipping is a stale icon until Explorer notices.
+                    $iconRefreshSafe = $true
+                    if ($env:OS -eq "Windows_NT" -and (Test-StudioChildScriptDirectoryElevated)) {
+                        $iconRefreshSafe = Test-StudioPathUnderAdminRoot -Path "$ManagedPythonPath"
+                    }
+                    if ($iconRefreshSafe) {
+                        try {
+                            $null = Invoke-StudioPythonShellIconRefresh `
+                                -Paths $createdShortcutPaths -Exe $ManagedPythonPath
+                        } catch {}
+                    }
                     if ($firstInstall -or $iconChanged) {
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}

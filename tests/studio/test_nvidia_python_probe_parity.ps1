@@ -353,6 +353,15 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $elevCode -match 'whoami' -and $elevCode -match 'S-1-16-')
     Check "$leaf does not use the managed principal types for it" (
         $elevCode -notmatch 'WindowsPrincipal')
+    # Unknown has to answer YES. whoami can be missing or blocked by application control, and
+    # neither is evidence of a medium token: reading that as "not elevated" hands back an
+    # unlabelled directory on a host that may well be elevated, which is the escalation this
+    # exists to stop. The only confirmed no is a token naming a mandatory label below High.
+    Check "$leaf treats an unreadable token as elevated" (
+        $elevCode -match 'catch \{ return \$true \}' -and
+        $elevCode -match 'IsNullOrWhiteSpace\(\$groups\)\) \{ return \$true \}')
+    Check "$leaf only answers no for a label it actually read" (
+        $elevCode -match 'S-1-16-\\d\+.*return \$false')
     Check "$leaf comment stripper kept the code (bites)" ($elevCode -match 'return')
     # And every launcher in the file uses it, rather than naming the shared root itself. The
     # shared-root spelling is what the finding was about, so its absence is the check.
@@ -405,9 +414,21 @@ try {
         [string]::IsNullOrWhiteSpace($plantedAnswer))
 } finally {
     Remove-Item Function:Get-ChildItem -ErrorAction SilentlyContinue
-    Remove-Item Function:icacls -ErrorAction SilentlyContinue
-    Remove-Item Function:Test-StudioChildScriptDirectoryElevated -ErrorAction SilentlyContinue
+    Remove-Item Function:icacls.exe -ErrorAction SilentlyContinue
+    # Restored rather than removed: this one came from the file under test, and the rows below
+    # still drive it. Removing it left them failing on a missing command instead of on the code.
+    Invoke-Expression ($setupParts[5])
     if ($null -eq $savedOs) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOs }
+}
+
+# Driven: with whoami absent the answer has to be "elevated", not "not elevated".
+$savedPath = $env:PATH
+try {
+    $env:PATH = ""
+    Check "an unreadable token reads as elevated" (
+        (Test-StudioChildScriptDirectoryElevated) -eq $true)
+} finally {
+    $env:PATH = $savedPath
 }
 
 # Run it: a directory really is created, really is fresh, and really is cleaned up.
