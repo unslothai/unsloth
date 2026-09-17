@@ -511,7 +511,7 @@ _ROUTES_WITHOUT_HOST_PATHS = {
 
 
 def test_every_inventory_route_that_could_answer_a_path_takes_the_caller_class():
-    source = Path(inventory_routes.__file__).read_text()
+    source = Path(inventory_routes.__file__).read_text(encoding = "utf-8")
     tree = ast.parse(source)
     missing = []
     for node in tree.body:
@@ -867,7 +867,7 @@ _COMPAT_INVENTORY_ROUTES = (
 
 
 def test_every_compat_mirror_of_an_inventory_route_takes_the_caller_class():
-    source = Path(models_routes.__file__).read_text()
+    source = Path(models_routes.__file__).read_text(encoding = "utf-8")
     tree = ast.parse(source)
     found = {}
     for node in ast.walk(tree):

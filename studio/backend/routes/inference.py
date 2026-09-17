@@ -2780,7 +2780,7 @@ async def _tunnel_safe_json(coro, *, label: str):
     task.add_done_callback(lambda t: t.cancelled() or t.exception())
     done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
     if done:
-        # Here rather than at each `return LoadResponse(...)` because this is the one funnel
+        # Here rather than at each `return LoadResponse` because this is the one funnel
         # every tunnelled answer passes through, padded body included.
         try:
             return restore_inventory_handles(task.result())
