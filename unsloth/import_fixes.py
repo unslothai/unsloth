@@ -884,6 +884,326 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
 
 
+_ROPE_SCALING_PATCH_FLAG = "_unsloth_patched_rope_scaling_setter"
+
+
+def _rope_scaling_property_owner():
+    """The class that DEFINES a writable ``rope_scaling`` property, or ``None``.
+
+    transformers 5 keeps ``rope_scaling`` as an alias for ``rope_parameters``; 4.x has a
+    plain attribute, so ``None`` there. The MRO is walked because the base config is
+    spelled ``PretrainedConfig`` on 4.x and ``PreTrainedConfig`` on 5.x.
+    """
+    try:
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception:
+        return None
+    for klass in getattr(PretrainedConfig, "__mro__", ()):
+        prop = klass.__dict__.get("rope_scaling", None)
+        if isinstance(prop, property) and prop.fset is not None:
+            return klass
+    return None
+
+
+def _rope_probe_inherits(owner):
+    """Does the config class the probe measures still descend from the LIVE owner?
+
+    False only after a reload has replaced the owner underneath a cached config module,
+    which is exactly when the probe's verdict describes a class nobody will use again.
+    """
+    try:
+        from transformers import LlamaConfig
+    except Exception:
+        return False
+    return isinstance(owner, type) and issubclass(LlamaConfig, owner)
+
+
+def _rope_scaling_setter_is_patched(owner = None):
+    """Is the LIVE ``rope_scaling`` setter ours, right now?
+
+    Asked of the descriptor, not of a class flag: a reload of
+    ``transformers.configuration_utils`` puts the upstream property back while a class
+    attribute survives, so a flag would refuse to re-patch a vulnerable build.
+    """
+    if owner is None:
+        owner = _rope_scaling_property_owner()
+    if owner is None:
+        return False
+    prop = owner.__dict__.get("rope_scaling", None)
+    if not isinstance(prop, property):
+        return False
+    return bool(getattr(prop.fset, _ROPE_SCALING_PATCH_FLAG, False))
+
+
+def _rope_parameters_are_per_layer(config, parameters):
+    """Is this a per-layer-type rope dict rather than one global one?
+
+    transformers' own discriminator: per-layer exactly when the config declares
+    ``layer_types`` and every key is one of them. A global key written into such a dict
+    makes transformers read the whole thing as flat, so this is asked first.
+    """
+    layer_types = getattr(config, "layer_types", None)
+    if not layer_types or not isinstance(parameters, dict) or not parameters:
+        return False
+    try:
+        return set(parameters.keys()).issubset(set(layer_types))
+    except Exception:
+        return False
+
+
+def _rope_theta_snapshot(config):
+    """The base(s) ``rope_parameters`` holds right now, in the shape it holds them.
+
+    A flat dict has one base. A per-layer dict has one per layer type (5.5's
+    ``T5Gemma2DecoderConfig``: 10000.0 sliding, 1000000.0 full), returned as
+    ``{layer_type: base}``; the outer dict has no ``rope_theta``, which is how both
+    bases used to be lost.
+    """
+    parameters = getattr(config, "rope_parameters", None)
+    if not isinstance(parameters, dict):
+        return None
+    if not _rope_parameters_are_per_layer(config, parameters):
+        return parameters.get("rope_theta", None)
+    snapshot = {}
+    for layer_type, entry in parameters.items():
+        if isinstance(entry, dict) and entry.get("rope_theta", None) is not None:
+            snapshot[layer_type] = entry["rope_theta"]
+    return snapshot or None
+
+
+def _carry_per_layer_rope_theta(config, parameters, carried):
+    """Put each layer type's base back into a per-layer replacement that lost it.
+
+    A top-level ``rope_theta`` would make the dict read as flat, so the base goes back
+    into each nested entry. Copies throughout, never the caller's dicts in place. An
+    entry naming its own base is left alone.
+    """
+    if not isinstance(carried, dict) or not carried:
+        return None
+    replacement = {}
+    changed = False
+    for layer_type, entry in parameters.items():
+        if (
+            isinstance(entry, dict)
+            and entry.get("rope_theta", None) is None
+            and carried.get(layer_type, None) is not None
+        ):
+            entry = dict(entry)
+            entry["rope_theta"] = carried[layer_type]
+            changed = True
+        replacement[layer_type] = entry
+    if not changed:
+        return None
+    try:
+        config.rope_parameters = replacement
+    except Exception:
+        return None
+    return carried
+
+
+def _carry_rope_theta_across_assignment(config, carried):
+    """Keep the RoPE base frequency across a ``rope_scaling`` replacement.
+
+    Separated from the wrapper so every parameter shape is testable without a live
+    transformers.
+
+    Precedence, so nothing a caller said is overwritten: the NEW parameters' base, then
+    the config's own, then ``carried`` (the base held before the assignment). That order
+    matters because ``unsloth_zoo/empty_model.py`` sets Gemma's local rotary base and
+    then replaces the scaling, and carrying the global base over it would be wrong.
+
+    The base is written to ``rope_parameters`` where 5.x keeps it, so the answer does
+    not depend on ``standardize_rope_params`` running first and ``validate_rope`` and
+    ``save_pretrained`` see a complete dict. A per-layer dict is left alone.
+
+    The config's ``rope_theta`` attribute (the 4.x slot) is written only when it is the
+    only slot that can hold the base, which is the non-dict replacement of #2405, or
+    when it already exists and would otherwise go stale. Otherwise a saved config gains
+    no key it did not have. Writes nothing when the new parameters name their own base
+    and the config states none, so this is a no-op on a build that keeps the base.
+    """
+    parameters = getattr(config, "rope_parameters", None)
+    per_layer = _rope_parameters_are_per_layer(config, parameters)
+    if per_layer:
+        # Per-layer bases go back one level down. Falls through to the global attribute
+        # below only when there is no nested snapshot to restore.
+        restored = _carry_per_layer_rope_theta(config, parameters, carried)
+        if restored is not None:
+            return restored
+    elif isinstance(carried, dict):
+        # Per-layer parameters replaced by a FLAT dict. Passing the mapping through would
+        # write a dict where a number belongs. One base stands for it only when every
+        # layer type agreed; otherwise carry nothing rather than invent a scalar.
+        bases = set(carried.values())
+        carried = bases.pop() if len(bases) == 1 else None
+    is_flat_dict = isinstance(parameters, dict) and not per_layer
+    current = parameters.get("rope_theta", None) if is_flat_dict else None
+    stated = getattr(config, "rope_theta", None)
+
+    base = current
+    if base is None:
+        base = stated
+    if base is None:
+        base = carried
+    if base is None:
+        return None
+
+    readable = current is not None
+    if is_flat_dict and not readable:
+        try:
+            # A COPY, never the dict in place: transformers 5 stores the caller's object
+            # verbatim, so one scaling dict reused across a loop of models would carry the
+            # first config's base into the second. Measured on 5.0.0, 5.5.4 and 5.17.0: a
+            # config declaring 10000.0 came out with 500000.0, silently.
+            replacement = dict(parameters)
+            replacement["rope_theta"] = base
+            config.rope_parameters = replacement
+            parameters = replacement
+            readable = True
+        except Exception:
+            pass
+    if stated is not None or not readable:
+        try:
+            config.rope_theta = base
+        except Exception:
+            return None
+    return base
+
+
+def _transformers_rope_scaling_assignment_drops_theta():
+    """Does replacing ``config.rope_scaling`` on THIS build lose the base frequency?
+
+    Measured, not inferred from a version: the move into ``rope_parameters``, the alias
+    property and the strict validation landed in different 5.x releases and have been
+    backported. Two configs, because ``ROPE_INIT_FUNCTIONS`` mutates the one it is
+    handed. Absent positive evidence answer ``False`` and leave transformers alone.
+    """
+    try:
+        import torch
+        from transformers import LlamaConfig
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+    except Exception:
+        return False
+    try:
+        rope_init_fn = ROPE_INIT_FUNCTIONS["linear"]
+    except Exception:
+        return False
+    scaling = {"rope_type": "linear", "factor": 4.0}
+
+    def build():
+        # Tiny, and a base far from the 10000.0 default so a silent fallback shows up
+        # as a difference rather than a match.
+        return LlamaConfig(
+            hidden_size = 64,
+            num_attention_heads = 2,
+            num_key_value_heads = 2,
+            head_dim = 32,
+            rope_theta = 500000.0,
+            max_position_embeddings = 2048,
+            rope_scaling = dict(scaling),
+        )
+
+    # CPU explicitly: under a "meta" default device the comparison cannot be read, which
+    # would answer "not affected" for a reason unrelated to the bug.
+    device = torch.device("cpu")
+    try:
+        reference, _attention_factor = rope_init_fn(build(), device)
+        subject = build()
+    except Exception:
+        return False
+    try:
+        subject.rope_scaling = dict(scaling)
+    except Exception:
+        return False
+    try:
+        replaced, _attention_factor = rope_init_fn(subject, device)
+    except Exception:
+        # The base came out None and `base ** positions` raised. This is the defect.
+        return True
+    try:
+        return not bool(torch.allclose(replaced.float().cpu(), reference.float().cpu()))
+    except Exception:
+        return False
+
+
+def fix_transformers_rope_scaling_drops_theta():
+    """Stop a replaced ``rope_scaling`` silently unscaling RoPE (issue #2405).
+
+    transformers 5 moved ``rope_theta`` into ``config.rope_parameters`` and kept
+    ``rope_scaling`` as an alias that REPLACES that whole dict, so assigning a
+    normalized scaling dict takes the base with it and
+    ``_compute_linear_scaling_rope_parameters`` raises ``TypeError: unsupported operand
+    type(s) for ** or pow(): 'NoneType' and 'Tensor'``. That assignment is what
+    ``models/llama.py``'s ``_compute_config_rope_inv_freq`` retry does, and unsloth
+    catches the raise and falls back to UNSCALED RoPE, which is #2405's gibberish past
+    the original context.
+
+    Measured here, one venv per transformers minor on torch 2.11.0:
+    ``tests/utils/test_rope_scaling_drift.py`` fails on 5.0.0 through 5.3.0 and passes
+    on 4.57.6, where ``rope_theta`` is an attribute the assignment cannot touch. From
+    5.4.0 a config refuses a non-dict ``rope_parameters``, so the object route is
+    unreachable, but any dict assignment still drops the base and ``save_pretrained``
+    raises ``KeyError: Missing required keys ... {'rope_theta'}`` instead. The probe
+    therefore fires on every 5.x.
+
+    The alias setter is the only site where the outgoing and incoming parameters are
+    both visible. Nothing is normalized or rejected on the way in; the wrapper only puts
+    the base back where it would otherwise be gone. Assignments to ``rope_parameters``
+    itself need no cover: a caller writing that field writes what transformers reads.
+    """
+    owner = _rope_scaling_property_owner()
+    if owner is not None and _rope_scaling_setter_is_patched(owner):
+        return
+    # The probe answers through the cached `transformers.LlamaConfig`. After a reload of
+    # configuration_utils that class still inherits the OLD patched owner while the live
+    # owner is new and unpatched, so the probe would report the base survives and leave
+    # the live owner to lose it. A probe that cannot see the owner is no evidence and
+    # does not get to veto; installing anyway is safe, since the wrapper is a no-op on a
+    # build that keeps the base.
+    probe_can_see_owner = owner is None or _rope_probe_inherits(owner)
+    if probe_can_see_owner and not _transformers_rope_scaling_assignment_drops_theta():
+        return
+    if owner is None:
+        logger.info("Unsloth: Skipping the rope_scaling base-frequency fix (no alias property)")
+        return
+
+    prop = owner.__dict__["rope_scaling"]
+    # Unwrap first, so a reload that restored upstream's property is re-patched rather
+    # than wrapped on top of a wrapper.
+    original = getattr(prop.fset, "__wrapped__", prop.fset)
+
+    @functools.wraps(original)
+    def rope_scaling(self, value):
+        # Both halves are guarded, since this runs on every model load and an unexpected
+        # config shape must not turn an assignment into a traceback. The assignment
+        # itself is not, since swallowing that would be a silent behaviour change.
+        try:
+            carried = _rope_theta_snapshot(self)
+        except Exception:
+            carried = None
+        result = original(self, value)
+        try:
+            _carry_rope_theta_across_assignment(self, carried)
+        except Exception:
+            pass
+        return result
+
+    # Set explicitly as well as by wraps: the unwrap above and the tests read it, so a
+    # wraps-less edit must not make the patch un-probeable.
+    rope_scaling.__wrapped__ = original
+    # The mark travels ON the setter, so a reload that drops it is re-patched.
+    setattr(rope_scaling, _ROPE_SCALING_PATCH_FLAG, True)
+
+    try:
+        setattr(owner, "rope_scaling", property(prop.fget, rope_scaling, prop.fdel, prop.__doc__))
+        logger.info(
+            "Unsloth: Patching transformers `rope_scaling` so replacing it keeps the "
+            "RoPE base frequency (unsloth #2405)"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching rope_scaling ({e})")
+
+
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
