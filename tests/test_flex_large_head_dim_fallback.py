@@ -120,6 +120,7 @@ def test_force_enable_still_opts_in_qwen3_5():
 # head_dim and model_type are both read off config.json, so a model that needs flex gets it
 # without the caller naming a backend. The env var overrides in either direction.
 
+
 @pytest.fixture
 def _no_env(monkeypatch):
     monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising = False)
@@ -130,19 +131,26 @@ def test_large_head_dim_is_detected_from_config_by_default(_no_env):
 
 
 def test_small_head_dim_is_left_on_sdpa_by_default(_no_env):
-    assert u._prefers_flex_for_head_dim(
-        _Cfg(model_type = "llama", head_dim = 128, num_attention_heads = 8)
-    ) is False
+    assert (
+        u._prefers_flex_for_head_dim(_Cfg(model_type = "llama", head_dim = 128, num_attention_heads = 8))
+        is False
+    )
 
 
 def test_head_dim_derived_from_hidden_size_when_absent(_no_env):
     # older configs omit head_dim; hidden_size / num_attention_heads is the same quantity
-    assert u._prefers_flex_for_head_dim(
-        _Cfg(model_type = "fake", hidden_size = 2048, num_attention_heads = 8)
-    ) is True
-    assert u._prefers_flex_for_head_dim(
-        _Cfg(model_type = "fake", hidden_size = 1024, num_attention_heads = 8)
-    ) is False
+    assert (
+        u._prefers_flex_for_head_dim(
+            _Cfg(model_type = "fake", hidden_size = 2048, num_attention_heads = 8)
+        )
+        is True
+    )
+    assert (
+        u._prefers_flex_for_head_dim(
+            _Cfg(model_type = "fake", hidden_size = 1024, num_attention_heads = 8)
+        )
+        is False
+    )
 
 
 def test_per_layer_head_dims_take_the_maximum(_no_env):
@@ -153,7 +161,9 @@ def test_per_layer_head_dims_take_the_maximum(_no_env):
         head_dim = 128,
         num_attention_heads = 8,
         per_layer_config = [
-            _Cfg(head_dim = 128), _Cfg(head_dim = 128), _Cfg(head_dim = 512),
+            _Cfg(head_dim = 128),
+            _Cfg(head_dim = 128),
+            _Cfg(head_dim = 512),
         ],
     )
     assert u._text_attention_head_dim(cfg) == 512
@@ -162,15 +172,17 @@ def test_per_layer_head_dims_take_the_maximum(_no_env):
 
 def test_a_homogeneous_small_config_is_unaffected_by_the_per_layer_read(_no_env):
     # 4.x configs have no per_layer_config at all; the global head_dim must still decide.
-    assert u._prefers_flex_for_head_dim(
-        _Cfg(model_type = "fake", head_dim = 128, num_attention_heads = 8)
-    ) is False
+    assert (
+        u._prefers_flex_for_head_dim(_Cfg(model_type = "fake", head_dim = 128, num_attention_heads = 8))
+        is False
+    )
 
 
 def test_excluded_model_stays_on_sdpa_even_at_large_head_dim(_no_env):
-    assert u._prefers_flex_for_head_dim(
-        _Cfg(model_type = "gemma2", head_dim = 256, num_attention_heads = 8)
-    ) is False
+    assert (
+        u._prefers_flex_for_head_dim(_Cfg(model_type = "gemma2", head_dim = 256, num_attention_heads = 8))
+        is False
+    )
 
 
 def test_a_vision_tower_alone_never_turns_it_on(_no_env):
@@ -195,18 +207,20 @@ def test_env_var_zero_forces_sdpa(monkeypatch, value):
 @pytest.mark.parametrize("value", ["1", "true", " 1 "])
 def test_env_var_nonzero_forces_flex(monkeypatch, value):
     monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, value)
-    assert u._prefers_flex_for_head_dim(
-        _Cfg(model_type = "llama", head_dim = 64, num_attention_heads = 8)
-    ) is True
+    assert (
+        u._prefers_flex_for_head_dim(_Cfg(model_type = "llama", head_dim = 64, num_attention_heads = 8))
+        is True
+    )
 
 
 def test_empty_env_var_falls_back_to_the_config(monkeypatch):
     # an exported-but-empty variable is the shell's "unset", not a request to disable
     monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, "")
     assert u._prefers_flex_for_head_dim(_text_only()) is True
-    assert u._prefers_flex_for_head_dim(
-        _Cfg(model_type = "llama", head_dim = 64, num_attention_heads = 8)
-    ) is False
+    assert (
+        u._prefers_flex_for_head_dim(_Cfg(model_type = "llama", head_dim = 64, num_attention_heads = 8))
+        is False
+    )
 
 
 def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch):
