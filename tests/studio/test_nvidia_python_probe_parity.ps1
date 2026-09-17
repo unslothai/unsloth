@@ -187,6 +187,74 @@ Check "the embedded probe reads the hints from the environment" `
     (($installProbe -match 'os\.environ\.get\("UNSLOTH_NVML_HINT"') -and ($installProbe -match 'os\.environ\.get\("UNSLOTH_CUDA_HINT"'))
 
 Write-Host ""
+Write-Host "=== the installer uses the interpreter this run installed ==="
+
+# Get-StudioEarlyPython memoises, including a MISS. On a fresh host it is first called by the
+# install-lock path, finds no Python, and caches $null for the rest of the run. The inventory is
+# not read until thousands of lines later, by which point this install has created a managed
+# interpreter and a venv. Asking only the cache would decline on exactly the fresh install where
+# nvidia-smi is also most likely absent, and the host would take CPU wheels with a working card.
+$hookSrc = @(Get-HelperSources $installPs1 @("Get-NvidiaProbePythonExe"))[0]
+Invoke-Expression $hookSrc
+$script:EarlyCalled = $false
+function Get-StudioEarlyPython { $script:EarlyCalled = $true; return "/early/python3" }
+
+$hookDir = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-hook-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $hookDir | Out-Null
+try {
+    $fakeVenv = Join-Path $hookDir "venv-python"
+    $fakeManaged = Join-Path $hookDir "managed-python"
+    [System.IO.File]::WriteAllText($fakeVenv, "")
+    [System.IO.File]::WriteAllText($fakeManaged, "")
+
+    $VenvPython = $fakeVenv; $ManagedPythonPath = $fakeManaged
+    $script:EarlyCalled = $false
+    Check "the venv interpreter wins when it exists" ((Get-NvidiaProbePythonExe) -eq $fakeVenv)
+    Check "and the memoising ladder is not consulted at all" ($script:EarlyCalled -eq $false)
+
+    # Before the venv is built but after the managed interpreter is installed.
+    $VenvPython = Join-Path $hookDir "not-created-yet"
+    $script:EarlyCalled = $false
+    Check "the managed interpreter is next" ((Get-NvidiaProbePythonExe) -eq $fakeManaged)
+    Check "and it too skips the ladder" ($script:EarlyCalled -eq $false)
+
+    # Neither present: the ladder is the fallback, which is the pre-existing behaviour.
+    $VenvPython = Join-Path $hookDir "nope-1"; $ManagedPythonPath = Join-Path $hookDir "nope-2"
+    $script:EarlyCalled = $false
+    Check "with neither on disk the ladder still answers" ((Get-NvidiaProbePythonExe) -eq "/early/python3")
+    Check "and the ladder really was the source" ($script:EarlyCalled -eq $true)
+
+    # A path recorded but never created must not be handed out: Test-Path is the discriminator,
+    # not whether the variable happens to be set.
+    $VenvPython = $null; $ManagedPythonPath = $null
+    Check "unset variables fall through rather than returning empty" (
+        (Get-NvidiaProbePythonExe) -eq "/early/python3")
+
+    $saved = $env:UNSLOTH_EARLY_PYTHON_PROBE
+    try {
+        $env:UNSLOTH_EARLY_PYTHON_PROBE = "0"
+        $VenvPython = $fakeVenv
+        Check "the kill switch still wins over the venv interpreter" ((Get-NvidiaProbePythonExe) -eq "")
+    } finally {
+        if ($null -eq $saved) { Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue }
+        else { $env:UNSLOTH_EARLY_PYTHON_PROBE = $saved }
+    }
+} finally {
+    Remove-Item -LiteralPath $hookDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# The ordering that makes the above reachable at all: both variables are assigned before the
+# first Get-NvidiaLibraryInventory call, or the hook would read $null however it is written.
+$installText = [System.IO.File]::ReadAllText($installPs1)
+$venvAt = $installText.IndexOf('$VenvPython = Join-Path $VenvDir')
+$managedAt = $installText.IndexOf('$ManagedPythonPath = (Resolve-Path')
+$firstInventoryAt = $installText.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory))')
+Check "the venv interpreter is named before the inventory is first read" (
+    $venvAt -gt 0 -and $firstInventoryAt -gt $venvAt)
+Check "the managed interpreter is named before it too" (
+    $managedAt -gt 0 -and $firstInventoryAt -gt $managedAt)
+
+Write-Host ""
 Write-Host "=== the timeout is whole seconds, rounded up, without [math]::Ceiling ==="
 
 # PowerShell's / is floating point and [int] rounds to NEAREST, so the C "+999" ceiling idiom

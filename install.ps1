@@ -8196,6 +8196,19 @@ exit 0
     # ladder from the process-image rung, which never installs anything.
     function Get-NvidiaProbePythonExe {
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return "" }
+        # The interpreter this run installed comes FIRST, and Get-StudioEarlyPython is the
+        # fallback rather than the source.
+        #
+        # That ladder memoises, including a miss: on a fresh host with no Python of its own it
+        # is first called by the install-lock path, finds nothing, and caches $null for the rest
+        # of the run. The inventory is not read until much later, by which point this install
+        # has created a managed interpreter and then a venv, so asking the cache would decline
+        # on exactly the fresh install where nvidia-smi is also most likely to be missing. The
+        # host would take CPU wheels while holding a working NVIDIA card.
+        foreach ($candidate in @($VenvPython, $ManagedPythonPath)) {
+            if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        }
         try { return "$(Get-StudioEarlyPython)" } catch { return "" }
     }
 
