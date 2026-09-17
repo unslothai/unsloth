@@ -48,7 +48,8 @@ function Get-FunctionText($file, $name) {
 $strip = { param($t) (($t -split "`n") | ForEach-Object { $_.TrimStart() }) -join "`n" }
 $shared = @(
     "Invoke-BoundedVideoControllerScan", "Test-NvidiaAdapterPresent",
-    "Test-OtherVendorAdapterPresent", "Get-NvidiaDriverRelease", "Get-NvidiaDriverCudaFloor",
+    "Test-OtherVendorAdapterPresent", "Get-XpuCapableNameRegex",
+    "Get-NvidiaDriverRelease", "Get-NvidiaDriverCudaFloor",
     "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor"
 )
 foreach ($name in $shared) {
@@ -56,7 +57,7 @@ foreach ($name in $shared) {
         (& $strip (Get-FunctionText $installPs1 $name)) -eq (& $strip (Get-FunctionText $setupPs1 $name)))
 }
 
-foreach ($name in @("Test-NvidiaAdapterPresent", "Test-OtherVendorAdapterPresent",
+foreach ($name in @("Test-NvidiaAdapterPresent", "Test-OtherVendorAdapterPresent", "Get-XpuCapableNameRegex",
                     "Get-NvidiaDriverRelease", "Get-NvidiaDriverCudaFloor",
                     "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor")) {
     Invoke-Expression (Get-FunctionText $setupPs1 $name)
@@ -162,6 +163,55 @@ $script:FakeAdapters = @(
     (Adapter "AMD Radeon 780M" "PCI\VEN_1002&DEV_15BF" 0))
 Check "on a hybrid NVIDIA plus AMD host presence is true but the gate blocks promotion" (
     (Test-NvidiaAdapterPresent) -eq $true -and (Test-OtherVendorAdapterPresent) -eq $true)
+
+# The commonest machine in this entire population: a laptop with an NVIDIA GPU and Intel
+# integrated graphics. UHD and Iris get no XPU wheels, so counting them as an alternative blocks
+# the NVIDIA promotion and then hands the host CPU wheels anyway. Worse than either outcome on
+# its own, and it is the configuration the promotion was written for.
+foreach ($case in @(
+    @{ N = "Intel UHD Graphics";    Name = "Intel(R) UHD Graphics 770";        Blocks = $false },
+    @{ N = "Intel Iris Xe";         Name = "Intel(R) Iris(R) Xe Graphics";     Blocks = $false },
+    @{ N = "Intel HD Graphics";     Name = "Intel(R) HD Graphics 630";         Blocks = $false },
+    # Arc and Data Center parts DO block: for those the Intel route has somewhere to go, and
+    # suppressing it would cost the host wheels it can actually use.
+    @{ N = "Intel Arc A770";        Name = "Intel(R) Arc(TM) A770 Graphics";   Blocks = $true },
+    @{ N = "Intel Arc B580";        Name = "Intel(R) Arc(TM) B580 Graphics";   Blocks = $true },
+    @{ N = "Intel Data Center GPU"; Name = "Intel(R) Data Center GPU Max 1100"; Blocks = $true },
+    # A nameless Intel adapter cannot be shown to be XPU-capable, so it does not block.
+    @{ N = "a nameless Intel adapter"; Name = "";                              Blocks = $false }
+)) {
+    $script:FakeAdapters = @(
+        (Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0),
+        (Adapter $case.Name "PCI\VEN_8086&DEV_4680" 0))
+    Check "NVIDIA plus $($case.N): the gate $(if ($case.Blocks) { 'blocks' } else { 'allows' }) promotion" (
+        (Test-OtherVendorAdapterPresent) -eq $case.Blocks)
+    Check "  and NVIDIA presence is unaffected either way" ((Test-NvidiaAdapterPresent) -eq $true)
+}
+
+# AMD is deliberately NOT narrowed: its route serves most Radeon parts through a name-to-gfx
+# table rather than a short allowlist, so deciding capability here would duplicate that table.
+$script:FakeAdapters = @(
+    (Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0),
+    (Adapter "AMD Radeon(TM) Graphics" "PCI\VEN_1002&DEV_15BF" 0))
+Check "an integrated AMD adapter still blocks, unlike the Intel one" (
+    (Test-OtherVendorAdapterPresent) -eq $true)
+
+# The gate's Intel pattern must be the SAME one the XPU route uses, or the two answer different
+# questions and drift apart silently. Read both out of install.ps1 rather than restating either.
+$gateText = Get-FunctionText $installPs1 "Test-OtherVendorAdapterPresent"
+$installAll = [System.IO.File]::ReadAllText($installPs1)
+Check "the gate defers to the shared XPU-capable pattern" ($gateText -match 'Get-XpuCapableNameRegex')
+# @() around the WHOLE pipeline, not just the Matches. Sort-Object -Unique on one element
+# returns a bare string, .Count on a string is 1, and [0] is then its first CHARACTER, so both
+# checks below compare "(" with "(" and pass for free. Hit exactly that here before fixing it.
+$patternDefs = @(@([regex]::Matches($installAll, 'function Get-XpuCapableNameRegex \{ return "([^"]+)" \}') |
+    ForEach-Object { $_.Groups[1].Value }) | Sort-Object -Unique)
+$routeDefs = @(@([regex]::Matches($installAll, '\$_xpuNameRe = "([^"]+)"') |
+    ForEach-Object { $_.Groups[1].Value }) | Sort-Object -Unique)
+Check "the extracted patterns are whole strings, not characters" (
+    $patternDefs[0].Length -gt 5 -and $routeDefs[0].Length -gt 5)
+Check "both patterns are defined exactly once" ($patternDefs.Count -eq 1 -and $routeDefs.Count -eq 1)
+Check "the gate pattern and the XPU route pattern are identical" ($patternDefs[0] -ceq $routeDefs[0])
 
 # -------------------------------------------------------- the driver version to CUDA floor
 #

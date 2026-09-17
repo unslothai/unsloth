@@ -3040,6 +3040,18 @@ function Test-NvidiaAdapterPresent {
 # Intel wheels today, so promoting NVIDIA there would suppress a working path in exchange for a
 # GPU whose CUDA version nothing on the machine can report. Measured before this gate existed:
 # such a host ended up with $HasNvidiaSmi true, AMD detection off, and a CPU index anyway.
+# The Intel names the XPU route will actually serve. Deliberately the SAME pattern the route
+# itself uses, because the question here is not "is this an Intel GPU" but "will the code further
+# down give this machine Intel wheels". A pattern of our own would answer a different question,
+# and test_nvidia_adapter_presence.ps1 asserts the two stay identical.
+#
+# A function rather than a bare $script: assignment. An assignment only holds once the statement
+# has run, which is the no-hoisting hazard this file has been bitten by before, and it leaves the
+# pattern $null for anything that loads these helpers on their own. A $null pattern matches every
+# string, so the gate would silently block on every Intel adapter, which is the bug this is
+# fixing. Observed exactly that way while writing the test.
+function Get-XpuCapableNameRegex { return "(?i)Intel.*(Arc|Data Center GPU)" }
+
 function Test-OtherVendorAdapterPresent {
     param($Scan = $null)
     if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
@@ -3048,6 +3060,19 @@ function Test-OtherVendorAdapterPresent {
         if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_(1002|8086)') { continue }
         if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
         if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+        # An Intel adapter only counts as an ALTERNATIVE if the XPU route can serve it. The
+        # commonest machine in this whole population is a laptop with an NVIDIA GPU and Intel
+        # UHD or Iris integrated graphics, and UHD gets no XPU wheels: counting it would block
+        # the NVIDIA promotion and then hand the host CPU wheels anyway, which is worse than
+        # either outcome on its own. Arc and Data Center parts still block, because for those
+        # the Intel route really does have somewhere to go.
+        #
+        # AMD is deliberately NOT narrowed the same way. Its route serves most Radeon parts
+        # through a name-to-gfx table rather than a short allowlist, so deciding capability here
+        # would mean duplicating that table and drifting from it. Any healthy AMD adapter still
+        # blocks the promotion.
+        if ("$($adapter.PNPDeviceID)" -match '(?i)ven_8086' -and
+            "$($adapter.Name)" -notmatch (Get-XpuCapableNameRegex)) { continue }
         return $true
     }
     return $false
