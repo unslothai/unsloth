@@ -370,6 +370,42 @@ Check "with nothing working the hard bound still stops the walk" ($script:Probed
 Check "and it spends the HARD budget, not the soft one, before giving up" ($spent -ge 2)
 Check "control: giving up empty-handed really reports no GPU" ($HasNvidiaSmi -eq $false)
 
+# The banner probe has to respect the deadline too.
+#
+# Checking only at the top of the loop is not enough: the listing probe that just returned can
+# have spent most of its own bound, and the banner probe has a full bound of its own, so a
+# candidate starting just inside the deadline could add nearly twice the per-probe timeout after
+# it. The earlier elapsed-time check missed this because its banner stub returned instantly.
+# Driven with a banner probe that is the slow one.
+$script:Listings = 0
+$script:Banners = 0
+function Test-NvidiaSmiHasGpu { param([string]$Exe) $script:Listings++; Start-Sleep -Milliseconds 900; return $true }
+function Invoke-NvidiaSmiBounded {
+    param($Exe, $Arguments)
+    $script:Banners++
+    Start-Sleep -Milliseconds 900
+    return "no version here"
+}
+function Get-NvidiaSmiCandidatePaths { return @(1..10 | ForEach-Object { "C:\slow$_\nvidia-smi.exe" }) }
+$script:NvidiaSmiWedged = $false
+$HasNvidiaSmi = $false
+$NvidiaSmiExe = $null
+$t0 = Get-Date
+Invoke-Expression $fastLoop
+$spent = ((Get-Date) - $t0).TotalSeconds
+# Counted, not timed. The first version asserted "fewer than 10 banners" and "under 8 seconds",
+# and BOTH held with the fix reverted: at 1.8 s per candidate the top-of-loop check stops the
+# walk one candidate later either way. The exact count is what separates them. With the recheck,
+# candidate 1 gets a banner and candidate 2 is cut off after its listing, so exactly one banner
+# probe runs; without it, candidate 2 also gets a banner. Mutation-tested both ways.
+Check "a slow banner probe does not start after the deadline" ($script:Banners -eq 1)
+Check "control: a banner probe did run for the candidate before it" ($script:Listings -ge 2)
+# Loose sanity only; the counter above is the check that bites.
+Check "the loop does not spend two probe bounds per candidate after expiry" ($spent -lt 8)
+# And the GPU is still reported: everything here listed, so the fallback must take the first.
+Check "control: the GPU found before the deadline is still reported" (
+    $HasNvidiaSmi -eq $true -and $NvidiaSmiExe -eq "C:\slow1\nvidia-smi.exe")
+
 # ------------------------------- the Windows-on-ARM picker must answer with a WORKING binary
 #
 # Get-WoaNvidiaSmiPath fed the first candidate that EXISTS to Test-WoaNvidiaPresent and
@@ -385,7 +421,11 @@ function Get-Command { param($Name, $ErrorAction) return $null }   # nothing on 
 function Invoke-NvidiaSmiBounded {
     param($Exe, $Arguments)
     $script:WoaProbes += $Exe
-    if ($Exe -like "*working*") { $global:LASTEXITCODE = 0; return "GPU 0: NVIDIA GeForce RTX 4090" }
+    if ($Exe -like "*working*") {
+        $global:LASTEXITCODE = 0
+        if ($Arguments -contains '-L') { return "GPU 0: NVIDIA GeForce RTX 4090" }
+        return "CUDA Version: 12.8"
+    }
     $global:LASTEXITCODE = 1
     return ""
 }
@@ -411,6 +451,68 @@ $script:WoaNvidiaSmiPath = $null
 function Invoke-NvidiaSmiBounded { param($Exe, $Arguments) $global:LASTEXITCODE = 1; return "" }
 Check "with nothing answering it falls back to the first existing copy" (
     (Get-WoaNvidiaSmiPath) -eq "C:\stale\nvidia-smi.exe")
+
+# The ARM64 picker needs BOTH probes, not just the listing.
+#
+# Get-WoaDriverCudaVersion asks this same binary for the CUDA banner, and a null answer does not
+# merely lose a version: it skips the CUDA-major compatibility guard in
+# Initialize-WoaNativeCudaTorch, which is what stops a native wheel newer than the installed
+# driver being selected. So a candidate that lists a GPU but never names a version must not win
+# over one that does.
+$script:WoaNvidiaSmiProbed = $false
+$script:WoaNvidiaSmiPath = $null
+function Invoke-NvidiaSmiBounded {
+    param($Exe, $Arguments)
+    $global:LASTEXITCODE = 0
+    if ($Arguments -contains '-L') { return "GPU 0: NVIDIA GeForce RTX 4090" }
+    if ($Exe -like "*versioned*") { return "CUDA Version: 12.8" }
+    return "NVIDIA-SMI has failed because it couldn't communicate with the driver"
+}
+function Get-NvidiaSmiCandidatePaths {
+    return @("C:\listingonly\nvidia-smi.exe", "C:\versioned\nvidia-smi.exe")
+}
+Check "a candidate that also names a CUDA version wins over a listing-only one" (
+    (Get-WoaNvidiaSmiPath) -eq "C:\versioned\nvidia-smi.exe")
+
+# And when none names a version, the listing-only candidate is still used: the presence check
+# must keep working, and only the version check declines.
+$script:WoaNvidiaSmiProbed = $false
+$script:WoaNvidiaSmiPath = $null
+function Invoke-NvidiaSmiBounded {
+    param($Exe, $Arguments)
+    $global:LASTEXITCODE = 0
+    if ($Arguments -contains '-L') { return "GPU 0: NVIDIA GeForce RTX 4090" }
+    return "no version here"
+}
+Check "with no version anywhere the first listing candidate is still used" (
+    (Get-WoaNvidiaSmiPath) -eq "C:\listingonly\nvidia-smi.exe")
+
+# The scan is bounded as a whole. Without this a wedged driver plus eight retained DriverStore
+# copies held Initialize-WoaNativeCudaTorch for minutes before the install started.
+Check "the ARM64 scan carries a soft and a hard deadline" (
+    $woaFn -match '\$woaDeadline = \(Get-Date\)\.AddSeconds\(30\)' -and
+    $woaFn -match '\$woaHardDeadline = \(Get-Date\)\.AddSeconds\(60\)')
+
+$fastWoa = ($woaFn -replace 'AddSeconds\(30\)', 'AddSeconds(2)') -replace 'AddSeconds\(60\)', 'AddSeconds(4)'
+Check "the shortened ARM64 slice really carries both (bites)" (
+    $fastWoa -match 'AddSeconds\(2\)' -and $fastWoa -match 'AddSeconds\(4\)')
+Invoke-Expression $fastWoa
+$script:WoaNvidiaSmiProbed = $false
+$script:WoaNvidiaSmiPath = $null
+$script:WoaSlowProbes = 0
+function Invoke-NvidiaSmiBounded {
+    param($Exe, $Arguments)
+    $script:WoaSlowProbes++
+    Start-Sleep -Milliseconds 700
+    $global:LASTEXITCODE = 1
+    return ""
+}
+function Get-NvidiaSmiCandidatePaths { return @(1..20 | ForEach-Object { "C:\wedged$_\nvidia-smi.exe" }) }
+$null = Get-WoaNvidiaSmiPath
+Check "a wedged ARM64 host stops scanning instead of walking every candidate" (
+    $script:WoaSlowProbes -lt 20)
+Check "control: it probed rather than declining immediately" ($script:WoaSlowProbes -ge 2)
+Invoke-Expression $woaFn
 Remove-Item Function:\Get-Command -ErrorAction SilentlyContinue
 
 if ($failures -gt 0) {

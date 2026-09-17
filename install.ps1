@@ -1174,14 +1174,39 @@ function Install-UnslothStudio {
         # longer: every location added is another chance that the first entry is a stale copy
         # sitting in front of a working one. Same reason the main detection loop stopped taking
         # the first listing candidate.
+        # Same two-budget shape as the main detection loop, and for the same reasons. Each probe
+        # below is a bounded process spawn, and the list can now be eleven entries, so a wedged
+        # driver would otherwise hold Initialize-WoaNativeCudaTorch for minutes before the
+        # install even starts. The soft budget only applies once something has answered; only the
+        # hard one may end the scan with nothing, because that decides the whole ARM64 route.
+        $woaDeadline = (Get-Date).AddSeconds(30)
+        $woaHardDeadline = (Get-Date).AddSeconds(60)
+        $woaListing = $null
         foreach ($p in $found) {
+            if ($null -ne $woaListing -and (Get-Date) -gt $woaDeadline) { break }
+            if ((Get-Date) -gt $woaHardDeadline) { break }
             try {
                 $listing = Invoke-NvidiaSmiBounded $p @('-L')
-                if ($LASTEXITCODE -eq 0 -and $listing -match '(?m)^\s*GPU\s+\d+') {
+                if (-not ($LASTEXITCODE -eq 0 -and $listing -match '(?m)^\s*GPU\s+\d+')) { continue }
+                if (-not $woaListing) { $woaListing = $p }
+                # Two passes, because listing a GPU is not enough here. Get-WoaDriverCudaVersion
+                # asks this same binary for the CUDA banner, and a null answer does not merely
+                # lose a version: it skips the CUDA-major compatibility guard in
+                # Initialize-WoaNativeCudaTorch, which is what stops a native wheel newer than
+                # the installed driver being chosen. So prefer a candidate that answers BOTH.
+                if ((Get-Date) -gt $woaDeadline) { break }
+                $banner = Invoke-NvidiaSmiBounded $p
+                if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
                     $script:WoaNvidiaSmiPath = $p
                     return $p
                 }
             } catch {}
+        }
+        # One that listed a GPU but never named a version is still better than one that did not
+        # answer at all: the callers' presence check works, and the version check declines.
+        if ($woaListing) {
+            $script:WoaNvidiaSmiPath = $woaListing
+            return $woaListing
         }
         # Nothing answered. Hand back the first that exists, which is what this did before, so a
         # host where the probe cannot run is no worse off than it was.
@@ -7222,6 +7247,12 @@ exit 0
                     $firstListing = $p
                     $firstListingWedged = $script:NvidiaSmiWedged
                 }
+                # Rechecked here, not only at the top. The listing probe that just returned can have
+                # spent most of its own bound, and the banner probe below has a full bound of its
+                # own, so a candidate starting just inside the deadline could add nearly twice the
+                # per-probe timeout after it. There is already a usable answer in $firstListing at
+                # this point, so stopping costs at most a wheel family.
+                if ((Get-Date) -gt $probeDeadline) { break }
                 $banner = Invoke-NvidiaSmiBounded $p
                 if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
                     $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break

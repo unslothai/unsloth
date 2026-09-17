@@ -2698,6 +2698,12 @@ if (-not $HasNvidiaSmi) {
                 $firstListing = $p
                 $firstListingWedged = $script:NvidiaSmiWedged
             }
+            # Rechecked here, not only at the top. The listing probe that just returned can have
+            # spent most of its own bound, and the banner probe below has a full bound of its
+            # own, so a candidate starting just inside the deadline could add nearly twice the
+            # per-probe timeout after it. There is already a usable answer in $firstListing at
+            # this point, so stopping costs at most a wheel family.
+            if ((Get-Date) -gt $probeDeadline) { break }
             $banner = Invoke-NvidiaSmiBounded $p
             if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
                 $HasNvidiaSmi = $true
