@@ -2544,3 +2544,90 @@ class TestRocmRuntimePreflight:
         monkeypatch.setattr(ctypes, "CDLL", self._sonames_that({"libhipblas.so.3"}))
         # The off switch removes the rung, so nothing about rocm can be decisive for a fallback.
         assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is False
+
+
+# ── the two index spaces, and the mask that does not exist on Windows ──────────────────────
+class TestSelectedCardIndexSpaces:
+    """``selected_card_identity`` turns a torch ordinal into a card. Getting the wrong card is worse
+    than getting none: the failure is persisted against it, so the card that really fails keeps being
+    retried while a healthy one is diverted to Vulkan for the rest of the install's life."""
+
+    def test_an_unmasked_host_still_translates_the_hip_id(self, fake_settings, monkeypatch):
+        """No mask means the ordinal IS the HIP id, not an inventory row. amd-smi's discovery order is
+        a different index space, so the unmasked path needs the same mapping the masked one does."""
+        from core.inference import sd_cpp_backend
+
+        devices = [
+            {"index": 0, "name": "Card A", "gfx_candidates": ["gfx1201"], "vendor": "amd"},
+            {"index": 1, "name": "Card B", "gfx_candidates": ["gfx1100"], "vendor": "amd"},
+        ]
+        # HIP id 0 is probe row 1 on this host: the spaces disagree, which is the whole point.
+        _inventory_of(monkeypatch, devices, hip_by_row = {0: 1, 1: 0})
+        for variable in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(variable, raising = False)
+
+        # Torch ordinal 0 -> HIP id 0 -> probe row 1 -> Card B. Before the fix this read row 0, Card A.
+        assert sd_cpp_backend.selected_card_identity(0) == sd_cpp_backend._card_identity(devices[1])
+
+    def test_a_multi_gpu_host_with_no_mapping_names_no_card(self, fake_settings, monkeypatch):
+        """``amd-smi list -e`` arrived in ROCm 6.4. Without it, which row a HIP id means is a guess,
+        and a guess here pins the fallback to whichever card the guess happened to land on."""
+        from core.inference import sd_cpp_backend
+
+        devices = [
+            {"index": 0, "name": "Card A", "gfx_candidates": ["gfx1201"], "vendor": "amd"},
+            {"index": 1, "name": "Card B", "gfx_candidates": ["gfx1100"], "vendor": "amd"},
+        ]
+        _inventory_of(monkeypatch, devices, hip_by_row = None)
+        from utils.hardware import amd as amd_module
+
+        monkeypatch.setattr(amd_module, "get_hip_id_by_gpu_index", lambda: None, raising = False)
+        for variable in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(variable, raising = False)
+
+        assert sd_cpp_backend.selected_card_identity(0) is None
+
+    def test_a_single_gpu_host_with_no_mapping_still_names_its_card(self, fake_settings, monkeypatch):
+        """One card is the case this fallback exists for (gfx1151 Strix Halo, every APU). With a
+        single inventory row the identity mapping is the only one there is, so declining would cost
+        failure attribution on every pre-6.4 ROCm host and buy no safety."""
+        from core.inference import sd_cpp_backend
+        from utils.hardware import amd as amd_module
+
+        devices = [{"index": 0, "name": "Card A", "gfx_candidates": ["gfx1151"], "vendor": "amd"}]
+        _inventory_of(monkeypatch, devices)
+        monkeypatch.setattr(amd_module, "get_hip_id_by_gpu_index", lambda: None, raising = False)
+        for variable in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(variable, raising = False)
+
+        assert sd_cpp_backend.selected_card_identity(0) == sd_cpp_backend._card_identity(devices[0])
+
+    def test_windows_ignores_a_stale_rocr_mask(self, monkeypatch):
+        """Windows HIP has no ROCr layer, so ROCR_VISIBLE_DEVICES masks nothing there. Reading it
+        would turn a leftover ``ROCR_VISIBLE_DEVICES=1`` into "ordinal 0 is card 1"."""
+        from core.inference import sd_cpp_backend
+
+        monkeypatch.setattr(sd_cpp_backend.sys, "platform", "win32")
+        env = {"ROCR_VISIBLE_DEVICES": "1"}
+
+        # No mask in force on Windows, so the ordinal passes through and nothing is masked.
+        assert sd_cpp_backend._physical_index_of(0, env = env) == (0, False)
+
+    def test_linux_still_reads_the_rocr_mask(self, monkeypatch):
+        """The same variable on Linux is a real mask, and the fix must not disarm it there."""
+        from core.inference import sd_cpp_backend
+
+        monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+        env = {"ROCR_VISIBLE_DEVICES": "1"}
+
+        assert sd_cpp_backend._physical_index_of(0, env = env) == (1, True)
+
+    def test_windows_still_reads_the_hip_mask(self, monkeypatch):
+        """HIP_VISIBLE_DEVICES IS honoured by Windows HIP; only the ROCr variable is absent there."""
+        from core.inference import sd_cpp_backend
+
+        monkeypatch.setattr(sd_cpp_backend.sys, "platform", "win32")
+        env = {"HIP_VISIBLE_DEVICES": "2,3", "ROCR_VISIBLE_DEVICES": "1"}
+
+        # Composing the stale ROCR mask in would have made this 3 rather than 2.
+        assert sd_cpp_backend._physical_index_of(0, env = env) == (2, True)

@@ -454,7 +454,11 @@ def _mask_entries(value: Optional[str]) -> "Optional[list[int]]":
 def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optional[int], bool]":
     """``(HIP device id, a mask was set)``; ``None`` where the masks cannot be composed, so the caller declines the tie-break rather than guessing."""
     source = os.environ if env is None else env
-    rocr = source.get(_ROCR_MASK_VAR)
+    # ROCR_VISIBLE_DEVICES is Linux-only: Windows HIP has no ROCr layer, so a stray value there masks
+    # nothing and must not be read as the ordinal->physical mapping. Reading it would turn a leftover
+    # ROCR_VISIBLE_DEVICES=1 into "torch ordinal 0 is card 1" and pin the failure, and the Vulkan
+    # fallback with it, to a card that never failed. Mirrors LlamaCppBackend._active_gpu_visibility_mask.
+    rocr = None if sys.platform == "win32" else source.get(_ROCR_MASK_VAR)
     hip = next((source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None), None)
     opaque = source.get(_OPAQUE_MASK_VAR)
     if rocr is None and hip is None and opaque is None:
@@ -985,16 +989,26 @@ def selected_card_identity(ordinal: "Optional[int]") -> "Optional[str]":
             for device in ((inventory or {}).get("devices") or [])
             if isinstance(device, dict) and device.get("index") is not None
         ]
-        if masked:
-            # A mask names HIP ids, the inventory rows its own probe order; without amd-smi's mapping between them, decline.
-            hip_by_row = get_hip_id_by_gpu_index()
-            if not hip_by_row:
-                return None
+        # ``physical_index`` is a HIP device id in every branch: unmasked it IS the torch ordinal,
+        # masked it is what the composed mask resolved to. The inventory is keyed by amd-smi's own
+        # discovery order, a DIFFERENT index space (amd.py's get_hip_id_by_gpu_index: "They coincide
+        # on most hosts and not on all of them"), so the number needs translating either way. Gating
+        # this on ``masked`` was wrong: an unmasked multi-GPU host where the spaces disagree would
+        # attach the failure to the wrong card and keep retrying the one that actually fails while
+        # diverting a working card to Vulkan.
+        hip_by_row = get_hip_id_by_gpu_index()
+        if hip_by_row:
             physical_index = next(
                 (row for row, hip in hip_by_row.items() if hip == physical_index), None
             )
             if physical_index is None:
                 return None
+        elif len(devices) != 1:
+            # No mapping: amd-smi is missing, or older than the ROCm 6.4 that added ``list -e``. With
+            # one card in the inventory the identity mapping is the only one there is, so the single
+            # GPU case (every APU, and the gfx1151 this fallback targets) keeps working. With more
+            # than one, guessing picks a card, so decline and let the caller skip the tie-break.
+            return None
         selected = next((d for d in devices if d.get("index") == physical_index), None)
         if selected is None:
             return None
