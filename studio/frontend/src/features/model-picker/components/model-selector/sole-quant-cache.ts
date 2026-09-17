@@ -31,6 +31,7 @@ export function verifiedSoleHubVariant<
   T extends {
     downloaded?: boolean;
     partial?: boolean;
+    update_available?: boolean;
     pending_drafter_filename?: string | null;
   },
 >(
@@ -46,6 +47,8 @@ export function verifiedSoleHubVariant<
   const sole = downloaded[0];
   // Drafter still missing: not loadable yet, so not collapsible.
   if (sole.pending_drafter_filename) return null;
+  // Only the expander carries the update action, so an update must keep it.
+  if (sole.update_available === true) return null;
   return sole;
 }
 

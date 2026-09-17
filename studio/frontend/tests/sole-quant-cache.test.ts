@@ -73,6 +73,29 @@ test("a torn quant beside a complete one keeps the expander", () => {
   assert.equal(verifiedSoleHubVariant(variants, false, true), null);
 });
 
+// Only GgufVariantExpander wires onUpdateVariant; the collapsed row's menu is pin and delete
+// only, so collapsing an updateable quant would drop the update action from the default view.
+test("an updateable quant keeps the expander", () => {
+  const variants = [
+    { quant: "Q4_K_M", downloaded: true, update_available: true },
+    { quant: "Q6_K", downloaded: false },
+  ];
+  assert.equal(verifiedSoleHubVariant(variants, false, true), null);
+
+  // No update pending still collapses.
+  assert.equal(
+    verifiedSoleHubVariant(
+      [
+        { quant: "Q4_K_M", downloaded: true, update_available: false },
+        { quant: "Q6_K", downloaded: false },
+      ],
+      false,
+      true,
+    )?.quant,
+    "Q4_K_M",
+  );
+});
+
 // The companion concern behind the dependency gate, checked where it is answerable.
 test("a cached main GGUF still awaiting its drafter keeps the expander", () => {
   const variants = [
