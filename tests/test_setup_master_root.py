@@ -789,8 +789,11 @@ def test_the_windows_node_guard_treats_a_file_as_occupied():
     setup.sh's _assert_studio_owned_or_absent takes the same view of -d against -e and -L.
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    block = _slice(ps, "if (($NodeOverride -or $RuntimeRootIsCustom) -and (Test-Path -LiteralPath $NodeDir",
-                   "install_node_prebuilt.py")
+    block = _slice(
+        ps,
+        "if (($NodeOverride -or $RuntimeRootIsCustom) -and (Test-Path -LiteralPath $NodeDir",
+        "install_node_prebuilt.py",
+    )
     code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
     # The gate itself must not be container-only any more.
     gate = code.splitlines()[0]
@@ -835,7 +838,7 @@ def test_neither_uninstaller_takes_a_studio_root_that_is_also_the_master_root():
     sh = UNINSTALL_SH.read_text(encoding = "utf-8")
     ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
 
-    sh_block = _slice(sh, "_crf_canon=", "_remove_root_recording_db \"$_custom_root\"")
+    sh_block = _slice(sh, "_crf_canon=", '_remove_root_recording_db "$_custom_root"')
     sh_code = "\n".join(l for l in sh_block.splitlines() if not l.lstrip().startswith("#"))
     assert "_MASTER_ROOT_SAVED" in sh_code and "continue" in sh_code
     # Canonicalised on both sides, or a symlinked path compares unequal to itself and the guard

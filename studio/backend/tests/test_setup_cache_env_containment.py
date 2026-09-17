@@ -1106,7 +1106,7 @@ def test_an_empty_managed_dir_still_defers_to_a_user_matplotlibrc(tmp_path):
 
 
 def test_a_blank_toolchain_override_is_dropped_on_a_spaced_root(monkeypatch, tmp_path):
-    """"blank counts as unset" has to hold for a root we refuse to pin, too.
+    """ "blank counts as unset" has to hold for a root we refuse to pin, too.
 
     Inductor distinguishes an absent TORCHINDUCTOR_CACHE_DIR from a present one, so a leftover
     "   " becomes a relative compiler path and is then split by the very unquoted command

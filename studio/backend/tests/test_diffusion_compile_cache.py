@@ -405,7 +405,9 @@ def test_load_only_mode_reads_legacy_without_writing_to_it(monkeypatch, tmp_path
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
 
     assert ctx.hit is True
-    assert not (ctx.dir / legacy_bundle.name).exists()  # a read-only cache stays read-only, both roots
+    assert not (
+        ctx.dir / legacy_bundle.name
+    ).exists()  # a read-only cache stays read-only, both roots
     assert legacy_bundle.exists()
 
 
