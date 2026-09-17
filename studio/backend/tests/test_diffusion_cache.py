@@ -564,7 +564,9 @@ class _RealisticCacheMixin:
     def enable_cache(self, config):
         self.enable_calls += 1
         if self.is_cache_enabled:
-            raise ValueError("Caching has already been enabled with <class 'FirstBlockCacheConfig'>.")
+            raise ValueError(
+                "Caching has already been enabled with <class 'FirstBlockCacheConfig'>."
+            )
         self.enabled_with = config
 
     def disable_cache(self):
