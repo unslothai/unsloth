@@ -187,6 +187,11 @@ def test_guard_spellings(template, detected):
          "{{ ns.lines|join(',') }}", True),
         ("{% set ns = namespace(lines=[]) %}{% if enable_thinking %}"
          "{% do ns.lines.append('Think') %}{% endif %}{{ ns.lines|join(',') }}", False),
+        # A stored predicate renders what the inline one does, so it answers the same.
+        ("{% set handles_tool = message.role == 'tool' %}"
+         "{% if handles_tool %}{{ message.content }}{% endif %}", True),
+        ("{% set is_user = message.role == 'user' %}"
+         "{% if is_user %}{{ message.content }}{% endif %}", False),
         # A loop's inline filter is a guard like any other. The marker scan matched
         # this spelling of the tool-role check, so missing it loses tool support.
         ("{% for m in messages if m.role == 'tool' %}{{ m.content }}{% endfor %}", True),
