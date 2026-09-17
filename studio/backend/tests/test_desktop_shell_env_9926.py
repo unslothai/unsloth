@@ -295,3 +295,40 @@ def test_a_value_the_filesystem_allows_but_utf8_does_not_round_trips(tmp_path):
     shell = _shim(tmp_path, "export ROCM_PATH=\"$(printf '/opt/rocm\\377')\"\n")
     env = dse.read_login_shell_env(shell = shell)
     assert os.fsencode(env["ROCM_PATH"]) == b"/opt/rocm\xff"
+
+
+# --------------------------------------------------------------------------
+# The #7331 interaction. The CLI clears an HSA_OVERRIDE_GFX_VERSION that the
+# installed single-ISA wheels cannot satisfy, and that clear runs BEFORE this
+# import. Refilling the name from the same shell profile would undo it.
+# --------------------------------------------------------------------------
+
+
+def test_an_override_the_cli_cleared_is_not_imported_back(monkeypatch):
+    monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: True)
+    monkeypatch.setattr(
+        dse,
+        "read_login_shell_env",
+        lambda *_a, **_k: {"HSA_OVERRIDE_GFX_VERSION": "11.0.0", "ROCM_PATH": "/opt/rocm"},
+    )
+    environ = desktop(**{dse.HSA_OVERRIDE_CLEARED_ENV: "gfx1151"})
+    imported = dse.import_rocm_env_from_login_shell(environ = environ)
+    assert imported == {"ROCM_PATH": "/opt/rocm"}
+    assert dse.HSA_OVERRIDE_ENV not in environ
+
+
+def test_without_that_marker_the_override_is_still_imported(monkeypatch):
+    monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: True)
+    monkeypatch.setattr(
+        dse, "read_login_shell_env", lambda *_a, **_k: {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"}
+    )
+    environ = desktop()
+    assert dse.import_rocm_env_from_login_shell(environ = environ) == {
+        "HSA_OVERRIDE_GFX_VERSION": "11.0.0"
+    }
+
+
+def test_the_cli_and_this_module_name_the_same_marker():
+    """Two files, one contract: a rename on either side must fail here."""
+    import unsloth_cli.commands.studio as studio_cli
+    assert studio_cli.HSA_OVERRIDE_CLEARED_ENV == dse.HSA_OVERRIDE_CLEARED_ENV

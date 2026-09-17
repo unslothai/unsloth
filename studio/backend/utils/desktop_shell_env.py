@@ -60,6 +60,14 @@ DISABLE_ENV_VAR = "UNSLOTH_DISABLE_SHELL_ENV_IMPORT"
 # startup it got before this module existed, with no shell spawned.
 DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 
+# Set by the CLI's #7331 guard (unsloth_cli/commands/studio.py) when it drops an
+# HSA_OVERRIDE_GFX_VERSION that names an arch the installed single-ISA ROCm wheels
+# carry no kernels for. Without this marker the guard's pop is indistinguishable
+# from a GUI launch that never had the variable, and importing it back from the
+# shell profile would undo the clear and fail every kernel launch again.
+HSA_OVERRIDE_CLEARED_ENV = "UNSLOTH_HSA_OVERRIDE_CLEARED"
+HSA_OVERRIDE_ENV = "HSA_OVERRIDE_GFX_VERSION"
+
 # AMD/ROCm runtime knobs only. Deliberately no ``CUDA_*``, no ``ONEAPI_*``, no
 # ``PYTORCH_*`` general switches and no ``UNSLOTH_*``: the point of this module
 # is the AMD launch gap in #9926, and a wider list would make a GUI launch on an
@@ -275,7 +283,11 @@ def import_rocm_env_from_login_shell(
     if all(name in environ for name in ROCM_SHELL_ENV_ALLOWLIST):
         return {}
 
-    imported = select_missing_vars(environ, read_login_shell_env(shell, timeout))
+    allowlist = ROCM_SHELL_ENV_ALLOWLIST
+    if str(environ.get(HSA_OVERRIDE_CLEARED_ENV, "")).strip():
+        allowlist = tuple(name for name in allowlist if name != HSA_OVERRIDE_ENV)
+
+    imported = select_missing_vars(environ, read_login_shell_env(shell, timeout), allowlist)
     for name, value in imported.items():
         environ[name] = value
     if imported:

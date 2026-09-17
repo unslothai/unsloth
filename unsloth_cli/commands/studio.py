@@ -414,6 +414,12 @@ def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
     return False
 
 
+# Set to the installed arch when the #7331 clear below drops a contradicting override,
+# and read by studio/backend/utils/desktop_shell_env.py so that a desktop launch does
+# not import the same value straight back out of the user's shell profile.
+HSA_OVERRIDE_CLEARED_ENV = "UNSLOTH_HSA_OVERRIDE_CLEARED"
+
+
 def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
     """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None. Read from the
     `rocm` meta-package: globbing for rocm_sdk_libraries_gfx* would read an ORPHAN. None also
@@ -466,6 +472,11 @@ def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
     if named is None or named == arch:
         return None
     os.environ.pop("HSA_OVERRIDE_GFX_VERSION", None)
+    # A pop alone says "absent", which is indistinguishable from "a GUI launch never
+    # had it", and studio/backend/utils/desktop_shell_env.py refills absent ROCm
+    # names from the login shell. Saying "cleared on purpose" is what keeps this
+    # decision from being undone a few hundred milliseconds later.
+    os.environ[HSA_OVERRIDE_CLEARED_ENV] = arch
     return arch
 
 

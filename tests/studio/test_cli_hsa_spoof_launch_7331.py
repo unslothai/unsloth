@@ -343,3 +343,25 @@ def test_a_rocm_metapackage_orphaned_by_a_switch_to_generic_wheels_arbitrates_no
         tmp_path / "orphaned", "rocm_sdk_libraries_gfx1151", torch_needs_rocm = False
     )
     assert _installed_rocm_single_arch(orphaned) is None
+
+
+class TestTheClearSurvivesTheDesktopShellImport:
+    """#11125 imports absent ROCm names back out of the login shell on a desktop
+    launch, and the profile that exported the bad override still exports it. The
+    clear therefore has to say "cleared on purpose", not just leave the name absent."""
+
+    def test_clearing_records_the_installed_arch(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+        monkeypatch.delenv(studio_cli.HSA_OVERRIDE_CLEARED_ENV, raising = False)
+        monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
+        venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
+        assert studio_cli._clear_hsa_override_contradicting_install(venv) == "gfx1151"
+        assert os.environ[studio_cli.HSA_OVERRIDE_CLEARED_ENV] == "gfx1151"
+
+    def test_an_override_that_was_never_cleared_leaves_no_marker(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.5.1")
+        monkeypatch.delenv(studio_cli.HSA_OVERRIDE_CLEARED_ENV, raising = False)
+        monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
+        venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
+        assert studio_cli._clear_hsa_override_contradicting_install(venv) is None
+        assert studio_cli.HSA_OVERRIDE_CLEARED_ENV not in os.environ
