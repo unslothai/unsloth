@@ -2913,6 +2913,34 @@ function Install-UnslothStudio {
         return (Resolve-StudioFinalPathInfo -Path $Path).Path
     }
 
+    # Two spellings, one directory? Asked of the filesystem rather than of the two strings.
+    #
+    # Only reached when the strings disagree, which on a host that resolved both paths exactly
+    # means they really are different directories. Where no interpreter could be reached the
+    # lexical resolver carried the run, and it folds SUBST drives and reparse points but cannot
+    # expand an 8.3 alias or a volume-GUID spelling: "C:\Users\DANIEL~1\.unsloth\studio" and the
+    # profile root it names compare unequal, and the check below would refuse the default root
+    # it exists to accept. The emitted rung that was removed resolved both to one string.
+    #
+    # Writing a uniquely named file through one spelling and looking for it through the other is
+    # decisive where the comparison is not, and it is cmdlets only, so it still answers on a host
+    # under Constrained Language Mode. Both sides must already exist; when either does not, they
+    # cannot be aliases of one directory and the answer is no without touching the disk.
+    function Test-StudioSameDirectoryByProbe {
+        param([string]$Left, [string]$Right)
+        if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
+        if (-not (Test-Path -LiteralPath $Left -PathType Container)) { return $false }
+        if (-not (Test-Path -LiteralPath $Right -PathType Container)) { return $false }
+        $name = ".unsloth-path-probe-" + [guid]::NewGuid().ToString("N")
+        $probe = Join-Path $Left $name
+        try { Set-Content -LiteralPath $probe -Value "" -ErrorAction Stop } catch { return $false }
+        try {
+            return (Test-Path -LiteralPath (Join-Path $Right $name))
+        } finally {
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
     # the Windows profile folder). Pass through if the override is that same root.
     if ($TauriMode -and $envOverride) {
@@ -2934,7 +2962,11 @@ function Install-UnslothStudio {
         )
         $_tauriOverride = $_tauriOverride.TrimEnd($_trimSeps)
         $_legacyTauriRoot = $_legacyTauriRoot.TrimEnd($_trimSeps)
-        if ($_tauriOverride -ne $_legacyTauriRoot) {
+        # Unequal strings are only proof of different directories when both sides resolved
+        # exactly. They did not here whenever the interpreter could not be reached, so ask the
+        # filesystem before refusing an install.
+        if ($_tauriOverride -ne $_legacyTauriRoot -and
+            -not (Test-StudioSameDirectoryByProbe -Left $_tauriOverride -Right $_legacyTauriRoot)) {
             Write-StudioLine "ERROR: $envOverrideVar is not supported with --tauri." -ForegroundColor Red
             Write-StudioLine "       The desktop app uses the Windows profile .unsloth\studio root." -ForegroundColor Red
             Write-StudioLine "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow

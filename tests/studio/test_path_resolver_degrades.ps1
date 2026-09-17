@@ -300,6 +300,60 @@ Write-Host "PROCIMG_TABLE_STILL_NULL: `$(`$null -eq `$script:StudioPythonProcess
     Check "and an empty result is not re-probed" ($out -match "PROCIMG_TABLE_STILL_NULL: True")
 }
 
+# ---- Two spellings of one directory, where the lexical resolver cannot tell ----
+#
+# The --tauri gate refuses an override that is not the profile root, and it decided that by
+# comparing two resolved strings. With no interpreter on the host the lexical resolver carries
+# both sides, and it cannot expand an 8.3 alias or a volume-GUID spelling, so a host whose
+# UNSLOTH_STUDIO_HOME names the default root in one of those spellings had its install refused
+# outright. The removed emitted rung resolved both to one string, so this is a path the change
+# had to keep. Asking the filesystem answers it without expanding anything.
+$probeFn = Get-InstallFunctionSource -Path $installPath -Name "Test-StudioSameDirectoryByProbe"
+Check "install.ps1 defines Test-StudioSameDirectoryByProbe" ($null -ne $probeFn)
+if ($probeFn) {
+    Invoke-Expression $probeFn
+    $probeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-probe-" + [guid]::NewGuid().ToString("N"))
+    $realDir = Join-Path $probeRoot "real"
+    $otherDir = Join-Path $probeRoot "other"
+    $null = New-Item -ItemType Directory -Path $realDir -Force
+    $null = New-Item -ItemType Directory -Path $otherDir -Force
+    $aliasDir = Join-Path $probeRoot "alias"
+    $madeAlias = $false
+    try {
+        $null = New-Item -ItemType SymbolicLink -Path $aliasDir -Target $realDir -ErrorAction Stop
+        $madeAlias = $true
+    } catch { }
+    Check "two different directories are not one" (
+        (Test-StudioSameDirectoryByProbe -Left $realDir -Right $otherDir) -eq $false)
+    Check "a directory is itself" (
+        (Test-StudioSameDirectoryByProbe -Left $realDir -Right $realDir) -eq $true)
+    if ($madeAlias) {
+        # The alias mechanism differs per OS, so the check is on the PROPERTY: two names that
+        # reach one directory answer yes even though the strings share nothing.
+        Check "two spellings that reach one directory are one" (
+            (Test-StudioSameDirectoryByProbe -Left $aliasDir -Right $realDir) -eq $true)
+    } else {
+        Write-Host "  SKIP  this host cannot create a link to test the aliased spelling"
+    }
+    # A side that does not exist cannot be an alias of one that does, and the answer must come
+    # without writing anything: the caller is about to refuse the install on it.
+    Check "a missing right side is not a match" (
+        (Test-StudioSameDirectoryByProbe -Left $realDir -Right (Join-Path $probeRoot "absent")) -eq $false)
+    Check "a missing left side is not a match" (
+        (Test-StudioSameDirectoryByProbe -Left (Join-Path $probeRoot "absent") -Right $realDir) -eq $false)
+    Check "an empty spelling is not a match" (
+        (Test-StudioSameDirectoryByProbe -Left "" -Right $realDir) -eq $false)
+    # It leaves nothing behind, or a later scan of the install root would see its own probe.
+    Check "the probe file is removed again" (
+        @(Get-ChildItem -LiteralPath $realDir -Force -ErrorAction SilentlyContinue).Count -eq 0)
+    Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# The gate itself has to consult it, or the helper above is dead code.
+$installText = [System.IO.File]::ReadAllText($installPath)
+Check "the --tauri gate asks it before refusing an override" (
+    $installText -match 'if \(\$_tauriOverride -ne \$_legacyTauriRoot -and[\r\n\s]*-not \(Test-StudioSameDirectoryByProbe')
+
 # Structural self-check, kept because the mistake it catches has happened here: a check
 # added after the gate below runs, prints FAIL, and the file still exits 0, so CI records
 # a pass over a failing suite.
