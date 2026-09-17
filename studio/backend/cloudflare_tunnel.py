@@ -32,9 +32,13 @@ _REGISTERED_MARKER = "Registered tunnel connection"
 
 _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
 
-_READY_TIMEOUT = 30.0
+_READY_TIMEOUT = 15.0
 # No URL means the trycloudflare.com request itself failed or stalled, which is usually transient.
 _NO_URL_RETRY_DELAYS = (2.0, 5.0)
+# run.py starts the tunnel inline before the CLI banner, so these retries are startup stall. A refused
+# request fails in milliseconds and still gets all of them; a network that swallows the request instead
+# burns a full _READY_TIMEOUT per attempt, so stop once the sequence has cost this much.
+_NO_URL_RETRY_BUDGET = 30.0
 _OUTPUT_TAIL_LINES = 8
 _DOWNLOAD_TIMEOUT = 60
 
@@ -884,6 +888,7 @@ def start_studio_tunnel(
 
         protocols = [None, "http2"]
         no_url_delays = list(_NO_URL_RETRY_DELAYS)
+        no_url_started = time.monotonic()
         while protocols:
             protocol = protocols[0]
             with _active_lock:
@@ -953,7 +958,11 @@ def start_studio_tunnel(
                     return None
                 return url
             saw_url = tunnel.url is not None
-            retry_no_url = not saw_url and bool(no_url_delays)
+            retry_no_url = (
+                not saw_url
+                and bool(no_url_delays)
+                and time.monotonic() - no_url_started < _NO_URL_RETRY_BUDGET
+            )
             tail = tunnel.output_tail() if hasattr(tunnel, "output_tail") else ""
             logging.getLogger(__name__).warning(
                 "cloudflared attempt failed (protocol=%s, url=%s, registered=%s)%s",
@@ -995,6 +1004,11 @@ def start_studio_tunnel(
             if not stopped:
                 return None
             if retry_no_url:
+                with _active_lock:
+                    # A Stop that landed during the attempt above must not pay out the delay: this holds
+                    # _start_lock, so a following Start would queue behind the sleep.
+                    if _shutdown_requested or generation != _tunnel_generation:
+                        return None
                 time.sleep(no_url_delays.pop(0))
                 continue
             if not saw_url:
