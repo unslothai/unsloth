@@ -5652,9 +5652,7 @@ def _repair_user_under(id_stub: str) -> str:
     lines = _install_sh_lines()
     i = _install_sh_anchor(lines, "_amd_repair_user=$(id -un")
     script = "\n".join([id_stub, lines[i].strip(), 'printf "%s" "$_amd_repair_user"'])
-    return subprocess.run(
-        ["sh", "-c", script], capture_output = True, text = True, check = True
-    ).stdout
+    return subprocess.run(["sh", "-c", script], capture_output = True, text = True, check = True).stdout
 
 
 def test_a_uid_with_no_passwd_entry_names_no_account():
@@ -5667,13 +5665,13 @@ def test_a_uid_with_no_passwd_entry_names_no_account():
     usermod rejects with "user '1234' does not exist". Verified against real GNU coreutils
     in a container before this was written.
     """
-    assert _repair_user_under('id() { echo 12345; return 1; }') == ""
+    assert _repair_user_under("id() { echo 12345; return 1; }") == ""
 
 
 def test_a_resolvable_account_is_still_named():
     """The control. Without it the fix could be "never name an account", which removes the
     usermod prescription on every ordinary host."""
-    assert _repair_user_under('id() { echo ada; return 0; }') == "ada"
+    assert _repair_user_under("id() { echo ada; return 0; }") == "ada"
 
 
 def _topology_state(monkeypatch, tmp_path, entries: "dict[str, str | None]"):
@@ -5699,8 +5697,9 @@ def _topology_state(monkeypatch, tmp_path, entries: "dict[str, str | None]"):
 
     real_listdir, real_open = os.listdir, open
     monkeypatch.setattr(amd.os, "listdir", lambda p: real_listdir(_redirect(p)))
-    monkeypatch.setattr(amd, "open", lambda p, *a, **k: real_open(_redirect(p), *a, **k),
-                        raising = False)
+    monkeypatch.setattr(
+        amd, "open", lambda p, *a, **k: real_open(_redirect(p), *a, **k), raising = False
+    )
     return amd._kfd_topology_amd_state()
 
 
@@ -5713,10 +5712,14 @@ def test_a_partly_unreadable_topology_is_unknown_not_a_denial(monkeypatch, tmp_p
     shut -- the node the ROCm caller actually needs. install.sh states the same rule for the
     same decision: a topology that could not be READ is not one that named another vendor.
     """
-    state = _topology_state(monkeypatch, tmp_path, {
-        "0": "cpu_cores_count 16\nsimd_count 0\nvendor_id 0\n",
-        "1": None,
-    })
+    state = _topology_state(
+        monkeypatch,
+        tmp_path,
+        {
+            "0": "cpu_cores_count 16\nsimd_count 0\nvendor_id 0\n",
+            "1": None,
+        },
+    )
     assert state is None
 
 
@@ -5724,21 +5727,29 @@ def test_a_partly_unreadable_topology_is_unknown_not_a_denial(monkeypatch, tmp_p
 def test_a_fully_read_topology_with_no_amd_is_still_a_denial(monkeypatch, tmp_path):
     """The control. Without it the fix could be "never answer False", which would let an
     NVIDIA-only host whose KFD nodes all read as 4318 claim an AMD card."""
-    state = _topology_state(monkeypatch, tmp_path, {
-        "0": "cpu_cores_count 16\nvendor_id 0\n",
-        "1": "simd_count 128\nvendor_id 4318\n",
-    })
+    state = _topology_state(
+        monkeypatch,
+        tmp_path,
+        {
+            "0": "cpu_cores_count 16\nvendor_id 0\n",
+            "1": "simd_count 128\nvendor_id 4318\n",
+        },
+    )
     assert state is False
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason = "root opens a 0000 file, so nothing is unreadable")
 def test_an_amd_node_still_wins_over_an_unreadable_sibling(monkeypatch, tmp_path):
     """The other control: a confirmed AMD node answers True however many siblings failed."""
-    state = _topology_state(monkeypatch, tmp_path, {
-        "0": "cpu_cores_count 16\nvendor_id 0\n",
-        "1": None,
-        "2": "simd_count 256\nvendor_id 4098\n",
-    })
+    state = _topology_state(
+        monkeypatch,
+        tmp_path,
+        {
+            "0": "cpu_cores_count 16\nvendor_id 0\n",
+            "1": None,
+            "2": "simd_count 256\nvendor_id 4098\n",
+        },
+    )
     assert state is True
 
 
@@ -5773,8 +5784,9 @@ def _lacking(monkeypatch, *, topology, confirmed_drm, kfd_present, render_presen
     monkeypatch.setattr(amd, "_kfd_topology_has_an_amd_gpu", lambda: topology is True)
     monkeypatch.setattr(amd, "_a_confirmed_amd_render_node_exists", lambda: confirmed_drm)
     monkeypatch.setattr(amd, "_amd_render_node_exists", lambda: render_present)
-    monkeypatch.setattr(amd.os.path, "exists",
-                        lambda p: kfd_present if p == amd._KFD_NODE else os.path.exists(p))
+    monkeypatch.setattr(
+        amd.os.path, "exists", lambda p: kfd_present if p == amd._KFD_NODE else os.path.exists(p)
+    )
     return amd._amd_nodes_the_runtime_lacks(needs_kfd = True)
 
 
@@ -5783,23 +5795,32 @@ def test_a_masked_topology_still_reports_kfd_when_drm_confirms_amd(monkeypatch):
     /sys/class/kfd too. The topology proves nothing there, but DRM names an AMD render node
     outright, and a HIP caller cannot run without /dev/kfd -- so suppressing the diagnosis
     left that host with the generic "no GPU" reading of its own missing device mapping."""
-    assert _lacking(monkeypatch, topology = None, confirmed_drm = True,
-                    kfd_present = False, render_present = True) == [amd._KFD_NODE]
+    assert _lacking(
+        monkeypatch, topology = None, confirmed_drm = True, kfd_present = False, render_present = True
+    ) == [amd._KFD_NODE]
 
 
 def test_a_masked_topology_with_no_confirmed_amd_node_still_says_nothing(monkeypatch):
     """The control, and the reason the DRM evidence must be the CONFIRMED kind: an
     NVIDIA-only host has render nodes under the same glob, and reading an unreadable vendor
     as AMD would hand it a ROCm device-mapping repair for a card it does not have."""
-    assert _lacking(monkeypatch, topology = None, confirmed_drm = False,
-                    kfd_present = False, render_present = True) == []
+    assert (
+        _lacking(
+            monkeypatch, topology = None, confirmed_drm = False, kfd_present = False, render_present = True
+        )
+        == []
+    )
 
 
 def test_a_topology_that_names_no_amd_gpu_still_says_nothing(monkeypatch):
     """The other control: READ and denied is not unknown, so a host whose KFD nodes all
     report another vendor gets nothing whatever DRM says."""
-    assert _lacking(monkeypatch, topology = False, confirmed_drm = True,
-                    kfd_present = False, render_present = True) == []
+    assert (
+        _lacking(
+            monkeypatch, topology = False, confirmed_drm = True, kfd_present = False, render_present = True
+        )
+        == []
+    )
 
 
 def test_the_wording_does_not_claim_a_loaded_driver_it_cannot_prove(monkeypatch):
