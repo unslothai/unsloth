@@ -477,7 +477,7 @@ class ChatSettingsPayload(BaseModel):
     searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
-    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
+    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 0)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
     # Composer and RAG toggles. They describe the installation, not the browser that set them, so a
