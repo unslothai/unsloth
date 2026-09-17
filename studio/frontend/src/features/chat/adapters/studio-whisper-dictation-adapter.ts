@@ -1,0 +1,437 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import {
+  requestVoiceBargeIn,
+  requestVoiceResume,
+  requestVoiceSubmit,
+} from "@/features/chat/voice/voice-loop-bridge";
+// The store directly, not the feature barrel: the barrel pulls in the runtime
+// provider, which reaches back here through the dictation dispatcher.
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
+import { SttModelNotDownloadedError } from "./stt-errors";
+import {
+  loadSttModel,
+  transcribeAudioBlob,
+} from "./studio-model-dictation-adapter";
+import type { DictationAdapter } from "@assistant-ui/react";
+import { toast } from "@/lib/toast";
+
+// Backend Whisper STT dictation: capture the mic, detect end-of-utterance with a
+// simple energy VAD, then POST the recorded audio to /api/audio/transcribe and
+// emit the transcript. Unlike the Web Speech adapter this needs no browser cloud
+// speech service, so it works in Edge/Brave and the Tauri desktop webview.
+//
+// Whisper is batch, not streaming, so there are no interim results: one final
+// transcript per utterance, mirroring how the Web Speech adapter ends a session
+// on silence and lets the voice loop re-arm.
+
+const SILENCE_RMS = 0.012;       // RMS below this counts as silence (ends the utterance)
+// A frame only counts as real SPEECH toward the transcribe gate (voicedMs /
+// heardSpeech) at or above this, comfortably over the ambient-noise floor. Frames
+// between SILENCE_RMS and SPEECH_RMS keep the utterance alive but don't count, so
+// room noise or a mic click can't quietly accumulate the 350ms of "speech" that
+// would get fed to Whisper (which then hallucinates "Thank you." etc. from noise).
+// Lower it if genuinely soft speech is being dropped.
+const SPEECH_RMS = 0.02;
+const SILENCE_HANG_MS = 1000;    // silence after speech ends the utterance
+const MAX_UTTERANCE_MS = 30000;  // hard cap so a stuck mic can't record forever
+const NO_SPEECH_TIMEOUT_MS = 8000;  // give up quietly if no speech is heard
+// Minimum total voiced audio required to treat a window as real speech and
+// transcribe it. Coughs, clicks, a blip of the model's own voice, or ambient
+// noise fall under this and are dropped -- this is what stops Whisper being fed
+// junk (and hallucinating repeated tokens) during barge-in / idle listening.
+const MIN_SPEECH_MS = 350;
+// Real-time barge-in (cut the TTS while the model speaks). We cut at two points,
+// whichever comes first:
+//   1. Commit: the moment this utterance has accumulated MIN_SPEECH_MS of real
+//      voiced speech -- i.e. the instant we KNOW it will be transcribed and sent.
+//      Tying the cut to the transcribe gate means you never end up talking over a
+//      reply that's already committed to being replaced, and a sub-threshold blip
+//      that WON'T be transcribed never cuts the model.
+//   2. Fast: a clearly LOUD burst (>= BARGE_IN_RMS) sustained continuously for
+//      BARGE_IN_FAST_MS cuts even sooner, so an emphatic "stop" interrupts snappily.
+// The higher BARGE_IN_RMS gate on the fast path keeps quiet speaker-bleed from
+// self-interrupting before the commit point; the commit path leans on the same
+// SPEECH_RMS floor that already guards transcription itself against bleed.
+const BARGE_IN_FAST_MS = 220;
+const BARGE_IN_RMS = 0.045;
+// Silence trimmed around the voiced span before sending to Whisper (Whisper
+// hallucinates on long leading/trailing silence). Keep a little context.
+const SILENCE_PAD_MS = 200;
+// Faked streaming reveal: Whisper is batch (one transcript per utterance), but
+// once it lands we replay it as growing interim results so the composer types it
+// out char-by-char like the streaming Web Speech engine, instead of the whole
+// line appearing at once. REVEAL_MAX_MS caps the total so long transcripts don't
+// lag the send much.
+const REVEAL_CHAR_MS = 12;
+const REVEAL_MAX_MS = 1000;
+
+type AudioContextCtor = typeof AudioContext;
+
+const getAudioContextCtor = (): AudioContextCtor | undefined => {
+  if (typeof window === "undefined") return undefined;
+  return (
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: AudioContextCtor }).webkitAudioContext
+  );
+};
+
+// Encode mono float samples as a 16-bit PCM WAV blob (soundfile reads this; no
+// ffmpeg needed server-side).
+function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i] ?? 0));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    offset += 2;
+  }
+  return new Blob([view], { type: "audio/wav" });
+}
+
+// Whisper hallucinates a repeated word/phrase on non-speech audio (noise,
+// breath, silence) -- e.g. "Ha, ha, ha..." or "Thank you. Thank you...". Reject
+// a transcript dominated by one repeated token (very low unique-word ratio) so
+// it isn't sent as a prompt. Short utterances (< 6 words) are always allowed.
+function isHallucinatedTranscript(text: string): boolean {
+  const words = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length < 6) return false;
+  return new Set(words).size / words.length < 0.3;
+}
+
+export class StudioWhisperDictationAdapter implements DictationAdapter {
+  static isSupported(): boolean {
+    return (
+      typeof window !== "undefined" &&
+      navigator.mediaDevices?.getUserMedia !== undefined &&
+      getAudioContextCtor() !== undefined
+    );
+  }
+
+  listen(): DictationAdapter.Session {
+    const AudioCtx = getAudioContextCtor();
+    if (!AudioCtx || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Whisper dictation is not supported in this browser.");
+    }
+
+    const speechStartCallbacks = new Set<() => void>();
+    const speechEndCallbacks = new Set<(result: DictationAdapter.Result) => void>();
+    const speechCallbacks = new Set<(result: DictationAdapter.Result) => void>();
+
+    let stream: MediaStream | null = null;
+    let audioCtx: AudioContext | null = null;
+    let processor: ScriptProcessorNode | null = null;
+    let source: MediaStreamAudioSourceNode | null = null;
+    const chunks: Float32Array[] = [];
+    // Parallel to chunks: whether each frame was above the silence floor, used to
+    // measure voiced duration and to trim silence before transcription.
+    const chunkVoiced: boolean[] = [];
+    let voicedMs = 0;
+    // Run of continuous LOUD frames (>= BARGE_IN_RMS) for the fast barge path;
+    // resets on any quiet frame.
+    let bargeLoudMs = 0;
+    let bargedIn = false;
+    let sampleRate = 16000;
+    let heardSpeech = false;
+    let lastVoiceAt = 0;
+    let startedAt = 0;
+    let ended = false;
+    let resolveEnded: (() => void) | null = null;
+    const endedPromise = new Promise<void>((resolve) => {
+      resolveEnded = resolve;
+    });
+
+    const session: DictationAdapter.Session = {
+      status: { type: "starting" },
+      stop: async () => {
+        await finalize();
+        await endedPromise;
+      },
+      cancel: () => {
+        teardown();
+        finish("cancelled");
+      },
+      onSpeechStart: (cb) => {
+        speechStartCallbacks.add(cb);
+        return () => speechStartCallbacks.delete(cb);
+      },
+      onSpeechEnd: (cb) => {
+        speechEndCallbacks.add(cb);
+        return () => speechEndCallbacks.delete(cb);
+      },
+      onSpeech: (cb) => {
+        speechCallbacks.add(cb);
+        return () => speechCallbacks.delete(cb);
+      },
+    };
+
+    const teardown = () => {
+      // Mic is closing: no longer hearing the user, so drop the orb's salmon
+      // "hearing you" state (the utterance ended or was cancelled).
+      useChatRuntimeStore.getState().setVoiceHearing(false);
+      if (processor) {
+        processor.onaudioprocess = null;
+        processor.disconnect();
+        processor = null;
+      }
+      source?.disconnect();
+      source = null;
+      stream?.getTracks().forEach((t) => t.stop());
+      stream = null;
+      void audioCtx?.close().catch(() => {});
+      audioCtx = null;
+    };
+
+    const finish = (reason: "stopped" | "cancelled" | "error", transcript?: string) => {
+      if (ended) return;
+      ended = true;
+      session.status = { type: "ended", reason };
+      if (transcript) {
+        for (const cb of speechEndCallbacks) cb({ transcript });
+      }
+      resolveEnded?.();
+    };
+
+    // End the utterance: tear down capture, transcribe the buffer, emit result.
+    let finalizing = false;
+    const finalize = async () => {
+      if (finalizing || ended) return;
+      finalizing = true;
+      teardown();
+
+      if (!heardSpeech || chunks.length === 0 || voicedMs < MIN_SPEECH_MS) {
+        // Nothing said this window (or only a sub-threshold blip: cough, click,
+        // a bit of the model's own voice, ambient noise). End quietly and re-arm,
+        // mirroring the Web Speech "no-speech" path so the loop keeps listening
+        // without feeding Whisper junk to hallucinate on.
+        finish("stopped");
+        setTimeout(() => requestVoiceResume(), 0);
+        return;
+      }
+
+      // Trim to the voiced span (+ a little padding) so Whisper isn't handed long
+      // leading/trailing silence, which it tends to hallucinate words from.
+      const frameMs = chunks[0] ? (chunks[0].length / sampleRate) * 1000 : 0;
+      const padFrames = frameMs > 0 ? Math.ceil(SILENCE_PAD_MS / frameMs) : 0;
+      const firstVoiced = chunkVoiced.indexOf(true);
+      const lastVoiced = chunkVoiced.lastIndexOf(true);
+      const start = Math.max(0, firstVoiced - padFrames);
+      const end = Math.min(chunks.length - 1, lastVoiced + padFrames);
+      const span = chunks.slice(start, end + 1);
+
+      const total = span.reduce((n, c) => n + c.length, 0);
+      const merged = new Float32Array(total);
+      let offset = 0;
+      for (const c of span) {
+        merged.set(c, offset);
+        offset += c.length;
+      }
+      const wav = encodeWav(merged, sampleRate);
+
+      try {
+        // The PR posted its own multipart to /api/audio/transcribe and let the
+        // backend pick a model. Upstream since grew a real STT stack: a curated
+        // model list, per-model engines, downloads, and language handling. Go
+        // through its helper so the loop transcribes with the model the Voice
+        // settings tab actually downloaded, instead of whatever the route
+        // defaults to (which is how this asked for an absent "small").
+        const modelId =
+          useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
+        // Flag transcribing so the orb shows a processing state (not idle green)
+        // while Whisper runs -- the first call can take many seconds on ROCm.
+        const store = useChatRuntimeStore.getState();
+        store.setVoiceTranscribing(true);
+        let transcript = "";
+        try {
+          transcript = (
+            await transcribeAudioBlob(wav, { model: modelId })
+          ).trim();
+          if (ended) return;
+        } catch (error) {
+          // A model the user has selected but never downloaded is the common
+          // first-run case, not a failure: raise the same download prompt the
+          // Dictate button raises and keep the loop alive.
+          if (error instanceof SttModelNotDownloadedError) {
+            requestSttDownload(
+              modelId ?? useVoiceSettingsStore.getState().sttModel,
+            );
+          }
+          throw error;
+        } finally {
+          store.setVoiceTranscribing(false);
+        }
+        if (transcript && isHallucinatedTranscript(transcript)) {
+          // Whisper invents a repeated token ("Ha, ha, ha...", "Thank you.
+          // Thank you...") from noise/breath/silence. Drop it and keep listening
+          // rather than sending garbage as a prompt.
+          transcript = "";
+        }
+        if (transcript) {
+          // Fake a streaming reveal: replay the transcript as growing interim
+          // results so the composer types it out char-by-char (like Web Speech),
+          // then commit + send. Bails immediately if the session is superseded.
+          const total = transcript.length;
+          const stepChars = Math.max(
+            1,
+            Math.ceil(total / Math.max(1, REVEAL_MAX_MS / REVEAL_CHAR_MS)),
+          );
+          for (let i = stepChars; i < total; i += stepChars) {
+            if (ended) return;
+            const partial = transcript.slice(0, i);
+            for (const cb of speechCallbacks) cb({ transcript: partial, isFinal: false });
+            await new Promise<void>((r) => setTimeout(r, REVEAL_CHAR_MS));
+          }
+          if (ended) return;
+          // onSpeech(isFinal) commits the full transcript into the composer text;
+          // onSpeechEnd (via finish) ends the session. Then, deferred so those
+          // state updates land first, submit the turn. requestVoiceSubmit is a
+          // no-op outside voice mode, so plain Dictate-button use just fills the
+          // composer as before.
+          for (const cb of speechCallbacks) cb({ transcript, isFinal: true });
+          finish("stopped", transcript);
+          setTimeout(() => requestVoiceSubmit(), 0);
+        } else {
+          finish("stopped");
+          setTimeout(() => requestVoiceResume(), 0);
+        }
+      } catch (error) {
+        if (ended) return;
+        console.error("Whisper dictation error:", error);
+        toast.error("Whisper transcription failed.");
+        finish("error");
+        // Keep the voice loop alive: a transcribe failure (transient backend
+        // hiccup, etc.) shouldn't leave the mic dead so it never hears you again.
+        // Re-arm so the next utterance still gets a shot.
+        setTimeout(() => requestVoiceResume(), 0);
+      }
+    };
+
+    void (async () => {
+      try {
+        // Pin capture to the user-chosen input device when set, so the loop
+        // listens to their headset mic and not a loopback / "Stereo Mix" /
+        // default-communications device that mixes in system/app audio (e.g.
+        // Discord). null -> browser default.
+        const micDeviceId = useChatRuntimeStore.getState().selectedMicDeviceId;
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            ...(micDeviceId ? { deviceId: { exact: micDeviceId } } : {}),
+          },
+        });
+        if (ended) {
+          teardown();
+          return;
+        }
+        audioCtx = new AudioCtx();
+        sampleRate = audioCtx.sampleRate;
+        source = audioCtx.createMediaStreamSource(stream);
+        processor = audioCtx.createScriptProcessor(4096, 1, 1);
+        startedAt = performance.now();
+        lastVoiceAt = startedAt;
+        session.status = { type: "running" };
+
+        // Warm the STT model while the user is still drawing breath. Whisper's
+        // first load is slow enough (tens of seconds on ROCm) that paying it
+        // after the first utterance reads as the loop having missed what was
+        // said. Fire-and-forget: transcription awaits the same load, so a
+        // failure here surfaces there rather than killing the session.
+        void loadSttModel(
+          useChatRuntimeStore.getState().selectedSttModelId ??
+            useVoiceSettingsStore.getState().sttModel,
+        ).catch(() => {});
+
+        processor.onaudioprocess = (event) => {
+          if (ended || finalizing) return;
+          const input = event.inputBuffer.getChannelData(0);
+          chunks.push(new Float32Array(input));
+
+          let sumSquares = 0;
+          for (let i = 0; i < input.length; i++) sumSquares += input[i] * input[i];
+          const rms = Math.sqrt(sumSquares / input.length);
+          const now = performance.now();
+
+          const frameMs = (input.length / sampleRate) * 1000;
+          // notSilent keeps the utterance alive (resets the silence-hang timer);
+          // speech is the stricter bar that actually counts toward transcription,
+          // so noise/clicks between the two thresholds never reach Whisper.
+          const notSilent = rms >= SILENCE_RMS;
+          const speech = rms >= SPEECH_RMS;
+          chunkVoiced.push(speech);
+          if (notSilent) lastVoiceAt = now;
+          if (speech) {
+            voicedMs += frameMs;
+            if (!heardSpeech) {
+              heardSpeech = true;
+              // Light the orb's salmon "hearing you" state the instant the mic
+              // picks up real voice -- immediate proof the mic is capturing you.
+              useChatRuntimeStore.getState().setVoiceHearing(true);
+              for (const cb of speechStartCallbacks) cb();
+            }
+          }
+          // Real-time barge-in: cut the currently-playing TTS the instant this
+          // utterance commits to being transcribed (voicedMs past the transcribe
+          // gate), so you never talk over a reply that's already going to be
+          // replaced. A clearly LOUD continuous burst cuts even sooner. Firing only
+          // at/after the commit point means blips that WON'T be transcribed never
+          // self-interrupt. The VoiceEngine handler no-ops unless the model is
+          // actually speaking, so stray calls are harmless.
+          if (rms >= BARGE_IN_RMS) bargeLoudMs += frameMs;
+          else bargeLoudMs = 0;
+          if (
+            !bargedIn &&
+            (voicedMs >= MIN_SPEECH_MS || bargeLoudMs >= BARGE_IN_FAST_MS)
+          ) {
+            bargedIn = true;
+            requestVoiceBargeIn();
+          }
+
+          const sinceVoice = now - lastVoiceAt;
+          const elapsed = now - startedAt;
+          if (
+            (heardSpeech && sinceVoice >= SILENCE_HANG_MS) ||
+            elapsed >= MAX_UTTERANCE_MS ||
+            (!heardSpeech && elapsed >= NO_SPEECH_TIMEOUT_MS)
+          ) {
+            void finalize();
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(audioCtx.destination); // required for onaudioprocess to fire
+      } catch (error) {
+        teardown();
+        console.error("Whisper dictation mic error:", error);
+        toast.error("Could not access the microphone for dictation.");
+        finish("error");
+      }
+    })();
+
+    return session;
+  }
+}

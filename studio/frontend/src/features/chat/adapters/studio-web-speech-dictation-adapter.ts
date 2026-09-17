@@ -8,6 +8,7 @@ import {
   resolveDictationLanguage,
   useVoiceSettingsStore,
 } from "@/features/settings/stores/voice-settings-store";
+import { requestVoiceResume } from "@/features/chat/voice/voice-loop-bridge";
 import { isTauri } from "@/lib/api-base";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
@@ -359,10 +360,17 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         }
         return;
       }
-      const description = describeSpeechError(
-        errorEvent.error,
-        errorEvent.message,
-      );
+      if (errorEvent.error === "no-speech") {
+        // The engine heard nothing for a few seconds and gave up. Don't fail the
+        // loop or toast — end this session quietly and re-arm dictation so the
+        // orb stays active and listening continues. requestVoiceResume is a
+        // no-op unless voice mode is still "active". Deferred so assistant-ui
+        // clears the just-ended session before resumeListen re-checks it.
+        finish("stopped");
+        setTimeout(() => requestVoiceResume(), 0);
+        return;
+      }
+      const description = describeSpeechError(errorEvent.error, errorEvent.message);
       console.error("Dictation error:", errorEvent.error, errorEvent.message);
       if (errorEvent.error === "network") {
         // Online speech service unreachable; point the user to the offline local engine (the toast
