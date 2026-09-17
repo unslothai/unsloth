@@ -657,9 +657,7 @@ def _windows_identity_of_handle(kernel32, handle) -> "Optional[str]":
         return None
 
 
-def _windows_terminate_through_a_handle(
-    pid: int, identity: "Optional[str]"
-) -> "Optional[bool]":
+def _windows_terminate_through_a_handle(pid: int, identity: "Optional[str]") -> "Optional[bool]":
     """Kill *pid* through a handle that was proved to be the right process, or say why not.
 
     ``True`` the process was signalled, ``False`` the handle is provably somebody else (or
@@ -1675,7 +1673,10 @@ def _identity_for_record(pid: int, attempts: int = 3) -> Optional[str]:
 
 
 def adopt_pid(
-    pid: Optional[int], identity: "Optional[str]" = None, *, from_snapshot: bool = False
+    pid: Optional[int],
+    identity: "Optional[str]" = None,
+    *,
+    from_snapshot: bool = False,
 ) -> None:
     """Track a child (e.g. a multiprocessing worker started after the parent job
     was set up) and, on Windows, assign it to the job as belt-and-suspenders.

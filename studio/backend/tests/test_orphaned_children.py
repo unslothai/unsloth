@@ -907,9 +907,7 @@ def test_a_retained_child_keeps_its_group(tmp_path, monkeypatch):
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: "recorded")
     monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "recorded")
     monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: None)
-    monkeypatch.setattr(
-        pl, "_windows_terminate_validated_tree", lambda pid, identity = None: None
-    )
+    monkeypatch.setattr(pl, "_windows_terminate_validated_tree", lambda pid, identity = None: None)
     assert pl.terminate_all(timeout = 1.0) == [4242]
     assert pl._tracked_pgids.get(4242) == 4242
 
