@@ -266,11 +266,22 @@ def apply_step_cache(
         # this guard exists to prevent and loses the cache outright if the rebuild then fails. So ask
         # the live config, and repair the marker when it was the thing that was wrong.
         live = getattr(transformer, "_cache_config", None)
-        live_matches = (
+        # Only the live config authorises the no-op. The marker is not a second opinion here: a
+        # transformer reconfigured elsewhere to another threshold, or to MagCache/PAB (``_cache_config``
+        # is generic across them), keeps whatever marker we last wrote, and honouring that would report
+        # success for settings the model is not running. is_cache_enabled IS ``_cache_config is not
+        # None``, so inside this branch there is always a live config to ask.
+        if (
             type(live).__name__ == "FirstBlockCacheConfig"
             and getattr(live, "threshold", None) == thr
-        )
-        if prior == f"{mode}@{thr}" or live_matches:
+        ):
+            # This cache may not be one we installed -- that is the whole point of reading it off the
+            # model -- so the post-enable integration cannot be assumed done. Both steps are idempotent
+            # and both are required: without the first, a cache enabled after a generation leaves a
+            # stale child-registry list and the next cache_context reaches no block ("No context is
+            # set"); without the second, regionally compiled inners stay unhooked.
+            _invalidate_child_registry_cache(transformer)
+            _compile_hooked_block_inners(transformer, logger)
             try:
                 transformer._unsloth_step_cache = f"{mode}@{thr}"
             except Exception:  # noqa: BLE001 - marker is best-effort

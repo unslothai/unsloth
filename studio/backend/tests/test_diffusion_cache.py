@@ -43,9 +43,12 @@ def test_normalize_rejects_unknown():
 
 
 # ── apply_step_cache ───────────────────────────────────────────────────────────────
-class _Config:
+class FirstBlockCacheConfig:  # noqa: N801 - the name diffusers exports, and what the guard matches on
     def __init__(self, threshold):
         self.threshold = threshold
+
+
+_Config = FirstBlockCacheConfig
 
 
 class _MixinTransformer:
@@ -581,12 +584,15 @@ class _RealisticCacheMixin:
 
     def __init__(self):
         self.enabled_with = None
+        # diffusers defines is_cache_enabled AS `_cache_config is not None` and assigns it last in
+        # enable_cache, so the config is the live state and must be modelled, not just counted.
+        self._cache_config = None
         self.disable_calls = 0
         self.enable_calls = 0
 
     @property
     def is_cache_enabled(self):
-        return self.enabled_with is not None
+        return self._cache_config is not None
 
     def enable_cache(self, config):
         self.enable_calls += 1
@@ -595,10 +601,12 @@ class _RealisticCacheMixin:
                 "Caching has already been enabled with <class 'FirstBlockCacheConfig'>."
             )
         self.enabled_with = config
+        self._cache_config = config
 
     def disable_cache(self):
         self.disable_calls += 1
         self.enabled_with = None
+        self._cache_config = None
 
 
 def test_a_redundant_engage_keeps_the_running_cache(monkeypatch):
@@ -927,3 +935,77 @@ def test_a_lost_marker_does_not_cost_a_healthy_cache(monkeypatch):
     assert t.disable_calls == 0             # the healthy cache was never torn down
     assert registry.removed == []           # and its hooks were never touched
     assert t._unsloth_step_cache == f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"  # marker repaired
+
+
+def test_a_stale_marker_cannot_authorize_the_no_op(monkeypatch):
+    """The marker is not a second opinion alongside the live config. A transformer reconfigured
+    elsewhere to a different threshold keeps whatever marker was last written, and honouring that
+    would report success for settings the model is not running. Only the live config decides."""
+    _stub_diffusers(monkeypatch)
+
+    class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME
+        def __init__(self, threshold):
+            self.threshold = threshold
+
+    class _Reconfigured:
+        def __init__(self):
+            self._cache_config = FirstBlockCacheConfig(0.5)  # someone else moved it
+            self.disable_calls = 0
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def disable_cache(self):
+            self.disable_calls += 1
+            self._cache_config = None
+
+        def enable_cache(self, config):
+            self._cache_config = config
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _Reconfigured()
+    t._unsloth_step_cache = f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"  # stale: says what we last asked for
+
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert t.disable_calls == 1                                    # reconfigured, not waved through
+    assert t._cache_config.threshold == DEFAULT_FBCACHE_THRESHOLD  # at the settings actually asked for
+
+
+def test_an_adopted_cache_gets_the_post_enable_integration(monkeypatch):
+    """A live cache we did not install has not had our post-enable steps run against it. Returning
+    on it without invalidating the cached child-registry list leaves the next ``cache_context``
+    reaching no block ("No context is set"), and without re-pointing the hooks at compiled inners
+    a regionally compiled transformer runs its blocks uncompiled."""
+    _stub_diffusers(monkeypatch)
+    import core.inference.diffusion_cache as dc
+
+    ran = []
+    monkeypatch.setattr(dc, "_invalidate_child_registry_cache", lambda t: ran.append("invalidate"))
+    monkeypatch.setattr(dc, "_compile_hooked_block_inners", lambda t, log = None: ran.append("compile"))
+
+    class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME
+        def __init__(self, threshold):
+            self.threshold = threshold
+
+    class _CachedByHand:
+        def __init__(self):
+            self._cache_config = FirstBlockCacheConfig(DEFAULT_FBCACHE_THRESHOLD)
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def disable_cache(self):
+            raise AssertionError("the healthy cache must not be torn down")
+
+        def enable_cache(self, config):
+            raise AssertionError("the healthy cache must not be rebuilt")
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    assert apply_step_cache(_pipe(_CachedByHand()), mode = "fbcache") == TC_FBCACHE
+    assert ran == ["invalidate", "compile"]
