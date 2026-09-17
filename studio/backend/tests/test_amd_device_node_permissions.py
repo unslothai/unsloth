@@ -5676,8 +5676,7 @@ def test_a_forced_list_whose_manifest_is_fine_still_asks_for_a_reinstall(monkeyp
     monkeypatch.setattr(amd, "_an_icd_is_32_bit", lambda _p: False)
     monkeypatch.setattr(amd, "_icd_manifest_is_usable", lambda _p: True)
     assert (
-        _loader_blame(monkeypatch, {__file__: True}, VK_DRIVER_FILES = __file__)
-        == "VK_DRIVER_FILES"
+        _loader_blame(monkeypatch, {__file__: True}, VK_DRIVER_FILES = __file__) == "VK_DRIVER_FILES"
     )
 
 
