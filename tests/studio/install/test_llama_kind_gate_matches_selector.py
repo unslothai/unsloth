@@ -28,7 +28,6 @@ import itertools
 import pathlib
 import re
 import shutil
-import subprocess
 import sys
 
 import pytest
@@ -38,8 +37,10 @@ SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 SETUP_SRC = SETUP_PS1.read_text(encoding = "utf-8")
 
 sys.path.insert(0, str(REPO_ROOT / "studio"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "_shared"))
 
 import install_llama_prebuilt as ip  # noqa: E402
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
 
 PWSH = shutil.which("pwsh") or shutil.which("powershell")
 requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "PowerShell is unavailable")
@@ -121,7 +122,9 @@ def _expected_kinds(*, arm64_venv: bool, nvidia: bool, rocm: bool, opt_out: bool
             "Write-Output ('<<<' + ($expectedKinds -join ',') + '>>>')",
         ]
     )
-    done = subprocess.run(
+    # run_pwsh, not subprocess.run: one shared $XDG_CACHE_HOME/powershell startup cache
+    # across xdist workers kills ~1 startup in 500 before it reaches the script.
+    done = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         timeout = 120,
