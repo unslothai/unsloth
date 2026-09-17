@@ -3253,7 +3253,9 @@ _uv_probe_exec() {
                 sleep 1
                 _upe_grace=$((_upe_grace + 1))
             done
-            kill -9 "$_upe_pid" 2>/dev/null
+            # Only if it is still there: the loop also ends when TERM worked, and the KILL went
+            # out anyway, to a number this shell no longer owns.
+            if kill -0 "$_upe_pid" 2>/dev/null; then kill -9 "$_upe_pid" 2>/dev/null || :; fi
             wait "$_upe_pid" 2>/dev/null
             unset _upe_pid _upe_waited _upe_grace
             return 124

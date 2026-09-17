@@ -2056,7 +2056,11 @@ _setup_uv_probe_exec() {
                 sleep 1
                 _supe_grace=$((_supe_grace + 1))
             done
-            kill -9 "$_supe_pid" 2>/dev/null
+            # Only if it is still there. The loop above also ends when TERM worked, and the
+            # KILL was sent anyway: a number whose process this shell no longer owns, which
+            # after a wraparound is somebody else's. It narrows that window rather than
+            # closing it, but an unconditional signal to a pid known to be gone buys nothing.
+            if kill -0 "$_supe_pid" 2>/dev/null; then kill -9 "$_supe_pid" 2>/dev/null || :; fi
             wait "$_supe_pid" 2>/dev/null
             unset _supe_pid _supe_waited _supe_grace
             return 124
