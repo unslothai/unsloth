@@ -24,6 +24,9 @@ import textwrap
 import pytest
 import torch
 import unsloth  # noqa: F401
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.models import llama as llama_module
 from unsloth.models.llama import _fused_lora_skip_reason
@@ -101,7 +104,7 @@ def test_the_summary_call_carries_the_reason():
 
 @pytest.mark.gpu
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not has_real_accelerator(),
     reason = "loads a real checkpoint through FastLanguageModel; needs an accelerator",
 )
 def test_summary_reason_is_logged_for_a_real_model():
