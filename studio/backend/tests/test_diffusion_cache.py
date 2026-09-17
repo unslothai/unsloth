@@ -1069,6 +1069,10 @@ def test_the_hook_probe_sees_the_names_the_low_level_api_installs(monkeypatch):
     assert _first_block_cache_is_hooked(bare) is False
 
     for name in (_FBC_LEADER_BLOCK_HOOK, _FBC_BLOCK_HOOK):
-        block = _types.SimpleNamespace(_diffusers_hook = _types.SimpleNamespace(hooks = {name: object()}))
-        hooked = _types.SimpleNamespace(modules = lambda block = block: [_types.SimpleNamespace(), block])
+        block = _types.SimpleNamespace(
+            _diffusers_hook = _types.SimpleNamespace(hooks = {name: object()})
+        )
+        hooked = _types.SimpleNamespace(
+            modules = lambda block = block: [_types.SimpleNamespace(), block]
+        )
         assert _first_block_cache_is_hooked(hooked) is True
