@@ -169,9 +169,7 @@ def test_max_tool_calls_rejects_a_boolean(value):
     # silently stopped every later run from calling a tool.
     with _settings_client() as client:
         assert (
-            client.put(
-                "/api/chat/settings", json = {"maxToolCallsPerMessage": value}
-            ).status_code
+            client.put("/api/chat/settings", json = {"maxToolCallsPerMessage": value}).status_code
             == 400
         )
         assert "maxToolCallsPerMessage" not in client.get("/api/chat/settings").json()["settings"]
