@@ -461,9 +461,17 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
+_HF_MODEL_ACCESS_DENIED = (
+    "Hugging Face denied access to this model. Add a valid Hugging Face "
+    "token with repository access and accept any required access terms, "
+    "then try again."
+)
+
+
 def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
+    from utils.models.unsloth_mirror import unsloth_16bit_mirror
     from utils.security import load_scan_target
 
     # Registry aliases such as "Spark-TTS-0.5B/LLM" are not repos; probe the repo the trainer
@@ -498,11 +506,7 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
                 raise _hf_preflight_error(
                     422,
                     "hf_model_access_denied",
-                    (
-                        "Hugging Face denied access to this model. Add a valid Hugging Face "
-                        "token with repository access and accept any required access terms, "
-                        "then try again."
-                    ),
+                    _HF_MODEL_ACCESS_DENIED,
                 ) from error
             retry_available = attempt + 1 < len(timeouts)
             if transient_status:
@@ -538,6 +542,29 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
                     "Retry before starting training."
                 ),
             ) from error
+
+    # Gated model metadata is public, so verify access to its files separately.
+    if getattr(info, "gated", False) and unsloth_16bit_mirror(repo_id) is None:
+        from urllib.parse import quote
+        from huggingface_hub import constants
+        from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
+
+        try:
+            # Call the endpoint directly so the request is bounded.
+            response = get_session().get(
+                f"{constants.ENDPOINT}/api/models/{quote(repo_id, safe = '/')}/auth-check",
+                headers = build_hf_headers(token = account_hf_token(hf_token)),
+                timeout = _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
+            )
+            hf_raise_for_status(response)
+        except Exception as error:
+            # Only definite denials block the run.
+            if hf_error_status(error) in (401, 403):
+                raise _hf_preflight_error(
+                    422,
+                    "hf_model_access_denied",
+                    _HF_MODEL_ACCESS_DENIED,
+                ) from error
 
     load_roots = ("", *(f"{subdir.strip('/')}/" for subdir in load_subdirs if subdir))
     root_files: set[str] = set()

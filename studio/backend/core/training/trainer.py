@@ -73,6 +73,7 @@ from utils.third_party_source import (
 
 from utils.models import is_vision_model, detect_audio_type_checked
 from utils.models.model_identity import restore_hf_cache_repo_identity
+from utils.models.unsloth_mirror import unsloth_16bit_mirror
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets.completion_masking import apply_completion_masking
@@ -168,6 +169,22 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
             trainer.remove_callback(callback_cls)
         except Exception:  # noqa: BLE001 - not attached, or an incompatible trainer
             pass
+
+
+def _metadata_lookup_name(
+    model_name: str,
+    lookup_name: str,
+    local_files_only: bool,
+    model_revision: Optional[str],
+) -> str:
+    """Return the repo whose config and tokenizer the loader will read."""
+    if local_files_only or model_revision is not None or lookup_name != model_name:
+        return lookup_name
+    mirror = unsloth_16bit_mirror(model_name)
+    if mirror is None:
+        return lookup_name
+    logger.info("Reading %s config and tokenizer from %s, the repo Unsloth loads", model_name, mirror)
+    return mirror
 
 
 def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> dict:
@@ -343,7 +360,12 @@ class UnslothTrainer:
         self.model_name = model_name
         self.max_seq_length = max_seq_length
         self.trust_remote_code = trust_remote_code
-        lookup_name = model_load_name or model_name
+        lookup_name = _metadata_lookup_name(
+            model_name,
+            model_load_name or model_name,
+            local_files_only,
+            model_revision,
+        )
 
         if hf_token:
             os.environ["HF_TOKEN"] = hf_token
@@ -828,6 +850,9 @@ class UnslothTrainer:
         use_gradient_checkpointing = normalize_gradient_checkpointing(use_gradient_checkpointing)
         self._use_gradient_checkpointing = use_gradient_checkpointing
         lookup_name = model_load_name or model_name
+        metadata_name = _metadata_lookup_name(
+            model_name, lookup_name, local_files_only, model_revision
+        )
         self.model_load_error = None
         try:
             if self.model is not None:
@@ -863,7 +888,7 @@ class UnslothTrainer:
             # Checked: this reassigns _audio_type, so an unchecked answer would leave the flag describing the previous
             # probe.
             self._audio_type, self._audio_type_known = detect_audio_type_checked(
-                lookup_name,
+                metadata_name,
                 hf_token,
                 local_files_only = local_files_only,
                 revision = model_revision,
@@ -882,7 +907,7 @@ class UnslothTrainer:
 
             vision = (
                 is_vision_model(
-                    lookup_name,
+                    metadata_name,
                     hf_token = hf_token,
                     local_files_only = local_files_only,
                     revision = model_revision,
@@ -920,8 +945,13 @@ class UnslothTrainer:
             if hf_token:
                 os.environ["HF_TOKEN"] = hf_token
 
-            # Proactive gated/private check before from_pretrained; skipped offline (uses cache).
-            if "/" in model_name and not local_files_only and not _env_offline():
+            # Skip the upstream gate check when Unsloth will load a public mirror.
+            if (
+                "/" in model_name
+                and not local_files_only
+                and not _env_offline()
+                and metadata_name == lookup_name
+            ):
                 try:
                     from huggingface_hub import model_info as hf_model_info
 
