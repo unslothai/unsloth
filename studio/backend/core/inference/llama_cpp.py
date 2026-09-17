@@ -17653,9 +17653,9 @@ class LlamaCppBackend:
                 Path(download_cache_dir).mkdir(parents = True, exist_ok = True)
                 free_bytes = shutil.disk_usage(download_cache_dir).free
 
-                total_gb = total_download_bytes / (1024**3)
-                free_gb = free_bytes / (1024**3)
-                cached_gb = already_cached_bytes / (1024**3)
+                total_gb = total_download_bytes / 1e9
+                free_gb = free_bytes / 1e9
+                cached_gb = already_cached_bytes / 1e9
 
                 logger.info(
                     f"GGUF download: {total_gb:.1f} GB needed "
@@ -17686,7 +17686,7 @@ class LlamaCppBackend:
                         notice = (
                             f"Not enough disk space to download {hf_variant} "
                             f"({total_gb:.1f} GB needed, {free_gb:.1f} GB free), so "
-                            f"{fallback_variant} ({fallback_size / (1024**3):.1f} GB) "
+                            f"{fallback_variant} ({fallback_size / 1e9:.1f} GB) "
                             "was loaded instead."
                         )
                         logger.warning(notice)
