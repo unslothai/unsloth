@@ -822,8 +822,12 @@ def test_a_reconfigure_that_dies_between_the_two_hook_removals_finishes_the_job(
     report the prior cache as healthy. The removal has to be finished, not diagnosed."""
     registry = _stub_diffusers(monkeypatch)
 
+    class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME, so the name is the fixture
+        pass
+
     class _DiesMidTeardown:
-        _cache_config = object()  # leader gone, blocks still hooked, diffusers never got to clear it
+        # Leader gone, blocks still hooked, and diffusers never got as far as clearing this.
+        _cache_config = FirstBlockCacheConfig()
 
         @property
         def is_cache_enabled(self):
@@ -847,3 +851,40 @@ def test_a_reconfigure_that_dies_between_the_two_hook_removals_finishes_the_job(
     assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
     assert t.enabled_with.threshold == 0.3
     assert t._unsloth_step_cache == "fbcache@0.3"
+
+
+def test_another_cache_type_is_left_alone(monkeypatch):
+    """MagCache / FasterCache / PAB share the same generic _cache_config, so a transformer running one
+    of them arrives here looking like a broken FBC one. Removing FBC's hook names does nothing for it,
+    and clearing the state would make diffusers forget a cache that is still installed."""
+    registry = _stub_diffusers(monkeypatch)
+
+    class _MagCacheConfig:
+        pass
+
+    class _RunningMagCache:
+        def __init__(self):
+            self._cache_config = _MagCacheConfig()
+            self.enabled_with = None
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def disable_cache(self):
+            raise RuntimeError("teardown of the other cache failed")
+
+        def enable_cache(self, config):
+            self.enabled_with = config
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _RunningMagCache()
+    t._unsloth_step_cache = "magcache@0.1"
+
+    # Reports the cache that is actually running, and does not touch it.
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == "magcache"
+    assert registry.removed == []            # FBC's names were never touched
+    assert isinstance(t._cache_config, _MagCacheConfig)  # the other cache is still known to diffusers
+    assert t.enabled_with is None            # and FBC was NOT stacked on top of it

@@ -147,6 +147,15 @@ def _unhook_first_block_cache(transformer: Any) -> bool:
     False when the registry or the hook names cannot be reached, which is the caller's cue to keep the
     marker rather than assume an uncached transformer.
     """
+    # `_cache_config` is GENERIC across every cache CacheMixin supports, and disable_cache dispatches
+    # on its type. So a transformer running MagCache / FasterCache / PAB reaches here looking exactly
+    # like a broken FBC one. Removing FBC's hook names would do nothing for it, and clearing the state
+    # would make diffusers forget a cache that is still installed, so the next enable_cache would stack
+    # FBC on top of live hooks. Someone else's cache is not ours to tear down. Matched by name because
+    # the config class is exported from two different modules depending on the diffusers version.
+    config = getattr(transformer, "_cache_config", None)
+    if config is not None and type(config).__name__ != "FirstBlockCacheConfig":
+        return False
     try:
         from diffusers.hooks import HookRegistry
         from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, _FBC_LEADER_BLOCK_HOOK
