@@ -48,11 +48,11 @@ test("a connected row draws its badges through ModelRow", () => {
   // drop there could not be honoured.
   assert.match(
     pickers,
-    /pinnedConnectedRows\.map\(\(model\) =>\s*renderConnectedModelRow\(model, true\)/,
+    /pinnedConnectedRows\.map\(\(model\) =>\s*renderConnectedModelRow\(model, true, true\)/,
   );
   assert.match(
     pickers,
-    /group\.models\.map\(\(model\) =>\s*renderConnectedModelRow\(model\)/,
+    /group\.models\.map\(\(model\) =>\s*renderConnectedModelRow\(model, false, !headed\)/,
   );
 });
 
@@ -251,6 +251,59 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   assert.match(settingsDialog, /"Remember settings per model" is off/);
   // No example prompt: a placeholder reads as a value that is already set.
   assert.doesNotMatch(settingsDialog, /placeholder=/);
+  // The cap field always holds a number. A blank would have to mean "forget the cap", and
+  // neither merge can express that: the patch merges per key and the server deep-merges the
+  // settings row, so an omitted key keeps the old value and the clear goes nowhere.
+  assert.match(
+    settingsDialog,
+    /useState\(\s*String\(remembered\?\.maxTokens \?\? chatMaxTokens\),\s*\)/,
+  );
+  assert.doesNotMatch(settingsDialog, /blank follows the connection/);
+});
+
+test("editing the live model's effort reaches the chat now", () => {
+  const settingsDialog = readSrc(
+    "features/model-picker/components/model-selector/connected-model-settings-dialog.tsx",
+  );
+  const chatPage = readSrc("features/chat/chat-page.tsx");
+  // The pin is consumed on a switch, and a switch to the model already loaded returns first, so
+  // without this an edit would not apply until the user switched away and back.
+  assert.match(
+    chatPage,
+    /if \(isSameLoadedModel && !meta\?\.forceReload\) \{\s*return;/,
+  );
+  assert.match(
+    settingsDialog,
+    /state\.params\.checkpoint === checkpointId,/,
+  );
+  assert.match(
+    settingsDialog,
+    /if \(isLiveModel && level\) \{\s*setReasoningEffort\(level\);/,
+  );
+  // Matched against the levels on offer, so a stale pin cannot reach the chat.
+  assert.match(
+    settingsDialog,
+    /const level = efforts\.find\(\(candidate\) => candidate === effort\);/,
+  );
+});
+
+test("a row with no heading over it still names its connection", () => {
+  // Pinned rows and the name-sorted flat list have no provider heading, and two connections can
+  // serve one model id, so those rows carry the logo the heading would have carried.
+  assert.match(pickers, /renderConnectedModelRow\(model, true, true\)/);
+  assert.match(pickers, /renderConnectedModelRow\(model, false, !headed\)/);
+  assert.match(
+    pickers,
+    /leadingSlot=\{\s*headless \? \(\s*<ApiProviderLogo/,
+  );
+  // In the slot the format dot would have used, so the names stay on one line.
+  assert.match(
+    pickers,
+    /const leading = formatDot \? <FormatTag \{\.\.\.formatDot\} \/> : \(leadingSlot \?\? null\);/,
+  );
+  // And the connection's name on hover, which is the only thing that tells two of one provider
+  // type apart.
+  assert.match(pickers, /<span className="block text-ui-10 mt-1">\s*\{model\.providerName\}/);
 });
 
 test("the store write merges per key and reaches the live params", () => {

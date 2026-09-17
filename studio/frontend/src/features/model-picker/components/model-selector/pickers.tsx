@@ -1044,6 +1044,7 @@ function ModelRow({
   partialResumable,
   showVision,
   reserveLeadingSlot,
+  leadingSlot,
   quantChip,
   tags,
   alignMeta,
@@ -1083,6 +1084,8 @@ function ModelRow({
   /** Hold open the slot ahead of the name, where local rows draw their format dot, on a row with
    *  no format for it. Without it the name starts 18px left of every other list's. */
   reserveLeadingSlot?: boolean;
+  /** What to draw in that slot on a row that has no format dot. */
+  leadingSlot?: ReactNode;
   /** Grey chip beside the name, for rows that load one specific quant. */
   quantChip?: string | null;
   /** Chips for what used to sit in brackets after the name: the artifact format, and a
@@ -1142,7 +1145,7 @@ function ModelRow({
         label: parsed.formats.map((f) => f.label).join(" · "),
       }
     : null;
-  const leading = formatDot ? <FormatTag {...formatDot} /> : null;
+  const leading = formatDot ? <FormatTag {...formatDot} /> : (leadingSlot ?? null);
 
   // Only the selected row charts itself: a meter under every row turns a list you scan into a wall of charts.
   const memorySegments = useModelMemory(selected ? memory : undefined, gpuGb);
@@ -5351,6 +5354,9 @@ export function HubModelPicker({
     model: ExternalModelOption,
     // Only pinned rows drag: the groups below are sorted, so a drop there could not be honoured.
     draggable = false,
+    // No heading above this row to name its connection: the pinned group, and the flat list the
+    // name sort produces. Two connections can serve one model id, so the row has to say.
+    headless = false,
   ) => {
     const optionKey = makeModelOptionKey("connected", model.id);
     const isSelected = value === model.id;
@@ -5432,7 +5438,19 @@ export function HubModelPicker({
             label={model.name}
             // The provider's own id, the way a local row hovers its path: a label can be
             // rewritten, and one connection can offer two models that shorten to the same words.
-            tooltipText={providerModelId}
+            // With no heading above, the connection's name goes here too.
+            tooltipText={
+              headless ? (
+                <>
+                  {providerModelId}
+                  <span className="block text-ui-10 mt-1">
+                    {model.providerName}
+                  </span>
+                </>
+              ) : (
+                providerModelId
+              )
+            }
             capabilities={marks.capabilities}
             showVision={marks.vision}
             // The context window, which is usually what choosing between two models from one
@@ -5443,9 +5461,18 @@ export function HubModelPicker({
                 : undefined
             }
             // Empty but held open: the slot a local row gives its format dot is what starts
-            // every list's names on one line. Nothing goes in it here, since the group heading
-            // already names the connection for every row under it.
+            // every list's names on one line. The connection's logo goes in it only where no
+            // heading is carrying it, so a pinned row still says where it came from.
             reserveLeadingSlot={true}
+            leadingSlot={
+              headless ? (
+                <ApiProviderLogo
+                  providerType={model.providerType}
+                  className="size-3.5"
+                  title={model.providerName}
+                />
+              ) : undefined
+            }
             selected={isSelected}
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() =>
@@ -6199,7 +6226,7 @@ export function HubModelPicker({
                       {pinnedConnectedCollapsed
                         ? null
                         : pinnedConnectedRows.map((model) =>
-                            renderConnectedModelRow(model, true),
+                            renderConnectedModelRow(model, true, true),
                           )}
                     </div>
                   ) : null}
@@ -6236,7 +6263,7 @@ export function HubModelPicker({
                         {collapsed
                           ? null
                           : group.models.map((model) =>
-                              renderConnectedModelRow(model),
+                              renderConnectedModelRow(model, false, !headed),
                             )}
                       </div>
                     );

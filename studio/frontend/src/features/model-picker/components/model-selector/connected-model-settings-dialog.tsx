@@ -66,6 +66,16 @@ export function ConnectedModelSettingsDialog({
   const setRememberedParamsForModel = useChatRuntimeStore(
     (state) => state.setRememberedParamsForModel,
   );
+  // The chat's own cap, which is what a model with none of its own runs at.
+  const chatMaxTokens = useChatRuntimeStore((state) => state.params.maxTokens);
+  // Whether this is the model currently loaded, which decides whether an edit has to reach the
+  // live settings as well as the memory.
+  const isLiveModel = useChatRuntimeStore(
+    (state) => state.params.checkpoint === checkpointId,
+  );
+  const setReasoningEffort = useChatRuntimeStore(
+    (state) => state.setReasoningEffort,
+  );
   const pinnedEffort = useModelReasoningEffortStore(
     (state) => state.effortByModel[checkpointId],
   );
@@ -86,9 +96,12 @@ export function ConnectedModelSettingsDialog({
   const [systemPrompt, setSystemPrompt] = useState(
     remembered?.systemPrompt ?? "",
   );
-  // A string, not a number: blank is a real state ("no cap of its own") a number cannot hold.
+  // Seeded from what this model runs at now, so the field always holds a real number. A blank
+  // would have to mean "forget the cap", and nothing can express that: paramsByModel merges per
+  // key here and the settings row deep-merges on the server, so an omitted key keeps the old
+  // value and the clear would be dropped without saying so.
   const [maxTokens, setMaxTokens] = useState(
-    remembered?.maxTokens ? String(remembered.maxTokens) : "",
+    String(remembered?.maxTokens ?? chatMaxTokens),
   );
   const [effort, setEffort] = useState(pinnedEffort ?? FOLLOW_CHAT);
 
@@ -96,13 +109,21 @@ export function ConnectedModelSettingsDialog({
     const cap = Number.parseInt(maxTokens, 10);
     setRememberedParamsForModel(checkpointId, {
       systemPrompt,
-      // Blank is an absence, not a zero the request would then send as the cap.
+      // A blank or junk field leaves the cap alone rather than sending a zero as the limit.
       ...(Number.isFinite(cap) && cap > 0 ? { maxTokens: cap } : {}),
     });
     setModelReasoningEffort(
       checkpointId,
       effort === FOLLOW_CHAT ? null : effort,
     );
+    // The pin is read on a model switch, and a switch to the model already loaded returns before
+    // that, so the live model's effort has to land on the chat's own level here or the edit would
+    // not apply until the user switched away and back. Matched against the levels on offer, so
+    // only one this model accepts can reach the chat.
+    const level = efforts.find((candidate) => candidate === effort);
+    if (isLiveModel && level) {
+      setReasoningEffort(level);
+    }
     onOpenChange(false);
   }
 
@@ -136,12 +157,7 @@ export function ConnectedModelSettingsDialog({
           </div>
 
           <div className="flex items-center justify-between gap-4">
-            <Label htmlFor="connected-model-max-tokens">
-              Max output tokens
-              <span className="ml-1 font-normal text-muted-foreground">
-                (blank follows the connection)
-              </span>
-            </Label>
+            <Label htmlFor="connected-model-max-tokens">Max output tokens</Label>
             <Input
               id="connected-model-max-tokens"
               type="number"
