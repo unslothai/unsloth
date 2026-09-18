@@ -16536,6 +16536,9 @@ def _check_signal_escape_patterns(code: str):
                 certain = certain and not reads_itself,
                 position = position,
             )
+        elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Attribute):
+            # `s.proxies['https'] = url` adds a destination without replacing the mapping.
+            _record_store(target.value, value, scope, handled, certain = False, position = position)
         elif isinstance(target, ast.Attribute):
             handled.add(id(target))
             if isinstance(target.value, ast.Name):
@@ -16633,6 +16636,23 @@ def _check_signal_escape_patterns(code: str):
                 _record_store(
                     node.target,
                     node.value,
+                    scope,
+                    handled,
+                    certain = False,
+                    position = _end_position(node),
+                )
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("update", "setdefault")
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr in _PROXY_KEYWORDS
+                and node.args
+            ):
+                # `s.proxies.update({...})` likewise adds to the mapping.
+                _record_store(
+                    node.func.value,
+                    node.args[-1],
                     scope,
                     handled,
                     certain = False,
@@ -17111,6 +17131,9 @@ def _check_signal_escape_patterns(code: str):
         if prefix is None:
             return [(False, None)]
         text, complete = prefix
+        # urlsplit drops tab and newline anywhere and ignores leading control characters, so
+        # `requests.get(" http://host/")` reaches the host. Parse what the client will send.
+        text = re.sub(r"[\t\r\n]", "", text).lstrip("\x00-\x20 ")
         if kind == "url":
             # A partial URL resolves only once its authority is closed off by a path, query or fragment.
             m = re.match(r"^\w+://([^/?#]+)" if complete else r"^\w+://([^/?#]+)[/?#]", text)

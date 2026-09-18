@@ -429,6 +429,26 @@ class TestNetworkTargetResolution:
                 f"s.proxies = {{'https': 'http://{_H}'}}\ns.get('https://pypi.org/')",
                 id = "proxy_set_after_the_receiver_rebinding",
             ),
+            # The client strips these before connecting, so the analysis has to as well.
+            pytest.param(
+                f'import requests\nrequests.get(" http://{_H}/")',
+                id = "url_with_leading_whitespace",
+            ),
+            pytest.param(
+                f'import requests\nrequests.get("ht\\ttp://{_H}/")',
+                id = "url_with_embedded_tab",
+            ),
+            # A proxy mapping mutated in place rather than replaced.
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f's.proxies.update({{"https": "http://{_H}:8080"}})\ns.get("https://pypi.org/")',
+                id = "proxy_mapping_updated",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f's.proxies["https"] = "http://{_H}:8080"\ns.get("https://pypi.org/")',
+                id = "proxy_mapping_subscript",
+            ),
             # A URL factory reached through the module that defines it.
             pytest.param(
                 f"import urllib3\nurllib3.connectionpool.connection_from_url('http://{_H}/')",
@@ -794,6 +814,8 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(proxy=None).get('https://pypi.org/')",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': None})",
             "import requests\ns = requests.Session()\ns.proxies = {'https': 'https://pypi.org'}\ns.get('https://pypi.org/')",
+            'import requests\nrequests.get(" https://pypi.org/")',
+            'import requests\ns = requests.Session()\ns.proxies.update({"https": "https://pypi.org"})\ns.get("https://pypi.org/")',
             # An attribute replaced before the call, or set after it, cannot reach it.
             "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5'}\n"
             "s.proxies = {}\ns.get('https://pypi.org/')",
