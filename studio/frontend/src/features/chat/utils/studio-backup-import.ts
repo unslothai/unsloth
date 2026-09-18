@@ -72,6 +72,15 @@ function messageContent(raw: unknown): MessageRecord["content"] {
   return [] as MessageRecord["content"];
 }
 
+// The third carrier of the same vector as systemPrompt and a project's instructions:
+// toOpenAIMessages passes a stored role "system" straight into the next request, so a backup
+// could hand whoever wrote it the system role on the importer's account. The text is the
+// user's and a backup is their last copy, so it comes back as an ordinary turn, visible in the
+// transcript, rather than being dropped or replayed with authority.
+function restorableRole(role: string): MessageRecord["role"] {
+  return (role === "system" ? "user" : role) as MessageRecord["role"];
+}
+
 function restorableSettings(settings: Dict): Dict {
   return Object.fromEntries(
     Object.entries(settings).filter(([key]) => RESTORABLE_SETTING_KEYS.has(key)),
@@ -184,7 +193,7 @@ export function studioBackupToConversations(
       const record: MessageRecord = {
         id: messageIds.get(id) as string,
         threadId,
-        role: raw.role as MessageRecord["role"],
+        role: restorableRole(raw.role as string),
         content: messageContent(raw.content),
         createdAt: ts,
       };
