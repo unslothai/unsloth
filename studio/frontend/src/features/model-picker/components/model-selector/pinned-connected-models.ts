@@ -205,34 +205,25 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === KEY || event.key === null) {
-      // Retire from the payload THIS event carries, before reading the record. Two events queued
-      // behind each other both read the latest value, so a model a peer pinned and then unpinned
-      // is never observed as persisted and would be resurrected as one of ours.
-      if (event.newValue != null) {
-        try {
-          const seen: unknown = JSON.parse(event.newValue);
-          if (Array.isArray(seen)) {
-            retirePersisted(seen.filter((v): v is string => typeof v === "string"));
-          }
-        } catch {
-          // A payload we cannot read tells us nothing; the record below still does.
-        }
-      }
+      // Only the RECORD retires a pin, never a queued payload. A payload carrying an id says
+      // nothing about whether that write happened before or after this window's failed attempt:
+      // "we failed to pin B, then a peer pinned and unpinned it" and "a peer pinned and unpinned
+      // B, then we failed to pin it" deliver the same two events over the same final record, so
+      // no rule can tell them apart. Retiring on the payload silently drops the pin the user just
+      // made in the second ordering; keeping it leaves a session-only pin this window's user did
+      // ask for. The pin the user made is the one worth being wrong about.
       const next = readPinned();
       retirePersisted(next);
       if (dragSnapshot !== null) {
         dragExternalOrder = next;
         return;
       }
-      // Carry this window's unpersisted pins into the rendered list. Without them the row shows as
-      // unpinned while every merge still holds it, so "Pin to top" takes the removal branch and
-      // persists it unpinned once writes recover. Newly observed peer additions go in FRONT of
-      // them, which is both the store's newest-first rule and what the drag rebase already does.
-      const current = usePinnedConnectedModelsStore.getState().pinned;
-      const added = next.filter((id) => !current.includes(id));
-      const rest = next.filter((id) => current.includes(id));
+      // The same merge the toggle and the drag commit use, over the RENDERED list. Regrouping the
+      // record's ids and this window's unpersisted ones into two blocks instead moved every
+      // unpersisted pin above every peer pin already on screen, so interleaved pins came out in
+      // an order neither window had produced, and the next write that landed made it durable.
       usePinnedConnectedModelsStore.setState({
-        pinned: [...added, ...ourPins(next, next), ...rest],
+        pinned: rebaseOnStored(usePinnedConnectedModelsStore.getState().pinned),
       });
     }
   });

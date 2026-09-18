@@ -10,7 +10,9 @@ const { usePinnedConnectedModelsStore: pins } = await import(
   "../src/features/model-picker/components/model-selector/pinned-connected-models.ts"
 );
 const KEY = "unsloth_pinned_connected_models";
-const [A, B, C, D] = ["a", "b", "c", "d"].map((id) => `external::connection::${id}`);
+const [A, B, C, D, E] = ["a", "b", "c", "d", "e"].map(
+  (id) => `external::connection::${id}`,
+);
 const RESET_PROBE = "external::connection::__reset__";
 
 function reset(order = [A, B]) {
@@ -246,7 +248,13 @@ test("a record read outside the storage handler retires a pin too", () => {
   );
 });
 
-test("a pin a peer added and removed between events is retired", () => {
+test("a queued payload does not retire a pin the record never carried", () => {
+  // The mirror image of the test above, and the two are INDISTINGUISHABLE from here: "we failed
+  // to pin B, then a peer pinned and unpinned it" and "a peer pinned and unpinned B, then we
+  // failed to pin it" deliver the same two payloads over the same final record. An earlier round
+  // retired on the payload, which is right for the first ordering and silently drops the user's
+  // own pin in the second. Only the record retires, so the pin the user made survives as what it
+  // is: session-only, on screen, and not in the record.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -257,16 +265,15 @@ test("a pin a peer added and removed between events is retired", () => {
   } finally {
     storage.set = realSet;
   }
-  // Both events arrive after both writes, so each handler reads the SAME final record and only
-  // the payloads carry the intermediate pin.
   storage.set(KEY, JSON.stringify([B, A]));
   storage.set(KEY, JSON.stringify([A]));
   fireWindowEvent("storage", { key: KEY, newValue: JSON.stringify([B, A]) });
   fireWindowEvent("storage", { key: KEY, newValue: JSON.stringify([A]) });
   assert.ok(
-    !pins.getState().pinned.includes(B),
-    `an id the peer pinned then unpinned was resurrected: ${JSON.stringify(pins.getState().pinned)}`,
+    pins.getState().pinned.includes(B),
+    `the pin the user just made was dropped: ${JSON.stringify(pins.getState().pinned)}`,
   );
+  assert.deepEqual(storedOrder(), [A]);
 });
 
 test("a newer peer pin sits above an older unpersisted one", () => {
@@ -323,4 +330,32 @@ test("a peer reorder wins once nothing of ours is unwritten", () => {
   pins.getState().togglePinnedConnected(D); // this one lands
   assert.deepEqual(storedOrder(), [D, A, B]);
   assert.deepEqual(pins.getState().pinned, [D, A, B]);
+});
+
+test("interleaved local and peer pins keep one newest-first order", () => {
+  // Two blocks, ours and theirs, is not an order either window produced: it lifts every pin this
+  // window could not write above every peer pin already on screen, and the next write that lands
+  // freezes that.
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  const failing = () => {
+    throw new Error("QuotaExceededError");
+  };
+  storage.set = failing;
+  try {
+    pins.getState().togglePinnedConnected(B);
+  } finally {
+    storage.set = realSet;
+  }
+  externalWrite([C, A]);
+  assert.deepEqual(pins.getState().pinned, [C, B, A]);
+  storage.set = failing;
+  try {
+    pins.getState().togglePinnedConnected(D);
+  } finally {
+    storage.set = realSet;
+  }
+  assert.deepEqual(pins.getState().pinned, [D, C, B, A]);
+  externalWrite([E, C, A]);
+  assert.deepEqual(pins.getState().pinned, [E, D, C, B, A]);
 });
