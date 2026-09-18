@@ -314,6 +314,12 @@ export function useTauriBackend() {
       const { invoke } = await import("@tauri-apps/api/core");
 
       const preflight = await invoke<DesktopPreflightResult>("desktop_preflight");
+      // Released here, not in the finally below: managed_ready awaits startManagedServer, which
+      // sits in a 500 ms port poll. server-start-timeout clears startingRef and offers Retry from
+      // that poll's own wait, so a click landing before it next wakes would find this flag still
+      // held, clear the error and return without starting anything. What it guards is the probe:
+      // the dispositions below are re-entrant already (startingRef, repairInFlightRef).
+      preflightInFlightRef.current = false;
       switch (preflight.disposition) {
         case "attached_ready": {
           if (!preflight.port) {

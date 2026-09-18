@@ -45,6 +45,21 @@ test("a preflight already in flight is not run again", () => {
     /finally \{\s*preflightInFlightRef\.current = false;\s*\}/,
     "a failed preflight must release the flag or Retry is dead for the session",
   );
+  // The flag covers the PROBE, not what the probe leads to. managed_ready awaits
+  // startManagedServer, which parks in a 500 ms port poll; server-start-timeout offers Retry from
+  // inside that wait, and a click arriving before the poll next wakes would otherwise be swallowed
+  // by this flag after clearing the error, leaving the screen with no attempt running.
+  const release = body.indexOf("preflightInFlightRef.current = false;");
+  const dispatch = body.indexOf("switch (preflight.disposition)");
+  assert.ok(
+    release > preflight && release < dispatch,
+    "the flag must be released once the probe returns, before any disposition is acted on",
+  );
+  assert.ok(
+    body.indexOf("await startManagedServer()") > release,
+    "no long await may run while the flag is held",
+  );
+  assert.ok(body.indexOf("await startRepair()") > release);
 });
 
 test("a repair already in flight is not started again", () => {
