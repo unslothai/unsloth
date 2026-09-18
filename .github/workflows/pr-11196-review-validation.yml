@@ -59,6 +59,9 @@ jobs:
           replace('tests/helpers/kit.ts', '  const storage: StorageFake = {',
                   '  const storage: StorageFake & Pick<Storage, "length" | "key"> = {')
           replace('src/features/chat/stores/chat-runtime-store.ts',
+                  ': readThreadScopedValue(live, edit.field as ThreadScopedSettingKey);',
+                  ': readThreadScopedValue(\n          live,\n          edit.field as ThreadScopedSettingKey,\n        );')
+          replace('src/features/chat/stores/chat-runtime-store.ts',
                   '  const writeGlobal = () => {\n    scalarSettingMutationVersions[key] += 1;\n    saveSettingsPatch({ [key]: value });\n  };',
                   '  const writeGlobal = () => {\n    if (key === "reasoningEffort" && globalThreadScopedDefaults !== null) {\n      globalThreadScopedDefaults = {\n        ...globalThreadScopedDefaults,\n        reasoningEffort: value as ReasoningEffort,\n      };\n    }\n    scalarSettingMutationVersions[key] += 1;\n    saveSettingsPatch({ [key]: value });\n  };')
           file = root / 'tests/model-reasoning-preferences.test.ts'
