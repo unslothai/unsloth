@@ -447,3 +447,25 @@ test("an event arriving while the record is unreadable leaves the list alone", (
     storage.get = realGet;
   }
 });
+
+test("an unpin stays an unpin when a peer cleared the record first", () => {
+  // The row still draws itself pinned, so the click means unpin. Reading the direction off a base
+  // the clear had already emptied wrote the model straight back in.
+  reset([A, B]);
+  storage.delete(KEY); // a peer clears, its event not yet delivered
+  pins.getState().togglePinnedConnected(A);
+  assert.ok(
+    !pins.getState().pinned.includes(A),
+    `an unpin was turned into a pin: ${JSON.stringify(pins.getState().pinned)}`,
+  );
+  assert.deepEqual(storedOrder(), []);
+});
+
+test("an unpin stays an unpin when a peer unpinned it first", () => {
+  // The quiet version of the same thing: one model gone from the record rather than all of them.
+  reset([A, B]);
+  storage.set(KEY, JSON.stringify([B])); // a peer unpins A, its event not yet delivered
+  pins.getState().togglePinnedConnected(A);
+  assert.deepEqual(storedOrder(), [B]);
+  assert.deepEqual(pins.getState().pinned, [B]);
+});

@@ -178,11 +178,15 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
         // whole list: another window's pin can be newer than the storage event this one has
         // processed, and rewriting our own array would drop it for good.
         const base = persistedBase(state.pinned);
+        // The DIRECTION comes from the row the user clicked, not from the base: the row draws
+        // state.pinned, so a base that no longer holds the model turns an unpin into a pin and
+        // writes back something the user was trying to remove. A peer clearing the record is the
+        // loud case, a peer unpinning one model the quiet one.
+        const unpinning = state.pinned.includes(modelId);
+        const without = base.filter((id) => id !== modelId);
         // Newest pin first, as On Device does, so "Pin to top" literally lands on top of the
         // pinned group rather than under earlier pins.
-        const next = base.includes(modelId)
-          ? base.filter((id) => id !== modelId)
-          : [modelId, ...base];
+        const next = unpinning ? without : [modelId, ...without];
         writePinned(next);
         return { pinned: next };
       }),
