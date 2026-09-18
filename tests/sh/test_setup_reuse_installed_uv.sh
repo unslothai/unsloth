@@ -18,14 +18,20 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 
 HELPER=$(awk '
     /^_setup_uv_probe_exec\(\) \{/ { grab = 1 }
+    /^_setup_uv_version_at_least\(\) \{/ { grab = 1 }
     /^_setup_find_installed_uv\(\) \{/ { grab = 1 }
     grab { print }
     grab && /^}/ { grab = 0 }
 ' "$SETUP_SH")
-printf '%s\n' "$HELPER" | grep -q '^_setup_uv_probe_exec() {' || {
-    echo "FATAL: could not extract _setup_uv_probe_exec from setup.sh" >&2; exit 1; }
-printf '%s\n' "$HELPER" | grep -q '^_setup_find_installed_uv() {' || {
-    echo "FATAL: could not extract _setup_find_installed_uv from setup.sh" >&2; exit 1; }
+# The floor the finder compares against lives beside the function, not inside it.
+HELPER="$(grep '^_SETUP_UV_MIN_VERSION=' "$SETUP_SH")
+$HELPER"
+for _fn in _setup_uv_probe_exec _setup_uv_version_at_least _setup_find_installed_uv; do
+    printf '%s\n' "$HELPER" | grep -q "^$_fn() {" || {
+        echo "FATAL: could not extract $_fn from setup.sh" >&2; exit 1; }
+done
+printf '%s\n' "$HELPER" | grep -q '^_SETUP_UV_MIN_VERSION=' || {
+    echo "FATAL: could not extract _SETUP_UV_MIN_VERSION from setup.sh" >&2; exit 1; }
 
 PROBE="$WORK/probe.sh"
 {
@@ -39,7 +45,7 @@ DIAG="$WORK/diag.sh"
 {
     printf '%s\n' "$HELPER"
     cat <<'BODY'
-if _setup_find_installed_uv; then printf 'found'; else printf 'looked=%s miss=%s' "$_SETUP_UV_LOOKED" "$_SETUP_UV_PROBE_MISS"; fi
+if _setup_find_installed_uv; then printf 'found'; else printf 'looked=%s miss=%s old=%s' "$_SETUP_UV_LOOKED" "$_SETUP_UV_PROBE_MISS" "$_SETUP_UV_TOO_OLD"; fi
 BODY
 } > "$DIAG"
 # setup.ps1's finder, whole, so the checks below do not depend on its line count.
@@ -51,9 +57,12 @@ PS_FINDER=$(awk '
 printf '%s\n' "$PS_FINDER" | grep -q '^function Find-InstalledUv {' || {
     echo "FATAL: could not extract Find-InstalledUv from setup.ps1" >&2; exit 1; }
 
-fake_uv() {  # fake_uv <dir> [exit code]
+fake_uv() {  # fake_uv <dir> [exit code] [version]
+    # It prints a version because the finder reads one: a uv below the floor is refused, so a
+    # stand-in that printed nothing would be refused too and every reuse case would go green
+    # for the wrong reason.
     mkdir -p "$1"
-    printf '#!/bin/sh\nexit %s\n' "${2:-0}" > "$1/uv"
+    printf '#!/bin/sh\necho "uv %s (0123456 2026-01-01)"\nexit %s\n' "${3:-0.12.12}" "${2:-0}" > "$1/uv"
     chmod +x "$1/uv"
 }
 
@@ -69,7 +78,7 @@ for shell in sh bash; do
     assert_eq "$shell: nothing installed anywhere is a miss" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" "$shell" "$PROBE")"
     case "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" "$shell" "$DIAG")" in
-        "looked=$HOME_DIR/.local/bin/uv miss=") ok "$shell: a miss names the destinations it looked at" ;;
+        "looked=$HOME_DIR/.local/bin/uv miss= old=") ok "$shell: a miss names the destinations it looked at" ;;
         *) bad "$shell: a miss names the destinations it looked at ($(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" "$shell" "$DIAG"))" ;;
     esac
 
@@ -95,6 +104,57 @@ for shell in sh bash; do
     rm -f "$HOME_DIR/.local/bin/uv"
     assert_eq "$shell: ...and with nothing else installed that is a miss" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$BROKEN" "$shell" "$PROBE")"
+
+    # Runs, but older than the floor install.sh keeps: a uv whose managed-Python manifest tops
+    # out at a CPython that cannot import torch must not be reused in place of the pinned
+    # release, which is what a bare "does it run" check did.
+    OLD="$CASE/old uv"
+    fake_uv "$OLD" 0 0.4.0
+    assert_eq "$shell: a uv below the minimum version is not reused" \
+        "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
+    case "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$DIAG")" in
+        *"old=$OLD/uv"*) ok "$shell: ...and the diagnostic names the version it refused" ;;
+        *) bad "$shell: ...and the diagnostic names the version it refused ($(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$DIAG"))" ;;
+    esac
+    # The floor itself is reused, and a newer one over it.
+    fake_uv "$OLD" 0 0.9.3
+    assert_eq "$shell: a uv exactly at the minimum version is reused" \
+        "found=$OLD" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
+    # A binary that runs but is not uv at all answers --version with something else: that is a
+    # miss, not a reuse, and this is the case a Windows stand-in cannot express.
+    NOTUV="$CASE/not uv"
+    mkdir -p "$NOTUV"
+    printf '#!/bin/sh\necho "curl 8.9.1 (x86_64-pc-linux-gnu)"\nexit 0\n' > "$NOTUV/uv"
+    chmod +x "$NOTUV/uv"
+    assert_eq "$shell: a binary that runs but does not answer as uv is not reused" \
+        "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$NOTUV" "$shell" "$PROBE")"
+
+    # One directory, however many variables name it: launched once, named once. Two of these
+    # commonly point at the same place, and a candidate that hangs costs the ceiling each time.
+    DUP="$CASE/one dir"
+    fake_uv "$DUP"
+    case "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$DUP" UV_UNMANAGED_INSTALL="$DUP" XDG_BIN_HOME="$DUP" "$shell" "$DIAG")" in
+        found) ok "$shell: duplicate destinations are searched once" ;;
+        *) bad "$shell: duplicate destinations are searched once" ;;
+    esac
+    rm -f "$DUP/uv"
+    case "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$DUP" UV_UNMANAGED_INSTALL="$DUP" XDG_BIN_HOME="$DUP" "$shell" "$DIAG")" in
+        "looked=$DUP/uv, $HOME_DIR/.local/bin/uv miss= old=") ok "$shell: ...and named once in the miss diagnostic" ;;
+        *) bad "$shell: ...and named once in the miss diagnostic ($(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$DUP" UV_UNMANAGED_INSTALL="$DUP" XDG_BIN_HOME="$DUP" "$shell" "$DIAG"))" ;;
+    esac
+
+    # A second search in one process reports its own destinations, not the first search's.
+    TWICE="$WORK/$shell twice.sh"
+    {
+        printf '%s\n' "$HELPER"
+        cat <<'BODY'
+_setup_find_installed_uv || :
+_setup_find_installed_uv || :
+printf 'looked=%s' "$_SETUP_UV_LOOKED"
+BODY
+    } > "$TWICE"
+    assert_eq "$shell: a second search does not inherit the first one's destinations" \
+        "looked=$HOME_DIR/.local/bin/uv" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" "$shell" "$TWICE")"
 
     # A uv that never answers: the probe is bounded, so a miss is reported, not a hang.
     # Not gated on `command -v timeout`. It was, and stock macOS has none, so on the only
@@ -200,6 +260,28 @@ if printf '%s\n' "$PS_FINDER" | grep -q -- '-ne "ok") { continue }'; then
     ok "setup.ps1 reuses only a uv with an ok verdict"
 else
     bad "setup.ps1 reuses only a uv with an ok verdict"
+fi
+
+# ...and on both sides it also has to clear the floor, at the SAME number install.sh keeps:
+# a uv below it resolves a CPython that cannot import torch, which is why the installer
+# refuses one outright rather than building on it.
+_sh_floor=$(grep '^_SETUP_UV_MIN_VERSION="' "$SETUP_SH" | head -1 | sed 's/.*"\(.*\)"/\1/')
+_ps_floor=$(grep '^\$SetupUvMinVersion = "' "$SETUP_PS1" | head -1 | sed 's/.*"\(.*\)"/\1/')
+_install_floor=$(grep '^UV_MIN_VERSION="' "$SCRIPT_DIR/../../install.sh" | head -1 | sed 's/.*"\(.*\)"/\1/')
+if printf '%s\n' "$HELPER" | grep -q '_setup_uv_version_at_least "\$_sfu_ver"'; then
+    ok "setup.sh gates the reused uv on a minimum version"
+else
+    bad "setup.sh gates the reused uv on a minimum version"
+fi
+if printf '%s\n' "$PS_FINDER" | grep -q 'Test-SetupUvVersionAtLeast'; then
+    ok "setup.ps1 gates the reused uv on a minimum version"
+else
+    bad "setup.ps1 gates the reused uv on a minimum version"
+fi
+if [ -n "$_sh_floor" ] && [ "$_sh_floor" = "$_ps_floor" ] && [ "$_sh_floor" = "$_install_floor" ]; then
+    ok "both shells keep install.sh's floor ($_sh_floor)"
+else
+    bad "both shells keep install.sh's floor (setup.sh=$_sh_floor setup.ps1=$_ps_floor install.sh=$_install_floor)"
 fi
 
 # Get-SetupUvExecutableVerdict returns the verdict only: a Write-Output in it rode along in

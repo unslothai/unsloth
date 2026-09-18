@@ -3242,12 +3242,31 @@ _uv_probe_exec() {
         timeout -k 5 "$_upe_secs" "$1" --version >/dev/null 2>&1 </dev/null
         return $?
     fi
+    # Monitor mode, where the shell has it, gives the probe a process group of its own, so the
+    # signals below reach what IT started, the way `timeout`'s do. Turned off again at once.
+    _upe_monitor=off
+    case "$-" in *m*) _upe_monitor=on ;; esac
+    [ "$_upe_monitor" = on ] || set -m 2>/dev/null || :
     "$1" --version >/dev/null 2>&1 </dev/null &
     _upe_pid=$!
+    [ "$_upe_monitor" = on ] || set +m 2>/dev/null || :
+    # The group only where it is demonstrably not this shell's own; otherwise the single pid,
+    # exactly as before. Parameter expansion, not `tr`: this branch has to hold on a bare PATH.
+    _upe_target="$_upe_pid"
+    if command -v ps >/dev/null 2>&1; then
+        _upe_pgid=$(ps -o pgid= -p "$_upe_pid" 2>/dev/null)
+        _upe_self=$(ps -o pgid= -p $$ 2>/dev/null)
+        _upe_pgid=${_upe_pgid##* }
+        _upe_self=${_upe_self##* }
+        case "$_upe_pgid$_upe_self" in
+            ''|*[!0-9]*) : ;;
+            *) [ "$_upe_pgid" = "$_upe_self" ] || _upe_target="-$_upe_pgid" ;;
+        esac
+    fi
     _upe_waited=0
     while kill -0 "$_upe_pid" 2>/dev/null; do
         if [ "$_upe_waited" -ge "$_upe_secs" ]; then
-            kill "$_upe_pid" 2>/dev/null
+            kill "$_upe_target" 2>/dev/null
             _upe_grace=0
             while [ "$_upe_grace" -lt 5 ] && kill -0 "$_upe_pid" 2>/dev/null; do
                 sleep 1
@@ -3255,9 +3274,9 @@ _uv_probe_exec() {
             done
             # Only if it is still there: the loop also ends when TERM worked, and the KILL went
             # out anyway, to a number this shell no longer owns.
-            if kill -0 "$_upe_pid" 2>/dev/null; then kill -9 "$_upe_pid" 2>/dev/null || :; fi
+            if kill -0 "$_upe_pid" 2>/dev/null; then kill -9 "$_upe_target" 2>/dev/null || :; fi
             wait "$_upe_pid" 2>/dev/null
-            unset _upe_pid _upe_waited _upe_grace
+            unset _upe_pid _upe_waited _upe_grace _upe_target _upe_pgid _upe_self
             return 124
         fi
         sleep 1
@@ -3265,7 +3284,7 @@ _uv_probe_exec() {
     done
     wait "$_upe_pid"
     _upe_rc=$?
-    unset _upe_pid _upe_waited
+    unset _upe_pid _upe_waited _upe_target _upe_pgid _upe_self
     return $_upe_rc
 }
 

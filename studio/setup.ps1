@@ -6304,6 +6304,10 @@ function Get-SetupUvExecutableVerdict {
     # A cached exit code decides; with none (the timed wait can return first), a printed
     # version is "ok".
     param([string]$Path)
+    # What the binary printed, for the caller that has to know WHICH uv answered. A second
+    # pipeline value would put the reason back in the return value this function exists to keep
+    # clean, and running the binary again to read it would be a second chance to hang.
+    $script:SetupUvVersionLine = ""
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
     $outFile = [System.IO.Path]::GetTempFileName()
     $errFile = [System.IO.Path]::GetTempFileName()
@@ -6318,12 +6322,13 @@ function Get-SetupUvExecutableVerdict {
         # The timed overload can return before the exit code is cached (arm64 and the Windows
         # containers read a working uv as broken); the parameterless wait settles it at once.
         try { $proc.WaitForExit() } catch {}
+        $answer = ""
+        try { $answer = Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue } catch {}
+        if ($answer) { $script:SetupUvVersionLine = $answer.Trim() }
         $code = $null
         try { $code = $proc.ExitCode } catch {}
         if ($null -eq $code -or "$code" -eq "") {
             # No exit code: a printed version is "ok"; nothing printed gets no verdict.
-            $answer = ""
-            try { $answer = Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue } catch {}
             if ($answer -and ($answer.Trim() -match '^uv \d+\.\d+')) { return "ok" }
             substep "uv --version gave no exit code; installing it unprobed."
             return "unknown"
@@ -6522,6 +6527,7 @@ function Find-InstalledUv {
     $script:InstalledUvLooked = @()
     # Assigned even when no uv.exe exists: unassigned, it terminates under a caller's Set-StrictMode.
     $script:InstalledUvProbeMiss = $null
+    $script:InstalledUvTooOld = $null
     # The installer destination normally IS one of the tiers below, and two variables can point
     # at one directory: without this, that directory is launched twice and named twice in the
     # miss diagnostic. Ordinal, since a path that differs only in case is the same directory here.
@@ -6536,9 +6542,31 @@ function Find-InstalledUv {
         # would reach an unbounded uv pip. Asked twice: one miss (Defender scanning a fresh
         # binary) sent setup to the pinned download, which put an OLDER uv over this one.
         if ((Get-InstalledUvVerdict -Path $exe) -ne "ok") { continue }
+        # It runs; it also has to be new enough to do the work the pinned release would. The
+        # floor is install.ps1's UvMinVersion, kept for the same reason: below it uv's
+        # managed-Python manifest tops out at a CPython that cannot import torch. A version
+        # line this cannot read leaves the candidate alone, which is what happened before this
+        # search existed.
+        if (-not (Test-SetupUvVersionAtLeast -VersionLine $script:SetupUvVersionLine -Minimum $SetupUvMinVersion)) {
+            $script:InstalledUvTooOld = $exe
+            continue
+        }
         return $dir
     }
     return $null
+}
+
+# The floor a found uv has to clear. install.ps1 keeps the same number as UvMinVersion.
+$SetupUvMinVersion = "0.9.3"
+
+function Test-SetupUvVersionAtLeast {
+    # "uv 0.12.1 (abcdef0 2026-01-01)" -> $true when 0.12.1 is at least $Minimum. Anything this
+    # cannot parse is $false: the download that follows is what ran before the reuse existed.
+    param([string]$VersionLine, [string]$Minimum)
+    if (-not $VersionLine) { return $false }
+    if ($VersionLine -notmatch '(?m)^\s*uv\s+(\d+(?:\.\d+){0,2})') { return $false }
+    $found = $Matches[1]
+    try { return ([version]$found -ge [version]$Minimum) } catch { return $false }
 }
 
 function Get-InstalledUvVerdict {
@@ -6566,7 +6594,9 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
     substep "reusing the uv installed at $installedUvDir (it was not on PATH)"
     $UseUv = $true
 } elseif (-not $StageRoot) {
-    if ($script:InstalledUvProbeMiss) {
+    if ($script:InstalledUvTooOld) {
+        substep "the uv at $($script:InstalledUvTooOld) is older than $SetupUvMinVersion; installing the pinned release"
+    } elseif ($script:InstalledUvProbeMiss) {
         substep "the uv at $($script:InstalledUvProbeMiss) did not answer --version twice; installing the pinned release"
     } elseif ($script:InstalledUvLooked) {
         # Names the destinations searched, so a re-download can be read.

@@ -2037,19 +2037,46 @@ _setup_uv_sha256() {
 
 # Bounded liveness probe: no stdin (a prompting build reads EOF), 20 s ceiling held by GNU
 # timeout or, without it (stock macOS), a background job killed when the ceiling passes.
+# $2 is where the binary's stdout goes, /dev/null by default. The caller that reuses an
+# installed uv passes a file instead: the version line decides whether that uv is new enough,
+# and running the binary again to read it would be a second chance to hang.
 _setup_uv_probe_exec() {
     _supe_secs="${_SETUP_UV_PROBE_SECONDS:-20}"
+    _supe_out="${2:-/dev/null}"
     # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
     if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
-        timeout -k 5 "$_supe_secs" "$1" --version >/dev/null 2>&1 </dev/null
+        timeout -k 5 "$_supe_secs" "$1" --version >"$_supe_out" 2>/dev/null </dev/null
         return $?
     fi
-    "$1" --version >/dev/null 2>&1 </dev/null &
+    # Monitor mode, where the shell has it, gives the probe a process group of its own, so the
+    # signals below reach what IT started -- which is why `timeout` setpgid's itself and signals
+    # the group. Turned off again at once: monitor mode changes how every later job is reported.
+    _supe_monitor=off
+    case "$-" in *m*) _supe_monitor=on ;; esac
+    [ "$_supe_monitor" = on ] || set -m 2>/dev/null || :
+    "$1" --version >"$_supe_out" 2>/dev/null </dev/null &
     _supe_pid=$!
+    [ "$_supe_monitor" = on ] || set +m 2>/dev/null || :
+    # Signal the group only where it is demonstrably NOT this shell's own. A shell whose
+    # monitor mode leaves them shared would otherwise take setup down with the probe, and a
+    # shell without the feature keeps exactly the behaviour it had: the single pid. Read with
+    # `ps` where there is one, and through parameter expansion rather than `tr`, since the
+    # PATH this branch runs under can be as bare as the shell and sleep.
+    _supe_target="$_supe_pid"
+    if command -v ps >/dev/null 2>&1; then
+        _supe_pgid=$(ps -o pgid= -p "$_supe_pid" 2>/dev/null)
+        _supe_self=$(ps -o pgid= -p $$ 2>/dev/null)
+        _supe_pgid=${_supe_pgid##* }
+        _supe_self=${_supe_self##* }
+        case "$_supe_pgid$_supe_self" in
+            ''|*[!0-9]*) : ;;
+            *) [ "$_supe_pgid" = "$_supe_self" ] || _supe_target="-$_supe_pgid" ;;
+        esac
+    fi
     _supe_waited=0
     while kill -0 "$_supe_pid" 2>/dev/null; do
         if [ "$_supe_waited" -ge "$_supe_secs" ]; then
-            kill "$_supe_pid" 2>/dev/null
+            kill "$_supe_target" 2>/dev/null
             # Escalate as timeout -k does: a binary ignoring TERM would hold the wait.
             _supe_grace=0
             while [ "$_supe_grace" -lt 5 ] && kill -0 "$_supe_pid" 2>/dev/null; do
@@ -2060,9 +2087,9 @@ _setup_uv_probe_exec() {
             # KILL was sent anyway: a number whose process this shell no longer owns, which
             # after a wraparound is somebody else's. It narrows that window rather than
             # closing it, but an unconditional signal to a pid known to be gone buys nothing.
-            if kill -0 "$_supe_pid" 2>/dev/null; then kill -9 "$_supe_pid" 2>/dev/null || :; fi
+            if kill -0 "$_supe_pid" 2>/dev/null; then kill -9 "$_supe_target" 2>/dev/null || :; fi
             wait "$_supe_pid" 2>/dev/null
-            unset _supe_pid _supe_waited _supe_grace
+            unset _supe_pid _supe_waited _supe_grace _supe_target _supe_pgid _supe_self
             return 124
         fi
         sleep 1
@@ -2070,7 +2097,7 @@ _setup_uv_probe_exec() {
     done
     wait "$_supe_pid"
     _supe_rc=$?
-    unset _supe_pid _supe_waited
+    unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
     return $_supe_rc
 }
 
@@ -2399,6 +2426,42 @@ _setup_persist_uv_path() {
 _SETUP_UV_PROBE_MISS=""
 _SETUP_UV_LOOKED=""
 _SETUP_UV_DIR=""
+_SETUP_UV_TOO_OLD=""
+# The floor install.sh keeps as UV_MIN_VERSION, for the same reason: below it uv's
+# managed-Python manifest tops out at a CPython that cannot import torch, so reusing one would
+# hand the dependency pass exactly the interpreter the installer refuses to build on. The
+# pinned release this would otherwise download is far above it.
+_SETUP_UV_MIN_VERSION="0.9.3"
+
+# True when the line uv printed for --version names a release at least as new as $2. No line,
+# or one this cannot read, is false: the candidate is then left alone and the download runs,
+# which is what happened before this search existed.
+_setup_uv_version_at_least() {
+    [ -n "$1" ] || return 1
+    printf '%s\n' "$1" | awk -v floor="$2" '
+        NR == 1 {
+            # It has to be uv saying it. Another binary that runs and prints a version of its
+            # own ("curl 8.9.1") would otherwise clear a floor of 0.9.3 on the strength of
+            # being curl 8.
+            if ($1 != "uv") { exit 1 }
+            split($2, have, ".")
+            if (have[1] !~ /^[0-9]+$/) { exit 1 }
+            split(floor, want, ".")
+            for (i = 1; i <= 3; i++) {
+                h = (have[i] ~ /^[0-9]+$/) ? have[i] + 0 : 0
+                w = (want[i] ~ /^[0-9]+$/) ? want[i] + 0 : 0
+                if (h > w) { exit 0 }
+                if (h < w) { exit 1 }
+            }
+            # Braced, like every other exit in this program: setup.sh is allowed exactly two
+            # exits of its own (tests/sh/test_tauri_retry_failure_context.sh counts the lines),
+            # and an awk exit indented on a line of its own reads as a third.
+            { exit 0 }
+        }
+        { exit 1 }
+    '
+}
+
 # Answers in _SETUP_UV_DIR: under command substitution the miss diagnostics above would die
 # with the subshell.
 _setup_find_installed_uv() {
@@ -2406,22 +2469,57 @@ _setup_find_installed_uv() {
     # before the install, a CI step, an unread profile line): the miss re-downloaded the pinned
     # archive on every update, 42 of a 53 s Windows no-op. Same priority list
     # _setup_install_uv_pinned writes to; it has to run, not merely exist.
+    # Cleared on entry, not just at definition: a second search in one process would otherwise
+    # report the first one's destinations.
+    _SETUP_UV_PROBE_MISS=""
+    _SETUP_UV_LOOKED=""
+    _SETUP_UV_DIR=""
+    _SETUP_UV_TOO_OLD=""
+    _sfu_seen=""
+    # A file, not a command substitution: the probe's stdout is inherited by whatever the
+    # candidate starts, so a pipe would hold this function open until the LAST descendant let
+    # go of it -- which is the hang the ceiling exists to prevent, moved one process out.
+    # Without a temp file there is no version to read, and a candidate whose version cannot be
+    # read is not reused: that is the download this search was added to avoid, not a new risk.
+    _sfu_ver_file=""
+    if command -v mktemp >/dev/null 2>&1; then
+        _sfu_ver_file=$(mktemp 2>/dev/null) || _sfu_ver_file=""
+    fi
     for _sfu_dir in "${UV_INSTALL_DIR:-}" "${UV_UNMANAGED_INSTALL:-}" "${XDG_BIN_HOME:-}" \
         "${XDG_DATA_HOME:+$XDG_DATA_HOME/../bin}" "${HOME:+$HOME/.local/bin}"; do
         [ -n "$_sfu_dir" ] || continue
+        # One directory is launched once however many variables name it, as the PowerShell
+        # finder already does: two of these commonly point at the same place, and a candidate
+        # that hangs costs the ceiling twice every time it is asked.
+        case "$_sfu_seen" in *"|$_sfu_dir|"*) continue ;; esac
+        _sfu_seen="$_sfu_seen|$_sfu_dir|"
         _SETUP_UV_LOOKED="${_SETUP_UV_LOOKED:+$_SETUP_UV_LOOKED, }$_sfu_dir/uv"
         [ -x "$_sfu_dir/uv" ] || continue
         # Bounded, like the pinned installer's probe. Asked twice: one miss (an antivirus scan
         # holding a fresh binary) sent setup to the pinned download, which put an OLDER uv
         # over this one and moved the manifest's uv_version on the next pass.
-        if _setup_uv_probe_exec "$_sfu_dir/uv" || { sleep 2; _setup_uv_probe_exec "$_sfu_dir/uv"; }; then
-            _SETUP_UV_DIR="$_sfu_dir"
-            unset _sfu_dir
-            return 0
+        if _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}" ||
+           { sleep 2; _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}"; }; then
+            # It runs; it also has to be new enough to do the work the pinned release would.
+            # `read`, not `cat`: this branch has to hold on a bare PATH. An empty file makes it
+            # return non-zero, which under `set -e` is not a reason to end setup.
+            _sfu_ver=""
+            if [ -n "$_sfu_ver_file" ]; then
+                read -r _sfu_ver < "$_sfu_ver_file" 2>/dev/null || _sfu_ver=""
+            fi
+            if _setup_uv_version_at_least "$_sfu_ver" "$_SETUP_UV_MIN_VERSION"; then
+                _SETUP_UV_DIR="$_sfu_dir"
+                if [ -n "$_sfu_ver_file" ]; then rm -f "$_sfu_ver_file" 2>/dev/null || :; fi
+                unset _sfu_dir _sfu_ver _sfu_seen _sfu_ver_file
+                return 0
+            fi
+            _SETUP_UV_TOO_OLD="$_sfu_dir/uv"
+            continue
         fi
         _SETUP_UV_PROBE_MISS="$_sfu_dir/uv"
     done
-    unset _sfu_dir
+    if [ -n "$_sfu_ver_file" ]; then rm -f "$_sfu_ver_file" 2>/dev/null || :; fi
+    unset _sfu_dir _sfu_ver _sfu_seen _sfu_ver_file
     return 1
 }
 
@@ -2439,7 +2537,9 @@ elif _setup_find_installed_uv; then
 elif [ -n "$STAGE_ROOT" ]; then
     step "uv" "using pip inside the staged environment"
 elif {
-    if [ -n "${_SETUP_UV_PROBE_MISS:-}" ]; then
+    if [ -n "${_SETUP_UV_TOO_OLD:-}" ]; then
+        step "uv" "the uv at $_SETUP_UV_TOO_OLD is older than $_SETUP_UV_MIN_VERSION; installing the pinned release"
+    elif [ -n "${_SETUP_UV_PROBE_MISS:-}" ]; then
         step "uv" "the uv at $_SETUP_UV_PROBE_MISS did not answer --version twice; installing the pinned release"
     elif [ -n "${_SETUP_UV_LOOKED:-}" ]; then
         step "uv" "no installed uv at $_SETUP_UV_LOOKED; installing the pinned release"
