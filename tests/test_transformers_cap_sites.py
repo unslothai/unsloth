@@ -815,3 +815,92 @@ def test_the_declared_ceiling_anchor_uses_the_tag_upstream_pushed() -> None:
         assert "_TAG_OVERRIDES" in inspect.getsource(
             module._declared_ceiling_tag
         ), "the ceiling anchor is built as 'v' + version and ignores the override table"
+
+
+# ---------------------------------------------------------------------------
+# The deferral above has to expire by itself.
+# ---------------------------------------------------------------------------
+
+def _newest_published_zoo_transformers_ceiling(timeout: float = 10.0):
+    """(zoo version, its transformers ceiling) for the newest unsloth_zoo on PyPI.
+
+    Returns None when PyPI cannot be asked, or when the newest release declares no
+    transformers upper bound this function can read. Never raises: the caller treats
+    "could not ask" as "keep deferring", so an offline runner is not a failure.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+            "https://pypi.org/pypi/unsloth_zoo/json", timeout = timeout
+        ) as handle:
+            payload = json.load(handle)
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+
+    info = payload.get("info") or {}
+    released = info.get("version")
+    if not released:
+        return None
+
+    # The zoo splits transformers by platform marker. Ordinary (non Apple Silicon)
+    # installs get the widest line, so the governing ceiling is the highest one declared.
+    ceilings = []
+    for raw in info.get("requires_dist") or []:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            continue
+        if req.name.lower() != "transformers":
+            continue
+        for spec in req.specifier:
+            if spec.operator in ("<=", "=="):
+                ceilings.append(Version(str(spec.version)))
+            elif spec.operator == "<":
+                ceilings.append(Version(str(spec.version)))
+    if not ceilings:
+        return None
+    return Version(released), max(ceilings)
+
+
+def test_the_zoo_deferral_expires_when_the_zoo_release_ships() -> None:
+    """A deferral nothing can end is the defect this file exists to catch.
+
+    `test_the_declared_zoo_floor_can_supply_the_declared_transformers_window` skips while
+    `ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP` is None, and that constant is hand-written.
+    So on the day unslothai/unsloth-zoo#1227 ships, nothing turns red: the gate keeps
+    skipping, the pyproject floor keeps naming a zoo that caps transformers at 5.5.0, and
+    the lift stays advertised rather than delivered for as long as nobody happens to look.
+    That is precisely "a site left behind after the window moves does not go red", which
+    is the failure the rest of this file is about, reproduced inside its own deferral.
+
+    So the deferral is made self-expiring. This asks PyPI what the newest published
+    unsloth_zoo actually allows, and fails only on POSITIVE evidence that the deferral is
+    obsolete. No network, a timeout, a malformed answer or a zoo with no readable ceiling
+    all leave it skipped: it can only ever turn red by proving the release landed, never
+    by failing to reach PyPI. That keeps the three-OS cap-site job honest when it runs
+    offline, which is the property that let this suite go on that job in the first place.
+    """
+    if ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP is not None:
+        pytest.skip(
+            "the floor already names a zoo release carrying the lift, so the deferral is "
+            "over and the gate above is live"
+        )
+
+    published = _newest_published_zoo_transformers_ceiling()
+    if published is None:
+        pytest.skip("PyPI could not be asked for unsloth_zoo, so the deferral stands")
+
+    zoo_version, zoo_ceiling = published
+    declared = _ceiling(_declared_window())
+    assert zoo_ceiling < declared, (
+        f"unsloth_zoo {zoo_version} is published and admits transformers up to "
+        f"{zoo_ceiling}, which covers the {declared} ceiling declared here, so the "
+        f"deferral is over. Set ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP to {zoo_version} "
+        f"and raise the unsloth_zoo floor in pyproject.toml to it in the same commit; "
+        f"that re-enables "
+        f"test_the_declared_zoo_floor_can_supply_the_declared_transformers_window, which "
+        f"is what actually checks the two windows agree."
+    )
