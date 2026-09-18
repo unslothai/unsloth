@@ -316,3 +316,69 @@ class TestPowerShellTestsRunOnAPr:
             if not (REPO_ROOT / test).is_file()
         ]
         assert not missing, f"workflows invoke PowerShell tests that do not exist: {missing}"
+
+
+class TestWindowsPowerShellStepsAreGated:
+    """A step that runs powershell.exe on a multi-OS job must say so.
+
+    Windows PowerShell 5.1 is the host the Desktop app launches the installer in, so the .ps1
+    suites here have a second leg that runs it. `powershell` does not exist on a hosted Linux or
+    macOS runner, and a step without the guard fails the whole job for a reason that has nothing
+    to do with the change under test. Observed exactly that way: a merge dropped the `if:` line
+    from one such step because an identical line already appeared above it.
+
+    A job pinned to windows-latest needs no guard, so the rule is about jobs whose runner is not
+    provably Windows: a matrix expression, or anything else that is not a windows-* literal.
+    """
+
+    @staticmethod
+    def _multi_os_jobs(doc):
+        for name, job in (doc.get("jobs") or {}).items():
+            runs_on = job.get("runs-on")
+            labels = runs_on if isinstance(runs_on, list) else [runs_on]
+            if all(
+                isinstance(l, str) and l.startswith("windows-") for l in labels if l is not None
+            ):
+                continue
+            yield name, job
+
+    @staticmethod
+    def _windows_powershell_steps(job):
+        for step in job.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            run = str(step.get("run") or "")
+            if "powershell -NoProfile" not in run:
+                continue
+            if "pwsh -NoProfile" in run:
+                continue
+            yield step
+
+    def test_every_windows_powershell_step_is_gated_on_windows(self):
+        for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+            if not isinstance(doc, dict):
+                continue
+            for job_name, job in self._multi_os_jobs(doc):
+                for step in self._windows_powershell_steps(job):
+                    condition = str(step.get("if") or "")
+                    assert "runner.os == 'Windows'" in condition, (
+                        f"{workflow.name}: job {job_name}, step {step.get('name')!r} runs "
+                        f"powershell.exe on a job that is not pinned to a Windows runner, with no "
+                        f"`if: runner.os == 'Windows'`. That executable does not exist on the "
+                        f"Linux and macOS legs."
+                    )
+
+    def test_the_rule_finds_the_steps_it_is_about(self):
+        """Without this, a walk that matched nothing would leave the rule above vacuous."""
+        found = 0
+        for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+            if not isinstance(doc, dict):
+                continue
+            for _, job in self._multi_os_jobs(doc):
+                found += len(list(self._windows_powershell_steps(job)))
+        assert found >= 5, (
+            f"only {found} Windows PowerShell steps found on multi-OS jobs; the walk above is "
+            f"looking in the wrong place"
+        )
