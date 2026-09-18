@@ -6205,11 +6205,15 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     $_venvParent = Split-Path -Parent $VenvDir
     $_venvLeaf = Split-Path -Leaf $VenvDir
     $_staleShape = '^' + [regex]::Escape($_venvLeaf) + '\.stale-[0-9]{14}-([0-9]+)$'
+    # [regex]::Match rather than -notmatch plus $Matches: which of -match and -notmatch fills
+    # $Matches, and on which result, is exactly the kind of thing that differs between Windows
+    # PowerShell 5.1 and 7.x, and this reads a capture group to decide what to delete.
     foreach ($_old in @(Get-ChildItem -LiteralPath $_venvParent -Directory -Force -ErrorAction SilentlyContinue)) {
-        if ($_old.Name -notmatch $_staleShape) { continue }
+        $_staleMatch = [regex]::Match($_old.Name, $_staleShape)
+        if (-not $_staleMatch.Success) { continue }
         if (($_old.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
         $_ownerPid = 0
-        if (-not [int]::TryParse($Matches[1], [ref]$_ownerPid)) { continue }
+        if (-not [int]::TryParse($_staleMatch.Groups[1].Value, [ref]$_ownerPid)) { continue }
         if ($_ownerPid -ne $PID -and $null -ne (Get-Process -Id $_ownerPid -ErrorAction SilentlyContinue)) { continue }
         Remove-Item -LiteralPath $_old.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
