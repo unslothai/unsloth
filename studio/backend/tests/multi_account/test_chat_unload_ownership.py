@@ -160,9 +160,9 @@ def test_a_torn_down_backend_does_not_yet_mean_a_released_claim(
     asyncio.run(tick())
 
     assert chat_resident.unloaded, "the loop never tore the backend down"
-    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT, (
-        "the release ran after all, so this no longer reproduces the window it documents"
-    )
+    assert (
+        gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    ), "the release ran after all, so this no longer reproduces the window it documents"
     assert bob_status(accounts).json() == {"loaded": [], "loading": [], "yours": False}
 
 
