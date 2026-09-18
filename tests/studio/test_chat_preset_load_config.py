@@ -384,24 +384,26 @@ def _pinned(guard: list, taken: bool, access: list):
 
 
 def _reads_field(arm: list, access: list) -> bool:
-    """Does `arm` return a value derived from the field?
+    """Does `arm` return the field itself, or a call on it?
 
-    The field has to be read off the parameter, not off some other object, and the arm must not
-    collapse it: a comparison, a logical operator or a nested branch at the arm's own level
-    returns something the field does not decide. A call is taken as a transform of its
-    arguments, which is as far as source can see.
+    The field has to be read off the parameter, not off some other object, and be the value
+    itself: `.length` after it, a comparison, a logical operator or a branch anywhere in the arm
+    returns something the field does not decide. A call is the one transform taken on trust,
+    as source cannot see into it.
     """
-    depth = 0
-    for index, (kind, text) in enumerate(arm):
-        if kind == "call":
-            depth += 1 if text == "(" else -1
-        elif depth == 0 and text in _COLLAPSING:
-            return False
+    if any(text in _COLLAPSING for _, text in arm):
+        return False
     size = len(access)
-    return any(
-        arm[index : index + size] == access and (index == 0 or arm[index - 1][1] not in (".", "?."))
-        for index in range(len(arm) - size + 1)
-    )
+    for index in range(len(arm) - size + 1):
+        if arm[index : index + size] != access:
+            continue
+        before = arm[index - 1][1] if index else None
+        after = arm[index + size] if index + size < len(arm) else None
+        if before in (".", "?."):
+            continue
+        if after is None or after[1] in (",", "??") or after == ("call", ")"):
+            return True
+    return False
 
 
 def _selector_reads(selector: str, field: str) -> bool:
@@ -486,7 +488,7 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget ?? s.fallback", True),
     ("(s) => formatBudget(s.reasoningBudget)", True),
     ("(s) => formatBudget(s.reasoningBudget, 2)", True),
-    ("(s) => s.reasoningBudget.toString()", True),
+    ("(s) => String(s.reasoningBudget)", True),
     ("(s) => { return s.reasoningBudget; }", True),
     ("(s) => { return s.enabled ? s.reasoningBudget : s.reasoningBudget }", True),
     ("(s) => s.reasoningBudget,", True),
@@ -517,6 +519,11 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget > 0 ? s.other : null", False),
     ("(s) => s.reasoningBudget !== null ? s.other : null", False),
     ("(s) => (s.enabled ? s.other : s.reasoningBudget).toString()", False),
+    ("(s) => String(s.enabled ? s.reasoningBudget : s.nBatch)", False),
+    # A property of the field is another value: two messages of one length compare equal.
+    ("(s) => s.reasoningBudget.length", False),
+    ("(s) => s.reasoningBudget.toString()", False),
+    ("(s) => (s.reasoningBudget).length", False),
     # A constant arm counts only when a guard pins the field to that very value there.
     ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
     ("(s) => -1 === s.reasoningBudget ? -1 : s.reasoningBudget", True),
