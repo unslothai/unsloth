@@ -95,6 +95,11 @@ HOST_PATH_IDENTITY_FIELDS = (
     "active_model",
     "model_identifier",
     "dataset_name",
+    # The companion base a media load resolved. Value-decided like the rest: an ordinary Hub
+    # base ("black-forest-labs/FLUX.2-klein-4B") is not a path and passes through, while the
+    # supported LOCAL form is a host path that the diffusion and video STATUS routes answer
+    # with, to whichever caller polls them rather than to the one that supplied it.
+    "base_repo",
 )
 # The same identities, published as lists. Each ENTRY is decided on its own value.
 HOST_PATH_IDENTITY_LIST_FIELDS = ("loaded", "loading")

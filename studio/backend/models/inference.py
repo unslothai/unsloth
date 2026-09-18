@@ -3707,6 +3707,9 @@ class DiffusionLoadRequest(BaseModel):
     base_repo: Optional[str] = Field(
         None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
     )
+    # Referenced on the way out, so it has to resolve on the way back in, or a caller handed a
+    # `ref:` base can see the row and cannot load it.
+    _resolve_the_base_handle = field_validator("base_repo")(resolve_inventory_handle)
     family_override: Optional[str] = Field(
         None, description = "Force a family when it can't be inferred from the repo id"
     )
@@ -4626,6 +4629,8 @@ class VideoLoadRequest(BaseModel):
         None,
         description = "Companion diffusers repo for VAE/text-encoders (default: family base)",
     )
+    # As on the diffusion request above: referenced out, so resolved back in.
+    _resolve_the_base_handle = field_validator("base_repo")(resolve_inventory_handle)
     family_override: Optional[str] = Field(
         None, description = "Force a family when it can't be inferred from the repo id"
     )

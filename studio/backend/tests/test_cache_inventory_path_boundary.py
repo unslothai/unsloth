@@ -1817,3 +1817,63 @@ def test_the_config_route_passes_the_caller_identifier_as_echo():
     import inspect
     source = inspect.getsource(models_routes.get_model_config)
     assert "echo = (model_name,)" in source
+
+
+# ---------------------------------------------------------------------------------------
+# The companion base a media load resolved. `base_repo` is usually a Hub id, but the local
+# form is a host path, and the diffusion and video STATUS routes answer it to whoever polls
+# them rather than to the caller who supplied it.
+# ---------------------------------------------------------------------------------------
+
+BASE_DIR = f"{HOST_ROOT}/flux-base"
+
+
+def _media_status(cls):
+    from models.inference import DiffusionStatusResponse, VideoStatusResponse
+    return {"diffusion": DiffusionStatusResponse, "video": VideoStatusResponse}[cls]
+
+
+@pytest.mark.parametrize("kind", ["diffusion", "video"])
+def test_a_local_companion_base_is_referenced_not_returned(kind):
+    response = _media_status(kind)(loaded = True, repo_id = "unsloth/x", base_repo = BASE_DIR)
+
+    api = redact_host_paths(response, via_api_key = True)
+    value = api.get("base_repo") if isinstance(api, dict) else api.base_repo
+    assert value.startswith("ref:"), value
+    assert response_leaks_host_path(api, [HOST_ROOT, HOST_ROOT_NATIVE]) is None
+
+
+@pytest.mark.parametrize("kind", ["diffusion", "video"])
+def test_the_operators_own_session_still_sees_the_companion_base(kind):
+    """BOUNDARY. Same rule as every other path on these routes: the UI renders it."""
+    response = _media_status(kind)(loaded = True, repo_id = "unsloth/x", base_repo = BASE_DIR)
+
+    ui = redact_host_paths(response, via_api_key = False)
+    assert (ui.get("base_repo") if isinstance(ui, dict) else ui.base_repo) == BASE_DIR
+
+
+@pytest.mark.parametrize("kind", ["diffusion", "video"])
+def test_a_hub_companion_base_is_not_a_path_and_is_left_alone(kind):
+    """BOUNDARY, and the reason this field is decided by VALUE. The ordinary base is a repo
+    id; referencing it would make the field useless to every caller for nothing."""
+    response = _media_status(kind)(
+        loaded = True, repo_id = "unsloth/x", base_repo = "black-forest-labs/FLUX.2-klein-4B"
+    )
+
+    api = redact_host_paths(response, via_api_key = True)
+    value = api.get("base_repo") if isinstance(api, dict) else api.base_repo
+    assert value == "black-forest-labs/FLUX.2-klein-4B"
+
+
+@pytest.mark.parametrize("kind", ["diffusion", "video"])
+def test_a_referenced_companion_base_can_still_be_loaded_with(kind):
+    """A row advertised as actionable has to be actionable: the handle the status route hands
+    out must resolve back to the path on the load request that takes it."""
+    from models.inference import DiffusionLoadRequest, VideoLoadRequest
+
+    response = _media_status(kind)(loaded = True, repo_id = "unsloth/x", base_repo = BASE_DIR)
+    api = redact_host_paths(response, via_api_key = True)
+    handle = api.get("base_repo") if isinstance(api, dict) else api.base_repo
+
+    request_cls = {"diffusion": DiffusionLoadRequest, "video": VideoLoadRequest}[kind]
+    assert request_cls(model_path = "unsloth/x", base_repo = handle).base_repo == BASE_DIR
