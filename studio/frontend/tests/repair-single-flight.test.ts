@@ -45,10 +45,8 @@ test("a preflight already in flight is not run again", () => {
     /finally \{\s*preflightInFlightRef\.current = false;\s*\}/,
     "a failed preflight must release the flag or Retry is dead for the session",
   );
-  // The flag covers the PROBE, not what the probe leads to. managed_ready awaits
-  // startManagedServer, which parks in a 500 ms port poll; server-start-timeout offers Retry from
-  // inside that wait, and a click arriving before the poll next wakes would otherwise be swallowed
-  // by this flag after clearing the error, leaving the screen with no attempt running.
+  // Held past the probe, a Retry that server-start-timeout offers from inside startManagedServer's
+  // 500 ms port poll is swallowed after clearing the error: error screen, nothing running.
   const release = body.indexOf("preflightInFlightRef.current = false;");
   const dispatch = body.indexOf("switch (preflight.disposition)");
   assert.ok(

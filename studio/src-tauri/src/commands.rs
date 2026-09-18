@@ -803,8 +803,7 @@ pub async fn start_install(
                 .to_string(),
         );
     }
-    // The repair's own installer phase runs through run_install_for_repair, not this command, so
-    // a second installer started here would race the one the repair is about to spawn.
+    // A repair's installer phase runs through run_install_for_repair, so one started here races it.
     if update::is_repair_running(update_state.inner()) {
         return Err("Cannot install while a repair is in progress.".to_string());
     }
@@ -884,8 +883,7 @@ pub async fn start_backend_update(
     {
         return Err("Cannot update while installation is in progress.".to_string());
     }
-    // A repair spends seconds between its own update child and the installer it may fall back to,
-    // and holds no child handle in between, so the check above cannot see it.
+    // A repair holds no child handle between its update and its installer: invisible to the above.
     if update::is_repair_running(update_state.inner()) {
         return Err("Cannot update while a repair is in progress.".to_string());
     }
