@@ -89,28 +89,51 @@ function Get-StudioTempSubtree {
 
     Reparse points are not followed. A junction into an ancestor would otherwise
     walk forever, and a compile does not write through one.
+
+    Filtering happens here rather than in the caller. A temp root can hold an
+    extracted toolchain or a package cache, and this sweep runs before and after
+    every measured action, so collecting every path first and selecting afterwards
+    means carrying tens of thousands of strings that were never of interest.
     #>
-    param([Parameter(Mandatory = $true)][string]$Root)
-    $found = @()
-    $pending = @($Root)
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string[]]$Patterns
+    )
+    # Generic lists, not PowerShell arrays. += on an array allocates a new one and
+    # copies, so a large temp tree costs quadratic time in the number of entries on
+    # a path that runs twice per measured action.
+    $found = New-Object 'System.Collections.Generic.List[string]'
+    $pending = New-Object 'System.Collections.Generic.List[string]'
+    $pending.Add($Root)
     $visited = 0
     while ($pending.Count -gt 0) {
         $visited++
-        # A cheap ceiling rather than a correctness bound: this is a detector, and a
-        # temp tree deep enough to hit it is already telling us something is wrong.
-        if ($visited -gt 20000) { break }
-        $dir = $pending[0]
-        $pending = @($pending | Select-Object -Skip 1)
+        if ($visited -gt 200000) {
+            # Not a break. A truncated snapshot is indistinguishable from a clean one
+            # to the caller, and this listing is exactly what stands in when the
+            # watcher cannot attach, so a silent stop turns a missed artifact into a
+            # clean verdict. Better to declare the measurement void.
+            throw ("the temp scan of $Root passed $visited directories without finishing. " +
+                   "A partial snapshot would be read as a complete one, so this run cannot " +
+                   "say whether a compiler ran.")
+        }
+        $dir = $pending[$pending.Count - 1]
+        $pending.RemoveAt($pending.Count - 1)
         $entries = @()
         try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
         catch { continue }
         foreach ($entry in $entries) {
             if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
-            if ($entry.PSIsContainer) { $pending += $entry.FullName; continue }
-            $found += $entry.FullName
+            if ($entry.PSIsContainer) { $pending.Add($entry.FullName); continue }
+            foreach ($pattern in $Patterns) {
+                if ($entry.Name -like $pattern) {
+                    $found.Add($entry.FullName)
+                    break
+                }
+            }
         }
     }
-    return ,[string[]]$found
+    return ,[string[]]$found.ToArray()
 }
 
 function Get-StudioTempArtifacts {
@@ -119,23 +142,16 @@ function Get-StudioTempArtifacts {
     Compiler intermediates and assemblies currently sitting in the temp roots.
     #>
     $patterns = @('*.dll', '*.cmdline', '*.rsp', '*.cs', '*.err', '*.out')
-    $found = @()
+    $found = New-Object 'System.Collections.Generic.List[string]'
     foreach ($root in (Get-StudioTempRoots)) {
-        # Recurse: PowerShell compiles into a per-invocation subdirectory, not
-        # into the root, so a non-recursive listing sees none of this.
-        foreach ($file in (Get-StudioTempSubtree -Root $root)) {
-            foreach ($pattern in $patterns) {
-                if ((Split-Path -Leaf $file) -like $pattern) {
-                    $found += $file
-                    break
-                }
-            }
-        }
+        # The whole subtree: PowerShell compiles into a per-invocation subdirectory,
+        # not into the root, so a non-recursive listing sees none of this.
+        $found.AddRange([string[]](Get-StudioTempSubtree -Root $root -Patterns $patterns))
     }
     # Comma-wrapped: PowerShell unrolls an empty array to nothing on return, and the
     # caller casts this into a HashSet whose two-argument constructor rejects null.
     # On a clean runner that killed the watcher before the positive control ran.
-    return ,[string[]]$found
+    return ,[string[]]$found.ToArray()
 }
 
 $script:ArtifactPattern = '\.(dll|cmdline|rsp|cs|err|out)$'

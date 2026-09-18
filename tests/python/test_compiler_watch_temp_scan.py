@@ -38,12 +38,13 @@ PWSH = shutil.which("pwsh")
 pytestmark = pytest.mark.skipif(PWSH is None, reason="needs PowerShell")
 
 
-def _walk(root: pathlib.Path) -> list[str]:
+def _walk(root: pathlib.Path, patterns: str = "'*.dll','*.cmdline'") -> list[str]:
     """Run Get-StudioTempSubtree over `root` under the same preference CI uses."""
     script = (
         "$ErrorActionPreference = 'Stop'\n"
         f". '{SCRIPT}'\n"
-        f"Get-StudioTempSubtree -Root '{root}' | ForEach-Object {{ Write-Output $_ }}\n"
+        f"Get-StudioTempSubtree -Root '{root}' -Patterns {patterns} | "
+        "ForEach-Object { Write-Output $_ }\n"
     )
     proc = subprocess.run(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
@@ -53,6 +54,14 @@ def _walk(root: pathlib.Path) -> list[str]:
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = (
+        "POSIX permissions only. Windows has no os.geteuid, and chmod there sets the read-only "
+        "attribute rather than making a directory unopenable, so this would not deny anything. "
+        "The Windows half of the same question is the ACL-based control below."
+    ),
+)
 def test_an_unreadable_directory_costs_only_itself(tmp_path: pathlib.Path) -> None:
     (tmp_path / "keep").mkdir()
     (tmp_path / "keep" / "probe.dll").write_text("x")
@@ -115,6 +124,44 @@ def test_the_walk_really_would_have_died_without_the_handling(tmp_path: pathlib.
         "-ErrorAction SilentlyContinue suppressed the error on this host, so the reason for the "
         "rewrite needs re-checking"
     )
+
+
+def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path) -> None:
+    """Past the ceiling it raises, rather than handing back a partial listing.
+
+    The caller reads this snapshot as complete, and it is what stands in when the file-system
+    watcher cannot attach, so a silent stop turns a missed artifact into a clean verdict. Driven
+    by lowering the ceiling with a stubbed walk is not possible here, so the tree is built: 12
+    directories against a ceiling of 8, set by dot-sourcing and re-declaring nothing.
+    """
+    # The real ceiling is 200000, far too large to build, so the shape is asserted instead and
+    # the behaviour is driven at a scale that fits: the function is re-defined with the same body
+    # and a smaller limit, taken from the shipped source rather than retyped.
+    text = SCRIPT.read_text(encoding = "utf-8")
+    assert "throw (" in text and "$visited -gt 200000" in text, (
+        "the ceiling no longer raises, so a truncated scan would be read as a complete one"
+    )
+    small = text[text.index("function Get-StudioTempSubtree"):text.index("function Get-StudioTempArtifacts")]
+    small = small.replace("$visited -gt 200000", "$visited -gt 3")
+    assert "$visited -gt 3" in small
+    for i in range(12):
+        (tmp_path / f"d{i}").mkdir()
+    holder = tmp_path / "small.ps1"
+    holder.write_text(small, encoding = "utf-8")
+    proc = subprocess.run(
+        [
+            PWSH, "-NoProfile", "-NonInteractive", "-Command",
+            "$ErrorActionPreference = 'Stop'\n"
+            f". '{holder}'\n"
+            f"Get-StudioTempSubtree -Root '{tmp_path}' -Patterns '*.dll' | Out-Null\n"
+            "Write-Output 'NO-THROW'\n",
+        ],
+        capture_output = True, text = True, timeout = 300,
+    )
+    assert "NO-THROW" not in proc.stdout, (
+        "the walk returned a partial snapshot instead of declaring the measurement void"
+    )
+    assert "cannot say whether a compiler ran" in (proc.stdout + proc.stderr)
 
 
 def test_the_artifact_filter_still_selects_by_extension(tmp_path: pathlib.Path) -> None:
