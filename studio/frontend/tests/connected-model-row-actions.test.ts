@@ -346,10 +346,18 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
     /if \(key === "reasoningEffort" && pinOwnsLiveReasoningEffort\(state\)\) \{[\s\S]{0,500}?effortDisplacedByPin = value as ReasoningEffort;/,
   );
   // Leaving a pinned model for a local one restores the chat's level first: the load and status
-  // handlers clamp whatever the store holds to the local ladder, and that is the pin.
+  // handlers clamp whatever the store holds to the local ladder, and that is the pin. At the point
+  // a load actually starts, not at the pick: picking an uncached model only queues its download
+  // and leaves the pinned model running, and a cancelled one never loads at all.
   assert.match(
     chatPage,
-    /const ownEffort = pinHoldsLiveEffort\(\) \? takeEffortDisplacedByPin\(\) : null;\s*if \(ownEffort && ownEffort !== store\.reasoningEffort\) \{\s*useChatRuntimeStore\.setState\(\(state\) => \(\{\s*reasoningEffort: ownEffort,\s*queuedSettingsEpoch: state\.queuedSettingsEpoch \+ 1,/,
+    /const chatEffort = pinHoldsLiveEffort\(\) \? takeEffortDisplacedByPin\(\) : null;\s*if \(\s*chatEffort &&\s*chatEffort !== useChatRuntimeStore\.getState\(\)\.reasoningEffort\s*\) \{\s*useChatRuntimeStore\.setState\(\(state\) => \(\{\s*reasoningEffort: chatEffort,\s*queuedSettingsEpoch: state\.queuedSettingsEpoch \+ 1,/,
+  );
+  // Which is the one place every local load funnels through, the deferred load after a staged
+  // download included, and it is past both staging returns.
+  assert.match(
+    chatPage,
+    /const chatEffort = pinHoldsLiveEffort[\s\S]{0,620}?await selectModel\(\{/,
   );
   // A number field accepts scientific notation and parseInt stops at the "e", so 1e5 was read as
   // 1 and saved clamped to the provider minimum.
