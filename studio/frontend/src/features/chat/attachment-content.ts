@@ -37,6 +37,7 @@ export type AttachmentTextLabel =
   | "PPTX"
   | "RTF"
   | "PAGES"
+  | "NUMBERS"
   | "KEY";
 
 export { TEXT_ATTACHMENT_ACCEPT };
@@ -57,7 +58,7 @@ const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
 const LABELLED_ATTACHMENT_TEXT_RE =
-  /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF|PAGES|KEY): [^\n]*\]\n/;
+  /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF|PAGES|NUMBERS|KEY): [^\n]*\]\n/;
 const ATTACHMENT_TAG_OPEN_RE = /^<attachment name=[^\n]*>\n/;
 const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 // Both wrappers start on the first line, so only a prefix is matched against.

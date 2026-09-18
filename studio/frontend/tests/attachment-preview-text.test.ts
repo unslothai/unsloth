@@ -1436,6 +1436,131 @@ test("Keynote slides read in deck order, numbered past skipped slides", async ()
   });
 });
 
+function cell(type: number, flags: number, values: Bytes): Bytes {
+  return [5, type, 0, 0, 0, 0, 0, 0, flags, 0, 0, 0, ...values];
+}
+
+function float64(value: number): Bytes {
+  return [...new Uint8Array(new Float64Array([value]).buffer)];
+}
+
+function rowInfo(index: number, cells: (Bytes | null)[]): Bytes {
+  const buffer: Bytes = [];
+  const offsets: Bytes = [];
+  for (const value of cells) {
+    const offset = value ? buffer.length : 0xffff;
+    offsets.push(offset & 0xff, offset >> 8);
+    buffer.push(...(value ?? []));
+  }
+  return bytes(5, [
+    ...int(1, index),
+    ...bytes(6, buffer),
+    ...bytes(7, offsets),
+  ]);
+}
+
+test("Numbers sheets read their tables as rows of typed cells", async () => {
+  // -12345678901234567.89: a mantissa past 2^53, exponent -2 stored with bias 0x1820.
+  const mantissa = BigInt("1234567890123456789");
+  const biased = 0x1820 - 2;
+  const decimal = [
+    ...Array.from({ length: 14 }, (_, index) =>
+      Number((mantissa >> BigInt(8 * index)) & BigInt(0xff)),
+    ),
+    (biased & 0x7f) << 1,
+    0x80 | (biased >> 7),
+  ];
+  // Listed out of order: the second tile first.
+  const tileStorage = [
+    ...bytes(1, [...int(1, 1), ...ref(2, 7)]),
+    ...bytes(1, [...int(1, 0), ...ref(2, 6)]),
+  ];
+  const content = await readIwork(
+    "budget.numbers",
+    iwa([
+      [1, 1, ref(1, 2)],
+      [2, 2, [...bytes(1, "Budget"), ...ref(2, 3)]],
+      [3, 6000, ref(2, 4)],
+      [
+        4,
+        6001,
+        [
+          ...bytes(8, "Costs"),
+          ...int(6, 300),
+          ...int(7, 4),
+          ...bytes(4, [...bytes(3, tileStorage), ...ref(4, 5)]),
+        ],
+      ],
+      [
+        5,
+        6005,
+        [...int(1, 1), ...bytes(3, [...int(1, 7), ...bytes(3, "Re\tnt")])],
+      ],
+      [
+        6,
+        6002,
+        rowInfo(5, [
+          cell(3, 0x8, [7, 0, 0, 0]),
+          cell(2, 0x3, [...decimal, ...float64(0)]),
+          cell(5, 0x6, [...float64(7), ...float64(86400)]),
+          null,
+        ]),
+      ],
+      [
+        7,
+        6002,
+        rowInfo(0, [null, cell(6, 0x3, [...Array(16).fill(0), ...float64(1)])]),
+      ],
+    ]),
+  );
+  assert.deepEqual(content, {
+    label: "NUMBERS",
+    text: "[Sheet: Budget]\n[Table: Costs]\nRe nt\t-12345678901234567.89\t2001-01-02 00:00:00\n\tTRUE",
+  });
+});
+
+test("a row repeating one long blank string spends the text budget, after the rows before it", async () => {
+  const string = (id: number) => cell(3, 0x8, [id, 0, 0, 0]);
+  const tiles = bytes(3, bytes(1, [...int(1, 0), ...ref(2, 6)]));
+  const entry = (key: number, text: string) =>
+    bytes(3, [...int(1, key), ...bytes(3, text)]);
+  const content = await readIwork(
+    "long.numbers",
+    iwa([
+      [1, 1, ref(1, 2)],
+      [2, 2, [...bytes(1, "Sheet"), ...ref(2, 4)]],
+      [
+        4,
+        6001,
+        [...int(6, 3), ...int(7, 1024), ...bytes(4, [...tiles, ...ref(4, 5)])],
+      ],
+      [
+        5,
+        6005,
+        [
+          ...int(1, 1),
+          ...entry(7, " ".repeat(2 * 1024 * 1024)),
+          ...entry(8, "first"),
+          ...entry(9, "after"),
+        ],
+      ],
+      [
+        6,
+        6002,
+        [
+          ...rowInfo(2, [string(9)]),
+          ...rowInfo(1, Array(1024).fill(string(7))),
+          ...rowInfo(0, [string(8)]),
+        ],
+      ],
+    ]),
+  );
+  assert.equal(
+    content.text,
+    "[Sheet: Sheet]\n[Table: ]\nfirst\n\n[Truncated: the spreadsheet has more text than one attachment carries]",
+  );
+});
+
 test("an iWork reader refuses old and oversized files", async () => {
   await assert.rejects(
     readIworkAttachmentContent(

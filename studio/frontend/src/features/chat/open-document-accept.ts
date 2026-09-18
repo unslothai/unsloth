@@ -55,11 +55,13 @@ export function isRtfAttachmentName(filename: string): boolean {
 
 export const IWORK_MIMES = [
   "application/vnd.apple.pages",
+  "application/vnd.apple.numbers",
   "application/vnd.apple.keynote",
   "application/x-iwork-pages-sffpages",
+  "application/x-iwork-numbers-sffnumbers",
   "application/x-iwork-keynote-sffkey",
 ];
-export const IWORK_ATTACHMENT_EXTENSIONS = ".pages,.key";
+export const IWORK_ATTACHMENT_EXTENSIONS = ".pages,.numbers,.key";
 export const IWORK_ATTACHMENT_ACCEPT = [
   IWORK_ATTACHMENT_EXTENSIONS,
   ...IWORK_MIMES,

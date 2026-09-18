@@ -118,6 +118,7 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "ppsx" => "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
         "rtf" => "application/rtf",
         "pages" => "application/vnd.apple.pages",
+        "numbers" => "application/vnd.apple.numbers",
         "key" => "application/vnd.apple.keynote",
         "mp3" | "mp2" => "audio/mpeg",
         "wav" => "audio/wav",
@@ -508,6 +509,7 @@ mod tests {
             ),
             ("notes.rtf", "application/rtf"),
             ("notes.pages", "application/vnd.apple.pages"),
+            ("budget.numbers", "application/vnd.apple.numbers"),
             ("deck.key", "application/vnd.apple.keynote"),
         ] {
             assert_eq!(clipboard_file_mime_type(Path::new(name)), Some(mime_type));

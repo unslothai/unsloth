@@ -20,23 +20,37 @@ function maxTextLength(): number {
 // Charged per stored object, so a flood of empty records cannot outgrow the unpacked budget.
 const OBJECT_OVERHEAD_BYTES = 256;
 const MAX_REFERENCE_DEPTH = 8;
+const MAX_TABLE_COLUMNS = 1024;
+const TILE_ROWS = 256;
+// Charged per table row and data-list entry kept, so a flood of tiny ones is refused, not held.
+const TABLE_UNIT_BYTES = 64;
 
 const DOCUMENT = 1;
-const SHOW = 2;
+const SHOW_OR_SHEET = 2;
 const SLIDE_NODE = 4;
 const SLIDE = 5;
 const STYLESHEET = 401;
 const TEXT_STORAGE = 2001;
+const TABLE_MODEL = 6001;
+const TABLE_DATA_LIST = 6005;
 const PAGES_DOCUMENT = 10000;
-// Objects that link back to the deck, a slide or the styles: following them would repeat another
-// slide's text or walk the whole stylesheet.
-const WALK_STOPS = new Set([DOCUMENT, SHOW, SLIDE_NODE, SLIDE, STYLESHEET]);
+// Links back to the document, a sheet, a slide or the styles: following them repeats or sprawls.
+const WALK_STOPS = new Set([
+  DOCUMENT,
+  SHOW_OR_SHEET,
+  SLIDE_NODE,
+  SLIDE,
+  STYLESHEET,
+]);
 // Title and body placeholders, then drawables. The rest are builds, whose order is not reading
 // order, and the template slide and speaker notes, which the PPTX reader also leaves out.
 const SLIDE_TEXT_FIELDS = [5, 6, 7];
+const STRING_LIST = 1;
+const RICH_TEXT_LIST = 8;
+const IWORK_EPOCH_MS = Date.UTC(2001, 0, 1);
 
 export type IworkAttachmentContent = {
-  label: "PAGES" | "KEY";
+  label: "PAGES" | "NUMBERS" | "KEY";
   text: string;
 };
 
@@ -49,9 +63,13 @@ type Field = {
   bytes: Uint8Array | null;
 };
 type Budget = { remaining: number };
-// Every object is walked at most once per document, so structure that several slides share, or a
-// slide tree that lists a node twice, cannot multiply the work.
-type Walk = { objects: Objects; seen: Set<number> };
+// Every object is walked at most once, so shared structure cannot multiply the work.
+type Walk = {
+  objects: Objects;
+  seen: Set<number>;
+  tableUnits: Budget;
+  name: string;
+};
 
 class IworkSizeError extends Error {}
 
@@ -66,7 +84,10 @@ export async function readIworkAttachmentContent(
   if (types.has(PAGES_DOCUMENT)) {
     return { label: "PAGES", text: pagesText(objects, filename) };
   }
-  return { label: "KEY", text: keynoteText(objects, filename) };
+  if (types.has(SLIDE_NODE)) {
+    return { label: "KEY", text: keynoteText(objects, filename) };
+  }
+  return { label: "NUMBERS", text: numbersText(objects, filename) };
 }
 
 async function readObjects(file: File): Promise<Objects> {
@@ -401,7 +422,7 @@ function pushLine(lines: string[], line: string, budget: Budget): void {
   }
 }
 
-/** Text boxes reachable from one object, in the order its fields name them. */
+/** Text boxes and tables reachable from one object, in the order its fields name them. */
 function collect(
   id: number,
   walk: Walk,
@@ -420,6 +441,8 @@ function collect(
   walk.seen.add(id);
   if (object.type === TEXT_STORAGE) {
     pushLine(lines, storageText(object.payload), budget);
+  } else if (object.type === TABLE_MODEL) {
+    collectTable(object.payload, walk, lines, budget);
   } else {
     for (const next of references(object.payload, walk.objects)) {
       collect(next, walk, lines, budget);
@@ -450,13 +473,13 @@ function pagesText(objects: Objects, filename: string): string {
 }
 
 function keynoteText(objects: Objects, filename: string): string {
-  const show = findObject(objects, SHOW);
+  const show = findObject(objects, SHOW_OR_SHEET);
   const tree = show && bytesField(show.payload, 3);
   if (!tree) {
     throw new Error(`Keynote file has no slide list: ${filename}`);
   }
   const budget = { remaining: maxTextLength() };
-  const walk = { objects, seen: new Set<number>() };
+  const walk = newWalk(objects, filename);
   const slides: string[] = [];
   let number = 0;
   // Skipped slides keep their number, so [Slide N] matches Keynote's own numbering.
@@ -497,4 +520,251 @@ function keynoteText(objects: Objects, filename: string): string {
     visit(nodeId);
   }
   return truncated(slides, budget, "presentation");
+}
+
+function newWalk(objects: Objects, name: string): Walk {
+  const tableUnits = { remaining: maxUnpackedBytes() };
+  return { objects, seen: new Set(), tableUnits, name };
+}
+
+function numbersText(objects: Objects, filename: string): string {
+  const document = findObject(objects, DOCUMENT);
+  if (!document) {
+    throw new Error(`Numbers file has no sheet list: ${filename}`);
+  }
+  const budget = { remaining: maxTextLength() };
+  const walk = newWalk(objects, filename);
+  const sheets: string[] = [];
+  for (const sheetId of references(document.payload, objects, 1)) {
+    const sheet = objects.get(sheetId);
+    if (
+      sheet?.type !== SHOW_OR_SHEET ||
+      walk.seen.has(sheetId) ||
+      budget.remaining <= 0
+    ) {
+      continue;
+    }
+    walk.seen.add(sheetId);
+    const lines: string[] = [];
+    for (const id of references(sheet.payload, objects, 2)) {
+      collect(id, walk, lines, budget);
+    }
+    if (lines.length > 0) {
+      const name = utf8.decode(
+        bytesField(sheet.payload, 1) ?? new Uint8Array(),
+      );
+      sheets.push(`[Sheet: ${name}]\n${lines.join("\n")}`);
+    }
+  }
+  return truncated(sheets, budget, "spreadsheet");
+}
+
+/** A table's name, then its non-empty rows as tab-separated cells. Cells are read only while the
+ *  text budget lasts, so one long row stops there rather than crowding out the rows before it. */
+function collectTable(
+  model: Uint8Array,
+  walk: Walk,
+  lines: string[],
+  budget: Budget,
+): void {
+  const rowCount = numberField(model, 6);
+  const columnCount = Math.min(numberField(model, 7), MAX_TABLE_COLUMNS);
+  const store = bytesField(model, 4) ?? new Uint8Array();
+  const lists = dataLists(store, walk);
+  const rows: { row: number; info: Uint8Array }[] = [];
+  for (const tile of fields(bytesField(store, 3) ?? new Uint8Array())) {
+    if (tile.field !== 1 || !tile.bytes) {
+      continue;
+    }
+    const [tileId = -1] = references(tile.bytes, walk.objects, 2);
+    const tileObject = walk.objects.get(tileId);
+    if (!tileObject || walk.seen.has(tileId)) {
+      continue;
+    }
+    walk.seen.add(tileId);
+    const firstRow = numberField(tile.bytes, 1) * TILE_ROWS;
+    for (const info of fields(tileObject.payload)) {
+      const row = info.bytes ? firstRow + numberField(info.bytes, 1) : rowCount;
+      if (info.field === 5 && row < rowCount) {
+        charge(walk.tableUnits, TABLE_UNIT_BYTES, walk.name);
+        rows.push({ row, info: info.bytes! });
+      }
+    }
+  }
+  rows.sort((a, b) => a.row - b.row);
+  const name = utf8.decode(bytesField(model, 8) ?? new Uint8Array());
+  pushLine(lines, `[Table: ${name}]`, budget);
+  for (const [index, { row, info }] of rows.entries()) {
+    if (budget.remaining <= 0) {
+      break;
+    }
+    const buffer = bytesField(info, 6);
+    const offsets = bytesField(info, 7);
+    if (!buffer || !offsets || rows[index - 1]?.row === row) {
+      continue;
+    }
+    const wide = numberField(info, 8) === 1;
+    const columns = Math.min(columnCount, offsets.length >> 1);
+    const cells: string[] = [];
+    let read = 0;
+    for (
+      let column = 0;
+      column < columns && read <= budget.remaining;
+      column++
+    ) {
+      const offset = offsets[2 * column]! | (offsets[2 * column + 1]! << 8);
+      if (offset !== 0xffff) {
+        cells[column] = cellText(buffer, wide ? offset * 4 : offset, lists);
+        read += cells[column]!.length + 1;
+      }
+    }
+    const line = Array.from(cells, (cell) => cell ?? "")
+      .join("\t")
+      .replace(/\t+$/g, "");
+    if (line.trim()) {
+      pushLine(lines, line, budget);
+    } else {
+      budget.remaining -= read;
+    }
+  }
+}
+
+/** Strings and rich text a table's cells point into, by list type and entry key, on one line each. */
+function dataLists(
+  store: Uint8Array,
+  walk: Walk,
+): Map<number, Map<number, string>> {
+  const lists = new Map<number, Map<number, string>>();
+  for (const id of references(store, walk.objects)) {
+    const list = walk.objects.get(id);
+    if (list?.type !== TABLE_DATA_LIST || walk.seen.has(id)) {
+      continue;
+    }
+    walk.seen.add(id);
+    const type = numberField(list.payload, 1);
+    const entries = lists.get(type) ?? new Map<number, string>();
+    for (const entry of fields(list.payload)) {
+      if (entry.field !== 3 || !entry.bytes) {
+        continue;
+      }
+      charge(walk.tableUnits, TABLE_UNIT_BYTES, walk.name);
+      const string = bytesField(entry.bytes, 3);
+      let text = string ? utf8.decode(string) : "";
+      if (!string && type === RICH_TEXT_LIST) {
+        const lines: string[] = [];
+        for (const payload of references(entry.bytes, walk.objects)) {
+          collect(payload, walk, lines, { remaining: maxTextLength() });
+        }
+        text = lines.join("\n");
+      }
+      // Once per entry here, not per cell: a string repeated across rows costs its length only.
+      entries.set(numberField(entry.bytes, 1), text.replace(/[\t\r\n]+/g, " "));
+    }
+    lists.set(type, entries);
+  }
+  return lists;
+}
+
+function cellText(
+  buffer: Uint8Array,
+  offset: number,
+  lists: Map<number, Map<number, string>>,
+): string {
+  try {
+    const view = new DataView(
+      buffer.buffer,
+      buffer.byteOffset + offset,
+      buffer.byteLength - offset,
+    );
+    const flags = view.getUint32(8, true);
+    let at = 12;
+    let decimal: string | null = null;
+    let double: number | null = null;
+    let seconds: number | null = null;
+    let stringId = -1;
+    let richId = -1;
+    if (flags & 0x1) {
+      decimal = decimal128(buffer.subarray(offset + at, offset + at + 16));
+      at += 16;
+    }
+    if (flags & 0x2) {
+      double = view.getFloat64(at, true);
+      at += 8;
+    }
+    if (flags & 0x4) {
+      seconds = view.getFloat64(at, true);
+      at += 8;
+    }
+    if (flags & 0x8) {
+      stringId = view.getInt32(at, true);
+      at += 4;
+    }
+    if (flags & 0x10) {
+      richId = view.getInt32(at, true);
+    }
+    let text = "";
+    switch (view.getUint8(1)) {
+      case 2: // number
+      case 10: // currency
+        text = decimal ?? (double === null ? "" : String(double));
+        break;
+      case 3:
+        text = lists.get(STRING_LIST)?.get(stringId) ?? "";
+        break;
+      case 5:
+        text = seconds === null ? "" : iworkDate(seconds);
+        break;
+      case 6:
+        text = double ? "TRUE" : "FALSE";
+        break;
+      case 7: // duration, in seconds
+        text = double === null ? "" : String(double);
+        break;
+      case 8:
+        text = "#ERROR";
+        break;
+      case 9:
+        text = lists.get(RICH_TEXT_LIST)?.get(richId) ?? "";
+        break;
+    }
+    return text;
+  } catch {
+    return "";
+  }
+}
+
+/** An IEEE 754 decimal128 as exact decimal digits: the fraction a double would round is kept. */
+function decimal128(bytes: Uint8Array): string {
+  if (bytes.length < 16) {
+    return "";
+  }
+  const exponent = (((bytes[15]! & 0x7f) << 7) | (bytes[14]! >> 1)) - 0x1820;
+  let mantissa = BigInt(bytes[14]! & 1);
+  for (let index = 13; index >= 0; index--) {
+    mantissa = mantissa * BigInt(256) + BigInt(bytes[index]!);
+  }
+  let digits = mantissa.toString();
+  if (exponent > 20 || digits.length + exponent < -20) {
+    // An exponent reaches ±6176; keep such values from spelling out thousands of zeros.
+    digits = `${digits}e${exponent}`;
+  } else if (exponent >= 0) {
+    digits += "0".repeat(exponent);
+  } else {
+    const point = digits.length + exponent;
+    digits =
+      point > 0
+        ? `${digits.slice(0, point)}.${digits.slice(point)}`
+        : `0.${"0".repeat(-point)}${digits}`;
+    digits = digits.replace(/0+$/, "").replace(/\.$/, "");
+  }
+  return (bytes[15]! & 0x80) !== 0 && mantissa !== BigInt(0)
+    ? `-${digits}`
+    : digits;
+}
+
+function iworkDate(seconds: number): string {
+  const date = new Date(IWORK_EPOCH_MS + seconds * 1000);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toISOString().slice(0, 19).replace("T", " ");
 }
