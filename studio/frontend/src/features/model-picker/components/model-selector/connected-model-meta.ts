@@ -21,18 +21,6 @@ export interface ConnectedModelMarks {
   capabilities: ModelCapabilities;
   /** Reads images: drawn as the row's Vision badge rather than a glyph. */
   vision: boolean;
-  /** Published context window in tokens, or null when the catalogue does not say. */
-  contextLength: number | null;
-}
-
-/** A context window as a chip: "128K", "1.1M". The exact count stays in Model info. */
-export function formatContextLength(tokens: number): string {
-  if (tokens >= 1_000_000) {
-    const millions = tokens / 1_000_000;
-    return `${millions >= 10 ? Math.round(millions) : Number(millions.toFixed(1))}M`;
-  }
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
-  return String(tokens);
 }
 
 /** The badges one Connected row should draw.
@@ -75,9 +63,5 @@ export function connectedModelMarks(opts: {
       videoGen: false,
     },
     vision,
-    contextLength:
-      entry?.contextLength && entry.contextLength > 0
-        ? entry.contextLength
-        : null,
   };
 }

@@ -147,7 +147,6 @@ import {
 import { ConnectedModelInfoDialog } from "./connected-model-info-dialog";
 import {
   connectedModelMarks,
-  formatContextLength,
 } from "./connected-model-meta";
 import { ConnectedModelSettingsDialog } from "./connected-model-settings-dialog";
 import { FolderBrowser } from "./folder-browser";
@@ -5470,13 +5469,6 @@ export function HubModelPicker({
             }
             capabilities={marks.capabilities}
             showVision={marks.vision}
-            // The context window, which is usually what choosing between two models from one
-            // connection comes down to. Rounded here; Model info carries the exact count.
-            tags={
-              marks.contextLength
-                ? [`${formatContextLength(marks.contextLength)} ctx`]
-                : undefined
-            }
             // Empty but held open: the slot a local row gives its format dot is what starts
             // every list's names on one line. The connection's logo goes in it only where no
             // heading is carrying it, so a pinned row still says where it came from.
@@ -5555,26 +5547,6 @@ export function HubModelPicker({
                 ),
                 onSelect: () => void copyConnectedModelId(providerModelId),
               },
-              // Only where no heading is carrying it. A group heading has its own gear, so a row
-              // under one would be offering the same destination twice; a pinned row, or one in
-              // the flat list the name sort produces, has no heading at all, and a connection
-              // whose every model is pinned has no group left to hold one.
-              ...(headless && onConfigureConnection
-                ? [
-                    {
-                      key: "connection",
-                      label: "Connection settings",
-                      icon: (
-                        <HugeiconsIcon
-                          icon={Settings02Icon}
-                          strokeWidth={1.75}
-                          className="size-icon"
-                        />
-                      ),
-                      onSelect: () => onConfigureConnection(model.providerId),
-                    },
-                  ]
-                : []),
             ]}
           />
         </span>

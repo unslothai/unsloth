@@ -223,28 +223,26 @@ test("the row menu carries the connected actions", () => {
   assert.doesNotMatch(pickers, /Use by default in new chats/);
   // Unticking a model belongs to the connection form, which owns that list.
   assert.doesNotMatch(pickers, /Hide from this list/);
-  // The connection is the heading's, not the row's: a row under one would offer the same
-  // destination twice. Only a row with no heading over it carries the entry, and the group
-  // heading's own gear is what every other row reaches it through.
-  assert.match(
-    pickers,
-    /\.\.\.\(headless && onConfigureConnection\s*\? \[\s*\{\s*key: "connection",\s*label: "Connection settings",/,
-  );
-  assert.match(
+  // The connection belongs to the heading's gear, not to a row's menu: the row menu is about the
+  // model, and a second way in said nothing the gear above it did not.
+  assert.doesNotMatch(pickers, /label: "Connection settings",/);
+  assert.doesNotMatch(
     pickers,
     /onSelect: \(\) => onConfigureConnection\(model\.providerId\),/,
   );
 });
 
-test("a connection stays reachable when its heading is gone", () => {
-  // The name sort drops every heading, and a connection whose every model is pinned loses its
-  // group entirely, so the heading gear cannot be the only way in.
+test("the name sort flattens the list without dropping a model", () => {
+  // Every heading goes, and a connection whose every model is pinned loses its group entirely,
+  // so both paths have to list from the matches rather than from the groups.
   assert.match(pickers, /if \(connectedSort !== "name"\) return groups;/);
   assert.match(
     pickers,
     /for \(const model of connectedMatches\) \{\s*if \(pinnedConnectedSet\.has\(model\.id\)\) continue;/,
   );
-  assert.match(pickers, /headless && onConfigureConnection/);
+  // Such a row says which connection it came from through its logo and tooltip, pinned above.
+  // Its settings are the heading gear's, or Settings then Connections where no heading is left.
+  assert.doesNotMatch(pickers, /headless && onConfigureConnection/);
 });
 
 test("the connection's own settings hang off the group heading", () => {
@@ -714,12 +712,11 @@ test("the published context window reaches the row and the info box", () => {
     catalog,
     /\.find\(\(context\) => typeof context === "number" && context > 0\)/,
   );
-  // Rounded on the row, exact in the info box.
-  assert.match(marks, /export function formatContextLength/);
-  assert.match(
-    pickers,
-    /\[`\$\{formatContextLength\(marks\.contextLength\)\} ctx`\]/,
-  );
+  // The info box alone, with the exact count. No chip on the row: the name is what a row is for,
+  // and a window on every one of them read as noise rather than as the figure to compare.
+  assert.doesNotMatch(pickers, /ctx`\]/);
+  assert.doesNotMatch(marks, /formatContextLength/);
+  assert.doesNotMatch(marks, /contextLength/);
   assert.match(infoDialog, /<Field label="Context window">/);
   assert.match(infoDialog, /tokens\(entry\.contextLength\)/);
 });
