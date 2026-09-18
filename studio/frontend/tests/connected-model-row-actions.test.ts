@@ -127,6 +127,17 @@ test("connected pins are a separate list from the On Device ones", () => {
     connectedPins,
     /const raw = localStorage\.getItem\(KEY\);\s*if \(raw === null\) return null;/,
   );
+  // A drag commit rebases too, for the same reason and one more: nothing echoes this window's own
+  // write back to it, so a pin another window added mid-drag would be erased with no event left
+  // to restore it. The dragged order is this window's; which ids are pinned is the record's.
+  assert.match(
+    connectedPins,
+    /const next = rebaseOnStored\(state\.pinned\);\s*writePinned\(next\);/,
+  );
+  assert.match(
+    connectedPins,
+    /const kept = order\.filter\(\(id\) => stored\.includes\(id\)\);\s*const added = stored\.filter\(\(id\) => !order\.includes\(id\)\);\s*return \[\.\.\.added, \.\.\.kept\];/,
+  );
 });
 
 test("a pin moves the row out of its provider group", () => {

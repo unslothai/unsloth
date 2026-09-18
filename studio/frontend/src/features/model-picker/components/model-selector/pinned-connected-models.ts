@@ -62,6 +62,19 @@ function sameOrder(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((key, index) => key === b[index]);
 }
 
+/** A dragged order over the stored membership. This window owns the order of the rows it dragged;
+ *  which ids are pinned belongs to the record, since another window can pin or unpin during the
+ *  drag and its storage event may still be in flight at the drop. So another window's additions
+ *  come in at the front, where a new pin goes, and anything it unpinned stays unpinned.
+ *  Unavailable storage reads as null and leaves the order alone, keeping pins session-only. */
+function rebaseOnStored(order: readonly string[]): string[] {
+  const stored = storedPinned();
+  if (stored === null) return [...order];
+  const kept = order.filter((id) => stored.includes(id));
+  const added = stored.filter((id) => !order.includes(id));
+  return [...added, ...kept];
+}
+
 interface PinnedConnectedModelsState {
   pinned: string[];
   /** Pin or unpin one external model id. */
@@ -124,8 +137,12 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
         const base = external ?? snapshot;
         if (commit) {
           if (sameOrder(base, state.pinned)) return state;
-          writePinned(state.pinned);
-          return state;
+          // The write replaces the whole list and nothing echoes it back to this window, so a
+          // plain write of the dragged order would erase a pin another window added mid-drag
+          // with no event left to restore it.
+          const next = rebaseOnStored(state.pinned);
+          writePinned(next);
+          return sameOrder(next, state.pinned) ? state : { pinned: next };
         }
         // A cancel writes nothing, so it has to land on the order already in localStorage.
         if (sameOrder(base, state.pinned)) return state;
