@@ -2567,12 +2567,14 @@ const CONNECTED_SORT_OPTIONS: HubOption<ConnectedSortKey>[] = [
 
 // Modality filter for Connected, mirroring the On Device format filter. The keys are the marks a
 // connected row can draw, so a filter cannot ask for a badge the list has no way to show.
-type ConnectedModalityFilter = "all" | "vision" | "audio" | "imageGen";
+// No Audio: connectedModelMarks never marks a connected model as taking audio, since the
+// attachment adapter refuses it under an external selection, so the option could only ever
+// return an empty list.
+type ConnectedModalityFilter = "all" | "vision" | "imageGen";
 
 const CONNECTED_MODALITY_LABELS: Record<ConnectedModalityFilter, string> = {
   all: "All",
   vision: "Vision",
-  audio: "Audio",
   imageGen: "Image gen",
 };
 

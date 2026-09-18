@@ -79,8 +79,6 @@ test("modality comes from the resolvers the app already has", () => {
     marks,
     /providerModelSupportsVision\(providerType, modelId\) === true/,
   );
-  assert.match(marks, /resolveModelCatalogEntry\(providerType, modelId\);/);
-  assert.match(marks, /const modalities = entry\?\.inputModalities \?\? null;/);
   assert.match(marks, /providerSupportsBuiltinImageGeneration\(/);
   // Video generation is never claimed on a connected row: no provider publishes a capability for
   // it and nothing we connect to serves it through the chat route, so the name would be the only
@@ -89,14 +87,29 @@ test("modality comes from the resolvers the app already has", () => {
   // Nor is any other mark guessed from the name. Image generation is enabled in the adapter
   // through providerSupportsBuiltinImageGeneration alone, and the composer's Images pill with it,
   // so a name that reads like a diffusion model but resolves to false there can never be asked
-  // for one. Audio keeps the catalogue's published input modality and nothing else.
+  // for one.
   assert.doesNotMatch(marks, /byName/);
   assert.doesNotMatch(marks, /detectCapabilities/);
   assert.match(
     marks,
     /imageGen: providerSupportsBuiltinImageGeneration\(\s*providerType,\s*modelId,\s*baseUrl,\s*\),/,
   );
-  assert.match(marks, /audio: modalities\?\.includes\("audio"\) === true,/);
+  // Audio is withheld even where a catalogue publishes it as an input modality: the attachment
+  // adapter resolves the active model out of `models`, which carries loaded local models only, so
+  // an external selection has no row there and `add` rejects every audio file it is given.
+  assert.match(marks, /audio: false,/);
+  assert.doesNotMatch(marks, /includes\("audio"\)/);
+  const audioAdapter = readSrc("features/chat/audio-attachment-adapter.ts");
+  assert.match(
+    audioAdapter,
+    /const activeModel = state\.models\.find\(\(m\) => m\.id === checkpoint\);/,
+  );
+  assert.match(audioAdapter, /\} else if \(!activeModel\?\.hasAudioInput\) \{/);
+  // So the filter drops its Audio option rather than offering one that matches nothing.
+  assert.match(
+    pickers,
+    /type ConnectedModalityFilter = "all" \| "vision" \| "imageGen";/,
+  );
   // Unknown is not a promise: only an explicit true draws the eye.
   assert.doesNotMatch(
     marks,
@@ -198,6 +211,12 @@ test("the deep link waits for the provider and fires once", () => {
   assert.match(providersDialog, /\[providersReady, setProvidersReady\] = useState\(false\)/);
   assert.match(providersDialog, /onProvidersChange\(syncedProviders\);\s*setProvidersReady\(true\);/);
   assert.match(providersDialog, /if \(!providersReady\) return;/);
+  // Ready either way: a failed sync leaves the hydrated list as all there is, and waiting on a
+  // success the backend may never give would leave the gear opening nothing offline.
+  assert.match(
+    providersDialog,
+    /toast\.error\(`Failed to load connections: \$\{message\}`\);\s*\}\s*(\/\/[^\n]*\n\s*)*if \(isMounted\) setProvidersReady\(true\);/,
+  );
   assert.match(providersDialog, /\[openProviderId, providers, providersReady, onOpenProviderConsumed\]/);
   assert.match(providersDialog, /if \(!provider\) return;/);
   assert.match(

@@ -3,15 +3,14 @@
 
 // What a connected (API-served) model can do, in the shape the picker's row badges take. A
 // connected model carries no HF tags and no local metadata, so every mark comes from what the app
-// already resolves: the backend capability registry and the connection's cached catalogue. Not
-// from the name, unlike an On Device row: that badge describes a repo you may be about to fetch,
-// while this one describes what happens when you pick the row and send a message, so a guess here
-// promises something the request path may have no way to do.
+// already resolves for the request itself: the backend capability registry and the provider gates
+// the adapter uses. Not from the name, unlike an On Device row: that badge describes a repo you
+// may be about to fetch, while this one describes what happens when you pick the row and send a
+// message, so a mark the request path cannot honour is a promise the picker breaks. That rules
+// out a published modality as well as a guess, where nothing carries it to the provider yet.
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import { providerModelSupportsVision } from "@/features/chat/external-providers";
-// eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
-import { resolveModelCatalogEntry } from "@/features/chat/model-catalog";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import { providerSupportsBuiltinImageGeneration } from "@/features/chat/provider-capabilities";
 import type { ModelCapabilities } from "./model-capabilities";
@@ -35,8 +34,6 @@ export function connectedModelMarks(opts: {
   baseUrl?: string | null;
 }): ConnectedModelMarks {
   const { providerType, modelId, baseUrl } = opts;
-  const entry = resolveModelCatalogEntry(providerType, modelId);
-  const modalities = entry?.inputModalities ?? null;
   // Already layered: the backend's per-model registry entry, the image-stripping provider list,
   // the catalogue's modalities, then the provider-type default. Null there means unknown, which
   // the picker draws as no badge rather than as a promise.
@@ -47,7 +44,11 @@ export function connectedModelMarks(opts: {
       // No glyph reads this (CAPABILITY_BADGES draws none for reasoning), so it is not worth a
       // second catalogue lookup here.
       reasoning: false,
-      audio: modalities?.includes("audio") === true,
+      // Never claimed either, though catalogues do publish it: the audio adapter resolves the
+      // active model out of `models`, which holds loaded local models only, so `add` rejects
+      // every audio file under a connected selection. The glyph would offer a picker entry that
+      // cannot be used, so it waits on a request path that can carry audio to a provider.
+      audio: false,
       // The helper alone, with no fallback to the model's name. It is the same gate the adapter
       // enables image generation through, and the composer's Images pill with it, so a name that
       // reads like a diffusion model but resolves to false here can never be asked for an image.

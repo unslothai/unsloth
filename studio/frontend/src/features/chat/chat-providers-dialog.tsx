@@ -469,6 +469,9 @@ export function ChatProvidersSettings({
             error instanceof Error ? error.message : "Unknown error";
           toast.error(`Failed to load connections: ${message}`);
         }
+        // A failed sync leaves the hydrated list as all there is. Waiting on a success the backend
+        // may never give would leave the deep link dead offline, with the gear opening nothing.
+        if (isMounted) setProvidersReady(true);
       } finally {
         if (isMounted && showSpinner) {
           setRegistryLoading(false);
