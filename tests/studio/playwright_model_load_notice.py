@@ -3,10 +3,9 @@
 
 """Exercise the real chat load hook, Sonner toast, and inline status without a model.
 
-Start Vite from studio/frontend:
-  npm run dev -- --config tests/fixtures/model-load-notice/vite.config.ts --port 5197
-Then, from the repository root with Playwright and Chromium installed:
+From the repository root with frontend dependencies, Playwright and Chromium installed:
   python tests/studio/playwright_model_load_notice.py
+The driver starts and stops its own Vite fixture. Use --url to target an existing server.
 PW_BROWSER_EXECUTABLE optionally selects an installed Chromium executable.
 
 For a negative control, point Vite's PW_SOURCE_FRONTEND_DIR at the base checkout's
@@ -24,6 +23,12 @@ import re
 from urllib.parse import urlsplit
 
 from playwright.async_api import Error, async_playwright, expect
+from _playwright_robust import (
+    chromium_launch_args,
+    start_vite,
+    stop_process,
+    wait_for_smoke_page,
+)
 
 
 class LoadFixture:
@@ -255,7 +260,9 @@ async def main(args):
     }
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
-            headless = True, executable_path = os.environ.get("PW_BROWSER_EXECUTABLE") or None
+            headless = True,
+            executable_path = os.environ.get("PW_BROWSER_EXECUTABLE") or None,
+            args = chromium_launch_args(),
         )
         try:
             for name, run in cases.items():
@@ -276,7 +283,18 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("--url", default = "http://127.0.0.1:5197")
+    parser.add_argument("--url")
+    parser.add_argument("--port", type = int, default = 5197)
     parser.add_argument("--artifacts", default = "/tmp/unsloth-model-load-notice")
     parser.add_argument("--case")
-    asyncio.run(main(parser.parse_args()))
+    args = parser.parse_args()
+    server = None
+    try:
+        if args.url is None:
+            server = start_vite(args.port, config = "tests/fixtures/model-load-notice/vite.config.ts")
+            args.url = f"http://127.0.0.1:{args.port}"
+        wait_for_smoke_page(args.url, "./main.tsx", proc = server)
+        asyncio.run(main(args))
+    finally:
+        if server is not None:
+            stop_process(server)
