@@ -6182,6 +6182,7 @@ export function createOpenAIStreamAdapter(
             stream_options: { include_usage: true },
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
+              isMlx: activeModel?.isMlx === true,
               autoCompactEnabled: runtime.autoCompactEnabled,
               contextPolicy: runtime.contextPolicy,
               compactionHeadroomRatio: runtime.compactionHeadroomRatio,

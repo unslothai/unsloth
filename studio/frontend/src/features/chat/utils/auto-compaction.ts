@@ -87,6 +87,7 @@ export function parseCompactionStyle(value: string): {
 
 export function ggufCompactionRequestFields(options: {
   isGguf: boolean;
+  isMlx?: boolean;
   autoCompactEnabled: boolean;
   contextPolicy: LocalContextPolicy;
   compactionHeadroomRatio: number;
@@ -95,7 +96,7 @@ export function ggufCompactionRequestFields(options: {
   context_policy?: Exclude<LocalContextPolicy, "inherit">;
   compaction_headroom_ratio?: number;
 } {
-  if (!options.isGguf) return {};
+  if (!options.isGguf && !options.isMlx) return {};
   if (!options.autoCompactEnabled) {
     // An omitted field falls back to UNSLOTH_CONTEXT_OVERFLOW, which may still compact. "error" is an
     // explicit refusal of that fallback.
