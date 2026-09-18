@@ -38136,6 +38136,7 @@ class LlamaCppBackend:
         chat_template_kwargs = None,
         continue_final_message: bool = False,
         should_abort = None,
+        prefer_native: bool = False,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -38149,6 +38150,9 @@ class LlamaCppBackend:
         ``should_abort`` is polled between the two llama-server calls. Admission is the
         caller's job; this only stops a count that was admitted while idle from spending its
         second round trip once the answer stopped mattering. Raises when it fires.
+
+        Admission can prefer the single-request chat count endpoint. If unavailable,
+        the rendered-prompt tokenizer below still provides an exact count.
         """
         if not self.is_loaded:
             if strict:
@@ -38238,6 +38242,22 @@ class LlamaCppBackend:
                     if continue_final_message:
                         template_body["continue_final_message"] = True
                         template_body["add_generation_prompt"] = False
+                    if prefer_native:
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
+                        try:
+                            native = client.post(
+                                f"{self.base_url}/v1/chat/completions/input_tokens",
+                                json = template_body,
+                            )
+                            if native.status_code == 200:
+                                count = native.json().get("input_tokens")
+                                if type(count) is int and count > 0:
+                                    return count
+                        except Exception:
+                            pass
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,
