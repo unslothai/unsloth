@@ -6194,9 +6194,23 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # branch on purpose: an install that renames a venv aside, fails to delete the copy, and
     # thereafter always takes an in-place route would never reach a sweep that lived inside the
     # branch, and a multi-GB venv would sit there for good.
+    #
+    # Validated the way install.ps1 validates its own rollback sweep
+    # (Test-StudioVenvRollbackMustBePreserved), and for the same reasons. "$_venvLeaf.stale-*" is a
+    # wildcard, not a proof of ownership: a user's own unsloth_studio.stale-backup would match it,
+    # and this sweep runs ahead of the custom-root guard below, so that guard cannot cover it.
+    # Three refusals: anything outside the exact generated timestamp-PID shape, a reparse point,
+    # and a copy whose owning process is still alive -- that last one is a concurrent setup's
+    # rescue copy, not our litter.
     $_venvParent = Split-Path -Parent $VenvDir
     $_venvLeaf = Split-Path -Leaf $VenvDir
-    foreach ($_old in @(Get-ChildItem -LiteralPath $_venvParent -Directory -Filter "$_venvLeaf.stale-*" -ErrorAction SilentlyContinue)) {
+    $_staleShape = '^' + [regex]::Escape($_venvLeaf) + '\.stale-[0-9]{14}-([0-9]+)$'
+    foreach ($_old in @(Get-ChildItem -LiteralPath $_venvParent -Directory -Force -ErrorAction SilentlyContinue)) {
+        if ($_old.Name -notmatch $_staleShape) { continue }
+        if (($_old.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        $_ownerPid = 0
+        if (-not [int]::TryParse($Matches[1], [ref]$_ownerPid)) { continue }
+        if ($_ownerPid -ne $PID -and $null -ne (Get-Process -Id $_ownerPid -ErrorAction SilentlyContinue)) { continue }
         Remove-Item -LiteralPath $_old.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
 

@@ -338,12 +338,52 @@ def test_setup_ps1_stale_sweep_runs_outside_the_rebuild_branch():
     the rebuild branch it would never run for the install that needs it most: one that renamed a
     venv aside, failed to delete the copy, and thereafter always takes an in-place route."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
-    sweep = src.index('-Filter "$_venvLeaf.stale-*"')
+    sweep = src.index("$_staleShape = ")
     rebuild = src.index("Stale venv detected ($reason) -- rebuilding")
     assert sweep < rebuild, "the stale-venv sweep must run whether or not this run rebuilds"
+    # Running ahead of the custom-root guard, the sweep cannot lean on it: it has to establish on
+    # its own that a directory is our litter, the way install.ps1's rollback sweep does.
+    block = src[sweep : src.index("if ($shouldRebuild) {", sweep)]
+    assert "ReparsePoint" in block, "the sweep must refuse reparse points"
+    assert "Get-Process -Id $_ownerPid" in block, "the sweep must spare a live owner's rescue copy"
+    assert "[0-9]{14}-([0-9]+)$" in block, "the sweep must only match the generated name shape"
     # A second rebuild inside the same second must not collide on the destination name.
     stale_leaf = src[src.index("$_staleLeaf = ") : src.index("\n", src.index("$_staleLeaf = "))]
     assert "$PID" in stale_leaf, f"stale destination needs a per-process suffix, got {stale_leaf!r}"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs pwsh")
+def test_setup_ps1_stale_sweep_only_removes_its_own_litter(tmp_path):
+    """Runs the shipped sweep, rather than reading it. The wildcard it enumerates under would
+    happily match a user's own `unsloth_studio.stale-backup`, and the sweep runs ahead of the
+    custom-root guard, so nothing downstream would stop it."""
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    start = src.index("    $_venvParent = Split-Path -Parent $VenvDir")
+    sweep = src[start : src.index("\n\n", start)]
+
+    home = tmp_path / "studio"
+    venv = home / "unsloth_studio"
+    (venv / "Lib").mkdir(parents = True)
+    dead_pid = 999999  # no such process; this copy is ours and abandoned
+    ours = home / f"unsloth_studio.stale-20260101000000-{dead_pid}"
+    theirs = home / "unsloth_studio.stale-backup"
+    live = home / f"unsloth_studio.stale-20260101000000-{os.getpid()+0}"
+    for d in (ours, theirs, live):
+        d.mkdir()
+    # `live` names this pytest process, which is alive, so it stands in for a concurrent setup's
+    # rescue copy. Our own $PID inside pwsh differs, so the sweep sees a live foreign owner.
+    script = tmp_path / "sweep.ps1"
+    script.write_text(f'$VenvDir = "{venv.as_posix()}"\n' + sweep + "\n", encoding = "utf-8")
+    subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(script)],
+        check = True,
+        capture_output = True,
+    )
+
+    assert not ours.exists(), "an abandoned copy in the generated name shape must be swept"
+    assert theirs.exists(), "a directory outside the generated name shape must be left alone"
+    assert live.exists(), "a copy whose owning process is still alive must be left alone"
+    assert venv.exists(), "the sweep must never touch the live venv"
 
 
 def _extract_setup_ps1_function(name: str) -> str:
