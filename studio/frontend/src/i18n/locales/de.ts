@@ -249,7 +249,7 @@ export const de = {
   settings: {
     accounts: {
       title: "Konten",
-      description: "Private Studio-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
+      description: "Private Unsloth Studio-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
       username: "Benutzername",
       create: "Konto anlegen",
       setupCode: "Einrichtungscode",
@@ -304,8 +304,6 @@ export const de = {
     },
     keyboardShortcuts: {
       title: "Tastenkürzel",
-      description:
-        "Ändere ein Kürzel oder lösche es, um die Tastenkombination für Browser oder Betriebssystem freizugeben.",
       searchPlaceholder: "Kürzel suchen…",
       noResults: "Keine Kürzel passen zu dieser Suche.",
       unassigned: "Nicht zugewiesen",
@@ -503,6 +501,14 @@ export const de = {
           label: "Nachricht senden",
           description: "Den Inhalt des Eingabefelds senden",
         },
+        queueMessage: {
+          label: "Nachricht einreihen",
+          description: "Den Entwurf ans Ende der Warteschlange senden",
+        },
+        steerMessage: {
+          label: "Antwort steuern",
+          description: "Die laufende Antwort stoppen und den Entwurf als Nächstes senden",
+        },
         cycleReasoningEffort: {
           label: "Denkaufwand durchschalten",
           description: "Durch die Stufen des Denkaufwands blättern",
@@ -569,7 +575,7 @@ export const de = {
       openLogsFolderFailed: "Der Protokollordner konnte nicht geöffnet werden.",
       exportFailed: "Die Protokolle konnten nicht heruntergeladen werden.",
       exportTooOld: "Das laufende Unsloth-Backend ist zu alt für den Protokollexport. Aktualisieren Sie dieses Backend und starten Sie es neu.",
-      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Studio-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
+      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Unsloth Studio-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
       keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {

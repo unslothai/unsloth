@@ -5102,7 +5102,7 @@ def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
         "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
         "before answering."
         + create_tip
-        + " Skill allowed-tools metadata never overrides Studio tool permissions.\n"
+        + " Skill allowed-tools metadata never overrides Unsloth tool permissions.\n"
         + catalog
     )
 
@@ -9686,7 +9686,7 @@ async def _maybe_auto_switch_model(
                 raise HTTPException(
                     status_code = 400,
                     detail = openai_error_body(
-                        "The requested text-to-speech model requires Python 3.10 or newer in Studio.",
+                        "The requested text-to-speech model requires Python 3.10 or newer in Unsloth.",
                         status = 400,
                         code = "unsupported_runtime",
                         param = "model",
@@ -13871,7 +13871,7 @@ async def _preflight_native_audio_placement(
     if audio_type in ("higgs_tts2", "higgs_tts3") and sys.version_info < (3, 10):
         raise HTTPException(
             status_code = 400,
-            detail = "Higgs TTS requires Python 3.10 or newer in Studio.",
+            detail = "Higgs TTS requires Python 3.10 or newer in Unsloth.",
         )
 
     # Before every VRAM question: sizing a CPU load refuses it on a full GPU.
@@ -13907,7 +13907,7 @@ async def _preflight_native_audio_placement(
                     "MiniMax Music 3 requires an NVIDIA CUDA GPU in its official local runtime."
                 )
             if sys.version_info < (3, 10):
-                raise ValueError("MiniMax Music 3 requires Python 3.10 or newer in Studio.")
+                raise ValueError("MiniMax Music 3 requires Python 3.10 or newer in Unsloth.")
         if device not in (hardware.DeviceType.CUDA, hardware.DeviceType.XPU):
             if placement.requested_gpu_ids:
                 raise ValueError(

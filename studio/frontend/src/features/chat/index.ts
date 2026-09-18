@@ -394,6 +394,7 @@ export {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  followUpSubmitIntent,
   steeringInsertionIndex,
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,

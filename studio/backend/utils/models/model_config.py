@@ -1788,14 +1788,15 @@ def _is_imatrix_path(path: str) -> bool:
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS. dflash/ holds real weights, so it is a drafter by prefix only.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
 def _is_mtp_drafter(path: str) -> bool:
     """True for a separate-file drafter, a companion to the main model rather
     than a selectable quant: the repo-root ``mtp-*.gguf``, the ``MTP/`` subdir
-    copies (Gemma 4) or the ``dspark/`` drafters (DeepSeek V4 Flash).
+    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash) or the
+    ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss).
 
     Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub). Must be
     excluded everywhere mmproj is, or the drafter leaks into variant menus (a

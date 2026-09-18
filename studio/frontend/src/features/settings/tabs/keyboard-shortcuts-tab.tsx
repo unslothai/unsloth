@@ -342,17 +342,14 @@ export function KeyboardShortcutsTab() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1">
-        <h2
+      <header className="flex flex-col gap-1">
+        <h1
           data-settings-label={t("settings.keyboardShortcuts.title")}
-          className="font-heading text-base font-semibold text-foreground"
+          className="text-xl font-semibold font-heading"
         >
           {t("settings.keyboardShortcuts.title")}
-        </h2>
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {t("settings.keyboardShortcuts.description")}
-        </p>
-      </div>
+        </h1>
+      </header>
 
       <div className="relative">
         <HugeiconsIcon
@@ -374,12 +371,9 @@ export function KeyboardShortcutsTab() {
           {t("settings.keyboardShortcuts.noResults")}
         </p>
       ) : (
-        // Rows carry the padding, so the dividers sit inset from the edge.
-        <div className="rounded-xl border border-border/70 px-5">
-          <div className="divide-y divide-border/60">
-            {visible.map(renderRow)}
-          </div>
-        </div>
+        // No frame: the dividers alone separate the rows, and they line up
+        // with the heading and the search box above.
+        <div className="divide-y divide-border/60">{visible.map(renderRow)}</div>
       )}
 
       <div className="flex justify-start pt-1">
