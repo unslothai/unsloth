@@ -304,6 +304,9 @@ export const hi = {
     keyboardShortcuts: {
       title: "कीबोर्ड शॉर्टकट",
       searchPlaceholder: "शॉर्टकट खोजें…",
+      keystrokePlaceholder: "खोजने के लिए शॉर्टकट दबाएँ",
+      searchByKeystrokes: "कीस्ट्रोक से खोजें",
+      searchByName: "नाम से खोजें",
       noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
       unassigned: "असाइन नहीं",
       recording: "कुंजियाँ दबाएँ…",
@@ -875,6 +878,9 @@ export const hi = {
         showLoadedModels: "लोड किए गए मॉडल का संकेतक",
         showLoadedModelsDescription:
           "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
+        showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
+        showWhisperUpdatesDescription:
+          "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
       },
       startup: {
         sectionTitle: "स्टार्टअप",

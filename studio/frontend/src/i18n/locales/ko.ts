@@ -301,6 +301,9 @@ export const ko = {
     keyboardShortcuts: {
       title: "키보드 단축키",
       searchPlaceholder: "단축키 검색…",
+      keystrokePlaceholder: "단축키를 눌러 검색",
+      searchByKeystrokes: "키 입력으로 검색",
+      searchByName: "이름으로 검색",
       noResults: "검색과 일치하는 단축키가 없습니다.",
       unassigned: "지정 안 됨",
       recording: "키를 누르세요…",
@@ -869,6 +872,9 @@ export const ko = {
         showLoadedModels: "로드된 모델 표시기",
         showLoadedModelsDescription:
           "현재 메모리에 있는 모든 모델(채팅, 음성, 이미지, 비디오)을 오른쪽 아래 작은 카드에 표시하고, 각각을 해제하는 버튼을 제공합니다.",
+        showWhisperUpdates: "whisper.cpp 업데이트 알림",
+        showWhisperUpdatesDescription:
+          "음성 인식 모델을 위한 최신 whisper.cpp 빌드가 있으면 알립니다. 오디오를 전사하지 않는다면 끄세요.",
       },
       startup: {
         sectionTitle: "시작",

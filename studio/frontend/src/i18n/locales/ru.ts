@@ -303,6 +303,9 @@ export const ru = {
     keyboardShortcuts: {
       title: "Сочетания клавиш",
       searchPlaceholder: "Поиск сочетаний…",
+      keystrokePlaceholder: "Нажмите сочетание для поиска",
+      searchByKeystrokes: "Поиск по нажатию",
+      searchByName: "Поиск по названию",
       noResults: "Ни одно сочетание не соответствует запросу.",
       unassigned: "Не назначено",
       recording: "Нажмите клавиши…",
@@ -875,6 +878,9 @@ export const ru = {
         showLoadedModels: "Индикатор загруженных моделей",
         showLoadedModelsDescription:
           "Показывает в правом нижнем углу небольшую карточку со всеми моделями, находящимися сейчас в памяти (чат, речь, изображения, видео), и кнопку для выгрузки каждой из них.",
+        showWhisperUpdates: "Уведомления об обновлениях whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Уведомлять о доступности новой сборки whisper.cpp для моделей распознавания речи. Отключите, если вы не расшифровываете аудио.",
       },
       startup: {
         sectionTitle: "Автозапуск",

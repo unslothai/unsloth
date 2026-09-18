@@ -304,6 +304,9 @@ export const es = {
     keyboardShortcuts: {
       title: "Atajos de teclado",
       searchPlaceholder: "Buscar atajos…",
+      keystrokePlaceholder: "Pulsa un atajo para buscar",
+      searchByKeystrokes: "Buscar por pulsación",
+      searchByName: "Buscar por nombre",
       noResults: "Ningún atajo coincide con esa búsqueda.",
       unassigned: "Sin asignar",
       recording: "Pulsa las teclas…",
@@ -887,6 +890,9 @@ export const es = {
         showLoadedModels: "Indicador de modelos cargados",
         showLoadedModelsDescription:
           "Muestra una pequeña tarjeta en la esquina inferior derecha con todos los modelos actualmente en memoria (chat, voz, imagen, vídeo), con un botón para expulsar cada uno.",
+        showWhisperUpdates: "Notificaciones de actualización de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Avisa cuando haya una compilación más reciente de whisper.cpp para los modelos de voz a texto. Desactívalo si nunca transcribes audio.",
       },
       startup: {
         sectionTitle: "Inicio",

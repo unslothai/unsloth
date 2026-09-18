@@ -305,6 +305,9 @@ export const fr = {
     keyboardShortcuts: {
       title: "Raccourcis clavier",
       searchPlaceholder: "Rechercher des raccourcis…",
+      keystrokePlaceholder: "Appuyez sur un raccourci pour rechercher",
+      searchByKeystrokes: "Rechercher par frappe",
+      searchByName: "Rechercher par nom",
       noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
       recording: "Appuyez sur les touches…",
@@ -889,6 +892,9 @@ export const fr = {
         showLoadedModels: "Indicateur des modèles chargés",
         showLoadedModelsDescription:
           "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
+        showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
       },
       startup: {
         sectionTitle: "Démarrage",

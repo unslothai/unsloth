@@ -299,6 +299,9 @@ export const zhCN = {
     keyboardShortcuts: {
       title: "键盘快捷键",
       searchPlaceholder: "搜索快捷键…",
+      keystrokePlaceholder: "按下快捷键进行搜索",
+      searchByKeystrokes: "按键搜索",
+      searchByName: "按名称搜索",
       noResults: "没有匹配的快捷键。",
       unassigned: "未分配",
       recording: "请按下按键…",
@@ -853,6 +856,9 @@ export const zhCN = {
         showLoadedModels: "已加载模型指示器",
         showLoadedModelsDescription:
           "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
+        showWhisperUpdates: "whisper.cpp 更新通知",
+        showWhisperUpdatesDescription:
+          "当有可用于语音识别模型的新版 whisper.cpp 构建时通知你。如果不需要转写音频，可以关闭此项。",
       },
       startup: {
         sectionTitle: "启动",
