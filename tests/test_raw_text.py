@@ -816,3 +816,28 @@ if __name__ == "__main__":
     success = test_validate_dataset_streams_instead_of_materialising_columns() and success
     success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
     sys.exit(0 if success else 1)
+
+
+def test_tokenized_chunks_reserve_space_for_the_final_eos():
+    class Tokenizer:
+        eos_token_id = 99
+        eos_token = "</s>"
+
+        def __call__(self, text, **kwargs):
+            return {"input_ids": [[int(word) for word in text.split()]]}
+
+    for size in (1, 4):
+        for stride in range(size):
+            loader = RawTextDataLoader(Tokenizer(), chunk_size = size, stride = stride)
+            for count in (size - 1, size, 2 * size - stride):
+                if count == 0:
+                    continue
+                chunks = loader.chunk_text(" ".join(map(str, range(count))))
+                assert all(len(chunk["input_ids"]) <= size for chunk in chunks)
+                assert chunks[-1]["input_ids"][-1] == 99
+                restored = list(chunks[0]["input_ids"])
+                for chunk in chunks[1:]:
+                    restored.extend(chunk["input_ids"][stride:])
+                assert restored == list(range(count)) + [99]
+                dataset = loader.create_causal_dataset(chunks)
+                assert dataset["labels"] == dataset["input_ids"]
