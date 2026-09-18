@@ -2791,7 +2791,9 @@ exit 1
         $script = "import pathlib,sys" + [char]10 +
                   "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
-        $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)".Trim()
+        # Verbatim: the child writes no delimiter, and Trim() would also strip a trailing
+        # U+00A0 that NTFS keeps in a name and the native rung and the gate both preserve.
+        $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
         if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
         # A relative answer is not an identity, and a path that does not exist cannot be the
         # resolution of one that does.
