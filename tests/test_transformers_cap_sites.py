@@ -77,12 +77,15 @@ PINNED_BY_DESIGN: dict[tuple[str, str], str] = {}
 # what a user actually resolves.
 ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT = Version("5.5.0")
 
-# DEFERRED. The zoo release carrying the matching transformers ceiling
-# (unslothai/unsloth-zoo#1227) is not on PyPI: 2026.9.5 is the newest published release, so
-# naming anything above it in pyproject.toml is a floor no release satisfies, which makes
-# unsloth uninstallable rather than merely under-delivered. The floor therefore stays at
-# 2026.9.5 and the gate below stays off. Set this to the release that ships #1227 and raise
-# the pyproject floor to match, in the same commit; the gate re-enables itself.
+# STILL DEFERRED. No zoo release carries the matching transformers ceiling: 2026.9.5, the
+# newest published, still says `transformers<=5.5.0` because unslothai/unsloth-zoo#1227 is
+# open. Naming anything above it in pyproject.toml is a floor no release satisfies, which
+# makes unsloth uninstallable rather than merely under-delivered, so the floor stops at
+# 2026.9.5 and this gate stays off. The trl half of the same coordination is NOT deferred
+# any more: 2026.9.5 ships unslothai/unsloth-zoo#1260, so
+# ZOO_FLOOR_WITH_LIFTED_TRL_CAP in tests/test_trl_cap_sites.py names it and that gate runs.
+# Set this to the release that ships #1227 and raise the pyproject floor to match, in the
+# same commit; the gate re-enables itself.
 ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP = None
 
 # unsloth's CPU lanes must admit what unsloth_zoo's torch bound admits, or they test a

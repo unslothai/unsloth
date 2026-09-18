@@ -20,6 +20,7 @@ on:
       # another workflow never starts the job that exists to catch that drift.
       - '.github/workflows/**'
       - 'tests/test_transformers_cap_sites.py'
+      - 'tests/test_trl_cap_sites.py'
   schedule:
     # Off the :00 / :30 fleet-collision spots.
     - cron: '43 6 * * *'
@@ -119,7 +120,15 @@ jobs:
           pip install 'pytest>=8' packaging pyyaml
       - name: Assert every site declares the same window
         # rootdir has to be the repo so the suite's relative paths resolve.
-        run: python -m pytest tests/test_transformers_cap_sites.py -v --tb=short
+        # Both cap suites in one step: they read the same files and cost seconds, and a
+        # separate step would double the OS-axis admission cost for no extra coverage.
+        # One line, no `\` continuation: this job has no `shell:`, so the windows-latest
+        # leg runs under PowerShell, where `\` is not a line continuation and is passed
+        # through as a literal argument. pytest then reads it as the path `\`, collects
+        # the whole working drive, and the leg dies on `D:\System Volume Information`
+        # with 162 collection errors having tested nothing.
+        run: |
+          python -m pytest tests/test_transformers_cap_sites.py tests/test_trl_cap_sites.py -v --tb=short
 
   # Catches what the static symbol check cannot (import-time side effects). Two lanes,
   # since one pinned set proves one point of the range and nothing about either end.
@@ -182,11 +191,19 @@ jobs:
             # the job split. The interpreter is incidental to what this lane measures,
             # which is the dependency ceiling, and 3.11 is inside requires-python and
             # otherwise uncovered by this job.
+            #
+            # BOTH pins here are the declared ceilings, and they have to move together with
+            # pyproject. This lane previously kept 'trl==0.24.0' while transformers had
+            # already moved, so the lane whose stated purpose is to measure the ceiling was
+            # measuring a superseded one. `test_a_ceiling_lane_pins_the_declared_ceiling` in
+            # tests/test_trl_cap_sites.py now fails the build if that happens again. An
+            # exact `==` pin is otherwise treated as a point rather than a cap and is
+            # exempt from the range sweep, which is why it needed its own assertion.
             python: '3.11'
             torch_pins: >-
               torch torchvision 'torchcodec>=0.12'
             pkg_pins: >-
-              'transformers==5.17.0' 'trl==0.24.0'
+              'transformers==5.17.0' 'trl==1.13.0'
               peft sentence-transformers accelerate 'datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0'
               bitsandbytes triton hf_transfer
           - slug: latest

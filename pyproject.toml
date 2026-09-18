@@ -214,13 +214,21 @@ huggingfacenotorch = [
     # release to export `grpo_vision_chunks`, which both vision GRPO logprob paths in
     # unsloth/models/rl_replacements.py refuse to run without.
     #
-    # 2026.9.6 does NOT make the wider transformers window this file declares below
-    # resolvable. It still says `transformers<=5.5.0` in its own metadata, and pip intersects
-    # the two requirements, so users keep resolving 5.5.0 whatever this file says: the lift is
-    # advertised and not delivered until unslothai/unsloth-zoo#1227 merges and ships. Raise
-    # this floor to the release carrying it and re-enable the deferred gate in
-    # tests/test_transformers_cap_sites.py in the same commit. A floor no published release
-    # satisfies makes unsloth uninstallable, so the floor never leads the release.
+    # This branch widens both the transformers and the trl ranges below, and unsloth_zoo
+    # publishes its own window for each. pip intersects the two, so a widened range only
+    # reaches users once a zoo release carries the same ceiling. The two halves are not in
+    # the same state:
+    #
+    # trl: SATISFIED. 2026.9.5 shipped unslothai/unsloth-zoo#1260 and says `trl<=1.13.0`,
+    #   so the floor covers it and the gate in tests/test_trl_cap_sites.py is live.
+    # transformers: NOT SATISFIED. 2026.9.6 still says `transformers<=5.5.0` because
+    #   unslothai/unsloth-zoo#1227 has not shipped, so pip keeps intersecting the wider
+    #   window below back down to 5.5.0 and that lift is advertised rather than delivered.
+    #   The gate in tests/test_transformers_cap_sites.py stays deferred for that reason,
+    #   and expires by itself once PyPI shows a zoo carrying the lift.
+    #
+    # The floor therefore stops at 2026.9.6: a floor no published release satisfies would
+    # make unsloth uninstallable, which is worse than under-delivering.
     "unsloth_zoo>=2026.9.6",
     "wheel>=0.42.0",
     "packaging",
@@ -256,7 +264,7 @@ huggingfacenotorch = [
     # (mlx-vlm >= 0.6.5 wants transformers >= 5.14.0); every extra naming transformers here
     # also names unsloth_zoo, so that lower cap applies without being repeated.
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
-    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "trl>=0.18.2,!=0.19.0,<=1.13.0",
     "sentence-transformers",
 ]
 # torchcodec backend for Gemma audio / datasets>=4 (#7225).
@@ -932,7 +940,7 @@ colab-new = [
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
-    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "trl>=0.18.2,!=0.19.0,<=1.13.0",
     "peft>=0.18.0",
     "xformers ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
