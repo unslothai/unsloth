@@ -455,7 +455,7 @@ class MoveModelRequest(BaseModel):
     repo_id: str = Field(..., description = "HuggingFace repo id of the cached model.")
     variant: Optional[str] = Field(
         None,
-        description = "GGUF variant to scope the move to; omit to move the whole repo.",
+        description = "Unsupported: moves are whole-repo only. Rejected with a 400.",
     )
     target_library_id: str = Field(
         ...,
@@ -471,4 +471,8 @@ class MoveModelResponse(BaseModel):
     already_in_library: bool = Field(
         False,
         description = "True when the model was already in the target library.",
+    )
+    note: Optional[str] = Field(
+        None,
+        description = "Optional note on move semantics, e.g. XET data left in place.",
     )

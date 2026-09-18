@@ -16,8 +16,12 @@ import tempfile
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
+from loggers import get_logger
 from pathlib import Path
 from typing import Iterator, Literal, Mapping, Optional
+
+
+logger = get_logger(__name__)
 
 
 CACHE_HOME_SETTING_KEY = "hugging_face_cache_home"
@@ -365,7 +369,10 @@ def known_hf_cache_homes() -> list[Path]:
         from hub.storage.model_libraries import model_library_homes
         candidates.extend(model_library_homes())
     except Exception:  # noqa: BLE001 - libraries are an optional shim; a scan must never depend on it
-        pass
+        logger.debug(
+            "Could not read model library homes for cache-scan unification",
+            exc_info = True,
+        )
     out: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:

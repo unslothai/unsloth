@@ -152,7 +152,43 @@ def library_cache_paths(library_id: Optional[str]):
     raise HTTPException(status_code = 404, detail = "Library not found")
 
 
+def _remove_failed_move(dest: Path) -> None:
+    """Best-effort removal of a half-copied destination after a failed move;
+    the source is still intact there."""
+    try:
+        if dest.is_dir() and not dest.is_symlink():
+            shutil.rmtree(dest)
+    except OSError as exc:
+        logger.warning("Could not remove partial move destination %s: %s", dest, exc)
+
+
+def _xet_skip_note(source_home: Path) -> Optional[str]:
+    """Note for the response when the library's shared, content-addressed xet/
+    store stays behind."""
+    try:
+        xet = source_home / "xet"
+        has_data = xet.is_dir() and any(xet.iterdir())
+    except OSError:
+        return None
+    if not has_data:
+        return None
+    return (
+        "Moved the repo's hub/ directory only; the library's content-addressed "
+        "xet/ store was left in place because it is shared by all its repos. "
+        "The moved files are self-contained."
+    )
+
+
 def move_model_response(repo_id: str, variant: Optional[str], target_library_id: str) -> dict:
+    if variant is not None:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Model moves are whole-repo only; a variant-scoped move is not "
+                "supported yet. Retry without a variant to move the whole cached repo."
+            ),
+        )
+
     from hub.utils import download_manifest
     from hub.utils.hf_cache_state import (
         iter_repo_cache_dirs,
@@ -188,20 +224,44 @@ def move_model_response(repo_id: str, variant: Optional[str], target_library_id:
     source_dirs = [p for p in iter_repo_cache_dirs("model", repo_id) if p is not None]
     if not source_dirs and not already_in_target:
         raise HTTPException(status_code = 404, detail = "This model is not cached in any library.")
+    if already_in_target:
+        return {
+            "ok": True,
+            "repo_id": repo_id,
+            "variant": None,
+            "target_home": str(target_paths.cache_home),
+            "already_in_library": True,
+            "note": "A copy of this model already exists in the target library; nothing was moved.",
+        }
 
     moved_any = False
+    xet_note: Optional[str] = None
     for source in source_dirs:
         if same_existing_path(source.parent, target_hub):
             continue
+        dest = target_hub / source.name
+        if dest.exists():
+            logger.warning(
+                "Move of %s skipped a duplicate copy in %s: target %s already holds the repo.",
+                repo_id,
+                source.parent,
+                dest,
+            )
+            continue
         try:
-            shutil.move(str(source), str(target_hub / source.name))
+            shutil.move(str(source), str(dest))
         except OSError as exc:
+            _remove_failed_move(dest)
             logger.error("Failed to move model %s to %s: %s", repo_id, target_hub, exc)
             raise HTTPException(
                 status_code = 500,
                 detail = f"Failed to move the model: {exc}",
             )
-        download_manifest.purge_state("model", repo_id, variant, hub_cache = str(source.parent))
+        download_manifest.purge_all_state_for_repo("model", repo_id, hub_cache = str(source.parent))
+        if xet_note is None:
+            xet_note = _xet_skip_note(source.parent.parent)
+            if xet_note is not None:
+                logger.info("%s (repo %s)", xet_note, repo_id)
         moved_any = True
 
     if moved_any:
@@ -209,7 +269,8 @@ def move_model_response(repo_id: str, variant: Optional[str], target_library_id:
     return {
         "ok": True,
         "repo_id": repo_id,
-        "variant": variant,
+        "variant": None,
         "target_home": str(target_paths.cache_home),
-        "already_in_library": already_in_target or not moved_any,
+        "already_in_library": not moved_any,
+        "note": xet_note,
     }

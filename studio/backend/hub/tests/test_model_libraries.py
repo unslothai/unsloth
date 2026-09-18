@@ -6,14 +6,17 @@ move-between-libraries path."""
 
 import os
 import platform
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
 from hub.services.models import libraries
 from hub.storage import model_libraries as ml_storage
-from hub.utils import hf_cache_state
+from hub.utils import download_manifest, hf_cache_state
+from hub.utils.state_dir import cache_scope_name
 from utils import hf_cache_settings
 
 
@@ -174,12 +177,31 @@ def test_move_repo_between_libraries(tmp_path):
     repo_id = "Unsloth/Test-X"
     _write_repo(a_hub, repo_id)
     assert (a_hub / hf_cache_state.repo_cache_dir_name("model", repo_id)).exists()
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        None,
+        [download_manifest.ExpectedFile("blobs/aa", 7)],
+        hub_cache = a_hub,
+    )
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        "q4_k_m",
+        [download_manifest.ExpectedFile("model-q4.gguf", 7)],
+        hub_cache = a_hub,
+    )
+    assert download_manifest.read_manifest("model", repo_id, "q4_k_m", hub_cache = a_hub) is not None
 
     response = libraries.move_model_response(repo_id, None, str(b["id"]))
     assert response["ok"] is True
     assert response["target_home"] == str(Path(b["path"]))
     assert (b_hub / hf_cache_state.repo_cache_dir_name("model", repo_id)).exists()
     assert not (a_hub / hf_cache_state.repo_cache_dir_name("model", repo_id)).exists()
+    assert response["already_in_library"] is False
+    assert download_manifest.read_manifest("model", repo_id, None, hub_cache = a_hub) is None
+    assert download_manifest.read_manifest("model", repo_id, "q4_k_m", hub_cache = a_hub) is None
+    assert download_manifest.read_manifest("model", repo_id, None, hub_cache = b_hub) is None
 
 
 def test_move_into_same_library_is_noop(tmp_path):
@@ -198,6 +220,126 @@ def test_move_missing_model_raises_404(tmp_path):
     with pytest.raises(HTTPException) as exc:
         libraries.move_model_response("Unsloth/None", None, str(a["id"]))
     assert exc.value.status_code == 404
+
+
+def test_move_rejects_variant_scoped_requests(tmp_path):
+    """Variant-scoped moves are rejected; moving is whole-repo only."""
+    a = _register_library(tmp_path, "libA")
+    b = _register_library(tmp_path, "libB")
+    repo_id = "Unsloth/Variant"
+    a_repo = _write_repo(Path(a["path"]) / "hub", repo_id)
+    with pytest.raises(HTTPException) as exc:
+        libraries.move_model_response(repo_id, "q4_k_m", str(b["id"]))
+    assert exc.value.status_code == 400
+    assert a_repo.exists()
+
+
+def test_move_skips_xet_tree_of_source_library(tmp_path):
+    """The hub/ dir moves; the library's shared xet/ store stays put."""
+    a = _register_library(tmp_path, "libA")
+    b = _register_library(tmp_path, "libB")
+    a_hub = Path(a["path"]) / "hub"
+    b_hub = Path(b["path"]) / "hub"
+    repo_id = "Unsloth/Xet"
+    a_repo = _write_repo(a_hub, repo_id)
+    source_xet = Path(a["path"]) / "xet"
+    (source_xet / "cas").mkdir(parents = True)
+    (source_xet / "cas" / "chunk-1").write_bytes(b"xet-chunk")
+
+    response = libraries.move_model_response(repo_id, None, str(b["id"]))
+    assert response["ok"] is True
+    assert response["note"] is not None
+    assert "xet" in response["note"]
+    assert (b_hub / hf_cache_state.repo_cache_dir_name("model", repo_id)).exists()
+    assert not a_repo.exists()
+    assert (source_xet / "cas" / "chunk-1").read_bytes() == b"xet-chunk"
+    assert not (Path(b["path"]) / "xet" / "cas" / "chunk-1").exists()
+
+
+def test_move_failure_keeps_source_intact_and_cleans_partial(monkeypatch, tmp_path):
+    """A failed move 500s, keeps the intact source, and removes the partial copy."""
+    a = _register_library(tmp_path, "libA")
+    b = _register_library(tmp_path, "libB")
+    a_hub = Path(a["path"]) / "hub"
+    b_hub = Path(b["path"]) / "hub"
+    repo_id = "Unsloth/Fails"
+    repo_dir = _write_repo(a_hub, repo_id)
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        None,
+        [download_manifest.ExpectedFile("blobs/aa", 7)],
+        hub_cache = a_hub,
+    )
+
+    def _failing_cross_volume_move(src, dst):
+        Path(dst).mkdir(parents = True, exist_ok = True)
+        (Path(dst) / "blobs").mkdir(parents = True, exist_ok = True)
+        (Path(dst) / "blobs" / "zz").write_bytes(b"half-copy")
+        raise OSError("cross-volume copy failed mid-way")
+
+    monkeypatch.setattr(shutil, "move", _failing_cross_volume_move)
+    dest = b_hub / hf_cache_state.repo_cache_dir_name("model", repo_id)
+
+    with pytest.raises(HTTPException) as exc:
+        libraries.move_model_response(repo_id, None, str(b["id"]))
+    assert exc.value.status_code == 500
+
+    assert (repo_dir / "blobs" / "aa").read_bytes() == b"payload"
+    assert download_manifest.read_manifest("model", repo_id, None, hub_cache = a_hub) is not None
+    assert not dest.exists()
+
+
+def test_non_default_library_scopes_env_and_manifest_state(tmp_path):
+    """Library targeting resolves and writes to that library's own cache scope."""
+    default = hf_cache_settings.get_hf_cache_paths()
+    row = _register_library(tmp_path, "libD")
+    selected = libraries.library_cache_paths(str(row["id"]))
+
+    assert selected.source == "studio"
+    assert selected.hub_cache != default.hub_cache
+    assert selected.xet_cache != default.xet_cache
+
+    env = selected.child_env({})
+    assert env["HF_HUB_CACHE"] == str(selected.hub_cache)
+    assert env["HF_XET_CACHE"] == str(selected.xet_cache)
+    assert env["HF_HUB_CACHE"] != str(default.hub_cache)
+
+    assert cache_scope_name(selected.hub_cache) != cache_scope_name(default.hub_cache)
+    repo_id = "Unsloth/Scoped"
+    variant = "q4_k_m"
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        variant,
+        [download_manifest.ExpectedFile("model-q4.gguf", 4)],
+        hub_cache = selected.hub_cache,
+    )
+    assert (
+        download_manifest.read_manifest("model", repo_id, variant, hub_cache = selected.hub_cache)
+        is not None
+    )
+    assert (
+        download_manifest.read_manifest("model", repo_id, variant, hub_cache = default.hub_cache)
+        is None
+    )
+
+
+def test_known_hf_cache_homes_logs_library_probe_failure(monkeypatch, tmp_path):
+    """A dead library volume is logged, not silently skipped."""
+    recorded = []
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "logger",
+        SimpleNamespace(debug = lambda msg, **kwargs: recorded.append(msg)),
+    )
+
+    def _boom():
+        raise RuntimeError("dead volume")
+
+    monkeypatch.setattr(ml_storage, "model_library_homes", _boom)
+    hf_cache_settings.known_hf_cache_homes()
+    assert recorded
 
 
 def test_add_and_remove_library_service_mapping(tmp_path):
