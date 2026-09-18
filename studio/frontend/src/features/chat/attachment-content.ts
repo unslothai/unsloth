@@ -23,6 +23,7 @@ import {
   isIworkAttachmentName,
   RTF_MIMES,
   isRtfAttachmentName,
+  isToolOnlyAttachmentName,
 } from "./open-document-accept";
 import { readIworkAttachmentContent } from "./iwork";
 import { readRtfAttachmentContent } from "./rtf";
@@ -884,6 +885,13 @@ export async function readAttachmentText(
   if (isIworkAttachment(name, contentType)) {
     const { label, text } = await readIworkAttachmentContent(file, name);
     return { label, text, truncated: false };
+  }
+  if (isToolOnlyAttachmentName(name)) {
+    return {
+      label: null,
+      text: `${name} has no preview: only the python tool can read it.`,
+      truncated: false,
+    };
   }
   return { label: null, ...(await readBoundedText(file)) };
 }

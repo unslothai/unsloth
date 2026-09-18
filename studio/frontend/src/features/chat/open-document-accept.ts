@@ -73,3 +73,15 @@ export function isIworkAttachmentName(filename: string): boolean {
     lower.endsWith(extension),
   );
 }
+
+// Matched by extension only: their MIME types are missing or shared with unrelated files.
+// Keep in sync with TOOL_ONLY_ATTACHMENT_EXTS in native_path_policy.rs.
+export const TOOL_ONLY_ATTACHMENT_EXTENSIONS =
+  ".parquet,.feather,.arrow,.orc,.sqlite,.sqlite3,.db,.zip,.tar,.gz,.tgz,.bz2,.xz,.npy,.npz,.epub,.mobi,.xps,.oxps,.docm,.dotx,.odp,.odg";
+
+export function isToolOnlyAttachmentName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return TOOL_ONLY_ATTACHMENT_EXTENSIONS.split(",").some((ext) =>
+    lower.endsWith(ext),
+  );
+}

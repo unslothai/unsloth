@@ -8,6 +8,7 @@ import {
   OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
   RTF_ATTACHMENT_EXTENSIONS,
   IWORK_ATTACHMENT_EXTENSIONS,
+  TOOL_ONLY_ATTACHMENT_EXTENSIONS,
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
 } from "../src/features/chat/open-document-accept.ts";
@@ -113,6 +114,8 @@ const RTF_ADAPTER_RE =
   /class RtfAttachmentAdapter[^{]*\{[\s\S]*?accept = RTF_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readRtfAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new RtfAttachmentAdapter\(\),/;
 const IWORK_ADAPTER_RE =
   /class IworkAttachmentAdapter[^{]*\{[\s\S]*?accept = IWORK_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readIworkAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new IworkAttachmentAdapter\(\),/;
+const TOOL_ONLY_ADAPTER_RE =
+  /function pythonToolRunsInStudio\(\)[\s\S]*?if \(!external\) return supportsTools && codeToolsEnabled;[\s\S]*?\}\)\.local\.includes\("python"\);[\s\S]*?class ToolOnlyAttachmentAdapter[^{]*\{\s*accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;[\s\S]*?!pythonToolRunsInStudio\(\)[\s\S]*?\?\?\s*\(await uploadAttachmentFile\(attachment\.file\)\);[\s\S]*?return storedFile\s*\?\s*\(\{ \.\.\.complete, storedFile \}[\s\S]*?\.map\(\(adapter\) => new StoredFileAttachmentAdapter\(adapter\)\),\s*new ToolOnlyAttachmentAdapter\(\),\s*\]\)/;
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
@@ -210,6 +213,12 @@ for (const [format, extensions, adapter, rustList] of [
     IWORK_ADAPTER_RE,
     "IWORK_ATTACHMENT_EXTS",
   ],
+  [
+    "Tool-only",
+    TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+    TOOL_ONLY_ADAPTER_RE,
+    "TOOL_ONLY_ATTACHMENT_EXTS",
+  ],
 ] as const) {
   test(`${format} drops route to the composer and match the native allowlist`, () => {
     for (const extension of extensions.split(",")) {
@@ -258,10 +267,10 @@ test("a mixed or unsupported drop is rejected", () => {
     "unsupported",
   );
   assert.equal(
-    classifyDropPaths(["/docs/a.pdf", "/docs/b.zip"]).kind,
+    classifyDropPaths(["/docs/a.pdf", "/docs/b.dmg"]).kind,
     "unsupported",
   );
-  assert.equal(classifyDropPaths(["/docs/notes.zip"]).kind, "unsupported");
+  assert.equal(classifyDropPaths(["/docs/notes.dmg"]).kind, "unsupported");
 });
 
 test("an empty payload is not a drop target", () => {
@@ -1564,7 +1573,7 @@ test("a dotfile is not mistaken for a source file", () => {
 });
 
 test("an unreadable type is still refused", () => {
-  assert.equal(classifyDropPaths(["/docs/archive.zip"]).kind, "unsupported");
+  assert.equal(classifyDropPaths(["/docs/disk.dmg"]).kind, "unsupported");
   assert.equal(classifyDropPaths(["/bin/tool.exe"]).kind, "unsupported");
 });
 

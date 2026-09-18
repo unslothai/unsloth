@@ -64,7 +64,17 @@ import {
   getDocxAttachmentError,
 } from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
-import { uploadAttachmentFile } from "./stored-attachment";
+import {
+  type StoredAttachmentFile,
+  uploadAttachmentFile,
+} from "./stored-attachment";
+import {
+  TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+  OFFICE_OPEN_XML_ATTACHMENT_ACCEPT,
+  IWORK_ATTACHMENT_ACCEPT,
+  RTF_ATTACHMENT_ACCEPT,
+  OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
+} from "./open-document-accept";
 import {
   isBinaryPropertyList,
   isBinaryTrackerModule,
@@ -79,19 +89,19 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
+  providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
+import { selectCodeToolNames } from "./api/code-tool-placement";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   readOfficeOpenXmlAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
 import {
-  OFFICE_OPEN_XML_ATTACHMENT_ACCEPT,
-  IWORK_ATTACHMENT_ACCEPT,
-  RTF_ATTACHMENT_ACCEPT,
-  OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
-} from "./open-document-accept";
+  providerHostsCodeExecution,
+  providerSupportsBuiltinCodeExecution,
+} from "./provider-capabilities";
 import { readIworkAttachmentContent } from "./iwork";
 import { readRtfAttachmentContent } from "./rtf";
 import {
@@ -793,6 +803,118 @@ class IworkAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
 
   protected read(file: File, filename: string) {
     return readIworkAttachmentContent(file, filename);
+  }
+}
+
+const MAX_TOOL_ONLY_ATTACHMENT_BYTES = 200 * 1024 * 1024;
+
+// Code on a provider that hosts execution runs no python tool here, so nothing could open it.
+function pythonToolRunsInStudio(): boolean {
+  const { params, supportsTools, codeToolsEnabled } =
+    useChatRuntimeStore.getState();
+  const external = parseExternalModelId(params.checkpoint);
+  if (!external) return supportsTools && codeToolsEnabled;
+  const provider = (
+    loadConnectionsEnabled() ? loadExternalProviders() : []
+  ).find((p) => p.id === external.providerId);
+  if (
+    !provider ||
+    providerModelSupportsStudioTools(
+      provider.providerType,
+      external.modelId,
+    ) !== true
+  ) {
+    return false;
+  }
+  return selectCodeToolNames({
+    codeToolsEnabled,
+    hostedCodeExecutionForThisTurn: providerSupportsBuiltinCodeExecution(
+      provider.providerType,
+      external.modelId,
+      provider.baseUrl,
+    ),
+    providerHostsCodeExecution: providerHostsCodeExecution(
+      provider.providerType,
+    ),
+  }).local.includes("python");
+}
+
+/** Formats the browser cannot read, which reach the model only through the python tool. */
+class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
+  accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;
+  private readonly uploads = new Map<
+    string,
+    Promise<StoredAttachmentFile | null>
+  >();
+
+  async *add({
+    file,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
+    const refusal = !pythonToolRunsInStudio()
+      ? `Turn on Code with a model that runs the python tool to attach ${file.name}.`
+      : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES
+        ? `File is too large: ${file.name}`
+        : null;
+    if (refusal) {
+      toast.error(refusal);
+      throw new Error(refusal);
+    }
+    const attachment = {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+    yield attachment;
+    const upload = uploadAttachmentFile(file);
+    this.uploads.set(attachment.id, upload);
+    const storedFile = await upload;
+    // Removed while uploading: yielding again would put it back.
+    if (this.uploads.get(attachment.id) !== upload) return;
+    if (!storedFile) {
+      this.uploads.delete(attachment.id);
+      toast.error(`Could not upload ${file.name}`);
+      yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    // An incomplete chip is still sent: its failed upload is tried once more here.
+    const storedFile =
+      (await this.uploads.get(attachment.id)) ??
+      (await uploadAttachmentFile(attachment.file));
+    this.uploads.delete(attachment.id);
+    const complete: CompleteAttachment = {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        {
+          type: "text",
+          text: storedFile
+            ? `[${attachment.name}: only the python tool can read this file]`
+            : `[${attachment.name} could not be uploaded, so it cannot be read]`,
+        },
+      ],
+      status: { type: "complete" },
+    };
+    return storedFile
+      ? ({ ...complete, storedFile } as CompleteAttachment)
+      : complete;
+  }
+
+  async remove(attachment: { id: string }): Promise<void> {
+    this.uploads.delete(attachment.id);
   }
 }
 
@@ -2401,6 +2523,7 @@ function useStudioRuntimeAdapters(
             new RtfAttachmentAdapter(),
             new IworkAttachmentAdapter(),
           ].map((adapter) => new StoredFileAttachmentAdapter(adapter)),
+          new ToolOnlyAttachmentAdapter(),
         ]),
         () => {
           const state = aui.threadListItem().getState();

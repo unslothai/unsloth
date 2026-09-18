@@ -140,6 +140,9 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         // list the composer and the drop path already share.
         "txt" => "text/plain",
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => "text/plain",
+        other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
+            "application/octet-stream"
+        }
         _ => return None,
     };
     Some(mime_type)
@@ -511,6 +514,7 @@ mod tests {
             ("notes.pages", "application/vnd.apple.pages"),
             ("budget.numbers", "application/vnd.apple.numbers"),
             ("deck.key", "application/vnd.apple.keynote"),
+            ("archive.tar.gz", "application/octet-stream"),
         ] {
             assert_eq!(clipboard_file_mime_type(Path::new(name)), Some(mime_type));
         }

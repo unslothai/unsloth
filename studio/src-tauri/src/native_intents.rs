@@ -694,6 +694,9 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => {
             Some("text/plain")
         }
+        other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
+            Some("application/octet-stream")
+        }
         _ => None,
     }
 }
@@ -1115,6 +1118,7 @@ mod tests {
             ("PAGES", "application/vnd.apple.pages"),
             ("Numbers", "application/vnd.apple.numbers"),
             ("KEY", "application/vnd.apple.keynote"),
+            ("Parquet", "application/octet-stream"),
         ] {
             let path = temp_path("open-document").with_extension(ext);
             fs::write(&path, b"open-document").unwrap();
@@ -1164,9 +1168,15 @@ mod tests {
     }
 
     #[test]
-    fn every_text_and_video_extension_the_drop_accepts_has_a_mime_type() {
-        use crate::native_path_policy::{TEXT_ATTACHMENT_EXTS, VIDEO_ATTACHMENT_EXTS};
-        for ext in TEXT_ATTACHMENT_EXTS.iter().chain(VIDEO_ATTACHMENT_EXTS) {
+    fn every_text_video_and_tool_only_extension_the_drop_accepts_has_a_mime_type() {
+        use crate::native_path_policy::{
+            TEXT_ATTACHMENT_EXTS, TOOL_ONLY_ATTACHMENT_EXTS, VIDEO_ATTACHMENT_EXTS,
+        };
+        for ext in TEXT_ATTACHMENT_EXTS
+            .iter()
+            .chain(VIDEO_ATTACHMENT_EXTS)
+            .chain(TOOL_ONLY_ATTACHMENT_EXTS)
+        {
             let path = PathBuf::from(format!("sample.{ext}"));
             assert!(attachment_mime_type(&path).is_some(), "{ext}");
         }

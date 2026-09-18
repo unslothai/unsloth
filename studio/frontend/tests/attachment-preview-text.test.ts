@@ -257,6 +257,15 @@ test("readAttachmentText reads a bounded slice of a large html file", async () =
   assert.equal(text.length, 1_000_000);
 });
 
+test("readAttachmentText does not decode a file only the python tool reads", async () => {
+  const file = new File([new Uint8Array([0x50, 0x41, 0x52, 0x31])], "t.PARQUET");
+  assert.deepEqual(await readAttachmentText(file, file.name, file.type), {
+    label: null,
+    text: "t.PARQUET has no preview: only the python tool can read it.",
+    truncated: false,
+  });
+});
+
 // the adapter sends the extraction; the preview shows the markup unextracted
 test("readAttachmentText previews an html file as its markup", async () => {
   const markup = "<p>Drag to rotate<br>Scroll to zoom</p>";

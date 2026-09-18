@@ -57,6 +57,11 @@ pub const OFFICE_OPEN_XML_ATTACHMENT_EXTS: &[&str] =
 pub const RTF_ATTACHMENT_EXTS: &[&str] = &["rtf"];
 /// iWork files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
 pub const IWORK_ATTACHMENT_EXTS: &[&str] = &["pages", "numbers", "key"];
+/// Files only the python tool reads; keep in sync with `open-document-accept.ts`.
+pub const TOOL_ONLY_ATTACHMENT_EXTS: &[&str] = &[
+    "parquet", "feather", "arrow", "orc", "sqlite", "sqlite3", "db", "zip", "tar", "gz", "tgz",
+    "bz2", "xz", "npy", "npz", "epub", "mobi", "xps", "oxps", "docm", "dotx", "odp", "odg",
+];
 pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
 
 /// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so a
@@ -617,6 +622,7 @@ fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
         .chain(OFFICE_OPEN_XML_ATTACHMENT_EXTS.iter())
         .chain(RTF_ATTACHMENT_EXTS.iter())
         .chain(IWORK_ATTACHMENT_EXTS.iter())
+        .chain(TOOL_ONLY_ATTACHMENT_EXTS.iter())
         .chain(TEXT_ATTACHMENT_EXTS.iter())
         .chain(IMAGE_ATTACHMENT_EXTS.iter())
         .chain(AUDIO_ATTACHMENT_EXTS.iter())
