@@ -59,9 +59,7 @@ def _resolve(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
         if value:
             env.setdefault(name, value)
     env.update(env_overrides)
-    out = subprocess.run(
-        [sys.executable, "-c", PROBE], env = env, capture_output = True, text = True
-    )
+    out = subprocess.run([sys.executable, "-c", PROBE], env = env, capture_output = True, text = True)
     # Not check = True: the child's stderr is the only thing that says why, and swallowing it is
     # how a dead interpreter passes for a wrong answer.
     assert out.returncode == 0, f"probe failed ({out.returncode}): {out.stderr.strip()}"
