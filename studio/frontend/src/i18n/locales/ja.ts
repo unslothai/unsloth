@@ -302,8 +302,6 @@ export const ja = {
     },
     keyboardShortcuts: {
       title: "キーボードショートカット",
-      description:
-        "ショートカットを変更したり、消してブラウザや OS にそのキーを譲ったりできます。",
       searchPlaceholder: "ショートカットを検索…",
       noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",

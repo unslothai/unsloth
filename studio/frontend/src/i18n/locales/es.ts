@@ -303,8 +303,6 @@ export const es = {
     },
     keyboardShortcuts: {
       title: "Atajos de teclado",
-      description:
-        "Cambia cualquier atajo, o bórralo para liberar la combinación para el navegador o el sistema.",
       searchPlaceholder: "Buscar atajos…",
       noResults: "Ningún atajo coincide con esa búsqueda.",
       unassigned: "Sin asignar",
