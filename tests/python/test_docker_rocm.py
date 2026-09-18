@@ -665,6 +665,37 @@ class TestRocmEntrypoint:
         entry = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
 
+    def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
+        """docker/Dockerfile.studio-rocm is built by the same run as the base, on the
+        base by digest (a tag can already be a newer run's) with the refs the base
+        baked, and takes the base's tags with a -studio leaf under the same gates."""
+        import yaml
+
+        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+        build = wf["jobs"]["build-studio"]
+        assert "build" in build["needs"] and "tag" in build["needs"]
+        step = next(s for s in build["steps"] if s.get("id") == "build")
+        assert step["with"]["file"] == "./docker/Dockerfile.studio-rocm"
+        args = dict(ln.split("=", 1) for ln in step["with"]["build-args"].splitlines() if ln)
+        assert args["BASE_IMAGE"].endswith("@${{ needs.build.outputs.digest }}"), args
+        assert args["UNSLOTH_STUDIO_REF"] == "${{ needs.prepare.outputs.unsloth_ref }}"
+        assert args["UNSLOTH_STUDIO_ZOO_REF"] == "${{ needs.prepare.outputs.zoo_ref }}"
+
+        def tag_lines(job):
+            meta = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == "meta")
+            return [ln for ln in meta["with"]["tags"].splitlines() if ln.strip()]
+
+        tag = wf["jobs"]["tag-studio"]
+        assert "build-studio" in tag["needs"]
+        studio, base = tag_lines("tag-studio"), tag_lines("tag")
+        assert len(studio) == len(base) == 5
+        for s_ln, b_ln in zip(studio, base):
+            assert "studio" in s_ln, s_ln
+            # the same enable= gate as the base line it mirrors
+            assert s_ln.split(",enable=", 1)[1:] == b_ln.split(",enable=", 1)[1:], (s_ln, b_ln)
+        # the page describes both images, so it syncs only once both moved
+        assert "tag-studio" in wf["jobs"]["hub-readme"]["needs"]
+
     def test_the_gfx_tag_needs_every_other_input_at_its_default(self):
         """A feature-branch ref plus rocm_gfx=gfx1151 must not replace the public
         gfx1151 image: the gfx tag is gated like latest, minus the gfx itself."""
