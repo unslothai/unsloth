@@ -201,6 +201,13 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export { chatLocalModelOptions } from "./local-model-options";
+export {
+  readLastLocalModelLoad,
+  recordLastLocalModelLoad,
+  type LastLocalModelKind,
+  type LastLocalModelLoad,
+} from "./utils/last-local-model-load";
 export {
   type AttachmentText,
   assertDocumentAttachmentSize,
