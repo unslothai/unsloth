@@ -10,8 +10,9 @@
 # rather than by two implementations happening to match.
 #
 # The rung is strictly additive. It runs only where the native resolver already returned nothing,
-# which is what happens under Constrained Language Mode, under WDAC Dynamic Code Security, and on
-# any host where kernel32 will not resolve. A host that resolves natively is untouched.
+# which is what happens under WDAC Dynamic Code Security and on any host where kernel32 will not
+# resolve. A host that resolves natively is untouched. Constrained Language Mode never gets here:
+# Resolve-StudioFinalPathInfo's own GetFullPath is refused there, before any rung runs.
 # Run: pwsh -NoProfile -File tests/studio/test_early_python_path_resolver.ps1
 
 $ErrorActionPreference = "Stop"
@@ -28,9 +29,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
-    "Get-StudioEarlyPython", "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
-    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython",
-    "Get-StudioPythonFinalPath",
+    "Get-StudioEarlyPython", "Invoke-StudioEarlyPython", "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo"
 )) {
@@ -236,92 +235,12 @@ try {
     # And the resolver passes it. Read out of the launcher, because the end-to-end drive is not
     # available here: sitecustomize is resolved on sys.path and the stdlib directory precedes
     # site-packages, so a planted copy is shadowed by the host's own on any machine that has one.
-    # Read out of BOTH launchers. The flags used to live in the one resolver, and the CLM
-    # fallback below it would have been free to drop them, which is the half of the population
-    # that fallback exists for.
-    foreach ($launcher in @(
-        "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPythonScriptViaCmdlets"
-    )) {
-        $launcherFn = @($ast.FindAll({ param($n)
-            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-            $n.Name -eq $launcher
-        }, $true))[0].Extent.Text
-        Check "$launcher runs the probe with -S as well as -I" (
-            $launcherFn -match '@\("-I",\s*"-S"')
-    }
-
-    # ---- the launcher that has to work where the primary one is forbidden ----
-    #
-    # The primary launcher builds a System.Diagnostics.ProcessStartInfo. Constrained Language Mode
-    # refuses to construct or invoke non-core .NET types, and the broad catch around it turns that
-    # refusal into $null, so on a locked-down host this whole rung answered nothing and every
-    # consumer below it stayed degraded. That is the population the rung exists for.
-    #
-    # Both launchers are driven over the same awkward arguments first, because a fallback that
-    # answers differently is not a fallback.
-    $echoScript = "import sys;sys.stdout.write('|'.join(sys.argv[1:]))"
-    $awkward = @('a b', 'c\')
-    $primaryAnswer = Invoke-StudioEarlyPythonScript -Exe $exe -Script $echoScript -ScriptArgs $awkward
-    $cmdletAnswer = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script $echoScript -ScriptArgs $awkward
-    Check "the primary launcher passes awkward arguments through unchanged" (
-        $primaryAnswer -ceq "a b|c\")
-    Check "and the cmdlet launcher returns the same string byte for byte" (
-        $cmdletAnswer -ceq $primaryAnswer)
-    Check "the cmdlet launcher refuses a non-zero exit" (
-        $null -eq (Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import sys;sys.exit(4)"))
-    $cmdletStart = Get-Date
-    $cmdletHung = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe `
-        -Script "import time;time.sleep(90)" -TimeoutMs 2000
-    Check "the cmdlet launcher kills a hung child too" (
-        $null -eq $cmdletHung -and ((Get-Date) - $cmdletStart).TotalSeconds -lt 30)
-
-    # The handover, driven in a runspace that is genuinely in Constrained Language Mode.
-    #
-    # Setting $ExecutionContext.SessionState.LanguageMode partway through a script is NOT enough
-    # and was tried first: PowerShell fixes a function's language mode when the function is
-    # defined, so functions defined before the switch keep running in FullLanguage and the primary
-    # launcher succeeds. The check passed while proving nothing. A runspace created with
-    # InitialSessionState.LanguageMode set is constrained before anything is defined in it, which
-    # is what a locked-down host actually looks like.
-    $clmFunctions = (@(
-        "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
-        "Invoke-StudioEarlyPythonScriptViaCmdlets"
-    ) | ForEach-Object {
-        $name = $_
-        ($ast.FindAll({ param($n)
-            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
-        }, $true)[0]).Extent.Text
-    }) -join "`n"
-
-    $rs = $null
-    $ps = $null
-    try {
-        $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
-        $iss.LanguageMode = "ConstrainedLanguage"
-        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
-        $rs.Open()
-        $ps = [System.Management.Automation.PowerShell]::Create()
-        $ps.Runspace = $rs
-        $null = $ps.AddScript($clmFunctions + @"
-
-Write-Output "MODE=`$(`$ExecutionContext.SessionState.LanguageMode)"
-try { `$null = New-Object System.Diagnostics.ProcessStartInfo; Write-Output 'PSI-ALLOWED' }
-catch { Write-Output 'PSI-BLOCKED' }
-Write-Output ("ANSWER=" + (Invoke-StudioEarlyPythonScript -Exe '$exe' -Script "$echoScript" -ScriptArgs @('a b', 'c\')))
-"@)
-        $clmOut = @($ps.Invoke() | ForEach-Object { "$_".Trim() })
-        Check "the runspace really is constrained" ($clmOut -contains "MODE=ConstrainedLanguage")
-        # The premise of the whole fallback, measured rather than assumed.
-        Check "Constrained Language Mode really does refuse ProcessStartInfo" (
-            $clmOut -contains "PSI-BLOCKED")
-        # And therefore the primary launcher cannot answer there, so this can only have come from
-        # the fallback. Removing the fallback call from the catch makes this check fail.
-        Check "under Constrained Language Mode the answer still comes back, through the fallback" (
-            $clmOut -contains "ANSWER=a b|c\")
-    } finally {
-        if ($ps) { $ps.Dispose() }
-        if ($rs) { $rs.Dispose() }
-    }
+    $resolverFn = @($ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $n.Name -eq "Invoke-StudioEarlyPython"
+    }, $true))[0].Extent.Text
+    Check "the resolver runs the probe with -S as well as -I" (
+        $resolverFn -match '@\("-I",\s*"-S",\s*"-c"')
     # ---- a miss recorded before $VenvDir existed is not final ----
     #
     # The --tauri path resolves the Studio-home override well before $VenvDir is assigned. On a
