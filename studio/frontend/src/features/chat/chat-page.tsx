@@ -132,6 +132,7 @@ import {
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { notifyChatHistoryUpdated } from "./api/chat-api";
 import { codeToolCanRun } from "./api/code-tool-placement";
+import { deriveExternalModelCapabilities } from "./lib/external-model-capabilities";
 import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
   clearAutoOpenedArtifacts,
@@ -2538,69 +2539,6 @@ export function ChatPage({
       },
     );
     const state = useChatRuntimeStore.getState();
-    const preferredEffort = state.reasoningEffort;
-    const effortLevels = reasoningCaps.reasoningEffortLevels;
-    const clampedEffort = clampReasoningEffortToLevels(
-      preferredEffort,
-      effortLevels,
-    );
-    // Per-provider default effort: Anthropic gets the highest level, since Claude's adaptive thinking
-    // adjusts cost per turn; OpenAI gets "high"; everyone else "medium". Overridable via Think.
-    const isAnthropic = provider?.providerType === "anthropic";
-    const isOpenAI = provider?.providerType === "openai";
-    const anthropicTopEffort = effortLevels.includes("xhigh")
-      ? "xhigh"
-      : effortLevels.includes("high")
-        ? "high"
-        : clampedEffort;
-    const openaiDefaultEffort = effortLevels.includes("high")
-      ? "high"
-      : effortLevels.includes("medium")
-        ? "medium"
-        : clampedEffort;
-    const catalogDefaultEffort =
-      reasoningCaps.defaultEffort &&
-      effortLevels.includes(reasoningCaps.defaultEffort)
-        ? reasoningCaps.defaultEffort
-        : null;
-    const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? (catalogDefaultEffort ??
-        (isAnthropic
-          ? anthropicTopEffort
-          : isOpenAI
-            ? openaiDefaultEffort
-            : effortLevels.includes("medium")
-              ? "medium"
-              : clampedEffort))
-      : state.reasoningEffort;
-    const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
-      provider?.providerType,
-      selection.modelId,
-      provider?.baseUrl,
-    );
-    const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
-      provider?.providerType,
-      selection.modelId,
-      provider?.baseUrl,
-    );
-    const supportsBuiltinImageGeneration =
-      providerSupportsBuiltinImageGeneration(
-        provider?.providerType,
-        selection.modelId,
-        provider?.baseUrl,
-      );
-    const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
-      provider?.providerType,
-    );
-    // Kimi's k2.6/k2.5 default to thinking enabled server-side, so the Think pill comes up clicked. Search stays
-    // off; the composer's mutual-exclusion handlers flip the two. Per https://platform.kimi.ai/docs/models.
-    const isKimi = provider?.providerType === "kimi";
-    // Web search on by default only for Anthropic and OpenAI, both with structured citations.
-    // OpenRouter and Kimi work on opt-in but are less reliable.
-    const searchOnByDefault =
-      supportsBuiltinWebSearch &&
-      (provider?.providerType === "anthropic" ||
-        provider?.providerType === "openai");
     // the open chat's own pills win, or selecting a model would revert them to the global ones.
     const storedToolsEnabled =
       threadScopedOverride("toolsEnabled") ??
@@ -2614,57 +2552,48 @@ export function ChatPage({
     const storedWebFetchToolsEnabled =
       threadScopedOverride("webFetchToolsEnabled") ??
       loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
-    // Unsloth runs Search and Code itself for any provider that advertises the capability, so a self-hosted
-    // connection has no hosted builtin to key off. Keying the pill state on the hosted flags alone discarded the
-    // saved preference on every reload and sent enable_tools: false.
-    const supportsStudioToolsHere =
-      providerModelSupportsStudioTools(
-        provider?.providerType,
-        selection.modelId,
-      ) === true;
-    const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
-    // Read out of the placement rule, not off the Unsloth-tools flag: a model on a sandbox-owning
-    // provider that cannot use it runs nothing either way.
-    const canRunCode = codeToolCanRun({
-      hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
-      providerHostsCodeExecution: providerHostsCodeExecution(provider?.providerType),
-      supportsStudioTools: supportsStudioToolsHere,
-    });
-    const nextToolsEnabled = canSearch
-      ? isKimi
-        ? false
-        : (storedToolsEnabled ?? searchOnByDefault)
-      : false;
-    useChatRuntimeStore.setState({
-      supportsReasoning: reasoningCaps.supportsReasoning,
-      reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
-      reasoningStyle: reasoningCaps.reasoningStyle,
-      supportsReasoningOff: reasoningCaps.supportsReasoningOff,
-      reasoningEffortLevels: effortLevels,
-      reasoningEffort: nextReasoningEffort,
-      reasoningEnabled: reasoningCaps.supportsReasoning
-        ? reasoningCaps.supportsReasoningOff
-          ? isKimi
-            ? true
-            : state.reasoningEnabled
-          : true
-        : state.reasoningEnabled,
-      supportsPreserveThinking: false,
-      supportsTools: supportsStudioToolsHere,
-      supportsBuiltinWebSearch,
-      supportsBuiltinCodeExecution,
-      supportsBuiltinImageGeneration,
-      supportsBuiltinWebFetch,
-      toolsEnabled: nextToolsEnabled,
-      codeToolsEnabled: canRunCode ? (storedCodeToolsEnabled ?? false) : false,
-      imageToolsEnabled: supportsBuiltinImageGeneration
-        ? (storedImageToolsEnabled ?? false)
-        : false,
-      // Default Fetch off (Anthropic bills per fetch); deliberate opt-in.
-      webFetchToolsEnabled: supportsBuiltinWebFetch
-        ? (storedWebFetchToolsEnabled ?? false)
-        : false,
-    });
+    useChatRuntimeStore.setState(
+      deriveExternalModelCapabilities({
+        providerType: provider?.providerType,
+        reasoningCaps,
+        clampedCurrentEffort: clampReasoningEffortToLevels(
+          state.reasoningEffort,
+          reasoningCaps.reasoningEffortLevels,
+        ),
+        currentReasoningEffort: state.reasoningEffort,
+        currentReasoningEnabled: state.reasoningEnabled,
+        supportsBuiltinWebSearch: providerSupportsBuiltinWebSearch(
+          provider?.providerType,
+          selection.modelId,
+          provider?.baseUrl,
+        ),
+        supportsBuiltinCodeExecution: providerSupportsBuiltinCodeExecution(
+          provider?.providerType,
+          selection.modelId,
+          provider?.baseUrl,
+        ),
+        supportsBuiltinImageGeneration: providerSupportsBuiltinImageGeneration(
+          provider?.providerType,
+          selection.modelId,
+          provider?.baseUrl,
+        ),
+        supportsBuiltinWebFetch: providerSupportsBuiltinWebFetch(
+          provider?.providerType,
+        ),
+        supportsStudioTools:
+          providerModelSupportsStudioTools(
+            provider?.providerType,
+            selection.modelId,
+          ) === true,
+        providerHostsCodeExecution: providerHostsCodeExecution(
+          provider?.providerType,
+        ),
+        storedToolsEnabled,
+        storedCodeToolsEnabled,
+        storedImageToolsEnabled,
+        storedWebFetchToolsEnabled,
+      }),
+    );
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);

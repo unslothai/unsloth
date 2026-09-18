@@ -47,8 +47,19 @@ test("every Thinking control resolves reasoning for the id the adapter sends, no
     return calls.map((match) => match[1].trim().replace("?.", "."));
   };
   assert.deepEqual(modelArguments("features/chat/api/chat-adapter.ts"), ["externalSelection.modelId"]);
-  for (const file of ["features/chat/shared-composer.tsx", "components/assistant-ui/thread.tsx"]) {
-    assert.deepEqual(modelArguments(file), ["externalSelection.modelId"], file);
+  assert.deepEqual(
+    modelArguments("components/assistant-ui/thread.tsx"),
+    ["externalSelection.modelId"],
+    "components/assistant-ui/thread.tsx",
+  );
+  // The composer resolves twice: once for the open chat's selection, and once per compare pane
+  // for that pane's own parsed id. Both are the id the adapter will send for that surface, which
+  // is the invariant; what must never appear here is the router's last pick.
+  for (const argument of modelArguments("features/chat/shared-composer.tsx")) {
+    assert.ok(
+      argument === "externalSelection.modelId" || argument === "external.modelId",
+      `features/chat/shared-composer.tsx resolves reasoning for ${argument}`,
+    );
   }
   assert.equal(getExternalReasoningCapabilities("openrouter", "openrouter/free").reasoningStyle, "enable_thinking");
 });

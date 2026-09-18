@@ -103,9 +103,12 @@ test("attachment and send gates forward projector fallback state", () => {
     sendGate,
     /mmprojFallbackReason:\s*runtime\.mmprojFallbackReason/,
   );
+  // Anchored on the GPU-field spread, which only the LOCAL compare load has: the composer
+  // also has an earlier setState for a hosted-connection pick, which clears the same
+  // activeNativePathToken and would otherwise be the block this slice caught.
   const compareLoadState = sourceBetween(
     "../src/features/chat/shared-composer.tsx",
-    "useChatRuntimeStore.setState({",
+    "...loadedGpuMemoryFields(resp),",
     "activeNativePathToken: null,",
   );
   assert.match(
