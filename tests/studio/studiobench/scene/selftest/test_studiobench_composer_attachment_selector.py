@@ -64,7 +64,9 @@ def _tokens(text: str) -> set[str]:
 
 
 @pytest.mark.parametrize("index", range(len(_RENDERED_BY)))
-@pytest.mark.parametrize("constant", ["_COMPOSER_ATTACHMENT_CONTAINERS", "_COMPOSER_ATTACHMENT_TILES"])
+@pytest.mark.parametrize(
+    "constant", ["_COMPOSER_ATTACHMENT_CONTAINERS", "_COMPOSER_ATTACHMENT_TILES"]
+)
 def test_each_counted_handle_is_one_its_composer_renders(constant, index):
     selectors = _shipped_constant(constant)
     assert len(selectors) == len(_RENDERED_BY), (
@@ -111,7 +113,9 @@ def test_the_compare_composer_tags_its_image_thumb_and_not_only_its_audio_chip()
     """
     attribute = _shipped_constant("_COMPOSER_ATTACHMENT_TILES")[1]
     match = _BARE_ATTRIBUTE.match(attribute)
-    assert match is not None, f"the compare composer's tile selector {attribute!r} is not an attribute"
+    assert (
+        match is not None
+    ), f"the compare composer's tile selector {attribute!r} is not an attribute"
     handle = match.group(1)
     body = _component_body(_SHARED_COMPOSER_TSX.read_text(encoding = "utf-8"), "PendingImageThumb")
     assert handle in _tokens(body), (
@@ -130,9 +134,9 @@ def test_the_counting_query_scopes_every_tile_to_its_own_container():
     tiles = _shipped_constant("_COMPOSER_ATTACHMENT_TILES")
     query = _shipped_constant_expression("_COUNT_COMPOSER_ATTACHMENTS_JS")
     for container, tile in zip(containers, tiles):
-        assert f"{container} {tile}" in query, (
-            f"the attachment count does not scope {tile} to {container}. Built query: {query!r}"
-        )
+        assert (
+            f"{container} {tile}" in query
+        ), f"the attachment count does not scope {tile} to {container}. Built query: {query!r}"
 
 
 def test_every_composer_container_is_probed_on_failure():
