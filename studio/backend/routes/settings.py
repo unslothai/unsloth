@@ -24,6 +24,7 @@ from pydantic import (
     StrictInt,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from auth.authentication import (
@@ -806,7 +807,19 @@ class ModelOverridePayload(BaseModel):
     custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
     # A discrete set, enforced by the normalizer; these bounds only block absurd values.
-    mlx_kv_bits: Optional[int] = Field(default = None, ge = 2, le = 8)
+    mlx_kv_quant: Optional[str] = Field(default = None, max_length = 16)
+    mlx_kv_bits: Optional[float] = Field(default = None, ge = 2, le = 8)
+
+    @model_validator(mode = "after")
+    def derive_mlx_kv_quant(self):
+        """Fold the pair into the field storage keeps; null is how a client spells Auto."""
+
+        if "mlx_kv_quant" not in self.model_fields_set and self.mlx_kv_bits is not None:
+            from core.inference.mlx_inference import encode_mlx_kv_quant
+            self.mlx_kv_quant = encode_mlx_kv_quant(self.mlx_kv_bits)
+        self.mlx_kv_bits = None
+        return self
+
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
@@ -1917,7 +1930,7 @@ def update_openai_auto_switch_override(
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
-                mlx_kv_bits = payload.mlx_kv_bits,
+                mlx_kv_quant = payload.mlx_kv_quant,
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,

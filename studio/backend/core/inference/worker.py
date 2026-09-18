@@ -478,7 +478,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             if getattr(backend, "device", None) == "mlx":
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
-                load_kwargs["kv_bits"] = config.get("mlx_kv_bits")
+                load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:
@@ -534,6 +534,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     for k in (
                         "mlx_kv_bits",
                         "mlx_kv_bits_requested",
+                        "mlx_kv_quant",
+                        "mlx_kv_quant_requested",
                         "mlx_kv_quant_eligibility",
                         "mlx_kv_quant_reason",
                         "mlx_kv_quant_note",

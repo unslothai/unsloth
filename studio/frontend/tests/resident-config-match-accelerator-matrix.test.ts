@@ -63,7 +63,7 @@ const BLANK = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -113,7 +113,7 @@ const ACCELERATORS: Record<string, Record<string, unknown>> = {
   // default load leaves the width unrequested; a pinned width is swept below like any other
   // field, and is not part of the base for the same reason placement is not.
   "apple-mlx": {
-    mlx_kv_bits_requested: null,
+    mlx_kv_quant_requested: null,
   },
 };
 
@@ -150,10 +150,10 @@ const FIELDS: FieldCase[] = [
     different: "f16",
   },
   {
-    key: "mlxKvBits",
-    statusKey: "mlx_kv_bits_requested",
-    same: 8,
-    different: 4,
+    key: "mlxKvQuant",
+    statusKey: "mlx_kv_quant_requested",
+    same: "8",
+    different: "tq-4",
   },
   {
     key: "speculativeType",

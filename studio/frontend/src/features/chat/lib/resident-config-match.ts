@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PerModelConfig } from "@/features/model-picker";
+import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
 
 import {
   parseGpuLayersOverride,
@@ -17,7 +18,7 @@ type ResidentRuntime = Pick<
   InferenceStatusResponse,
   | "requested_context_length"
   | "cache_type_kv"
-  | "mlx_kv_bits_requested"
+  | "mlx_kv_quant_requested"
   | "speculative_type"
   | "spec_draft_n_max"
   | "requested_parallel_slots"
@@ -266,8 +267,9 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     mlxComparable: true,
     pinned: () => true,
+    // Normalized: the backend spells Auto "auto" and the control spells it null.
     agrees: (c, s) =>
-      (c.mlxKvBits ?? null) === (s.mlx_kv_bits_requested ?? null),
+      (c.mlxKvQuant ?? null) === normalizeMlxKvQuant(s.mlx_kv_quant_requested),
   },
   {
     // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading

@@ -1353,6 +1353,12 @@ def _put(model_id, **fields):
     )
 
 
+def test_an_older_clients_cache_width_survives_the_override_route(monkeypatch):
+    _mock_override_store(monkeypatch)
+    _put("org/m", mlx_kv_bits = 8)
+    assert settings.get_model_overrides()["org/m"]["mlx_kv_quant"] == "8"
+
+
 def test_model_override_roundtrip(monkeypatch):
     _mock_override_store(monkeypatch)
 
@@ -8313,6 +8319,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
         max_seq_length = 8192,
     )
     settings_route.update_openai_auto_switch_override(legacy, "tester")
+    store[settings.MODEL_OVERRIDES_SETTING_KEY]["unsloth/B-GGUF:Q4_K_M"]["mlx_kv_bits"] = 8
 
     backfill = settings_route.ModelOverridePayload(
         model_id = "unsloth/B-GGUF:Q4_K_M",
@@ -8320,6 +8327,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
         max_seq_length = 2048,
         custom_context_length = 32768,
         kv_cache_dtype = "q8_0",
+        mlx_kv_quant = "tq-4",
         speculative_type = "ngram",
         gpu_ids = [0, 1],
         fill_absent_fields = True,
@@ -8334,6 +8342,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
     assert entry["kv_cache_dtype"] == "q8_0"
     assert entry["speculative_type"] == "ngram"
     assert entry["gpu_ids"] == [0, 1]
+    assert settings.model_override_load_kwargs(entry, is_gguf = False)["mlx_kv_quant"] == "8"
     # One entry, not two: the fill resolves onto the key a load reads.
     assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
 
@@ -8734,22 +8743,42 @@ def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkey
     assert stored[list(stored)[0]]["max_seq_length"] in (4096, 8192)
 
 
-def test_mlx_kv_bits_survives_the_whole_override_projection():
+def test_mlx_kv_quant_survives_the_whole_override_projection():
     # Dropped here, an API auto-switch would load a remembered MLX model at full
-    # precision while the picker honored the width.
-    for bits in (8, 6, 5, 4, 3, 2):
-        assert settings.normalize_model_override({"mlx_kv_bits": bits}) == {"mlx_kv_bits": bits}
+    # precision while the picker honored the setting.
+    for quant in ("8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"):
+        assert settings.normalize_model_override({"mlx_kv_quant": quant}) == {"mlx_kv_quant": quant}
 
-    # A discrete set, so an in-range width can still be one mx.quantize rejects.
-    # bool is an int subclass, and a string width would reach LoadRequest untyped.
-    for rejected in (7, 1, 0, 9, True, False, "4", 4.5, None):
-        assert settings.normalize_model_override({"mlx_kv_bits": rejected}) == {}
+    for rejected in ("7", "3.5", "tq-8", "tq-6", "auto", 4, True, None):
+        assert settings.normalize_model_override({"mlx_kv_quant": rejected}) == {}
+    assert settings.normalize_model_override({"mlx_kv_bits": 8}) == {"mlx_kv_quant": "8"}
+    assert settings.normalize_model_override({"mlx_kv_bits": 7}) == {}
+    assert settings.model_override_load_kwargs({"mlx_kv_bits": 8}, is_gguf = False) == {
+        "mlx_kv_quant": "8"
+    }
+    assert (
+        settings.model_override_load_kwargs({"mlx_kv_quant": None, "mlx_kv_bits": 8}, is_gguf = False)
+        == {}
+    )
+    both = {"mlx_kv_quant": "auto", "mlx_kv_bits": 4}
+    assert settings.normalize_model_override(both) == {}
+    assert settings.model_override_load_kwargs(both, is_gguf = False) == {}
+    assert LoadRequest(model_path = "unsloth/A", **both).mlx_kv_quant == "auto"
+
+    # Folded before storage sees it: an explicit null is Auto, not a payload predating the setting.
+    def _folded(**kw):
+        payload = settings_route.ModelOverridePayload(model_id = "m", **kw)
+        return payload.mlx_kv_quant, payload.mlx_kv_bits
+
+    assert _folded(mlx_kv_bits = 8) == ("8", None)
+    assert _folded(mlx_kv_quant = None, mlx_kv_bits = 8) == (None, None)
+    assert _folded(mlx_kv_quant = "tq-4", mlx_kv_bits = 8) == ("tq-4", None)
 
     # Ungated on is_gguf, matching the picker's own load payload.
     for is_gguf in (True, False):
-        kwargs = settings.model_override_load_kwargs({"mlx_kv_bits": 4}, is_gguf = is_gguf)
-        assert kwargs["mlx_kv_bits"] == 4
-        assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_bits == 4
+        kwargs = settings.model_override_load_kwargs({"mlx_kv_quant": "tq-4"}, is_gguf = is_gguf)
+        assert kwargs["mlx_kv_quant"] == "tq-4"
+        assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_quant == "tq-4"
 
 
 def _idle_backend(kw, monkeypatch, *, user_loaded):
