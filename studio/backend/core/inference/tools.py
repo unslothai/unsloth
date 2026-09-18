@@ -15970,6 +15970,10 @@ def _check_signal_escape_patterns(code: str):
         "socket.getaddrinfo",
         "urllib.request.urlopen",
         "urllib.request.urlretrieve",
+        # The request objects themselves, so their payload is checked wherever they are built.
+        "requests.Request",
+        "requests.models.Request",
+        "httpx.Request",
         # urllib3's connecting surface only: `urllib3.util` is string and retry helpers, and
         # matching the whole package refused `urllib3.util.parse_url`, which opens nothing.
         "urllib3.request",
@@ -16145,9 +16149,10 @@ def _check_signal_escape_patterns(code: str):
             for verb in _UPLOAD_VERBS
         ),
         "urllib.request.urlopen",
-        "urllib.request.Request",
         "aiohttp.request",
         "aiohttp.client.request",
+        # A payload attached when the request is built is the same upload as an inline one.
+        *_REQUEST_BUILDERS,
     )
     _UPLOAD_HF_FQ = (
         "huggingface_hub.upload_file",

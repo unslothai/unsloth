@@ -752,6 +752,7 @@ class TestNetworkTargetResolution:
             "import requests\nclass A:\n    def __init__(self):\n        self.session = requests.Session()\n"
             "    def go(self):\n        self.session.get('https://pypi.org/')",
             "import httpx\nc = httpx.Client()\nc.send(c.build_request('GET', 'https://pypi.org/'))",
+            'import httpx\nhttpx.Client().send(httpx.Request("GET", "https://huggingface.co"))',
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': 'https://pypi.org'})",
             "import requests\ns = requests.Session()\ns.headers.update({'a': 'b'})",
             # Two functions with a same-named attribute receiver do not contaminate each other.
@@ -913,6 +914,24 @@ class TestUploadDenylist:
                 "import aiohttp\n"
                 'aiohttp.request("POST", "https://huggingface.co/x", data=open("artifact", "rb"))',
                 id = "aiohttp_request_data_open_handle_blocked",
+            ),
+            # A payload attached when the request is built is the same upload as an inline one.
+            pytest.param(
+                "import httpx\n"
+                'httpx.Client().send(httpx.Request("POST", "https://huggingface.co", '
+                'files={"f": open("artifact", "rb")}))',
+                id = "httpx_send_request_files_blocked",
+            ),
+            pytest.param(
+                "import httpx\nc = httpx.Client()\n"
+                'c.send(c.build_request("POST", "https://huggingface.co", files={"f": open("a", "rb")}))',
+                id = "httpx_send_build_request_files_blocked",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                's.send(s.prepare_request(requests.Request("POST", "https://huggingface.co", '
+                'files={"f": open("a", "rb")})))',
+                id = "requests_send_prepared_request_files_blocked",
             ),
         ],
     )
