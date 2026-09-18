@@ -46,7 +46,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
       const rows = await listMcpBuiltins(wait);
       if (generation.current !== current) return;
       const blender = rows.find((row) => row.builtin_id === "blender");
-      if (!blender) throw new Error("Blender MCP is not available from this Unsloth Studio backend.");
+      if (!blender) throw new Error("Blender MCP is not available from this Unsloth backend.");
       setConfig(blender);
       setLoadError(null);
       if (!initialized.current) {
@@ -90,7 +90,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
       if (action === "test") {
         const result = await testBlenderMcp({ ...settings, consent });
         if (!mounted.current) return;
-        if (!result.ok) throw new Error(result.error ?? "MCP connection failed. Retry or check the Unsloth Studio backend.");
+        if (!result.ok) throw new Error(result.error ?? "MCP connection failed. Retry or check the Unsloth backend.");
         setConnection(result.blender_ready ? "ready" : "partial");
         setMessage(`MCP connected (${result.tool_count} tools). ${result.blender_ready
           ? "Blender ready."
@@ -143,9 +143,9 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
         </span>
       </div>
       {!config?.is_enabled && <p className="text-sm leading-relaxed text-muted-foreground">
-        Unsloth Studio downloads and sets up MCP on first use. Internet is needed once; the Blender add-on is installed separately.
+        Unsloth downloads and sets up MCP on first use. Internet is needed once; the Blender add-on is installed separately.
       </p>}
-      {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom Blender server also exists. Disable it below if you prefer Unsloth Studio’s managed setup.</p>}
+      {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom Blender server also exists. Disable it below if you prefer Unsloth’s managed setup.</p>}
       {config && !config.is_enabled && (
         <div className="flex items-start gap-3">
           <Checkbox id="blender-mcp-consent" className="mt-0.5" checked={consent} disabled={locked} onCheckedChange={(checked) => setConsent(checked === true)} />
@@ -169,7 +169,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
         </CollapsibleTrigger>
         <CollapsibleContent className="[--duration:200ms] motion-reduce:animate-none">
         <div className="space-y-4 pt-4 text-sm leading-relaxed text-muted-foreground">
-          <p>Use Blender {config?.min_blender_version ?? "5.1.0"}+ on the Unsloth Studio backend machine.</p>
+          <p>Use Blender {config?.min_blender_version ?? "5.1.0"}+ on the Unsloth backend machine.</p>
           <Button size="sm" variant="outline" onClick={() => openLink("https://www.blender.org/lab/mcp-server/")}>Download Blender add-on</Button>
           <ol className="list-decimal space-y-3 pl-5">
             <li>In Blender, enable <strong className="font-medium text-foreground">Online Access</strong> in Preferences → System.</li>
@@ -188,7 +188,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
         </CollapsibleTrigger>
         <CollapsibleContent className="[--duration:200ms] motion-reduce:animate-none">
         <div className="space-y-4 pt-4">
-          <p className="text-xs leading-relaxed text-muted-foreground">Loopback only (127.0.0.1). Match the add-on’s port. Unsloth Studio needs Python 3.10+.</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">Loopback only (127.0.0.1). Match the add-on’s port. Unsloth needs Python 3.10+.</p>
           <div className="grid gap-3 sm:grid-cols-[100px_1fr]">
             <div className="space-y-1">
               <Label htmlFor="blender-mcp-port">Port</Label>

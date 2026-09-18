@@ -245,7 +245,7 @@ export const ko = {
   settings: {
     accounts: {
       title: "계정",
-      description: "개별 Unsloth Studio 계정을 만듭니다. 새 사용자는 일회용 설정 코드로 로그인한 뒤 비밀번호를 정합니다.",
+      description: "개별 Unsloth 계정을 만듭니다. 새 사용자는 일회용 설정 코드로 로그인한 뒤 비밀번호를 정합니다.",
       username: "사용자 이름",
       create: "계정 만들기",
       createDescription: "설정 코드를 전달하면 본인이 비밀번호를 정할 수 있습니다.",
@@ -584,7 +584,7 @@ export const ko = {
       openLogsFolderFailed: "로그 폴더를 열 수 없습니다.",
       exportFailed: "로그를 다운로드할 수 없습니다.",
       exportTooOld: "실행 중인 Unsloth 백엔드가 너무 오래되어 로그를 내보낼 수 없습니다. 해당 백엔드를 업데이트한 뒤 다시 시작하세요.",
-      exportForbidden: "모든 로그를 다운로드하려면 로그인된 Unsloth Studio 세션이 필요합니다. API 키만으로는 할 수 없습니다.",
+      exportForbidden: "모든 로그를 다운로드하려면 로그인된 Unsloth 세션이 필요합니다. API 키만으로는 할 수 없습니다.",
       keywords: "디버그 디버깅 로그 오류 에러 충돌 스택 추적 진단 문제 해결 debug log logs error",
     },
     voice: {

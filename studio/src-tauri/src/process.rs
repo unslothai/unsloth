@@ -518,14 +518,14 @@ fn acquire_file_studio_runtime_launch_guard(
     use std::os::fd::AsRawFd;
 
     std::fs::create_dir_all(home)
-        .map_err(|error| format!("Could not create the Unsloth Studio runtime lock directory: {error}"))?;
+        .map_err(|error| format!("Could not create the Unsloth runtime lock directory: {error}"))?;
     let path = home.join(".studio-runtime.lock");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(&path)
-        .map_err(|error| format!("Could not open the Unsloth Studio runtime lock: {error}"))?;
+        .map_err(|error| format!("Could not open the Unsloth runtime lock: {error}"))?;
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if result == 0 {
         return Ok(StudioManagedRuntimeLaunchGuard { file });
@@ -534,7 +534,7 @@ fn acquire_file_studio_runtime_launch_guard(
     if error.kind() == std::io::ErrorKind::WouldBlock {
         return Err(STUDIO_RUNTIME_GATE_BUSY.to_string());
     }
-    Err(format!("Could not acquire the Unsloth Studio runtime lock: {error}"))
+    Err(format!("Could not acquire the Unsloth runtime lock: {error}"))
 }
 
 #[cfg(unix)]
