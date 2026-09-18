@@ -359,3 +359,52 @@ test("interleaved local and peer pins keep one newest-first order", () => {
   externalWrite([E, C, A]);
   assert.deepEqual(pins.getState().pinned, [E, D, C, B, A]);
 });
+
+function externalRemove() {
+  storage.delete(KEY);
+  assert.equal(fireWindowEvent("storage", { key: KEY, newValue: null }), 1);
+}
+
+test("a peer clearing the record unpins everything it held", () => {
+  reset([A, B]);
+  externalRemove();
+  assert.deepEqual(pins.getState().pinned, []);
+  pins.getState().togglePinnedConnected(D);
+  // The pins the peer cleared must not come back with the next write that lands.
+  assert.deepEqual(storedOrder(), [D]);
+});
+
+test("a peer clearing the record keeps a pin that was never written", () => {
+  // Only this window ever held it, so a reset of the record says nothing about it.
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+  } finally {
+    storage.set = realSet;
+  }
+  externalRemove();
+  assert.deepEqual(pins.getState().pinned, [B]);
+});
+
+test("an unchanged drag keeps a peer pin above an older failed one", () => {
+  // The drag ends on the pre-drag rendered order, which is where the unpersisted pin actually
+  // sits. Ending on the list the event carried re-added it at the front, above a newer peer pin.
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+  } finally {
+    storage.set = realSet;
+  }
+  pins.getState().beginPinnedConnectedDrag();
+  externalWrite([C, A]); // a peer pins C mid-drag
+  pins.getState().endPinnedConnectedDrag(false);
+  assert.deepEqual(pins.getState().pinned, [C, B, A]);
+});

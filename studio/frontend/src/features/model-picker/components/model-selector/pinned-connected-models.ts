@@ -87,7 +87,7 @@ function retirePersisted(stored: readonly string[]): void {
  *  pinned and could not persist are carried over. */
 function persistedBase(fallback: readonly string[]): string[] {
   const stored = storedPinned();
-  if (stored === null) return [...fallback];
+  if (stored === null) return fallback.filter(isOurs);
   retirePersisted(stored);
   // Nothing of ours is unwritten, so the record is authoritative exactly as it is while writes
   // land: a peer that persisted our failed pin may also have REORDERED since, and holding on to
@@ -105,9 +105,6 @@ function persistedBase(fallback: readonly string[]): string[] {
 // Snapshot, move in memory, commit on drop. Mirrors pinned-models.ts.
 let dragSnapshot: string[] | null = null;
 
-// Keep remote updates for cancellation without replacing the drag's live order.
-let dragExternalOrder: string[] | null = null;
-
 function sameOrder(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((key, index) => key === b[index]);
 }
@@ -117,7 +114,11 @@ function sameOrder(a: readonly string[], b: readonly string[]): boolean {
  *  Its additions arrive at the front; null storage leaves the order alone. */
 function rebaseOnStored(order: readonly string[]): string[] {
   const stored = storedPinned();
-  if (stored === null) return [...order];
+  // A record that is GONE is a peer's reset (removeItem, or a clear() of the whole origin), not
+  // "nothing to read": everything it held is unpinned now. Only the pins this window is carrying
+  // unwritten survive it, because nothing else ever recorded them. Keeping the rendered list here
+  // let the next write that landed put a peer's cleared pins straight back.
+  if (stored === null) return order.filter(isOurs);
   retirePersisted(stored);
   const added = stored.filter((id) => !order.includes(id));
   // An id survives if the record still carries it, or if it is one of ours the record never
@@ -173,19 +174,19 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
     beginPinnedConnectedDrag: () =>
       set((state) => {
         dragSnapshot = [...state.pinned];
-        dragExternalOrder = null;
         return state;
       }),
     endPinnedConnectedDrag: (commit) =>
       set((state) => {
         const snapshot = dragSnapshot;
-        const external = dragExternalOrder;
         dragSnapshot = null;
-        dragExternalOrder = null;
         if (snapshot === null) return state;
-        // Read storage too, since its event may still be pending. persistedBase keeps this
-        // session's unpersisted pins while writes are failing without dropping the other window's.
-        const base = persistedBase(external ?? snapshot);
+        // The PRE-DRAG rendered order, not the order the event carried. Both reach the same
+        // record, since persistedBase reads storage live rather than waiting on an event, but only
+        // the rendered one holds this window's unpersisted pins where they are actually drawn: the
+        // event's list lacks them entirely, so they were re-added at the front, above peer pins
+        // that are newer than they are.
+        const base = persistedBase(snapshot);
         if (commit && !sameOrder(snapshot, state.pinned)) {
           if (sameOrder(base, state.pinned)) return state;
           // The write replaces the whole list and nothing echoes it back to this window, so a
@@ -214,10 +215,9 @@ if (typeof window !== "undefined") {
       // ask for. The pin the user made is the one worth being wrong about.
       const next = readPinned();
       retirePersisted(next);
-      if (dragSnapshot !== null) {
-        dragExternalOrder = next;
-        return;
-      }
+      // A drag owns the rendered order until it ends; the record it is rebased onto is read
+      // live at that point, so there is nothing to stash here.
+      if (dragSnapshot !== null) return;
       // The same merge the toggle and the drag commit use, over the RENDERED list. Regrouping the
       // record's ids and this window's unpersisted ones into two blocks instead moved every
       // unpersisted pin above every peer pin already on screen, so interleaved pins came out in
