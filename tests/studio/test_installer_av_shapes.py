@@ -191,6 +191,29 @@ Each fires a rule and each is load-bearing. Listed so nobody spends a second pas
   - ie4uinit, Get-Process, python -X utf8 -c, Invoke-WebRequest. Each is scored; each has no
     equivalent that does the job.
 
+## Which products ship a controlled-folder-access equivalent
+
+Get-SecuritySoftwareNote, in install.ps1 and studio/setup.ps1, explains a denied llama.cpp cache
+by naming the security product that is registered and running, because takeown and icacls cannot
+clear a filter-driver block and elevation does not either. Defender's own feature is Controlled
+folder access, and the script names it directly: that name is Microsoft's, not a third-party
+vendor's, and is already in the user-facing string the function returns.
+
+The third-party suites ship the same protected-folders feature under their own product names,
+and those names live here rather than in the scripts, because the scripts are AMSI input and a
+comment listing security vendors raises the score of the file it is explaining:
+
+| Vendor | Feature |
+|---|---|
+| Bitdefender | Safe Files, and Ransomware Remediation |
+| Kaspersky | Anti-Ransomware / Protected folders |
+| Trellix and McAfee Enterprise | Access Protection rules |
+| Sophos | CryptoGuard protected folders |
+
+The function does not hard-code any of these. It reads whatever SecurityCenter2 has registered
+and names that, so the list above is the reason the code is written to ask rather than the data
+it asks with, and it does not need updating when a vendor renames a feature.
+
 ## Reporting a detection
 
 Use the "Windows: antivirus or security software blocked the installer" issue form. It requires the

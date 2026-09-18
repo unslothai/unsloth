@@ -140,22 +140,32 @@ def test_rocm_is_not_classified_by_the_cuda_integrated_flag(monkeypatch):
 # ── nothing above may reach a host that is not one of these parts ────────────
 
 
-def test_a_readable_smi_host_never_consults_torch(monkeypatch):
-    """The repair is scoped to hosts with a missing capacity.
+def test_a_readable_smi_host_is_classified_but_never_rewritten(monkeypatch):
+    """A readable capacity is still compared against torch, and still wins.
 
-    /api/system is polled every 5s by the floating monitor and every 3s from Settings.
-    A discrete card answers memory.total, so it must leave that poll exactly as it was:
-    no torch import, no property query, no new failure mode on a machine that was fine.
+    This test used to assert that torch was never consulted when every row carried a
+    number. That shortcut WAS the bug: a Windows RTX Spark N1X answers memory.total with
+    its 8128 MiB dedicated carve-out rather than ``[N/A]``, so "the CLI answered" stopped
+    being a reason to trust the answer. The classification now runs on every poll, at a
+    measured 7 microseconds, because get_device_properties is served from the driver's
+    device list.
+
+    What must not change is the verdict on a discrete card, and what must never happen
+    on a 3-5 s poll is a primary context. Both are asserted here; the context guarantee
+    has its own file (test_system_poll_no_cuda_context.py).
     """
     _cuda_host(monkeypatch, _DiscreteProps())
     _smi_rows(monkeypatch, 23.99)
 
     def _forbidden(*args, **kwargs):
-        raise AssertionError("torch inventory consulted on a host with nothing to repair")
+        raise AssertionError("mem_get_info pins a primary context on the /api/system poll")
 
-    monkeypatch.setattr(hw, "_torch_get_device_inventory", _forbidden)
+    monkeypatch.setattr(hw, "trusted_mem_get_info", _forbidden)
 
-    assert hw.get_backend_visible_gpu_info()["devices"][0]["memory_total_gb"] == 23.99
+    device = hw.get_backend_visible_gpu_info()["devices"][0]
+
+    assert device["memory_total_gb"] == 23.99
+    assert device.get("unified_memory") is not True
 
 
 def test_multi_gpu_smi_host_is_untouched(monkeypatch):
@@ -493,8 +503,19 @@ def test_a_known_usage_still_gets_its_percentage(monkeypatch):
     Filling the total is what makes the percentage computable, so a device that already
     carries a usage must not be skipped: it was the one case where both operands existed
     and the monitor still showed an unknown.
+
+    The host counter has to be stubbed. On one shared pool the used half is
+    ``max(host_used, cli_used)``, so without this the assertion below reads whatever the
+    machine running the suite happens to be using and the test passes or fails by how
+    busy the runner is. Held at 20 GiB, under the 30.0 the CLI reports, so the CLI's own
+    figure is the larger one and the assertion is about the rule rather than the host.
     """
     _cuda_host(monkeypatch, _SparkProps())
+    monkeypatch.setattr(
+        psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(total = 121 * GIB, available = 101 * GIB),
+    )
     utilization = {
         "devices": [
             {
@@ -511,6 +532,7 @@ def test_a_known_usage_still_gets_its_percentage(monkeypatch):
     device = utilization["devices"][0]
 
     assert device["vram_total_gb"] == SPARK_TOTAL_GB
-    # The CLI's own figure, not the host counter that stands in when it is absent.
+    # Whichever of the two is larger. Both are lower bounds on occupancy of one pool,
+    # and here the CLI's own figure is the larger one.
     assert device["vram_used_gb"] == 30.0
     assert device["vram_utilization_pct"] == round((30.0 / SPARK_TOTAL_GB) * 100, 1)

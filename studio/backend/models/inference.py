@@ -2308,7 +2308,7 @@ class ChatCompletionRequest(BaseModel):
         description = (
             "[x-unsloth] How a local GGUF chat compacts once context_overflow is "
             "truncate_oldest. 'checkpoint' resets to the latest turn plus standing "
-            "instructions (Studio default). 'rolling' drops oldest complete turns. "
+            "instructions (Unsloth default). 'rolling' drops oldest complete turns. "
             "Unset uses UNSLOTH_CONTEXT_POLICY."
         ),
     )
@@ -2326,7 +2326,7 @@ class ChatCompletionRequest(BaseModel):
     studio_tool_history: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] The replayed tool calls were produced by Studio's local "
+            "[x-unsloth] The replayed tool calls were produced by Unsloth's local "
             "tool loop rather than by an OpenAI-compatible client tool contract."
         ),
     )
@@ -2715,7 +2715,7 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         None,
         description = (
             "[x-unsloth] Mirrors ChatCompletionRequest: the replayed tool calls came from "
-            "Studio's local tool loop, so _takes_tool_passthrough routes the count the way "
+            "Unsloth's local tool loop, so _takes_tool_passthrough routes the count the way "
             "it routes the completion. Declared rather than left to extra='allow', which "
             "coerces nothing and would read the string 'false' as a claim of ownership."
         ),

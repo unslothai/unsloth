@@ -14,10 +14,13 @@ export function ModelLoadSettingsAction({
   ariaLabel,
   onConfigure,
   className,
+  tooltip = "Configure run settings before loading model",
 }: {
   ariaLabel: string;
   onConfigure: () => void;
   className?: string;
+  /** Hover copy. The default describes a local load, so Connected rows override it. */
+  tooltip?: string;
 }) {
   return (
     <Tooltip delayDuration={0}>
@@ -45,7 +48,7 @@ export function ModelLoadSettingsAction({
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
-        Configure run settings before loading model
+        {tooltip}
       </TooltipContent>
     </Tooltip>
   );
