@@ -357,6 +357,7 @@ def test_the_cuda_repair_stands_down_under_the_request(stack, monkeypatch):
     monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(stack, "NO_TORCH", False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
     # The request stands down only for a card an index can actually serve, so the mixed
@@ -994,6 +995,7 @@ def test_an_inferable_card_stands_the_cuda_repair_down(stack, monkeypatch):
     monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(stack, "NO_TORCH", False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: False)
@@ -1052,6 +1054,7 @@ def test_a_real_card_with_a_declared_arch_is_still_served(stack, monkeypatch):
     monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1151")
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
     monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: None)
     monkeypatch.setattr(stack, "_explicit_unknown_family_torch_index_url", lambda: None)
@@ -1452,6 +1455,7 @@ def test_a_rocm_pin_is_still_honoured_over_an_nvidia_card(stack, monkeypatch):
     monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(stack, "NO_TORCH", False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
@@ -1477,6 +1481,11 @@ def _viable_masked(
     """
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "IS_MACOS", False)
+    # _forced_rocm_route_is_viable leads with an x86_64 test, so on an ARM64 Linux or
+    # Apple Silicon runner every case below answers False before reaching the branch it
+    # is about. Stubbed beside IS_WINDOWS/IS_MACOS, which describe the same hypothetical
+    # host: without it the suite is green only on an x86_64 runner.
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
     monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [])
     monkeypatch.setattr(stack, "_is_wsl", lambda: False)
@@ -1557,6 +1566,11 @@ def _rocm_repair_reached(
     monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "IS_MACOS", False)
+    # _forced_rocm_route_is_viable leads with an x86_64 test, so on an ARM64 Linux or
+    # Apple Silicon runner every case below answers False before reaching the branch it
+    # is about. Stubbed beside IS_WINDOWS/IS_MACOS, which describe the same hypothetical
+    # host: without it the suite is green only on an x86_64 runner.
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(stack, "NO_TORCH", False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
     monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
@@ -2771,3 +2785,93 @@ def test_a_readable_version_still_routes_the_same_three_arches(stack, monkeypatc
     _unreadable_version_host(stack, monkeypatch, gfx)
     monkeypatch.setattr(stack, "_detect_rocm_version", lambda: (6, 4))
     assert stack._forced_rocm_route_is_viable() is True
+
+
+def _declared_on_physical(stack, monkeypatch, *, declared: str, physical: list) -> bool:
+    """_forced_rocm_route_is_viable for a DECLARED arch on a known physical inventory.
+
+    The declaration is what _runtime_gfx_target returns as the target, and it replaces the
+    host inventory with itself, so every case here turns on whether the guard consults the
+    physical list instead. Probes are stubbed together: a host whose inventory and whose
+    declaration disagree is the whole point.
+    """
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", declared)
+    for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_mask, raising = False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_is_wsl", lambda: False)
+    monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
+    monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: list(physical))
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: list(physical))
+    monkeypatch.setattr(stack, "_detect_rocm_version", lambda: (6, 4))
+    monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: None)
+    return stack._forced_rocm_route_is_viable()
+
+
+def test_a_declared_arch_cannot_exempt_a_physical_gfx1033_in_python(stack, monkeypatch):
+    """A declaration is a build target the user typed, not a statement about the silicon.
+
+    _runtime_gfx_target's declared early return REPLACES the inventory with the declaration,
+    so host_codes is [gfx1030] on a box holding [gfx1033, gfx1100]: the selected-target test
+    sees a healthy arch and _miscomputing_arch_host sees a host where not every arch is bad.
+    A stale or copied gfx1030 therefore stood the CUDA repair down and installed gfx103X
+    wheels on hardware measured to diverge to NaN (studio/ROCM_RDNA2_APU.md). install.sh
+    already records _AMD_REQUEST_TARGET_SOURCE for exactly this; this is the Python twin.
+    """
+    assert _declared_on_physical(
+        stack, monkeypatch, declared = "gfx1030", physical = ["gfx1033", "gfx1100"]
+    ) is False
+
+
+def test_a_probe_resolved_target_still_exempts_the_same_host(stack, monkeypatch):
+    """The control that keeps the narrowing honest, and the case install.sh spells out by
+    name: with NO declaration the probe resolves the target, the discrete-GPU preference
+    selects the gfx1100 over the integrated gfx1033, and that IS a statement about the
+    silicon. A fix that refused every host merely containing a gfx1033 would pass the test
+    above and silently take this host with it."""
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_mask, raising = False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_is_wsl", lambda: False)
+    monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
+    monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: None)
+    monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: ["gfx1033", "gfx1100"])
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: ["gfx1033", "gfx1100"])
+    monkeypatch.setattr(
+        stack, "_detect_amd_gfx_codes", lambda dedup = True, **k: ["gfx1033", "gfx1100"]
+    )
+    monkeypatch.setattr(stack, "_detect_rocm_version", lambda: (6, 4))
+    monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: None)
+    # Proves the control is about the PROBE path: the target must be the discrete card, not
+    # the integrated one the guard above rejects a declaration for.
+    assert stack._runtime_gfx_target(None)[0] == "gfx1100"
+    assert stack._forced_rocm_route_is_viable() is True
+
+
+def test_a_declaration_still_routes_where_no_bad_arch_is_present(stack, monkeypatch):
+    """The second control: the guard keys on a MISCOMPUTING arch in the machine, not on the
+    declaration disagreeing with it. gfx1030 declared beside a physical gfx1030 and gfx1100
+    is an ordinary host and must stay viable."""
+    assert _declared_on_physical(
+        stack, monkeypatch, declared = "gfx1030", physical = ["gfx1030", "gfx1100"]
+    ) is True
+
+
+def test_the_documented_strix_declaration_still_routes(stack, monkeypatch):
+    """The third control, and the reason the guard cannot simply distrust declarations: the
+    documented Strix Halo workaround declares gfx1100 on a physical gfx1151, which install.sh
+    calls out by name. No miscomputing arch is present, so the request still stands."""
+    assert _declared_on_physical(
+        stack, monkeypatch, declared = "gfx1100", physical = ["gfx1151"]
+    ) is True

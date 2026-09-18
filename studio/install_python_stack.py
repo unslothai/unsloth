@@ -2868,6 +2868,22 @@ def _forced_rocm_route_is_viable() -> bool:
     # _amd_arch_index_url keys on the bare arch. _physical_amd_gfx_archs splits the same way.
     _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0] or None
     _target, _, _, _host_codes = _runtime_gfx_target(_inferred)
+    # A DECLARED arch cannot vouch for what is in the machine, and _runtime_gfx_target's
+    # declared early return REPLACES the inventory with it: host_codes becomes [gfx1030] on a
+    # box holding [gfx1033, gfx1100], so the target test below sees a healthy arch and
+    # _miscomputing_arch_host() above sees a host where not every arch is bad. A stale or
+    # copied gfx1030 beside a physical gfx1033 therefore stood the CUDA repair down and
+    # installed gfx103X wheels on hardware measured to diverge to NaN
+    # (studio/ROCM_RDNA2_APU.md). install.sh already separates the two, recording
+    # _AMD_REQUEST_TARGET_SOURCE so only a PROBE-resolved target may clear this gate; this is
+    # the Python half catching up. Probe-resolved stays exempt, which is what keeps the
+    # [gfx1033, gfx1100] host the discrete-GPU preference already handles viable.
+    if (
+        (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip()
+        and _target is not None
+        and any(_gfx in _ROCM_MISCOMPUTING_GFX for _gfx in _physical_amd_gfx_archs())
+    ):
+        return False
     # A mask HIP cannot resolve exposes no device, so there is nothing to swap to and the
     # target above is the first card only because _pick_visible_index guesses one. Above the
     # target test, or the fallback below approves the same host off its inventory. Silent by
