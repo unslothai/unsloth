@@ -6,13 +6,13 @@ This is the AMD counterpart to [`unsloth/unsloth`](https://hub.docker.com/r/unsl
 
 ## Quick start
 
-Needs Docker and a working amdgpu driver. Without Docker, start here:
+Needs Docker and, on Linux, a working amdgpu driver. Windows goes through WSL2 and is covered below. Without Docker, start here:
 
 ```bash
 curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
 ```
 
-AMD GPUs are reached through the kernel driver's device nodes, not through a container toolkit, so the run command differs from the NVIDIA one:
+AMD GPUs are reached through the kernel driver's device nodes, not through a container toolkit, so the run command differs from the NVIDIA one. On Linux:
 
 ```bash
 GPU_FLAGS="--device /dev/kfd"
@@ -31,9 +31,25 @@ docker run --rm -it \
 
 Those few lines build the flags the way `docker/run.sh` does, and each part earns its place. `--group-add` needs the numeric group ids, because a name is resolved inside the container, where the host's `video` and `render` groups do not exist, so passing the names can add the wrong groups and leave `/dev/kfd` unreadable. A minimal host may have no `render` group at all, and a plain `--group-add "$(getent group render | cut -d: -f3)"` would then expand to an empty argument. And Docker refuses to start over a device that does not exist, so `/dev/dri` is named only when it is there, leaving the entrypoint to explain an incomplete driver rather than failing in the daemon.
 
+On Windows there is no `/dev/kfd`. WSL2 reaches the card over its DXG bridge, so the flags are the `/dev/dxg` node, the runtime's opt-in, and the host's `librocdxg` together with the `libdxcore` it loads from WSL's own lib directory (the image cannot ship `librocdxg`: its build needs Windows SDK headers). This needs ROCm for WSL on the host (`scripts/install_rocm_wsl_strixhalo.sh` installs it), a docker engine running inside the WSL distribution (Docker Desktop's own engine exposes neither node), and a per-architecture image: the generic image's torch bundles `librocprofiler-sdk`, which aborts on the bridge, and the entrypoint refuses before it gets that far. Until the per-architecture tags are published, build one with `ROCM_GFX=<your gfx> bash docker/build.sh --rocm`, which tags it `unsloth-rocm:latest` locally, then:
+
+```bash
+GPU_FLAGS="--device /dev/dxg -e HSA_ENABLE_DXG_DETECTION=1 \
+  -v /opt/rocm/lib/librocdxg.so.1:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro \
+  -v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro -e LD_LIBRARY_PATH=/usr/lib/wsl/lib"
+
+docker run --rm -it \
+  $GPU_FLAGS \
+  --ipc=host \
+  -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
+  unsloth-rocm:latest
+```
+
+No `--group-add` here: WSL exposes `/dev/dxg` to everyone and has no `render` group.
+
 The Hugging Face mount is not optional if you care about your downloads: `HF_HOME` inside the container is `/workspace/.cache/huggingface`, which lives in the container's writable layer, so without it every model is fetched again after `docker rm`.
 
-Or let the launcher work out the device nodes, group ids and mounts for you:
+Or let the launcher work out the device nodes, group ids and mounts for you, on Linux and on WSL alike:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/run.sh -o run.sh

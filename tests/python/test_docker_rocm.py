@@ -25,6 +25,8 @@ _ENTRYPOINT = os.path.join(_DOCKER, "entrypoint-rocm.sh")
 _DOCKERFILE = os.path.join(_DOCKER, "Dockerfile.rocm")
 _SMOKE = os.path.join(_DOCKER, "smoke_test_rocm.py")
 _WORKFLOW = os.path.join(_REPO, ".github", "workflows", "docker-publish-rocm.yml")
+_HUB_PAGE = os.path.join(_DOCKER, "DOCKERHUB-ROCM.md")
+_README = os.path.join(_REPO, "README.md")
 
 _posix_shell = pytest.mark.skipif(
     os.name != "posix" or shutil.which("bash") is None,
@@ -401,6 +403,30 @@ class TestBuildShRocm:
         assert "git ls-remote https://github.com/unslothai/unsloth-zoo" in body
         assert "needs.prepare.outputs.stable == 'true'" in body
         assert "org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only" in body
+
+
+class TestTheUserFacingDocsCoverWsl:
+    """docker/DOCKERHUB-ROCM.md is synced to the Docker Hub page and README.md is the
+    first thing a Windows user reads. Both said the image needs native Linux, and the
+    Hub quick start passed --device /dev/kfd unconditionally, which the daemon rejects
+    on WSL before the entrypoint runs."""
+
+    def test_the_hub_page_gives_the_same_wsl_flags_as_run_sh(self):
+        text = open(_HUB_PAGE, encoding = "utf-8").read()
+        for needle in (
+            "--device /dev/dxg",
+            "HSA_ENABLE_DXG_DETECTION=1",
+            "librocdxg.so.1:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro",
+            "-v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro",
+            "LD_LIBRARY_PATH=/usr/lib/wsl/lib",
+            "ROCM_GFX=<your gfx> bash docker/build.sh --rocm",
+        ):
+            assert needle in text, needle
+
+    def test_the_readme_no_longer_says_native_linux_only(self):
+        text = open(_README, encoding = "utf-8").read()
+        assert "needs native Linux" not in text
+        assert "/dev/dxg" in text and "docker/run.sh --rocm" in text
 
 
 # ── entrypoint-rocm.sh ───────────────────────────────────────────────────────
