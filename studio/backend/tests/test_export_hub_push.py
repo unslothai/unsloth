@@ -542,9 +542,7 @@ def test_lora_export_push_uploads_when_the_repo_is_already_private(tmp_path, mon
     assert calls == [*opens, "repo_info", *uploads]
 
 
-def test_lora_adapter_push_to_a_fresh_repo_leaves_the_card_to_the_uploader(
-    tmp_path, monkeypatch
-):
+def test_lora_adapter_push_to_a_fresh_repo_leaves_the_card_to_the_uploader(tmp_path, monkeypatch):
     """Creating the repo here would make Unsloth's wrapper skip its model card.
 
     `upload_to_huggingface` calls create_repo with `exist_ok=False` and pushes MODEL_CARD in
@@ -560,8 +558,8 @@ def test_lora_adapter_push_to_a_fresh_repo_leaves_the_card_to_the_uploader(
 
     assert success is True, message
     assert calls == ["repo_exists", "model_push:model", "tokenizer_push:model"]
-    assert "repo" not in seen           # no create_repo
-    assert "visibility" not in seen     # nothing to tighten; the push creates it private
+    assert "repo" not in seen  # no create_repo
+    assert "visibility" not in seen  # nothing to tighten; the push creates it private
 
 
 def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, monkeypatch):
@@ -577,7 +575,7 @@ def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, mon
 
     def _fail_the_upload_save(save_directory):
         saves["n"] += 1
-        if saves["n"] >= 2:          # 1st is the local save, 2nd is the temp dir to upload
+        if saves["n"] >= 2:  # 1st is the local save, 2nd is the temp dir to upload
             raise RuntimeError("MLX serialization failed")
         real_save(save_directory)
 
@@ -587,5 +585,5 @@ def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, mon
 
     assert success is False
     assert "MLX serialization failed" in message
-    assert calls == []                  # no create_repo, no tightening, no upload
+    assert calls == []  # no create_repo, no tightening, no upload
     assert "repo" not in seen
