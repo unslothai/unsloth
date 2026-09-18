@@ -60,6 +60,7 @@ from core.training.dataset_bounds import (
     row_bound_for_resume,
     world_size_from_env,
 )
+from core.training.resume import _checkpoint_state, session_eta_seconds
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -2993,6 +2994,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     _send("status", status_message = f"Training {model_name}...")
 
+    start_step = 0
+    if resume_from_checkpoint:
+        start_step = _checkpoint_state(Path(resume_from_checkpoint)) or 0
+
     def _on_step(
         step,
         total,
@@ -3004,7 +3009,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         num_tokens,
         grad_norm = None,
     ):
-        eta = (elapsed / step * (total - step)) if step > 0 else 0
+        eta = session_eta_seconds(elapsed, step, start_step, total) or 0
         _send(
             "progress",
             step = step,
@@ -3013,7 +3018,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
             learning_rate = lr,
             total_steps = total,
             elapsed_seconds = elapsed,
-            eta_seconds = max(0, eta),
+            eta_seconds = eta,
+            session_start_step = start_step,
             grad_norm = grad_norm,
             num_tokens = num_tokens,
             eval_loss = None,
@@ -4629,6 +4635,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "total_steps": progress.total_steps,
                     "elapsed_seconds": progress.elapsed_seconds,
                     "eta_seconds": progress.eta_seconds,
+                    "session_start_step": progress.session_start_step,
                     "grad_norm": progress.grad_norm,
                     "num_tokens": progress.num_tokens,
                     "eval_loss": progress.eval_loss,
@@ -4658,7 +4665,10 @@ def _create_embedding_progress_callback(
     from transformers import TrainerCallback
 
     class _EmbeddingProgressCallback(TrainerCallback):
+        _start_step = 0
+
         def on_train_begin(self, args, state, control, **kwargs):
+            self._start_step = state.global_step
             # Progress events carry an empty status, else the parent keeps showing "Starting...".
             if should_stop():
                 return
@@ -4700,11 +4710,7 @@ def _create_embedding_progress_callback(
             current_step = state.global_step
 
             elapsed = time.time() - training_start_time
-            eta = None
-            if current_step > 0 and total_steps > 0:
-                remaining = total_steps - current_step
-                if remaining > 0:
-                    eta = (elapsed / current_step) * remaining
+            eta = session_eta_seconds(elapsed, current_step, self._start_step, total_steps)
 
             event_queue.put(
                 {
@@ -4716,6 +4722,7 @@ def _create_embedding_progress_callback(
                     "total_steps": total_steps,
                     "elapsed_seconds": elapsed,
                     "eta_seconds": eta,
+                    "session_start_step": self._start_step,
                     "grad_norm": logs.get("grad_norm"),
                     "num_tokens": getattr(state, "num_input_tokens_seen", None),
                     "eval_loss": logs.get("eval_loss"),

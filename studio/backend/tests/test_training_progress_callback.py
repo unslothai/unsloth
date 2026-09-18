@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib
 import queue as _queue
 import sys
+import time
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -234,6 +235,60 @@ def test_stop_status_is_never_replaced_by_the_active_one(stop_status):
     assert control.should_training_stop is True
 
 
+def _drive_resumed(callback, start_step, step):
+    state = SimpleNamespace(global_step = start_step, epoch = 0.9, num_input_tokens_seen = 0)
+    control = SimpleNamespace(should_training_stop = False)
+    callback.on_train_begin(None, state, control)
+    state.global_step = step
+    callback.on_log(None, state, control, logs = {"loss": 0.5, "learning_rate": 1e-4})
+
+
+def test_resumed_run_eta_uses_the_steps_done_in_this_session():
+    owner = _make_owner()
+    owner._update_progress(total_steps = 1000)
+    backend = TrainingBackend()
+    event_queue = _FakeQueue()
+    owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
+    owner.training_start_time = time.time() - 60
+
+    _drive_resumed(owner._create_progress_callback(), start_step = 900, step = 910)
+    for event in event_queue.events:
+        backend._handle_event(event)
+
+    assert owner.training_progress.eta_seconds == pytest.approx(540, rel = 0.02)
+    assert backend._progress.eta_seconds == pytest.approx(540, rel = 0.02)
+    assert backend._progress.session_start_step == 900
+
+
+def test_resumed_run_reports_no_eta_before_its_first_step():
+    owner = _make_owner()
+    owner._update_progress(total_steps = 1000)
+    owner.training_start_time = time.time() - 60
+
+    _drive_resumed(owner._create_progress_callback(), start_step = 900, step = 900)
+
+    assert owner.training_progress.eta_seconds is None
+
+
+def test_fresh_run_eta_is_unchanged():
+    owner = _make_owner()
+    owner._update_progress(total_steps = 1000)
+    owner.training_start_time = time.time() - 60
+
+    _drive_resumed(owner._create_progress_callback(), start_step = 0, step = 100)
+
+    assert owner.training_progress.eta_seconds == pytest.approx(540, rel = 0.02)
+
+
+def test_mlx_adapter_keeps_the_session_start_step():
+    adapter = _MLXTrainerAdapter()
+
+    adapter._handle_event({"type": "progress", "step": 910, "session_start_step": 900})
+    adapter._handle_event({"type": "progress", "step": 920, "eval_loss": 0.4})
+
+    assert adapter.training_progress.session_start_step == 900
+
+
 # ---------------------------------------------------------------------------
 # Embedding path: worker._create_embedding_progress_callback
 # ---------------------------------------------------------------------------
@@ -290,3 +345,21 @@ def test_embedding_callback_survives_a_real_queue():
     events = [event_queue.get_nowait() for _ in range(event_queue.qsize())]
     assert [e["type"] for e in events] == ["status", "progress"]
     assert pickle.loads(pickle.dumps(events)) == events
+
+
+def test_embedding_resumed_run_eta_uses_the_steps_done_in_this_session():
+    event_queue = _FakeQueue()
+    backend = TrainingBackend()
+    callback = _create_embedding_progress_callback(
+        event_queue,
+        total_steps = 1000,
+        training_start_time = time.time() - 60,
+        should_stop = lambda: False,
+    )
+
+    _drive_resumed(callback, start_step = 900, step = 910)
+    for event in event_queue.events:
+        backend._handle_event(event)
+
+    assert backend._progress.eta_seconds == pytest.approx(540, rel = 0.02)
+    assert backend._progress.session_start_step == 900
