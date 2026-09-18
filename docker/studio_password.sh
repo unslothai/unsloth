@@ -81,10 +81,10 @@ echo "Unsloth Studio login -> ${STUDIO_LINE}"
 studio_ok=""; jupyter_ok=""
 deadline=$(( $(date +%s) + READY_WAIT ))
 while :; do
-    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${UNSLOTH_STUDIO_PORT:-8000}/api/health"; then
+    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${UNSLOTH_STUDIO_PORT:-8000}/api/health"; then
         studio_ok=1
     fi
-    if [[ -z "$jupyter_ok" ]] && curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${JUPYTER_PORT}/login"; then
+    if [[ -z "$jupyter_ok" ]] && curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${JUPYTER_PORT}/login"; then
         jupyter_ok=1
     fi
     { [[ -n "$studio_ok" && -n "$jupyter_ok" ]] || (( $(date +%s) >= deadline )); } && break

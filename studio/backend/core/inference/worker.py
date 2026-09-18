@@ -556,6 +556,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         # The IMAGE-turn body; the whitelist is the only way out.
                         "processor_template": _tpl_info.get("processor_template"),
                         "renders_image": _tpl_info.get("renders_image"),
+                        "accepts_multiple_images": _tpl_info.get("accepts_multiple_images"),
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)
@@ -675,16 +676,16 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     request_id = cmd.get("request_id", "")
 
     try:
-        image = None
-        image_b64 = cmd.get("image_base64")
-        if image_b64:
-            image = _decode_image(image_b64)
-            image = _resize_image(image)
+        images = [
+            _resize_image(_decode_image(encoded))
+            for encoded in cmd.get("images_base64") or ()
+            if encoded
+        ]
 
         gen_kwargs = {
             "messages": cmd["messages"],
             "system_prompt": cmd.get("system_prompt", ""),
-            "image": image,
+            "images": images,
             "temperature": cmd.get("temperature", 0.7),
             "top_p": cmd.get("top_p", 0.9),
             "top_k": cmd.get("top_k", 40),
@@ -1119,6 +1120,13 @@ def run_inference_process(
         service_name = "unsloth-studio-inference-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+    # Must follow setup_logging. Structlog records go to fd 1, but a third-party library
+    # logging through stdlib `logging` reaches fd 2 via `logging.lastResort`, and that
+    # traceback is byte-identical to a dying process's: unmarked, the parent hands a
+    # RECOVERED failure to the NEXT caller on a shared worker as their crash.
+    from utils.worker_stderr import mark_log_record_continuations
+
+    mark_log_record_continuations()
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
