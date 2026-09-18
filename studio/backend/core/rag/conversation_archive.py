@@ -2481,7 +2481,7 @@ def recall(
 
 
 def _scope_select(scope: str, created_before: Optional[str]) -> tuple:
-    """The scope's document ids, optionally cut at ``created_before``. See `delete_for_thread`."""
+    """The scope's documents, optionally cut at ``created_before`` (see `delete_for_thread`)."""
     if not created_before:
         return ("SELECT id, stored_path FROM documents WHERE scope=?", (scope,))
     return (
@@ -2498,10 +2498,10 @@ def _delete_scope_without_vec(
 ) -> list:
     """Delete a scope's text-bearing rows over a connection with no sqlite-vec.
 
-    Deletion must not depend on the optional native extension. Archives are only WRITTEN while vec0
+    Deletion must not depend on the optional native extension. Rows are only WRITTEN while vec0
     loads, but it can stop loading afterwards (a venv change, common on macOS), and a delete that
-    silently does nothing leaves a deleted conversation on disk ready to answer again once vec0
-    returns.
+    silently does nothing leaves a deleted chat's turns and uploads on disk, retrievable again once
+    vec0 returns.
 
     The chunks_vec rows are unreachable from here and left behind. They carry vectors, not text, and
     every read path resolves through ``chunks`` joined to ``documents``, both gone, so nothing can
@@ -2552,6 +2552,7 @@ def delete_for_thread(thread_id: str, *, created_before: Optional[str] = None) -
 
 
 def delete_thread_documents(thread_id: str, *, created_before: Optional[str] = None) -> int:
+    """Drop a thread's uploaded documents and their stored files, cut as in `delete_for_thread`."""
     if not thread_id:
         return 0
     from .ingestion import _remove_upload

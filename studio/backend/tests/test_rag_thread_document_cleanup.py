@@ -64,9 +64,12 @@ def _document_ids(client):
 
 
 def _chunk_count(thread_id):
-    conn = rag_db.get_connection()
+    conn = rag_db.get_metadata_connection()
     try:
-        return len(store.all_chunks_for_scope(conn, store.thread_scope(thread_id)))
+        scope = store.thread_scope(thread_id)
+        chunks = conn.execute("SELECT COUNT(*) FROM chunks WHERE scope=?", (scope,)).fetchone()[0]
+        fts = conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE scope=?", (scope,)).fetchone()[0]
+        return chunks + fts
     finally:
         conn.close()
 
@@ -74,17 +77,20 @@ def _chunk_count(thread_id):
 def test_deleting_a_thread_removes_its_uploaded_documents(client):
     _create_thread(client, "doomed")
     _create_thread(client, "kept")
-    doomed = _upload(client, "doomed", "doomed.txt", "alpha bravo charlie " * 50)
+    doomed = [
+        _upload(client, "doomed", f"doomed{i}.txt", f"alpha bravo charlie {i} " * 50)
+        for i in range(2)
+    ]
     kept = _upload(client, "kept", "kept.txt", "delta echo foxtrot " * 50)
-    doomed_path, kept_path = _stored_path(doomed), _stored_path(kept)
-    assert os.path.isfile(doomed_path)
+    doomed_paths, kept_path = [_stored_path(d) for d in doomed], _stored_path(kept)
+    assert all(os.path.isfile(path) for path in doomed_paths)
 
     response = client.request("DELETE", "/api/chat/threads", json = {"ids": ["doomed"]})
 
     assert response.status_code == 200, response.text
     assert _document_ids(client) == {kept}
     assert _chunk_count("doomed") == 0
-    assert not os.path.exists(doomed_path)
+    assert not any(os.path.exists(path) for path in doomed_paths)
     assert os.path.isfile(kept_path)
     assert _chunk_count("kept") > 0
 
@@ -121,11 +127,13 @@ def test_deleting_a_project_removes_its_member_threads_documents(client):
     )
     assert response.status_code == 200, response.text
     path = _stored_path(_upload(client, "member", "member.txt", "golf hotel india " * 50))
+    _create_thread(client, "outsider")
+    outsider = _upload(client, "outsider", "outsider.txt", "sierra tango uniform " * 50)
 
     response = client.delete("/api/chat/projects/proj")
 
     assert response.status_code == 200, response.text
-    assert _document_ids(client) == set()
+    assert _document_ids(client) == {outsider}
     assert not os.path.exists(path)
 
 
@@ -136,10 +144,10 @@ def test_a_recreated_thread_keeps_documents_uploaded_after_the_cutoff(client):
     cutoff = datetime.now(timezone.utc).isoformat()
     fresh = _upload(client, "recreated", "fresh.txt", "mike november oscar " * 50)
 
-    chat_history._remove_thread_documents(["recreated"])
+    chat_history._remove_thread_rag_data(["recreated"])
     assert _document_ids(client) == {old, fresh}
 
-    chat_history._remove_thread_documents(["recreated"], cutoff = cutoff)
+    chat_history._remove_thread_rag_data(["recreated"], cutoff = cutoff)
 
     assert _document_ids(client) == {fresh}
     assert not os.path.exists(old_path)
@@ -159,7 +167,8 @@ def test_thread_documents_go_without_sqlite_vec(client, monkeypatch):
 
     with monkeypatch.context() as patch:
         patch.setattr(rag_db, "get_connection", no_vec)
-        chat_history._remove_thread_documents(["vecless"])
+        chat_history._remove_thread_rag_data(["vecless"])
 
     assert _document_ids(client) == set()
+    assert _chunk_count("vecless") == 0
     assert not os.path.exists(path)
