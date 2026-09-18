@@ -599,6 +599,7 @@ def test_the_powershell_continuation_check_can_fail(tmp_path, monkeypatch) -> No
 # A lane named "ceiling" has to pin the ceiling that is actually declared.
 # ---------------------------------------------------------------------------
 
+
 def _ceiling_lane_trl_pins(workflows: Path) -> list[tuple[str, str, str]]:
     """(workflow, job, pinned trl version) for every matrix lane with `slug: ceiling`.
 
