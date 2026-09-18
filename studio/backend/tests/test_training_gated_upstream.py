@@ -90,6 +90,19 @@ def _clear_mirror_caches():
     clear()
 
 
+@pytest.fixture(autouse = True)
+def _torch_trainer(monkeypatch):
+    # UnslothTrainer.__new__ hands back _MLXTrainerAdapter when should_use_mlx_training_backend()
+    # is true, and that adapter has no pre_detect_and_load_tokenizer at all. On a real Apple
+    # Silicon runner every test here that builds a trainer therefore exercised the MLX adapter
+    # and died with AttributeError, which the Linux and Windows legs could never show. These
+    # tests are about the Torch path by construction; the MLX path has its own tests below,
+    # which patch core.training.training and so are unaffected by this.
+    monkeypatch.setattr(
+        trainer_mod, "should_use_mlx_training_backend", lambda *a, **kw: False, raising = False
+    )
+
+
 @pytest.fixture
 def mapper(monkeypatch):
     monkeypatch.setattr(unsloth_mirror, "_mapper_tables", lambda: _TABLES)
