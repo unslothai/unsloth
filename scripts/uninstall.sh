@@ -349,11 +349,16 @@ _remove_path() {
 # owns as much as any other, since the root is theirs. Nothing outside these fixed names reaches
 # here, so the test costs nothing and removes the one shape we never meant to delete.
 #
-# A symlink is unlinked rather than followed: -f is true for a link to a file, and rm on the link
-# takes the link.
+# A link is not a lock either, so it is kept, not unlinked. O_CREAT | O_EXCL never produces one,
+# which makes a link at that name the user's, exactly as a directory there would be; taking it
+# because rm on a link is cheap is the same reasoning the unmarked-tree rule already refuses.
+# uninstall.ps1's _RemoveLockFile excludes reparse points for this reason, and the two halves of
+# one rule have to agree. -L is tested BEFORE -f, which is true for a link to a file.
 _remove_lock_file() {
     _rlf="$1"
-    if [ -L "$_rlf" ] || [ -f "$_rlf" ]; then
+    if [ -L "$_rlf" ]; then
+        echo "  keeping link at an install-lock path: $_rlf" >&2
+    elif [ -f "$_rlf" ]; then
         _remove_path "$_rlf"
     elif [ -e "$_rlf" ]; then
         echo "  keeping non-file at an install-lock path: $_rlf" >&2

@@ -918,11 +918,32 @@ _TOOLCHAIN_PATH_KEYS = frozenset(
 
 
 def _usable_dir(value: str) -> bool:
-    """Whether a path we generated is actually a directory the toolchain can compile into."""
+    """Whether a path we generated is actually a directory the toolchain can compile into.
+
+    A real create, not is_dir() alone. The mkdir above passes exist_ok = False and swallows
+    every OSError, so a directory that already exists but cannot be written to reaches here
+    having proven nothing, and torch treats the value as authoritative: cache_dir() falls back
+    to its own temporary directory only when the variable is UNSET, then calls
+    os.makedirs(exist_ok = True), which succeeds on an existing read-only directory and leaves
+    every later write to fail (torch/_inductor/runtime/cache_dir_utils.py, cache_dir and
+    triton_cache_dir). Publishing such a path is worse than publishing none, which is what the
+    caller's comment promises. Same rule install.sh states for the uv cache probe.
+    """
     try:
-        return Path(value).is_dir()
+        if not Path(value).is_dir():
+            return False
     except (OSError, ValueError):
         return False
+    try:
+        handle, probe = tempfile.mkstemp(dir = value, prefix = ".unsloth-write-probe.")
+    except (OSError, ValueError):
+        return False
+    os.close(handle)
+    try:
+        os.unlink(probe)
+    except OSError:
+        pass
+    return True
 
 
 def _toolchain_unsafe(key: str, value: str) -> bool:

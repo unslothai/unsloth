@@ -1158,6 +1158,44 @@ def test_an_unusable_managed_inductor_path_is_not_published(monkeypatch, tmp_pat
     assert os.environ["CUDA_CACHE_PATH"] == str(cache / "cuda")
 
 
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
+                    reason = "chmod 555 denies neither root nor Windows")
+def test_a_read_only_managed_cache_is_not_published(tmp_path):
+    """A directory that exists but cannot be written to is the same defect as a missing one.
+
+    mkdir passes exist_ok = False, so an existing directory takes the FileExistsError path and
+    proves nothing about writability. torch only falls back to its own temporary cache when the
+    variable is UNSET (torch/_inductor/runtime/cache_dir_utils.py), so a read-only pin fails
+    every compile.
+    """
+    cache = tmp_path / "studio" / "cache"
+    for name in ("torchinductor", "triton", "cuda"):
+        (cache / name).mkdir(parents = True)
+        (cache / name).chmod(0o555)
+    sr = _load_storage_roots()
+    try:
+        sr._setup_cache_env()
+
+        for key in ("TORCHINDUCTOR_CACHE_DIR", "TRITON_CACHE_DIR", "CUDA_CACHE_PATH"):
+            assert key not in os.environ, key
+        # Withheld, not blanked: an empty value is a relative path to the library reading it.
+        assert os.environ["NUMBA_CACHE_DIR"] == str(cache / "numba")
+    finally:
+        for name in ("torchinductor", "triton", "cuda"):
+            (cache / name).chmod(0o755)
+
+
+def test_the_write_probe_leaves_nothing_behind(tmp_path):
+    """The probe creates a file in the directory it is testing; it must not accumulate."""
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    inductor = Path(os.environ["TORCHINDUCTOR_CACHE_DIR"])
+    assert inductor.is_dir()
+    assert list(inductor.iterdir()) == []
+
+
 def test_a_usable_managed_inductor_path_is_still_published(tmp_path):
     """The rule above must not withhold the ordinary case."""
     sr = _load_storage_roots()

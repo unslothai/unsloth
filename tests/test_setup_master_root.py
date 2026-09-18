@@ -691,14 +691,15 @@ def test_the_windows_node_guard_covers_a_master_root():
     never wrote: it named a third variable. So the rule here is positive, not a denial.
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    guards = [
-        line
-        for line in ps.splitlines()
-        if "$NodeDir" in line
-        and ".unsloth-studio-owned" not in line
-        and ("$NodeOverride" in line or "$RuntimeRootIsCustom" in line)
-    ]
-    # The guard's `if`, and the marker's `if`. Fewer means the block was restructured and this
+    # Every site in the Node install section that decides whether the Node path is the user's.
+    # Keyed on $NodeOverride, the variable the bug named, rather than on $NodeDir: the guard's
+    # probe moved to its own line and a $NodeDir test would have stopped finding it, passing by
+    # seeing less. The section start drops the parsing block far above, which assigns
+    # $NodeOverride from the environment and rightly says nothing about the runtime root.
+    lines = ps.splitlines()
+    start = next(i for i, line in enumerate(lines) if "$nodeEntry = if (" in line)
+    guards = [line for line in lines[start:] if "$NodeOverride" in line]
+    # The guard's probe, and the marker's `if`. Fewer means the block was restructured and this
     # test would otherwise pass by finding nothing.
     assert len(guards) >= 2, guards
     for line in guards:
@@ -952,13 +953,17 @@ def test_the_windows_node_guard_treats_a_file_as_occupied():
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     block = _slice(
         ps,
-        "if (($NodeOverride -or $RuntimeRootIsCustom) -and (Test-Path -LiteralPath $NodeDir",
+        "        $nodeEntry = if ($NodeOverride -or $RuntimeRootIsCustom) {",
         "install_node_prebuilt.py",
     )
     code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
-    # The gate itself must not be container-only any more.
-    gate = code.splitlines()[0]
-    assert "-PathType Container" not in gate, gate
+    # Get-Item -Force, not Test-Path: under Windows PowerShell 5.1 Test-Path answers for the
+    # link TARGET, so a dangling `node` link read as absent and install_node_prebuilt.py then
+    # installed through it. Assert-StudioOwnedOrAbsent uses Get-Item for the same reason.
+    assert "Get-Item -LiteralPath $NodeDir -Force" in code, code
+    assert "Test-Path -LiteralPath $NodeDir" not in code, code
+    # A reparse point is not a directory here either, however it resolves.
+    assert "$nodeEntry.PSIsContainer" in code and "ReparsePoint" in code, code
     # And a non-directory must fail rather than fall through to the marker questions.
     assert "$nodeIsDir" in code and "-not $nodeIsDir -or" in code
 

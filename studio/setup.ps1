@@ -4746,10 +4746,21 @@ if ($NeedNodeForSetup) {
         # about containers. Ownership evidence lives inside a directory, so a non-directory can
         # never carry it and is refused outright. setup.sh's _assert_studio_owned_or_absent takes
         # the same view of -d against -e and -L.
-        if (($NodeOverride -or $RuntimeRootIsCustom) -and (Test-Path -LiteralPath $NodeDir)) {
+        # Get-Item -Force, not Test-Path, for the same reason Assert-StudioOwnedOrAbsent uses it:
+        # under Windows PowerShell 5.1 Test-Path reports whether the TARGET resolves, so a
+        # dangling link named `node` reads as absent, and install_node_prebuilt.py then resolves
+        # --install-dir and installs through the link. The comment above promises that anything
+        # at the path counts as occupied; this is what makes a link count too.
+        $nodeEntry = if ($NodeOverride -or $RuntimeRootIsCustom) {
+            Get-Item -LiteralPath $NodeDir -Force -ErrorAction SilentlyContinue
+        } else { $null }
+        if ($nodeEntry) {
             $nodeOwnedMarker = Join-Path $NodeDir ".unsloth-studio-owned"
             $nodeMeta = Join-Path $NodeDir "UNSLOTH_NODE_PREBUILT_INFO.json"
-            $nodeIsDir = Test-Path -LiteralPath $NodeDir -PathType Container
+            # From the entry, not a second probe: a dangling link is a container to neither, and
+            # a reparse point carrying no ownership evidence is not an install of ours.
+            $nodeIsDir = $nodeEntry.PSIsContainer -and
+                -not ($nodeEntry.Attributes -band [IO.FileAttributes]::ReparsePoint)
             if (-not $nodeIsDir -or (
                     -not (Test-Path -LiteralPath $nodeOwnedMarker) -and
                     -not (Test-Path -LiteralPath $nodeMeta))) {

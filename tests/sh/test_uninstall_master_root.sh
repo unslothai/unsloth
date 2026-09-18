@@ -22,6 +22,7 @@ mkdir -p "$HOME"
 
 assert_nodir() { _l="$1"; [ -e "$2" ] && { echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); } || { echo "  PASS: $_l"; PASS=$((PASS+1)); }; }
 assert_dir()   { _l="$1"; [ -e "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing $2)"; FAIL=$((FAIL+1)); }; }
+assert_link()  { _l="$1"; [ -L "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (link missing $2)"; FAIL=$((FAIL+1)); }; }
 # -e is false for a dangling symlink, which is exactly the shape one case below is about.
 assert_present() { _l="$1"; { [ -e "$2" ] || [ -L "$2" ]; } && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing $2)"; FAIL=$((FAIL+1)); }; }
 assert_eq()    { _l="$1"; [ "$2" = "$3" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (got '$2', want '$3')"; FAIL=$((FAIL+1)); }; }
@@ -77,12 +78,17 @@ MRL="$_TMP_ROOT/lockshapes"
 mkdir -p "$MRL/studio" "$MRL/.node.install.lock/keep"
 : > "$MRL/.node.install.lock/keep/user-file"
 : > "$MRL/.llama.cpp.install.lock"
+# A link at a lock name is the user's too: O_CREAT | O_EXCL never makes one, and
+# uninstall.ps1 already excluded reparse points, so unlinking it here was the two halves of
+# one rule disagreeing. Two shapes, since a link to a file is -f and a dangling one is not.
 ln -s "$MRL/.llama.cpp.install.lock" "$MRL/.whisper.cpp.install.lock"
+ln -s "$MRL/nowhere" "$MRL/.sd.cpp.install.lock"
 : > "$MRL/.sd.cpp.install.lock.stale.4242"
 run_block "$HOME" "$MRL"
 assert_nodir "a real lock file is removed"          "$MRL/.llama.cpp.install.lock"
 assert_nodir "a stale lock file is removed"         "$MRL/.sd.cpp.install.lock.stale.4242"
-assert_nodir "a symlinked lock is unlinked"         "$MRL/.whisper.cpp.install.lock"
+assert_link  "a linked lock is kept"                "$MRL/.whisper.cpp.install.lock"
+assert_link  "a dangling linked lock is kept too"   "$MRL/.sd.cpp.install.lock"
 assert_dir   "a directory at a lock path is kept"   "$MRL/.node.install.lock"
 assert_dir   "and so is everything under it"        "$MRL/.node.install.lock/keep/user-file"
 
