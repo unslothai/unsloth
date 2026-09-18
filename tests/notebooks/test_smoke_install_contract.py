@@ -259,7 +259,9 @@ def test_the_cache_key_inputs_exist():
         # key-files resolve from GITHUB_WORKSPACE and this job checks out under
         # `unsloth/`, which is the repo root from this test's point of view.
         assert rel.startswith("unsloth/"), f"{rel} is not prefixed for this job's checkout layout"
-        assert (REPO / rel[len("unsloth/"):]).exists(), f"key-files names {rel}, which does not exist"
+        assert (
+            REPO / rel[len("unsloth/") :]
+        ).exists(), f"key-files names {rel}, which does not exist"
 
 
 # --- what the skip list costs and what it must not spend -----------------------------
