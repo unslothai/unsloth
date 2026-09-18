@@ -1705,6 +1705,14 @@ def _rail_openings(provider: str) -> list[str]:
     return tags
 
 
+# Anything that sets padding, in either of Tailwind's two spellings. The utility family
+# (p-, px-, ps-, ...) and the arbitrary-property form, which Tailwind 4 emits with
+# !important and which starts with "[" once _split_variants has taken the marker off, so a
+# pattern anchored on "p" never sees it. The side letter is optional and a "-" must follow
+# it either way, which is what keeps pointer-events-none, peer-* and place-items-* out.
+_PADS = re.compile(r"p[xytblrse]?-|\[padding[-:]")
+
+
 def _rail_class_tokens(tag: str) -> list[str]:
     """Every class token the rail's className CAN render, conditionals included.
 
@@ -1942,7 +1950,7 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
     for tag in _rail_openings(provider):
         for token in _rail_class_tokens(tag):
             utility = _split_variants(token)[1]
-            assert not re.match(r"p[xytblrse]?-", utility), (
+            assert not _PADS.match(utility), (
                 f"the rail carries the padding utility {token!r}; its padding is the inline "
                 f"px style, and a class here is rem-scaled or !important-overrides it (#8082)"
             )
