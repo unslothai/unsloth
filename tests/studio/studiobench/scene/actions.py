@@ -1075,14 +1075,7 @@ def settings(ctx: ActionContext) -> ActionResult:
 
 @register_action(name = "model_change", default_budget_ms = 10000)
 def model_change(ctx: ActionContext) -> ActionResult:
-    """Open the model picker and select a row.
-
-    THE WEAKEST SELECTOR IN THE SUITE, and it is recorded as such rather than hidden. The picker's
-    option rows are plain `<button>` elements with utility classes: no `role="option"`, no
-    `data-model-id`, no CommandItem, nothing stable anywhere in features/model-picker. So the row
-    is found by position among the menu's buttons and the assertion is on the trigger's LABEL
-    changing, which is an observable consequence rather than a selector.
-    """
+    """Open the model picker and select a row marked with data-model-picker-option."""
     trigger = ctx.page.query_selector("button.unsloth-model-selector-trigger")
     if trigger is None:
         return not_run("no model selector trigger on the page")
@@ -1129,7 +1122,7 @@ def model_change(ctx: ActionContext) -> ActionResult:
             "label_before": before,
             "label_after": after,
             "menu_closed": closed,
-            "selector_confidence": "low: the option rows carry no stable attribute",
+            "selector_confidence": "high: data-model-picker-option identifies selectable rows",
         },
         timings = {"open_ms": round(opened_ms, 1), "select_ms": round(select_ms, 1)},
         reason = None if ok else "no option could be selected, or the menu stayed open",

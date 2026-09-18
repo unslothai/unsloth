@@ -210,6 +210,10 @@ huggingfacenotorch = [
     # gate on the INSTALLED zoo rather than on this pin, so they start running by themselves
     # wherever 2026.9.5 or newer is the zoo actually present.
     #
+    # The same floor is needed for a second, independent reason: 2026.9.5 is also the first
+    # release to export `grpo_vision_chunks`, which both vision GRPO logprob paths in
+    # unsloth/models/rl_replacements.py refuse to run without.
+    #
     # This branch widens both the transformers and the trl ranges below, and unsloth_zoo
     # publishes its own window for each. pip intersects the two, so a widened range only
     # reaches users once a zoo release carries the same ceiling. The two halves are not in

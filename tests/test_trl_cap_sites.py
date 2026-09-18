@@ -593,3 +593,111 @@ def test_the_powershell_continuation_check_can_fail(tmp_path, monkeypatch) -> No
         encoding = "utf-8",
     )
     test_no_windows_step_uses_a_bash_line_continuation()
+
+
+# ---------------------------------------------------------------------------
+# A lane named "ceiling" has to pin the ceiling that is actually declared.
+# ---------------------------------------------------------------------------
+
+def _ceiling_lane_trl_pins(workflows: Path) -> list[tuple[str, str, str]]:
+    """(workflow, job, pinned trl version) for every matrix lane with `slug: ceiling`.
+
+    Lanes are matrix `include:` entries whose package list is a single `pkg_pins` string,
+    so the pin is recovered by scanning that string rather than by resolving a requirement
+    file.
+    """
+    import yaml
+
+    found = []
+    for path in sorted(workflows.glob("*.yml")):
+        try:
+            document = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+        except yaml.YAMLError:
+            continue
+        if not isinstance(document, dict):
+            continue
+        for job_name, job in (document.get("jobs") or {}).items():
+            if not isinstance(job, dict):
+                continue
+            # `strategy:` and `matrix:` can each be a bare `${{ ... }}` expression string
+            # rather than a mapping, so every level is checked before it is indexed.
+            strategy = job.get("strategy")
+            matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+            includes = matrix.get("include") if isinstance(matrix, dict) else None
+            for entry in includes or []:
+                if not isinstance(entry, dict) or entry.get("slug") != "ceiling":
+                    continue
+                pins = str(entry.get("pkg_pins") or "")
+                for match in re.finditer(r"trl==([0-9][0-9A-Za-z.\-]*)", pins):
+                    found.append((path.name, job_name, match.group(1)))
+    return found
+
+
+def test_a_ceiling_lane_pins_the_declared_ceiling() -> None:
+    """The one assertion the `<0.26`-style range sweep structurally cannot make.
+
+    An exact `==` pin is a point, not a cap, so `test_no_workflow_lane_sits_below_the
+    _declared_ceiling` deliberately exempts it: pinning trl 0.18.2 in the floor lane is
+    correct and must not be flagged. That exemption leaves one hole, and the shipped tree
+    fell into it. `zoo-imports-under-spoof`'s `ceiling` lane, whose own comment says "what
+    this lane measures ... is the dependency ceiling", pinned `transformers==5.17.0`
+    alongside `trl==0.24.0` -- the transformers ceiling after the lift and the trl ceiling
+    from before it. Nothing was red: 0.24.0 is still inside the declared window, it is
+    simply no longer its top. A lane that measures a superseded ceiling reports on a range
+    that is no longer the edge of anything.
+
+    Scoped to `slug: ceiling` on purpose. Floor and latest lanes pin other things by
+    design and are none of this assertion's business.
+    """
+    if sys.version_info < (3, 11):
+        pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
+
+    declared = _ceiling(_declared_window())
+    lanes = _ceiling_lane_trl_pins(WORKFLOWS)
+    assert lanes, (
+        "no lane with `slug: ceiling` pins trl at all, so nothing measures the top of the "
+        "declared window. If the ceiling lane was renamed, rename it here too."
+    )
+    stale = [
+        f"{workflow}: job {job!r} pins trl=={pinned}"
+        for workflow, job, pinned in lanes
+        if Version(pinned) != declared
+    ]
+    assert not stale, (
+        f"the declared trl ceiling is {declared}, but " + "; ".join(stale) + ". A lane "
+        f"called `ceiling` that pins something else measures a range that is no longer the "
+        f"edge of the window. Move the pin with the cap."
+    )
+
+
+def test_the_ceiling_lane_check_can_fail(tmp_path, monkeypatch) -> None:
+    """NEGATIVE CONTROL: this is the exact drift that shipped, so prove it is caught, and
+    prove the check is not merely asserting on its own input."""
+    workflows = tmp_path / "workflows"
+    workflows.mkdir()
+
+    def write(trl_pin: str) -> None:
+        (workflows / "version-compat-ci.yml").write_text(
+            "jobs:\n"
+            "  zoo-imports-under-spoof:\n"
+            "    strategy:\n"
+            "      matrix:\n"
+            "        include:\n"
+            "          - slug: floor\n"
+            "            pkg_pins: \"'transformers==4.52.4' 'trl==0.18.2'\"\n"
+            "          - slug: ceiling\n"
+            f"            pkg_pins: \"'transformers==5.17.0' '{trl_pin}'\"\n",
+            encoding = "utf-8",
+        )
+
+    monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
+
+    # The shipped state: ceiling lane left on the pre-lift trl.
+    write("trl==0.24.0")
+    with pytest.raises(AssertionError) as raised:
+        test_a_ceiling_lane_pins_the_declared_ceiling()
+    assert "0.24.0" in str(raised.value)
+
+    # The floor lane's own exact pin must NOT be mistaken for a stale ceiling.
+    write(f"trl=={TESTED_CEILING}")
+    test_a_ceiling_lane_pins_the_declared_ceiling()
