@@ -138,7 +138,16 @@ def _env_int(name: str, default: int) -> int:
 
 # Model-visible cap on python/terminal tool results. The live UI stream is capped separately and higher, so
 # _truncate's notice stays mode-neutral (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS).
+# UNSLOTH_TOOL_RESULT_MAX_CHARS is the install-wide (user-set) default; a single call may additionally ask for a
+# *smaller* cap via `max_output_chars` in its arguments (see `_resolve_max_output_chars`). Neither path can raise the
+# effective cap above what `_tool_result_char_budget` already sized to the loaded window -- only the install owner, via
+# the env var, can do that.
 _MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
+
+# Floor for a per-call `max_output_chars` request. Low enough to let a caller
+# ask for a terse result, high enough that the request itself is never the
+# reason a real error message or short output gets cut.
+_MIN_RESULT_CHARS = 500
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
         "rm",
@@ -11900,7 +11909,18 @@ PYTHON_TOOL = {
                 "code": {
                     "type": "string",
                     "description": "The Python code to run",
-                }
+                },
+                "max_output_chars": {
+                    "type": "integer",
+                    "description": (
+                        "Optional. Cap the returned stdout/stderr to at most this many "
+                        "characters instead of the server default. Useful when you only "
+                        "need a short confirmation and want to avoid a long paged result. "
+                        "Cannot raise the cap past what the server already allows for this "
+                        "conversation; requests above that ceiling are silently clamped to "
+                        "it, and requests under 500 are raised to 500."
+                    ),
+                },
             },
             "required": ["code"],
         },
@@ -11920,7 +11940,18 @@ TERMINAL_TOOL = {
                 "command": {
                     "type": "string",
                     "description": "The command to run",
-                }
+                },
+                "max_output_chars": {
+                    "type": "integer",
+                    "description": (
+                        "Optional. Cap the returned stdout/stderr to at most this many "
+                        "characters instead of the server default. Useful when you only "
+                        "need a short confirmation and want to avoid a long paged result. "
+                        "Cannot raise the cap past what the server already allows for this "
+                        "conversation; requests above that ceiling are silently clamped to "
+                        "it, and requests under 500 are raised to 500."
+                    ),
+                },
             },
             "required": ["command"],
         },
@@ -12713,6 +12744,7 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                max_output_chars = arguments.get("max_output_chars"),
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -12724,6 +12756,7 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                max_output_chars = arguments.get("max_output_chars"),
             )
     # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
     # unlink it underneath.
@@ -14480,6 +14513,43 @@ def _result_char_budget(cap: int) -> int:
 def _tool_result_char_budget() -> int:
     """The terminal/python cap, sized to the window. See `_result_char_budget`."""
     return _result_char_budget(_MAX_OUTPUT_CHARS)
+
+
+def _resolve_max_output_chars(requested) -> int | None:
+    """Turn a call's own `max_output_chars` argument into a `_truncate` limit.
+
+    Returns None when there is nothing usable to apply, which leaves `_truncate`
+    to size the result from `_tool_result_char_budget()` exactly as before this
+    argument existed -- an absent, non-numeric, or out-of-range request changes
+    nothing.
+
+    Deliberately one-directional: a request is only ever allowed to LOWER the
+    cap the window already earned, never raise it. `_tool_result_char_budget()`
+    is what keeps a small resident model from handing a large one's cap to a
+    call it cannot afford, and a per-call override that could exceed it would
+    reopen exactly that gap from inside a single tool call instead of from an
+    env var only the install owner controls.
+    """
+    if requested is None or isinstance(requested, bool):
+        # `bool` is an `int` subclass, so an unguarded coercion reads `true` as a request for ONE character, which the
+        # floor below then turns into a 500-character request. A boolean is not a character count in any reading.
+        return None
+    try:
+        requested = int(requested)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is `int(float("inf"))`, and a model writing `1e999` in its JSON arguments reaches it: nothing
+        # validates tool arguments against the schema before dispatch. Uncaught it escapes into `_python_exec`'s own
+        # handler AFTER the subprocess has already run, so the side effects land and the model is handed
+        # "Execution error" with the real output discarded.
+        return None
+    if requested <= 0:
+        return None
+    # Floor INSIDE, operator ceiling OUTERMOST -- the same shape as `_result_char_budget` and `_dense_char_limit`
+    # ("An explicit cap smaller than the floor still wins"). Reversed, an install running
+    # `UNSLOTH_TOOL_RESULT_MAX_CHARS=200` answers a request for 50 characters with 500, because the floor never saw
+    # the ceiling: a per-call argument raising the install's own cap 2.5x, which is the one thing this function's
+    # docstring promises it cannot do.
+    return min(_tool_result_char_budget(), max(_MIN_RESULT_CHARS, requested))
 
 
 def _page_char_budget() -> int:
@@ -18031,11 +18101,14 @@ def _python_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    max_output_chars: int | None = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip the
     safety analysis and rlimit pre-exec, and use the host env minus secrets. output_callback:
     optional callable(str) streamed each stdout line as it is produced; the returned result is
-    unchanged."""
+    unchanged. max_output_chars: optional per-call cap on the returned result, resolved against
+    `_tool_result_char_budget()` by `_resolve_max_output_chars` -- it may only lower the cap, never
+    raise it. None keeps the previous behaviour."""
     if not code or not code.strip():
         return "No code provided."
 
@@ -18170,7 +18243,13 @@ def _python_exec(
         # envelope.
         result = _defuse_sentinels(result)
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            _truncate(
+                result,
+                limit = _resolve_max_output_chars(max_output_chars),
+                workdir = spill_dir,
+                scope = spill_scope,
+                hint = hint,
+            )
             if result.strip()
             else "(no output)" + hint
         )
@@ -18207,11 +18286,13 @@ def _bash_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    max_output_chars: int | None = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip
     the command blocklist and rlimit pre-exec, and use the host env minus secrets.
     output_callback: optional callable(str) streamed each stdout line as it is produced; the
-    returned result is unchanged."""
+    returned result is unchanged. max_output_chars: optional per-call cap on the returned result;
+    see `_python_exec`."""
     if not command or not command.strip():
         return "No command provided."
 
@@ -18324,7 +18405,13 @@ def _bash_exec(
         hint = _missing_path_hint(result, workdir)
         result = _defuse_sentinels(result)  # before the fit; see _python_exec
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            _truncate(
+                result,
+                limit = _resolve_max_output_chars(max_output_chars),
+                workdir = spill_dir,
+                scope = spill_scope,
+                hint = hint,
+            )
             if result.strip()
             else "(no output)" + hint
         )
