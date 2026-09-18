@@ -409,6 +409,15 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # A URL factory reached through the module that defines it.
+            pytest.param(
+                f"import urllib3\nurllib3.connectionpool.connection_from_url('http://{_H}/')",
+                id = "canonical_connection_from_url",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.poolmanager.proxy_from_url('http://{_H}:8080/')",
+                id = "canonical_proxy_from_url",
+            ),
             # A tracked client's bound connect is a listed call like any other.
             pytest.param(
                 f"import socket\nc = socket.socket().connect\nc(('{_H}', 80))",

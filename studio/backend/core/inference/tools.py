@@ -15827,8 +15827,15 @@ def _check_signal_escape_patterns(code: str):
             for module in ("requests", "requests.api", "httpx", "aiohttp", "aiohttp.client")
         },
         "urllib3.request": (1, "url", "url"),
-        "urllib3.connection_from_url": (0, "url", "url"),
-        "urllib3.proxy_from_url": (0, "url", "url"),
+        # Each URL factory under the top-level name and under the module that defines it.
+        **{
+            f"{module}.{factory}": (0, "url", "url")
+            for factory, defined_in in (
+                ("connection_from_url", "urllib3.connectionpool"),
+                ("proxy_from_url", "urllib3.poolmanager"),
+            )
+            for module in ("urllib3", defined_in)
+        },
         "urllib3.ProxyManager": (0, "proxy_url", "url"),
         **{
             f"{module}.{pool}": (0, "host", "host")
