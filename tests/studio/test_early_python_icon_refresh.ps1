@@ -108,14 +108,8 @@ try {
     Check "an empty shortcut list is handled" (
         $null -ne (Invoke-StudioPythonShellIconRefresh -Paths @()))
 
-    # The fresh install, which is the case the rung exists for and the one it used to miss.
-    #
-    # Get-StudioEarlyPython latches its answer on first use, and its first use is the install
-    # lock, which runs before Python is installed. On a host that had none, that call caches $null
-    # for the whole run. Shortcuts are written much later, by which point the managed interpreter
-    # exists, and the rung would still decline on the cached miss. Resetting the cache in the
-    # checks above hides this entirely, so it is driven here in the real order instead: probe
-    # first with nothing on the host, install after, then ask for the refresh.
+    # An interpreter handed in is used even when discovery still holds a miss from before the
+    # install provided one: probe first with nothing on the host, install after, then refresh.
     $savedFinder = ${function:Get-StudioEarlyPython}
     function Get-StudioEarlyPython {
         if ($script:StudioEarlyPythonProbed) { return $script:StudioEarlyPython }

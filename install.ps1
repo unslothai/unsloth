@@ -3038,13 +3038,9 @@ exit 1
         # case also routed around the switch, and a host that had opted out got a child process
         # anyway. The refresh is cosmetic, so opting out costs a stale icon and nothing else.
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $false }
-        # The caller's interpreter wins over discovery, and on the fresh-install case it is the
-        # only one that works. Get-StudioEarlyPython latches its answer on first use, and its
-        # first use is the install lock, which runs before Python is installed. On a host that
-        # had none, that call caches $null for the rest of the run, so by the time shortcuts are
-        # written the managed interpreter exists and this would still decline: exactly the
-        # first-install case the rung was added for. New-StudioShortcuts has already confirmed
-        # its own path exists and resolved it, so there is nothing left to check here.
+        # The caller's interpreter wins over discovery: it is the one the install just provided,
+        # and New-StudioShortcuts has already confirmed its path exists and resolved it, so there
+        # is nothing left to check here. Discovery is only the fallback for a caller without one.
         $exe = $Exe
         if ([string]::IsNullOrWhiteSpace($exe)) {
             # Inside the try, not above it. Discovery can throw, and this function promises it
