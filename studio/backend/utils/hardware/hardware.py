@@ -946,8 +946,7 @@ def _torch_reports_another_vendors_runtime() -> bool:
     on the path it exists for, letting a stale ROCm flavor speak for a CUDA or XPU wheel.
     """
     if TORCH_IMPORT_ERROR is not None:
-        # A ROCm build records hip and may record cuda besides, so that reading leads here
-        # for the same reason it leads in the live branch below.
+        # A ROCm build records hip and may record cuda besides.
         if _torch_reports_a_hip_runtime():
             return False
         _markers = _installed_torch_markers_on_disk()
@@ -956,8 +955,7 @@ def _torch_reports_another_vendors_runtime() -> bool:
         import torch
 
         _version = getattr(torch, "version", None)
-        # A ROCm build sets torch.version.hip and can carry a cuda attribute besides, so
-        # that reading is taken first and this answers only about the other vendors.
+        # A ROCm build sets hip and can carry cuda besides, so hip is read first.
         if getattr(_version, "hip", None) is not None:
             return False
         return bool(getattr(_version, "cuda", None)) or bool(getattr(_version, "xpu", None))
@@ -1611,40 +1609,24 @@ def _gpu_present_but_unusable_message(
     if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
         return None
     installed = f" (installed {detail})" if detail else ""
-    # A closed device node is not a mismatch, and the reinstall below is the wrong repair
-    # for it: the wheel is correct and no reinstall changes group membership (#10466).
-    # Checked before both branches because either verdict can describe that host.
-    #
-    # Only when AMD is the card the verdict is ABOUT. Recording AMD is necessary but not
-    # sufficient: CHAT_ONLY_MISMATCH_VENDORS is qualifying physical inventory, so a hybrid
-    # host running CUDA torch records both vendors, and there the verdict is about the
-    # NVIDIA card and the reinstall below is right. AMD also has to be what this install
-    # targets: the only qualifying vendor, or the venv asked for ROCm, or torch carries a
-    # HIP runtime.
+    # No reinstall changes group membership (#10466), so a closed node is not a mismatch.
+    # Recording AMD is necessary but not sufficient: a hybrid host on CUDA torch records
+    # both vendors, and there the verdict is about the NVIDIA card.
     vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
-    # Two questions, and conflating them was the bug. Whether the closed node is worth
-    # MENTIONING is about the hardware: on an AMD-only host it always is. Whether it
-    # REPLACES the reinstall advice is about the wheel, and only a ROCm one is repaired by
-    # opening a node. The label about to be printed is the most direct evidence of what is
-    # installed and the caller has already resolved it; the two probes answer for the venv,
-    # which a passed-in verdict may predate.
+    # Worth MENTIONING is about the hardware; REPLACES the reinstall advice is about the
+    # wheel, and only a ROCm one is repaired by opening a node. Conflating them was the bug.
     _label = (detail or "").lower()
-    # Intent is the LAST resort, because it can outlive the wheel. A venv that recorded a
-    # ROCm flavor and then had a CUDA build installed over it still answers yes to
-    # _expected_rocm_flavor_was_chosen, and reading that as "the wheel targets AMD" hands a
-    # host whose real repair is reinstalling ROCm torch a message about group membership
-    # instead. The label and the live runtime describe what is installed NOW, so a label
-    # naming another vendor's accelerator settles it and intent is never consulted; a bare
-    # +cpu names no vendor, so it settles nothing and intent still gets its say.
+    # Intent is the LAST resort: it outlives the wheel, so a venv that recorded ROCm and
+    # then had CUDA installed over it still answers yes. Label and live runtime describe
+    # what is installed NOW; a bare +cpu names no vendor, so intent still gets its say.
     wheel_targets_amd = (
         "rocm" in _label
         or "hip" in _label
         or _torch_reports_a_hip_runtime()
         or (
             not _WHEEL_LABEL_OTHER_VENDOR_RE.search(_label)
-            # An untagged CUDA build (conda, or built locally) names no vendor in its
-            # label, so the regex above clears it and stale intent would otherwise speak
-            # for a wheel that is demonstrably not AMD's.
+            # An untagged CUDA build (conda, or local) names no vendor, so the regex
+            # clears it and stale intent would speak for a wheel that is not AMD's.
             and not _torch_reports_another_vendors_runtime()
             and _expected_rocm_flavor_was_chosen()
         )
@@ -1658,19 +1640,14 @@ def _gpu_present_but_unusable_message(
                 amd_node_permission_hint,
             )
 
-            # Only when the closed set actually leaves the runtime no way in. A sibling
-            # render node still open means ROCm had a complete path and failed anyway, so
-            # the closed one does not explain this and must not replace the repair below.
+            # Only when the closed set leaves the runtime no way in: an open sibling
+            # render node means ROCm had a complete path and failed anyway.
             if amd_closed_nodes_block_the_runtime():
                 node_hint = amd_node_permission_hint()
         except Exception:
             node_hint = None
-    # It REPLACES the reinstall advice for a ROCm wheel that cannot initialise the device,
-    # which the closed node fully explains. It does not for a CPU-only wheel: opening the
-    # node leaves a build with no GPU path at all, so that host needs both repairs and is
-    # given both below rather than being sent back after only one. Nor for a wheel built
-    # for another vendor, which is the same story: the node is real, and the wheel is
-    # still the repair.
+    # Replaces the reinstall advice only for a ROCm wheel, which the closed node fully
+    # explains. A CPU-only or other-vendor wheel needs BOTH repairs and is given both.
     if node_hint and reason == "torch_cuda_unavailable" and wheel_targets_amd:
         return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a backend it manages, so a browser-hosted Studio, or a desktop attached to a server someone started from a terminal, was being sent to a control that is not on the page.
@@ -1686,9 +1663,8 @@ def _gpu_present_but_unusable_message(
         f"{feature} cannot use it. This is usually a driver or runtime mismatch; reinstalling "
         f"a matching PyTorch build fixes it. Use Repair installation in Settings in the "
         f"desktop app, or re-run the Unsloth installer." + (f" {node_hint}" if node_hint else "")
-        # Appended, not substituted: a wheel built for another vendor is not repaired by
-        # opening a node, but the node is still closed and the matching ROCm build will
-        # need it. Same shape as the CPU-only arm above, for the same reason.
+        # Appended, not substituted: the wheel is still the repair, but the node is
+        # still closed and the matching ROCm build will need it.
     )
 
 

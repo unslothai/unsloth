@@ -3862,17 +3862,11 @@ _kfd_topology_amd_state() {
     esac
 }
 
-# Whether the /dev/kfd that EXISTS here is one the AMD driver put there. The branch below
-# claims the AMD kernel stack is already loaded and that only ROCm userspace is missing, and
-# a node that merely exists does not establish that: what does is an AMD agent in the KFD
-# topology.
-#
-# A tri-state, read the same way the missing-node branch reads it, and deliberately not the
-# stricter "require vendor 4098" it would be easy to write instead. State 1 is the topology
-# READ with no AMD agent in it, which is the only reading that contradicts the claim. State
-# 2 is a topology that cannot be read at all -- the container that maps /dev/kfd and masks
-# /sys/class/kfd -- where the claim is unproven rather than false, so the diagnosis it has
-# today is kept rather than lost to a gate that cannot see.
+# Whether the /dev/kfd that EXISTS here is one the AMD driver put there: the branch below
+# claims the AMD kernel stack is loaded, and a node merely existing does not establish that.
+# A tri-state, not the stricter "require vendor 4098": state 1 (read, no AMD agent) is the
+# only reading that CONTRADICTS the claim, while state 2 (unreadable -- the container that
+# masks /sys/class/kfd) leaves it unproven, so that host keeps the diagnosis it has today.
 _kfd_node_is_amds() {
     _kina_state=0
     _kfd_topology_amd_state || _kina_state=$?
@@ -3880,19 +3874,14 @@ _kfd_node_is_amds() {
 }
 
 # Whether this host has AMD silicon behind a /dev/kfd that is not there. Mirrors
-# utils/hardware/amd.py::_amd_nodes_the_runtime_lacks, which asks the same two questions in
-# the same order, and the two halves have to agree or one of them stays silent on a host the
-# other diagnoses.
+# utils/hardware/amd.py::_amd_nodes_the_runtime_lacks question for question; the two halves
+# must agree or one stays silent on a host the other diagnoses.
 #
-# The KFD topology is the first evidence and settles it whenever it can be READ. Where it
-# cannot -- state 2, the container that maps /dev/dri and masks /sys/class/kfd -- a
-# CONFIRMED AMD render node stands in: that host is precisely the one a HIP caller cannot
-# run on, and gating on the topology alone left it with no diagnosis at all, since amd-smi
-# answers through libdrm there and so silences the two PCI branches below, while a node that
-# does not EXIST can never appear in the closed-node list.
-#
-# Confirmed, not merely present: the vendor is read rather than assumed, or an NVIDIA-only
-# box whose sysfs is masked the same way would claim an AMD card.
+# The topology settles it whenever it can be READ. Where it cannot (state 2: --device
+# /dev/dri with /sys/class/kfd masked) a CONFIRMED AMD render node stands in, because that
+# host had no diagnosis at all -- amd-smi answers through libdrm and silences the PCI
+# branches, and a node that does not EXIST never reaches the closed-node list. Confirmed,
+# not merely present, or an NVIDIA-only box masked the same way would claim an AMD card.
 _amd_silicon_behind_a_missing_kfd() {
     if _kfd_topology_has_an_amd_gpu; then return 0; fi
     # Captured rather than tested inline: this runs under set -e, where a bare non-zero
@@ -5997,31 +5986,21 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
-# The diagnoses below sit after the whole case because they are properties of the HOST,
-# not of the arm the index landed in, and both are gated on the route: the case has arms
-# for */cpu and */rocm*|*/gfx* only, so a CUDA index reached neither and must not start.
-# That gate also matters because _has_amd_rocm_gpu returns false on ANY host with a usable
-# NVIDIA GPU, which would make the condition true for every hybrid box with an AMD card on
-# the bus -- and someone correctly installing CUDA wheels is not helped by being told to
-# install the ROCm kernel stack for a card this install does not use.
+# These sit after the whole case because they are properties of the HOST, not of the arm
+# the index landed in, and both are gated on the route: _has_amd_rocm_gpu returns false on
+# ANY host with a usable NVIDIA GPU, so without the gate every hybrid box with an AMD card
+# on the bus would be told to install a ROCm kernel stack its CUDA wheels never use.
 #
-# /dev/kfd IS the amdkfd char device, so its presence proves the kernel stack is loaded and
-# a reinstall repairs nothing; that is what suppresses the kernel-stack hint, rather than
-# any closed node. A host whose /dev/kfd is ABSENT while a render node is closed needs both
-# repairs and gets both, which is why these are two arms: a node that is absent is not
-# closed either, so one guard left an openable /dev/kfd reaching a sentence saying there was
-# none. Sibling arms, not a nested `if`: the harnesses lift this block by walking back to
+# Two sibling arms rather than a nested `if`, since an ABSENT /dev/kfd is not a CLOSED one
+# and a host can need both repairs; the harnesses also lift this block by walking back to
 # the `if` above a sentence.
 #
-# The runtime half's needs_kfd, for the installer: /dev/kfd is opened by ROCm and nothing
-# else. SKIP_TORCH alone does not settle it, since --no-torch still installs a GGUF bundle
-# and the ROCm bundle opens /dev/kfd exactly as torch would -- the #10466 shape. Only an
-# explicit backend request does, the bundle itself being chosen later in setup.sh. The
-# three named are the REQUESTABLE_BACKENDS that are not ROCm
-# (utils/prebuilt/llama_backend.py); "hip" normalises to rocm and "auto" is not a decision.
-# Normalized as the bundle selector normalizes it (studio/setup.sh, `awk '{$1=$1}'`: trim
-# and collapse, never delete) -- deleting internal whitespace let "vul kan" match and go
-# quiet here while setup.sh rejects it and may fall back to installing ROCm.
+# The runtime half's needs_kfd: SKIP_TORCH does not settle it, because --no-torch still
+# installs a GGUF bundle and the ROCm one opens /dev/kfd exactly as torch would (the #10466
+# shape). The three named are the REQUESTABLE_BACKENDS that are not ROCm
+# (utils/prebuilt/llama_backend.py). Normalized as the bundle selector normalizes it
+# (studio/setup.sh, `awk '{$1=$1}'`): deleting internal whitespace let "vul kan" match here
+# and go quiet while setup.sh rejects it and may fall back to ROCm.
 
 # Whether the TORCH this run installs can open an AMD device node, which only a ROCm wheel
 # does. Asked positively, not as "anything that is not the cpu leaf": that read a CUDA

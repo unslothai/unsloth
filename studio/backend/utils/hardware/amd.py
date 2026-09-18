@@ -1364,18 +1364,12 @@ _PRIVILEGED_GROUPS = frozenset(
 )
 
 
-# A group name this can safely pass on to usermod, which is narrower than a name NSS can
-# return. The portable set from groupadd(8), plus the trailing $ a Samba machine account
-# carries. Anything outside it is reported by its GID instead of being pasted into a
-# command, because two layers below this one read such a name as structure rather than as
-# a name:
-#   usermod -G takes a COMMA-SEPARATED list, so a group genuinely named "render,sudo" is
-#   two groups to it, and _PRIVILEGED_GROUPS never matches because it compares the whole
-#   string. Shell quoting is the wrong layer -- the splitting happens inside usermod,
-#   after the shell has handed it one argument.
-#   install.sh's twin parses `stat -c` output with awk -F'|', so a name carrying a pipe
-#   shifts every field after it.
-# The GID is what --group-add takes anyway, so nothing is lost by reporting it.
+# A name safe to paste into usermod, narrower than one NSS can return: groupadd(8)'s
+# portable set plus the trailing $ of a Samba machine account. Anything else is reported by
+# GID, because two layers below read such a name as STRUCTURE: usermod -G splits on commas
+# inside itself, after the shell has handed it one argument, so "render,sudo" is two groups
+# and _PRIVILEGED_GROUPS never matches; and install.sh's twin parses stat output with
+# awk -F'|'. --group-add takes the GID anyway, so nothing is lost.
 _GROUP_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*\$?\Z")
 
 
@@ -1450,16 +1444,12 @@ def _groups_that_own(paths: list) -> tuple:
             else:
                 owned.append(path)
             continue
-        # Neither the owner nor in the owning group puts this account in the OTHER class,
-        # and POSIX resolves that one exclusively too: if its bits already grant rw then the
-        # mode is not what denies a node os.access() just called shut, so no chmod and no
-        # usermod moves it. The same reasoning as the owner branch above and the
-        # already-a-member branch below, for the third class.
-        #
-        # Guarded on membership rather than placed after it, because a member is in the
-        # GROUP class, where the other bits are never consulted and `already` names the
-        # group it is pointless to re-join. It has to sit above the group-bits test, which
-        # would otherwise prescribe a chmod for a node the mode is not blocking.
+        # Neither owner nor group member puts this account in the OTHER class, which POSIX
+        # also resolves exclusively: bits already granting rw mean the mode is not what
+        # denies a node os.access() just called shut. Same rule as the owner and
+        # already-a-member branches, for the third class. Guarded on membership (a member is
+        # in the GROUP class, where `already` names the group more precisely) and above the
+        # group-bits test, which would otherwise prescribe a chmod that cannot help.
         if _st.st_gid not in _mine and (_st.st_mode & stat.S_IROTH and _st.st_mode & stat.S_IWOTH):
             external.append(path)
             continue
@@ -1792,16 +1782,12 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                 f"sudo usermod -a -G amdgpu{_g} {_shell_word(user)}"
                 for _g in unnamed
             )
-            # A pair per GID, not just the first: the sentence already says "each of them",
-            # and one groupadd names one numeric owner, so a host whose nodes differ in group
-            # had every node after the first left shut by the command it was told to run.
-            # The name is GENERATED rather than a <name> placeholder, because these are
-            # commands to paste: angle brackets are redirection operators, so `groupadd -g
-            # 993 <name>` is a shell syntax error before groupadd runs. Derived from the GID,
-            # which has no group entry by definition here -- which says nothing about the
-            # NAME, so the && is load bearing: on a host that already has an amdgpu<GID>
-            # group at a different GID, an unchained usermod would SUCCEED against the wrong
-            # group and leave the node shut, having reported success.
+            # A pair per GID: one groupadd names one numeric owner, so a host whose nodes
+            # differ in group had every node after the first left shut. The name is
+            # generated, not a <name> placeholder, since angle brackets are redirection
+            # operators and these are commands to paste. The && is load bearing: with an
+            # amdgpu<GID> group already at a different GID, an unchained usermod would
+            # SUCCEED against the wrong group and report success on a still-shut node.
             if user is None:
                 # The bare-host half needs an account to add and there is none, so the
                 # container half is the whole repair for this shape.

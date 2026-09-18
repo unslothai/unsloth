@@ -12543,24 +12543,18 @@ class LlamaCppBackend:
                 return int(first) >= _bound
 
             def _cannot_be_resolved(value: str) -> bool:
-                # ROCr accepts a UUID as well as an ordinal ("0,GPU-4b2c..."), and one
-                # naming no device stops the list exactly as a bad ordinal does. Nothing
-                # here can match one, so it is reported as unresolved rather than judged:
-                # calling it a blocker invents a fault, and dropping it leaves the user
-                # unaware of the one variable that may be hiding their card. Only the UUID
-                # form -- every other non-index is Illegal to ROCr, which
-                # _is_an_illegal_rocr_selector decides. clr resolves a UUID too
-                # (rocdevice.cpp matches "GPU-" against HSA_AMD_AGENT_INFO_UUID), so the
-                # HIP layer gets the same answer.
+                # ROCr and clr both resolve a UUID ("0,GPU-4b2c...") as well as an
+                # ordinal (rocdevice.cpp matches "GPU-" against HSA_AMD_AGENT_INFO_UUID).
+                # Nothing here can match one, so it is unresolved rather than judged:
+                # calling it a blocker invents a fault. Every other non-index is Illegal,
+                # which _is_an_illegal_rocr_selector decides.
                 first = value.split(",")[0].strip()
                 return first.lower().startswith("gpu-")
 
             def _vk_selects_no_device(value: str) -> bool:
-                # ggml stops reading at the first token that has no integer prefix, so if
-                # the FIRST one does not, device_indices stays empty and the Vulkan backend
-                # enumerates nothing. A leading sign counts as a prefix: size_t extraction
-                # accepts "-1" and wraps it, which then throws as out of range rather than
-                # selecting nothing.
+                # ggml stops at the first token with no integer prefix, so if the FIRST
+                # lacks one device_indices stays empty. A sign counts as a prefix: "-1"
+                # extracts and wraps, which throws rather than selecting nothing.
                 _first = value.replace(",", " ").split()
                 if not _first:
                     return True
@@ -12569,20 +12563,14 @@ class LlamaCppBackend:
                 return not _digits[:1].isdigit()
 
             def _vk_ordinal_always_throws(value: str) -> bool:
-                # A NEGATIVE ordinal is decidable without the raw device count, which is why
-                # it is judged here while a positive out-of-range one is only unresolved.
-                # ggml reads with `size_t tmp; while (ss >> tmp)` (ggml-vulkan.cpp,
-                # ggml_vk_instance_init), and unsigned extraction applies strtoull, which
-                # accepts a sign and wraps: "-1" becomes 2**64-1, which is >= any possible
-                # num_available_devices, so `tmp >= num_available_devices` always holds and
-                # it throws "Invalid Vulkan device index". _run_vulkan_probe turns that
-                # nonzero exit into the empty result being diagnosed, and no group
-                # membership changes it -- so it is a blocker, exactly as an Illegal ROCr
-                # token is, rather than something to try after the group repair.
-                #
-                # Not just the FIRST token: extraction walks the list, so a negative one
-                # throws wherever it sits, provided every token before it still extracts.
-                # "-0" wraps to 0 and is in range, so it is not a throw.
+                # A negative ordinal is the one out-of-range value decidable WITHOUT the
+                # raw device count, because it wraps past every possible one: ggml reads
+                # `size_t tmp; while (ss >> tmp)` (ggml-vulkan.cpp, ggml_vk_instance_init),
+                # strtoull accepts the sign, and "-1" becomes 2**64-1, so it always throws
+                # "Invalid Vulkan device index". No group membership repairs that, so it is
+                # a blocker like an Illegal ROCr token. Extraction walks the list, so a
+                # negative one throws wherever it sits provided every token before it still
+                # extracts; "-0" wraps to 0 and is in range.
                 for _token in value.replace(",", " ").split():
                     _signed = _token[:1] in ("+", "-")
                     _digits = _token[1:] if _signed else _token
