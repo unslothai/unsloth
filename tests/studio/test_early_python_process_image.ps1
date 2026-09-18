@@ -49,6 +49,19 @@ $script:StudioEarlyPythonProbed = $false
 $script:StudioEarlyPython = $null
 $exe = Get-StudioEarlyPython
 if (-not $exe) {
+    # "No interpreter" is a real and supported state, so it is a skip. But it is also what a
+    # BROKEN EXTRACTION looks like from here: a helper this file forgot to pull out of
+    # install.ps1 makes Get-StudioEarlyPython fail, the probe finds nothing, and the suite exits 0
+    # having tested nothing. That happened once and CI recorded it as a pass. Tell the two apart.
+    $onPath = $null
+    foreach ($n in @("python3", "python")) {
+        if (-not $onPath) { $onPath = (Get-Command $n -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1) }
+    }
+    if ($onPath) {
+        Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $($onPath.Source) is on PATH." -ForegroundColor Red
+        Write-Host "        That is a broken extraction in this file, not a host without Python." -ForegroundColor Red
+        exit 1
+    }
     Write-Host "  SKIP  no Python on this host, which is the fallback case and not a failure" -ForegroundColor Yellow
     exit 0
 }
@@ -158,6 +171,26 @@ Check "the probe declares CloseHandle's argument type" (
     $probeText -match "CloseHandle\.argtypes")
 # 0x400 is refused by protected and cross-session processes; 0x1000 is not.
 Check "the probe asks for the limited-information right only" ($probeText -match "OpenProcess\(0x1000,")
+# Exactness. This rung and the native rung must return the SAME string for the same process, or
+# Test-StudioProtectedPathMatch compares a path from one against a path recorded by the other and
+# sees a difference that is not there. They agree by construction only if the underlying call is
+# identical: same access right, same flags argument (0 is the Win32 path form; 1 would return
+# \Device\HarddiskVolume1\... instead), same buffer size. Read both out of the file and compare.
+$nativeInit = ($ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq "Get-StudioNativeProcessImagePath" }, $true)[0]).Extent.Text
+# The native rung names the constant rather than inlining it, so follow the name to its value.
+$nativeRight = if ($nativeInit -match '\$queryLimitedInformation\s*=\s*\[uint32\](0x[0-9a-fA-F]+)') { $Matches[1] } else { "" }
+Check "the native rung asks for the same access right the probe does" (
+    $nativeRight -eq "0x1000" -and
+    $nativeInit -match "OpenProcess\(\s*\r?\n?\s*\`$queryLimitedInformation," -and
+    $probeText -match "OpenProcess\(0x1000,")
+Check "both pass flags 0, so both get the Win32 path form and not the device form" (
+    $nativeInit -match "QueryFullProcessImageNameW\(\s*\`$handle,\s*\[uint32\]0," -and
+    $probeText -match "QueryFullProcessImageNameW\(h,0,")
+Check "both size the buffer the same" (
+    $nativeInit -match "32768" -and $probeText -match "create_unicode_buffer\(32768\)")
+
 # EnumProcesses filling the buffer exactly may mean truncation; only a smaller count is complete.
 Check "the probe grows its buffer until the enumeration is provably complete" (
     $probeText -match "b\.value\s*<\s*ctypes\.sizeof\(a\)")
