@@ -1227,10 +1227,10 @@ async def get_gguf_variants_answer(
                         detail.quant,
                         snapshot_dir,
                         repo_cache_dir = repo_cache_dir,
-                        # Repo-wide state belongs to another attempt when this
-                        # older snapshot can serve the quant. An absent quant is
-                        # still the interrupted attempt and is not excused.
-                        repo_signal_applies = (repo_signal_applies or key not in complete_here),
+                        # a ready row absent here comes from a complete sibling snapshot.
+                        repo_signal_applies = (
+                            repo_signal_applies if key in complete_here else not detail.downloaded
+                        ),
                     )
                 except Exception as e:
                     logger.warning(

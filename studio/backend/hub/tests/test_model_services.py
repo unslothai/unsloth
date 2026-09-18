@@ -4399,7 +4399,10 @@ def test_local_gguf_state_demotes_matching_main_until_companion_completes(monkey
     assert completed.default_variant == quant
 
 
-def test_pinned_complete_gguf_ignores_newer_state_but_keeps_state_only_quant(monkeypatch, tmp_path):
+@pytest.mark.parametrize("pin_snapshot", [True, False])
+def test_complete_gguf_ignores_newer_state_but_keeps_state_only_quant(
+    monkeypatch, tmp_path, pin_snapshot
+):
     repo_id = "Org/PinnedRepo"
     hub_cache = tmp_path / "hub"
     repo_dir = hub_cache / "models--Org--PinnedRepo"
@@ -4448,7 +4451,7 @@ def test_pinned_complete_gguf_ignores_newer_state_but_keeps_state_only_quant(mon
             gguf_variants.get_gguf_variants_response(
                 repo_id,
                 prefer_local_cache = True,
-                local_path = str(old_snapshot),
+                local_path = str(old_snapshot) if pin_snapshot else None,
             )
         )
     finally:
