@@ -1705,6 +1705,35 @@ def _rail_openings(provider: str) -> list[str]:
     return tags
 
 
+def _rail_class_tokens(tag: str) -> list[str]:
+    """Every class token the rail's className CAN render, conditionals included.
+
+    _class_value answers what renders in EVERY state, which is what a positive guarantee
+    needs and exactly wrong for a prohibition: `cn("...", compact && "!pl-0")` renders that
+    override whenever compact is true, and an always-rendered reader never sees it. So this
+    one reads the literals out of the whole expression on purpose. The two are not
+    interchangeable, and the asymmetry is the point: "must always have X" and "must never
+    have Y" cannot be answered by the same set.
+    """
+    key = "className="
+    at = tag.index(key) + len(key)
+    if tag[at] == '"':
+        expression = tag[at : _skip_literal(tag, at)]
+    else:
+        expression = tag[at + 1 : _balanced(tag, at) - 1]
+
+    tokens: list[str] = []
+    i = 0
+    while i < len(expression):
+        if expression[i] in _QUOTES:
+            end = _skip_literal(expression, i)
+            tokens += expression[i + 1 : end - 1].split()
+            i = end
+        else:
+            i += 1
+    return tokens
+
+
 def _rail_padding(tag: str) -> dict[str, str]:
     """This rail's padding properties mapped to the constant each one is set from.
 
@@ -1910,8 +1939,8 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
     # third the logical `ps-`/`pe-` pair this repo also uses. Matching the property rather
     # than its value ends that; `pointer-events-none` and `peer-*` do not match, since the
     # side letter is optional and a `-` has to follow it either way.
-    for rail in _corner_rails(provider):
-        for token in rail.split():
+    for tag in _rail_openings(provider):
+        for token in _rail_class_tokens(tag):
             utility = _split_variants(token)[1]
             assert not re.match(r"p[xytblrse]?-", utility), (
                 f"the rail carries the padding utility {token!r}; its padding is the inline "
