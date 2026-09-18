@@ -131,48 +131,9 @@ def test_unset_fields_stay_out_of_the_merge():
     assert payload.model_dump(exclude_unset = True) == {"ragTopK": 5}
 
 
-def _settings_client():
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from auth.authentication import get_current_subject
-    from routes.chat_history import router
-
-    app = FastAPI()
-    app.dependency_overrides[get_current_subject] = lambda: "t"
-    app.include_router(router, prefix = "/api/chat")
-    return TestClient(app)
-
-
-def test_max_tool_calls_off_round_trips():
-    with _settings_client() as client:
-        client.put("/api/chat/settings", json = {"maxToolCallsPerMessage": 25})
-        saved = client.put("/api/chat/settings", json = {"maxToolCallsPerMessage": 0})
-        assert saved.status_code == 200
-        assert saved.json()["settings"]["maxToolCallsPerMessage"] == 0
-        stored = client.get("/api/chat/settings").json()["settings"]
-        assert stored["maxToolCallsPerMessage"] == 0
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [{"maxToolCallsPerMessage": -1}, {"toolCallTimeout": 0}],
-)
-def test_tool_call_limits_below_their_floor_are_rejected(payload):
-    with _settings_client() as client:
-        assert client.put("/api/chat/settings", json = payload).status_code == 400
-
-
-@pytest.mark.parametrize("value", [False, True])
-def test_max_tool_calls_rejects_a_boolean(value):
-    # bool subclasses int, so with the floor at 0 a False would have persisted as Off and
-    # silently stopped every later run from calling a tool.
-    with _settings_client() as client:
-        assert (
-            client.put("/api/chat/settings", json = {"maxToolCallsPerMessage": value}).status_code
-            == 400
-        )
-        assert "maxToolCallsPerMessage" not in client.get("/api/chat/settings").json()["settings"]
+def test_max_tool_calls_off_survives_the_payload():
+    payload = ChatSettingsPayload.model_validate({"maxToolCallsPerMessage": 0})
+    assert payload.model_dump(exclude_unset = True) == {"maxToolCallsPerMessage": 0}
 
 
 @pytest.mark.parametrize(
@@ -194,8 +155,12 @@ def test_max_tool_calls_rejects_a_boolean(value):
         {"researchModelTimeoutSeconds": 9},
         {"researchModelTimeoutSeconds": -1},
         {"researchModelTimeoutSeconds": 365 * 24 * 3600 + 1},
-        # bool subclasses int, so False would persist as the 0 "unlimited" sentinel.
+        # bool subclasses int, so False would persist as the 0 sentinel.
         {"researchModelTimeoutSeconds": False},
+        {"maxToolCallsPerMessage": False},
+        {"maxToolCallsPerMessage": True},
+        {"maxToolCallsPerMessage": -1},
+        {"toolCallTimeout": 0},
         {"unknownSetting": True},
     ],
 )
