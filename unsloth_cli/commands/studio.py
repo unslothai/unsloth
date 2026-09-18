@@ -127,9 +127,13 @@ def _recorded_master_root() -> Optional[Path]:
     setup a plain Studio root, have it refresh the runtimes one level down at <master>/studio/,
     and leave the backend still launching the stale trees at <master>/.
 
-    The recorded root must exist and its studio/ child must be THIS Studio directory, so a tree
-    copied from one master root to another does not send the update, or a removal, into the
-    original install.
+    The recorded root must exist and THIS Studio directory must lie inside it, so a tree copied
+    from one master root to another does not send the update, or a removal, into the original
+    install. Containment, not an exact <root>/studio match: the flat layout names one directory
+    for both, and UNSLOTH_HOME=/root with UNSLOTH_STUDIO_HOME=/root/custom/studio is a root that
+    genuinely contains its Studio somewhere other than the default child. The backend and both
+    uninstallers apply exactly this rule, and a stricter one here would have the CLI decline a
+    note the backend accepts, which is the same split this function exists to close.
     """
     try:
         recorded = (STUDIO_HOME / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8").strip()
@@ -139,7 +143,8 @@ def _recorded_master_root() -> Optional[Path]:
         return None
     try:
         master = Path(recorded).expanduser().resolve()
-        if master.is_dir() and (master / "studio").samefile(STUDIO_HOME):
+        here = STUDIO_HOME.resolve()
+        if master.is_dir() and (here == master or master in here.parents):
             return master
     except (OSError, ValueError):
         return None

@@ -124,6 +124,23 @@ def test_the_cli_recovers_a_recorded_master_root_for_the_setup_subprocess(tmp_pa
     assert result["cli_llama"] == result["backend_llama"]
 
 
+def test_the_cli_and_the_backend_accept_the_same_nested_studio_root(tmp_path):
+    # UNSLOTH_HOME=<root> with UNSLOTH_STUDIO_HOME=<root>/custom/studio is a real pairing: setup
+    # records <root>, and the Studio directory is inside it but is not its studio/ child. A
+    # stricter rule in the CLI than in the backend would have the CLI decline a note the backend
+    # accepts, which is the split this recovery exists to close.
+    master = tmp_path / "root"
+    studio = master / "custom" / "studio"
+    (studio / "share").mkdir(parents = True)
+    (studio / "share" / ".unsloth-master-root").write_text(f"{master}\n", encoding = "utf-8")
+    result = _probe({"UNSLOTH_STUDIO_HOME": str(studio)})
+
+    assert result["exported_master"] == str(master)
+    assert result["cli"] == str(studio)
+    assert result["cli_llama"] == str(master / "llama.cpp")
+    assert result["cli_llama"] == result["backend_llama"]
+
+
 def test_the_cli_refuses_a_note_carried_in_from_another_master_root(tmp_path):
     # A Studio tree copied from master root A to B keeps a note naming A. Exporting it would
     # point an update at the original install; the Studio directory has to lie inside the root
