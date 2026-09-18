@@ -604,7 +604,7 @@ def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, mon
 
     def _fail_the_upload_save(save_directory):
         saves["n"] += 1
-        if saves["n"] >= 2:          # 1st is the local save, 2nd is the temp dir to upload
+        if saves["n"] >= 2:  # 1st is the local save, 2nd is the temp dir to upload
             raise RuntimeError("MLX serialization failed")
         real_save(save_directory)
 
@@ -614,5 +614,5 @@ def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, mon
 
     assert success is False
     assert "MLX serialization failed" in message
-    assert calls == []                  # no create_repo, no tightening, no upload
+    assert calls == []  # no create_repo, no tightening, no upload
     assert "repo" not in seen

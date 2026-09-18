@@ -525,9 +525,7 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
             method = "",
             extra = "trl",
         )
-        ModelCard(content).push_to_hub(
-            repo_id, token = hf_token, commit_message = "Unsloth Model Card"
-        )
+        ModelCard(content).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
     except Exception as exception:
         logger.warning(f"Could not publish the model card: {exception}")
 
@@ -1705,9 +1703,7 @@ class ExportBackend:
                     # yet is one another client can create public first, and `private` cannot
                     # change an existing repo's visibility, so the adapter would land in it.
                     repo_id = _open_hub_repo(hf_api, repo_id, private)
-                    _publish_unsloth_model_card(
-                        hf_api, repo_id, self.current_model, hf_token
-                    )
+                    _publish_unsloth_model_card(hf_api, repo_id, self.current_model, hf_token)
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
                     self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
                 logger.info(f"Adapter pushed successfully to {repo_id}")
