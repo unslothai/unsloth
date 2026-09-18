@@ -83,6 +83,7 @@ import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
+  refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
 
@@ -755,6 +756,7 @@ export function ChatProvidersSettings({
       ];
       providersRef.current = nextProviders;
       onProvidersChange(nextProviders);
+      void refreshProviderModelCatalogs([provider]);
       setSelectedModelIds(models);
       setAvailableModels(available);
       setEditingProviderId(created.id);
@@ -881,6 +883,7 @@ export function ChatProvidersSettings({
         ...providers.filter((p) => p.id !== created.id),
         provider,
       ]);
+      void refreshProviderModelCatalogs([provider]);
       resetForm();
       autoOpenedAddFormRef.current = true;
       setPage("list");
@@ -1005,31 +1008,31 @@ export function ChatProvidersSettings({
       const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
         ? Date.parse(updated.updated_at)
         : Date.now();
+      const editedProvider: ExternalProviderConfig = {
+        ...existing,
+        backendProviderType: updated.provider_type,
+        name: updated.display_name,
+        baseUrl: updated.base_url ?? "",
+        models: modelsToSave,
+        availableModels: manualOnly
+          ? []
+          : pruneProviderModelIds(existing.providerType, availableModels),
+        maxOutputTokens: updated.max_output_tokens ?? undefined,
+
+        hasApiKey: updated.has_api_key,
+        isReasoningModel: supportsProviderReasoningToggle(
+          existing.providerType,
+        )
+          ? isReasoningModel
+          : undefined,
+        updatedAt,
+      };
       onProvidersChange(
         providers.map((provider) =>
-          provider.id === editingProviderId
-            ? {
-                ...provider,
-                backendProviderType: updated.provider_type,
-                name: updated.display_name,
-                baseUrl: updated.base_url ?? "",
-                models: modelsToSave,
-                availableModels: manualOnly
-                  ? []
-                  : pruneProviderModelIds(existing.providerType, availableModels),
-                maxOutputTokens: updated.max_output_tokens ?? undefined,
-
-                hasApiKey: updated.has_api_key,
-                isReasoningModel: supportsProviderReasoningToggle(
-                  existing.providerType,
-                )
-                  ? isReasoningModel
-                  : undefined,
-                updatedAt,
-              }
-            : provider,
+          provider.id === editingProviderId ? editedProvider : provider,
         ),
       );
+      void refreshProviderModelCatalogs([editedProvider]);
       toast.success("Connection updated.");
       resetForm();
       autoOpenedAddFormRef.current = true;
@@ -1295,7 +1298,7 @@ export function ChatProvidersSettings({
             type="button"
             variant="ghost"
             size="icon-sm"
-            className="size-8 rounded-[8px]"
+            className="size-8"
             onClick={closeForm}
             aria-label="Back to connections"
             title="Back to connections"
@@ -1314,7 +1317,7 @@ export function ChatProvidersSettings({
         </header>
 
         <div className="flex max-w-[760px] flex-col gap-3">
-          <section className="overflow-hidden rounded-[8px] border border-border/70 bg-muted/[0.12]">
+          <section className="overflow-hidden rounded-lg border border-border/70 bg-muted/[0.12]">
             <div className="divide-y divide-border/60">
               <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                 <div className="flex min-w-0 flex-col gap-0.5">
@@ -1661,7 +1664,7 @@ export function ChatProvidersSettings({
             />
           ) : null}
 
-          <section className="overflow-hidden rounded-[8px] border border-border/70 bg-muted/[0.12]">
+          <section className="overflow-hidden rounded-lg border border-border/70 bg-muted/[0.12]">
             <AnimatePresence initial={false} mode="wait">
               <motion.div
                 key={modelsPanelKey}
@@ -1741,7 +1744,7 @@ export function ChatProvidersSettings({
                       Select from suggestions below or enter exact model IDs.
                     </p>
                     {availableModels.length > 0 ? (
-                      <div className="space-y-3 rounded-[8px] border border-border/70 bg-background/50 p-3">
+                      <div className="space-y-3 rounded-md border border-border/70 bg-background/50 p-3">
                         <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
                           <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
                             {availableModelsLabel}
@@ -1781,7 +1784,7 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto rounded-[8px] border border-border/70 bg-background/50">
+                        <ul className="max-h-56 overflow-y-auto rounded-md border border-border/70 bg-background/50">
                           {filteredAvailableModels.length === 0 ? (
                             <li className="px-3 py-3 text-xs text-muted-foreground">
                               No matching models
@@ -1870,7 +1873,7 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto rounded-[8px] border border-border/70 bg-background/50">
+                        <ul className="max-h-56 overflow-y-auto rounded-md border border-border/70 bg-background/50">
                           {filteredAvailableModels.length === 0 ? (
                             <li className="px-3 py-3 text-xs text-muted-foreground">
                               No matching models
@@ -2002,7 +2005,7 @@ export function ChatProvidersSettings({
       </div>
 
       <section className="flex max-w-[760px] flex-col gap-2">
-        <div className="overflow-hidden rounded-[14px] border border-border/70 bg-muted/[0.12]">
+        <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/[0.12]">
           <button
             type="button"
             onClick={openAddProvider}
@@ -2043,7 +2046,7 @@ export function ChatProvidersSettings({
                     className="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-border/60 border-b px-3 py-3 transition-colors last:border-b-0 hover:bg-muted/35 max-sm:grid-cols-1"
                   >
                     <div className="flex min-w-0 items-start gap-3">
-                      <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-[8px] border border-border/70 bg-background/80">
+                      <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/80">
                         <ApiProviderLogo
                           providerType={provider.providerType}
                           className="size-5"
@@ -2055,7 +2058,7 @@ export function ChatProvidersSettings({
                           <span className="truncate text-sm font-medium text-foreground">
                             {provider.name}
                           </span>
-                          <span className="shrink-0 rounded-[6px] border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
+                          <span className="shrink-0 rounded-full border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
                             {provider.models.length}{" "}
                             {provider.models.length === 1 ? "model" : "models"}
                           </span>
@@ -2082,7 +2085,7 @@ export function ChatProvidersSettings({
                         type="button"
                         size="icon-sm"
                         variant="ghost"
-                        className="size-7 rounded-[8px] hover:text-foreground"
+                        className="size-7 hover:text-foreground"
                         disabled={mutatingProvider}
                         onClick={() => editProvider(provider)}
                         title="Edit connection"
@@ -2094,7 +2097,7 @@ export function ChatProvidersSettings({
                         type="button"
                         size="icon-sm"
                         variant="ghost"
-                        className="size-7 rounded-[8px] hover:text-foreground"
+                        className="size-7 hover:text-foreground"
                         disabled={mutatingProvider}
                         onClick={() => void testProvider(provider)}
                         title="Check connection"
@@ -2106,7 +2109,7 @@ export function ChatProvidersSettings({
                         type="button"
                         size="icon-sm"
                         variant="ghost"
-                        className="size-7 rounded-[8px] hover:text-destructive"
+                        className="size-7 hover:text-destructive"
                         disabled={mutatingProvider}
                         onClick={() => void deleteProvider(provider.id)}
                         title="Delete connection"

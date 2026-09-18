@@ -347,12 +347,21 @@ function Get-StudioCompilerEvents {
     try {
         # Bounded at both ends. Open-ended, a compiler started by something else during
         # the recursive temp scan counted against the action that had already finished.
+        #
+        # Padded a second each way, then filtered exactly below: the hashtable's bounds do
+        # not hold to the precision they are given. A csc.exe at 17:51:57.107 came back from
+        # a window whose floor was 17:51:57.58, and failed a step that had not printed its
+        # first line until 17:51:58.58. TimeCreated is the instant the claim is about. The
+        # far pad covers the other end, where rounding could drop a real compile.
         $events = Get-WinEvent -FilterHashtable @{
             LogName   = 'Security'
             Id        = 4688
-            StartTime = $Since
-            EndTime   = $Until
+            StartTime = $Since.AddSeconds(-1)
+            EndTime   = $Until.AddSeconds(1)
         } -ErrorAction Stop
+        $events = @($events | Where-Object {
+            $_.TimeCreated -ge $Since -and $_.TimeCreated -le $Until
+        })
     } catch [System.Exception] {
         # No matching events is an exception from Get-WinEvent, not an empty set, and on
         # a clean run that is expected. A log this cannot READ throws the same way, so

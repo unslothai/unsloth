@@ -192,7 +192,7 @@ def create_studio_mcp() -> FastMCP:
     async def load_checkpoint(
         checkpoint_path: str,
         max_seq_length: int = 2048,
-        load_in_4bit: bool = True,
+        load_in_4bit: bool | None = None,
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: str | None = None,
         hf_token: str | None = None,
@@ -203,18 +203,22 @@ def create_studio_mcp() -> FastMCP:
         inference; it does not unload them, so a load can fail with a clear
         out-of-memory error if the GPU is already full. Pass hf_token to load a
         gated checkpoint, and approved_remote_code_fingerprint to retry a
-        trust_remote_code load that was blocked pending review.
+        trust_remote_code load that was blocked pending review. Leave
+        load_in_4bit unset to load full fine-tunes in 16-bit and adapters in
+        4-bit.
         """
         from models import LoadCheckpointRequest
         from routes.export import load_checkpoint as load
 
+        # Omit an unset load_in_4bit so the route can pick 16-bit for a full fine-tune.
+        optional = {} if load_in_4bit is None else {"load_in_4bit": load_in_4bit}
         request = LoadCheckpointRequest(
             checkpoint_path = checkpoint_path,
             max_seq_length = max_seq_length,
-            load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
             approved_remote_code_fingerprint = approved_remote_code_fingerprint,
             hf_token = hf_token,
+            **optional,
         )
         return _dump(await load(request, current_subject = "mcp", allow_ambient = False))
 

@@ -54,6 +54,7 @@ from core.tool_healing import (
     strip_outside_think,
 )
 from core.inference.tool_loop_controller import (
+    _WORKSPACE_TOOLS,
     ToolLoopController,
     append_deferred_nudges,
     awaiting_approval_status,
@@ -197,6 +198,7 @@ def _earliest_tool_signal(
     *,
     unrestricted: bool = False,
     start: int = 0,
+    streaming: bool = False,
 ) -> int:
     """Index where the turn's first genuine tool-call boundary begins, or -1.
 
@@ -241,6 +243,7 @@ def _earliest_tool_signal(
             None if unrestricted else (lambda: _active_tool_names(active_tools)),
             start,
             floor = floor,
+            streaming = streaming,
         )
         if gemma >= floor and (best < 0 or gemma < best):
             best = gemma
@@ -903,6 +906,7 @@ def run_safetensors_tool_loop(
                     _detect_tools,
                     unrestricted = unrestricted_tools,
                     start = max(0, _tool_signal_scanned_upto - _TOOL_SIGNAL_OVERLAP),
+                    streaming = True,
                 )
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]
@@ -1303,11 +1307,26 @@ def run_safetensors_tool_loop(
         # Collapse exact-duplicate calls and cap the count (runaway-turn guard).
         if tool_calls:
             seen_keys: set = set()
+            last_workspace_key = None
+            # One rerun per piece of new work: `test, edit A, test, edit B, test` keeps every
+            # test, while `read, edit, read, edit` stops replaying and cannot fill the cap.
+            novel_kept = 0
+            novel_at_last_keep: dict = {}
             deduped: list = []
             for _tc in tool_calls:
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if _key in seen_keys:
+                if _fn.get("name") in _WORKSPACE_TOOLS:
+                    if _key == last_workspace_key:
+                        continue
+                    if _key in seen_keys:
+                        if novel_kept <= novel_at_last_keep.get(_key, 0):
+                            continue
+                    else:
+                        novel_kept += 1
+                    novel_at_last_keep[_key] = novel_kept
+                    last_workspace_key = _key
+                elif _key in seen_keys:
                     continue
                 seen_keys.add(_key)
                 deduped.append(_tc)

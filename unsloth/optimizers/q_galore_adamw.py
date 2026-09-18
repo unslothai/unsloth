@@ -12,6 +12,7 @@
 # Original paper: "Q-GaLore: Quantized GaLore with INT4 Projection and
 # Layer-Adaptive Low-Rank Gradients" (arXiv:2407.08296)
 
+import inspect
 import torch
 from typing import Optional, List
 
@@ -80,19 +81,30 @@ class QGaLoreAdamW8bit(Optimizer2State):
         is_paged: bool = False,
     ):
         _require_bnb()
+        bnb_parameters = inspect.signature(Optimizer2State.__init__).parameters
+        legacy_kwargs = {}
+        for name, value, default in (
+            ("percentile_clipping", percentile_clipping, 100),
+            ("block_wise", block_wise, True),
+        ):
+            if name in bnb_parameters:
+                legacy_kwargs[name] = value
+            elif value != default:
+                raise ValueError(
+                    f"This bitsandbytes version no longer supports {name}={value}; "
+                    f"use {name}={default}."
+                )
         super().__init__(
             "adam",
             params,
-            lr,
-            betas,
-            eps,
-            weight_decay,
-            8,  # optim_bits
-            None,  # args
-            min_8bit_size,
-            percentile_clipping,
-            block_wise,
+            lr = lr,
+            betas = betas,
+            eps = eps,
+            weight_decay = weight_decay,
+            optim_bits = 8,
+            min_8bit_size = min_8bit_size,
             is_paged = is_paged,
+            **legacy_kwargs,
         )
 
     @torch.no_grad()
@@ -173,18 +185,18 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 self.update_step(group, p, gindex, pindex)
 
                 if "rank" in group:
-                    # p.data now holds the weight update in low-rank space.
-                    p.data = p._saved_data.add_(state["projector"].project_back(p.data))
-
-                    # Re-apply decoupled weight decay using pre-update weights.
+                    # Decay the pre-update weight BEFORE adding the update; it touches only
+                    # p._saved_data, so p.data still holds the low-rank update below.
                     if "_wd_saved" in group:
-                        p.data.add_(
-                            p.data,
+                        p._saved_data.add_(
+                            p._saved_data,
                             alpha = -group["lr"] * group["_wd_saved"],
                         )
                         group["weight_decay"] = group["_wd_saved"]
                         del group["_wd_saved"]
 
+                    # project_back stays inline: a loop-local name outlives the iteration (+64 MiB).
+                    p.data = p._saved_data.add_(state["projector"].project_back(p.data))
                     del p._saved_data
 
                 if has_weight_quant:
@@ -200,8 +212,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     # Scalar placeholder to free float memory; the forward pre-hook (install_weight_quant_hooks)
                     # dequantizes before the next forward pass.
                     p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
-
-                state["step"] += 1
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()

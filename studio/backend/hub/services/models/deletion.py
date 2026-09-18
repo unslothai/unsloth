@@ -649,6 +649,10 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     for lid in getattr(engine, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "An Images model load is using this repo; wait for it to finish"
+    # Cancelled but not yet unwound: deleting here yanks blobs from under a live Hub call.
+    for lid in getattr(engine, "draining_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "An Images model load is still releasing this repo; wait for it to finish"
     return None
 
 

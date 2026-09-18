@@ -199,6 +199,69 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
     assert controller.active_tools() == []
 
 
+def test_command_can_run_again_after_a_file_edit():
+    controller = ToolLoopController(
+        tools = [_tool("terminal"), _tool("edit_file"), _tool("web_search")]
+    )
+    run = _call("terminal", {"command": "python calc.py"})
+    edit = _call(
+        "edit_file", {"path": "calc.py", "edits": [{"old_string": "a", "new_string": "b"}]}
+    )
+    search = _call("web_search", {"query": "gpu prices"})
+
+    controller.record_result(controller.prepare_call(search), "ok")
+    controller.record_result(controller.prepare_call(run), "3")
+    assert controller.prepare_call(run).action == "duplicate"
+    controller.record_noop(controller.prepare_call(run))
+
+    controller.record_result(controller.prepare_call(edit), "Edited calc.py")
+    rerun = controller.prepare_call(run)
+    assert rerun.action == "execute"
+    controller.record_result(rerun, "-1")
+
+    controller.record_noop(controller.prepare_call(run))
+    assert not controller.force_final_answer
+    # The edit does NOT come back. Nothing new has run since it did -- only `run`, which was
+    # already spent -- so re-applying the identical edit is a repeating block replaying
+    # itself, and a non-idempotent one (an appending python/terminal call) would land twice.
+    assert controller.prepare_call(edit).action == "duplicate"
+    assert controller.prepare_call(search).action == "duplicate"
+
+
+def test_each_independent_edit_buys_back_its_own_verification():
+    """A rerun is worth one piece of new work, not one per call, so B's check is not lost."""
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool("edit_file")])
+    test = _call("terminal", {"command": "pytest -q"})
+    edit_a = _call("edit_file", {"path": "a.py", "edits": [{"old_string": "a", "new_string": "b"}]})
+    edit_b = _call("edit_file", {"path": "b.py", "edits": [{"old_string": "c", "new_string": "d"}]})
+
+    controller.record_result(controller.prepare_call(test), "1 failed")
+    controller.record_result(controller.prepare_call(edit_a), "Edited a.py")
+    after_a = controller.prepare_call(test)
+    assert after_a.action == "execute"
+    controller.record_result(after_a, "1 failed")
+
+    controller.record_result(controller.prepare_call(edit_b), "Edited b.py")
+    after_b = controller.prepare_call(test)
+    assert after_b.action == "execute"
+
+
+def test_a_repeating_workspace_block_stops_replaying_itself():
+    """read, edit, read, edit: the second edit is the block repeating, not new work."""
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool("edit_file")])
+    read = _call("terminal", {"command": "cat notes.txt"})
+    edit = _call(
+        "edit_file", {"path": "notes.txt", "edits": [{"old_string": "a", "new_string": "b"}]}
+    )
+
+    controller.record_result(controller.prepare_call(read), "version one")
+    controller.record_result(controller.prepare_call(edit), "Edited notes.txt")
+    reread = controller.prepare_call(read)
+    assert reread.action == "execute"
+    controller.record_result(reread, "version two")
+    assert controller.prepare_call(edit).action == "duplicate"
+
+
 def test_failed_call_does_not_block_retry():
     controller = ToolLoopController(tools = [_tool("web_search")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))
@@ -545,7 +608,58 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
     }
     # The turn replayed to the model carries the typed values too, not the strings.
     assert decision.as_assistant_tool_call()["function"]["arguments"] == (
-        '{"depth":null,"fuzzy":false,"limit":25,"query":"ship dates","tags":["a","b"]}'
+        '{"query":"ship dates","limit":25,"fuzzy":false,"tags":["a","b"],"depth":null}'
+    )
+
+
+def test_replayed_arguments_keep_the_order_the_model_generated():
+    """The replay is the text the model is told it wrote, so its key order must survive (#10791)."""
+    edit_file = next(t for t in ALL_TOOLS if t["function"]["name"] == "edit_file")
+    arguments = {
+        "path": "calc.py",
+        "edits": [{"new_string": "def subtract", "old_string": "def add"}],
+    }
+    controller = ToolLoopController(tools = [edit_file])
+    decision = controller.prepare_call(
+        {"function": {"name": "edit_file", "arguments": json.dumps(arguments)}}
+    )
+
+    replayed = decision.as_assistant_tool_call()["function"]["arguments"]
+    assert (
+        replayed
+        == '{"path":"calc.py","edits":[{"new_string":"def subtract","old_string":"def add"}]}'
+    )
+    assert decision.tool_start_payload()["arguments_text"] == replayed
+    flipped = {
+        "path": "calc.py",
+        "edits": [{"old_string": "def add", "new_string": "def subtract"}],
+    }
+    assert canonical_tool_call_key("edit_file", decision.arguments) == (
+        canonical_tool_call_key("edit_file", flipped)
+    )
+
+
+def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
+    """Each call's own order, not one fixed order that happens to look unsorted.
+
+    No fixed order satisfies both, so on the sorted encoder both replay as the same string.
+    """
+
+    def replay(*parameters):
+        content = (
+            "<function=mcp__notes__search>"
+            + "".join(f"<parameter={key}>{value}</parameter>" for key, value in parameters)
+            + "</function>"
+        )
+        calls = parse_tool_calls_from_text(content)
+        decision = ToolLoopController(tools = _mcp_tool_schemas()).prepare_call(calls[0])
+        return decision.as_assistant_tool_call()["function"]["arguments"]
+
+    assert replay(("query", "ship dates"), ("limit", 25), ("fuzzy", "false")) == (
+        '{"query":"ship dates","limit":25,"fuzzy":false}'
+    )
+    assert replay(("fuzzy", "false"), ("query", "ship dates"), ("limit", 25)) == (
+        '{"fuzzy":false,"query":"ship dates","limit":25}'
     )
 
 
@@ -594,3 +708,14 @@ def test_a_success_that_opens_with_error_is_not_nudged_as_a_failure():
 
     assert not completion.is_error
     assert TOOL_ERROR_NUDGE not in completion.model_message()["content"]
+
+
+@pytest.mark.parametrize("tool_name", ["python", "terminal", "edit_file"])
+def test_failed_workspace_execution_invalidates_previous_reads(tool_name):
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool(tool_name)])
+    read = _call("terminal", {"command": "cat notes.txt"})
+    controller.record_result(controller.prepare_call(read), "before")
+    write = _call(tool_name, {"code": "write_then_fail", "command": "write_then_fail"})
+    controller.record_result(controller.prepare_call(write), "Error: failed after writing")
+    assert controller.prepare_call(read).action == "execute"
+    assert controller.prepare_call(write).action == "execute"

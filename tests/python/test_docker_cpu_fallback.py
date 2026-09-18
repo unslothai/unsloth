@@ -46,6 +46,8 @@ def _invoke_run_sh(
     nvidia,
     amd,
     groups = "both",
+    image = None,
+    extra_env = None,
 ):
     """Run docker/run.sh with a recording `docker` stub and a staged /dev tree.
 
@@ -99,8 +101,18 @@ def _invoke_run_sh(
     env["UNSLOTH_DEV_ROOT"] = str(dev_root)
     env["HOME"] = str(tmp_path / "home")
     env["UNSLOTH_WORKDIR"] = str(tmp_path)
-    for leak in ("HF_TOKEN", "WANDB_API_KEY", "UNSLOTH_GPUS", "UNSLOTH_ALLOW_CPU"):
+    for leak in (
+        "HF_TOKEN",
+        "WANDB_API_KEY",
+        "UNSLOTH_GPUS",
+        "UNSLOTH_ALLOW_CPU",
+        "UNSLOTH_STUDIO_VOLUME",
+    ):
         env.pop(leak, None)
+    env.pop("UNSLOTH_IMAGE", None)
+    if image:
+        env["UNSLOTH_IMAGE"] = image
+    env.update(extra_env or {})
 
     # absolute: the "absent" case strips /usr/bin from PATH, so `bash` itself would
     # not resolve either
@@ -127,12 +139,32 @@ class TestRunShDegradesWithoutNvidia:
     def test_amd_host_gets_the_render_nodes_with_numeric_gids(self, tmp_path):
         """--group-add by NAME resolves inside the container, where the host's
         video/render groups do not exist, so the gids must be numeric."""
-        argv, _ = _invoke_run_sh(tmp_path, nvidia = False, amd = True)
+        argv, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = True)
         assert "--gpus" not in argv
         assert "--device" in argv
         assert "/dev/kfd" in argv and "/dev/dri" in argv
         gids = [argv[i + 1] for i, a in enumerate(argv) if a == "--group-add"]
         assert all(g.isdigit() for g in gids), f"non-numeric --group-add: {gids}"
+        # the devices go through, but no part of the image can drive them: torch is
+        # cu128 and the bundled llama.cpp has neither a HIP nor a Vulkan backend
+        assert "HIP" in stderr and "runs on the CPU" in stderr, (
+            "an AMD host must be told the container still runs on the CPU:\n" + stderr
+        )
+
+    def test_the_untagged_published_name_is_recognised(self, tmp_path):
+        """`unsloth/unsloth` is :latest to Docker, so the AMD notice has to treat it as a
+        published image rather than as somebody else's."""
+        _, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = True, image = "unsloth/unsloth")
+        assert "runs on the CPU" in stderr, stderr
+        assert "up to that image" not in stderr, stderr
+
+    def test_the_cpu_only_claim_is_scoped_to_the_published_images(self, tmp_path):
+        """A custom image may carry a HIP or Vulkan build; run.sh cannot know, so it
+        must not claim the container runs on the CPU."""
+        argv, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = True, image = "myorg/custom:rocm")
+        assert "/dev/kfd" in argv
+        assert "runs on the CPU" not in stderr, stderr
+        assert "myorg/custom:rocm" in stderr and "unsloth/unsloth" in stderr, stderr
 
     def test_the_group_lookup_is_guarded_on_getent_existing(self):
         """A host with no getent at all (busybox, some slim images) must skip the
@@ -162,6 +194,52 @@ class TestRunShDegradesWithoutNvidia:
         assert "--gpus" in argv
         assert "all" in argv
         assert "/dev/kfd" not in argv
+
+
+def _studio_mounts(argv):
+    return [
+        argv[i + 1]
+        for i, a in enumerate(argv)
+        if a == "-v" and argv[i + 1].endswith(":/opt/unsloth-studio")
+    ]
+
+
+@_posix_shell
+class TestRunShMountsTheStudioVolume:
+    """Studio's accounts, chats and trained models live under /opt/unsloth-studio.
+    The image links its own code in there at every start, so a named volume keeps
+    the data across `docker rm` without pinning the first image's code. The helper
+    has to mount it, or the quick start in DOCKERHUB.md keeps data and the helper
+    does not."""
+
+    def test_the_default_is_a_named_volume(self, tmp_path):
+        argv, _ = _invoke_run_sh(tmp_path, nvidia = True, amd = False)
+        assert _studio_mounts(argv) == ["unsloth-studio:/opt/unsloth-studio"], argv
+
+    @pytest.mark.parametrize("nvidia, amd", [(False, True), (False, False)])
+    def test_the_amd_and_cpu_paths_mount_it_too(self, tmp_path, nvidia, amd):
+        argv, _ = _invoke_run_sh(tmp_path, nvidia = nvidia, amd = amd)
+        assert _studio_mounts(argv) == ["unsloth-studio:/opt/unsloth-studio"], argv
+
+    def test_an_empty_value_disables_the_mount(self, tmp_path):
+        """`${VAR-default}`, not `${VAR:-default}`: an explicitly empty value is an
+        opt-out, for example on :core or for a throwaway run."""
+        argv, _ = _invoke_run_sh(
+            tmp_path, nvidia = True, amd = False, extra_env = {"UNSLOTH_STUDIO_VOLUME": ""}
+        )
+        assert _studio_mounts(argv) == [], argv
+
+    def test_a_custom_name_or_host_path_is_one_argv(self, tmp_path):
+        """A bind mount path with a space must not be word-split."""
+        host = str(tmp_path / "studio home")
+        argv, _ = _invoke_run_sh(
+            tmp_path, nvidia = True, amd = False, extra_env = {"UNSLOTH_STUDIO_VOLUME": host}
+        )
+        assert _studio_mounts(argv) == [f"{host}:/opt/unsloth-studio"], argv
+
+    def test_the_flag_is_documented_in_the_header(self):
+        body = open(_RUN_SH, encoding = "utf-8").read()
+        assert "UNSLOTH_STUDIO_VOLUME=unsloth-studio" in body
 
 
 class TestStudioImageAllowsCpu:
@@ -196,6 +274,24 @@ class TestStudioImageAllowsCpu:
             body,
             re.M,
         ), "Dockerfile.studio does not bundle its own entrypoint"
+
+    def test_the_studio_image_keeps_the_base_entrypoint_directive(self):
+        """The bundled file replaces the base's copy at the SAME path and the base's
+        ENTRYPOINT directive stays: a second ENTRYPOINT or a different destination
+        would let the two images drift apart again."""
+        studio = open(_STUDIO_DF, encoding = "utf-8").read()
+        base = open(_BASE_DF, encoding = "utf-8").read()
+        dest = re.findall(r"^COPY\s+entrypoint\.sh\s+(\S+)\s*$", base, re.M)
+        assert dest == ["/usr/local/bin/unsloth-entrypoint"], dest
+        assert re.findall(r"^COPY\s+entrypoint\.sh\s+(\S+)\s*$", studio, re.M) == dest
+        # The copy alone proves nothing: the base must still RUN that file, or the
+        # inherited ENTRYPOINT no longer translates UNSLOTH_IMAGE_ALLOW_CPU.
+        assert re.findall(r"^\s*ENTRYPOINT\s+(.+?)\s*$", base, re.M) == [
+            '["/usr/local/bin/unsloth-entrypoint"]'
+        ], "base Dockerfile no longer runs the bundled entrypoint"
+        assert not re.search(
+            r"^\s*ENTRYPOINT\b", studio, re.M
+        ), "Dockerfile.studio must inherit the base ENTRYPOINT, not declare its own"
 
     def test_the_base_training_image_keeps_the_strict_check(self):
         """FastLanguageModel genuinely needs a GPU, so :core must NOT default it."""
