@@ -491,6 +491,7 @@ _custom_studio_data_dirs() {
 # and tilde-expanded like storage_roots.unsloth_home() and studio/setup.sh, or a padded value
 # would name a directory neither install nor uninstall agrees on.
 _master_root() {
+    _mr_from_note=
     _mr=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     # The note setup.sh leaves in the Studio tree, when this run has no UNSLOTH_HOME of its own.
     # `UNSLOTH_HOME=/mnt/portable unsloth studio update` installs the runtimes there and leaves
@@ -513,18 +514,44 @@ _master_root() {
         _mr_ush=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         _mr_sh=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         if [ -n "$_mr_ush" ]; then
-            _mr_studio="$_mr_ush"
+            _mr_roots="$_mr_ush"
         elif [ -n "$_mr_sh" ]; then
-            _mr_studio="$_mr_sh"
+            _mr_roots="$_mr_sh"
         else
-            _mr_studio="$HOME/.unsloth/studio"
+            # No override names one, so the root install.sh recorded in the default-mode
+            # studio.conf, then the legacy tree. A master-root install puts Studio at
+            # <master>/studio, and that conf is how this script finds that directory at all when
+            # the environment is bare. Read here rather than through _custom_studio_roots, which
+            # calls back into this function. install.sh writes
+            # UNSLOTH_EXE='<root>/unsloth_studio/bin/unsloth', so the root is three dirnames up;
+            # apostrophes arrive escaped as '\''.
+            _mr_roots=""
+            _mr_dconf="$HOME/.local/share/unsloth/studio.conf"
+            if [ -f "$_mr_dconf" ]; then
+                _mr_exe=$(sed -n "s/^UNSLOTH_EXE='\(.*\)'\$/\1/p" "$_mr_dconf" | head -n1)
+                _mr_exe=$(printf '%s' "$_mr_exe" | sed "s/'\\\\''/'/g")
+                [ -n "$_mr_exe" ] && _mr_roots=$(dirname "$(dirname "$(dirname "$_mr_exe")")")
+            fi
+            _mr_roots="$_mr_roots
+$HOME/.unsloth/studio"
         fi
-        _mr_conf="${_mr_studio}/share/.unsloth-master-root"
-        if [ -f "$_mr_conf" ]; then
+        _mr_saved_ifs=$IFS
+        IFS='
+'
+        for _mr_studio in $_mr_roots; do
+            IFS=$_mr_saved_ifs
+            [ -n "$_mr_studio" ] || continue
+            _mr_conf="${_mr_studio}/share/.unsloth-master-root"
+            [ -f "$_mr_conf" ] || continue
             # One line, first only: a note that grew a second line is not one we wrote.
             _mr=$(head -n 1 "$_mr_conf" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') \
                 || _mr=""
-        fi
+            if [ -n "$_mr" ]; then
+                _mr_from_note=1
+                break
+            fi
+        done
+        IFS=$_mr_saved_ifs
     fi
     [ -n "$_mr" ] || return 0
     # shellcheck disable=SC2088
@@ -542,6 +569,23 @@ _master_root() {
     # setup.sh's master-root block already guards the same call this way.
     _mr_canon=$(CDPATH= cd -P -- "$_mr" 2>/dev/null && pwd -P) || _mr_canon=""
     [ -n "$_mr_canon" ] && _mr="$_mr_canon"
+    # A note has to describe the tree it was found in: the Studio directory it was read from must
+    # lie INSIDE the root it names. Copy a Studio tree from master root A to B and uninstall B,
+    # and the copied note still names A, whose llama.cpp, node, whisper.cpp and sd.cpp carry the
+    # same owner markers B's would -- so the gates below would authorise deleting the ORIGINAL
+    # install's runtimes. Containment rather than an exact <root>/studio match, because the flat
+    # layout (UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming one directory) is supported and would
+    # fail that. A Studio root deliberately placed OUTSIDE its master root is not recovered here;
+    # storage_roots already calls that layout not self-contained and warns on every resolve.
+    # An explicit UNSLOTH_HOME skips all of this: that is the user speaking, not a file on disk.
+    if [ "${_mr_from_note:-}" = 1 ]; then
+        _mr_here=$(CDPATH= cd -P -- "$_mr_studio" 2>/dev/null && pwd -P) || _mr_here=""
+        case "$_mr_here" in
+            "$_mr") : ;;
+            "$_mr"/*) : ;;
+            *) return 0 ;;
+        esac
+    fi
     case "$_mr" in "$HOME/.unsloth"|/|"") return 0 ;; esac
     printf '%s\n' "$_mr"
 }

@@ -622,6 +622,7 @@ Environment:
     # whisper.cpp are its other children, so removing the Studio root alone strands them. Trimmed
     # and tilde-expanded like storage_roots.unsloth_home() and studio\setup.ps1.
     function _MasterRoot {
+        $noteStudio = $null
         $raw = $env:UNSLOTH_HOME
         if ([string]::IsNullOrWhiteSpace($raw)) {
             # The note setup.ps1 leaves in the Studio tree, when this run has no UNSLOTH_HOME of
@@ -637,24 +638,38 @@ Environment:
             # otherwise had the legacy note win here while the removal still worked on the named
             # tree: the run deleted the named Studio, then followed the OTHER install's master
             # root and took its runtime children with it.
-            $noteRoot = $null
+            $noteRoots = @()
             foreach ($override in @($env:UNSLOTH_STUDIO_HOME, $env:STUDIO_HOME)) {
                 if (-not [string]::IsNullOrWhiteSpace($override)) {
-                    $noteRoot = _ExpandTilde $override.Trim()
+                    $noteRoots = @(_ExpandTilde $override.Trim())
                     break
                 }
             }
-            if (-not $noteRoot -and $env:USERPROFILE) {
-                $noteRoot = Join-Path $env:USERPROFILE ".unsloth\studio"
+            if (-not $noteRoots) {
+                # No override names one, so the root install.ps1 recorded in the default-mode
+                # studio.conf, then the legacy tree. A master-root install puts Studio at
+                # <master>\studio, and that conf is how this script finds it with a bare
+                # environment. Read directly rather than through _CustomStudioRoots, which calls
+                # back into this function.
+                if ($env:LOCALAPPDATA) {
+                    $confRoot = _RootFromConf (Join-Path $env:LOCALAPPDATA "Unsloth Studio\studio.conf")
+                    if ($confRoot) { $noteRoots += $confRoot }
+                }
+                if ($env:USERPROFILE) {
+                    $noteRoots += (Join-Path $env:USERPROFILE ".unsloth\studio")
+                }
             }
-            if ($noteRoot) {
+            foreach ($noteRoot in $noteRoots) {
                 $notePath = Join-Path $noteRoot "share\.unsloth-master-root"
-                if (Test-Path -LiteralPath $notePath -PathType Leaf) {
-                    try {
-                        # One line, first only: a note that grew a second line is not ours.
-                        $line = @(Get-Content -LiteralPath $notePath -TotalCount 1 -ErrorAction Stop)[0]
-                    } catch { $line = $null }
-                    if (-not [string]::IsNullOrWhiteSpace($line)) { $raw = $line }
+                if (-not (Test-Path -LiteralPath $notePath -PathType Leaf)) { continue }
+                try {
+                    # One line, first only: a note that grew a second line is not ours.
+                    $line = @(Get-Content -LiteralPath $notePath -TotalCount 1 -ErrorAction Stop)[0]
+                } catch { continue }
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $raw = $line
+                    $noteStudio = $noteRoot
+                    break
                 }
             }
         }
@@ -674,6 +689,28 @@ Environment:
         try { $norm = [System.IO.Path]::GetFullPath($(if ($norm) { $norm } else { $expanded })).TrimEnd('\','/') }
         catch { return $null }
         if (-not $norm) { return $null }
+        # A note has to describe the tree it was found in: the Studio directory it was read from
+        # must lie INSIDE the root it names. Copy a Studio tree from master root A to B and
+        # uninstall B, and the copied note still names A, whose llama.cpp, node, whisper.cpp and
+        # sd.cpp carry the same owner markers B's would, so the gates below would authorise
+        # deleting the ORIGINAL install's runtimes. Containment rather than an exact <root>\studio
+        # match, because the flat layout (UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming one
+        # directory) is supported and would fail that. An explicit UNSLOTH_HOME skips the check:
+        # that is the user speaking, not a file found on disk. Mirrors _master_root in
+        # uninstall.sh and storage_roots._recorded_master_root().
+        if ($noteStudio) {
+            $here = $null
+            try {
+                $here = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($noteStudio)
+            } catch { $here = $null }
+            try { $here = [System.IO.Path]::GetFullPath($(if ($here) { $here } else { $noteStudio })).TrimEnd('\','/') }
+            catch { $here = $null }
+            if (-not $here) { return $null }
+            if (-not ($here -ieq $norm -or $here.StartsWith($norm + [System.IO.Path]::DirectorySeparatorChar,
+                      [System.StringComparison]::OrdinalIgnoreCase))) {
+                return $null
+            }
+        }
         # The default root is left to the blocks that own it, which remove it unconditionally.
         if ($env:USERPROFILE -and ($norm -ieq (Join-Path $env:USERPROFILE ".unsloth").TrimEnd('\','/'))) {
             return $null

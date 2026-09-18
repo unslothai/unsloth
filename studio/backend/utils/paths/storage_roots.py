@@ -101,10 +101,12 @@ def _recorded_master_root() -> Path | None:
     writes the root to share/.unsloth-master-root for the uninstallers; read it here so the rest
     of the process agrees with the install on disk.
 
-    Only a note that still describes reality is honoured: the recorded root must exist and its
-    studio/ child must be the very directory the note was read from. A note left behind by a
-    tree that has since moved, or copied into an unrelated install, names a root this process
-    would otherwise adopt for caches and runtimes both.
+    Only a note that still describes reality is honoured: the recorded root must exist and the
+    Studio directory the note was read from must lie INSIDE it. A note left behind by a tree
+    that has since moved, or copied from one master root to another, names a root this process
+    would otherwise adopt for caches and runtimes both. Containment rather than an exact
+    <root>/studio match, because the flat layout, UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming
+    one directory, is supported and would fail that; the uninstallers apply the same rule.
     """
     studio = _studio_root_without_master()
     key = str(studio)
@@ -119,7 +121,8 @@ def _recorded_master_root() -> Path | None:
     if recorded:
         master = _resolved(recorded)
         try:
-            if master.is_dir() and (master / "studio").samefile(studio):
+            here = studio.resolve()
+            if master.is_dir() and (here == master or master in here.parents):
                 found = master
         except (OSError, ValueError):
             found = None

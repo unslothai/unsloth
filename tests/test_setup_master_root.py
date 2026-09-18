@@ -854,6 +854,51 @@ def test_a_shared_staging_directory_is_pruned_not_deleted():
     assert "_RemovePath" not in staging, staging
 
 
+def test_the_windows_uninstaller_refuses_a_note_carried_in_from_elsewhere(tmp_path):
+    """A Studio tree copied from master root A to B keeps a note naming A.
+
+    A's llama.cpp, node, whisper.cpp and sd.cpp carry exactly the owner markers B's would, so
+    the marker gates cannot tell them apart: accepting the copied note has the uninstall of B
+    delete the ORIGINAL install's runtimes. The note has to describe the tree it was found in,
+    which means the Studio directory it was read from lying inside the root it names.
+    """
+    original = tmp_path / "original"
+    (original / "studio").mkdir(parents = True)
+    copied = tmp_path / "copied"
+    (copied / "studio" / "share").mkdir(parents = True)
+    (copied / "studio" / "share" / ".unsloth-master-root").write_text(
+        f"{original}\n", encoding = "utf-8"
+    )
+    profile = tmp_path / "profile"
+    (profile / ".unsloth" / "studio" / "share").mkdir(parents = True)
+
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        f"""$txt = Get-Content -Raw "{UNINSTALL_PS1}"
+foreach ($n in @("_ExpandTilde", "_RootFromConf", "_MasterRoot")) {{
+    $m = [regex]::Match($txt, "(?ms)^    function $n \\{{.*?^    \\}}")
+    if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED:$n"; exit 1 }}
+    Invoke-Expression $m.Value
+}}
+$env:UNSLOTH_HOME = ""
+$env:STUDIO_HOME = ""
+$env:UNSLOTH_STUDIO_HOME = "{copied}/studio"
+$env:USERPROFILE = "{profile}"
+$answer = _MasterRoot
+Write-Output "ANSWER:$answer"
+""",
+        encoding = "utf-8",
+    )
+    out = run_pwsh(
+        [PWSH, "-NoProfile", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout.strip()
+    assert "EXTRACT-FAILED" not in out, out
+    assert out == "ANSWER:", out
+
+
 def test_the_windows_uninstaller_does_not_borrow_another_installs_note(tmp_path):
     """Two installs on one box: the legacy tree carries a note, the named one does not.
 

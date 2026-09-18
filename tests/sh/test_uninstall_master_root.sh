@@ -200,19 +200,32 @@ echo "== the master root is remembered when the environment does not carry it ==
 # `UNSLOTH_HOME=/mnt/portable unsloth studio update` installs the runtimes there and leaves
 # nothing behind in the environment. setup.sh writes a note in the Studio tree; without it an
 # uninstall later removed the Studio tree and stranded the runtimes.
+# The real layout: Studio lives at <master>/studio, and with a bare environment the only thing
+# that names that directory is the default-mode studio.conf install.sh wrote.
 NOTED="$_TMP_ROOT/noted"
-mkdir -p "$HOME/.unsloth/studio/share" "$NOTED"
-printf '%s\n' "$NOTED" > "$HOME/.unsloth/studio/share/.unsloth-master-root"
+mkdir -p "$HOME/.unsloth/studio/share" "$NOTED/studio/share" "$HOME/.local/share/unsloth"
+printf "UNSLOTH_EXE='%s'\n" "$NOTED/studio/unsloth_studio/bin/unsloth" \
+    > "$HOME/.local/share/unsloth/studio.conf"
+printf '%s\n' "$NOTED" > "$NOTED/studio/share/.unsloth-master-root"
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; export HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "the note names the master root" "$got" "$NOTED"
 # The environment still outranks it, and the deny list still applies to whatever it names.
 got=$( ( HOME="$HOME"; UNSLOTH_HOME="$_TMP_ROOT/from-env"; export HOME UNSLOTH_HOME
          . "$HELPERS_FILE"; _master_root ) )
 assert_eq "the environment outranks the note" "$got" "$_TMP_ROOT/from-env"
-printf '%s\n' "$HOME/.unsloth" > "$HOME/.unsloth/studio/share/.unsloth-master-root"
+printf '%s\n' "$HOME/.unsloth" > "$NOTED/studio/share/.unsloth-master-root"
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; export HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "a note naming the default root is still refused" "$got" ""
-rm -f "$HOME/.unsloth/studio/share/.unsloth-master-root"
+# A tree copied from one master root to another keeps a note naming the ORIGINAL, whose
+# runtimes carry the same owner markers the copy's would, so accepting it would authorise
+# deleting the original install's llama.cpp, node and whisper.cpp.
+COPIED="$_TMP_ROOT/copied"
+mkdir -p "$COPIED/studio/share"
+printf '%s\n' "$NOTED" > "$COPIED/studio/share/.unsloth-master-root"
+got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$COPIED/studio"
+         export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "a note carried in from another master root is refused" "$got" ""
+rm -f "$NOTED/studio/share/.unsloth-master-root" "$HOME/.local/share/unsloth/studio.conf"
 
 echo "== a named Studio root does not borrow another install's note =="
 # Two installs on one box. The legacy tree carries a note; the one UNSLOTH_STUDIO_HOME names does
@@ -220,15 +233,14 @@ echo "== a named Studio root does not borrow another install's note =="
 # on the named tree, so the run deleted the named Studio and then followed the OTHER install's
 # master root and took its runtime children with it.
 BORROWED="$_TMP_ROOT/borrowed"
-NAMED="$_TMP_ROOT/named-studio"
-mkdir -p "$HOME/.unsloth/studio/share" "$BORROWED" "$NAMED/share"
+NAMED_MASTER="$_TMP_ROOT/named-master"
+NAMED="$NAMED_MASTER/studio"
+mkdir -p "$HOME/.unsloth/studio/share" "$BORROWED/studio" "$NAMED/share"
 printf '%s\n' "$BORROWED" > "$HOME/.unsloth/studio/share/.unsloth-master-root"
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$NAMED"
          export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "an unrelated install's note is not adopted" "$got" ""
 # The alias is the same rule, and the named root's OWN note is still read.
-NAMED_MASTER="$_TMP_ROOT/named-master"
-mkdir -p "$NAMED_MASTER"
 printf '%s\n' "$NAMED_MASTER" > "$NAMED/share/.unsloth-master-root"
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME UNSLOTH_STUDIO_HOME; STUDIO_HOME="$NAMED"
          export HOME STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
@@ -240,9 +252,9 @@ echo "== a padded Studio override still finds the note setup.sh wrote =="
 # UNSLOTH_STUDIO_HOME="  /mnt/studio  " lands at /mnt/studio/share. Appending to the padded
 # value looked somewhere that does not exist: the note was never found, while the removal loop
 # trimmed the same override and took /mnt/studio, stranding the master-root runtimes.
-PADDED="$_TMP_ROOT/padded-studio"
 PADDED_MASTER="$_TMP_ROOT/padded-master"
-mkdir -p "$PADDED/share" "$PADDED_MASTER"
+PADDED="$PADDED_MASTER/studio"
+mkdir -p "$PADDED/share"
 printf '%s\n' "$PADDED_MASTER" > "$PADDED/share/.unsloth-master-root"
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="  $PADDED  "
          export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )

@@ -114,6 +114,37 @@ def _resolve_studio_home() -> tuple[Path, bool]:
 
 STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
+MASTER_ROOT_NOTE = ".unsloth-master-root"
+
+
+def _recorded_master_root() -> Optional[Path]:
+    """The master root setup recorded in this Studio tree, or None.
+
+    Keep this aligned with storage_roots._recorded_master_root(); see
+    test_unsloth_home_root_agreement.py. `UNSLOTH_HOME=/mnt/portable unsloth studio update` puts
+    node, llama.cpp and whisper.cpp BESIDE studio/ and leaves nothing in a later environment. The
+    backend recovers that from the note, so a `unsloth studio update` that did not would hand
+    setup a plain Studio root, have it refresh the runtimes one level down at <master>/studio/,
+    and leave the backend still launching the stale trees at <master>/.
+
+    The recorded root must exist and its studio/ child must be THIS Studio directory, so a tree
+    copied from one master root to another does not send the update, or a removal, into the
+    original install.
+    """
+    try:
+        recorded = (STUDIO_HOME / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not recorded:
+        return None
+    try:
+        master = Path(recorded).expanduser().resolve()
+        if master.is_dir() and (master / "studio").samefile(STUDIO_HOME):
+            return master
+    except (OSError, ValueError):
+        return None
+    return None
+
 
 def _ensure_studio_env_exported() -> None:
     """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots, and for a master
@@ -127,6 +158,13 @@ def _ensure_studio_env_exported() -> None:
     # make it custom: the value equals the legacy path, so setup.sh's and setup.ps1's own
     # comparisons keep their ownership flags false and the installers keep their licence to
     # replace the tree without an owner marker.
+    # The note, when this run has no UNSLOTH_HOME of its own. Exported rather than merely read,
+    # because setup runs as a subprocess and would otherwise refresh the runtimes at
+    # <master>/studio/ while the backend kept launching the ones at <master>/.
+    if not (os.environ.get("UNSLOTH_HOME") or "").strip():
+        _recorded = _recorded_master_root()
+        if _recorded is not None:
+            os.environ["UNSLOTH_HOME"] = str(_recorded)
     if not _STUDIO_HOME_IS_CUSTOM and not (os.environ.get("UNSLOTH_HOME") or "").strip():
         return
     # Truthy-check, not setdefault: a blank UNSLOTH_STUDIO_HOME= must not win.

@@ -222,6 +222,22 @@ def test_an_explicit_studio_home_without_a_note_does_not_borrow_anothers(tmp_pat
     assert r["whisper"] == str(named / "whisper.cpp")
 
 
+def test_a_flat_recorded_root_is_still_honoured(tmp_path):
+    # UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming one directory is a supported layout, and the
+    # note then sits in the root it names rather than in a studio/ child. Requiring an exact
+    # <root>/studio match would refuse it; the rule is containment, which this satisfies by
+    # equality.
+    home = tmp_path / "home"
+    home.mkdir()
+    flat = tmp_path / "flat"
+    (flat / "share").mkdir(parents = True)
+    (flat / "share" / ".unsloth-master-root").write_text(f"{flat}\n", encoding = "utf-8")
+    r = _resolve({"UNSLOTH_STUDIO_HOME": str(flat)}, home)
+    assert r["master"] == str(flat)
+    assert r["node"] == str(flat / "node")
+    assert r["warnings"] == []
+
+
 def test_a_default_install_reads_no_note(tmp_path):
     # Nothing writes the note for a default install, so the legacy tree must not acquire a
     # master root by accident: this is the path every existing user is on.
