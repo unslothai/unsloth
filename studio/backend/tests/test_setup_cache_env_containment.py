@@ -1158,8 +1158,9 @@ def test_an_unusable_managed_inductor_path_is_not_published(monkeypatch, tmp_pat
     assert os.environ["CUDA_CACHE_PATH"] == str(cache / "cuda")
 
 
-@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
-                    reason = "chmod 555 denies neither root nor Windows")
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0, reason = "chmod 555 denies neither root nor Windows"
+)
 def test_a_read_only_managed_cache_is_not_published(tmp_path):
     """A directory that exists but cannot be written to is the same defect as a missing one.
 
