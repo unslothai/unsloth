@@ -54,7 +54,10 @@ export {
   type InferenceParams,
   type Preset,
 } from "./chat-settings-sheet";
-export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export {
+  flushPendingChatSettings,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
