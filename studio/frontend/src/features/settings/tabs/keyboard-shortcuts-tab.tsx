@@ -374,12 +374,9 @@ export function KeyboardShortcutsTab() {
           {t("settings.keyboardShortcuts.noResults")}
         </p>
       ) : (
-        // Rows carry the padding, so the dividers sit inset from the edge.
-        <div className="rounded-xl border border-border/70 px-5">
-          <div className="divide-y divide-border/60">
-            {visible.map(renderRow)}
-          </div>
-        </div>
+        // No frame: the dividers alone separate the rows, and they line up
+        // with the heading and the search box above.
+        <div className="divide-y divide-border/60">{visible.map(renderRow)}</div>
       )}
 
       <div className="flex justify-start pt-1">

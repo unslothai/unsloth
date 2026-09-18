@@ -10,7 +10,7 @@ export const en = {
     sendShortcut: "Send shortcut",
     sendDescription: "Choose when Enter sends a prompt or inserts a new line.",
     followUp: "Follow-up behavior",
-    followUpDescription: "Choose what happens when you send during a response. Press {shortcut} to do the opposite for one message.",
+    followUpDescription: "What happens when you send during a response. Press {shortcut} to do the opposite once.",
     queue: "Queue",
     steer: "Steer",
     steerDescription: "Steer stops the current response and sends your follow-up next.",
@@ -250,7 +250,7 @@ export const en = {
   settings: {
     accounts: {
       title: "Accounts",
-      description: "Create private Studio accounts. New users sign in with a one-time setup code and choose a password.",
+      description: "Create private Unsloth Studio accounts. New users sign in with a one-time setup code and choose a password.",
       username: "Username",
       create: "Create account",
       setupCode: "Setup code",
@@ -504,6 +504,14 @@ export const en = {
           label: "Send message",
           description: "Send what is in the composer",
         },
+        queueMessage: {
+          label: "Queue message",
+          description: "Send the draft to the end of the prompt queue",
+        },
+        steerMessage: {
+          label: "Steer response",
+          description: "Stop the current response and send the draft next",
+        },
         cycleReasoningEffort: {
           label: "Cycle reasoning effort",
           description: "Step through the reasoning effort levels",
@@ -570,7 +578,7 @@ export const en = {
       openLogsFolderFailed: "Could not open the logs folder.",
       exportFailed: "Could not download the logs.",
       exportTooOld: "Running Unsloth backend is too old to export logs. Update that backend and restart.",
-      exportForbidden: "Downloading all logs needs a signed-in Studio session. An API key is not enough.",
+      exportForbidden: "Downloading all logs needs a signed-in Unsloth Studio session. An API key is not enough.",
       // Not rendered: extra terms the settings search matches this tab on.
       keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
@@ -1485,9 +1493,8 @@ export const en = {
         "When off, use the same settings for every model.",
       autoCompactHint: "Uses the context length you set, not available VRAM.",
       pastedTextShortDescription:
-        "Pastes of {count} characters or more become .txt attachments. Shorter pastes stay in the message box.",
-      pastedTextOffDescription:
-        "All pasted text stays in the message box, regardless of length.",
+        "Pastes of {count} characters or more become .txt attachments.",
+      pastedTextOffDescription: "Pasted text always stays in the message box.",
       compactionDescriptionInherit: "Follow the server's context policy.",
       compactionDescriptionCheckpoint:
         "Keep the latest turn and standing instructions.",

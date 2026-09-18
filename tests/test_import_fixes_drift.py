@@ -1444,14 +1444,26 @@ def test_rope_carry_keeps_every_nested_base_on_every_real_config():
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
     checked, damaged = [], {}
-    for name, config_class in sorted(CONFIG_MAPPING.items()):
+    # Told apart on purpose from `checked` below. A build with no `rope_parameters` at all is
+    # transformers 4.x, where this whole carry does not exist and there is nothing to sweep; a
+    # build that HAS the attribute but exposes no nested config is drift worth failing on.
+    # Collapsing the two would either red the 4.x job forever or silently stop testing 5.x.
+    saw_rope_parameters = False
+    # keys(), then resolve inside the try. CONFIG_MAPPING is lazy: .items() imports every
+    # config module to hand back the classes, so ONE model whose module needs an optional
+    # dependency takes the whole sweep down before the loop body runs. Seen with
+    # transformers.models.gemma3n, which imports timm.data.ImageNetInfo and raises ImportError
+    # on a timm that does not export it. A config that cannot be built on this machine cannot
+    # be the one that regressed, so it is skipped rather than allowed to end the sweep.
+    for name in sorted(CONFIG_MAPPING.keys()):
         try:
-            config = config_class()
+            config = CONFIG_MAPPING[name]()
         except Exception:
             continue
         parameters = getattr(config, "rope_parameters", None)
         if not isinstance(parameters, dict):
             continue
+        saw_rope_parameters = True
         labels = [k for k, v in parameters.items() if isinstance(v, dict)]
         if len(labels) < 2:
             continue
@@ -1471,6 +1483,13 @@ def test_rope_carry_keeps_every_nested_base_on_every_real_config():
                 "actual": actual,
                 "stray_top_level_rope_theta": "rope_theta" in restored,
             }
+
+    if not saw_rope_parameters:
+        pytest.skip(
+            "this transformers has no config.rope_parameters, so there is no per-label rope "
+            "dict for a scaling replacement to damage (4.x keeps rope_scaling as a plain "
+            "attribute; test_rope_scaling_replacement_keeps_the_base_frequency covers it)"
+        )
 
     assert checked, "no config with a nested rope dict was found to check"
     assert not damaged, (
@@ -1499,7 +1518,10 @@ def test_rope_carry_leaves_the_zoo_gemma_local_base_alone_on_a_real_config():
     assert (
         config.rope_theta == 10000.0
     ), f"the carry overwrote the local rotary base with {config.rope_theta!r}"
-    parameters = config.rope_parameters
+    # getattr, not attribute access: the isinstance check below already says this is optional,
+    # but transformers 4.x RAISES rather than returning None here, so reading it directly made
+    # the tolerance unreachable and failed the test on the 4.x job.
+    parameters = getattr(config, "rope_parameters", None)
     if isinstance(parameters, dict):
         assert (
             parameters.get("rope_theta") == 10000.0

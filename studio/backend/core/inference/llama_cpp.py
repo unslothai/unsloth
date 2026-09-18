@@ -2591,29 +2591,6 @@ def _extract_model_size_b(model_id: str):
     return extract_model_size_b(model_id)
 
 
-_TOOL_TEMPLATE_MARKERS = (
-    "{%- if tools %}",
-    "{%- if tools -%}",
-    "{% if tools %}",
-    "{% if tools -%}",
-    # Defensive templates guard with `tools is defined` before truth-testing
-    # (e.g. Inkling: `{%- if tools is defined and tools -%}`).
-    "{%- if tools is defined",
-    "{% if tools is defined",
-    '"role" == "tool"',
-    "'role' == 'tool'",
-    'message.role == "tool"',
-    "message.role == 'tool'",
-    # DeepSeek: no top-level ``{% if tools %}`` block; it gates emission on
-    # ``message['role'] == 'tool'`` plus ``message['tool_calls'] is defined``.
-    "message['role'] == 'tool'",
-    'message["role"] == "tool"',
-    "message['tool_calls']",
-    'message["tool_calls"]',
-    "tool_calls is defined",
-)
-
-
 # Canonical reasoning_effort levels, weakest -> strongest. Used to read the
 # discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max', Inkling
 # uses the full 'none'..'max' ladder) so we only ever offer levels the template
@@ -2785,7 +2762,9 @@ def detect_reasoning_flags(
         flags["preserve_thinking_default"] = bool(_QWEN38_MODEL_RE.search(model_identifier or ""))
         _log(f"{prefix}model supports preserve_thinking")
 
-    if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
+    from core.inference.template_capabilities import template_supports_tools
+
+    if isinstance(tpl, str) and template_supports_tools(tpl):
         flags["supports_tools"] = True
         _log(f"{prefix}model supports tool calling")
 
@@ -2822,7 +2801,7 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 # Human label per resolved spec mode, for launch logging and the UI notice.
@@ -2854,9 +2833,10 @@ _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORE
 def _is_companion_gguf_path(path: str) -> bool:
     """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
     drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
-    drafters for DeepSeek V4 Flash). Mirrors hub.utils.gguf so variant resolution
-    never picks a companion as the main model -- a Gemma ``Q8_0`` request must not
-    resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight.
+    drafters for DeepSeek V4 Flash, the ``eagle3-*.gguf`` draft heads). Mirrors
+    hub.utils.gguf so variant resolution never picks a companion as the main model --
+    a Gemma ``Q8_0`` request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts
+    ahead of the real weight.
 
     EXCLUSION ONLY. Use ``_is_mtp_only_drafter_path`` to pick a drafter to launch.
     """

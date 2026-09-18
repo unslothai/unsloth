@@ -56,6 +56,8 @@ export type ShortcutId =
   | "openProjectPicker"
   | "startDictation"
   | "sendMessage"
+  | "queueMessage"
+  | "steerMessage"
   | "toggleFastMode"
   | "copyChatAsMarkdown"
   | "copySessionId"
@@ -223,6 +225,10 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     nonMacDefaultBinding: "Mod+Alt+KeyV",
   }),
   def("sendMessage", null),
+  // Unassigned: ⌘⏎ already sends with the opposite follow-up, and these two
+  // name the behaviour instead of flipping it. Chat settings picks the default.
+  def("queueMessage", null),
+  def("steerMessage", null),
   def("toggleFastMode", null),
 
   def("copyChatAsMarkdown", null),
