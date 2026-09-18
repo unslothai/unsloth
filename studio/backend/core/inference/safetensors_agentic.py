@@ -1561,6 +1561,11 @@ def run_safetensors_tool_loop(
                             {"role": "assistant", "content": json.dumps(call, default = str)}
                             for call in pending
                         ]
+                        # the notice restores skipped arguments after the retained results.
+                        if over_cap:
+                            pending_args.append(
+                                tool_call_limit_nudge(over_cap, _MAX_TOOL_CALLS_PER_TURN)
+                            )
                         kwargs["result_budget_tokens"] = tool_result_budget(
                             int(context_length),
                             max_tokens,

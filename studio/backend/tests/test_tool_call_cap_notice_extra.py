@@ -275,3 +275,49 @@ def test_cap_notice_does_not_invite_a_spent_one_shot_retry(
         assert "Do not retry render_html" in content
         if mixed_skipped:
             assert "retry the skipped calls for web_search" in content
+
+
+def test_skipped_arguments_are_reserved_in_safetensors_result_budgets():
+    import random
+    import string
+    from core.inference.context_window import (
+        estimate_messages_tokens_conservative,
+        prompt_budget,
+    )
+
+    random_source = random.Random(11154)
+    alphabet = string.ascii_letters + string.digits
+    code = "print(" + json.dumps("".join(random_source.choices(alphabet, k = 4000))) + ")"
+    calls = [{"name": "web_search", "arguments": {"query": f"q{i}"}} for i in range(8)]
+    calls.append({"name": "python", "arguments": {"code": code}})
+    text = "".join("<tool_call>" + json.dumps(call) + "</tool_call>" for call in calls)
+    tools = [{"type": "function", "function": {"name": name}} for name in ["web_search", "python"]]
+    seen = []
+    turns = iter([text, "done"])
+    budgets = []
+
+    def generate(messages):
+        seen.append(copy.deepcopy(messages))
+        yield next(turns)
+
+    def execute(name, arguments, *, result_budget_tokens, **kwargs):
+        budgets.append(result_budget_tokens)
+        return "".join(random_source.choices(alphabet, k = 2 * max(0, result_budget_tokens - 24)))
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = generate,
+            messages = [{"role": "user", "content": "go"}],
+            tools = tools,
+            execute_tool = execute,
+            max_tool_iterations = 2,
+            context_length = 4096,
+            max_tokens = 3500,
+        )
+    )
+    assert len(budgets) == 8
+    (notice,) = _notices(seen[1])
+    assert json.dumps({"code": code}) in notice["content"]
+    spent = estimate_messages_tokens_conservative(seen[1])
+    spent += estimate_messages_tokens_conservative(tools)
+    assert spent <= prompt_budget(4096, 3500)
