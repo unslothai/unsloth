@@ -28,6 +28,7 @@ import inspect
 import io
 import json
 import os
+import platform
 import pwd
 import re
 import shlex
@@ -1002,6 +1003,26 @@ def _install_sh_env(
     return env
 
 
+def _the_real_stat_derivation_runs_here() -> None:
+    """Skip a case that lifts install.sh's REAL stat|awk classifier onto this host.
+
+    install.sh reads each node with GNU ``stat -c '%a|%g|%u|%n|%G'``. BSD stat on macOS
+    rejects -c outright, so the record arrives empty, the owner branch cannot match a uid it
+    never parsed, and every node falls through to "join a group" -- an artifact of running
+    the harness there, not a finding about the installer, which gates every diagnosis that
+    reaches this classifier on `[ "$OS" != "macos" ]` and so never runs it on a Mac at all.
+
+    Keyed on the OS, and never on hardware: every Linux host runs all of these whatever GPU
+    it has, which is the property the rest of this file was fixed to keep. The synthetic-record
+    harness beside this one stubs stat and therefore still runs everywhere.
+    """
+    if platform.system() != "Linux":
+        pytest.skip(
+            "install.sh's stat|awk node classifier needs GNU stat -c, and the installer "
+            "gates every diagnosis that uses it on OS != macos"
+        )
+
+
 def _install_sh_hint(
     closed_nodes: str,
     *,
@@ -1025,6 +1046,10 @@ def _install_sh_hint(
     the node list comes in through the environment, since embedding it in the script would
     put a literal backslash-n inside shell quotes and turn two nodes into one unmatched line.
     """
+    # repairs None means the REAL derivation runs, reading this host's own stat(1). A
+    # stubbed one is a synthetic record and stays portable, so only the real arm is gated.
+    if repairs is None:
+        _the_real_stat_derivation_runs_here()
     lines = _install_sh_lines()
     start = _install_sh_if(lines, '[ -n "$_closed_amd_nodes" ]; then')
     end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
@@ -1731,7 +1756,11 @@ def test_what_the_acl_probe_answers(monkeypatch, tmp_path, case):
     if create:
         node.write_bytes(b"")
     if xattrs is not None:
-        monkeypatch.setattr(amd.os, "listxattr", lambda path: xattrs)
+        # raising=False: os.listxattr does not exist on macOS or Windows, so without it
+        # monkeypatch fails on the PATCH rather than the probe, and the case never runs.
+        # _has_an_access_acl already answers False through AttributeError there, which is
+        # what these cases assert about a host that cannot report an ACL.
+        monkeypatch.setattr(amd.os, "listxattr", lambda path: xattrs, raising = False)
     assert amd._has_an_access_acl(str(node)) is carries_one
 
 
