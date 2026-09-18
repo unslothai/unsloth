@@ -214,6 +214,27 @@ got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; export HOME; . "$HELPERS_FILE"; _mast
 assert_eq "a note naming the default root is still refused" "$got" ""
 rm -f "$HOME/.unsloth/studio/share/.unsloth-master-root"
 
+echo "== a named Studio root does not borrow another install's note =="
+# Two installs on one box. The legacy tree carries a note; the one UNSLOTH_STUDIO_HOME names does
+# not. Probing the legacy path first let its note win here while the removal below still worked
+# on the named tree, so the run deleted the named Studio and then followed the OTHER install's
+# master root and took its runtime children with it.
+BORROWED="$_TMP_ROOT/borrowed"
+NAMED="$_TMP_ROOT/named-studio"
+mkdir -p "$HOME/.unsloth/studio/share" "$BORROWED" "$NAMED/share"
+printf '%s\n' "$BORROWED" > "$HOME/.unsloth/studio/share/.unsloth-master-root"
+got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$NAMED"
+         export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "an unrelated install's note is not adopted" "$got" ""
+# The alias is the same rule, and the named root's OWN note is still read.
+NAMED_MASTER="$_TMP_ROOT/named-master"
+mkdir -p "$NAMED_MASTER"
+printf '%s\n' "$NAMED_MASTER" > "$NAMED/share/.unsloth-master-root"
+got=$( ( HOME="$HOME"; unset UNSLOTH_HOME UNSLOTH_STUDIO_HOME; STUDIO_HOME="$NAMED"
+         export HOME STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "the named root's own note is still read" "$got" "$NAMED_MASTER"
+rm -f "$HOME/.unsloth/studio/share/.unsloth-master-root" "$NAMED/share/.unsloth-master-root"
+
 echo "== a padded Studio override still finds the note setup.sh wrote =="
 # setup.sh trims UNSLOTH_STUDIO_HOME before choosing where to write, so the note for
 # UNSLOTH_STUDIO_HOME="  /mnt/studio  " lands at /mnt/studio/share. Appending to the padded

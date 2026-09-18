@@ -65,28 +65,29 @@ def _resolved(value: str) -> Path:
 
 MASTER_ROOT_NOTE = ".unsloth-master-root"
 
-_recorded_master_roots: dict[tuple[str, ...], Path | None] = {}
+_recorded_master_roots: dict[str, Path | None] = {}
 _recorded_master_lock = threading.Lock()
 
 
-def _studio_roots_without_master() -> list[Path]:
-    """Every studio root derivable WITHOUT consulting the master root.
+def _studio_root_without_master() -> Path:
+    """THE studio root, derived WITHOUT consulting the master root.
 
     studio_root() asks unsloth_home() where the studio tree is, so the note reader cannot ask
-    studio_root() back. These are the same three answers studio_root() reaches for once the
-    master root is out of the picture, in its order.
+    studio_root() back. This is the answer studio_root() gives once the master root is out of the
+    picture, and only that one: an explicit UNSLOTH_STUDIO_HOME names this exact directory, so
+    walking on to the inferred or legacy root when it carries no note would adopt an unrelated
+    install's master root while studio_root() stayed on the tree the user named, and send node,
+    whisper.cpp, llama.cpp and the portable caches somewhere the Studio is not.
     """
-    roots: list[Path] = []
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if not override:
         override = (os.environ.get("STUDIO_HOME") or "").strip()
     if override:
-        roots.append(_resolved(override))
+        return _resolved(override)
     inferred = _infer_studio_home_from_venv()
     if inferred is not None:
-        roots.append(inferred)
-    roots.append(Path.home() / ".unsloth" / "studio")
-    return roots
+        return inferred
+    return Path.home() / ".unsloth" / "studio"
 
 
 def _recorded_master_root() -> Path | None:
@@ -105,28 +106,23 @@ def _recorded_master_root() -> Path | None:
     tree that has since moved, or copied into an unrelated install, names a root this process
     would otherwise adopt for caches and runtimes both.
     """
-    candidates = _studio_roots_without_master()
-    key = tuple(str(root) for root in candidates)
+    studio = _studio_root_without_master()
+    key = str(studio)
     with _recorded_master_lock:
         if key in _recorded_master_roots:
             return _recorded_master_roots[key]
     found: Path | None = None
-    for studio in candidates:
-        try:
-            raw = (studio / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8")
-        except (OSError, ValueError, UnicodeDecodeError):
-            continue
-        recorded = raw.strip()
-        if not recorded:
-            continue
+    try:
+        recorded = (studio / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError, UnicodeDecodeError):
+        recorded = ""
+    if recorded:
         master = _resolved(recorded)
         try:
-            if not master.is_dir() or not (master / "studio").samefile(studio):
-                continue
+            if master.is_dir() and (master / "studio").samefile(studio):
+                found = master
         except (OSError, ValueError):
-            continue
-        found = master
-        break
+            found = None
     with _recorded_master_lock:
         _recorded_master_roots[key] = found
     return found

@@ -627,25 +627,35 @@ Environment:
             # The note setup.ps1 leaves in the Studio tree, when this run has no UNSLOTH_HOME of
             # its own. `$env:UNSLOTH_HOME = 'D:\portable'; unsloth studio update` installs the
             # runtimes there and leaves nothing in a later environment, so without the note an
-            # uninstall removed the Studio tree and stranded them. Every Studio root this script
-            # already knows is consulted and the first readable note wins; the deny list and the
-            # marker gates still apply to whatever it names, so a stale note cannot license a
-            # removal the environment could not. Mirrors _master_root in uninstall.sh.
-            $noteRoots = @()
-            if ($env:USERPROFILE) { $noteRoots += (Join-Path $env:USERPROFILE ".unsloth\studio") }
+            # uninstall removed the Studio tree and stranded them. The deny list and the marker
+            # gates still apply to whatever it names, so a stale note cannot license a removal
+            # the environment could not. Mirrors _master_root in uninstall.sh.
+            #
+            # Only the Studio root this run is about is consulted, in studio_root()'s precedence:
+            # UNSLOTH_STUDIO_HOME, then STUDIO_HOME, then the legacy tree, and no falling through.
+            # Two installs on one box, with the legacy one carrying a note and the named one not,
+            # otherwise had the legacy note win here while the removal still worked on the named
+            # tree: the run deleted the named Studio, then followed the OTHER install's master
+            # root and took its runtime children with it.
+            $noteRoot = $null
             foreach ($override in @($env:UNSLOTH_STUDIO_HOME, $env:STUDIO_HOME)) {
                 if (-not [string]::IsNullOrWhiteSpace($override)) {
-                    $noteRoots += (_ExpandTilde $override.Trim())
+                    $noteRoot = _ExpandTilde $override.Trim()
+                    break
                 }
             }
-            foreach ($noteRoot in $noteRoots) {
+            if (-not $noteRoot -and $env:USERPROFILE) {
+                $noteRoot = Join-Path $env:USERPROFILE ".unsloth\studio"
+            }
+            if ($noteRoot) {
                 $notePath = Join-Path $noteRoot "share\.unsloth-master-root"
-                if (-not (Test-Path -LiteralPath $notePath -PathType Leaf)) { continue }
-                try {
-                    # One line, first only: a note that grew a second line is not one we wrote.
-                    $line = @(Get-Content -LiteralPath $notePath -TotalCount 1 -ErrorAction Stop)[0]
-                } catch { continue }
-                if (-not [string]::IsNullOrWhiteSpace($line)) { $raw = $line; break }
+                if (Test-Path -LiteralPath $notePath -PathType Leaf) {
+                    try {
+                        # One line, first only: a note that grew a second line is not ours.
+                        $line = @(Get-Content -LiteralPath $notePath -TotalCount 1 -ErrorAction Stop)[0]
+                    } catch { $line = $null }
+                    if (-not [string]::IsNullOrWhiteSpace($line)) { $raw = $line }
+                }
             }
         }
         if ([string]::IsNullOrWhiteSpace($raw)) { return $null }

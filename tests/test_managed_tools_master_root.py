@@ -204,6 +204,24 @@ def test_an_empty_note_is_not_a_root(tmp_path):
     assert r["node"] == str(studio / "node")
 
 
+def test_an_explicit_studio_home_without_a_note_does_not_borrow_anothers(tmp_path):
+    # Two installs on one box: the legacy tree carries a valid note, the one named by
+    # UNSLOTH_STUDIO_HOME does not. studio_root() stays on the named tree, so reading on past it
+    # would leave unsloth_home() pointing at the OTHER install and send node, whisper.cpp,
+    # llama.cpp and the portable caches there while Studio ran from here.
+    home = tmp_path / "home"
+    legacy_master = home / ".unsloth"
+    (legacy_master / "studio").mkdir(parents = True)
+    _record_note(legacy_master / "studio", legacy_master)
+    named = tmp_path / "named"
+    named.mkdir()
+    r = _resolve({"UNSLOTH_STUDIO_HOME": str(named)}, home)
+    assert r["master"] is None
+    assert r["studio"] == str(named)
+    assert r["node"] == str(named / "node")
+    assert r["whisper"] == str(named / "whisper.cpp")
+
+
 def test_a_default_install_reads_no_note(tmp_path):
     # Nothing writes the note for a default install, so the legacy tree must not acquire a
     # master root by accident: this is the path every existing user is on.

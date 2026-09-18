@@ -743,8 +743,8 @@ Write-Output (_MasterRoot)
 """,
         encoding = "utf-8",
     )
-    out = subprocess.run(
-        ["pwsh", "-NoProfile", "-File", str(script)],
+    out = run_pwsh(
+        [PWSH, "-NoProfile", "-File", str(script)],
         capture_output = True,
         text = True,
         check = True,
@@ -854,6 +854,51 @@ def test_a_shared_staging_directory_is_pruned_not_deleted():
     assert "_RemovePath" not in staging, staging
 
 
+def test_the_windows_uninstaller_does_not_borrow_another_installs_note(tmp_path):
+    """Two installs on one box: the legacy tree carries a note, the named one does not.
+
+    _MasterRoot probed the legacy path first, so its note won here while the removal still
+    worked on the tree UNSLOTH_STUDIO_HOME names. The run deleted the named Studio and then
+    followed the OTHER install's master root and took its marked runtime children with it.
+    Runs the shipped function, as the test below does.
+    """
+    profile = tmp_path / "profile"
+    (profile / ".unsloth" / "studio" / "share").mkdir(parents = True)
+    borrowed = tmp_path / "borrowed"
+    (borrowed / "studio").mkdir(parents = True)
+    (profile / ".unsloth" / "studio" / "share" / ".unsloth-master-root").write_text(
+        f"{borrowed}\n", encoding = "utf-8"
+    )
+    named = tmp_path / "named"
+    (named / "share").mkdir(parents = True)
+
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        f"""$txt = Get-Content -Raw "{UNINSTALL_PS1}"
+foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
+    $m = [regex]::Match($txt, "(?ms)^    function $n \\{{.*?^    \\}}")
+    if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED:$n"; exit 1 }}
+    Invoke-Expression $m.Value
+}}
+$env:UNSLOTH_HOME = ""
+$env:STUDIO_HOME = ""
+$env:UNSLOTH_STUDIO_HOME = "{named}"
+$env:USERPROFILE = "{profile}"
+$answer = _MasterRoot
+Write-Output "ANSWER:$answer"
+""",
+        encoding = "utf-8",
+    )
+    out = run_pwsh(
+        [PWSH, "-NoProfile", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout.strip()
+    assert "EXTRACT-FAILED" not in out, out
+    assert out == "ANSWER:", out
+
+
 def test_the_windows_uninstaller_finds_a_master_root_from_the_note(tmp_path):
     """`$env:UNSLOTH_HOME = 'D:\\portable'; unsloth studio update` names the root for one command.
 
@@ -889,8 +934,8 @@ Write-Output (_MasterRoot)
 """,
         encoding = "utf-8",
     )
-    out = subprocess.run(
-        ["pwsh", "-NoProfile", "-File", str(script)],
+    out = run_pwsh(
+        [PWSH, "-NoProfile", "-File", str(script)],
         capture_output = True,
         text = True,
         check = True,

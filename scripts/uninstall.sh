@@ -495,9 +495,15 @@ _master_root() {
     # The note setup.sh leaves in the Studio tree, when this run has no UNSLOTH_HOME of its own.
     # `UNSLOTH_HOME=/mnt/portable unsloth studio update` installs the runtimes there and leaves
     # nothing in this environment, so without the note an uninstall later removed the Studio
-    # tree and stranded them. Every Studio root this script already knows is consulted, and the
-    # first readable note wins; the deny list and the marker gate below still apply to whatever
-    # it names, so a stale note cannot license a removal the environment could not.
+    # tree and stranded them. The deny list and the marker gate below still apply to whatever it
+    # names, so a stale note cannot license a removal the environment could not.
+    #
+    # Only the Studio root this run is actually about is consulted, in the precedence
+    # storage_roots.studio_root() uses: UNSLOTH_STUDIO_HOME, then STUDIO_HOME, then the legacy
+    # tree, and no falling through from one to the next. Two installs on one box, with the
+    # legacy one carrying a note and the named one not, otherwise had the legacy note win here
+    # while the removal below still worked on the named tree: the run deleted the named Studio,
+    # then followed the other install's master root and took ITS runtime children with it.
     if [ -z "$_mr" ]; then
         # Trimmed exactly as _custom_studio_roots trims these, and as setup.sh trimmed them when
         # it chose where to write the note. UNSLOTH_STUDIO_HOME="  /mnt/studio  " puts the note
@@ -506,16 +512,19 @@ _master_root() {
         # left the master-root runtimes behind.
         _mr_ush=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         _mr_sh=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-        for _mr_conf in "$HOME/.unsloth/studio/share/.unsloth-master-root" \
-                        "${_mr_ush}/share/.unsloth-master-root" \
-                        "${_mr_sh}/share/.unsloth-master-root"; do
-            case "$_mr_conf" in /share/*) continue ;; esac
-            [ -f "$_mr_conf" ] || continue
+        if [ -n "$_mr_ush" ]; then
+            _mr_studio="$_mr_ush"
+        elif [ -n "$_mr_sh" ]; then
+            _mr_studio="$_mr_sh"
+        else
+            _mr_studio="$HOME/.unsloth/studio"
+        fi
+        _mr_conf="${_mr_studio}/share/.unsloth-master-root"
+        if [ -f "$_mr_conf" ]; then
             # One line, first only: a note that grew a second line is not one we wrote.
             _mr=$(head -n 1 "$_mr_conf" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') \
                 || _mr=""
-            [ -n "$_mr" ] && break
-        done
+        fi
     fi
     [ -n "$_mr" ] || return 0
     # shellcheck disable=SC2088
