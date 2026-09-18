@@ -3211,7 +3211,7 @@ exit 1
             if (-not (Test-StudioUvNoCache)) {
                 Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $studioCache
             }
-            step "uv cache" "forced Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
+            step "uv cache" "forced Unsloth Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
             return
         }
 
@@ -3338,19 +3338,19 @@ exit 1
             }
             "studio" {
                 if ($chosenCache) {
-                    step "uv cache" "reusing this install's Studio cache ($selectedCache)"
+                    step "uv cache" "reusing this install's Unsloth Studio cache ($selectedCache)"
                 # Never about the directory we are falling back TO: the Studio cache is itself
                 # a candidate now, so it can be the one refused, and naming it claims a fallback
                 # that did not happen.
                 } elseif ($scanBlocked -and -not [string]::IsNullOrWhiteSpace([string]$blockedCache) -and $blockedCache -ne $selectedCache) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
                 } elseif ($scanBlocked -and [string]::IsNullOrWhiteSpace([string]$blockedCache)) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
                 # Warm and still here means the write probe refused it.
                 } elseif ($warnCache -and $warnCache -ne $selectedCache) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
                 } else {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache)"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache)"
                 }
             }
         }

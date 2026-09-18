@@ -25353,7 +25353,7 @@ class LlamaCppBackend:
                         # _detected_gpus, not gpus: Manual modes empty gpus on purpose.
                         # gpu_ids is pinned for the child below; the arch gate warns better.
                         logger.warning(
-                            "Studio could not enumerate any GPU, so this load was planned "
+                            "Unsloth could not enumerate any GPU, so this load was planned "
                             "without device information: %s",
                             LlamaCppBackend._explain_empty_gpu_probe(binary),
                         )

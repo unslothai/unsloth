@@ -121,14 +121,14 @@ for shell in sh bash; do
 
     run_case "$shell" "missing default selects Studio" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$HOME_CACHE" "$STUDIO_CACHE" studio \
-        "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        "using new Unsloth Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
 
     mkdir -p "$HOME_CACHE/CACHEDIR.TAG/inside"
     : > "$HOME_CACHE/CACHEDIR.TAG/inside/payload"
     : > "$HOME_CACHE/.gitignore"
     run_case "$shell" "marker-only default stays Studio and is not traversed" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$HOME_CACHE" "$STUDIO_CACHE" studio \
-        "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        "using new Unsloth Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
     if [ -f "$HOME_CACHE/CACHEDIR.TAG/inside/payload" ] && [ -f "$HOME_CACHE/.gitignore" ]; then
         ok "$shell: marker-only probe is non-destructive"
     else
@@ -142,7 +142,7 @@ for shell in sh bash; do
     : > "$HOME_CACHE/.lock"
     run_case "$shell" "uv venv scaffolding stays Studio-owned" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$HOME_CACHE" "$STUDIO_CACHE" studio \
-        "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        "using new Unsloth Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
 
     mkdir -p "$HOME_CACHE/archive-v0/package"
     : > "$HOME_CACHE/archive-v0/package/payload.py"
@@ -168,7 +168,7 @@ for shell in sh bash; do
     mkdir -p "$EMPTY_XDG_CACHE"
     run_case "$shell" "empty XDG does not fall back to populated HOME" unset "" false \
         "$HOME_DIR" value "$EMPTY_XDG" "$ROOT" "$EMPTY_XDG_CACHE" "$STUDIO_CACHE" studio \
-        "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        "using new Unsloth Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
 
     CONFIG_CACHE="$CASE/uv.toml cache"
     mkdir -p "$CONFIG_CACHE/wheels-v5/package"
@@ -188,11 +188,11 @@ for shell in sh bash; do
 
     run_case "$shell" "forced isolation uses Studio despite populated default" unset "" true \
         "$HOME_DIR" value "$XDG_DIR" "$ROOT" "$XDG_CACHE" "$STUDIO_CACHE" isolated \
-        "forced Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" "$STUDIO_CACHE"
+        "forced Unsloth Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" "$STUDIO_CACHE"
 
     run_case "$shell" "unresolvable default safely selects Studio" unset "" false \
         "" unset "" "$ROOT" "" "$STUDIO_CACHE" studio \
-        "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        "using new Unsloth Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
 
     # wheels-v* is .msgpack/.http only on uv 0.10: one `--dry-run` leaves a file.
     META_CACHE="$CASE/metadata only/uv"
@@ -205,7 +205,7 @@ for shell in sh bash; do
     : > "$META_CACHE/sdists-v9/pypi/pkg/download.lock"
     run_case "$shell" "metadata-only default is not a warm cache" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$META_CACHE" "$STUDIO_CACHE" studio \
-        "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        "using new Unsloth Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
 
     mkdir -p "$META_CACHE/archive-v0/hash/torch"
     : > "$META_CACHE/archive-v0/hash/torch/_C.so"
@@ -242,7 +242,7 @@ for shell in sh bash; do
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 000 "$DENIED_CACHE/archive-v0" 2>/dev/null; then
         run_case "$shell" "unreadable bucket says why it fell back" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$DENIED_CACHE" "$STUDIO_CACHE" studio \
-            "using new Studio-owned cache ($STUDIO_CACHE); part of $DENIED_CACHE could not be read, so cached packages may download again" \
+            "using new Unsloth Studio-owned cache ($STUDIO_CACHE); part of $DENIED_CACHE could not be read, so cached packages may download again" \
             "$STUDIO_CACHE"
         chmod 755 "$DENIED_CACHE/archive-v0" 2>/dev/null || true
     fi
@@ -274,7 +274,7 @@ for shell in sh bash; do
     EMPTY_CACHE="$CASE/unrecorded/uv"
     run_case "$shell" "studio mode still selects the Studio cache" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$EMPTY_CACHE" "$STUDIO_CACHE" studio \
-        "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        "using new Unsloth Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
     check_marker "studio mode records the Studio cache" "$STUDIO_CACHE"
 
     rm -f "$MARKER"
@@ -291,11 +291,11 @@ for shell in sh bash; do
     _PRESET_MARKER="$STUDIO_CACHE"
     run_case "$shell" "a warm recorded Studio cache outranks a warm default" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$STUDIO_CACHE" studio \
-        "reusing this install's Studio cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        "reusing this install's Unsloth Studio cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
     # ...and it does NOT outrank an explicit isolation request.
     run_case "$shell" "isolation still wins over a warm marker" unset "" true \
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$STUDIO_CACHE" isolated \
-        "forced Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" \
+        "forced Unsloth Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" \
         "$STUDIO_CACHE"
     # A marker naming a cache that EXISTS and is no longer warm loses to uv's default, so a
     # machine that really has moved on still reaches the shared cache.
@@ -311,7 +311,7 @@ for shell in sh bash; do
     _PRESET_MARKER="$CASE/gone/uv"
     run_case "$shell" "a marker naming a deleted cache keeps Studio" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$STUDIO_CACHE" "$STUDIO_CACHE" studio \
-        "reusing this install's Studio cache ($STUDIO_CACHE)" \
+        "reusing this install's Unsloth Studio cache ($STUDIO_CACHE)" \
         "$STUDIO_CACHE"
     _PRESET_MARKER=""
     rm -rf "$STUDIO_CACHE"
@@ -321,7 +321,7 @@ for shell in sh bash; do
     rm -f "$MARKER"
     run_case "$shell" "isolation still forces the Studio cache" unset "" true \
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$STUDIO_CACHE" isolated \
-        "forced Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" \
+        "forced Unsloth Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" \
         "$STUDIO_CACHE"
     check_marker "isolated mode records the Studio cache" "$STUDIO_CACHE"
 
@@ -340,7 +340,7 @@ for shell in sh bash; do
     ln -s "$VICTIM" "$ROOT/cache/uv-cache-dir" 2>/dev/null && {
         run_case "$shell" "a symlinked marker is replaced, not followed" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$EMPTY_CACHE" "$STUDIO_CACHE" studio \
-            "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+            "using new Unsloth Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
         if [ "$(cat "$VICTIM")" = "do not clobber" ] && [ ! -L "$ROOT/cache/uv-cache-dir" ]; then
             ok "$shell: the symlink target was left alone"
         else
@@ -354,7 +354,7 @@ for shell in sh bash; do
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 200 "$MARKER" 2>/dev/null; then
         run_case "$shell" "an unreadable marker does not fail the install" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$EMPTY_CACHE" "$STUDIO_CACHE" studio \
-            "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+            "using new Unsloth Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
         chmod 600 "$MARKER" 2>/dev/null || true
         if [ "$(cat "$MARKER")" = "/previous/install/cache" ]; then
             ok "$shell: an unreadable marker is left as it was"
