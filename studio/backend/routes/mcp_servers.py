@@ -192,7 +192,7 @@ def list_builtins(
     if via_api_key or no_credential:
         item = blender.catalog_item()
         item.available = False
-        item.unavailable_reason = "An authenticated Studio UI session is required for Blender MCP."
+        item.unavailable_reason = "An authenticated Unsloth Studio UI session is required for Blender MCP."
         return [item]
     return [blender.catalog_item(_blender_row())]
 
