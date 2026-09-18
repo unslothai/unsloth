@@ -2915,6 +2915,13 @@ exit 1
             if ($waitError) { $timedOut = $true }
             if ($timedOut) {
                 Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue
+                # Stop-Process returns when the kill has been REQUESTED, not when the process is
+                # gone, and Windows holds the redirected stdout and stderr handles until it is.
+                # Deleting those files in the finally below then fails with a sharing violation
+                # and the .out is left behind in TEMP. Measured in parity CI, where the same run
+                # passed under pwsh 7 and failed under Windows PowerShell 5.1: an install that
+                # litters is an install that is not idempotent.
+                Wait-Process -InputObject $proc -Timeout 5 -ErrorAction SilentlyContinue
                 return $null
             }
             # Select-Object, not $proc.ExitCode: System.Diagnostics.Process is not an allowed
@@ -2928,8 +2935,19 @@ exit 1
         } catch {
             return $null
         } finally {
+            # Retried, and confirmed rather than assumed. A file that has just stopped being
+            # written can still be held for a moment, by the child that is on its way out or by
+            # an on-access scanner opening it, and a single silent Remove-Item that fails leaves
+            # the machine dirtier than this run found it. The loop costs nothing when the first
+            # attempt works, which is every ordinary call.
             foreach ($f in @($scriptFile, $outFile, $errFile)) {
-                if ($f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+                if (-not $f) { continue }
+                for ($attempt = 0; $attempt -lt 10; $attempt++) {
+                    if (-not (Test-Path -LiteralPath $f)) { break }
+                    Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+                    if (-not (Test-Path -LiteralPath $f)) { break }
+                    Start-Sleep -Milliseconds 100
+                }
             }
         }
     }
