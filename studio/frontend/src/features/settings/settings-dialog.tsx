@@ -182,7 +182,6 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { id: "accounts", labelKey: "settings.tabs.accounts", icon: UserIcon },
   { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
   {
     id: "profile",
@@ -218,6 +217,12 @@ const TABS: TabDef[] = [
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
+  },
+  {
+    id: "accounts",
+    labelKey: "settings.tabs.accounts",
+    icon: UserIcon,
+    badgeKey: "common.new",
   },
   {
     id: "agents",
