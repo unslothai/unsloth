@@ -194,10 +194,12 @@ $probeText = $fnAst.Extent.Text
 # The per-item notification is the one that matters: SHCNE_UPDATEITEM with SHCNF_PATHW. The
 # global SHCNE_ASSOCCHANGED broadcast misses a same-name .lnk rewritten in place, which is what
 # an update does every single time.
-Check "the probe sends SHCNE_UPDATEITEM with SHCNF_PATHW per shortcut" (
-    $probeText -match "SHChangeNotify\(0x00002000,0x0005,p,None\)")
-Check "the probe still sends the global SHCNE_ASSOCCHANGED broadcast" (
-    $probeText -match "SHChangeNotify\(0x08000000,0,None,None\)")
+# Both carry SHCNF_FLUSH (0x1000): the child exits right after, and an unflushed notification is
+# only queued, so it can be lost with the child still answering ok.
+Check "the probe sends SHCNE_UPDATEITEM with SHCNF_PATHW per shortcut, flushed" (
+    $probeText -match "SHChangeNotify\(0x00002000,0x1005,p,None\)")
+Check "the probe still sends the global SHCNE_ASSOCCHANGED broadcast, flushed" (
+    $probeText -match "SHChangeNotify\(0x08000000,0x1000,None,None\)")
 # ctypes defaults an undeclared argument to a C int, which would truncate a pointer on 64 bit.
 Check "the probe declares SHChangeNotify's signature" (
     $probeText -match "SHChangeNotify\.argtypes" -and $probeText -match "LPCWSTR")

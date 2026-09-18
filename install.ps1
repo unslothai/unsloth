@@ -3019,17 +3019,21 @@ exit 1
         }
         if (-not $exe) { return $false }
         # SHCNE_UPDATEITEM 0x00002000 with SHCNF_PATHW 0x0005 per shortcut, then SHCNE_ASSOCCHANGED
-        # 0x08000000 as the global broadcast. Same two calls, same order, same constants as the
-        # rung above: the per-item notification is the one that matters, because the global
-        # broadcast misses a same-name .lnk that was rewritten in place.
+        # 0x08000000 as the global broadcast. Same two calls, same order as the rung above: the
+        # per-item notification is the one that matters, because the global broadcast misses a
+        # same-name .lnk that was rewritten in place.
+        #
+        # Plus SHCNF_FLUSH 0x1000, which the rung above does not need. Without it SHChangeNotify
+        # only queues the notification, and this child exits straight after, so Explorer can
+        # lose it while the child still reports ok. A hung Explorer is bounded by the timeout.
         $script = "import ctypes,sys" + [char]10 +
             "from ctypes import wintypes" + [char]10 +
             "s32=ctypes.WinDLL('shell32',use_last_error=True)" + [char]10 +
             "s32.SHChangeNotify.restype=None" + [char]10 +
             "s32.SHChangeNotify.argtypes=[wintypes.LONG,wintypes.UINT,wintypes.LPCWSTR,wintypes.LPCWSTR]" + [char]10 +
             "for p in sys.argv[1:]:" + [char]10 +
-            "    s32.SHChangeNotify(0x00002000,0x0005,p,None)" + [char]10 +
-            "s32.SHChangeNotify(0x08000000,0,None,None)" + [char]10 +
+            "    s32.SHChangeNotify(0x00002000,0x1005,p,None)" + [char]10 +
+            "s32.SHChangeNotify(0x08000000,0x1000,None,None)" + [char]10 +
             "sys.stdout.write('ok')"
         try {
             $answer = Invoke-StudioEarlyPythonScript -Exe $exe -Script $script -ScriptArgs $Paths -TimeoutMs 10000
