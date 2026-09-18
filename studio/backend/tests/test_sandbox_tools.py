@@ -681,6 +681,11 @@ class TestNetworkTargetResolution:
                 id = "try_body_store_does_not_supersede",
             ),
             pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\ntry:\n    url = 'https://pypi.org/'\n"
+                "except ValueError:\n    requests.get(url)",
+                id = "finally_store_cannot_reach_the_handler",
+            ),
+            pytest.param(
                 f"import requests\nurl = 'https://pypi.org/'\ndef f():\n    requests.get(url)\n"
                 f"url = 'http://{_H}/'\nf()",
                 id = "store_after_the_read_does_not_supersede",
@@ -778,6 +783,9 @@ class TestNetworkTargetResolution:
             # A straight-line store below the call has not run yet.
             "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = input()",
             "import requests\nurl = 'https://pypi.org/'\nrequests.get(url)\nurl = 'http://internal.example/'",
+            # A finally block always finishes before control passes the try.
+            "import requests\nurl = 'http://203.0.113.5/'\ntry:\n    pass\nfinally:\n"
+            "    url = 'https://pypi.org/'\nrequests.get(url)",
             # Inside the body doing the reading, source order still holds.
             "import requests\ndef f():\n    url = 'https://pypi.org/'\n    requests.get(url)\n"
             "    url = 'http://203.0.113.5/'",

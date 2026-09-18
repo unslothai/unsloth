@@ -16411,7 +16411,9 @@ def _check_signal_escape_patterns(code: str):
     _FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
     _COMPREHENSION_NODES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
     _ALIAS_DEPTH_CAP = 256
-    _BLOCK_FIELDS = ("body", "orelse", "finalbody")
+    # `finalbody` is deliberately absent: a finally block always finishes before control
+    # passes the try, so its stores belong to the surrounding straight line.
+    _BLOCK_FIELDS = ("body", "orelse")
     _ROOT_BLOCK = (0, "root")
     _node_block: dict[int, tuple] = {}
     _block_parent: dict[tuple, tuple | None] = {_ROOT_BLOCK: None}
