@@ -2834,7 +2834,8 @@ _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORE
 def _is_companion_gguf_path(path: str) -> bool:
     """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
     drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
-    drafters for DeepSeek V4 Flash, the ``eagle3-*.gguf`` draft heads). Mirrors
+    drafters for DeepSeek V4 Flash, the ``<model>-dspark-<quant>.gguf`` drafters for
+    prism-ml Bonsai, the ``eagle3-*.gguf`` draft heads). Mirrors
     hub.utils.gguf so variant resolution never picks a companion as the main model --
     a Gemma ``Q8_0`` request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts
     ahead of the real weight.
@@ -2849,6 +2850,8 @@ def _is_companion_gguf_path(path: str) -> bool:
     # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
     # holding calibration statistics, so only the name rules it out.
     if _IMATRIX_TOKEN_RE.search(Path(p).stem):
+        return True
+    if _DSPARK_BEFORE_QUANT_RE.search(Path(p).name):
         return True
     return _drafter_path_kind(path) is not None
 
@@ -2916,6 +2919,11 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"|Q[0-9]+_[0-9]+"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_companion_gguf_path.
+_DSPARK_BEFORE_QUANT_RE = re.compile(
+    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
     re.IGNORECASE,
 )
 

@@ -91,6 +91,14 @@ DRAFTER_CASES = [
     ("quants/eagle3-gpt-oss-20b-Q8_0.gguf", True),
     ("Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
     ("eagle3/Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
+    # DSpark drafters named <model>-dspark-<quant>.gguf (prism-ml Bonsai, and the
+    # third-party DSpark GGUFs such as Anbeeld/Qwen3.6-27B-DSpark-GGUF). Only a quant
+    # may follow the kind: a family name that carries it goes on, and is the model.
+    ("Ternary-Bonsai-27B-dspark-Q4_1.gguf", True),
+    ("Bonsai-27B-dspark-bf16.gguf", True),
+    ("Qwen3.6-27B-DSpark-Q4_K_M.gguf", True),
+    ("model-dspark-Q8_0-00001-of-00002.gguf", True),
+    ("DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16-00001-of-00004.gguf", False),
 ]
 
 
@@ -178,6 +186,25 @@ def test_eagle3_draft_head_is_not_a_variant_or_the_default():
     )
     assert set(plans) == {"mxfp4"}
     assert plans["mxfp4"].target_filenames == ("gpt-oss-20b-MXFP4.gguf",)
+
+
+BONSAI_FILES = [
+    "Bonsai-27B-F16.gguf",
+    "Bonsai-27B-Q1_0.gguf",
+    "Bonsai-27B-dspark-Q4_1.gguf",
+    "Bonsai-27B-dspark-bf16.gguf",
+    "Bonsai-27B-mmproj-BF16.gguf",
+]
+
+
+def test_bonsai_dspark_drafter_is_not_a_variant():
+    # prism-ml/Bonsai-27B-gguf ships its DSpark drafter beside the model. Offered as
+    # a Q4_1 quant it was the smallest row, and llama-server cannot load it as a model.
+    plans = build_gguf_variant_plans(
+        [_sib(name, 1_000, f"sha-{i}") for i, name in enumerate(BONSAI_FILES)]
+    )
+    assert set(plans) == {"f16", "q1_0"}
+    assert plans["q1_0"].main_filenames == frozenset({"Bonsai-27B-Q1_0.gguf"})
 
 
 def test_baked_in_repo_plans_unchanged():
