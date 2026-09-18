@@ -540,6 +540,35 @@ def test_a_pypi_outage_keeps_every_load_bearing_tag() -> None:
     assert module.TRANSFORMERS_TAGS[-1] == "main"
 
 
+def test_the_outage_fallback_reaches_the_declared_floor() -> None:
+    """An outage must not quietly move the floor up.
+
+    `_FLOOR` is derived from pyproject, so the live matrix starts where the claim does.
+    The frozen fallback is a separate list and began at 4.57.6, so any PyPI failure
+    dropped every 4.52 through 4.56 check and CI could go green straight through a
+    regression at the newly supported low end. `_ALWAYS` does not restore them: it names
+    the Apple Silicon ceiling and the tokenizers breakpoint, both 5.x.
+    """
+    import urllib.error
+
+    def refuses(*args, **kwargs):
+        raise urllib.error.URLError("pypi is unreachable")
+
+    module = _matrix_module(refuses)
+    declared = module._declared_floor()
+    concrete = [tag for tag in module.TRANSFORMERS_TAGS if tag != "main"]
+    assert concrete, "the outage fallback resolved no tags at all"
+    lowest = min(module._sort_key(tag) for tag in concrete)
+    assert lowest <= declared, (
+        f"under a PyPI outage the oldest tag checked is {lowest}, above the declared "
+        f"floor {declared}, so every release between them goes unchecked while CI is green"
+    )
+    # Every supported minor below the old 4.57.6 start, not just the floor itself.
+    minors = {module._sort_key(tag)[:2] for tag in concrete}
+    missing = [m for m in ((4, 52), (4, 53), (4, 54), (4, 55), (4, 56)) if m not in minors]
+    assert not missing, f"the outage fallback covers no tag for supported minors {missing}"
+
+
 def test_an_empty_release_index_keeps_every_load_bearing_tag() -> None:
     """NEGATIVE CONTROL for the other fallback: a reachable PyPI that yields no usable
     release takes a different return path, and it has to merge the anchors too."""

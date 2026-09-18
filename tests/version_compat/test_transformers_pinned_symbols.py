@@ -96,8 +96,17 @@ def _declared_ceiling_tag() -> tuple[str, ...]:
 _TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release"}
 
 # Used when PyPI cannot be reached. A frozen list is the point: a network failure must not
-# quietly shrink the matrix to nothing and report green.
+# quietly shrink the matrix to nothing and report green. It has to START at the declared
+# floor for the same reason _FLOOR is derived: a fallback beginning at 4.57.6 silently
+# drops every 4.52 through 4.56 check on any outage, and _ALWAYS does not restore them, so
+# CI could pass through a regression at the newly supported low end.
+# test_the_outage_fallback_reaches_the_declared_floor holds this to the declared floor.
 _TAGS_FALLBACK = (
+    "v4.52.4",
+    "v4.53.3",
+    "v4.54-release",
+    "v4.55.4",
+    "v4.56.2",
     "v4.57.6",
     "v5.0.0",
     "v5.1.0",
