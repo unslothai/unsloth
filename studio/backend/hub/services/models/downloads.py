@@ -31,7 +31,7 @@ from hub.utils.paths import (
 )
 from hub.services import snapshot_progress
 from hub.services import download_lifecycle
-from hub.services.models import account_access, cache_inventory, gguf_variants
+from hub.services.models import account_access, cache_inventory, gguf_variants, libraries
 
 logger = get_logger(__name__)
 
@@ -214,6 +214,7 @@ async def download_model_response(
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
     key = _download_job_key(repo_id, variant)
+    cache_paths = libraries.library_cache_paths(getattr(body, "library_id", None))
     # Size and Auto resolution may perform network probes, so keep both off the event loop.
     largest_file_bytes = await asyncio.to_thread(
         download_lifecycle.largest_download_file_bytes,
@@ -224,6 +225,7 @@ async def download_model_response(
         files = scoped_files if scope_variant is not None else None,
         hf_token = hf_token,
         allow_ambient_token = allow_ambient_token,
+        hub_cache = str(cache_paths.hub_cache),
     )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
@@ -233,9 +235,6 @@ async def download_model_response(
     )
     transport = download_lifecycle.resolve_transport(use_xet, largest_file_bytes = largest_file_bytes)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
-    from utils.hf_cache_settings import get_hf_cache_paths
-
-    cache_paths = get_hf_cache_paths()
     cache_env = cache_paths.child_env({})
     variant_blob_hashes = frozenset()
     variant_progress_blob_hashes = frozenset()
@@ -273,8 +272,9 @@ async def download_model_response(
                 download_registry.scrub_secrets(str(e), hf_token = hf_token),
             )
         has_variant_resume_state = (
-            download_manifest.has_cancel_marker("model", repo_id, variant)
-            or download_manifest.read_manifest("model", repo_id, variant) is not None
+            download_manifest.has_cancel_marker("model", repo_id, variant, hub_cache = cache_paths.hub_cache)
+            or download_manifest.read_manifest("model", repo_id, variant, hub_cache = cache_paths.hub_cache)
+            is not None
         )
         if variant_progress_blob_hashes and not has_variant_resume_state:
             completed_baseline_bytes = await asyncio.to_thread(
@@ -282,6 +282,7 @@ async def download_model_response(
                 "model",
                 repo_id,
                 variant_progress_blob_hashes,
+                root = cache_paths.hub_cache,
             )
 
     def claim_and_launch():

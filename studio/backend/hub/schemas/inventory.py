@@ -398,3 +398,77 @@ class ModelsFolderResponse(BaseModel):
         ...,
         description = "Path to the model download directory.",
     )
+
+
+class ModelLibraryInfo(BaseModel):
+    """One model library: a cache-home folder that holds ``hub/`` and ``xet/``
+    model subtrees. The active HF cache is always present as the default library
+    (``id`` is null for it); rows list additional libraries the user registered."""
+
+    id: Optional[int] = Field(
+        None,
+        description = "Database row ID; null for the derived default library.",
+    )
+    path: str = Field(..., description = "Cache home directory of the library.")
+    label: Optional[str] = Field(None, description = "User label; null for the default.")
+    is_default: bool = Field(False, description = "True only for the active HF cache home.")
+    hub_cache: str = Field(..., description = "HF_HUB_CACHE this library downloads into.")
+    xet_cache: str = Field(..., description = "HF_XET_CACHE this library downloads into.")
+    available: bool = Field(False, description = "Whether the home directory exists.")
+    writable: bool = Field(False, description = "Whether the home directory is writable.")
+    free_bytes: Optional[int] = Field(None, description = "Free bytes on the containing volume.")
+    total_bytes: Optional[int] = Field(None, description = "Total capacity of the containing volume.")
+    created_at: Optional[str] = Field(None, description = "ISO 8601 registration timestamp.")
+
+
+class ModelLibrariesResponse(BaseModel):
+    libraries: List[ModelLibraryInfo] = Field(default_factory = list)
+
+
+class AddModelLibraryRequest(BaseModel):
+    """Request body for registering a new model library location."""
+
+    path: str = Field(
+        ...,
+        description = "Absolute cache-home directory for the new library.",
+    )
+    label: Optional[str] = Field(
+        None,
+        max_length = 120,
+        description = "Optional user-facing label for the library.",
+    )
+
+
+class RemoveModelLibraryResponse(BaseModel):
+    ok: bool = Field(..., description = "False when no such library row existed.")
+
+
+class SetDefaultLibraryResponse(BaseModel):
+    ok: bool = True
+    path: Optional[str] = Field(None, description = "The cache home that is now the default.")
+
+
+class MoveModelRequest(BaseModel):
+    """Move a cached repo into another library. The model is relocated on disk,
+    not re-downloaded."""
+
+    repo_id: str = Field(..., description = "HuggingFace repo id of the cached model.")
+    variant: Optional[str] = Field(
+        None,
+        description = "GGUF variant to scope the move to; omit to move the whole repo.",
+    )
+    target_library_id: str = Field(
+        ...,
+        description = "Library to move into: 'default' or a model_libraries row id.",
+    )
+
+
+class MoveModelResponse(BaseModel):
+    ok: bool = True
+    repo_id: str
+    variant: Optional[str] = None
+    target_home: str = Field(..., description = "Cache home the model now lives under.")
+    already_in_library: bool = Field(
+        False,
+        description = "True when the model was already in the target library.",
+    )
