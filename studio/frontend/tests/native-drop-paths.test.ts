@@ -11,6 +11,12 @@ import {
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
 } from "../src/features/chat/open-document-accept.ts";
 import {
+  CHAT_IMAGE_MIMES,
+  CHAT_IMAGE_ACCEPT,
+  convertedImageType,
+  isChatImageFile,
+} from "../src/features/chat/image-normalize.ts";
+import {
   TEXT_ATTACHMENT_ACCEPT,
   TEXT_ATTACHMENT_BASENAMES,
   TEXT_ATTACHMENT_EXTENSIONS,
@@ -94,9 +100,11 @@ const MIME_MATCH_BODY_RE =
   /fn attachment_mime_type[\s\S]*?match ext\.as_str\(\) \{([\s\S]*?)\n {4}\}/;
 const MIME_ARM_EXTENSION_RE =
   /^\s*((?:"[^"]+"\s*\|?\s*)+)=>\s*Some\("image\//gm;
-const COMPOSER_IMAGE_ACCEPT_RE = /const IMAGE_ACCEPT\s*=\s*"([^"]+)"/;
+const COMPOSER_IMAGE_ACCEPT_RE = /accept=\{CHAT_IMAGE_ACCEPT\}/;
+const IMAGE_DRAIN_CONVERTS_PER_FILE_RE =
+  /const drainPendingImages[\s\S]*?try \{[^}]*?file = await normalizeChatImage\(\s*await nativeAttachmentIntentToFile\(intent\),?\s*\);\s*\} catch \(error\) \{\s*\/\/[^\n]*\n[^\n]*\n\s*readFailures \+= 1;\s*lastReadError = error;\s*continue;/;
 const VISION_ADAPTER_ACCEPT_RE =
-  /class VisionImageAdapter[^{]*\{\s*accept\s*=\s*"([^"]+)"/s;
+  /class VisionImageAdapter[^{]*\{\s*accept = CHAT_IMAGE_ACCEPT;/;
 const OPEN_DOCUMENT_EXTENSION_RE = /\.ods/;
 const OFFICE_OPEN_XML_ADAPTER_RE =
   /class OfficeOpenXmlAttachmentAdapter[^{]*\{[\s\S]*?accept = OFFICE_OPEN_XML_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readOfficeOpenXmlAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new OfficeOpenXmlAttachmentAdapter\(\),/;
@@ -351,11 +359,8 @@ test("every MIME type Rust stamps is one the vision adapter claims", () => {
     ),
   ].sort();
 
-  const accepted = RUNTIME_PROVIDER
-    .match(VISION_ADAPTER_ACCEPT_RE)?.[1]
-    .split(",")
-    .map((type) => type.trim())
-    .sort();
+  assert.match(RUNTIME_PROVIDER, VISION_ADAPTER_ACCEPT_RE);
+  const accepted = [...CHAT_IMAGE_MIMES].sort();
 
   assert.ok(
     stamped.length > 0,
@@ -389,20 +394,36 @@ test("every accepted image extension has a Rust MIME arm", () => {
   assert.deepEqual(mapped, accepted);
 });
 
-// The one constant drop-paths.ts names in its own "keep in sync" comment.
-test("the drop image list matches the composer's file picker", () => {
-  const picker = SHARED_COMPOSER
-    .match(COMPOSER_IMAGE_ACCEPT_RE)?.[1]
-    .split(",")
-    .map((type) => type.trim().replace("image/", ""))
-    .sort();
+// Conversion is async: a send before it finishes would go out without the image.
+test("no composer sends while an image is being converted", () => {
+  assert.match(
+    SHARED_COMPOSER,
+    /setConvertingImages\(\(count\) => count \+ 1\);\s*try \{\s*image = await normalizeChatImage\(file\);[\s\S]*?\} finally \{\s*setConvertingImages\(\(count\) => count - 1\);/,
+  );
+  assert.match(SHARED_COMPOSER, /const canSend =[^;]*convertingImages === 0/);
+  // Removed while converting stays removed, and a failed conversion never sends the source file.
+  assert.match(
+    RUNTIME_PROVIDER,
+    /class VisionImageAdapter[\s\S]*?if \(!this\.converted\.has\(attachment\.id\)\) \{\s*return;\s*\}\s*toast\.error[\s\S]*?if \(!this\.converted\.has\(attachment\.id\)\) \{\s*return;\s*\}\s*yield \{ \.\.\.attachment, name: file\.name/,
+  );
+  assert.match(
+    RUNTIME_PROVIDER,
+    /class VisionImageAdapter[\s\S]*?this\.converted\.set\(\s*attachment\.id,\s*conversion\.catch\(\(\) => null\),?\s*\);[\s\S]*?const file = conversion \? await conversion : attachment\.file;\s*if \(!file\) \{[\s\S]*?content: \[\],[\s\S]*?async remove\(attachment: \{ id: string \}\): Promise<void> \{\s*this\.converted\.delete\(attachment\.id\);/,
+  );
+});
+
+// A file the webview cannot convert must fail alone: a throw stops the whole batch.
+test("dropped images are converted as part of their per-file read", () => {
+  assert.match(THREAD, IMAGE_DRAIN_CONVERTS_PER_FILE_RE);
+});
+
+test("every dropped image extension is a type the composers accept", () => {
+  assert.match(SHARED_COMPOSER, COMPOSER_IMAGE_ACCEPT_RE);
   const dropped = CHAT_IMAGE_DROP_ACCEPT.split(",")
     .map((ext) => ext.trim().toLowerCase().replace(".", ""))
-    .map((ext) => (ext === "jpg" ? "jpeg" : ext))
-    .sort();
-
-  assert.ok(picker, "IMAGE_ACCEPT not found in shared-composer.tsx");
-  assert.deepEqual([...new Set(dropped)], picker);
+    .map((ext) => ({ jpg: "jpeg", tif: "tiff" })[ext] ?? ext)
+    .map((ext) => `image/${ext}`);
+  assert.deepEqual([...new Set(dropped)].sort(), [...CHAT_IMAGE_MIMES].sort());
 });
 
 // A remount means the instance that queued the batch cannot hand it over.
@@ -2502,4 +2523,32 @@ test("escapes in a header entry resolve before the charset is read", async () =>
     '"Content-Type: text/plain; charset=utf-8\\nContent-Transfer-Encoding: 8bit\\n"\n\n' +
     'msgid "c"\nmsgstr "café"\n';
   assert.match(await readTextAttachment(new File([po], "m.po")), /café/);
+});
+
+test("formats the backends cannot take are converted, the rest sent as is", () => {
+  for (const [name, type, converted] of [
+    ["photo.HEIC", "image/heic", "image/jpeg"],
+    ["photo.heic", "", "image/jpeg"],
+    ["photo.heif", "application/octet-stream", "image/jpeg"],
+    ["scan.tif", "image/tiff", "image/png"],
+    ["icon.bmp", "", "image/png"],
+    ["pic.avif", "image/avif", "image/png"],
+    ["pic.png", "image/png", null],
+  ] as const) {
+    assert.ok(isChatImageFile({ name, type }), name);
+    assert.equal(convertedImageType({ name, type }), converted, name);
+  }
+  for (const extension of [
+    ".heic",
+    ".heif",
+    ".avif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+  ]) {
+    assert.ok(CHAT_IMAGE_ACCEPT.split(",").includes(extension), extension);
+  }
+  // A format sent as is needs its MIME type: the data URL carries it.
+  assert.ok(!isChatImageFile({ name: "pic.png", type: "" }));
+  assert.ok(!isChatImageFile({ name: "x.constructor", type: "" }));
 });

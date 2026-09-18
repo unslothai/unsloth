@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { CHAT_IMAGE_EXTENSIONS } from "../chat/image-normalize.ts";
 import {
   OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
   isOfficeOpenXmlAttachmentName,
@@ -44,8 +45,7 @@ function isTextDropName(path: string): boolean {
   return dot > 0 && TEXT_EXTS.includes(name.slice(dot));
 }
 
-/** Vision chat attachments; keep in sync with `shared-composer` `IMAGE_ACCEPT`. */
-export const CHAT_IMAGE_DROP_ACCEPT = ".jpg,.jpeg,.png,.webp,.gif";
+export const CHAT_IMAGE_DROP_ACCEPT = CHAT_IMAGE_EXTENSIONS;
 
 const IMAGE_EXTS = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),

@@ -92,6 +92,11 @@ import {
 } from "./open-document-accept";
 import { readRtfAttachmentContent } from "./rtf";
 import {
+  CHAT_IMAGE_ACCEPT,
+  convertedImageType,
+  normalizeChatImage,
+} from "./image-normalize";
+import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
   commitHeldThreadScopedEditsToTheirThread,
@@ -280,9 +285,15 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
 }
 
 class VisionImageAdapter implements AttachmentAdapter {
-  accept = "image/jpeg,image/png,image/webp,image/gif";
+  accept = CHAT_IMAGE_ACCEPT;
+  // Held from the running placeholder until send or remove; null when conversion failed.
+  private readonly converted = new Map<string, Promise<File | null>>();
 
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
+  async *add({
+    file: picked,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
     const state = useChatRuntimeStore.getState();
     const checkpoint = state.params.checkpoint;
     const activeModel = state.models.find((m) => m.id === checkpoint);
@@ -324,38 +335,80 @@ class VisionImageAdapter implements AttachmentAdapter {
     }
 
     const maxSize = 20 * 1024 * 1024;
-    if (file.size > maxSize) {
+    if (picked.size > maxSize) {
       throw new Error("Image size exceeds 20MB limit");
     }
-
-    return {
+    const attachment = {
       id: crypto.randomUUID(),
       type: "image",
-      name: file.name,
-      contentType: file.type,
-      file,
+      name: picked.name,
+      contentType: picked.type,
+      file: picked,
       status: { type: "requires-action", reason: "composer-send" },
+    } satisfies PendingAttachment;
+    if (convertedImageType(picked) === null) {
+      yield attachment;
+      return;
+    }
+    // Shown as running while it converts, which holds the composer's send.
+    yield {
+      ...attachment,
+      status: { type: "running", reason: "uploading", progress: 0 },
     };
+    const conversion = normalizeChatImage(picked);
+    this.converted.set(
+      attachment.id,
+      conversion.catch(() => null),
+    );
+    let file: File;
+    try {
+      file = await conversion;
+    } catch (error) {
+      if (!this.converted.has(attachment.id)) {
+        return;
+      }
+      toast.error(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    // Removed while converting: yielding again would put it back.
+    if (!this.converted.has(attachment.id)) {
+      return;
+    }
+    yield { ...attachment, name: file.name, contentType: file.type, file };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const conversion = this.converted.get(attachment.id);
+    this.converted.delete(attachment.id);
+    const file = conversion ? await conversion : attachment.file;
+    if (!file) {
+      // Its conversion failed and said so; the unconverted file is not one a backend takes.
+      return {
+        id: attachment.id,
+        type: "image",
+        name: attachment.name,
+        contentType: attachment.contentType,
+        content: [],
+        status: { type: "complete" },
+      };
+    }
     return {
       id: attachment.id,
       type: "image",
-      name: attachment.name,
-      contentType: attachment.contentType,
+      name: file.name,
+      contentType: file.type,
       content: [
         {
           type: "image",
-          image: await this.fileToBase64DataURL(attachment.file),
+          image: await this.fileToBase64DataURL(file),
         },
       ],
       status: { type: "complete" },
     };
   }
 
-  async remove(): Promise<void> {
-    return Promise.resolve();
+  async remove(attachment: { id: string }): Promise<void> {
+    this.converted.delete(attachment.id);
   }
 
   private async fileToBase64DataURL(file: File): Promise<string> {
