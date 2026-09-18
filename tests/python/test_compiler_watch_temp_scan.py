@@ -88,53 +88,20 @@ def test_an_unreadable_directory_costs_only_itself(tmp_path: pathlib.Path) -> No
     assert not any(name.endswith("hidden.dll") for name in found), found
 
 
-@pytest.mark.skipif(os.name != "nt", reason = "the error this reproduces is a Windows one")
-def test_the_walk_really_would_have_died_without_the_handling(tmp_path: pathlib.Path) -> None:
-    """The control for the row above: the shape it replaced does end the run.
-
-    Windows only, and deliberately so. The error that broke CI is a Win32Exception raised by the
-    Windows provider partway through a recursive enumeration, and `-ErrorAction
-    SilentlyContinue` does not suppress it. The POSIX provider reports an unreadable directory
-    as an ordinary non-terminating error, which that parameter does suppress, so on Linux this
-    control would assert something untrue and pass the rewrite off as unnecessary.
-    """
-    (tmp_path / "locked").mkdir()
-    (tmp_path / "locked" / "hidden.dll").write_text("x")
-    # DENY on the directory itself, which is how a temp directory belonging to another user
-    # presents to this process.
-    subprocess.run(
-        ["icacls", str(tmp_path / "locked"), "/deny", "*S-1-1-0:(OI)(CI)(RX)"],
-        capture_output = True,
-        text = True,
-        timeout = 300,
-    )
-    try:
-        proc = subprocess.run(
-            [
-                PWSH,
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "$ErrorActionPreference = 'Stop'\n"
-                f"Get-ChildItem -LiteralPath '{tmp_path}' -Filter '*.dll' -File -Recurse "
-                "-Force -ErrorAction SilentlyContinue | Out-Null\n"
-                "Write-Output 'SURVIVED'\n",
-            ],
-            capture_output = True,
-            text = True,
-            timeout = 300,
-        )
-    finally:
-        subprocess.run(
-            ["icacls", str(tmp_path / "locked"), "/remove:d", "*S-1-1-0"],
-            capture_output = True,
-            text = True,
-            timeout = 300,
-        )
-    assert "SURVIVED" not in proc.stdout, (
-        "-ErrorAction SilentlyContinue suppressed the error on this host, so the reason for the "
-        "rewrite needs re-checking"
-    )
+# There is no control here for "the old shape really would have died", and that is deliberate.
+#
+# The CI failure was a RACE: a directory in the shared temp root disappeared partway through a
+# recursive enumeration and the Windows provider raised a Win32Exception, which -ErrorAction
+# SilentlyContinue does not suppress because it governs non-terminating errors. An ACL denial was
+# tried as a stand-in and is not one: a directory the caller cannot open is an ordinary
+# non-terminating access-denied error, which that parameter DOES suppress, so the control reached
+# its SURVIVED line and would have passed while claiming the opposite. A POSIX chmod is the same
+# story.
+#
+# Reproducing the race means deleting directories under a live walk and hoping the timing lands,
+# which is a flaky test rather than a control. What is pinned instead is the shape: enumeration is
+# per-directory and wrapped, and no recursive listing is left in the file. The evidence for the
+# failure itself is the CI log quoted at the top of this module.
 
 
 def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path) -> None:
