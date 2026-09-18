@@ -134,8 +134,13 @@ fi
 
 # --- Check 2: what rocm-smi sees (advisory) --------------------------------
 # rocm-smi does not list every APU (measured on gfx1151: no GPU[..] line inside
-# the container), so it cannot be the gate; check 3 asks torch itself.
-if ! command -v rocm-smi >/dev/null 2>&1; then
+# the container), so it cannot be the gate; check 3 asks torch itself. It reads
+# the amdgpu sysfs, which the DXG bridge has no equivalent of (measured: "Driver
+# not initialized"), and its advice below is about /dev/dri and group ids, which
+# do not exist on WSL: skip it there.
+if [[ "$UNSLOTH_ROCM_DEV_PATH" == "dxg" ]]; then
+    note "skipping rocm-smi: it reads the amdgpu sysfs, which the DXG bridge does not expose."
+elif ! command -v rocm-smi >/dev/null 2>&1; then
     warn "rocm-smi not found inside the container; skipping its listing."
 elif ! rocm-smi --showid 2>/dev/null | grep -q 'GPU\['; then
     warn "rocm-smi lists no GPU from inside the container. That is normal for some APUs;"

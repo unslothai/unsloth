@@ -91,9 +91,13 @@ amd_dxg_flags() {
         return 0
     fi
     printf '%s\n' -v "${_so}:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro"
-    # librocdxg links libdxcore from WSL's own lib directory.
-    [[ -d /usr/lib/wsl/lib ]] && printf '%s\n' -v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro \
-                              && printf '%s\n' -e LD_LIBRARY_PATH=/usr/lib/wsl/lib
+    # librocdxg dlopens libdxcore from WSL's own lib directory, which the image
+    # does not have on its search path.
+    if [[ -d "$DEV_ROOT/usr/lib/wsl/lib" ]]; then
+        printf '%s\n' -v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro -e LD_LIBRARY_PATH=/usr/lib/wsl/lib
+    else
+        printf "\033[1;33mWARN:\033[0m /usr/lib/wsl/lib is missing, so librocdxg cannot load libdxcore.\n" >&2
+    fi
     # The standard HSA runtime only looks for the bridge when this is set.
     printf '%s\n' -e HSA_ENABLE_DXG_DETECTION=1
     return 0

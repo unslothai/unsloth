@@ -51,6 +51,7 @@ def _run_sh(
     dri = True,
     dxg = False,
     librocdxg = False,
+    wsl_lib = True,
     nvidia = False,
     groups = "both",
     extra_env = None,
@@ -93,6 +94,8 @@ def _run_sh(
         lib = dev_root / "opt" / "rocm" / "lib"
         lib.mkdir(parents = True)
         (lib / "librocdxg.so.1.2.1").write_text("")
+    if wsl_lib:
+        (dev_root / "usr" / "lib" / "wsl" / "lib").mkdir(parents = True)
     env = dict(os.environ)
     env["PATH"] = str(bindir) + ":/usr/bin:/bin"
     env["UNSLOTH_DEV_ROOT"] = str(dev_root)
@@ -210,8 +213,24 @@ class TestRunShRocm:
         assert "/dev/kfd" not in argv, argv
         assert "HSA_ENABLE_DXG_DETECTION=1" in argv, argv
         assert any("librocdxg.so" in a for a in argv), argv
+        # librocdxg dlopens libdxcore from here; without the mount hsa_init fails
+        # (measured on an R9700: "Failed to load libdxcore.so")
+        assert "/usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" in argv, argv
+        assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in argv, argv
         assert "--gpus" not in argv, argv
         assert "DXG" in stderr or "dxg" in stderr, stderr
+
+    def test_a_missing_wsl_lib_dir_is_named_not_silently_dropped(self, tmp_path):
+        argv, stderr = _run_sh(
+            tmp_path,
+            ["--rocm", "true"],
+            kfd = False,
+            dxg = True,
+            librocdxg = True,
+            wsl_lib = False,
+        )
+        assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" not in argv, argv
+        assert "/usr/lib/wsl/lib is missing" in stderr, stderr
 
     def test_dxg_without_librocdxg_warns_and_points_at_the_helper(self, tmp_path):
         """/dev/dxg alone is not enough: without the bridge library the runtime cannot
@@ -555,6 +574,23 @@ class TestRocmEntrypoint:
         )
         assert rc == 0 and ran, err
         assert "DXG bridge" in err, err
+
+    def test_dxg_skips_the_rocm_smi_advice(self, tmp_path):
+        """rocm-smi reads the amdgpu sysfs, which the bridge has none of (measured in the
+        container: "Driver not initialized"), and its advice is /dev/dri and group ids,
+        neither of which exists on WSL."""
+        lib = tmp_path / "rocmlib"
+        lib.mkdir()
+        (lib / "librocdxg.so.1").write_text("")
+        rc, ran, err = _entrypoint(
+            tmp_path,
+            kfd = False,
+            dxg = True,
+            smi_sees_gpu = False,
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
+        )
+        assert rc == 0 and ran, err
+        assert "--group-add" not in err and "/dev/dri" not in err, err
 
     def test_dxg_without_the_bridge_library_refuses(self, tmp_path):
         """/dev/dxg alone cannot reach the card: the HSA runtime needs librocdxg."""
