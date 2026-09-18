@@ -30,6 +30,18 @@ SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 
+# These execute blocks of the POSIX installer, so they need bash AND a POSIX filesystem.
+# Git Bash puts bash on PATH on a Windows runner, where the blocks then run against Windows path
+# semantics and hand back UTF-16 output: `assert '\x00' == 'ALLOWED'` is what that looks like.
+# setup.ps1 is covered separately in this file and in tests/studio/, so skipping here loses no
+# coverage and stops the Windows half of a cross-platform run reporting failures about a script
+# it never uses.
+NEEDS_POSIX_BASH = pytest.mark.skipif(
+    shutil.which("bash") is None or os.name == "nt",
+    reason = "runs studio/setup.sh blocks: needs bash on a POSIX filesystem",
+)
+
+
 def _slice(src: str, start: str, end: str) -> str:
     begin = src.index(start)
     return src[begin : src.index(end, begin)]
@@ -79,7 +91,7 @@ def _env(home: Path, **overrides: str) -> dict[str, str]:
     return env
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_a_master_root_puts_the_runtimes_beside_studio(tmp_path):
     root = tmp_path / "portable"
     (root / "studio").mkdir(parents = True)
@@ -95,7 +107,7 @@ def test_a_master_root_puts_the_runtimes_beside_studio(tmp_path):
     assert Path(llama_parent) == root
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_no_master_root_keeps_the_studio_home_layout(tmp_path):
     """The pre-existing custom-root behaviour, which the new branch must not disturb."""
     studio = tmp_path / "elsewhere" / "studio"
@@ -110,7 +122,7 @@ def test_no_master_root_keeps_the_studio_home_layout(tmp_path):
     assert Path(llama_parent) == studio
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_a_default_install_still_uses_the_legacy_root(tmp_path):
     home = tmp_path / "home"
     (home / ".unsloth" / "studio").mkdir(parents = True)
@@ -119,7 +131,7 @@ def test_a_default_install_still_uses_the_legacy_root(tmp_path):
     assert Path(llama_parent) == home / ".unsloth"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_a_staging_root_still_outranks_the_master_root(tmp_path):
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -150,7 +162,7 @@ def test_setup_ps1_derives_both_runtimes_from_the_master_root():
     assert node.index("$StageRoot") < node.index("$NodeParent = $_masterRoot")
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_a_padded_master_root_names_the_same_directory(tmp_path):
     """storage_roots.unsloth_home() and the CLI both .strip(), so setup has to as well: an
     unstripped value installs under a directory whose name carries the whitespace."""
@@ -167,7 +179,7 @@ def test_a_padded_master_root_names_the_same_directory(tmp_path):
     assert Path(llama_parent) == root
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_a_blank_master_root_counts_as_unset(tmp_path):
     home = tmp_path / "home"
     (home / ".unsloth" / "studio").mkdir(parents = True)
@@ -203,7 +215,7 @@ def whisper_path(tmp_path_factory):
     return f"{stub_bin}:/usr/bin:/bin"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_the_whisper_builder_installs_under_the_master_root(tmp_path, whisper_path):
     """setup.sh runs this with UNSLOTH_STUDIO_HOME=<root>/studio still inherited, so a builder
     that preferred it would install a level below _managed_whisper_cpp_dir()."""
@@ -227,7 +239,7 @@ def test_the_whisper_builder_installs_under_the_master_root(tmp_path, whisper_pa
     assert Path(completed.stdout.strip()) == root / "whisper.cpp"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_the_whisper_builder_still_honours_a_studio_home_alone(tmp_path, whisper_path):
     studio = tmp_path / "elsewhere" / "studio"
     src = BUILD_WHISPER.read_text(encoding = "utf-8")
@@ -248,7 +260,7 @@ def test_the_whisper_builder_still_honours_a_studio_home_alone(tmp_path, whisper
     assert Path(completed.stdout.strip()) == studio / "whisper.cpp"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_a_blank_master_root_does_not_outrank_the_whisper_studio_home(tmp_path, whisper_path):
     """${VAR:-} only treats the EMPTY string as unset, so an unstripped whitespace value would
     win the new precedence and name a relative "   /whisper.cpp"."""
@@ -279,7 +291,7 @@ def test_a_blank_master_root_does_not_outrank_the_whisper_studio_home(tmp_path, 
     assert Path(completed.stdout.strip()) == studio / "whisper.cpp"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_a_tilde_master_root_expands_for_the_whisper_builder(tmp_path, whisper_path):
     home = tmp_path / "home"
     completed = subprocess.run(
@@ -303,7 +315,7 @@ def test_a_tilde_master_root_expands_for_the_whisper_builder(tmp_path, whisper_p
     assert Path(completed.stdout.strip()) == home / "portable" / "whisper.cpp"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_a_relative_master_root_resolves_against_the_caller(tmp_path):
     """Node is chosen before setup.sh's first `cd "$SCRIPT_DIR"` and llama.cpp after it, so a
     value left relative names two different directories and the backend's neither."""
@@ -335,7 +347,7 @@ def test_a_relative_master_root_resolves_against_the_caller(tmp_path):
     assert Path(completed.stdout.strip()) == caller / "not-created-yet"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
     """With only UNSLOTH_HOME set, STUDIO_HOME stays legacy and _STUDIO_HOME_IS_CUSTOM stays
     false, which is what licenses the installers to os.replace() and rm -rf without checking
@@ -368,7 +380,7 @@ def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
     assert completed.stdout.split() == ["false", "true"]
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_no_master_root_leaves_the_ownership_flag_alone(tmp_path):
     src = SETUP_SH.read_text(encoding = "utf-8")
     script = "\n".join(
@@ -418,7 +430,7 @@ def test_every_runtime_ownership_guard_uses_the_runtime_flag():
         ), line
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_the_legacy_root_named_explicitly_is_not_custom(tmp_path):
     """UNSLOTH_HOME=$HOME/.unsloth names the root a default install already uses.
 
@@ -591,7 +603,7 @@ def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_pa
     assert (nested / "child").is_dir()
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_only_a_directory_can_be_adopted_at_a_runtime_path(tmp_path):
     """A dangling symlink and a regular file are both things the user put there.
 
@@ -1051,7 +1063,7 @@ def test_neither_uninstaller_sweeps_a_stale_lock_name_it_did_not_make():
     assert "[0-9]+$" in ps_code
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+@NEEDS_POSIX_BASH
 def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
     """The note is staged under an unpredictable name, so a link left in share/ is not followed.
 
