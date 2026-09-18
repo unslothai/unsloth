@@ -22,6 +22,7 @@ def _cfg(head_dim):
 def _no_env_override(monkeypatch):
     # The env var short-circuits before the gate, so it must be clear for these.
     monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising = False)
+    monkeypatch.setattr(u, "_flex_kernels_fit_large_head_dim", lambda: True)
 
 
 @pytest.fixture
@@ -118,3 +119,52 @@ def test_a_mixed_box_falls_back_to_the_weakest_card(monkeypatch):
         u.torch.cuda, "get_device_capability", lambda index: (10, 0) if index == 0 else (9, 0)
     )
     assert u._sdpa_reaches_cudnn_at_head_dim_256() is False
+
+
+def _cuda_box(monkeypatch, shared_memory):
+    class _Props:
+        def __init__(self, index):
+            self.shared_memory_per_block_optin = shared_memory[index]
+
+    monkeypatch.setattr(u.torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(u.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(u.torch.cuda, "device_count", lambda: len(shared_memory))
+    monkeypatch.setattr(u.torch.cuda, "get_device_properties", _Props)
+
+
+@pytest.mark.parametrize("shared_memory", [101376, 166912])  # sm86/sm89/sm120, A100
+def test_flex_kernels_do_not_fit_small_shared_memory(monkeypatch, shared_memory):
+    monkeypatch.undo()
+    _cuda_box(monkeypatch, [shared_memory])
+    assert u._flex_kernels_fit_large_head_dim() is False
+
+
+def test_flex_kernels_fit_the_measured_class(monkeypatch):
+    monkeypatch.undo()
+    _cuda_box(monkeypatch, [232448])
+    assert u._flex_kernels_fit_large_head_dim() is True
+
+
+def test_flex_kernels_fit_needs_every_card(monkeypatch):
+    monkeypatch.undo()
+    _cuda_box(monkeypatch, [232448, 101376])
+    assert u._flex_kernels_fit_large_head_dim() is False
+
+
+def test_flex_kernels_fit_is_off_on_rocm_and_without_cuda(monkeypatch):
+    monkeypatch.undo()
+    _cuda_box(monkeypatch, [232448])
+    monkeypatch.setattr(u.torch.version, "hip", "6.2.0", raising = False)
+    assert u._flex_kernels_fit_large_head_dim() is False
+    monkeypatch.setattr(u.torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(u.torch.cuda, "is_available", lambda: False)
+    assert u._flex_kernels_fit_large_head_dim() is False
+
+
+@pytest.mark.parametrize("head_dim", [256, 512])
+def test_small_shared_memory_keeps_sdpa(monkeypatch, cudnn_reaches_256, head_dim):
+    cudnn_reaches_256(False)
+    monkeypatch.setattr(u, "_flex_kernels_fit_large_head_dim", lambda: False)
+    assert u._prefers_flex_for_head_dim(_cfg(head_dim)) is False
+    monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, "1")
+    assert u._prefers_flex_for_head_dim(_cfg(head_dim)) is True

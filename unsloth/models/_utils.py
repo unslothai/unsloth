@@ -497,6 +497,29 @@ def _sdpa_reaches_cudnn_at_head_dim_256():
         return False
 
 
+# Inductor's default flex template needs 151552 bytes of shared memory at head_dim 256 (172032 at
+# 192), more than sm86/sm89/sm120 cards (101376) or an A100 (166912) have. There the compile
+# fails, unsloth_zoo's suppress_errors falls back to unfused eager flex, and training runs slower
+# and in more memory than on SDPA. Offer flex only on the 227 KiB class it was measured on.
+_FLEX_LARGE_HEAD_DIM_MIN_SHARED_MEMORY = 232448
+
+
+def _flex_kernels_fit_large_head_dim():
+    """True when every CUDA device has the shared memory Inductor's default flex template needs."""
+    try:
+        if getattr(torch.version, "hip", None):
+            return False
+        if not torch.cuda.is_available():
+            return False
+        return all(
+            torch.cuda.get_device_properties(index).shared_memory_per_block_optin
+            >= _FLEX_LARGE_HEAD_DIM_MIN_SHARED_MEMORY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return False
+
+
 def _flex_large_head_dim_override():
     """True / False when UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM forces flex on / off, else None."""
     override = os.environ.get(_FLEX_LARGE_HEAD_DIM_ENV_VAR)
@@ -527,6 +550,8 @@ def _prefers_flex_for_head_dim(config):
         return False
     head_dim = _text_attention_head_dim(config)
     if head_dim is None or head_dim <= _SDPA_FLASH_MAX_HEAD_DIM:
+        return False
+    if not _flex_kernels_fit_large_head_dim():
         return False
     # No cuDNN build takes head_dim > 256, so the version gate does not apply.
     if head_dim > _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:

@@ -18,6 +18,7 @@ class _Cfg:
 def _clean(monkeypatch):
     monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising = False)
     monkeypatch.setattr(u, "_sdpa_reaches_cudnn_at_head_dim_256", lambda: False)
+    monkeypatch.setattr(u, "_flex_kernels_fit_large_head_dim", lambda: True)
 
 
 def _gemma4():

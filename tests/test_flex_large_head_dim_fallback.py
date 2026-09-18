@@ -28,7 +28,8 @@ def _multimodal():
 
 
 @pytest.fixture(autouse = True)
-def _reset_probe_cache():
+def _reset_probe_cache(monkeypatch):
+    monkeypatch.setattr(u, "_flex_kernels_fit_large_head_dim", lambda: True)
     u._ATTN_IMPL_MAPPING_SUPPORTED.clear()
     yield
     u._ATTN_IMPL_MAPPING_SUPPORTED.clear()
