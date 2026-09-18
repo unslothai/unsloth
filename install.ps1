@@ -3006,8 +3006,8 @@ exit 1
         # first use is the install lock, which runs before Python is installed. On a host that
         # had none, that call caches $null for the rest of the run, so by the time shortcuts are
         # written the managed interpreter exists and this would still decline: exactly the
-        # first-install-under-CLM case the rung was added for. New-StudioShortcuts has already
-        # confirmed its own path exists and resolved it, so there is nothing left to check here.
+        # first-install case the rung was added for. New-StudioShortcuts has already confirmed
+        # its own path exists and resolved it, so there is nothing left to check here.
         $exe = $Exe
         if ([string]::IsNullOrWhiteSpace($exe)) {
             # Inside the try, not above it. Discovery can throw, and this function promises it
@@ -5268,12 +5268,13 @@ exit 0
                         # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
                         [UnslothShellIconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
                     } catch {
-                        # Reached where the type cannot be defined in this shell, which is every
-                        # host under Constrained Language Mode or WDAC Dynamic Code Security.
-                        # Before this the refresh simply did not happen there and the icon stayed
-                        # stale until something else invalidated Explorer's cache. Same two
-                        # notifications through a child interpreter instead. Still cosmetic, and
-                        # still unable to fail the install.
+                        # Reached where the type cannot be defined in this shell, which here means
+                        # WDAC Dynamic Code Security in FullLanguage. Constrained Language Mode
+                        # never gets this far: it refuses the WScript.Shell COM object above, so
+                        # no shortcut is written. Before this the refresh simply did not happen
+                        # and the icon stayed stale until something else invalidated Explorer's
+                        # cache. Same two notifications through a child interpreter instead. Still
+                        # cosmetic, and still unable to fail the install.
                         try {
                             $null = Invoke-StudioPythonShellIconRefresh `
                                 -Paths $createdShortcutPaths -Exe $ManagedPythonPath

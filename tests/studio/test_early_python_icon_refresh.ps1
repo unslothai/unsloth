@@ -6,8 +6,9 @@
 #
 # The installer tells Explorer about each shortcut it wrote with SHChangeNotify, because the
 # global broadcast alone misses a same-name .lnk rewritten in place. That call needs a type
-# defined at runtime, which Constrained Language Mode and WDAC Dynamic Code Security both refuse,
-# and on those hosts the refresh simply did not happen: the shortcut worked, its icon was stale.
+# defined at runtime, which WDAC Dynamic Code Security refuses, and on those hosts the refresh
+# simply did not happen: the shortcut worked, its icon was stale. (Constrained Language Mode never
+# reaches it: WScript.Shell is not an allowed COM object there, so no shortcut is written.)
 #
 # This is cosmetic in both directions. A stale icon is not a broken install, and nothing in this
 # path may fail one, so every check below is as much about the rung staying silent as about it
