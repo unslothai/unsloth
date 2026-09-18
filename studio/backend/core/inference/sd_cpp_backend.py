@@ -507,6 +507,18 @@ def _card_lookup_inventory() -> dict:
         return get_physical_gpu_inventory(block = True)
 
 
+def _amd_inventory_rows(inventory: Optional[dict]) -> list:
+    """The inventory's AMD rows. ``index`` is vendor-local, and the ids here come from amd-smi, so an
+    Intel iGPU or NVIDIA card at the same index must not answer for an AMD one."""
+    return [
+        device
+        for device in ((inventory or {}).get("devices") or [])
+        if isinstance(device, dict)
+        and device.get("index") is not None
+        and device.get("vendor") == "amd"
+    ]
+
+
 def _physical_position_of(hip_index: int) -> "tuple[Optional[str], Optional[int]]":
     """``(name, position)`` for a HIP device id; a HIP id is NOT the inventory's `index`."""
     try:
@@ -515,11 +527,7 @@ def _physical_position_of(hip_index: int) -> "tuple[Optional[str], Optional[int]
         inventory = _card_lookup_inventory()
         if (inventory or {}).get("unknown"):
             return None, None
-        devices = [
-            device
-            for device in ((inventory or {}).get("devices") or [])
-            if isinstance(device, dict) and device.get("index") is not None
-        ]
+        devices = _amd_inventory_rows(inventory)
         hip_by_row = get_hip_id_by_gpu_index()
     except Exception:  # noqa: BLE001
         return None, None
@@ -1011,11 +1019,7 @@ def selected_card_identity(ordinal: "Optional[int]") -> "Optional[str]":
         inventory = _card_lookup_inventory()
         if (inventory or {}).get("unknown"):
             return None
-        devices = [
-            device
-            for device in ((inventory or {}).get("devices") or [])
-            if isinstance(device, dict) and device.get("index") is not None
-        ]
+        devices = _amd_inventory_rows(inventory)
         # ``physical_index`` is a HIP device id in every branch: unmasked it IS the torch ordinal,
         # masked it is what the composed mask resolved to. The inventory is keyed by amd-smi's own
         # discovery order, a DIFFERENT index space (amd.py's get_hip_id_by_gpu_index: "They coincide

@@ -2678,6 +2678,27 @@ class TestSelectedCardIndexSpaces:
         assert asyncio.run(_on_loop()) is None
         assert calls == [False]
 
+    def test_another_vendors_row_at_the_same_index_is_not_the_amd_card(self, monkeypatch):
+        """Inventory indices are vendor-local, and an Intel iGPU beside an AMD card is an ordinary
+        desktop. The iGPU's row 0 answered for AMD row 0 when it was listed first."""
+        from core.inference import sd_cpp_backend
+
+        devices = [
+            {"index": 0, "name": "Intel(R) UHD Graphics 770", "vendor": "intel"},
+            {
+                "index": 0,
+                "name": "AMD Radeon RX 7900 XTX",
+                "gfx_candidates": ["gfx1100"],
+                "vendor": "amd",
+            },
+        ]
+        _inventory_of(monkeypatch, devices, hip_by_row = {0: 0})
+        for variable in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(variable, raising = False)
+
+        assert sd_cpp_backend.selected_card_identity(0) == sd_cpp_backend._card_identity(devices[1])
+        assert sd_cpp_backend._physical_position_of(0) == ("AMD Radeon RX 7900 XTX", 0)
+
     def test_windows_ignores_a_stale_rocr_mask(self, monkeypatch):
         """Windows HIP has no ROCr layer, so ROCR_VISIBLE_DEVICES masks nothing there. Reading it
         would turn a leftover ``ROCR_VISIBLE_DEVICES=1`` into "ordinal 0 is card 1"."""
