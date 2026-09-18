@@ -1,6 +1,6 @@
 # Builds and publishes the AMD ROCm Unsloth Docker images: the training base
-# (docker/Dockerfile.rocm, :latest) and Studio on top of it
-# (docker/Dockerfile.studio-rocm, :studio).
+# (docker/Dockerfile.rocm, :latest) and Studio, JupyterLab and the notebooks on
+# top of it (docker/Dockerfile.studio-rocm, :studio).
 #
 # No GPU runner needed: the ROCm torch wheels do not probe a device at install
 # time, and the build-time check reads torch.version.hip, a constant baked into
@@ -31,6 +31,10 @@ on:
         default: ''
       unsloth_zoo_ref:
         description: 'unsloth-zoo git ref to bake in'
+        required: false
+        default: 'main'
+      notebooks_ref:
+        description: 'unslothai/notebooks git ref to bake into :studio (resolved to one commit)'
         required: false
         default: 'main'
       rocm_version:
@@ -81,6 +85,7 @@ jobs:
     outputs:
       unsloth_ref: ${{ steps.unsloth_ref.outputs.ref }}
       zoo_ref: ${{ steps.zoo_ref.outputs.ref }}
+      notebooks_commit: ${{ steps.notebooks.outputs.commit }}
       rocm_version: ${{ steps.build_args.outputs.rocm_version }}
       torch_index_url: ${{ steps.build_args.outputs.torch_index_url }}
       rocm_gfx: ${{ steps.build_args.outputs.rocm_gfx }}
@@ -154,6 +159,28 @@ jobs:
           echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
           echo "unsloth-zoo ref: ${SHA}"
 
+      # One commit for the notebooks the Studio image bakes, as docker-publish.yml
+      # does: the layer is keyed on this string, so a mutable "main" would be a
+      # cache hit on a later run and ship the old set under a new digest.
+      - name: Resolve unsloth/notebooks commit
+        id: notebooks
+        env:
+          INPUT_REF: ${{ github.event.inputs.notebooks_ref }}
+        run: |
+          REF="${INPUT_REF:-main}"
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+              SHA="$REF"
+          else
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/notebooks "$REF")"; then
+                  echo "::error::unslothai/notebooks unreachable; cannot freeze ref '${REF}' to a sha"
+                  exit 1
+              fi
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
+              [ -n "$SHA" ] || SHA="$REF"
+          fi
+          echo "commit=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "notebooks commit: ${SHA}"
+
       # :latest and the release tags name the DEFAULT build. A dispatch that
       # changed any input (an older ROCm, another index, a per-arch build) gets
       # SHA tags only, so it can never overwrite what `docker pull` hands out.
@@ -162,6 +189,7 @@ jobs:
         env:
           IN_UNSLOTH: ${{ github.event.inputs.unsloth_ref }}
           IN_ZOO: ${{ github.event.inputs.unsloth_zoo_ref }}
+          IN_NOTEBOOKS: ${{ github.event.inputs.notebooks_ref }}
           IN_ROCM: ${{ github.event.inputs.rocm_version }}
           IN_INDEX: ${{ github.event.inputs.torch_index_url }}
           IN_GFX: ${{ github.event.inputs.rocm_gfx }}
@@ -196,6 +224,7 @@ jobs:
           DEFAULTS=true
           [ -z "$IN_UNSLOTH" ] || DEFAULTS=false
           case "$IN_ZOO" in ""|main) ;; *) DEFAULTS=false ;; esac
+          case "$IN_NOTEBOOKS" in ""|main) ;; *) DEFAULTS=false ;; esac
           [ "$ROCM" = "$DEF_ROCM" ] || DEFAULTS=false
           [ "$INDEX" = "$DEF_INDEX" ] || DEFAULTS=false
           STABLE=$DEFAULTS
@@ -374,6 +403,7 @@ jobs:
             BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
             UNSLOTH_STUDIO_REF=${{ needs.prepare.outputs.unsloth_ref }}
             UNSLOTH_STUDIO_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
+            UNSLOTH_NOTEBOOKS_REF=${{ needs.prepare.outputs.notebooks_commit }}
 
       # The Dockerfile hands install.sh UNSLOTH_ALLOW_CPU=1 for the GPU-less build
       # only. Image-wide it would reach every process and turn off Unsloth's TRL

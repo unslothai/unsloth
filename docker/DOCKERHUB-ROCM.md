@@ -58,7 +58,7 @@ That runs a real 5-step LoRA on a 1B model and fails loudly if the GPU is not us
 | `sha-<commit>` | the same image, pinned to the commit it was built from |
 | `nightly` | the scheduled weekly build |
 | `gfx1150`, `gfx1151`, `gfx1152`, `gfx1200`, `gfx1201` | builds using AMD's per-architecture wheels, when published |
-| `studio` | `latest` plus Unsloth Studio's web UI on port 8000, from [`docker/Dockerfile.studio-rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.studio-rocm). Every tag above has a `-studio` twin built on the same base |
+| `studio` | `latest` plus Unsloth Studio's web UI on port 8000, JupyterLab with the Unsloth notebooks on port 8888 and key-only SSH, from [`docker/Dockerfile.studio-rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.studio-rocm). Every tag above has a `-studio` twin built on the same base |
 
 Pin a digest for anything reproducible. `latest` moves.
 
@@ -94,10 +94,10 @@ Included: PyTorch with ROCm, Unsloth, unsloth-zoo, transformers, TRL, PEFT, acce
 
 Not included in `latest`, unlike `unsloth/unsloth`: Unsloth Studio and its web UI, JupyterLab, prebuilt llama.cpp and whisper.cpp, vLLM and xformers. `latest` is a training image.
 
-The `studio` tag adds Unsloth Studio and a CPU llama.cpp for GGUF chat, still without JupyterLab, whisper.cpp, vLLM or xformers. Training and the UI use the GPU; GGUF chat runs on the CPU, since a ROCm llama.cpp bundle is per-architecture and would pin the image to one card. Studio's data (accounts, chats, outputs) lives at `/opt/unsloth-studio`, so mount a volume there to keep it, with `GPU_FLAGS` set as in the quick start:
+The `studio` tag adds Unsloth Studio, JupyterLab with the Unsloth notebooks (the `AMD-*` set first), key-only SSH for cloud hosts and a CPU llama.cpp for GGUF chat, still without whisper.cpp, vLLM or xformers. Training, the notebooks and the UI use the GPU; GGUF chat runs on the CPU, since a ROCm llama.cpp bundle is per-architecture and would pin the image to one card. Studio's data (accounts, chats, outputs) lives at `/opt/unsloth-studio`, so mount a volume there to keep it, with `GPU_FLAGS` set as in the quick start:
 
 ```bash
-docker run --rm $GPU_FLAGS --ipc=host -p 127.0.0.1:8000:8000 \
+docker run --rm $GPU_FLAGS --ipc=host -p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888 \
   -v unsloth-studio-rocm:/opt/unsloth-studio \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth-rocm:studio

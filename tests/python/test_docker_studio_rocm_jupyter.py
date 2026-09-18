@@ -29,6 +29,7 @@ CUDA_ENTRYPOINT = DOCKER / "entrypoint.sh"
 SUPERVISORD = DOCKER / "supervisord.conf"
 LAUNCH = DOCKER / "studio_launch.sh"
 DOCKERIGNORE = DOCKER / ".dockerignore"
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish-rocm.yml"
 LABEXT_PKG = DOCKER / "jupyter" / "unsloth_labext" / "package.json"
 BRANDING = DOCKER / "jupyter" / "unsloth_branding.py"
 
@@ -283,6 +284,31 @@ def test_the_entrypoint_syncs_the_notebooks_before_every_exec():
         assert (
             preceding == "sync_notebooks"
         ), f"exec at offset {pos} is not preceded by sync_notebooks but by {preceding!r}"
+
+
+# ── the publisher ────────────────────────────────────────────────────────────
+
+
+def test_the_publisher_passes_every_build_arg_the_final_stage_declares():
+    """Each ARG after the final FROM is a ref a RUN layer is keyed on. One the
+    publisher leaves at its default bakes a mutable 'main' that docker matches on
+    the next run, so the published image would carry the first build's bits."""
+    import yaml
+
+    text = _read(ROCM_STUDIO)
+    final = text[text.rindex("\nFROM ") :]
+    declared = {m.group(1) for m in re.finditer(r"^ARG (\w+)=", final, re.M)}
+    assert declared, "no ARG after the final FROM"
+
+    wf = yaml.safe_load(_read(WORKFLOW))
+    step = next(s for s in wf["jobs"]["build-studio"]["steps"] if s.get("id") == "build")
+    assert step["with"]["file"] == "./docker/Dockerfile.studio-rocm"
+    passed = dict(ln.split("=", 1) for ln in step["with"]["build-args"].splitlines() if ln)
+    assert declared <= set(passed), declared - set(passed)
+    # the base by digest, so a newer run's :latest cannot slip under this build
+    assert "@${{ needs.build.outputs.digest }}" in passed["BASE_IMAGE"]
+    for name in declared:
+        assert passed[name].startswith("${{ needs.prepare.outputs."), (name, passed[name])
 
 
 # ── the build context ────────────────────────────────────────────────────────

@@ -614,7 +614,16 @@ class TestRocmEntrypoint:
         out.write_text("")
         env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(out)}
         env.update({k: str(v) for k, v in wf["env"].items()})
-        env.update({"IN_UNSLOTH": "", "IN_ZOO": "", "IN_ROCM": "", "IN_INDEX": "", "IN_GFX": ""})
+        env.update(
+            {
+                "IN_UNSLOTH": "",
+                "IN_ZOO": "",
+                "IN_NOTEBOOKS": "",
+                "IN_ROCM": "",
+                "IN_INDEX": "",
+                "IN_GFX": "",
+            }
+        )
         env.update(inputs)
         proc = subprocess.run(
             ["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True
@@ -680,6 +689,13 @@ class TestRocmEntrypoint:
         assert args["BASE_IMAGE"].endswith("@${{ needs.build.outputs.digest }}"), args
         assert args["UNSLOTH_STUDIO_REF"] == "${{ needs.prepare.outputs.unsloth_ref }}"
         assert args["UNSLOTH_STUDIO_ZOO_REF"] == "${{ needs.prepare.outputs.zoo_ref }}"
+        # the notebooks too: the layer is keyed on this string, so a mutable ref
+        # would be a cache hit on the next run and ship the old set
+        assert args["UNSLOTH_NOTEBOOKS_REF"] == "${{ needs.prepare.outputs.notebooks_commit }}"
+        prepare = wf["jobs"]["prepare"]
+        assert prepare["outputs"]["notebooks_commit"] == "${{ steps.notebooks.outputs.commit }}"
+        resolve = next(s for s in prepare["steps"] if s.get("id") == "notebooks")
+        assert "git ls-remote https://github.com/unslothai/notebooks" in resolve["run"]
 
         def tag_lines(job):
             meta = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == "meta")
@@ -695,6 +711,17 @@ class TestRocmEntrypoint:
             assert s_ln.split(",enable=", 1)[1:] == b_ln.split(",enable=", 1)[1:], (s_ln, b_ln)
         # the page describes both images, so it syncs only once both moved
         assert "tag-studio" in wf["jobs"]["hub-readme"]["needs"]
+
+    def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
+        """A dispatch that bakes another notebooks ref is an experiment like any
+        other override: :studio and :latest name the default build only."""
+        for ref in ("", "main"):
+            rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = ref)
+            assert rc == 0 and got["stable"] == "true", (ref, out)
+        rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = "some-branch")
+        assert rc == 0 and got["stable"] == "false", out
+        rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = "some-branch", IN_GFX = "gfx1151")
+        assert rc == 0 and got["gfx_tag"] == "false", out
 
     def test_the_gfx_tag_needs_every_other_input_at_its_default(self):
         """A feature-branch ref plus rocm_gfx=gfx1151 must not replace the public
