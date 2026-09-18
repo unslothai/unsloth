@@ -1824,7 +1824,7 @@ class TrainingBackend:
                         # the worker would then train on past it holding the GPU.
                         if is_process_shutting_down():
                             logger.info(
-                                "Studio is shutting down; not starting training worker for %s",
+                                "Unsloth is shutting down; not starting training worker for %s",
                                 start_request_id,
                             )
                             return False
@@ -1841,7 +1841,7 @@ class TrainingBackend:
                         # adoption ran first, so the worker is in the sweep record for as
                         # long as it exists.
                         if is_process_shutting_down():
-                            raise RuntimeError("Studio is shutting down")
+                            raise RuntimeError("Unsloth is shutting down")
                     except Exception:
                         logger.error(
                             "Could not keep the training subprocess; terminating it",
@@ -2579,7 +2579,7 @@ class TrainingBackend:
                         # this respawn after the shutdown sweep has taken its snapshot.
                         if is_process_shutting_down():
                             raise RuntimeError(
-                                "Studio is shutting down; not respawning the training worker"
+                                "Unsloth is shutting down; not respawning the training worker"
                             )
                         new_proc.start()
                         adopt_pid(new_proc.pid)
@@ -2602,7 +2602,7 @@ class TrainingBackend:
                                     "could not reap the new training worker", exc_info = True
                                 )
                             raise RuntimeError(
-                                "Studio is shutting down; not respawning the training worker"
+                                "Unsloth is shutting down; not respawning the training worker"
                             )
                 except Exception:
                     logger.error("Failed to respawn training subprocess", exc_info = True)

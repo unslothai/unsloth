@@ -1846,6 +1846,7 @@ class FastSentenceTransformer(FastModel):
             # unsloth.save closes an import cycle, which is why the two shims above are
             # deferred too. See tests/test_cold_import_order.py.
             from ..save import _is_adapter_save_method
+
             if _is_adapter_save_method(save_method):
                 # Refused because nothing here writes base weights: self.save_pretrained writes the
                 # sentence-transformers scaffolding and, for a PEFT auto_model, an adapter, and the

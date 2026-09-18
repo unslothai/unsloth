@@ -198,7 +198,6 @@ class TestTheOtherTwoLayoutKnobs:
 class TestTheContract:
     def test_the_new_parameters_are_all_optional(self):
         import inspect
-
         signature = inspect.signature(models_routes.get_kv_cache_estimate)
         for name in ("flash_attn", "kv_unified", "swa_full", "no_mmproj_offload"):
             assert name in signature.parameters, f"{name} is not on the route"

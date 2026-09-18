@@ -245,7 +245,7 @@ export const ko = {
   settings: {
     accounts: {
       title: "계정",
-      description: "개별 Studio 계정을 만듭니다. 새 사용자는 일회용 설정 코드로 로그인한 뒤 비밀번호를 정합니다.",
+      description: "개별 Unsloth Studio 계정을 만듭니다. 새 사용자는 일회용 설정 코드로 로그인한 뒤 비밀번호를 정합니다.",
       username: "사용자 이름",
       create: "계정 만들기",
       setupCode: "설정 코드",
@@ -300,9 +300,10 @@ export const ko = {
     },
     keyboardShortcuts: {
       title: "키보드 단축키",
-      description:
-        "단축키를 바꾸거나, 지워서 해당 조합을 브라우저나 운영체제에 넘길 수 있습니다.",
       searchPlaceholder: "단축키 검색…",
+      keystrokePlaceholder: "단축키를 눌러 검색",
+      searchByKeystrokes: "키 입력으로 검색",
+      searchByName: "이름으로 검색",
       noResults: "검색과 일치하는 단축키가 없습니다.",
       unassigned: "지정 안 됨",
       recording: "키를 누르세요…",
@@ -499,6 +500,14 @@ export const ko = {
           label: "메시지 보내기",
           description: "입력창의 내용을 보냅니다",
         },
+        queueMessage: {
+          label: "메시지 대기열에 추가",
+          description: "초안을 대기열 끝으로 보냅니다",
+        },
+        steerMessage: {
+          label: "응답 조정",
+          description: "현재 응답을 중단하고 초안을 다음으로 보냅니다",
+        },
         cycleReasoningEffort: {
           label: "추론 강도 순환",
           description: "추론 강도 단계를 차례로 바꿉니다",
@@ -565,7 +574,7 @@ export const ko = {
       openLogsFolderFailed: "로그 폴더를 열 수 없습니다.",
       exportFailed: "로그를 다운로드할 수 없습니다.",
       exportTooOld: "실행 중인 Unsloth 백엔드가 너무 오래되어 로그를 내보낼 수 없습니다. 해당 백엔드를 업데이트한 뒤 다시 시작하세요.",
-      exportForbidden: "모든 로그를 다운로드하려면 로그인된 Studio 세션이 필요합니다. API 키만으로는 할 수 없습니다.",
+      exportForbidden: "모든 로그를 다운로드하려면 로그인된 Unsloth Studio 세션이 필요합니다. API 키만으로는 할 수 없습니다.",
       keywords: "디버그 디버깅 로그 오류 에러 충돌 스택 추적 진단 문제 해결 debug log logs error",
     },
     voice: {
@@ -863,6 +872,9 @@ export const ko = {
         showLoadedModels: "로드된 모델 표시기",
         showLoadedModelsDescription:
           "현재 메모리에 있는 모든 모델(채팅, 음성, 이미지, 비디오)을 오른쪽 아래 작은 카드에 표시하고, 각각을 해제하는 버튼을 제공합니다.",
+        showWhisperUpdates: "whisper.cpp 업데이트 알림",
+        showWhisperUpdatesDescription:
+          "음성 인식 모델을 위한 최신 whisper.cpp 빌드가 있으면 알립니다. 오디오를 전사하지 않는다면 끄세요.",
       },
       startup: {
         sectionTitle: "시작",

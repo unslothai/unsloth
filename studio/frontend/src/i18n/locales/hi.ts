@@ -248,7 +248,7 @@ export const hi = {
   settings: {
     accounts: {
       title: "खाते",
-      description: "निजी Studio खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
+      description: "निजी Unsloth Studio खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
       username: "उपयोगकर्ता नाम",
       create: "खाता बनाएँ",
       setupCode: "सेटअप कोड",
@@ -303,9 +303,10 @@ export const hi = {
     },
     keyboardShortcuts: {
       title: "कीबोर्ड शॉर्टकट",
-      description:
-        "कोई भी शॉर्टकट बदलें, या उसे हटाकर वह कुंजी-संयोजन अपने ब्राउज़र या OS के लिए खाली करें।",
       searchPlaceholder: "शॉर्टकट खोजें…",
+      keystrokePlaceholder: "खोजने के लिए शॉर्टकट दबाएँ",
+      searchByKeystrokes: "कीस्ट्रोक से खोजें",
+      searchByName: "नाम से खोजें",
       noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
       unassigned: "असाइन नहीं",
       recording: "कुंजियाँ दबाएँ…",
@@ -502,6 +503,14 @@ export const hi = {
           label: "संदेश भेजें",
           description: "लिखने के बॉक्स की सामग्री भेजें",
         },
+        queueMessage: {
+          label: "संदेश कतार में डालें",
+          description: "ड्राफ़्ट को कतार के अंत में भेजें",
+        },
+        steerMessage: {
+          label: "उत्तर बदलें",
+          description: "मौजूदा उत्तर रोककर ड्राफ़्ट अगला भेजें",
+        },
         cycleReasoningEffort: {
           label: "तर्क प्रयास बदलें",
           description: "तर्क प्रयास के स्तरों में क्रमशः बदलें",
@@ -568,7 +577,7 @@ export const hi = {
       openLogsFolderFailed: "लॉग फ़ोल्डर नहीं खोला जा सका।",
       exportFailed: "लॉग डाउनलोड नहीं किए जा सके।",
       exportTooOld: "चल रहा Unsloth बैकएंड लॉग निर्यात करने के लिए बहुत पुराना है। उस बैकएंड को अपडेट करें और पुनः आरंभ करें।",
-      exportForbidden: "सभी लॉग डाउनलोड करने के लिए साइन-इन किया हुआ Studio सत्र चाहिए। केवल API कुंजी पर्याप्त नहीं है।",
+      exportForbidden: "सभी लॉग डाउनलोड करने के लिए साइन-इन किया हुआ Unsloth Studio सत्र चाहिए। केवल API कुंजी पर्याप्त नहीं है।",
       keywords: "डिबग डिबगिंग लॉग त्रुटि गड़बड़ी क्रैश ट्रेसबैक निदान समस्या निवारण debug log logs error",
     },
     voice: {
@@ -869,6 +878,9 @@ export const hi = {
         showLoadedModels: "लोड किए गए मॉडल का संकेतक",
         showLoadedModelsDescription:
           "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
+        showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
+        showWhisperUpdatesDescription:
+          "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
       },
       startup: {
         sectionTitle: "स्टार्टअप",
