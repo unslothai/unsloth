@@ -72,6 +72,13 @@ function isOurs(id: string): boolean {
   return !storageWritable && unpersisted.has(id);
 }
 
+/** An id the record now carries is no longer ours to re-add, whoever wrote it. Without this a peer
+ *  persisting the same model and later unpinning it would see the pin resurrected. */
+function retirePersisted(stored: readonly string[]): void {
+  if (unpersisted.size === 0) return;
+  for (const id of stored) unpersisted.delete(id);
+}
+
 /** The record to apply an edit to. While writes are failing the record is still FRESH for other
  *  windows and only stale for this one's own unpersisted pins, so it is merged rather than
  *  dropped: another window's additions and removals both land, and only the ids this session
@@ -187,6 +194,7 @@ if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === KEY || event.key === null) {
       const next = readPinned();
+      retirePersisted(next);
       if (dragSnapshot !== null) {
         dragExternalOrder = next;
         return;

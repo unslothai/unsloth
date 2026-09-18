@@ -197,3 +197,22 @@ test("a failed pin stays on screen when a peer writes", () => {
     `the row would render unpinned while the merge still holds it: ${JSON.stringify(pins.getState().pinned)}`,
   );
 });
+
+test("a peer persisting our failed pin hands it back to the record", () => {
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+  } finally {
+    storage.set = realSet;
+  }
+  externalWrite([B, A]); // a peer pins the same model, so the record carries it now
+  externalWrite([A]); // and later unpins it
+  assert.ok(
+    !pins.getState().pinned.includes(B),
+    `a peer's removal was undone by a stale unpersisted entry: ${JSON.stringify(pins.getState().pinned)}`,
+  );
+});
