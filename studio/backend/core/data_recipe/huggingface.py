@@ -49,25 +49,10 @@ def _resolve_recipe_artifact_path(artifact_path: str) -> Path:
     return resolved
 
 
-def _drop_token_keys(value: object) -> None:
-    if isinstance(value, dict):
-        value.pop("token", None)
-        for item in value.values():
-            _drop_token_keys(item)
-    elif isinstance(value, list):
-        for item in value:
-            _drop_token_keys(item)
-
-
-def _scrub_seed_source_tokens(builder_config: object) -> None:
-    if not isinstance(builder_config, dict):
-        return
-    for config in (builder_config, builder_config.get("data_designer")):
-        if not isinstance(config, dict):
-            continue
-        seed_config = config.get("seed_config")
-        if isinstance(seed_config, dict):
-            _drop_token_keys(seed_config.get("source"))
+def _drop_seed_token(builder_config: dict) -> None:
+    # The hf and github_repo seed sources save their token in plain text.
+    seed_config = builder_config.get("data_designer", {}).get("seed_config") or {}
+    seed_config.get("source", {}).pop("token", None)
 
 
 def publish_recipe_dataset(
@@ -117,7 +102,7 @@ def publish_recipe_dataset(
         if builder_config_path.exists():
             with builder_config_path.open(encoding = "utf-8") as fh:
                 builder_config = json.load(fh)
-            _scrub_seed_source_tokens(builder_config)
+            _drop_seed_token(builder_config)
 
         card = DataDesignerDatasetCard.from_metadata(
             metadata = metadata,

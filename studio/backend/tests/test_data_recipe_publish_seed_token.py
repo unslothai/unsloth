@@ -17,7 +17,6 @@ _SOURCES = [
         "endpoint": "https://huggingface.co",
     },
     {"seed_type": "github_repo", "repos": ["org/name"], "token": "ghp_FAKEFAKEFAKE"},
-    {"seed_type": "custom", "auth": [{"token": "ghp_FAKEFAKEFAKE"}]},
 ]
 
 
@@ -85,29 +84,35 @@ def _publish(monkeypatch, tmp_path, builder_config):
 
 
 @pytest.mark.parametrize("source", _SOURCES)
-@pytest.mark.parametrize("wrapped", [True, False])
-def test_publish_keeps_the_seed_token_out_of_the_hub(monkeypatch, tmp_path, source, wrapped):
+def test_publish_keeps_the_seed_token_out_of_the_hub(monkeypatch, tmp_path, source):
     recipe = {
         "columns": [{"name": "c", "column_type": "expression", "token": "kept"}],
         "seed_config": {"source": source, "sampling_strategy": "ordered"},
     }
-    builder_config = {"data_designer": recipe} if wrapped else recipe
+    builder_config = {"data_designer": recipe, "library_version": "0.5.4"}
     seen = _publish(monkeypatch, tmp_path, builder_config)
 
     assert seen["uploaded_name"] == "builder_config.json"
     assert "FAKEFAKEFAKE" not in seen["uploaded"]
     assert "FAKEFAKEFAKE" not in seen["card"]
 
-    uploaded = json.loads(seen["uploaded"])
-    uploaded = uploaded["data_designer"] if wrapped else uploaded
     expected_source = {k: v for k, v in source.items() if k != "token"}
-    if "auth" in expected_source:
-        expected_source["auth"] = [{}]
-    assert uploaded["seed_config"] == {"source": expected_source, "sampling_strategy": "ordered"}
-    assert uploaded["columns"] == recipe["columns"]
+    assert json.loads(seen["uploaded"]) == {
+        "data_designer": {
+            **recipe,
+            "seed_config": {"source": expected_source, "sampling_strategy": "ordered"},
+        },
+        "library_version": "0.5.4",
+    }
 
     on_disk = json.loads((tmp_path / "builder_config.json").read_text(encoding = "utf-8"))
     assert on_disk == builder_config
+
+
+def test_publish_without_a_seed_uploads_the_config_unchanged(monkeypatch, tmp_path):
+    builder_config = {"data_designer": {"columns": [], "seed_config": None}}
+    seen = _publish(monkeypatch, tmp_path, builder_config)
+    assert json.loads(seen["uploaded"]) == builder_config
 
 
 def test_publish_without_a_builder_config_uploads_none(monkeypatch, tmp_path):
