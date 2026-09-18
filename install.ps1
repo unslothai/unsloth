@@ -3851,9 +3851,13 @@ exit 1
     # files, so neither explains a denied folder.
     #
     # When Defender is not it, name whichever antivirus is registered and running
-    # instead: third-party suites ship the same feature under their own names
-    # (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
-    # user cannot act on advice that does not say which product to open.
+    # instead: third-party suites ship the same protected-folders feature under
+    # their own product names, and the user cannot act on advice that does not say
+    # which product to open. Which suite ships what is recorded in
+    # tests/studio/test_installer_av_shapes.py and deliberately not repeated here,
+    # because this file is scanned in full before a line of it runs and a comment
+    # listing security products raises the score of the very file explaining it.
+    # Nothing below hard-codes a product: it reads what SecurityCenter2 registered.
     #
     # Answers "" whenever it cannot tell, so a machine with no Defender module
     # and no SecurityCenter registration reads the same as one that says no.
@@ -4033,10 +4037,26 @@ exit 1
             $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
             $moved = $false
             try {
-                Move-Item -LiteralPath $dir -Destination $asideDir -ErrorAction Stop
+                # [System.IO.Directory]::Move, not Move-Item. Move-Item falls back to
+                # copy-then-delete when the rename fails, which creates $asideDir and then
+                # dies on the unreadable contents, leaving a stray llama.cpp.denied-* folder
+                # beside the original on every run. Directory.Move is a bare rename: it
+                # either moves the tree or throws having created nothing.
+                # Measured on windows-latest, denying each shape on the folder itself:
+                #   (OI)(CI)(RX)  rename refused, Move-Item left a stray folder
+                #   (OI)(CI)(R)   rename refused, Move-Item left a stray folder
+                #   (RX)          rename refused, Move-Item left a stray folder
+                #   (DE)          rename SUCCEEDED, both ways
+                # So on Windows a read denial always refuses the rename (the open asks for
+                # SYNCHRONIZE, which every read deny removes) and this recovery cannot fire;
+                # denying DELETE, which sounds like the blocker, does not stop it. On POSIX
+                # the rename needs only write+execute on the parent, so the recovery is real
+                # there and is why this stays rather than being deleted.
+                [System.IO.Directory]::Move($dir, $asideDir)
                 $moved = $true
             } catch {
-                # Expected when the denial also covers rename; fall through to guidance.
+                # Expected when the denial covers the rename; fall through to guidance.
+                # Nothing to clean up: Directory.Move creates nothing when it throws.
             }
             if ($moved) {
                 step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
