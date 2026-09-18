@@ -474,17 +474,44 @@ jobs:
         # transfer is otherwise unbounded and lands on the job clock.
         timeout-minutes: 8
         with:
-          name: notebooks-colab
-          # The freeze is the pin set, so it is what the downloads depend on. The
-          # workflow comes too because the seed step rewrites those pins in place
-          # -- CPU index mapping, skips, spoofs -- so an edit there changes what
-          # gets installed without touching the freeze.
+          # `-cpu`, not `notebooks-colab`, and the suffix is load-bearing rather
+          # than descriptive: it retires the old prefix so nothing falls back to
+          # it.
+          #
+          # pip's HTTP cache is cumulative and pip never evicts from it, while
+          # the save step saves the whole directory. With restore-keys on, a run
+          # that misses its exact key still restores the PREVIOUS generation's
+          # wheels into that directory and saves them straight back out, so
+          # dropping pins from the install set cannot shrink the entry. Measured
+          # on the two live generations: 7,486,810,247 bytes on 2026-09-15 and
+          # 7,486,845,334 on 2026-09-18, 35 KB apart, because the second run
+          # inherited the first instead of re-downloading 5 GiB.
+          #
+          # So #11270 removed 39 pins and freed nothing. A one-time prefix change
+          # is what collects it: the next run on main starts from an empty pip
+          # directory and saves only what the trimmed set actually downloads.
+          # Costs one cold install. Renaming this job rather than bumping the
+          # shared `v2` segment on purpose -- v3 would invalidate all 13 pip
+          # families at once AND fall outside cache-janitor.yml's `pip-v2-` glob,
+          # which would leave the new entries unpruneable.
+          name: notebooks-colab-cpu
+          # Everything the seed step READS, or the key cannot represent what the
+          # job installs. The freeze is the pin set. The workflow comes too
+          # because the seed step rewrites those pins in place. And the mapping
+          # is where the rewrites, skips and spoofs actually live -- it was
+          # missing here, so every edit to it (#11270 among them) changed the
+          # install while the key stayed put, the restore hit exactly, and
+          # pip-cache-save skipped on `cache-hit == 'true'`. A stale entry cannot
+          # serve wrong CONTENT, since pip's cache is addressed by URL and hash,
+          # but it can and did pin the entry's SIZE to a pin set that no longer
+          # exists.
           #
           # api-introspect above keys on the workflow alone because it pins inline.
           # This job does not, and keying it on the workflow alone would rebuild
           # 709 downloads for an unrelated edit to any other job in this file.
           key-files: |
             unsloth/scripts/data/colab_pip_freeze.gpu.txt
+            unsloth/scripts/data/colab_to_cpu_pin.json
             unsloth/.github/workflows/notebooks-ci.yml
 
       - name: Seed Colab-shaped venv from pip-freeze (CPU-mapped)
