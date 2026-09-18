@@ -7904,16 +7904,36 @@ MACOS_LOAD_PROBE_KEY = "macos_load_probe"
 
 
 def macos_product_version() -> str:
-    """The full macOS product version, patch included: "15.5.1", not (15, 5).
+    """The macOS identity the dyld shared cache actually tracks, as one string.
 
     host_profile records parse_macos_version, which is (major, minor) by design --
-    that is the right granularity for the minos comparison. It is the wrong
-    granularity for "can this image still load": since Big Sur the system libraries
-    are a dyld shared cache blob, and Apple replaces that blob in point releases and
-    in Rapid Security Responses. Both leave (major, minor) untouched, so the probe
-    skip has to compare something finer or it will outlive the loader it was taken on.
+    right for the minos comparison, wrong for "can this image still load": since Big
+    Sur the system libraries are a dyld shared cache blob, and Apple replaces that
+    blob in point releases and in Rapid Security Responses.
+
+    A Rapid Security Response does NOT move ProductVersion, which is all
+    platform.mac_ver() reads: 13.3.1 (a) reports ProductVersion 13.3.1 with the "(a)"
+    in ProductVersionExtra and the build at 22E772610a instead of 22E261. Reading
+    SystemVersion.plist has the same blind spot and is additionally stale for an RSR
+    (osquery/osquery#8008), so ask sw_vers, which reports all three.
     """
+    fields: list[str] = []
+    for flag in ("--productVersion", "--productVersionExtra", "--buildVersion"):
+        try:
+            done = subprocess.run(
+                ["/usr/bin/sw_vers", flag],
+                capture_output = True, text = True, timeout = 10, check = False,
+            )
+        except Exception:  # noqa: BLE001
+            fields = []
+            break
+        # --productVersionExtra exits non-zero when no RSR is installed, and did not
+        # exist before macOS 13; absent is a value, not a failure.
+        fields.append(done.stdout.strip() if done.returncode == 0 else "")
+    if fields and fields[0]:
+        return " ".join(f for f in fields if f)
     try:
+        # sw_vers unavailable: the product version alone still catches a point release.
         return str(platform.mac_ver()[0] or "").strip()
     except Exception:  # noqa: BLE001
         return ""
