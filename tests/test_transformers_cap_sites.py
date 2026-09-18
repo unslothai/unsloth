@@ -875,24 +875,23 @@ def _newest_published_zoo_transformers_ceiling(timeout: float = 10.0):
     if not released:
         return None
 
-    # The zoo splits transformers by platform marker. Ordinary (non Apple Silicon)
-    # installs get the widest line, so the governing ceiling is the highest one declared.
-    ceilings = []
+    # The zoo splits transformers by platform marker, and ordinary (non Apple Silicon)
+    # installs get the widest line. Whole SpecifierSets are kept rather than a bare ceiling
+    # Version: `<5.17.0` and `<=5.17.0` name the same number and mean different things, and
+    # collapsing them said a zoo declaring `<5.17.0` covered our `<=5.17.0` window and
+    # expired the deferral on a release that still cannot resolve our ceiling.
+    windows = []
     for raw in info.get("requires_dist") or []:
         try:
             req = Requirement(raw)
         except InvalidRequirement:
             continue
-        if req.name.lower() != "transformers":
+        if req.name.lower() != "transformers" or not req.specifier:
             continue
-        for spec in req.specifier:
-            if spec.operator in ("<=", "=="):
-                ceilings.append(Version(str(spec.version)))
-            elif spec.operator == "<":
-                ceilings.append(Version(str(spec.version)))
-    if not ceilings:
+        windows.append(req.specifier)
+    if not windows:
         return None
-    return Version(released), max(ceilings)
+    return Version(released), windows
 
 
 def test_the_zoo_deferral_expires_when_the_zoo_release_ships() -> None:
@@ -923,14 +922,17 @@ def test_the_zoo_deferral_expires_when_the_zoo_release_ships() -> None:
     if published is None:
         pytest.skip("PyPI could not be asked for unsloth_zoo, so the deferral stands")
 
-    zoo_version, zoo_ceiling = published
+    zoo_version, zoo_windows = published
     declared = _ceiling(_declared_window())
-    assert zoo_ceiling < declared, (
-        f"unsloth_zoo {zoo_version} is published and admits transformers up to "
-        f"{zoo_ceiling}, which covers the {declared} ceiling declared here, so the "
-        f"deferral is over. Set ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP to {zoo_version} "
-        f"and raise the unsloth_zoo floor in pyproject.toml to it in the same commit; "
-        f"that re-enables "
+    # Membership, not a number comparison: the question is whether the published zoo can
+    # actually resolve the exact ceiling declared here, which `<5.17.0` cannot and
+    # `<=5.17.0` can.
+    covering = [str(window) for window in zoo_windows if window.contains(declared)]
+    assert not covering, (
+        f"unsloth_zoo {zoo_version} is published and admits transformers {declared} "
+        f"({', '.join(covering)}), the exact ceiling declared here, so the deferral is "
+        f"over. Set ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP to {zoo_version} and raise the "
+        f"unsloth_zoo floor in pyproject.toml to it in the same commit; that re-enables "
         f"test_the_declared_zoo_floor_can_supply_the_declared_transformers_window, which "
         f"is what actually checks the two windows agree."
     )
