@@ -321,6 +321,13 @@ jobs:
                 # second copy causes on every other family. Same trade as the
                 # CodeQL rule above: keep is a budget dial, and this family spends
                 # more of it than the hit it buys is worth.
+                #
+                # The glob is deliberately a prefix and not the exact job name:
+                # it has to keep matching `notebooks-colab-cpu`, and any further
+                # suffix, because retiring the prefix is how that job collects a
+                # trim at all (see the comment on its `name` in notebooks-ci.yml).
+                # Each retired prefix is then its own family here, so keep=1
+                # drains it to one entry and the 7-day idle timer takes the last.
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{64}$//'); fkeep=1 ;;
               pip-v2-*|uv-*|fe-dist-*)
                 # Strip only the trailing dependency hash. Everything before it --
