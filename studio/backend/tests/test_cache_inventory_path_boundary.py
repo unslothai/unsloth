@@ -380,12 +380,27 @@ def test_orphan_companions_keep_their_repo_ids(monkeypatch):
     assert response_leaks_host_path(payload, [HOST_ROOT]) is None
 
 
-def test_download_progress_hides_the_cache_dir_it_measured(monkeypatch):
-    async def _progress(
-        repo_id,
-        expected_bytes = 0,
-        hf_token = None,
-    ):
+@pytest.mark.parametrize(
+    ("client", "route", "reader", "answers_with_a_reference"),
+    [
+        (_hub, "/api/hub/download-progress", "get_download_progress_response", True),
+        (_models, "/api/models/download-progress", "get_download_progress_response", False),
+        (
+            _models,
+            "/api/models/gguf-download-progress",
+            "get_gguf_download_progress_response",
+            False,
+        ),
+    ],
+    ids = ("hub", "compat", "compat-gguf"),
+)
+def test_download_progress_hides_the_cache_dir_it_measured(
+    monkeypatch, client, route, reader, answers_with_a_reference
+):
+    """The measurement is taken FROM the cache directory, so every route that reports it -- the
+    current one and both compat aliases -- has to drop the path on the way out."""
+
+    async def _progress(repo_id, **_kwargs):
         return {
             "repo_id": repo_id,
             "downloaded_bytes": 10,
@@ -397,15 +412,12 @@ def test_download_progress_hides_the_cache_dir_it_measured(monkeypatch):
 
     from hub.services.models import downloads
 
-    monkeypatch.setattr(downloads, "get_download_progress_response", _progress)
-    payload = (
-        _hub(via_api_key = True)
-        .get("/api/hub/download-progress", params = {"repo_id": "org/repo"})
-        .json()
-    )
+    monkeypatch.setattr(downloads, reader, _progress)
+    payload = client(via_api_key = True).get(route, params = {"repo_id": "org/repo"}).json()
     assert payload["cache_path"] == ""
-    assert payload["cache_ref"].startswith("ref:")
     assert response_leaks_host_path(payload, [HOST_ROOT]) is None
+    if answers_with_a_reference:
+        assert payload["cache_ref"].startswith("ref:")
 
 
 def test_an_api_key_can_still_delete_by_repo_id_without_ever_seeing_a_path(monkeypatch):
@@ -678,54 +690,6 @@ def test_the_compat_scan_folder_list_is_not_disclosed(monkeypatch):
     assert response_leaks_host_path(payload, [HOST_ROOT]) is None
     ui = _models(via_api_key = False).get("/api/models/scan-folders").json()
     assert ui["folders"][0]["path"] == f"{HOST_ROOT}/extra"
-
-
-def test_the_compat_download_progress_hides_the_cache_dir(monkeypatch):
-    async def _progress(
-        repo_id,
-        expected_bytes = 0,
-        hf_token = None,
-    ):
-        return {
-            "repo_id": repo_id,
-            "downloaded_bytes": 10,
-            "expected_bytes": 100,
-            "progress": 0.1,
-            "complete": False,
-            "cache_path": REPO_DIR,
-        }
-
-    from hub.services.models import downloads
-
-    monkeypatch.setattr(downloads, "get_download_progress_response", _progress)
-    payload = (
-        _models(via_api_key = True)
-        .get("/api/models/download-progress", params = {"repo_id": "org/repo"})
-        .json()
-    )
-    assert payload["cache_path"] == ""
-    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
-
-
-def test_the_compat_gguf_download_progress_hides_the_cache_dir(monkeypatch):
-    async def _progress(
-        repo_id,
-        variant = "",
-        expected_bytes = 0,
-        hf_token = None,
-    ):
-        return {"repo_id": repo_id, "progress": 0.5, "cache_path": REPO_DIR}
-
-    from hub.services.models import downloads
-
-    monkeypatch.setattr(downloads, "get_gguf_download_progress_response", _progress)
-    payload = (
-        _models(via_api_key = True)
-        .get("/api/models/gguf-download-progress", params = {"repo_id": "org/repo"})
-        .json()
-    )
-    assert payload["cache_path"] == ""
-    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
 
 
 def test_the_compat_local_scan_is_not_disclosed(monkeypatch):
