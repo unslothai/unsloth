@@ -138,3 +138,40 @@ test("facts come back in the declared field order", () => {
   const expected = MODEL_INFO_FIELDS.filter((f) => keys.includes(f));
   assert.deepEqual(keys, expected);
 });
+
+// Rounding straight to whole millions printed "0M" for anything under 500K, i.e. a tokenizer or
+// a small embedding model reported as having no parameters at all.
+test("small parameter counts do not round to zero", () => {
+  const paramsValue = (totalParams: number) =>
+    modelInfoFacts({ id: "a/b", totalParams }).find((f) => f.key === "params")
+      ?.value;
+  assert.equal(paramsValue(8_030_000_000), "8B");
+  assert.equal(paramsValue(1_500_000), "2M");
+  assert.equal(paramsValue(400_000), "0.4M");
+  assert.equal(paramsValue(30_000), "30,000");
+  for (const n of [1, 30_000, 400_000, 499_999]) {
+    assert.notEqual(paramsValue(n), "0M", String(n));
+  }
+});
+
+// The number is right either way; what the reader needs is which number it is, since a
+// quantized download is a fraction of the checkpoint.
+test("a full-precision size says so, a curated one does not", () => {
+  const estimate = modelInfoFacts({
+    id: "a/b",
+    sizeBytes: 16_060_522_496,
+    sizeIsFullPrecision: true,
+  }).find((f) => f.key === "size");
+  assert.ok(estimate);
+  assert.match(estimate.label, /full precision/);
+  assert.match(estimate.detail ?? "", /quantized download is smaller/);
+
+  const curated = modelInfoFacts({
+    id: "a/b",
+    sizeBytes: 4_900_000_000,
+    sizeIsFullPrecision: false,
+  }).find((f) => f.key === "size");
+  assert.ok(curated);
+  assert.equal(curated.label, "Size");
+  assert.equal(curated.detail, undefined);
+});

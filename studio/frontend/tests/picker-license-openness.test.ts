@@ -38,10 +38,129 @@ test("community licences are restricted, never open", () => {
     "llama3.2",
     "llama4",
     "gemma",
-    "apple-ascl",
+    "apple-amlr",
   ]) {
     assert.equal(classifyLicense(slug).openness, "restricted", slug);
   }
+});
+
+// `apple-ascl` is the Apple SAMPLE CODE licence, not the research one. Its text grants use,
+// reproduction, modification and redistribution in source or binary form, conditioned only on
+// keeping the notice and not implying Apple's endorsement — MIT-shaped. Reading it as restricted
+// warned about a licence that imposes no commercial or field-of-use limit, and the catch it
+// showed named no condition at all. `apple-amlr`, one line above, is the research-only sibling
+// and stays restricted.
+test("the Apple sample-code licence is open, not restricted", () => {
+  const ascl = classifyLicense("apple-ascl");
+  assert.equal(ascl.openness, "open");
+  assert.match(ascl.summary, /permits commercial use/);
+  assert.equal(classifyLicense("apple-amlr").openness, "restricted");
+  assert.match(classifyLicense("apple-amlr").summary, /research-only/);
+});
+
+// The EU carve-out is not a condition on the grant, it withholds it: Meta's Acceptable Use
+// Policy for Llama 4 and for Llama 3.2's vision models says the Section 1(a) rights "are not
+// being granted to you if you are an individual domiciled in, or a company with a principal
+// place of business in, the European Union". A reader in the EU who sees only the 700M ceiling
+// has been told the opposite of what the licence says.
+test("the Llama releases that withhold the EU grant say so", () => {
+  for (const slug of ["llama4", "llama3.2"]) {
+    assert.match(classifyLicense(slug).summary, /European Union/, slug);
+  }
+  // The text-only releases carry no such clause and must not claim one.
+  for (const slug of ["llama2", "llama3", "llama3.1", "llama3.3"]) {
+    assert.doesNotMatch(classifyLicense(slug).summary, /European Union/, slug);
+  }
+});
+
+// A licence slug says what the terms are, not whether the repository will hand you the files:
+// meta-llama/*, google/gemma-* and most apple-amlr repos are gated, and this function is given
+// the slug alone.
+test("a restricted verdict does not claim the weights are public", () => {
+  const verdict = classifyLicense("llama3.3");
+  assert.doesNotMatch(verdict.summary, /public/);
+  assert.match(verdict.summary, /downloadable/);
+});
+
+// Copyleft and attribution are part of the grant, and a single "permits commercial use,
+// modification and redistribution" erased them. AGPL is the one that costs real money to get
+// wrong: §13 obliges anyone offering network access to offer the source too.
+test("open licences with obligations name them", () => {
+  assert.match(classifyLicense("agpl-3.0").summary, /over a network is offered the source/);
+  assert.match(classifyLicense("gpl-3.0").summary, /stay under the GPL/);
+  assert.match(classifyLicense("lgpl-3.0").summary, /stay under the LGPL/);
+  assert.match(classifyLicense("mpl-2.0").summary, /stay under the MPL/);
+  assert.match(classifyLicense("cc-by-4.0").summary, /credit the author/);
+  assert.match(
+    classifyLicense("cc-by-sa-4.0").summary,
+    /derivatives carry the same licence/,
+  );
+  // A licence with nothing extra to say keeps the plain sentence.
+  assert.equal(
+    classifyLicense("mit").summary,
+    "MIT permits commercial use, modification and redistribution.",
+  );
+});
+
+// Every one of these is a live Hugging Face licence tag. Falling through to "Licence unclear"
+// dropped the non-commercial warning for ~966 repos while their own 4.0 siblings were
+// classified, which is the failure direction that costs a user something.
+test("older non-commercial spellings are restricted, like their 4.0 siblings", () => {
+  for (const slug of [
+    "cc-by-nc-2.0",
+    "cc-by-nc-3.0",
+    "cc-by-nc-sa-2.0",
+    "cc-by-nc-sa-3.0",
+    "cc-by-nc-nd-3.0",
+  ]) {
+    const verdict = classifyLicense(slug);
+    assert.equal(verdict.openness, "restricted", slug);
+    assert.match(verdict.summary, /non-commercial/, slug);
+  }
+});
+
+test("research-only vendor licences are restricted", () => {
+  for (const slug of [
+    "fair-noncommercial-research-license",
+    "deepfloyd-if-license",
+    "intel-research",
+    "h-research",
+  ]) {
+    const verdict = classifyLicense(slug);
+    assert.equal(verdict.openness, "restricted", slug);
+    assert.match(verdict.summary, /research-only/, slug);
+  }
+});
+
+test("common OSI licences are not reported as unrecognised", () => {
+  for (const slug of [
+    "gpl-2.0",
+    "lgpl-2.1",
+    "afl-3.0",
+    "bsl-1.0",
+    "epl-2.0",
+    "ecl-2.0",
+    "zlib",
+    "ncsa",
+    "ms-pl",
+    "osl-3.0",
+    "eupl-1.2",
+    "postgresql",
+    "bsd-3-clause-clear",
+    "wtfpl",
+  ]) {
+    assert.equal(classifyLicense(slug).openness, "open", slug);
+  }
+  assert.equal(classifyLicense("bigscience-openrail-m").openness, "restricted");
+});
+
+// The bare `cc` family tag spans CC0 through CC BY-NC-ND, so no verdict is possible — but it is
+// a tag HF publishes, not a slug nobody recognised, and the summary should say which it is.
+test("the generic Creative Commons tag explains why it is unclear", () => {
+  const verdict = classifyLicense("cc");
+  assert.equal(verdict.openness, "unknown");
+  assert.doesNotMatch(verdict.summary, /Unrecognised/);
+  assert.match(verdict.summary, /CC0/);
 });
 
 // A non-commercial grant is usable for evaluation but not for shipping; conflating it

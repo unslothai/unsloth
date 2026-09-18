@@ -129,3 +129,69 @@ test("a closed dialog does not probe a downloaded GGUF", () => {
     [],
   );
 });
+
+// The hook returns its stored facts only while the key still matches, so whatever is NOT in the
+// key cannot invalidate them. `enabled` was not, and the effect returns early when the probe is
+// off — so a GGUF deleted while its info dialog is open left the panel reporting that file's
+// context length and layer count for a file no longer on disk. Same shape for the token: a
+// sign-in re-fires the fetch, and the pre-token result was served until it landed.
+test("turning the probe off drops the previous file's facts", () => {
+  const meta = {
+    contextLength: 131_072,
+    layerCount: 32,
+    moeLayerCount: null,
+    chatTemplate: null,
+  };
+  // One `useState` cell shared across renders, as React would.
+  let stored: unknown;
+  const react = {
+    useRef: (initial: unknown) => ({ current: initial }),
+    useState: (initial: unknown) => {
+      if (stored === undefined)
+        stored = typeof initial === "function" ? initial() : initial;
+      return [stored, (next: unknown) => {
+        stored = next;
+      }];
+    },
+    useEffect: (effect: () => unknown) => effect(),
+  };
+  const { useLocalModelMeta } = loadWithStubs<{
+    useLocalModelMeta: (
+      repoId: string | null,
+      opts: { variant?: string | null; hfToken?: string; enabled: boolean },
+    ) => unknown;
+  }>(
+    new URL(
+      "../src/features/model-picker/components/model-selector/use-local-model-meta.ts",
+      import.meta.url,
+    ),
+    {
+      react,
+      "@/features/chat/api/chat-api": {
+        fetchGgufStagedMetadata: async () => meta,
+      },
+    },
+  );
+
+  const args = { variant: "Q4_K_M", enabled: true };
+  // First render kicks off the probe; the stubbed fetch resolves on the microtask queue, so the
+  // value lands before the next render rather than during this one.
+  useLocalModelMeta("unsloth/Qwen3-8B-GGUF", args);
+  return Promise.resolve().then(() => {
+    assert.deepEqual(
+      useLocalModelMeta("unsloth/Qwen3-8B-GGUF", args),
+      meta,
+      "a read header should be reported",
+    );
+    assert.equal(
+      useLocalModelMeta("unsloth/Qwen3-8B-GGUF", { ...args, enabled: false }),
+      null,
+      "the same repo and quant with the probe off must claim nothing",
+    );
+    assert.equal(
+      useLocalModelMeta("unsloth/Qwen3-8B-GGUF", { ...args, hfToken: "hf_new" }),
+      null,
+      "a changed token must not serve the pre-token result",
+    );
+  });
+});

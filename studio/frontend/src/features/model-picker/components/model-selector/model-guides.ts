@@ -242,11 +242,23 @@ const GUIDES: ReadonlyArray<{
   },
 ];
 
+// A quant suffix is a bit width, and a bit width is a digit followed by "bit" — which is
+// indistinguishable from a family version to a pattern like /llama[-_]?4/ that has no trailing
+// boundary. `nous-hermes-llama-4bit-v2` was handed the Llama 4 guide on the strength of its
+// quantisation. Fixing it here rather than in each of the 58 entries keeps the table readable
+// and cannot be forgotten by the next entry added. The canonical `unsloth/*-bnb-4bit` names
+// survive it, because their family digit comes earlier: `llama-3-8b-bnb-4bit` still matches
+// Llama 3 once `4bit` is blanked.
+const QUANT_SUFFIX = /\b\d+[-_]?bit\b/g;
+
 /** The Unsloth guide for `repoId`, or null when no family matches. */
 export function modelGuide(repoId: string | null | undefined): ModelGuide | null {
   if (!repoId) return null;
-  // Match the model name, not its owner.
-  const id = repoId.slice(repoId.lastIndexOf("/") + 1).toLowerCase();
+  // Match the model name, not its owner, and not how it was quantised.
+  const id = repoId
+    .slice(repoId.lastIndexOf("/") + 1)
+    .toLowerCase()
+    .replace(QUANT_SUFFIX, " ");
   for (const guide of GUIDES) {
     if (guide.match.test(id)) {
       return { title: guide.title, url: `${DOCS}/${guide.path}` };

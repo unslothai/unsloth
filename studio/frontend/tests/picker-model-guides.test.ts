@@ -94,3 +94,20 @@ test("a named family beats a base family named in the same id", () => {
   assert.equal(modelGuide("unsloth/Qwen3-8B-GGUF")?.title, "Qwen3");
   assert.equal(modelGuide("unsloth/Qwen3.8-27B-GGUF")?.title, "Qwen3.8");
 });
+
+// A quant suffix is a bit width, and to a pattern with no trailing boundary a bit width looks
+// like a family version: `nous-hermes-llama-4bit-v2` was handed the Llama 4 guide on the
+// strength of how it was quantised.
+test("a quant suffix is not a family version", () => {
+  assert.equal(modelGuide("nous/nous-hermes-llama-4bit-v2"), null);
+  assert.equal(modelGuide("acme/gemma-4bit"), null);
+  assert.equal(modelGuide("acme/granite-4bit"), null);
+  assert.equal(modelGuide("acme/glm-8bit"), null);
+});
+
+// The canonical unsloth naming puts the family digit before the quant, so it must survive.
+test("bnb-4bit repos still reach their family guide", () => {
+  assert.equal(modelGuide("unsloth/llama-4-scout-17b-bnb-4bit")?.title, "Llama 4");
+  assert.equal(modelGuide("unsloth/gemma-3-12b-it-bnb-4bit")?.title, "Gemma 3");
+  assert.equal(modelGuide("unsloth/Qwen3-8B-unsloth-bnb-4bit")?.title, "Qwen3");
+});

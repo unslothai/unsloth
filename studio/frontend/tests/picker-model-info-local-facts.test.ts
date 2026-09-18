@@ -253,3 +253,84 @@ test("a reasoning model with no markers is not called unsupported", () => {
     "Not detected",
   );
 });
+
+// A K-only unit rendered Llama 4's 10,485,760-token window as "10240K tokens".
+test("million-token context windows read in M, not thousands of K", () => {
+  const ctx = (contextLength: number) =>
+    localModelInfoFacts({ contextLength, layerCount: 32 }).find(
+      (f) => f.key === "contextLength",
+    )?.value;
+  assert.equal(ctx(4096), "4K tokens");
+  assert.equal(ctx(131_072), "128K tokens");
+  assert.equal(ctx(1_048_576), "1M tokens");
+  assert.equal(ctx(10_485_760), "10M tokens");
+  // Not a power of two, so neither unit divides it: a grouped count is the honest rendering.
+  assert.equal(ctx(1_000_000), "1,000,000 tokens");
+});
+
+// `isReportedCount` accepts 0 so a dense model's `moeLayerCount: 0` can say "None (dense)", but
+// a context length of 0 is not a reading — it cleared the header gate and then failed every row
+// guard, leaving the panel asserting "Chat template: Not available" on its own, which is the one
+// claim this module says must never be made from an unread header.
+test("a zeroed header count is not a reading", () => {
+  assert.deepEqual(
+    localModelInfoFacts({ contextLength: 0, layerCount: null }),
+    [],
+  );
+  assert.deepEqual(localModelInfoFacts({ contextLength: 0, layerCount: 0 }), []);
+  // One real count is still a reading, and the other rows fall away on their own.
+  const facts = localModelInfoFacts({ contextLength: 0, layerCount: 32 });
+  assert.ok(facts.some((f) => f.key === "layers"));
+  assert.ok(!facts.some((f) => f.key === "contextLength"));
+});
+
+// Bracket- and tag-delimited reasoning families were invisible to a `<think>`-only pattern.
+// Magistral is the pointed case: this same panel offers it an Unsloth reasoning guide.
+test("reasoning markers beyond the think tag are detected", () => {
+  const templates = {
+    magistral: "[SYSTEM_PROMPT]x[/SYSTEM_PROMPT][THINK]{{ r }}[/THINK]",
+    seed: "<seed:think>{{ t }}</seed:think>",
+    thinking: "Answer inside <thinking>...</thinking> first.",
+    thoughtPipe: "<|start_of_thought|>{{ t }}",
+  };
+  for (const [name, template] of Object.entries(templates)) {
+    assert.equal(reasoningSupport(template), "detected", name);
+  }
+});
+
+// The giveaway idiom of a NON-thinking variant: it strips a previous turn's reasoning out of the
+// history. Reading the marker it deletes as proof that it reasons inverts the answer.
+test("a template that strips reasoning from history is not reasoning", () => {
+  assert.equal(
+    reasoningSupport(
+      "{% for m in messages %}{{ m.content.split('</think>')[-1] }}{% endfor %}",
+    ),
+    "unknown",
+  );
+  // A template that strips history AND emits its own marker still reasons.
+  assert.equal(
+    reasoningSupport(
+      "{% for m in messages %}{{ m.content.split('</think>')[-1] }}{% endfor %}{{ '<think>' }}",
+    ),
+    "detected",
+  );
+});
+
+// "Hybrid" carries the only hard claim in this module — that reasoning can be turned off per
+// request. Naming the variable is not honouring it, and a documentation note is not behaviour.
+test("hybrid requires a switch the template actually branches on", () => {
+  assert.equal(
+    reasoningSupport("{%- set enable_thinking = true %}{{ messages[0].content }}"),
+    "unknown",
+  );
+  assert.equal(
+    reasoningSupport("{# pass /no_think to disable thinking #}{{ messages[0].content }}"),
+    "unknown",
+  );
+  // A real branch, and the model-specific sentinel emitted for real, both still read as hybrid.
+  assert.equal(
+    reasoningSupport("{% if enable_thinking %}<think>{% else %}<think></think>{% endif %}"),
+    "hybrid",
+  );
+  assert.equal(reasoningSupport("{{ '/no_think' }}"), "hybrid");
+});

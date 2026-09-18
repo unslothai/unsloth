@@ -183,3 +183,69 @@ test("a null result yields no facts rather than throwing", () => {
   assert.doesNotThrow(() => metaFromHfResult(null));
   assert.equal(metaFromHfResult(null), null);
 });
+
+// A tag whose text before the first hyphen happens to spell an ISO 639-1 code is not a
+// language. `ml-agents` is the Unity toolkit and rides on thousands of Hub repos; matching only
+// the base segment put "ML-AGENTS" in the Languages row of every one of them.
+test("hyphenated tags that merely start with a language code are not languages", () => {
+  for (const tag of ["ml-agents", "mt-bench", "no-code", "or-else"]) {
+    const meta = metaFromHfResult({ id: "a/b", tags: [tag] });
+    assert.ok(meta);
+    assert.equal(meta.languages, undefined, tag);
+  }
+});
+
+// Region and script subtags are still languages and still keep their own spelling.
+test("region- and script-qualified codes are kept", () => {
+  const meta = metaFromHfResult({
+    id: "a/b",
+    tags: ["zh-CN", "pt-br", "sr-Latn"],
+  });
+  assert.ok(meta);
+  assert.deepEqual(meta.languages, ["zh-CN", "pt-br", "sr-Latn"]);
+});
+
+// HF flattens a card's `language:` frontmatter into `tags` while often keeping the prefixed
+// form too, so the same language arrives twice in two spellings. Listing it as "EN, EN" is the
+// panel contradicting itself inside one row.
+test("the same language in two spellings is listed once", () => {
+  const meta = metaFromHfResult({ id: "a/b", tags: ["language:EN", "en"] });
+  assert.ok(meta);
+  assert.deepEqual(meta.languages, ["EN"]);
+});
+
+// A prefix states intent, not validity: HF cards carry `language:multilingual`, which is not a
+// language and has no place among the chips.
+test("a prefixed value that is not a language code is rejected", () => {
+  const meta = metaFromHfResult({
+    id: "a/b",
+    tags: ["language:multilingual", "language:en"],
+  });
+  assert.ok(meta);
+  assert.deepEqual(meta.languages, ["en"]);
+});
+
+// `recommended-fit.ts` states the rule and the reason: the curated size outranks the estimate,
+// because `estimatedSizeBytes` is the full-precision checkpoint. Reading it the other way made
+// this panel quote a number up to four times the download while the size badge on the same row
+// quoted the quantized load.
+test("the curated size outranks the full-precision estimate", () => {
+  const meta = metaFromHfResult({
+    id: "unsloth/Llama-3.1-8B-Instruct",
+    estimatedSizeBytes: 16_060_522_496,
+    curatedSizeBytes: 4_900_000_000,
+  });
+  assert.ok(meta);
+  assert.equal(meta.sizeBytes, 4_900_000_000);
+  assert.equal(meta.sizeIsFullPrecision, false);
+});
+
+test("a full-precision estimate is marked as one", () => {
+  const meta = metaFromHfResult({
+    id: "unsloth/Llama-3.1-8B-Instruct",
+    estimatedSizeBytes: 16_060_522_496,
+  });
+  assert.ok(meta);
+  assert.equal(meta.sizeBytes, 16_060_522_496);
+  assert.equal(meta.sizeIsFullPrecision, true);
+});

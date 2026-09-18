@@ -24,28 +24,106 @@ export interface LicenseVerdict {
   summary: string;
 }
 
-const OPEN_LICENSES: Readonly<Record<string, string>> = {
-  "apache-2.0": "Apache 2.0",
-  mit: "MIT",
-  bsd: "BSD",
-  "bsd-2-clause": "BSD 2-Clause",
-  "bsd-3-clause": "BSD 3-Clause",
-  "cc0-1.0": "CC0 1.0",
-  "cc-by-4.0": "CC BY 4.0",
-  "cc-by-sa-4.0": "CC BY-SA 4.0",
-  "artistic-2.0": "Artistic 2.0",
-  isc: "ISC",
-  "mpl-2.0": "MPL 2.0",
-  "lgpl-3.0": "LGPL 3.0",
-  "gpl-3.0": "GPL 3.0",
-  "agpl-3.0": "AGPL 3.0",
-  unlicense: "Unlicense",
+// `obligation`, where present, is the condition the grant is subject to. It is not a catch in the
+// RESTRICTED sense — these licences permit commercial use, modification and redistribution — but
+// omitting it renders copyleft and attribution as if they were absent, and the reader this panel
+// exists for is the one about to ship. AGPL is the expensive case: §13 requires that anyone
+// interacting with the work over a network be offered the source, so "permits commercial use"
+// alone is the sentence most likely to mislead a hosted-inference user.
+const OPEN_LICENSES: Readonly<
+  Record<string, { label: string; obligation?: string }>
+> = {
+  "apache-2.0": { label: "Apache 2.0" },
+  mit: { label: "MIT" },
+  bsd: { label: "BSD" },
+  "bsd-2-clause": { label: "BSD 2-Clause" },
+  "bsd-3-clause": { label: "BSD 3-Clause" },
+  "bsd-3-clause-clear": { label: "BSD 3-Clause Clear" },
+  "cc0-1.0": { label: "CC0 1.0" },
+  "cc-by-4.0": { label: "CC BY 4.0", obligation: "you credit the author" },
+  "cc-by-3.0": { label: "CC BY 3.0", obligation: "you credit the author" },
+  "cc-by-2.0": { label: "CC BY 2.0", obligation: "you credit the author" },
+  "cc-by-sa-4.0": {
+    label: "CC BY-SA 4.0",
+    obligation: "you credit the author and derivatives carry the same licence",
+  },
+  "cc-by-sa-3.0": {
+    label: "CC BY-SA 3.0",
+    obligation: "you credit the author and derivatives carry the same licence",
+  },
+  "artistic-2.0": { label: "Artistic 2.0" },
+  isc: { label: "ISC" },
+  zlib: { label: "zlib" },
+  wtfpl: { label: "WTFPL" },
+  "bsl-1.0": { label: "Boost 1.0" },
+  "afl-3.0": { label: "Academic Free 3.0" },
+  "ms-pl": { label: "Microsoft Public" },
+  ncsa: { label: "NCSA" },
+  postgresql: { label: "PostgreSQL" },
+  "ecl-2.0": { label: "Educational Community 2.0" },
+  "odc-by": { label: "ODC-By", obligation: "you credit the source" },
+  "cdla-permissive-2.0": { label: "CDLA-Permissive 2.0" },
+  "mpl-2.0": {
+    label: "MPL 2.0",
+    obligation: "modified files stay under the MPL",
+  },
+  "epl-2.0": {
+    label: "EPL 2.0",
+    obligation: "modified source stays under the EPL",
+  },
+  "epl-1.0": {
+    label: "EPL 1.0",
+    obligation: "modified source stays under the EPL",
+  },
+  "osl-3.0": {
+    label: "OSL 3.0",
+    obligation: "derivatives stay under the OSL",
+  },
+  "eupl-1.2": {
+    label: "EUPL 1.2",
+    obligation: "derivatives stay under the EUPL",
+  },
+  "lgpl-3.0": {
+    label: "LGPL 3.0",
+    obligation: "changes to the library itself stay under the LGPL",
+  },
+  "lgpl-2.1": {
+    label: "LGPL 2.1",
+    obligation: "changes to the library itself stay under the LGPL",
+  },
+  lgpl: {
+    label: "LGPL",
+    obligation: "changes to the library itself stay under the LGPL",
+  },
+  "gpl-3.0": {
+    label: "GPL 3.0",
+    obligation: "derivatives stay under the GPL",
+  },
+  "gpl-2.0": {
+    label: "GPL 2.0",
+    obligation: "derivatives stay under the GPL",
+  },
+  gpl: { label: "GPL", obligation: "derivatives stay under the GPL" },
+  "agpl-3.0": {
+    label: "AGPL 3.0",
+    obligation:
+      "derivatives stay under the AGPL and anyone using it over a network is offered the source",
+  },
+  // Permissive despite the name: the Apple Sample Code License grants use, reproduction,
+  // modification and redistribution in source or binary form, conditioned only on keeping the
+  // notice and not using Apple's marks to endorse. Its sibling `apple-amlr` is the research-only
+  // one, and lives in RESTRICTED_LICENSES.
+  "apple-ascl": {
+    label: "Apple Sample Code",
+    obligation: "you keep Apple's notice and do not imply Apple's endorsement",
+  },
+  unlicense: { label: "Unlicense" },
 };
 
 // Weights anyone may download, under terms an OSI licence would not impose. Each entry says
 // what the catch is, because "restricted" alone tells a user nothing actionable.
 const RESTRICTED_LICENSES: Readonly<
-  Record<string, { label: string; catch: string }>
+  Record<string, { label: string; catch: string; note?: string }>
 > = {
   llama2: {
     label: "Llama 2 Community",
@@ -59,9 +137,18 @@ const RESTRICTED_LICENSES: Readonly<
     label: "Llama 3.1 Community",
     catch: "an acceptable-use policy and a 700M monthly-user ceiling",
   },
+  // 3.2 and 4 carry a clause the other Llama releases do not, and it is not a condition on the
+  // grant — it withholds it. Meta's Acceptable Use Policy for both: "With respect to any
+  // multimodal models included in Llama <v>, the rights granted under Section 1(a) ... are not
+  // being granted to you if you are an individual domiciled in, or a company with a principal
+  // place of business in, the European Union." (llama-models/models/llama4/USE_POLICY.md, and
+  // the identically worded llama3_2/USE_POLICY.md.) Every Llama 4 model is multimodal, so for
+  // `llama4` it applies to the whole tag; for `llama3.2` it reaches the Vision models only, and
+  // a slug cannot tell those apart, so the wording says "vision models".
   "llama3.2": {
     label: "Llama 3.2 Community",
     catch: "an acceptable-use policy and a 700M monthly-user ceiling",
+    note: "Its vision models are also not licensed at all to individuals domiciled in, or companies with a principal place of business in, the European Union.",
   },
   "llama3.3": {
     label: "Llama 3.3 Community",
@@ -70,10 +157,23 @@ const RESTRICTED_LICENSES: Readonly<
   llama4: {
     label: "Llama 4 Community",
     catch: "an acceptable-use policy and a 700M monthly-user ceiling",
+    note: "Every Llama 4 model is multimodal, so none of them is licensed at all to individuals domiciled in, or companies with a principal place of business in, the European Union.",
   },
   gemma: { label: "Gemma Terms of Use", catch: "a prohibited-use policy" },
-  "apple-ascl": { label: "Apple ASCL", catch: "Apple's sample-code terms" },
   "apple-amlr": { label: "Apple ML Research", catch: "research-only terms" },
+  "fair-noncommercial-research-license": {
+    label: "FAIR Non-Commercial Research",
+    catch: "a non-commercial research-only grant",
+  },
+  "deepfloyd-if-license": {
+    label: "DeepFloyd IF Research",
+    catch: "a non-commercial research-only grant",
+  },
+  "intel-research": {
+    label: "Intel Research",
+    catch: "a research-only grant",
+  },
+  "h-research": { label: "H Research", catch: "a research-only grant" },
   "creativeml-openrail-m": {
     label: "CreativeML OpenRAIL-M",
     catch: "use-based restrictions",
@@ -88,19 +188,45 @@ const RESTRICTED_LICENSES: Readonly<
     label: "BigCode OpenRAIL-M",
     catch: "use-based restrictions",
   },
+  "bigscience-openrail-m": {
+    label: "BigScience OpenRAIL-M",
+    catch: "use-based restrictions",
+  },
+  // Every non-commercial spelling HF actually emits, not just the 4.0 ones. A missing NC slug
+  // degrades to "Licence unclear", which drops the warning for exactly the licences where
+  // getting it wrong costs the most, so the older point releases are listed too.
   "cc-by-nc-4.0": { label: "CC BY-NC 4.0", catch: "a non-commercial grant" },
+  "cc-by-nc-3.0": { label: "CC BY-NC 3.0", catch: "a non-commercial grant" },
+  "cc-by-nc-2.0": { label: "CC BY-NC 2.0", catch: "a non-commercial grant" },
   "cc-by-nc-sa-4.0": {
     label: "CC BY-NC-SA 4.0",
+    catch: "a non-commercial share-alike grant",
+  },
+  "cc-by-nc-sa-3.0": {
+    label: "CC BY-NC-SA 3.0",
+    catch: "a non-commercial share-alike grant",
+  },
+  "cc-by-nc-sa-2.0": {
+    label: "CC BY-NC-SA 2.0",
     catch: "a non-commercial share-alike grant",
   },
   "cc-by-nc-nd-4.0": {
     label: "CC BY-NC-ND 4.0",
     catch: "a non-commercial, no-derivatives grant",
   },
-  "cc-by-nc-3.0": { label: "CC BY-NC 3.0", catch: "a non-commercial grant" },
+  "cc-by-nc-nd-3.0": {
+    label: "CC BY-NC-ND 3.0",
+    catch: "a non-commercial, no-derivatives grant",
+  },
   "cc-by-nd-4.0": { label: "CC BY-ND 4.0", catch: "a no-derivatives grant" },
 };
 
+// `proprietary` is NOT in Hugging Face's licence vocabulary — no Hub repo carries it, so this
+// branch cannot fire for a Hub-sourced model, and the red chip it drives is unreachable today.
+// It is kept, not deleted, because the classifier takes a bare slug and a non-Hub catalog may
+// legitimately supply one. What it must not become is a dumping ground: a vendor EULA arrives
+// tagged `other`, which is deliberately routed to `unknown` below rather than here, since the
+// repository never said redistribution was refused.
 const PROPRIETARY_LICENSES: Readonly<Record<string, string>> = {
   proprietary: "Proprietary",
 };
@@ -123,6 +249,15 @@ const UNCLEAR_LICENSES: Readonly<
     label: "Custom terms",
     summary:
       "This repository uses custom licence terms that Hugging Face does not classify. Read the model card before use.",
+  },
+  // HF's generic Creative Commons family tag. It names a family that spans CC0 through
+  // CC BY-NC-ND, so it can be anything from public domain to non-commercial and
+  // no-derivatives. Unclear is the honest verdict, but say WHY rather than reporting it as a
+  // slug nobody recognised.
+  cc: {
+    label: "Creative Commons (unspecified)",
+    summary:
+      "Tagged only as Creative Commons, which spans everything from CC0 to non-commercial, no-derivatives terms. Check the model card for which one applies.",
   },
 };
 
@@ -147,21 +282,26 @@ export function classifyLicense(
     };
   }
 
-  const openLabel = own(OPEN_LICENSES, slug);
-  if (openLabel) {
+  const open = own(OPEN_LICENSES, slug);
+  if (open) {
     return {
       openness: "open",
-      label: openLabel,
-      summary: `${openLabel} permits commercial use, modification and redistribution.`,
+      label: open.label,
+      summary: open.obligation
+        ? `${open.label} permits commercial use, modification and redistribution, provided ${open.obligation}.`
+        : `${open.label} permits commercial use, modification and redistribution.`,
     };
   }
 
   const restricted = own(RESTRICTED_LICENSES, slug);
   if (restricted) {
+    // "Downloadable" rather than "public": a licence slug says what the terms are, not whether
+    // the repository will hand you the files. meta-llama/*, google/gemma-* and most apple-amlr
+    // repos are gated, and this function is given the slug alone.
     return {
       openness: "restricted",
       label: restricted.label,
-      summary: `Weights are public, but ${restricted.catch} applies. Read the licence before shipping.`,
+      summary: `These weights are downloadable, but ${restricted.catch} applies.${restricted.note ? ` ${restricted.note}` : ""} Read the licence before shipping.`,
     };
   }
 

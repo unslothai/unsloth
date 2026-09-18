@@ -25,7 +25,13 @@ function formatParamCount(totalParams: number): string {
         : Number(billions.toFixed(billions >= 10 ? 0 : 1));
     return `${rounded}B`;
   }
-  return `${Math.round(totalParams / MILLION)}M`;
+  const millions = totalParams / MILLION;
+  // Rounding straight to whole millions prints "0M" for anything under 500K — a tokenizer or a
+  // small embedding model reported as having no parameters. Below 1M, keep a decimal, and below
+  // 100K fall back to a plain grouped count, which is the only honest rendering left.
+  if (millions >= 1) return `${Math.round(millions)}M`;
+  if (millions >= 0.1) return `${millions.toFixed(1)}M`;
+  return `${Math.round(totalParams).toLocaleString()}`;
 }
 
 /** Panel reading order. The panel maps over what `modelInfoFacts` returns, so this is the order. */
@@ -60,6 +66,8 @@ export interface ModelInfoMeta {
   likes?: number;
   totalParams?: number;
   sizeBytes?: number;
+  /** `sizeBytes` is the full-precision checkpoint, not the size of a quantized download. */
+  sizeIsFullPrecision?: boolean;
   createdAt?: string | Date;
   lastModified?: string | Date;
   library?: string;
@@ -132,8 +140,14 @@ export function modelInfoFacts(meta: ModelInfoMeta): ModelInfoFact[] {
   if (meta.sizeBytes && meta.sizeBytes > 0) {
     facts.push({
       key: "size",
-      label: "Size",
+      label: meta.sizeIsFullPrecision ? "Size (full precision)" : "Size",
       value: formatBytes(meta.sizeBytes),
+      ...(meta.sizeIsFullPrecision
+        ? {
+            detail:
+              "The unquantized checkpoint on the Hub. A quantized download is smaller — the size on each quant row is the one you will actually fetch.",
+          }
+        : {}),
     });
   }
 
@@ -414,6 +428,24 @@ const ISO_639_1_CODES: ReadonlySet<string> = new Set([
   "zu",
 ]);
 
+// A language tag is a 2-letter ISO 639-1 code, optionally followed by ONE region or script
+// subtag: `en`, `zh-CN`, `pt-br`, `sr-Latn`. Testing only the segment before the first hyphen is
+// not enough — that accepts the WHOLE of any tag merely beginning with two letters that happen
+// to spell a code, and the Hub carries those: `ml-agents` (the Unity toolkit, thousands of
+// repos) read as Malayalam, and `mt-bench` as Maltese. The tag has to match end to end for the
+// ISO set to mean anything.
+//
+// The region alternative is two letters in either case, since HF cards write both `zh-CN` and
+// `pt-br`. The script alternative is four letters in BCP-47's title case (`Latn`, `Hans`), which
+// is what keeps an English compound like `no-code` or `or-else` out: lowercase four-letter
+// suffixes are not script codes.
+//
+// One residual, stated rather than papered over: a two-letter suffix cannot be told from a real
+// region, so `as-is` (Assamese + Iceland) and `to-do` (Tongan + Dominican Republic) are
+// structurally valid language tags and would still be accepted. Neither exists on the Hub — I
+// checked — and no structural rule can reject them, since they are well-formed BCP-47.
+const LANGUAGE_TAG_SHAPE = /^[A-Za-z]{2}(-([A-Za-z]{2}|[A-Z][a-z]{3}))?$/;
+
 /** `en`, `zh-CN` and `pt-br` all carry a base code; the region suffix is not a language. */
 function baseLanguageCode(tag: string): string {
   const [base] = tag.split("-", 1);
@@ -422,17 +454,30 @@ function baseLanguageCode(tag: string): string {
 
 function languagesFromTags(tags: string[] | undefined): string[] {
   const langs: string[] = [];
+  // Dedup on the lowercased spelling, because HF emits a model's languages both ways and the
+  // two spellings differ in case as often as not: `["language:EN", "en"]` is one language, and
+  // listing it as "EN, EN" is the panel contradicting itself in a single row. The first
+  // spelling seen wins, so a repo that only says `zh-CN` still keeps its region.
+  const seen = new Set<string>();
   const add = (code: string) => {
-    if (code && !langs.includes(code)) langs.push(code);
+    const key = code.toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    langs.push(code);
   };
   for (const tag of tags ?? []) {
     if (tag.startsWith(LANGUAGE_TAG_PREFIX)) {
-      add(tag.slice(LANGUAGE_TAG_PREFIX.length));
+      // The prefix states the intent, but it does not make the value a language: HF cards
+      // carry `language:multilingual` and similar. Hold it to the same shape and the same set.
+      const value = tag.slice(LANGUAGE_TAG_PREFIX.length);
+      if (LANGUAGE_TAG_SHAPE.test(value) && ISO_639_1_CODES.has(baseLanguageCode(value)))
+        add(value);
       continue;
     }
     // Keep the tag's own spelling (`pt-br`, not `pt`): the region is information the reader
     // wants, even though only the base code decides whether this is a language at all.
-    if (ISO_639_1_CODES.has(baseLanguageCode(tag))) add(tag);
+    if (LANGUAGE_TAG_SHAPE.test(tag) && ISO_639_1_CODES.has(baseLanguageCode(tag)))
+      add(tag);
   }
   return langs;
 }
@@ -456,7 +501,22 @@ export function metaFromHfResult(
     downloads: result.downloadsAllTime ?? result.downloads,
     likes: result.likes,
     totalParams: result.totalParams,
-    sizeBytes: result.estimatedSizeBytes ?? result.curatedSizeBytes,
+    // `curatedSizeBytes` first, matching `recommended-fit.ts`, whose comment states the rule and
+    // the reason: "Safetensors / MLX always use the params-based estimate ... since their
+    // estimatedSizeBytes is the full-precision checkpoint. `curatedSizeBytes` outranks both."
+    // Reading it the other way round made this panel quote the BF16 checkpoint — often four
+    // times the download — while the size badge on the very same row quoted the quantized load.
+    //
+    // When only the estimate is available the row still shows it, but `sizeIsFullPrecision`
+    // marks where it came from so the panel can say so rather than let the reader take a
+    // checkpoint size for a download size. No params-based guess is substituted: the one
+    // constant the codebase has, `MIN_QUANT_BYTES_PER_PARAM`, is the SMALLEST practical quant
+    // for a can-it-run check, and printing that as a download size would be a new wrong number
+    // in the opposite direction.
+    sizeBytes: result.curatedSizeBytes ?? result.estimatedSizeBytes,
+    sizeIsFullPrecision:
+      result.curatedSizeBytes === undefined &&
+      result.estimatedSizeBytes !== undefined,
     createdAt: result.createdAt,
     lastModified: result.updatedAt,
     library: result.libraryName,

@@ -31,14 +31,46 @@ export interface LocalModelMeta {
   chatTemplate?: string | null;
 }
 
-// A thinking switch means thinking can be turned off. Read off the template, not the repo
-// name, so a renamed quant still answers correctly.
-const THINKING_TOGGLE =
-  /\benable_thinking\b|\/no_?think\b|\bthinking_?budget\b/;
+// Jinja comments are documentation, not behaviour. A template that merely MENTIONS `/no_think`
+// in a `{# ... #}` note describing the model is not a template that honours it, and reading the
+// note as a switch is how a non-hybrid model came to advertise a toggle it does not have.
+const JINJA_COMMENT = /\{#[\s\S]*?#\}/g;
 
-// Markers alone do not establish whether thinking can be disabled.
+// String-consuming calls whose literal argument is a marker being REMOVED, not emitted. The
+// giveaway idiom is `{{ content.split('</think>')[-1] }}`, which strips a previous turn's
+// reasoning out of the history — something the NON-thinking variant of a pair does, so reading
+// it as evidence of reasoning inverts the answer. Blanking the whole call, argument included,
+// leaves any genuinely emitted marker still standing: a template that both strips history and
+// writes `<think>` itself keeps the second one and still reads as detected.
+const MARKER_CONSUMING_CALL =
+  /\.\s*(?:split|rsplit|replace|partition|rpartition|find|rfind|index|startswith|endswith|strip|lstrip|rstrip)\s*\(\s*(['"])[\s\S]*?\1[^)]*\)/g;
+
+// A thinking switch means thinking can be turned off. Read off the template, not the repo name,
+// so a renamed quant still answers correctly — and, for a variable, only where the template
+// BRANCHES on it. A bare `{%- set enable_thinking = true %}` names the variable without
+// honouring it, and calling that "Hybrid" asserts, in the one tooltip here that makes a hard
+// claim, that reasoning can be turned off per request when nothing in the template can turn it
+// off.
+const THINKING_VAR_IN_CONDITION =
+  /\{[%{][^%}]*?\b(?:if|elif)\b[^%}]*?(?:\benable_thinking\b|\bthinking_?budget\b)/;
+
+// `/no_think` needs no branch around it: it is a model-specific sentinel rather than a word, so
+// a template that emits it at all is a template built for a model that honours it. The mention
+// this must NOT count is the one in a `{# ... #}` note, and comments are already gone by here.
+const NO_THINK_SENTINEL = /\/no_?think\b/;
+
+// Markers alone do not establish whether thinking can be disabled. Beyond the `<think>` family:
+// `[THINK]` is Mistral's Magistral, `<seed:think>` ByteDance Seed, and `<|start_of_thought|>`
+// and `<thinking>` are used by several others. Omitting them reported a reasoning model this
+// very PR links a guide for — Magistral — as "Not detected".
 const REASONING_MARKERS =
-  /\breasoning_effort\b|<\/?think>|<\|channel\|>analysis|\breasoning_content\b/;
+  /\breasoning_effort\b|<\/?think>|<\/?thinking>|<\|\/?think\|>|<\/?seed:think>|\[\/?THINK\]|<\|\/?start_of_thought\|>|<\|channel\|>analysis|\breasoning_content\b/;
+
+/** Template text with documentation and marker-stripping expressions removed, so both tests
+ *  below see only what the template would actually emit or branch on. */
+function executableTemplate(template: string): string {
+  return template.replace(JINJA_COMMENT, " ").replace(MARKER_CONSUMING_CALL, " ");
+}
 
 export type ReasoningSupport = "hybrid" | "detected" | "unknown";
 
@@ -47,8 +79,13 @@ export function reasoningSupport(
   template: string | null | undefined,
 ): ReasoningSupport {
   if (!template || !template.trim()) return "unknown";
-  if (THINKING_TOGGLE.test(template)) return "hybrid";
-  return REASONING_MARKERS.test(template) ? "detected" : "unknown";
+  const executable = executableTemplate(template);
+  if (
+    THINKING_VAR_IN_CONDITION.test(executable) ||
+    NO_THINK_SENTINEL.test(executable)
+  )
+    return "hybrid";
+  return REASONING_MARKERS.test(executable) ? "detected" : "unknown";
 }
 
 const REASONING_VALUE: Record<ReasoningSupport, string> = {
@@ -67,6 +104,10 @@ const REASONING_DETAIL: Record<ReasoningSupport, string> = {
 };
 
 function formatTokens(tokens: number): string {
+  // Million-token windows ship now, and a K-only unit renders Llama 4's 10,485,760 as
+  // "10240K tokens". Step up to M first, so 1M reads as 1M rather than 1024K.
+  const MEGA = 1024 * 1024;
+  if (tokens >= MEGA && tokens % MEGA === 0) return `${tokens / MEGA}M tokens`;
   if (tokens >= 1024 && tokens % 1024 === 0) return `${tokens / 1024}K tokens`;
   return `${tokens.toLocaleString("en-US")} tokens`;
 }
@@ -78,10 +119,17 @@ function isReportedCount(n: number | null | undefined): n is number {
 
 /** Whether the probe read the file at all. Every GGUF header carries a context length or a
  *  block count, so neither being reported means nothing was read. Absence of a reading is not
- *  a finding, so no local rows beat turning "not read" into "none embedded". */
+ *  a finding, so no local rows beat turning "not read" into "none embedded".
+ *
+ *  Both counts must be POSITIVE, not merely reported. `isReportedCount` accepts 0 so a dense
+ *  model's `moeLayerCount: 0` can render as "None (dense)", but a context length or block count
+ *  of 0 is not a reading — no real GGUF has either — and letting it through cleared this gate
+ *  while failing every row guard below, leaving the panel showing "Chat template: Not available"
+ *  on its own. That is the exact claim the paragraph above says must never be made. */
 function headerWasRead(meta: LocalModelMeta): boolean {
   return (
-    isReportedCount(meta.contextLength) || isReportedCount(meta.layerCount)
+    (isReportedCount(meta.contextLength) && meta.contextLength > 0) ||
+    (isReportedCount(meta.layerCount) && meta.layerCount > 0)
   );
 }
 
