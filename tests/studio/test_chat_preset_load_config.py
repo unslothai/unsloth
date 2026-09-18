@@ -465,8 +465,11 @@ def _jumps_out(text: str, keyword: str, *, absorbed_by_switch: bool) -> bool:
         if not any(begin <= match.start() < end for begin, end in absorbing):
             absorbing.append((match.start(), _consume_statement(scan, match.start())[1]))
     absorbing += _nested_function_spans(scan)
+    # A labelled jump names its own target, which can be any enclosing statement, so it is
+    # never taken as absorbed: `break outer` leaves every loop between it and `outer:`.
     return any(
-        not any(begin <= match.start() < end for begin, end in absorbing)
+        re.match(r"[ \t]+[A-Za-z_$]", scan[match.end() :])
+        or not any(begin <= match.start() < end for begin, end in absorbing)
         for match in re.finditer(rf"{_KEYWORD}{keyword}\b", scan)
     )
 
@@ -1229,6 +1232,11 @@ SELECTOR_CASES = [
     ("(s) => { while (true) return s.reasoningBudget; }", True),
     # Unless it can break out of itself first.
     ("(s) => { for (;;) { if (s.stop) break; return s.reasoningBudget; } }", False),
+    (
+        "(s) => { outer: while (true) { while (true) { break outer; } "
+        "return s.reasoningBudget; } }",
+        False,
+    ),
     ("(s) => { do { if (s.stop) continue; return s.reasoningBudget; } while (false); }", False),
     # A test read off the store is a condition, not a certainty.
     ("(s) => { while (s.on) return s.reasoningBudget; }", False),
