@@ -36897,6 +36897,13 @@ class LlamaCppBackend:
                                         }
                                         for _call in _pending
                                     ]
+                                    # reserve the notice before sharing space among retained results.
+                                    if _over_cap:
+                                        _pending_msgs.append(
+                                            tool_call_limit_nudge(
+                                                _over_cap, _MAX_TOOL_CALLS_PER_TURN
+                                            )
+                                        )
                                     # Measured, not estimated: the estimator charges ASCII
                                     # four characters per token, and a pending call can
                                     # carry base64, minified JSON or a block of code, which

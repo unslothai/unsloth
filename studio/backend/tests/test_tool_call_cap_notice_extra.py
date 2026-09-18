@@ -277,7 +277,8 @@ def test_cap_notice_does_not_invite_a_spent_one_shot_retry(
             assert "retry the skipped calls for web_search" in content
 
 
-def test_skipped_arguments_are_reserved_in_safetensors_result_budgets():
+@pytest.mark.parametrize("backend", ["gguf", "safetensors"])
+def test_skipped_arguments_are_reserved_in_result_budgets(monkeypatch, backend):
     import random
     import string
     from core.inference.context_window import (
@@ -304,17 +305,43 @@ def test_skipped_arguments_are_reserved_in_safetensors_result_budgets():
         budgets.append(result_budget_tokens)
         return "".join(random_source.choices(alphabet, k = 2 * max(0, result_budget_tokens - 24)))
 
-    list(
-        run_safetensors_tool_loop(
-            single_turn = generate,
-            messages = [{"role": "user", "content": "go"}],
-            tools = tools,
-            execute_tool = execute,
-            max_tool_iterations = 2,
-            context_length = 4096,
-            max_tokens = 3500,
+    if backend == "gguf":
+        streams = [[_sse({"content": text}), _done()], [_sse({"content": "done"}), _done()]]
+        engine, payloads = _backend_and_payloads(monkeypatch, streams)
+
+        def count_tokens(
+            messages,
+            _unused = None,
+            tools = None,
+            **kwargs,
+        ):
+            return estimate_messages_tokens_conservative(
+                messages
+            ) + estimate_messages_tokens_conservative(tools or [])
+
+        monkeypatch.setattr(engine, "count_chat_tokens", count_tokens)
+        monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+        list(
+            engine.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "go"}],
+                tools = tools,
+                max_tool_iterations = 2,
+                max_tokens = 3500,
+            )
         )
-    )
+        seen = [payload["messages"] for payload in payloads]
+    else:
+        list(
+            run_safetensors_tool_loop(
+                single_turn = generate,
+                messages = [{"role": "user", "content": "go"}],
+                tools = tools,
+                execute_tool = execute,
+                max_tool_iterations = 2,
+                context_length = 4096,
+                max_tokens = 3500,
+            )
+        )
     assert len(budgets) == 8
     (notice,) = _notices(seen[1])
     assert json.dumps({"code": code}) in notice["content"]
