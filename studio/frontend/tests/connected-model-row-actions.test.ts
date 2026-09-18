@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc, readText } from "./helpers/kit.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 const pickers = readSrc(
   "features/model-picker/components/model-selector/pickers.tsx",
@@ -744,17 +744,14 @@ test("reasoning is read through the resolver the composer uses", () => {
   assert.match(pickers, /provider\.isReasoningModel === true,/);
 });
 
-test("a Codex connection resolves against OpenAI's catalogue", () => {
-  const catalog = readSrc("features/chat/model-catalog.ts");
-  assert.match(
-    catalog,
-    /CATALOG_NAMESPACE_ALIASES: Record<string, string> = \{\s*openai_codex: "openai",\s*\}/,
-  );
-  // At the snapshot lookup, so every caller of it inherits the alias.
-  assert.match(
-    catalog,
-    /\| undefined \{\s*providerType = catalogNamespace\(providerType\);/,
-  );
+test("a Codex connection resolves against OpenAI's catalogue", async () => {
+  // Behaviour rather than the shape of the alias table: a null entry is what the info panel
+  // renders as "Not published", which is the whole symptom, and the alias is applied at the
+  // snapshot lookup so every caller of it inherits this.
+  const { resolveModelCatalogEntry } = await import("../src/features/chat/model-catalog.ts");
+  const viaOpenAI = resolveModelCatalogEntry("openai", "gpt-4-turbo");
+  assert.ok(viaOpenAI !== null, "the fixture model must be in the bundled snapshot");
+  assert.deepEqual(resolveModelCatalogEntry("openai_codex", "gpt-4-turbo"), viaOpenAI);
 });
 
 test("the published context window reaches the row and the info box", () => {
@@ -783,19 +780,34 @@ test("the published context window reaches the row and the info box", () => {
   assert.match(infoDialog, /tokens\(entry\.contextLength\)/);
 });
 
-test("a served catalogue cannot take away a context window it has no field for", () => {
-  const catalog = readSrc("features/chat/model-catalog.ts");
-  // The served payload replaces the bundled entry per model, so before the backend carried the
-  // field every model models.dev covers read as publishing no window at all.
-  assert.match(catalog, /const context = entry\.context \?\? bundled\[id\]\?\.context;/);
-  assert.match(
-    catalog,
-    /merged\[id\] = context == null \? entry : \{ \.\.\.entry, context \};/,
+test("a served catalogue cannot take away a context window it has no field for", async () => {
+  // Behaviour, not source text. A regex over these two files passes just as happily with the
+  // line present in code that never runs, and fails on a rename that changes nothing; the point
+  // is what a user reads in the info panel, so drive the resolver and read the window back.
+  const { resolveModelCatalogEntry, setModelsDevCatalog } = await import(
+    "../src/features/chat/model-catalog.ts"
   );
-  // And the backend now sends it, so a fresh payload needs no rescue.
-  const trimmer = readText(
-    "../../backend/core/inference/provider_model_capabilities.py",
+  const bundled = resolveModelCatalogEntry("openai", "gpt-4-turbo")?.contextLength;
+  assert.ok(
+    typeof bundled === "number" && bundled > 0,
+    "the bundled snapshot must publish a window for this model, else the rest proves nothing",
   );
-  assert.match(trimmer, /context = limit\.get\("context"\) if isinstance\(limit, dict\) else None/);
-  assert.match(trimmer, /entry\["context"\] = context/);
+
+  // A served entry that carries one wins, as it does for every other field.
+  setModelsDevCatalog({
+    fetched_at: Date.now(),
+    providers: { openai: { "gpt-4-turbo": { input: ["text"], context: 999_999 } } },
+  } as never);
+  assert.equal(resolveModelCatalogEntry("openai", "gpt-4-turbo")?.contextLength, 999_999);
+
+  // THE CASE: a backend older than the field, or its cached payload inside the day-long TTL,
+  // serves the model with no context at all. Before the rescue this replaced the bundled entry
+  // wholesale and every model models.dev covers read as publishing no window.
+  setModelsDevCatalog({
+    fetched_at: Date.now(),
+    providers: { openai: { "gpt-4-turbo": { input: ["text"] } } },
+  } as never);
+  assert.equal(resolveModelCatalogEntry("openai", "gpt-4-turbo")?.contextLength, bundled);
+
+  setModelsDevCatalog({ fetched_at: Date.now(), providers: {} } as never);
 });
