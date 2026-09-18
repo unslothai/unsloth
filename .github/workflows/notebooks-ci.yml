@@ -344,7 +344,7 @@ jobs:
           # Pillow is listed explicitly as a defensive belt-and-braces
           # next to torchvision (vision_utils crashes ModuleNotFoundError
           # if torchvision skipped its Pillow dep for any reason).
-          pip install 'transformers>=4.56,<5.6' 'trl>=0.22,<0.26' 'accelerate>=1.0' \
+          pip install 'transformers>=4.56,<=5.17.0' 'trl>=0.22,<0.26' 'accelerate>=1.0' \
                       'datasets>=3.4,<5' 'peft>=0.15,<0.20' \
                       'bitsandbytes>=0.43' 'sentencepiece' 'protobuf' triton \
                       Pillow safetensors tqdm packaging psutil

@@ -210,14 +210,17 @@ huggingfacenotorch = [
     # gate on the INSTALLED zoo rather than on this pin, so they start running by themselves
     # wherever 2026.9.5 or newer is the zoo actually present.
     #
-    # This branch needs that same floor for a second, independent reason: 2026.9.5 is also the
-    # first release to export `grpo_vision_chunks`, which both vision GRPO logprob paths in
+    # The same floor is needed for a second, independent reason: 2026.9.5 is also the first
+    # release to export `grpo_vision_chunks`, which both vision GRPO logprob paths in
     # unsloth/models/rl_replacements.py refuse to run without.
     #
-    # This does NOT lift the transformers ceiling below. 2026.9.5 still declares
-    # `transformers<=5.5.0` in its own metadata, so the resolver intersects our transformers
-    # range down to 5.5.0 whatever this file says. That one waits on
-    # unslothai/unsloth-zoo#1227 and a later zoo release.
+    # 2026.9.6 does NOT make the wider transformers window this file declares below
+    # resolvable. It still says `transformers<=5.5.0` in its own metadata, and pip intersects
+    # the two requirements, so users keep resolving 5.5.0 whatever this file says: the lift is
+    # advertised and not delivered until unslothai/unsloth-zoo#1227 merges and ships. Raise
+    # this floor to the release carrying it and re-enable the deferred gate in
+    # tests/test_transformers_cap_sites.py in the same commit. A floor no published release
+    # satisfies makes unsloth uninstallable, so the floor never leads the release.
     "unsloth_zoo>=2026.9.6",
     "wheel>=0.42.0",
     "packaging",
@@ -245,7 +248,14 @@ huggingfacenotorch = [
     # on 3.9 and the whole extra becomes unresolvable.
     "diffusers>=0.39.0 ; python_version >= '3.10'",
     "diffusers ; python_version < '3.10'",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
+    # The ceiling is the newest release the version matrix was run against, not a guess.
+    # The old 5.5.0 ceiling is where prequantized bnb-4bit checkpoints lose quant_state on
+    # every Linear4bit (#9867, #10010, #10017, #10276) and holds the Gemma 4 E4B LoRA fix
+    # out of reach (shipped in 5.5.2, #5355). Each `!=` was tested and rejected: keep them.
+    # Apple Silicon stays capped at 5.5.0 by unsloth_zoo's marker-split requirement
+    # (mlx-vlm >= 0.6.5 wants transformers >= 5.14.0); every extra naming transformers here
+    # also names unsloth_zoo, so that lower cap applies without being repeated.
+    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
 ]
@@ -906,7 +916,7 @@ colab-new = [
     "unsloth_zoo>=2026.9.6",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
+    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "sentencepiece>=0.2.0",
     "tqdm",

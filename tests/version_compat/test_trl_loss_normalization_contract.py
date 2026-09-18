@@ -73,21 +73,77 @@ def test_sft_loss_type_default_is_nll_after_unsloth_patch():
     )
 
 
+def _loss_type_field(cfg_cls):
+    """TRL's `loss_type` dataclass field, or None if this TRL has no such field.
+
+    `hasattr(cfg_cls, "loss_type")` is NOT equivalent and was the bug here: from trl 0.21
+    DPOConfig declares the field with a `default_factory`, which leaves no class attribute,
+    so the hasattr form skipped DPO entirely on every recent TRL while still claiming to
+    check it.
+    """
+    import dataclasses
+    return next((f for f in dataclasses.fields(cfg_cls) if f.name == "loss_type"), None)
+
+
+def _pristine_config_cls(cfg_cls):
+    """TRL's own config class, walking past the subclass patching rebinds over it."""
+    while "_unsloth_patched_rl_config" in cfg_cls.__dict__ or cfg_cls.__name__.startswith(
+        "Unsloth"
+    ):
+        cfg_cls = cfg_cls.__mro__[1]
+    return cfg_cls
+
+
 def test_loss_type_replacement_did_not_leak_to_other_trainers():
-    """loss_type is an unrelated field in DPO/KTO/GRPO; the global dict hits all."""
+    """loss_type is an unrelated field in DPO/KTO/GRPO; the global dict hits all.
+
+    The expectation is split rather than one literal dict, because the two halves are
+    different claims and only one of them is version-independent:
+
+      * GRPO is a LITERAL. Unsloth deliberately overrides TRL here, pinning `bnpo` at
+        `unsloth/models/rl.py:2449` ("Default GRPO paper"), and it must hold whatever TRL
+        defaults to. It really does differ: pristine trl 0.24.0 says `dapo`.
+      * DPO and KTO are RELATIVE to pristine TRL, because the claim is that unsloth does
+        not touch them at all. Their values are TRL's own and change between releases:
+        trl 0.18.2 declares `DPOConfig.loss_type = "sigmoid"` as a plain default, while
+        trl 0.24.0 declares it with `default_factory=["sigmoid"]` that `__post_init__`
+        resolves back to the string. A hardcoded `["sigmoid"]` matched neither instance;
+        it matched the 0.24 field default only, and the hasattr skip above hid that.
+    """
     import unsloth  # noqa: F401
     import trl
 
-    expected = {"DPOConfig": ["sigmoid"], "KTOConfig": "kto", "GRPOConfig": "bnpo"}
-    for name, want in expected.items():
+    checked = []
+    for name in ("DPOConfig", "KTOConfig"):
         cfg_cls = getattr(trl, name, None)
-        if cfg_cls is None or not hasattr(cfg_cls, "loss_type"):
+        if cfg_cls is None or _loss_type_field(cfg_cls) is None:
             continue
+        pristine = _pristine_config_cls(cfg_cls)
+        assert "_unsloth_patched_rl_config" not in pristine.__dict__, (
+            f"the pristine walk for {name} landed on a patched class, so comparing against "
+            f"it would compare the patch with itself"
+        )
+        want = pristine(output_dir = "unused").loss_type
         got = cfg_cls(output_dir = "unused").loss_type
         assert got == want, (
-            f"{name}.loss_type is {got!r}, expected {want!r}. A loss_type "
-            "replacement leaked out of the sft_trainer branch in rl.py."
+            f"{name}.loss_type is {got!r} and pristine TRL {trl.__version__} says {want!r}. "
+            "A loss_type replacement leaked out of the sft_trainer branch in rl.py."
         )
+        checked.append(name)
+
+    grpo = getattr(trl, "GRPOConfig", None)
+    if grpo is not None and _loss_type_field(grpo) is not None:
+        got = grpo(output_dir = "unused").loss_type
+        assert got == "bnpo", (
+            f"GRPOConfig.loss_type is {got!r}, expected 'bnpo'. That pin is unsloth's own "
+            "(rl.py, 'Default GRPO paper'), so this is either a lost override or a leak."
+        )
+        checked.append("GRPOConfig")
+
+    assert len(checked) >= 2, (
+        f"only {checked} carried a loss_type field on trl {trl.__version__}, so this test "
+        f"checked almost nothing. Retarget it rather than letting it pass empty."
+    )
 
 
 def test_explicit_loss_type_still_wins():

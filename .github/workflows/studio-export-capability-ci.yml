@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Runs studio/backend/tests/test_export_capability.py on Linux, Windows and macOS.
-#
 # export_capability() is per-OS (is_apple_silicon() and the PyTorch-import probe differ per
-# platform) and the export backend must import without PyTorch, so this confirms the gating and
-# import-safety on hosted Windows/macOS. Hosted runners have no GPU/MLX, so a real accelerator
-# export is validated separately. No GPU / model / llama.cpp: the tests mock the probes and block
-# torch/unsloth, so the job installs only a CPU PyTorch plus import deps.
+# platform) and the export backend must import without PyTorch, so this confirms the gating
+# and import-safety off Linux. A real accelerator export is validated separately.
 
 name: Unsloth export capability
 
@@ -41,27 +37,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows only, and the reason is the same one that already removed the
-        # macOS leg: the only command this job runs is `pytest
-        # tests/test_export_capability.py`, and every test in that file goes
-        # through `_patch()`, which monkeypatches `_has_torch`, `get_device` and
-        # `is_apple_silicon`. Nothing in it touches Metal, MLX or any Apple
-        # binary, so a real Mac proved nothing a Linux runner did not.
-        #
-        # That argument reaches one step further than it was taken. It rests on
-        # studio-backend-ci.yml running the same file on ubuntu-latest as part of
-        # `pytest tests/` -- which it does, the file is not in that job's
-        # --ignore list -- and if that is true then the ubuntu leg HERE is the
-        # duplicate, not just the macOS one. The import-safety test does not need
-        # a torch-free image to be honest either: it installs its own
-        # `builtins.__import__` blocker and drops preloaded torch/unsloth from
-        # sys.modules, so it proves the same thing inside Backend CI's fully
-        # installed environment.
-        #
-        # Windows stays, because nothing else in CI runs this file there and
-        # `_has_torch`'s import probe is the per-OS behaviour the job exists for.
-        # Measured 67s of execution behind a 10642s queue, so the ubuntu leg was
-        # a runner slot spent re-proving a Linux result.
+        # Windows only. Every test in this file goes through `_patch()`, which
+        # monkeypatches `_has_torch`, `get_device` and `is_apple_silicon`, so nothing in it
+        # touches Metal, MLX or any Apple binary and a real Mac proved nothing Linux did
+        # not. The ubuntu leg went for the same reason: studio-backend-ci.yml already runs
+        # this file on ubuntu-latest (it is not in that job's --ignore list), and the
+        # import-safety test installs its own `builtins.__import__` blocker and drops
+        # preloaded torch/unsloth from sys.modules, so it is honest inside a fully
+        # installed environment too. Windows stays because nothing else in CI runs this
+        # file there and `_has_torch`'s import probe is the per-OS behaviour this job
+        # exists for.
         os: [windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -93,7 +78,7 @@ jobs:
       - name: Install CPU PyTorch
         # CPU wheel index so every OS gets a CPU build; keep PyPI as an extra index so torch's
         # transitive deps still resolve (matching the other workflows in this repo).
-        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "torch>=2.4,<2.13"
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "torch>=2.4,<2.15"
       - name: Install backend import deps
         # Enough to import utils.hardware and core.export.export; NOT unsloth (needs a GPU, and
         # the import-safety test blocks it) or triton/llama.cpp (Linux-only / native builds).
