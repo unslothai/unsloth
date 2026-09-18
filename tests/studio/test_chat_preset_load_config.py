@@ -311,25 +311,6 @@ def _nested_function_spans(block: str) -> list:
             return spans
 
 
-def _statement_start(head: str) -> int:
-    """Where the statement `head` ends inside began.
-
-    Only a depth-zero delimiter ends a statement: a `for (let i = 0; i < n; i++)` header carries
-    semicolons of its own, and taking one as the boundary hides the `for` from the caller.
-    """
-    depth, boundary = 0, -1
-    for index, char in enumerate(head):
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
-            if depth == 0 and char == "}":
-                boundary = index
-        elif depth == 0 and char == ";":
-            boundary = index
-    return boundary + 1
-
-
 def _consume_statement(block: str, index: int):
     """The statement starting at `index`, and where the one after it starts."""
     while index < len(block) and block[index].isspace():
