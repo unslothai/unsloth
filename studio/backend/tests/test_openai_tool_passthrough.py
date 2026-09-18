@@ -10491,9 +10491,45 @@ class TestPassthroughImageNormalization:
             px = Image.open(BytesIO(out)).getpixel((0, 0))
             assert px == ((77, 77, 77) if mode == "L" else (10, 20, 30)), (mode, px)
 
-    def test_remote_url_is_forwarded_unchanged(self):
+    def test_remote_url_is_fetched_here_and_never_forwarded(self, monkeypatch):
+        from PIL import Image
+        from io import BytesIO
+
+        buf = BytesIO()
+        Image.new("RGB", (2, 2), (4, 5, 6)).save(buf, format = "WEBP")
+        webp_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        import core.inference.external_provider as ep
+
+        monkeypatch.setattr(
+            ep, "safe_fetch_remote_image_sync", lambda *a, **k: ("image/webp", webp_b64)
+        )
+
         messages = _openai_messages_for_passthrough(self._req("https://x.example/a.webp"))
-        assert messages[0]["content"][1]["image_url"]["url"] == "https://x.example/a.webp"
+
+        url = messages[0]["content"][1]["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+
+    def test_remote_url_refused_when_the_fetch_is(self, monkeypatch):
+        import core.inference.external_provider as ep
+
+        monkeypatch.setattr(ep, "safe_fetch_remote_image_sync", lambda *a, **k: None)
+
+        with pytest.raises(HTTPException) as exc:
+            _openai_messages_for_passthrough(self._req("https://x.example/a.webp"))
+        assert exc.value.status_code == 400
+
+    def test_non_https_remote_url_is_refused_without_a_fetch(self, monkeypatch):
+        import core.inference.external_provider as ep
+
+        def _never(*_a, **_k):
+            raise AssertionError("http:// must be refused before any request")
+
+        monkeypatch.setattr(ep, "safe_fetch_remote_image_sync", _never)
+
+        with pytest.raises(HTTPException) as exc:
+            _openai_messages_for_passthrough(self._req("http://169.254.169.254/latest/meta-data/"))
+        assert exc.value.status_code == 400
 
     def test_local_template_caller_leaves_a_payloadless_data_url_alone(self):
         # The safetensors/MLX client-tools path only gets here when the turn has no
