@@ -7915,13 +7915,8 @@ def macos_product_version() -> str:
     platform.mac_ver() reads: 13.3.1 (a) reports ProductVersion 13.3.1 with the "(a)"
     in ProductVersionExtra and the build at 22E772610a instead of 22E261. Reading
     SystemVersion.plist has the same blind spot and is additionally stale for an RSR
-    (osquery/osquery#8008), so ask sw_vers.
-
-    Bare, not flagged: sw_vers documents single-dash options (-productVersion), so a
-    double-dash spelling is at best undocumented, and a flag that errors would silently
-    cost the very field this exists to read. With no arguments it prints every field as
-    documented tab-aligned "Key:\tValue" lines, ProductVersionExtra among them when an
-    RSR is installed, in one spawn and with nothing to spell wrong.
+    (osquery/osquery#8008), so ask sw_vers -- bare, since it documents single-dash
+    options and a misspelt flag would silently cost the field this exists to read.
     """
     try:
         done = subprocess.run(
@@ -7974,12 +7969,10 @@ def persist_macos_load_probe(install_dir: Path, host: HostInfo) -> bool:
     digests the marker did carry and dyld itself all passed on these exact bytes
     moments ago, which is the same evidence the install path records on.
 
-    Called only from _existing_install_runs, and only once every image has started.
-    The record covers the ROOT copies too, and a later run skips starting them on the
-    strength of it, so only a caller that has started them all can write it. The two
-    reuse fast paths probe build/bin alone and never reach a root wrapper, which can be
-    a separate file rather than a symlink: persisting from there recorded a wrapper
-    nothing had run, and the next run trusted the record and never ran it either.
+    The record covers the ROOT copies too, so only a caller that has started every one
+    of them may write it. That is _existing_install_runs alone; the two reuse fast paths
+    probe build/bin and never reach a root wrapper, which can be a separate file rather
+    than a symlink.
     """
     record = macos_load_probe_record(host)
     if record is None:
@@ -8811,10 +8804,9 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         _binary_image_runs(binary, install_dir, host, recorded_runtime_line) for binary in probes
     ):
         return False
-    # Last, not straight after the dyld probe: the root entrypoint can be a separate
-    # wrapper rather than a symlink, and recording before it was started would bless a
-    # corrupt one into the digest record. The next run would then read the record as
-    # current, return above, and never start the wrapper again.
+    # Last, not straight after the dyld probe: recording before the root entrypoints ran
+    # would bless a corrupt wrapper into the record, and the next run would read the
+    # record as current, return above, and never start the wrapper either.
     if probed:
         persist_macos_load_probe(install_dir, host)
     return True
