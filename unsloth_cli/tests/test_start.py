@@ -7731,7 +7731,7 @@ def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
     assert start._hub_gguf_files("owner/mmproj-pack") == []
 
 
-def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
+def test_hub_gguf_files_ignores_prefixed_drafters(monkeypatch):
     # Mirrors hub.utils.gguf.is_mtp_drafter_path: basename prefix (every kind) or exact
     # parent dir (mtp/, dspark/ only -- dflash/ is a real family name).
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -7745,6 +7745,7 @@ def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
             # Family names, not companions: these ARE the model.
             {"rfilename": "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf"},
             {"rfilename": "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf"},
+            {"rfilename": "Llama-3.1-8B-Eagle3-Q4_K_M.gguf"},
         ]
     }
     monkeypatch.setattr(
@@ -7755,6 +7756,7 @@ def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
     assert start._hub_gguf_files("owner/dspark-pack") == [
         "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf",
         "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf",
+        "Llama-3.1-8B-Eagle3-Q4_K_M.gguf",
     ]
 
 

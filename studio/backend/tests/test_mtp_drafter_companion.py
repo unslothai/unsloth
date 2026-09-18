@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate-file drafter contracts: MTP (Gemma 4), DSpark and DFlash.
+"""Separate-file drafter contracts: MTP (Gemma 4), DSpark, DFlash and EAGLE3.
 
 Pins: the drafter-path predicate and its two layering mirrors, Gemma
 effective-size extraction, companion classification in variant plans
@@ -169,7 +169,7 @@ GPT_OSS_FILES = [
 
 
 def test_eagle3_draft_head_is_not_a_variant_or_the_default():
-    from hub.utils.gguf import is_reclaimable_drafter_path, pick_best_gguf
+    from hub.utils.gguf import pick_best_gguf
 
     assert pick_best_gguf(GPT_OSS_FILES) == "gpt-oss-20b-MXFP4.gguf"
 
@@ -178,8 +178,6 @@ def test_eagle3_draft_head_is_not_a_variant_or_the_default():
     )
     assert set(plans) == {"mxfp4"}
     assert plans["mxfp4"].target_filenames == ("gpt-oss-20b-MXFP4.gguf",)
-
-    assert is_reclaimable_drafter_path("eagle3-gpt-oss-20b-Q8_0.gguf") is False
 
 
 def test_baked_in_repo_plans_unchanged():

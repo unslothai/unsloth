@@ -2854,9 +2854,10 @@ _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORE
 def _is_companion_gguf_path(path: str) -> bool:
     """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
     drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
-    drafters for DeepSeek V4 Flash). Mirrors hub.utils.gguf so variant resolution
-    never picks a companion as the main model -- a Gemma ``Q8_0`` request must not
-    resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight.
+    drafters for DeepSeek V4 Flash, the ``eagle3-*.gguf`` draft heads). Mirrors
+    hub.utils.gguf so variant resolution never picks a companion as the main model --
+    a Gemma ``Q8_0`` request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts
+    ahead of the real weight.
 
     EXCLUSION ONLY. Use ``_is_mtp_only_drafter_path`` to pick a drafter to launch.
     """
