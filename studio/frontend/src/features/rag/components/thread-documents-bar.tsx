@@ -468,10 +468,8 @@ export function ThreadDocumentsBar({
     if (current) {
       return current;
     }
-    // Captured by the caller, before anything can yield. Capturing it here is too late on the
-    // recovery path: requireStoredThread awaits a Dexie read and an unbounded getChatThread
-    // round trip first, and clearAllChats advances the boundary as its very first statement,
-    // so a clear landing in that window would read as no clear at all.
+    // Captured by the caller, not here: on the recovery path this runs after an unbounded
+    // getChatThread round trip, so a clear arriving in that window would read as no clear.
     if (chatHistoryClearBoundary.capture() !== clearGeneration) {
       return Promise.reject(new Error("Chat history was cleared"));
     }
@@ -508,9 +506,8 @@ export function ThreadDocumentsBar({
   }, [aui]);
 
   const ensureThreadId = useCallback((): Promise<string> => {
-    // Read synchronously with the attach, so a clear landing while the stored-thread check is
-    // still in flight is still seen as a clear: a late initializer must not recreate a chat
-    // after that clear finishes (clear-all-chats.ts).
+    // Before anything can yield: a late initializer must not recreate a chat a Clear All
+    // removed while the stored-thread check was in flight (clear-all-chats.ts).
     const clearGeneration = chatHistoryClearBoundary.capture();
     return materializeThreadScope({
       threadId: effectiveThreadId,
