@@ -2976,6 +2976,31 @@ def test_the_loading_card_store_exists_before_any_load():
     assert not hasattr(backend._loading_cards, "card")
 
 
+@pytest.mark.parametrize(
+    "returncode, runnable",
+    [
+        (0xC0000135, False),
+        (0xC0000139, False),
+        (0xC0000142, False),
+        (127, False),
+        (0, True),
+        (1, True),
+    ],
+)
+def test_the_server_probe_refuses_a_windows_loader_death(monkeypatch, returncode, runnable):
+    """A ROCm sd-server with no HIP DLLs exits 0xC0000135 with no output. Read as runnable, the
+    router never recorded it, and the load's start failure had nothing to classify, so every
+    forced-native image load retried the same build instead of ever reaching Vulkan."""
+    import subprocess
+
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_a, **_k: types.SimpleNamespace(returncode = returncode)
+    )
+    assert sd_cpp_backend._server_binary_runnable("/opt/sd/rocm/sd-server") is runnable
+
+
 def test_a_damaged_cli_beside_a_healthy_server_is_not_a_strike(fake_settings, monkeypatch):
     """The mirror of the held sd-server verdict. sd-cli losing its execute bit while the server runs
     says nothing about the accelerator: the server is what this load uses and the load succeeds. A

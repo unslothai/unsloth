@@ -197,9 +197,9 @@ def _server_binary_runnable(binary: str) -> bool:
     """Best-effort probe that ``binary`` can actually execute (not just exist). Runs ``<binary>
     --help`` with the same runtime env the server will use, so a present but unrunnable build
     (wrong arch, missing shared libs, no execute bit) is caught before a multi-GB asset download.
-    Conservative: only a clear "cannot launch" signal (OSError, or the dynamic-loader exit codes
-    126/127) returns False; anything else is treated as runnable so a quirky ``--help`` exit code
-    never blocks a working binary."""
+    Conservative: only a clear "cannot launch" signal (OSError, the dynamic-loader exit codes
+    126/127, or a Windows image-load status such as 0xC0000135) returns False; anything else is
+    treated as runnable so a quirky ``--help`` exit code never blocks a working binary."""
     import subprocess
 
     try:
@@ -216,7 +216,12 @@ def _server_binary_runnable(binary: str) -> bool:
         return True
     # Negative return code = signal death (e.g. -4 SIGILL from an incompatible prebuilt): launches then crashes, so
     # treat as unavailable.
-    return proc.returncode >= 0 and proc.returncode not in (126, 127)
+    # The Windows loader statuses arrive as large POSITIVE codes, which the sign test cannot see.
+    return (
+        proc.returncode >= 0
+        and proc.returncode not in (126, 127)
+        and proc.returncode not in _WINDOWS_IMAGE_LOAD_FAILURE_STATUSES
+    )
 
 
 def _usable_or_discard_managed(binary: str) -> bool:
@@ -1690,8 +1695,7 @@ def note_unlaunchable_accelerator_build(
     card: Optional[str] = None,
 ) -> None:
     """Record that the build ``binary`` came from could not be LAUNCHED here; the other recorder
-    reads output a loader death never writes. On Windows 0xC0000135 arrives as a large POSITIVE exit
-    code, so `_server_binary_runnable` accepts it. Ambiguous: a missing execute bit looks the same."""
+    reads output a loader death never writes. Ambiguous: a missing execute bit looks the same."""
     if not binary:
         return
     try:
