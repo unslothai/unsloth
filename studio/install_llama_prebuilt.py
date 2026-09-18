@@ -8787,8 +8787,6 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         return False
     if recorded_bytes_intact:
         return True
-    if probed:
-        persist_macos_load_probe(install_dir, host)
     # Root copies first: _find_llama_server_binary reaches them first, and without a
     # symlink they can rot alone.
     probes: list[Path] = []
@@ -8804,9 +8802,17 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
             continue
         seen.add(key)
         probes.append(binary)
-    return all(
+    if not all(
         _binary_image_runs(binary, install_dir, host, recorded_runtime_line) for binary in probes
-    )
+    ):
+        return False
+    # Last, not straight after the dyld probe: the root entrypoint can be a separate
+    # wrapper rather than a symlink, and recording before it was started would bless a
+    # corrupt one into the digest record. The next run would then read the record as
+    # current, return above, and never start the wrapper again.
+    if probed:
+        persist_macos_load_probe(install_dir, host)
+    return True
 
 
 def existing_install_matches_choice(
@@ -8846,6 +8852,7 @@ def existing_install_matches_choice(
     # match. Only a marker carrying the record is held to it.
     recorded_files = metadata.get("runtime_files")
     runtime_files_matched = False
+    macos_probed = False
     if isinstance(recorded_files, dict) and recorded_files:
         if not _runtime_files_match(install_dir, host, metadata):
             return False
@@ -8881,15 +8888,14 @@ def existing_install_matches_choice(
     # reject it, so a matching fingerprint would reuse the broken tree forever.
     elif host.is_macos:
         try:
-            if preflight_macos_installed_binaries(
+            macos_probed = preflight_macos_installed_binaries(
                 [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
                 install_dir,
                 host,
                 load_probe = not (
                     runtime_files_matched and _macos_load_record_is_current(metadata, host)
                 ),
-            ):
-                persist_macos_load_probe(install_dir, host)
+            )
         except Exception:
             return False
     expected_fingerprint = expected_install_fingerprint(
@@ -8922,6 +8928,10 @@ def existing_install_matches_choice(
     for key, expected in expected_pairs.items():
         if metadata.get(key) != expected:
             return False
+    # Only once this install is the answer: recording earlier would re-hash the payload
+    # of a tree we are about to reject over its fingerprint.
+    if macos_probed:
+        persist_macos_load_probe(install_dir, host)
     return True
 
 

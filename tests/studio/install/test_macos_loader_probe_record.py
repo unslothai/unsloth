@@ -447,6 +447,35 @@ def test_a_legacy_size_only_marker_is_upgraded_by_a_passing_probe(tmp_path: Path
     assert calls[0] == 1
 
 
+@POSIX_ONLY
+def test_a_broken_root_wrapper_is_not_blessed_into_the_record(tmp_path: Path, monkeypatch):
+    """The root entrypoint can be its own file, and it is started AFTER the dyld probe.
+
+    Recording between the two would hash the broken wrapper into the digest record, and
+    the next run would read that record as current and never start the wrapper again.
+    """
+    host = macos_host()
+    install_dir = build_install(tmp_path, host, load_probe_passed = False)
+    marker = marker_of(install_dir)
+    for key, entry in marker["runtime_files"].items():          # the pre-change shape
+        if not key.endswith(("llama-server", "llama-quantize")):
+            entry.pop("sha256", None)
+    write_marker(install_dir, marker)
+    count_spawns(monkeypatch)
+    broken = install_dir / "llama-server"
+
+    def _runs(path, *_a, **_k):
+        return Path(path) != broken
+
+    monkeypatch.setattr(ILP, "_binary_image_runs", _runs)
+
+    assert ILP._existing_install_runs(install_dir, host) is False
+    marker = marker_of(install_dir)
+    assert ILP.MACOS_LOAD_PROBE_KEY not in marker
+    # And the legacy size-only record was not upgraded on the strength of it either.
+    assert not all(entry.get("sha256") for entry in marker["runtime_files"].values())
+
+
 def test_a_probe_that_could_not_run_is_not_remembered(tmp_path: Path, monkeypatch):
     """Only a real load is evidence, so a fail-open probe must not persist one."""
     host = macos_host()
