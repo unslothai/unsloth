@@ -67,8 +67,9 @@ const withActiveChat = (run: (item: string) => void) => {
   run(activeChat.current);
 };
 
-/** Actions the blocks in Harness register by hand. The rest come from the
- *  registry below, so pressing any shipped chord reaches a listener. */
+/** Actions the blocks in Harness register by hand. The rest come from the registry
+ *  below, so every shipped chord has a listener here to reach. This stands in for the
+ *  app's own call sites, which the node suite pins by source text. */
 const NAMED_IDS = new Set<registry.ShortcutId>([
   "archiveChat",
   "togglePinChat",

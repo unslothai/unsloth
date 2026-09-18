@@ -145,8 +145,10 @@ def check_defaults(page, engine: str, platform: str) -> None:
 def check_every_default(page, engine: str, platform: str) -> None:
     """Press every chord the build ships, not just the handful named below.
 
-    The checks that follow read a few actions closely. This one is the breadth
-    pass: an action whose chord reaches no listener is the failure it catches.
+    The harness registers the registry itself, so this is the dispatch layer end to
+    end: a default the matcher cannot match, a chord another action owns, a modifier
+    that maps differently off macOS. The app's own call sites are pinned separately,
+    by "every action has a useShortcut call site" in the node suite.
     """
     rows = page.evaluate(
         """() => {
