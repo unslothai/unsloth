@@ -184,7 +184,6 @@ def _first_block_cache_is_hooked(transformer: Any) -> bool:
     """
     try:
         from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, _FBC_LEADER_BLOCK_HOOK
-
         names = (_FBC_LEADER_BLOCK_HOOK, _FBC_BLOCK_HOOK)
         for module in transformer.modules():
             registry = getattr(module, "_diffusers_hook", None)
