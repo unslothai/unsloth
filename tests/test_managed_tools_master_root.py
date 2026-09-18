@@ -163,7 +163,11 @@ print(json.dumps({
 
 
 def _install_llama_server(directory: Path) -> Path:
-    binary = directory / "build" / "bin" / "llama-server"
+    # The name _find_llama_server_binary looks for on THIS platform: it appends .exe on Windows,
+    # so a fixture that only ever writes the POSIX name made discovery correctly answer None and
+    # all three discovery tests fail on a Windows runner for a reason in the fixture.
+    name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
+    binary = directory / "build" / "bin" / name
     binary.parent.mkdir(parents = True, exist_ok = True)
     binary.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
     binary.chmod(0o755)
