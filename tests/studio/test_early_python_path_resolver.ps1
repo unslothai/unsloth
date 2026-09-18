@@ -108,8 +108,13 @@ try {
     $nbspName = "studio-nbsp" + [char]0x00A0
     New-Item -ItemType Directory -Force -Path (Join-Path $tmp "studio-nbsp") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $tmp $nbspName) | Out-Null
-    $nbspAnswer = Get-StudioPythonFinalPath -Path (Join-Path $tmp $nbspName)
-    Check "a trailing non-breaking space is kept" ("$nbspAnswer".EndsWith($nbspName))
+    # .NET Framework strips it on the way in, so 5.1 cannot create or name such a directory at all.
+    if (@(Get-ChildItem -LiteralPath $tmp -Name) -ccontains $nbspName) {
+        $nbspAnswer = Get-StudioPythonFinalPath -Path (Join-Path $tmp $nbspName)
+        Check "a trailing non-breaking space is kept" ("$nbspAnswer".EndsWith($nbspName))
+    } else {
+        Write-Host "  SKIP  this host strips a trailing U+00A0 from paths" -ForegroundColor Yellow
+    }
 
     $gateScript = "import pathlib,sys" + [char]10 +
         "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=False)).encode('utf-8'))"
