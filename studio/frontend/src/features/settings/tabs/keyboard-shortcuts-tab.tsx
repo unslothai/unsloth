@@ -342,17 +342,14 @@ export function KeyboardShortcutsTab() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1">
-        <h2
+      <header className="flex flex-col gap-1">
+        <h1
           data-settings-label={t("settings.keyboardShortcuts.title")}
-          className="font-heading text-base font-semibold text-foreground"
+          className="text-xl font-semibold font-heading"
         >
           {t("settings.keyboardShortcuts.title")}
-        </h2>
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {t("settings.keyboardShortcuts.description")}
-        </p>
-      </div>
+        </h1>
+      </header>
 
       <div className="relative">
         <HugeiconsIcon

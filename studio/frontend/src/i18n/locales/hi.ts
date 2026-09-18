@@ -303,8 +303,6 @@ export const hi = {
     },
     keyboardShortcuts: {
       title: "कीबोर्ड शॉर्टकट",
-      description:
-        "कोई भी शॉर्टकट बदलें, या उसे हटाकर वह कुंजी-संयोजन अपने ब्राउज़र या OS के लिए खाली करें।",
       searchPlaceholder: "शॉर्टकट खोजें…",
       noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
       unassigned: "असाइन नहीं",

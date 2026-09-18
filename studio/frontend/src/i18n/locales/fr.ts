@@ -304,8 +304,6 @@ export const fr = {
     },
     keyboardShortcuts: {
       title: "Raccourcis clavier",
-      description:
-        "Modifiez un raccourci, ou effacez-le pour libérer la combinaison pour le navigateur ou le système.",
       searchPlaceholder: "Rechercher des raccourcis…",
       noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
