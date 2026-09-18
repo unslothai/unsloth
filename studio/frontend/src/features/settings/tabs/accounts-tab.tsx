@@ -153,11 +153,22 @@ function OwnerAccountsTab() {
     day: "numeric",
   });
   function createdDate(account: StudioAccount) {
-    const date = new Date(account.created_at);
+    // Only a non-empty timestamp string becomes a Date. `new Date(null)` is the
+    // epoch rather than an invalid date, so a NaN check alone prints a confident
+    // "Jan 1, 1970" for an account whose created_at the API left null -- and it
+    // can be null, because the column is added nullable on upgrade and the
+    // backfill skips rows that already carry an account_id.
+    const raw = account.created_at;
+    const date = typeof raw === "string" && raw ? new Date(raw) : new Date(Number.NaN);
     return Number.isNaN(date.getTime()) ? "—" : dateFormatter.format(date);
   }
   function closeEditor() {
-    if (busy) return;
+    // Deliberately NOT gated on `busy`. A one-time setup code is displayed as
+    // soon as the mutation resolves, but `perform` stays busy through the
+    // account list refresh that follows it, so gating dismissal on busy leaves
+    // the plaintext code on screen with no way out whenever that refresh is slow
+    // or the backend is unreachable: Done disabled, Escape swallowed, and no
+    // close button. Hiding the code is display state, not a mutation.
     setCreating(false);
     setSetup(null);
     setUsername("");
@@ -306,7 +317,7 @@ function OwnerAccountsTab() {
                   <td className="py-3">
                     <span
                       className={cn(
-                        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-medium",
+                        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-ui-11 font-medium",
                         account.is_active
                           ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
                           : "bg-muted text-muted-foreground",
@@ -511,7 +522,7 @@ function OwnerAccountsTab() {
                     )}
                   </span>
                 </Button>
-                <Button variant="dark" disabled={busy} onClick={closeEditor}>
+                <Button variant="dark" onClick={closeEditor}>
                   {t("settings.accounts.dismiss")}
                 </Button>
               </DialogFooter>

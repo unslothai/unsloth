@@ -42,12 +42,23 @@ function translate(key: string, values: Record<string, string> = {}) {
     (_match, name: string) => values[name] ?? "",
   );
 }
-function tab(owner = true, mutationError: string | null = null) {
+type TabOptions = {
+  /** Hold the post-mutation account refresh open, the way a slow backend does. */
+  stallRefresh?: boolean;
+  /** Replace the fixture rows, for the cases the default two cannot express. */
+  accounts?: Record<string, unknown>[];
+};
+function tab(
+  owner = true,
+  mutationError: string | null = null,
+  options: TabOptions = {},
+) {
   const states: unknown[] = [];
   const effects: (() => void)[] = [];
   let cursor = 0;
   const calls: string[] = [];
-  const accounts = [
+  let releaseRefresh: (() => void) | null = null;
+  const accounts = options.accounts ?? [
     {
       account_id: "owner",
       username: "unsloth",
@@ -140,6 +151,14 @@ function tab(owner = true, mutationError: string | null = null) {
     "../api/accounts": {
       fetchAccounts: async () => {
         calls.push("list");
+        // The first call is the initial load and always resolves; a stalled run
+        // holds every refresh AFTER it, which is the window in which a one-time
+        // setup code is on screen while `perform` is still busy.
+        if (options.stallRefresh && calls.filter((c) => c === "list").length > 1) {
+          await new Promise<void>((resolve) => {
+            releaseRefresh = resolve;
+          });
+        }
         return accounts;
       },
       createAccount: async (username: string) => {
@@ -169,6 +188,7 @@ function tab(owner = true, mutationError: string | null = null) {
   return {
     render,
     calls,
+    releaseRefresh: () => releaseRefresh?.(),
     initialize: async () => {
       render();
       for (const effect of effects.splice(0)) effect();
@@ -365,4 +385,100 @@ test("accounts show creation dates and username search ignores case and surround
   });
   assert.match(content(ui.render()), /No matching accounts/);
   assert.doesNotMatch(content(ui.render()), /No other accounts yet/);
+});
+
+test("a one-time setup code can always be dismissed, even while its refresh is still in flight", async () => {
+  // `perform` stays busy through the account refresh that follows the mutation,
+  // and the code is already on screen by then. Gating dismissal on busy left the
+  // plaintext credential with no exit at all on a slow backend: Done disabled,
+  // Escape swallowed by the same guard, and the dialog has no close button.
+  const ui = tab(true, null, { stallRefresh: true });
+  let tree = await ui.initialize();
+  await click(tree, "Create account");
+  const input = nodes(ui.render()).find(
+    (node) => node.props.id === "new-account-username",
+  );
+  assert.ok(input);
+  (input.props.onChange as (event: unknown) => void)({
+    target: { value: "bob" },
+  });
+  const form = nodes(ui.render()).find((node) => node.type === "form");
+  assert.ok(form);
+  (form.props.onSubmit as (event: unknown) => void)({ preventDefault() {} });
+  await tick();
+  await tick();
+
+  tree = ui.render();
+  assert.match(content(tree), /one-time-secret/, "the code should be showing");
+  const done = nodes(tree).find(
+    (node) => node.type === "Button" && content(node).trim() === "Done",
+  );
+  assert.ok(done);
+  assert.notEqual(done.props.disabled, true, "Done must stay usable");
+  (done.props.onClick as () => void)();
+  await tick();
+  assert.doesNotMatch(content(ui.render()), /one-time-secret/);
+
+  // Escape and the overlay route through the same handler, so they must work too.
+  const ui2 = tab(true, null, { stallRefresh: true });
+  let tree2 = await ui2.initialize();
+  await click(tree2, "Create account");
+  const input2 = nodes(ui2.render()).find(
+    (node) => node.props.id === "new-account-username",
+  );
+  (input2!.props.onChange as (event: unknown) => void)({
+    target: { value: "bob" },
+  });
+  const form2 = nodes(ui2.render()).find((node) => node.type === "form");
+  (form2!.props.onSubmit as (event: unknown) => void)({ preventDefault() {} });
+  await tick();
+  await tick();
+  tree2 = ui2.render();
+  assert.match(content(tree2), /one-time-secret/);
+  const dialog = nodes(tree2).find((node) => node.type === "Dialog");
+  (dialog!.props.onOpenChange as (open: boolean) => void)(false);
+  await tick();
+  assert.doesNotMatch(content(ui2.render()), /one-time-secret/);
+  ui.releaseRefresh();
+  ui2.releaseRefresh();
+});
+
+test("an account the API reports without a creation date shows a dash, not the epoch", async () => {
+  // created_at is added as a NULLABLE column on upgrade and the backfill skips
+  // rows that already carry an account_id, so the API can answer with null.
+  // `new Date(null)` is the epoch rather than an invalid date, so a bare NaN
+  // check prints a confident "Jan 1, 1970" for an account nobody created then.
+  const ui = tab(true, null, {
+    accounts: [
+      {
+        account_id: "owner",
+        username: "unsloth",
+        role: "owner",
+        is_active: true,
+        created_at: null,
+      },
+      {
+        account_id: "alice-id",
+        username: "alice",
+        role: "user",
+        is_active: true,
+        created_at: "2026-09-01T12:00:00Z",
+      },
+    ],
+  });
+  const tree = await ui.initialize();
+  const ownerRow = nodes(tree).find(
+    (node) => node.props["data-testid"] === "account-unsloth",
+  );
+  assert.ok(ownerRow);
+  assert.equal(content(nodes(ownerRow).find((node) => node.type === "time")), "—");
+  assert.doesNotMatch(content(tree), /1970/);
+  const aliceRow = nodes(tree).find(
+    (node) => node.props["data-testid"] === "account-alice",
+  );
+  assert.match(
+    content(nodes(aliceRow!).find((node) => node.type === "time")),
+    /2026/,
+    "a real timestamp must still render",
+  );
 });
