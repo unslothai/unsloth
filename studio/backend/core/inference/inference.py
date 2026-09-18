@@ -77,6 +77,45 @@ def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool
     return hf_token.strip() if isinstance(hf_token, str) and hf_token.strip() else None
 
 
+def _load_cached_repo_as_named(config: ModelConfig, load_in_4bit: bool) -> bool:
+    """Use cached unquantized weights when the mapped repo is not cached."""
+    if config.is_local or config.is_lora or not config.path:
+        return False
+    try:
+        from unsloth.models import loader_utils
+
+        name = config.path.lower()
+        if name in loader_utils.BAD_MAPPINGS:
+            return False
+        table = (
+            loader_utils.FLOAT_TO_INT_MAPPER if load_in_4bit else loader_utils.MAP_TO_UNSLOTH_16bit
+        )
+        # Avoid fetching the remote mapper for unknown names.
+        if name not in table:
+            return False
+        target = loader_utils.get_model_name(config.path, load_in_4bit = load_in_4bit)
+    except Exception as e:
+        logger.debug(f"Could not resolve the Unsloth mapping for {config.path}: {e}")
+        return False
+    if not target or target.lower() == name:
+        return False
+    from utils.utils import active_hf_cache_loadable_snapshot
+
+    if active_hf_cache_loadable_snapshot(target) is not None:
+        return False
+    snapshot = active_hf_cache_loadable_snapshot(config.path)
+    if snapshot is None:
+        return False
+    try:
+        checkpoint = json.loads((snapshot / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(checkpoint, dict) or checkpoint.get("quantization_config") is not None:
+        return False
+    logger.info(f"Loading cached {config.path} as named instead of downloading {target}")
+    return True
+
+
 class HarmonyTextStreamer:
     """Streaming text decoder for the gpt-oss harmony channel protocol.
 
@@ -781,6 +820,7 @@ class InferenceBackend:
             logger.info(f"Loading {model_type} model{adapter_info}: {model_name}")
             log_gpu_memory(f"Before loading {model_name}")
 
+            use_exact_model_name = _load_cached_repo_as_named(config, load_in_4bit)
             if config.is_vision:
                 model, processor = FastVisionModel.from_pretrained(
                     model_name = config.path,
@@ -790,6 +830,7 @@ class InferenceBackend:
                     device_map = device_map,
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
                 )
 
                 FastVisionModel.for_inference(model)
@@ -838,6 +879,7 @@ class InferenceBackend:
                     device_map = device_map,
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
                 )
 
                 FastLanguageModel.for_inference(model)
