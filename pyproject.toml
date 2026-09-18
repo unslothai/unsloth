@@ -190,9 +190,8 @@ huggingfacenotorch = [
     # No win_arm64 wheel; only imported under HF_HUB_ENABLE_HF_TRANSFER=1, and hf_xet
     # covers fast downloads there.
     "hf_transfer ; sys_platform != 'win32' or platform_machine != 'ARM64'",
-    # 0.39 is the floor the diffusion pipelines assume (Krea 2, Flux2, Z-Image).
-    # diffusers dropped 3.9 in 0.37, so the floor only applies on 3.10+. The MiniMax-H3
-    # commit pin lives in the installer requirements: PyPI rejects VCS refs in wheel metadata.
+    # Diffusion pipelines need 0.39+ (Krea 2, Flux2, Z-Image); keep Python 3.9 resolvable.
+    # Installer pins live in studio/backend/requirements/diffusers-pin.txt.
     "diffusers>=0.39.0 ; python_version >= '3.10'",
     "diffusers ; python_version < '3.10'",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
