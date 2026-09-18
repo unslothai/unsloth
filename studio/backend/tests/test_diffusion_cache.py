@@ -43,9 +43,12 @@ def test_normalize_rejects_unknown():
 
 
 # ── apply_step_cache ───────────────────────────────────────────────────────────────
-class _Config:
+class FirstBlockCacheConfig:  # noqa: N801 - the name diffusers exports, and what the guard matches on
     def __init__(self, threshold):
         self.threshold = threshold
+
+
+_Config = FirstBlockCacheConfig
 
 
 class _MixinTransformer:
@@ -109,7 +112,38 @@ def _stub_diffusers(monkeypatch, *, hook_recorder = None):
             hook_recorder["config"] = config
 
     hooks.apply_first_block_cache = _apply_first_block_cache
+
+    # The real teardown path: diffusers removes FBCache by name through HookRegistry, NOT through
+    # _cache_config, which is exactly why a partial hook install is still removable.
+    class _Registry:
+        instances: dict = {}
+        removed: list = []
+
+        def __init__(self, module):
+            self.module = module
+
+        @classmethod
+        def check_if_exists_or_initialize(cls, module):
+            return cls.instances.setdefault(id(module), cls(module))
+
+        def remove_hook(
+            self,
+            name,
+            recurse = True,
+        ):
+            type(self).removed.append(name)
+
+    _Registry.instances = {}
+    _Registry.removed = []
+    hooks.HookRegistry = _Registry
     monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
+
+    fbc = types.ModuleType("diffusers.hooks.first_block_cache")
+    fbc._FBC_LEADER_BLOCK_HOOK = "fbc_leader_block_hook"
+    fbc._FBC_BLOCK_HOOK = "fbc_block_hook"
+    monkeypatch.setitem(sys.modules, "diffusers.hooks.first_block_cache", fbc)
+    hooks.first_block_cache = fbc
+    return _Registry
 
 
 def test_disabled_mode_is_noop(monkeypatch):
@@ -519,7 +553,9 @@ def test_enable_failure_restores_inners_before_partial_disable(monkeypatch):
 
     t = _T()
     assert apply_step_cache(_pipe(t), mode = "fbcache") is None
-    assert order == ["restore-walk", "disable"]
+    # Two walks: the pre-engage probe that asks whether FBCache's hooks were ALREADY installed by
+    # someone else, then the restore. What this pins is that the restore precedes disable_cache.
+    assert order == ["restore-walk", "restore-walk", "disable"]
 
 
 # ── stale child-registry cache invalidation (mid-session enable) ────────────────────
@@ -540,3 +576,581 @@ def test_invalidate_child_registry_cache_tolerates_absence():
     reg = types.SimpleNamespace(_child_registries_cache = None)
     _invalidate_child_registry_cache(types.SimpleNamespace(_diffusers_hook = reg))
     assert reg._child_registries_cache is None
+
+
+# ── a second engage must not destroy the cache the first one installed ────────────
+class _RealisticCacheMixin:
+    """``CacheMixin`` as diffusers actually implements it, which the simple stub above does not model.
+
+    The two behaviours that matter: ``enable_cache`` RAISES when a cache is already enabled ("To apply a new
+    caching technique, please disable the existing one first"), and ``is_cache_enabled`` reports the live
+    state. Without them a redundant ``apply_step_cache`` looks harmless in tests while tearing the running
+    cache down in production.
+    """
+
+    def __init__(self):
+        self.enabled_with = None
+        # diffusers defines is_cache_enabled AS `_cache_config is not None` and assigns it last in
+        # enable_cache, so the config is the live state and must be modelled, not just counted.
+        self._cache_config = None
+        self.disable_calls = 0
+        self.enable_calls = 0
+
+    @property
+    def is_cache_enabled(self):
+        return self._cache_config is not None
+
+    def enable_cache(self, config):
+        self.enable_calls += 1
+        if self.is_cache_enabled:
+            raise ValueError(
+                "Caching has already been enabled with <class 'FirstBlockCacheConfig'>."
+            )
+        self.enabled_with = config
+        self._cache_config = config
+
+    def disable_cache(self):
+        self.disable_calls += 1
+        self.enabled_with = None
+        self._cache_config = None
+
+
+def test_a_redundant_engage_keeps_the_running_cache(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _RealisticCacheMixin()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    first = t.enabled_with
+
+    # Same settings a second time: the cache must still be on, on the SAME config object, and diffusers must
+    # not have been asked to enable or disable anything.
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert t.is_cache_enabled is True
+    assert t.enabled_with is first
+    assert (t.enable_calls, t.disable_calls) == (1, 0)
+    assert t._unsloth_step_cache == f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"
+
+
+def test_re_engaging_at_a_new_threshold_reconfigures(monkeypatch):
+    # Different settings are a real request, so the old cache comes off and the new one goes on. This is the
+    # only order diffusers accepts, and it must leave the marker describing the NEW threshold.
+    _stub_diffusers(monkeypatch)
+    t = _RealisticCacheMixin()
+    apply_step_cache(_pipe(t), mode = "fbcache")
+    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.5) == TC_FBCACHE
+    assert t.is_cache_enabled is True
+    assert t.enabled_with.threshold == 0.5
+    assert (t.enable_calls, t.disable_calls) == (2, 1)
+    assert t._unsloth_step_cache == "fbcache@0.5"
+
+
+def test_a_failed_re_engage_clears_the_marker(monkeypatch):
+    # The marker is read far from here as "this transformer step-caches", so it must not outlive a failed
+    # engage. Re-engaging at a new threshold is the only way to reach that state: the first engage set the
+    # marker, the second drops the old cache and then fails, leaving a transformer that does NOT cache and a
+    # marker that says it does.
+    _stub_diffusers(monkeypatch)
+    t = _RealisticCacheMixin()
+    apply_step_cache(_pipe(t), mode = "fbcache")
+    assert t._unsloth_step_cache == f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"
+
+    real_enable = t.enable_cache
+
+    def _boom(config):
+        real_enable(config)
+        raise RuntimeError("block signature not recognised")
+
+    t.enable_cache = _boom
+    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.5) is None
+    assert t._unsloth_step_cache is None
+
+
+def test_a_stale_marker_without_hooks_re_engages(monkeypatch):
+    # The reverse desync: a marker left set on a transformer whose hooks are gone. The cache is genuinely off,
+    # so the engage must proceed and rewrite the marker rather than trust it and no-op.
+    _stub_diffusers(monkeypatch)
+    t = _RealisticCacheMixin()
+    t._unsloth_step_cache = f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert t.is_cache_enabled is True
+    assert t.enable_calls == 1
+
+
+class _CleanupAlsoFailsTransformer:
+    """``enable_cache`` hooks some blocks and THEN raises, so the cache reads as enabled only after the
+    attempt; the cleanup ``disable_cache`` raises too, leaving those hooks live. ``is_cache_enabled``
+    reports that honestly, and it is the only signal the recovery branch has to go on."""
+
+    def __init__(self, *, enabled_after_failure = True):
+        self.enabled_after_failure = enabled_after_failure
+        self.attempted = False
+        self.disable_attempted = False
+
+    @property
+    def is_cache_enabled(self):
+        # Uncached until the part-way failure, so the re-entry guard at the top is not the path here.
+        return self.attempted and self.enabled_after_failure
+
+    def enable_cache(self, config):
+        self.attempted = True
+        raise RuntimeError("block signature not recognised")
+
+    def disable_cache(self):
+        self.disable_attempted = True
+        raise RuntimeError("cannot unhook")
+
+    def cache_context(self, *_a, **_k):
+        raise AssertionError("not used")
+
+
+def test_a_failed_cleanup_removes_the_hooks_itself_then_clears_the_marker(monkeypatch):
+    """disable_cache raising does not end it: the hooks come off by NAME through the registry, which is
+    the layer under diffusers' own teardown, so the marker can be cleared on evidence rather than hope."""
+    registry = _stub_diffusers(monkeypatch)
+    t = _CleanupAlsoFailsTransformer(enabled_after_failure = True)
+    t._unsloth_step_cache = "fbcache@0.1"
+
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert t.disable_attempted is True
+    assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
+    assert t._unsloth_step_cache is None
+
+
+def test_a_silently_partial_engage_still_has_its_hooks_taken_off(monkeypatch):
+    """The shape diffusers actually produces. CacheMixin.enable_cache assigns _cache_config as its LAST
+    statement, after apply_first_block_cache returns, and disable_cache returns early with a warning when
+    _cache_config is None. So a raise part-way through hooking leaves hooks LIVE while is_cache_enabled
+    reads False and disable_cache does nothing: every signal says uncached about a transformer that is
+    partly hooked. Removing by name is the only thing here that does not depend on those signals."""
+    registry = _stub_diffusers(monkeypatch)
+
+    class _PartlyHooked:
+        # _cache_config never gets set, exactly as when apply_first_block_cache raises.
+        _cache_config = None
+        disable_calls = 0
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def enable_cache(self, config):
+            raise RuntimeError("apply_first_block_cache died after hooking 3 of 57 blocks")
+
+        def disable_cache(self):
+            type(self).disable_calls += 1  # the real one would warn and return; nothing is unhooked
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _PartlyHooked()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
+    assert t._unsloth_step_cache is None
+
+
+def test_an_unverifiable_teardown_keeps_the_marker(monkeypatch):
+    """No registry to remove through means the hooks cannot be shown to be gone. Clearing the marker
+    there would let the graph wrapper capture a partly-hooked forward, so it stays set and the
+    transformer keeps the eager path: slower, and not wrong."""
+    _stub_diffusers(monkeypatch)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks.first_block_cache", raising = False)
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", types.ModuleType("diffusers.hooks"))
+    sys.modules["diffusers.hooks"].apply_first_block_cache = lambda *_a, **_k: None
+    sys.modules["diffusers.hooks"].FirstBlockCacheConfig = _Config
+
+    t = _CleanupAlsoFailsTransformer(enabled_after_failure = True)
+    t._unsloth_step_cache = "fbcache@0.1"
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert t._unsloth_step_cache == "fbcache@0.1"
+
+
+def test_a_failed_cleanup_that_did_unhook_still_clears_the_marker(monkeypatch):
+    """disable_cache raising but the model reporting the cache OFF means the hooks went anyway, so the
+    marker must come off; leaving it would force eager on a transformer that does not cache."""
+    _stub_diffusers(monkeypatch)
+    t = _CleanupAlsoFailsTransformer(enabled_after_failure = False)
+    t._unsloth_step_cache = "fbcache@0.1"
+
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert t._unsloth_step_cache is None
+
+
+class _ReconfigureCleanupPartlyFails:
+    """Already caching. The re-configure ``disable_cache`` takes the hooks off and THEN raises, so the
+    cache reads as off afterwards even though the call failed."""
+
+    def __init__(self, *, enabled_after_disable):
+        self.enabled = True
+        self.enabled_after_disable = enabled_after_disable
+        self.enabled_with = None
+
+    @property
+    def is_cache_enabled(self):
+        return self.enabled
+
+    def disable_cache(self):
+        self.enabled = self.enabled_after_disable
+        raise RuntimeError("hook registry went away mid-teardown")
+
+    def enable_cache(self, config):
+        self.enabled_with = config
+        self.enabled = True
+
+    def cache_context(self, *_a, **_k):
+        raise AssertionError("not used")
+
+
+def test_a_reconfigure_whose_cleanup_unhooked_anyway_re_engages(monkeypatch):
+    """disable_cache raised, but the cache reads as OFF, so it did the thing this call wanted. Keeping
+    the old marker there would pin the transformer to the eager path and block every later re-engage."""
+    _stub_diffusers(monkeypatch)
+    t = _ReconfigureCleanupPartlyFails(enabled_after_disable = False)
+    t._unsloth_step_cache = "fbcache@0.1"
+
+    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.42) == TC_FBCACHE
+    assert t.enabled_with.threshold == 0.42
+    assert t._unsloth_step_cache == "fbcache@0.42"
+
+
+def test_a_reconfigure_that_cannot_be_verified_keeps_reporting_the_prior_mode(monkeypatch):
+    """With no registry to remove through, the teardown cannot be shown to have completed. Re-engaging
+    on top of hooks that may still be installed is the dangerous move, so this reports the mode that was
+    last known to be running and leaves the marker describing it."""
+    _stub_diffusers(monkeypatch)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks.first_block_cache", raising = False)
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", types.ModuleType("diffusers.hooks"))
+    sys.modules["diffusers.hooks"].apply_first_block_cache = lambda *_a, **_k: None
+    sys.modules["diffusers.hooks"].FirstBlockCacheConfig = _Config
+
+    t = _ReconfigureCleanupPartlyFails(enabled_after_disable = True)
+    t._unsloth_step_cache = "fbcache@0.1"
+
+    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.42) == TC_FBCACHE
+    assert t.enabled_with is None  # never re-engaged
+    assert t._unsloth_step_cache == "fbcache@0.1"  # marker still describes the live hooks
+
+
+def test_a_reconfigure_that_dies_between_the_two_hook_removals_finishes_the_job(monkeypatch):
+    """diffusers removes the FBC leader and block hooks in SEPARATE calls and clears _cache_config only
+    after both. A raise in between leaves block hooks with no leader to decide the skip, which is worse
+    than either a whole cache or none, while is_cache_enabled still reads True and would have this
+    report the prior cache as healthy. The removal has to be finished, not diagnosed."""
+    registry = _stub_diffusers(monkeypatch)
+
+    class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME, so the name is the fixture
+        pass
+
+    class _DiesMidTeardown:
+        # Leader gone, blocks still hooked, and diffusers never got as far as clearing this.
+        _cache_config = FirstBlockCacheConfig()
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def disable_cache(self):
+            raise RuntimeError("registry mutated while removing fbc_block_hook")
+
+        def enable_cache(self, config):
+            self.enabled_with = config
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _DiesMidTeardown()
+    t.enabled_with = None
+    t._unsloth_step_cache = "fbcache@0.1"
+
+    # Re-configuring at a new threshold: the half-torn cache is finished off, then the engage proceeds.
+    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.3) == TC_FBCACHE
+    assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
+    assert t.enabled_with.threshold == 0.3
+    assert t._unsloth_step_cache == "fbcache@0.3"
+
+
+def test_another_cache_type_is_left_alone(monkeypatch):
+    """MagCache / FasterCache / PAB share the same generic _cache_config, so a transformer running one
+    of them arrives here looking like a broken FBC one. Removing FBC's hook names does nothing for it,
+    and clearing the state would make diffusers forget a cache that is still installed."""
+    registry = _stub_diffusers(monkeypatch)
+
+    class _MagCacheConfig:
+        pass
+
+    class _RunningMagCache:
+        def __init__(self):
+            self._cache_config = _MagCacheConfig()
+            self.enabled_with = None
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def disable_cache(self):
+            raise RuntimeError("teardown of the other cache failed")
+
+        def enable_cache(self, config):
+            self.enabled_with = config
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _RunningMagCache()
+    t._unsloth_step_cache = "magcache@0.1"
+
+    # Reports the cache that is actually running, and does not touch it.
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == "magcache"
+    assert registry.removed == []  # FBC's names were never touched
+    assert isinstance(
+        t._cache_config, _MagCacheConfig
+    )  # the other cache is still known to diffusers
+    assert t.enabled_with is None  # and FBC was NOT stacked on top of it
+
+
+def test_a_lost_marker_does_not_cost_a_healthy_cache(monkeypatch):
+    """The marker can be absent on a transformer whose cache someone else engaged. Trusting it as the
+    source of truth would tear down a cache already running these exact settings and rebuild it, which
+    is what this guard exists to prevent, and loses it outright if the rebuild fails. The live config
+    decides, and the marker is repaired on the way out."""
+    registry = _stub_diffusers(monkeypatch)
+
+    class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME
+        def __init__(self, threshold):
+            self.threshold = threshold
+
+    class _CachedByHand:
+        def __init__(self):
+            self._cache_config = FirstBlockCacheConfig(DEFAULT_FBCACHE_THRESHOLD)
+            self.disable_calls = 0
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def disable_cache(self):
+            self.disable_calls += 1
+            self._cache_config = None
+
+        def enable_cache(self, config):
+            self._cache_config = config
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _CachedByHand()  # note: no _unsloth_step_cache at all
+    engaged = apply_step_cache(_pipe(t), mode = "fbcache")
+
+    assert engaged == TC_FBCACHE
+    assert t.disable_calls == 0  # the healthy cache was never torn down
+    assert registry.removed == []  # and its hooks were never touched
+    assert t._unsloth_step_cache == f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"  # marker repaired
+
+
+def test_a_stale_marker_cannot_authorize_the_no_op(monkeypatch):
+    """The marker is not a second opinion alongside the live config. A transformer reconfigured
+    elsewhere to a different threshold keeps whatever marker was last written, and honouring that
+    would report success for settings the model is not running. Only the live config decides."""
+    _stub_diffusers(monkeypatch)
+
+    class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME
+        def __init__(self, threshold):
+            self.threshold = threshold
+
+    class _Reconfigured:
+        def __init__(self):
+            self._cache_config = FirstBlockCacheConfig(0.5)  # someone else moved it
+            self.disable_calls = 0
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def disable_cache(self):
+            self.disable_calls += 1
+            self._cache_config = None
+
+        def enable_cache(self, config):
+            self._cache_config = config
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _Reconfigured()
+    t._unsloth_step_cache = (
+        f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"  # stale: says what we last asked for
+    )
+
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert t.disable_calls == 1  # reconfigured, not waved through
+    assert (
+        t._cache_config.threshold == DEFAULT_FBCACHE_THRESHOLD
+    )  # at the settings actually asked for
+
+
+def test_an_adopted_cache_gets_the_post_enable_integration(monkeypatch):
+    """A live cache we did not install has not had our post-enable steps run against it. Returning
+    on it without invalidating the cached child-registry list leaves the next ``cache_context``
+    reaching no block ("No context is set"), and without re-pointing the hooks at compiled inners
+    a regionally compiled transformer runs its blocks uncompiled."""
+    _stub_diffusers(monkeypatch)
+    import core.inference.diffusion_cache as dc
+
+    ran = []
+    monkeypatch.setattr(dc, "_invalidate_child_registry_cache", lambda t: ran.append("invalidate"))
+    monkeypatch.setattr(
+        dc, "_compile_hooked_block_inners", lambda t, log = None: ran.append("compile")
+    )
+
+    class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME
+        def __init__(self, threshold):
+            self.threshold = threshold
+
+    class _CachedByHand:
+        def __init__(self):
+            self._cache_config = FirstBlockCacheConfig(DEFAULT_FBCACHE_THRESHOLD)
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def disable_cache(self):
+            raise AssertionError("the healthy cache must not be torn down")
+
+        def enable_cache(self, config):
+            raise AssertionError("the healthy cache must not be rebuilt")
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    assert apply_step_cache(_pipe(_CachedByHand()), mode = "fbcache") == TC_FBCACHE
+    assert ran == ["invalidate", "compile"]
+
+
+def test_a_cache_installed_through_the_low_level_api_is_not_torn_down(monkeypatch):
+    """``diffusers.hooks.apply_first_block_cache`` is public and hooks WITHOUT setting
+    ``_cache_config``, so a caller who used it leaves live hooks behind ``is_cache_enabled is
+    False``. Our engage then raises out of ``register_hook`` ("Hook with name ... already exists")
+    having changed nothing, and the recovery must not read the absent config as permission to remove
+    hooks that are not ours and are working."""
+    registry = _stub_diffusers(monkeypatch)
+    import core.inference.diffusion_cache as dc
+
+    monkeypatch.setattr(dc, "_first_block_cache_is_hooked", lambda t: True)
+
+    class _HookedTheOtherWay:
+        # No _cache_config: the low-level API never sets one.
+        is_cache_enabled = False
+
+        def enable_cache(self, config):
+            raise ValueError("Hook with name fbc_leader_block_hook already exists in the registry.")
+
+        def disable_cache(self):
+            raise AssertionError("must not be reached: there is no config for diffusers to act on")
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _HookedTheOtherWay()
+    # Reports the cache that is actually running, exactly as a live MagCache is reported.
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert registry.removed == []  # and the working hooks were never touched
+
+
+def test_a_low_level_cache_is_integrated_and_marked_before_being_reported(monkeypatch):
+    """Adopting low-level hooks must run the same post-enable integration as adopting a live
+    config, and must set the marker first: GraphedForward falls back to eager ONLY on that marker,
+    so a clear one over live hooks lets it capture a data-dependent cached forward."""
+    registry = _stub_diffusers(monkeypatch)
+    import core.inference.diffusion_cache as dc
+
+    monkeypatch.setattr(dc, "_first_block_cache_is_hooked", lambda t: True)
+    ran = []
+    monkeypatch.setattr(dc, "_invalidate_child_registry_cache", lambda t: ran.append("invalidate"))
+    monkeypatch.setattr(
+        dc, "_compile_hooked_block_inners", lambda t, log = None: ran.append("compile")
+    )
+
+    class _HookedTheOtherWay:
+        # No _cache_config and no marker: the low-level API sets neither.
+        is_cache_enabled = False
+
+        def enable_cache(self, config):
+            raise ValueError("Hook with name fbc_leader_block_hook already exists in the registry.")
+
+        def disable_cache(self):
+            raise AssertionError("must not be reached: there is no config for diffusers to act on")
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _HookedTheOtherWay()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert ran == ["invalidate", "compile"]  # the same integration the live-config branch runs
+    # Truthy, so the CUDA graph wrapper stays eager over the live hooks; mode-only, because the
+    # threshold this cache is running is whatever its installer chose, not the one we asked for.
+    assert t._unsloth_step_cache == TC_FBCACHE
+    assert registry.removed == []  # and the working hooks were still never touched
+
+
+def test_auto_disengage_unhooks_an_adopted_cache_instead_of_trusting_disable_cache(monkeypatch):
+    """An adopted cache has no ``_cache_config``, so ``disable_cache`` removes nothing; clearing
+    the marker on that call alone would leave it clear over live hooks."""
+    registry = _stub_diffusers(monkeypatch)
+
+    class _AdoptedLowLevel:
+        _cache_config = None
+        _unsloth_step_cache = TC_FBCACHE
+
+        def __init__(self):
+            self.disable_calls = 0
+
+        def disable_cache(self):
+            self.disable_calls += 1  # diffusers' no-op: there is no config for it to act on
+
+    t = _AdoptedLowLevel()
+    assert maybe_toggle_step_cache(_pipe(t), steps = 8) is None
+    assert t.disable_calls == 1
+    assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
+    assert t._unsloth_step_cache is None  # cleared only because the hooks are now KNOWN gone
+
+
+def test_auto_disengage_keeps_the_marker_when_the_hooks_cannot_be_verified_gone(monkeypatch):
+    """An unverifiable teardown keeps the marker engaged: that costs eager execution, where the
+    reverse risks a captured graph over a cached forward."""
+    _stub_diffusers(monkeypatch)
+    import core.inference.diffusion_cache as dc
+
+    monkeypatch.setattr(dc, "_unhook_first_block_cache", lambda t: False)
+
+    class _Unverifiable:
+        _cache_config = None
+        _unsloth_step_cache = TC_FBCACHE
+
+        def disable_cache(self):
+            pass
+
+    t = _Unverifiable()
+    assert maybe_toggle_step_cache(_pipe(t), steps = 8) == TC_FBCACHE
+    assert t._unsloth_step_cache == TC_FBCACHE
+
+
+def test_the_hook_probe_sees_the_names_the_low_level_api_installs(monkeypatch):
+    """The probe above is the whole basis for that decision, so it is pinned against the real hook
+    names rather than a stub: a rename upstream must fail here, not silently start tearing down
+    other people's caches again."""
+    _stub_diffusers(monkeypatch)
+    import types as _types
+
+    from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, _FBC_LEADER_BLOCK_HOOK
+    from core.inference.diffusion_cache import _first_block_cache_is_hooked
+
+    bare = _types.SimpleNamespace(modules = lambda: [_types.SimpleNamespace()])
+    assert _first_block_cache_is_hooked(bare) is False
+
+    for name in (_FBC_LEADER_BLOCK_HOOK, _FBC_BLOCK_HOOK):
+        block = _types.SimpleNamespace(
+            _diffusers_hook = _types.SimpleNamespace(hooks = {name: object()})
+        )
+        hooked = _types.SimpleNamespace(
+            modules = lambda block = block: [_types.SimpleNamespace(), block]
+        )
+        assert _first_block_cache_is_hooked(hooked) is True
