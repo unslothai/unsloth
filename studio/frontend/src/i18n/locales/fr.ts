@@ -892,6 +892,9 @@ export const fr = {
         showLoadedModels: "Indicateur des modèles chargés",
         showLoadedModelsDescription:
           "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
+        showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
       },
       startup: {
         sectionTitle: "Démarrage",
