@@ -7926,7 +7926,10 @@ def macos_product_version() -> str:
     try:
         done = subprocess.run(
             ["/usr/bin/sw_vers"],
-            capture_output = True, text = True, timeout = 10, check = False,
+            capture_output = True,
+            text = True,
+            timeout = 10,
+            check = False,
         )
         if done.returncode == 0:
             values: "dict[str, str]" = {}
