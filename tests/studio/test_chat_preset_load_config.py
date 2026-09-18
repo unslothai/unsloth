@@ -323,6 +323,10 @@ def _nested_function_spans(block: str) -> list:
             return spans
 
 
+# A keyword, not a property of the same name: `s.switch` and `s.default` are reads.
+_KEYWORD = r"(?<![\w$.])"
+
+
 def _consume_statement(block: str, index: int):
     """The statement starting at `index`, and where the one after it starts."""
     while index < len(block) and block[index].isspace():
@@ -333,6 +337,15 @@ def _consume_statement(block: str, index: int):
         body = _balanced(block, index, "{", "}")
         end = index + len(body) + 2
         return block[index:end], end
+    if re.match(r"do\b(?!\s*:)", block[index:]):
+        _, cursor = _consume_statement(block, index + 2)
+        following = re.match(r"\s*while\s*(?=\()", block[cursor:])
+        if following is not None:
+            cursor += following.end()
+            cursor += len(_balanced(block, cursor, "(", ")")) + 2
+            semicolon = re.match(r"\s*;", block[cursor:])
+            cursor += semicolon.end() if semicolon else 0
+        return block[index:cursor], cursor
     keyword = re.match(r"\b(if|for|while|switch|catch|try|else|function)\b", block[index:])
     if keyword is not None:
         cursor = index + keyword.end()
@@ -363,6 +376,11 @@ def _consume_statement(block: str, index: int):
             return block[index:cursor], cursor
         _, cursor = _consume_statement(block, cursor)
         return block[index:cursor], cursor
+    # Without a `;` (automatic insertion), a statement keyword is where the next one begins:
+    # none of them can continue an expression.
+    next_statement = re.compile(
+        rf"{_KEYWORD}(?:if|for|while|do|switch|return|break|continue|try|throw|const|let|var)\b"
+    )
     depth = 0
     for cursor in range(index, len(block)):
         char = block[cursor]
@@ -372,11 +390,9 @@ def _consume_statement(block: str, index: int):
             depth -= 1
         elif depth == 0 and char == ";":
             return block[index : cursor + 1], cursor + 1
+        elif depth == 0 and cursor > index and next_statement.match(block, cursor):
+            return block[index:cursor], cursor
     return block[index:], len(block)
-
-
-# A keyword, not a property of the same name: `s.switch` and `s.default` are reads.
-_KEYWORD = r"(?<![\w$.])"
 
 
 def _labels_at_top_level(body: str) -> list:
@@ -435,10 +451,11 @@ def _jumps_out(text: str, keyword: str, *, absorbed_by_switch: bool) -> bool:
     # A statement, not an object key: `{ switch: 1 }` absorbs nothing.
     loops = r"(?:for|while)\s*\(|do\b(?!\s*:)"
     absorbers = rf"{loops}|switch\s*\(" if absorbed_by_switch else loops
-    absorbing = [
-        (match.start(), _consume_statement(scan, match.start())[1])
-        for match in re.finditer(rf"{_KEYWORD}(?:{absorbers})", scan)
-    ]
+    absorbing = []
+    for match in re.finditer(rf"{_KEYWORD}(?:{absorbers})", scan):
+        # Inside a span already taken, as the `while` closing a `do` is: it absorbs nothing more.
+        if not any(begin <= match.start() < end for begin, end in absorbing):
+            absorbing.append((match.start(), _consume_statement(scan, match.start())[1]))
     absorbing += _nested_function_spans(scan)
     return any(
         not any(begin <= match.start() < end for begin, end in absorbing)
@@ -1260,6 +1277,17 @@ SELECTOR_CASES = [
     ("(s) => { { const s = { reasoningBudget: 1 }; return s.reasoningBudget; } }", False),
     ("({ reasoningBudget }) => s.other.reasoningBudget", False),
     ("(s) => { const value = s.reasoningBudget; return s.other. value; }", False),
+    # Automatic semicolon insertion: the loop ends at `while (...)`, not at the next `;`.
+    (
+        '(s) => { switch (s.mode) { case "x": do {} while (false)\n if (s.stop) break; '
+        "return s.reasoningBudget; default: return s.reasoningBudget; } }",
+        False,
+    ),
+    (
+        '(s) => { switch (s.mode) { case "x": sideEffect()\n if (s.stop) break; '
+        "return s.reasoningBudget; default: return s.reasoningBudget; } }",
+        False,
+    ),
     (
         '(s) => { switch (s.mode) { case "x": const o = { switch: 1 }; if (s.stop) break; '
         "return s.reasoningBudget; default: return s.reasoningBudget; } }",
