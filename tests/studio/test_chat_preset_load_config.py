@@ -333,6 +333,13 @@ def _nested_function_spans(block: str) -> list:
 _KEYWORD = r"(?<![\w$.])"
 
 
+# Without a `;` (automatic insertion), a statement keyword is where the next statement begins:
+# none of them can continue an expression.
+_NEXT_STATEMENT = re.compile(
+    rf"{_KEYWORD}(?:if|for|while|do|switch|return|break|continue|try|throw|const|let|var)\b"
+)
+
+
 def _consume_statement(block: str, index: int):
     """The statement starting at `index`, and where the one after it starts."""
     while index < len(block) and block[index].isspace():
@@ -382,11 +389,6 @@ def _consume_statement(block: str, index: int):
             return block[index:cursor], cursor
         _, cursor = _consume_statement(block, cursor)
         return block[index:cursor], cursor
-    # Without a `;` (automatic insertion), a statement keyword is where the next one begins:
-    # none of them can continue an expression.
-    next_statement = re.compile(
-        rf"{_KEYWORD}(?:if|for|while|do|switch|return|break|continue|try|throw|const|let|var)\b"
-    )
     depth = 0
     for cursor in range(index, len(block)):
         char = block[cursor]
@@ -396,7 +398,7 @@ def _consume_statement(block: str, index: int):
             depth -= 1
         elif depth == 0 and char == ";":
             return block[index : cursor + 1], cursor + 1
-        elif depth == 0 and cursor > index and next_statement.match(block, cursor):
+        elif depth == 0 and cursor > index and _NEXT_STATEMENT.match(block, cursor):
             return block[index:cursor], cursor
     return block[index:], len(block)
 
@@ -601,9 +603,21 @@ def _own_scope_returns(block: str) -> list:
         start = match.start()
         if any(begin <= start < end for begin, end in nested):
             continue
-        end = len(block)
+        # A line break right after `return` ends the statement: it returns undefined.
+        if re.match(r"[ \t]*[\n\r\u2028\u2029]", block[match.end() :]):
+            out.append("undefined")
+            continue
+        depth, end = 0, len(block)
         for offset in range(match.end(), len(block)):
-            if block[offset] in ";}":
+            char = block[offset]
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                if depth == 0:
+                    end = offset
+                    break
+                depth -= 1
+            elif depth == 0 and (char == ";" or _NEXT_STATEMENT.match(block, offset)):
                 end = offset
                 break
         out.append(block[match.end() : end])
@@ -1293,6 +1307,9 @@ SELECTOR_CASES = [
     ("(s) => (s.other, s.reasoningBudget)", True),
     ("(s) => (s.other,xs.reasoningBudget)", False),
     ("(s) => { return s.reasoningBudget, s.other; }", False),
+    # A line break after `return` returns undefined; the access below is a separate statement.
+    ("(s) => { return\ns.reasoningBudget; }", False),
+    ("(s) => { if (s.on) return s.reasoningBudget\n return s.reasoningBudget }", True),
     ("(s) => { const value = s.other, ignored = s.reasoningBudget; return value; }", False),
     ("(s) => `${/* s.reasoningBudget */ 1}`", False),
     # Automatic semicolon insertion: the loop ends at `while (...)`, not at the next `;`.
