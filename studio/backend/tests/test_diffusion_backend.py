@@ -1087,7 +1087,8 @@ def test_generate_progress_cleared_on_setup_error(fake_runtime, tmp_path, monkey
 
 
 def test_generate_progress_active_through_compile_cache_save(fake_runtime, tmp_path, monkeypatch):
-    # The compile-cache save runs before the route persists the image, so progress must stay active through it.
+    # The compile-cache save is handed to the background worker before the route persists the image, so progress
+    # must stay active through that post-denoise work.
     from core.inference import diffusion as dmod
 
     backend = _loaded_backend(tmp_path, hf_token = "hf_secret")
@@ -1099,11 +1100,11 @@ def test_generate_progress_active_through_compile_cache_save(fake_runtime, tmp_p
         return True
 
     monkeypatch.setattr(dmod.compile_cache, "register_shape", lambda *a, **k: None)
-    monkeypatch.setattr(dmod.compile_cache, "save", fake_save)
+    monkeypatch.setattr(dmod.compile_cache, "save_async", fake_save)
 
     gen = backend.generate(prompt = "a sloth", steps = 4)
     assert len(gen["images"]) == 1
-    # Still active while the compile-cache save ran.
+    # Still active while the compile-cache save was handed off.
     assert seen["progress"]["active"] is True
     assert seen["progress"]["total_steps"] == 4
     assert backend.generate_progress()["active"] is False
@@ -1873,7 +1874,7 @@ def test_register_shape_uses_actual_forward_dims(fake_runtime, tmp_path, monkeyp
         "register_shape",
         lambda ctx, shape, *, static: registered.append(tuple(shape)),
     )
-    monkeypatch.setattr(diff.compile_cache, "save", lambda ctx, *, logger = None: True)
+    monkeypatch.setattr(diff.compile_cache, "save_async", lambda ctx, *, logger = None: True)
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = _loaded_backend(tmp_path)
     # txt2img registers the requested slider size.
@@ -7348,7 +7349,7 @@ def test_generate_reclaims_model_offload_memory_once_after_success(
 
     monkeypatch.setattr(dmod, "reclaim_offload_host_memory", fake_reclaim, raising = False)
     monkeypatch.setattr(dmod.compile_cache, "register_shape", lambda *a, **k: None)
-    monkeypatch.setattr(dmod.compile_cache, "save", lambda *a, **k: trace.append("save"))
+    monkeypatch.setattr(dmod.compile_cache, "save_async", lambda *a, **k: trace.append("save"))
 
     object.__setattr__(backend._state, "offload_policy", "model")
     object.__setattr__(backend._state, "pipe", _CountingPipe(max_images = 2))
@@ -10710,7 +10711,7 @@ def test_cancel_generate_lands_at_the_next_step_boundary(fake_runtime, tmp_path,
 def test_cancel_generate_during_the_post_denoise_save_still_cancels(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # The cancel event stays registered through the compile-cache save, and progress still reads
+    # The cancel event stays registered through the compile-cache handoff, and progress still reads
     # active, so the page still shows Stop. Before the final recheck, a Stop landing there was
     # answered cancelled = true and then contradicted: generate() returned the images and the
     # route persisted them. The two answers have to agree, so the run unwinds as cancelled.
@@ -10720,11 +10721,11 @@ def test_cancel_generate_during_the_post_denoise_save_still_cancels(
     backend = _loaded_backend(tmp_path)
 
     def _save(ctx, logger = None):
-        # Stop pressed while the bundle is being written: the route's cancel reaches the SAME
-        # event, and it must still be registered here or the button would have reported False.
+        # Stop pressed during the post-denoise compile-cache work: the route's cancel reaches the
+        # SAME event, and it must still be registered here or the button would have reported False.
         assert backend.cancel_generate() is True
 
-    monkeypatch.setattr(compile_cache, "save", _save)
+    monkeypatch.setattr(compile_cache, "save_async", _save)
 
     with pytest.raises(RuntimeError, match = "cancelled"):
         backend.generate(prompt = "x", steps = 2)
