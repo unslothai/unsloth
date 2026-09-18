@@ -1918,7 +1918,7 @@ export const zhCN = {
         desktopAvailable: "桌面应用 {version} 已可用",
         desktopAvailableDescription: "立即更新，完成后桌面应用将自动重启。",
         desktopExternalServer:
-          "请在启动服务器的终端中运行 `unsloth studio update`。",
+          "应用已连接到正在运行的 Studio 服务器，无法更新该服务器。请先停止该服务器，再退出并重新打开桌面应用以进行更新。",
         desktopManualInstall: "打开发布页面，安装最新的 Linux 软件包。",
         desktopCheckFailed: "无法检查更新",
         desktopCheckFailedDescription: "请检查网络连接后重试。",
