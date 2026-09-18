@@ -28,6 +28,7 @@ import {
 import {
   formatMcpToolName,
   mcpServerFromProvenance,
+  mcpToolFromProvenance,
 } from "../utils/mcp-tool-name";
 import { attachmentsPastedText } from "../utils/pasted-text.ts";
 
@@ -104,7 +105,11 @@ function extractText(message: MessageRecord): string {
         // Index the rendered "Server · tool" label too, so pasting it matches.
         const label =
           typeof p.toolName === "string"
-            ? formatMcpToolName(p.toolName, mcpServer)
+            ? formatMcpToolName(
+                p.toolName,
+                mcpServer,
+                mcpToolFromProvenance(p.provenance),
+              )
             : null;
         if (label) parts.push(label);
       }

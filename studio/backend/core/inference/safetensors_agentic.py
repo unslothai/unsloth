@@ -61,6 +61,7 @@ from core.inference.mcp_images import (
     trim_image_turns,
 )
 from core.inference.tool_loop_controller import (
+    _WORKSPACE_TOOLS,
     ToolLoopController,
     append_deferred_nudges,
     awaiting_approval_status,
@@ -73,7 +74,6 @@ from core.inference.chat_template_helpers import (
     trailing_assistant_text,
 )
 from core.inference.passthrough_healing import nudge_enabled
-from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -205,6 +205,7 @@ def _earliest_tool_signal(
     *,
     unrestricted: bool = False,
     start: int = 0,
+    streaming: bool = False,
 ) -> int:
     """Index where the turn's first genuine tool-call boundary begins, or -1.
 
@@ -249,6 +250,7 @@ def _earliest_tool_signal(
             None if unrestricted else (lambda: _active_tool_names(active_tools)),
             start,
             floor = floor,
+            streaming = streaming,
         )
         if gemma >= floor and (best < 0 or gemma < best):
             best = gemma
@@ -645,14 +647,13 @@ def run_safetensors_tool_loop(
     # keeps the sandbox but never prompts. An explicit confirm_tool_calls=True with
     # no mode is already resolved to "ask" at the request layer, so it never
     # arrives here as an ambiguous unset.
-    if permission_mode == "full":
-        bypass_permissions = True
-    elif bypass_permissions:
-        permission_mode = "full"
-    elif permission_mode is None:
-        permission_mode = "auto"
-    elif permission_mode not in ("ask", "auto", "off"):
-        permission_mode = "ask"
+    from core.inference.tool_stream_exec import stream_tool_execution
+    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+
+    permission_mode, bypass_permissions = normalize_tool_permissions(
+        permission_mode, bypass_permissions
+    )
+    stream_tool_execution = account_tool_stream(stream_tool_execution)
 
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to
     # web_search. Skip only when a retrieval call would actually prompt (ask
@@ -920,6 +921,7 @@ def run_safetensors_tool_loop(
                     _detect_tools,
                     unrestricted = unrestricted_tools,
                     start = max(0, _tool_signal_scanned_upto - _TOOL_SIGNAL_OVERLAP),
+                    streaming = True,
                 )
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]
@@ -1320,11 +1322,26 @@ def run_safetensors_tool_loop(
         # Collapse exact-duplicate calls and cap the count (runaway-turn guard).
         if tool_calls:
             seen_keys: set = set()
+            last_workspace_key = None
+            # One rerun per piece of new work: `test, edit A, test, edit B, test` keeps every
+            # test, while `read, edit, read, edit` stops replaying and cannot fill the cap.
+            novel_kept = 0
+            novel_at_last_keep: dict = {}
             deduped: list = []
             for _tc in tool_calls:
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if _key in seen_keys:
+                if _fn.get("name") in _WORKSPACE_TOOLS:
+                    if _key == last_workspace_key:
+                        continue
+                    if _key in seen_keys:
+                        if novel_kept <= novel_at_last_keep.get(_key, 0):
+                            continue
+                    else:
+                        novel_kept += 1
+                    novel_at_last_keep[_key] = novel_kept
+                    last_workspace_key = _key
+                elif _key in seen_keys:
                     continue
                 seen_keys.add(_key)
                 deduped.append(_tc)

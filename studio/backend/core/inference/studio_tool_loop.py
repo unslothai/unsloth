@@ -1038,12 +1038,13 @@ def _split_turn_end(
 
 
 def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
-    """Provenance for a hand-built unrun card; carries the MCP display name so a budget-exhausted or
-    truncated MCP call never shows the internal server id."""
+    """Provenance for a hand-built unrun card; carries the MCP display names so a budget-exhausted
+    or truncated MCP call never shows the internal server id or an alias."""
     provenance: dict[str, Any] = {"source": "local", "round_id": round_id}
     mcp = mcp_display_parts(tool_name)
     if mcp:
         provenance["mcp_server"] = mcp[0]
+        provenance["mcp_tool"] = mcp[1]
     return provenance
 
 
@@ -1224,9 +1225,13 @@ async def stream_with_studio_tools(
     tool_choice = run.tool_choice if run.tool_choice is not None else "auto"
     allowed_tool_names = _tool_names(tools)
     tool_call_timeout = policy.timeout
-    permission_mode = policy.permission_mode
+    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+
+    permission_mode, bypass_permissions = normalize_tool_permissions(
+        policy.permission_mode, policy.bypass_permissions
+    )
+    scoped_tool_stream = account_tool_stream(stream_tool_execution)
     confirm_tool_calls = policy.confirm_calls
-    bypass_permissions = policy.bypass_permissions
     rag_scope = policy.rag_scope
 
     # The promotion allowlist is the selected catalog, never None: an unrestricted parse re-opens markerless tool-call
@@ -1766,7 +1771,7 @@ async def stream_with_studio_tools(
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long
             # call cannot idle the stream out.
-            tool_stream = stream_tool_execution(
+            tool_stream = scoped_tool_stream(
                 _invoke,
                 tool_name = name,
                 tool_call_id = card_id,

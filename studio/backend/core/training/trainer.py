@@ -3,6 +3,7 @@
 
 """Unsloth training backend: integrates Unsloth training with the FastAPI backend."""
 
+from utils.account_context import account_thread
 import gc
 import os
 import sys
@@ -35,8 +36,13 @@ from utils.hardware import (
 )
 
 # recompile_limit was removed in some ROCm torch builds; guard for older wheels.
-if hasattr(torch._dynamo.config, "recompile_limit"):
-    torch._dynamo.config.recompile_limit = 64
+# getattr, not `torch._dynamo.config` directly: _dynamo is a LAZY torch submodule, so the bare
+# attribute triggers its import and returns a half-built module if one is already in flight
+# elsewhere in the process, raising at module-import time on a path with no handler. The two
+# inference call sites already read it this way; this one is the last that did not.
+_dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
+if _dynamo_config is not None and hasattr(_dynamo_config, "recompile_limit"):
+    _dynamo_config.recompile_limit = 64
 
 
 # Drop any unsloth/unsloth_zoo namespace-package shadow before importing them.
@@ -83,6 +89,7 @@ from trl import SFTTrainer, SFTConfig
 
 from .training import (
     TrainingProgress,
+    apply_save_strategy,
     create_mlx_trainer_adapter,
     should_use_mlx_training_backend,
 )
@@ -680,10 +687,7 @@ class UnslothTrainer:
         else:
             config["num_train_epochs"] = training_args.get("num_epochs", 3)
 
-        save_steps_val = training_args.get("save_steps", 0)
-        if save_steps_val and save_steps_val > 0:
-            config["save_steps"] = save_steps_val
-            config["save_strategy"] = "steps"
+        apply_save_strategy(config, training_args.get("save_steps", 0))
 
         if extra_args:
             config.update(extra_args)
@@ -2350,7 +2354,6 @@ class UnslothTrainer:
         return result_dataset
 
     def _preprocess_audio_eval_split(self, eval_dataset, preprocess, custom_format_mapping):
-        """Preprocess eval data, warning and dropping it on failure."""
         if eval_dataset is None:
             return None
         if self.should_stop:
@@ -2391,7 +2394,6 @@ class UnslothTrainer:
         return formatted
 
     def _audio_eval_config(self, training_args):
-        """Build audio evaluation arguments and return the eval dataset."""
         eval_dataset = training_args.get("eval_dataset", None)
         eval_steps = training_args.get("eval_steps", 0.00)
         if eval_dataset is None:
@@ -3410,7 +3412,7 @@ class UnslothTrainer:
                 Seq2SeqTrainingArguments as _Seq2SeqTrainingArguments,
             )
 
-        self.training_thread = threading.Thread(
+        self.training_thread = account_thread(
             target = self._train_worker,
             args = (dataset,),
             kwargs = {
@@ -4077,10 +4079,7 @@ class UnslothTrainer:
                 config_args["warmup_steps"] = 5
                 logger.info("Using default warmup_steps: 5\n")
 
-            save_steps_val = training_args.get("save_steps", 0)
-            if save_steps_val and save_steps_val > 0:
-                config_args["save_steps"] = save_steps_val
-                config_args["save_strategy"] = "steps"
+            apply_save_strategy(config_args, training_args.get("save_steps", 0))
 
             max_steps_val = training_args.get("max_steps", 0)
             if max_steps_val and max_steps_val > 0:

@@ -519,9 +519,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             # backend does not answer, which is not the same as a confirmed False.
             if _entry.get("context_length_enforced") is not None:
                 model_info["context_length_enforced"] = bool(_entry["context_length_enforced"])
-            # Backend post-load audio classification outranks pre-load config.
+            # Backend post-load audio and video classification outranks pre-load config.
             model_info.update(
-                {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
+                {
+                    k: _entry[k]
+                    for k in ("is_audio", "audio_type", "has_audio_input", "has_video_input")
+                    if k in _entry
+                }
             )
             # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
@@ -552,6 +556,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         # The IMAGE-turn body; the whitelist is the only way out.
                         "processor_template": _tpl_info.get("processor_template"),
                         "renders_image": _tpl_info.get("renders_image"),
+                        "accepts_multiple_images": _tpl_info.get("accepts_multiple_images"),
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)
@@ -674,14 +679,18 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         image = None
         image_b64 = cmd.get("image_base64")
         if image_b64:
-            image = _decode_image(image_b64)
-            image = _resize_image(image)
-        images = [_resize_image(_decode_image(b)) for b in cmd.get("images_base64") or []]
+            image = _resize_image(_decode_image(image_b64))
+        images = [
+            _resize_image(_decode_image(encoded))
+            for encoded in cmd.get("images_base64") or ()
+            if encoded
+        ]
 
         gen_kwargs = {
             "messages": cmd["messages"],
             "system_prompt": cmd.get("system_prompt", ""),
             "image": image,
+            "images": images,
             "temperature": cmd.get("temperature", 0.7),
             "top_p": cmd.get("top_p", 0.9),
             "top_k": cmd.get("top_k", 40),
@@ -703,19 +712,22 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
 
-        if images and _backend_declares(backend, "images"):
-            gen_kwargs["images"] = images
         if cmd.get("image_ordinal") is not None and _backend_declares(backend, "image_ordinal"):
             gen_kwargs["image_ordinal"] = cmd["image_ordinal"]
 
-        # These options are MLX-only. The transformers backend declares none of
-        # them and takes no **kwargs, so forwarding unconditionally would turn
-        # its documented "ignores them" behavior into a TypeError.
+        # Not every backend declares these (transformers declares only ``stop``)
+        # and none takes **kwargs, so forwarding unconditionally would turn a
+        # backend's documented "ignores them" behavior into a TypeError.
         # ``tool_protocol_active`` rides here rather than above: MLX declares no such
         # parameter and takes no **kwargs, so an unconditional forward would raise.
         for gated in ("seed", "frequency_penalty", "logit_bias", "stop", "tool_protocol_active"):
             if gated in cmd and _backend_declares(backend, gated):
                 gen_kwargs[gated] = cmd[gated]
+        # A clip cannot be dropped like an unknown sampling knob: the answer would ignore it.
+        if cmd.get("video_base64"):
+            if not _backend_declares(backend, "video"):
+                raise RuntimeError("The loaded backend does not read video.")
+            gen_kwargs["video"] = cmd["video_base64"]
 
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
@@ -1116,6 +1128,13 @@ def run_inference_process(
         service_name = "unsloth-studio-inference-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+    # Must follow setup_logging. Structlog records go to fd 1, but a third-party library
+    # logging through stdlib `logging` reaches fd 2 via `logging.lastResort`, and that
+    # traceback is byte-identical to a dying process's: unmarked, the parent hands a
+    # RECOVERED failure to the NEXT caller on a shared worker as their crash.
+    from utils.worker_stderr import mark_log_record_continuations
+
+    mark_log_record_continuations()
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 

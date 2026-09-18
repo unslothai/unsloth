@@ -942,9 +942,9 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
     (r"RX 7800|RX 7700(?!S)|PRO W7700|PRO V710", "gfx1101"),
     (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),
     (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
-    (r"RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),
+    (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),
     (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),
-    (r"RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500", "gfx1034"),
+    (r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300", "gfx1034"),
 ]
 
 
@@ -3813,58 +3813,167 @@ def _integrated_cuda_inventory(
     return {td["index"]: td for td in inventory}, "index"
 
 
-def _reconcile_cuda_integrated_memory(
-    utilization: Dict[str, Any], device_indices: Optional[list[int]]
-) -> None:
-    """Fill the VRAM columns nvidia-smi leaves at ``[N/A]`` on an integrated CUDA SoC.
+# props.total_memory is exact bytes, nvidia-smi rounds to whole MiB, so agreeing
+# sources still differ by a hair. 1% floored at 64 MiB separates that from a carve-out,
+# which is small by a multiple (8128 against 46477 MiB, measured).
+_INTEGRATED_TOTAL_ADOPT_FRACTION = 0.01
+_INTEGRATED_TOTAL_ADOPT_FLOOR_GB = 0.0625
 
-    The monitor names a Spark's GB10 and prints "Unknown / 0.00 GiB" beside it (#10691).
 
-    NOT _torch_get_per_device_info, which the ROCm twin above can afford and this cannot:
-    this is the /api/system poll, and mem_get_info pins a ~612 MiB primary context for
-    the life of the process (test_system_poll_no_cuda_context.py). Both figures here are
-    context-free. Host counters are not an approximation of the used half on one shared
-    pool, they are the same measurement.
+def _integrated_total_is_understated(
+    cli_total_gb: Optional[float], torch_total_gb: Optional[float]
+) -> bool:
+    """Whether an integrated part's CLI total is smaller than the pool torch can reach.
 
-    Writes only what the CLI could not answer, only on a confirmed integrated device.
+    ``None`` from the CLI is the DGX Spark shape: nvidia-smi answers ``[N/A]`` for
+    memory.total, which NVIDIA documents, and anything is wider than nothing. A NUMBER
+    from the CLI is the Windows RTX Spark N1X shape, where the figure is real, readable
+    and scoped to the dedicated carve-out rather than to the CUDA budget.
+
+    Only ever True for a LARGER torch total, which is what makes every caller below a
+    widening and never a shrink.
     """
-    missing = [dev for dev in utilization.get("devices", []) if dev.get("vram_total_gb") is None]
-    if not missing:
-        return
+    if torch_total_gb is None or torch_total_gb <= 0:
+        return False
+    if cli_total_gb is None:
+        return True
+    return torch_total_gb - cli_total_gb > max(
+        cli_total_gb * _INTEGRATED_TOTAL_ADOPT_FRACTION, _INTEGRATED_TOTAL_ADOPT_FLOOR_GB
+    )
+
+
+def _integrated_cuda_rows(
+    device_indices: Optional[list[int]],
+) -> tuple[Dict[Any, Dict[str, Any]], str]:
+    """``_integrated_cuda_inventory`` reduced to the rows torch calls integrated.
+
+    Deliberately NOT cached. The old check was "is a total missing", which a discrete
+    host answers no to without touching torch; widening a total nvidia-smi DID answer
+    cannot be decided without asking torch, and this runs on the 3-5 s /api/system poll,
+    so the cost was measured rather than assumed: 7 microseconds, because
+    get_device_properties is answered from the driver's device list and creates no
+    primary context (0 MiB on an RTX Spark N1X, against 116 MiB for mem_get_info). A
+    memo would buy nothing at that price and would have to be invalidated correctly.
+
+    Empty on a discrete host, and on any host the two sources cannot be joined, so every
+    caller keeps whatever the CLI reported.
+    """
+    inventory, key_field = _integrated_cuda_inventory(device_indices)
+    return {k: td for k, td in inventory.items() if td.get("_cuda_integrated")}, key_field
+
+
+def _cgroup_available_memory_gb() -> Optional[float]:
+    """What this process can still charge to an enforcing cgroup, or None.
+
+    Reuses the llama.cpp reader rather than a second copy: it walks the process's
+    cgroup AND its ancestors, since an ancestor slice can be the binding limit and
+    carries sibling usage a leaf never sees, and it handles v2 and legacy v1.
+    Imported lazily and only from the widening branch, so a discrete host, which
+    returns before ever reaching here, pays nothing for it.
+    """
     try:
-        inventory, key_field = _integrated_cuda_inventory(device_indices)
-    except Exception as e:  # noqa: BLE001 - reached on a host that HAS nvidia-smi
-        logger.debug("torch inventory unavailable while sizing an integrated GPU: %s", e)
-        return
-    integrated = {key: td for key, td in inventory.items() if td.get("_cuda_integrated")}
-    if not integrated:
-        return
-    used_gb = None
+        from core.inference.llama_cpp import LlamaCppBackend
+        mib = LlamaCppBackend._cgroup_available_memory_mib()
+        return None if mib is None else mib / 1024.0
+    except Exception as e:  # noqa: BLE001 - no readable limit means keep the host reading
+        logger.debug("cgroup budget probe failed while sizing an integrated GPU: %s", e)
+        return None
+
+
+def _host_memory_used_gb() -> Optional[float]:
+    """Host memory in use, or None. On one shared pool this is not an approximation of
+    the GPU's used half, it is the same measurement."""
     try:
         import psutil
         vm = psutil.virtual_memory()
-        used_gb = round((int(vm.total) - int(vm.available)) / (1024**3), 2)
+        return round((int(vm.total) - int(vm.available)) / (1024**3), 2)
     except Exception as e:  # noqa: BLE001 - a total alone still beats Unknown / 0.00
         logger.debug("host memory probe failed while sizing an integrated GPU: %s", e)
-    for dev in missing:
+        return None
+
+
+def _reconcile_cuda_integrated_memory(
+    utilization: Dict[str, Any], device_indices: Optional[list[int]]
+) -> None:
+    """Publish the pool an integrated CUDA SoC can reach, not its dedicated carve-out.
+
+    Two shapes of one fault. On a DGX Spark nvidia-smi answers ``[N/A]`` for
+    memory.total and the monitor printed "Unknown / 0.00 GiB" beside a 121 GiB part
+    (#10691). On a Windows RTX Spark N1X it answers a number, 8128 MiB, which is the
+    carve-out and not the 46477 MiB budget the same device reports through
+    ``props.total_memory``: an under-report of about 5.7x, which judged a 270M model
+    not to fit. Filling only the blanks repaired the first and left the second standing,
+    because a wrong number is not a missing one.
+
+    NOT _torch_get_per_device_info, which the ROCm twin above can afford and this
+    cannot: this is the /api/system poll, and mem_get_info pins a primary context for
+    the life of the process (test_system_poll_no_cuda_context.py). Both figures here
+    are context-free.
+
+    Widens only, in both directions it could be read: a total the CLI reported LARGER
+    than torch's is left alone, and the free bytes published here are floored at the
+    free bytes the row already promised, so no device loses capacity it was trusted
+    with before this ran.
+    """
+    devices = utilization.get("devices", [])
+    if not devices:
+        return
+    try:
+        integrated, key_field = _integrated_cuda_rows(device_indices)
+    except Exception as e:  # noqa: BLE001 - reached on a host that HAS nvidia-smi
+        logger.debug("torch inventory unavailable while sizing an integrated GPU: %s", e)
+        return
+    if not integrated:
+        # Every discrete host leaves here, having paid one memoised classification.
+        return
+
+    host_used_gb = _host_memory_used_gb()
+
+    for dev in devices:
         td = integrated.get(dev.get(key_field))
         if td is None:
+            # A row torch does not enumerate. An NVIDIA NPU is one: it runs under MCDM
+            # rather than WDDM and the driver publishes no memory telemetry for it at
+            # all, so "unknown" is the only honest answer and nothing here invents one.
             continue
         total_gb = td["total_gb"]
+        cli_total_gb = dev.get("vram_total_gb")
+        cli_used_gb = dev.get("vram_used_gb")
+        if not _integrated_total_is_understated(cli_total_gb, total_gb):
+            continue
+        # What the row promised before this ran, so widening cannot cost free bytes.
+        cli_free_gb = (
+            max(cli_total_gb - cli_used_gb, 0.0)
+            if cli_total_gb is not None and cli_used_gb is not None
+            else None
+        )
         dev["vram_total_gb"] = total_gb
-        # The CLI's own used figure wins where it has one: memory.used can be readable
-        # on a row whose memory.total is [N/A], and filling the total is exactly what
-        # makes the percentage computable. Host counters stand in only where it is not.
-        pool_used_gb = dev.get("vram_used_gb")
-        if pool_used_gb is None:
-            if used_gb is None:
-                continue
-            pool_used_gb = min(used_gb, total_gb)
-            dev["vram_used_gb"] = pool_used_gb
-        if dev.get("vram_utilization_pct") is None:
-            dev["vram_utilization_pct"] = (
-                round((min(pool_used_gb, total_gb) / total_gb) * 100, 1) if total_gb > 0 else None
-            )
+
+        # A pool total needs a pool-scoped numerator (_rocm_windows_unified_used_bytes
+        # states the same rule). memory.used is carve-out scoped, so it is a lower bound
+        # like the host counter is: take the larger, neither dominates.
+        numerators = [n for n in (host_used_gb, cli_used_gb) if n is not None]
+        if not numerators:
+            continue
+        pool_used_gb = min(max(numerators), total_gb)
+        if host_used_gb is None and cli_free_gb is not None:
+            # No pool-scoped occupancy left, so pairing the carve-out's used with the
+            # pool total would invent free bytes (45.39/5.73 reads as 39.66 free where
+            # the CLI vouched for 2.21). Widen the total, keep the budget.
+            pool_used_gb = max(pool_used_gb, total_gb - cli_free_gb)
+        if cli_free_gb is not None:
+            # The floor. A host whose RAM is nearly full would otherwise publish a pool
+            # emptier of free bytes than the carve-out reading it replaced.
+            pool_used_gb = min(pool_used_gb, max(total_gb - cli_free_gb, 0.0))
+        # Last, so it beats the floor: psutil reads host-wide counters in most
+        # containers while the allocations are charged to memory.max.
+        cgroup_free_gb = _cgroup_available_memory_gb()
+        if cgroup_free_gb is not None:
+            pool_used_gb = min(max(pool_used_gb, total_gb - cgroup_free_gb), total_gb)
+        dev["vram_used_gb"] = round(pool_used_gb, 2)
+        dev["vram_utilization_pct"] = (
+            round((pool_used_gb / total_gb) * 100, 1) if total_gb > 0 else None
+        )
 
 
 def _reconcile_primary_rocm_unified_memory(
@@ -4852,9 +4961,14 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
 
     from unsloth.models._utils import resolve_attention_implementation
     from transformers import AutoModel, AutoModelForCausalLM
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
     # resolve_attention_implementation writes _attn_implementation onto the config and propagates to nested sub-configs, so a shallow copy would still mutate the cached config's shared inner objects.
     config_copy = copy.deepcopy(config)
+    model_type = getattr(config_copy, "model_type", None)
+    config_class = (
+        CONFIG_MAPPING[model_type] if model_type in CONFIG_MAPPING else config_copy.__class__
+    )
 
     model_class = None
     for auto_model in (AutoModelForCausalLM, AutoModel):
@@ -4862,8 +4976,8 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
         if mapping is None:
             continue
         try:
-            if config_copy.__class__ in mapping:
-                model_class = mapping[config_copy.__class__]
+            if config_class in mapping:
+                model_class = mapping[config_class]
                 break
         except Exception:
             continue
@@ -5514,32 +5628,41 @@ def _repair_smi_visible_devices(
     The integrated flag rides along because the reason the capacity is unreadable is that
     this part has no memory of its own, and a total published without it is counted twice.
 
-    A host whose nvidia-smi CAN answer returns above without touching torch, so the 3-5s
-    poll is unchanged and a readable part is never reclassified as unified.
+    A readable total is not a right one. nvidia-smi answers 8128 MiB on a Windows RTX
+    Spark N1X, the dedicated carve-out of a part whose CUDA budget is 46477 MiB, so the
+    old shortcut here -- return early whenever every row carried a number -- published a
+    45 GiB device as a 7.94 GiB one on the System tab while the About tab, which reads
+    torch, showed 45.39 GiB for the same machine. So a BLANK total is still filled on any
+    part, as it always was, and a READABLE one is additionally widened on a confirmed
+    integrated part, and on nothing else.
     """
     if not devices:
         return False
-    if all(dev.get("memory_total_gb") is not None for dev in devices):
-        return True
     try:
         inventory, key_field = _integrated_cuda_inventory(parent_visible_ids)
     except Exception as e:  # noqa: BLE001 - the caller keeps the rows nvidia-smi found
         logger.debug("torch inventory unavailable while repairing a GPU capacity: %s", e)
-        return False
+        return all(dev.get("memory_total_gb") is not None for dev in devices)
     for dev in devices:
         td = inventory.get(dev.get(key_field))
         if td is None:
             continue
+        # A BLANK total is filled whatever the part is, as this function always did:
+        # dropping that sent MIG and vGPU rows down the torch fallback instead.
         if dev.get("memory_total_gb") is None:
             dev["memory_total_gb"] = td["total_gb"]
-        if td.get("_cuda_integrated"):
-            dev["unified_memory"] = True
-            # `shared_memory` as well, not just the host-backed figure: gpu-vram.ts
-            # splits the pools on THAT flag alone and only then reads the figure, so a
-            # row carrying one without the other is added to the dedicated total and
-            # counted a second time beside the same system RAM.
-            dev["shared_memory"] = True
-            dev["shared_memory_host_backed_gb"] = dev["memory_total_gb"]
+        if not td.get("_cuda_integrated"):
+            continue
+        # A READABLE total is only widened on a confirmed integrated part.
+        if _integrated_total_is_understated(dev.get("memory_total_gb"), td["total_gb"]):
+            dev["memory_total_gb"] = td["total_gb"]
+        dev["unified_memory"] = True
+        # `shared_memory` as well, not just the host-backed figure: gpu-vram.ts splits
+        # the pools on THAT flag alone and only then reads the figure, so a row carrying
+        # one without the other is added to the dedicated total and counted a second
+        # time beside the same system RAM.
+        dev["shared_memory"] = True
+        dev["shared_memory_host_backed_gb"] = dev["memory_total_gb"]
     return all(dev.get("memory_total_gb") is not None for dev in devices)
 
 

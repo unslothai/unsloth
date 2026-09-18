@@ -3,17 +3,15 @@
 
 """Disk-backed persistence for generated images.
 
-Each image is a PNG under ``studio_root()/images`` with its full recipe embedded as PNG text
-chunks: a structured ``unsloth`` JSON blob (the source of truth) plus an Automatic1111-style
-``parameters`` string for interop. So a downloaded PNG carries its own settings.
-
-Dumb storage: the route owns the metadata schema and passes a plain dict; this only reads/writes/
-sorts files.
+Each image is a PNG under ``workspace_root()/images`` with its recipe embedded as PNG text chunks:
+an ``unsloth`` JSON blob (the source of truth) plus an Automatic1111-style ``parameters`` string,
+so a downloaded PNG carries its own settings. The route owns the schema; this only stores files.
 """
 
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import os
 import re
@@ -24,7 +22,9 @@ from typing import Any, Optional
 
 from core.inference import gallery_flags
 from loggers import get_logger
-from utils.paths import ensure_dir, studio_root
+from utils.account_context import is_owner_context
+from utils.paths import ensure_account_dir, ensure_dir, studio_root
+from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
 
@@ -35,7 +35,9 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def gallery_dir() -> Path:
-    return ensure_dir(studio_root() / "images")
+    if is_owner_context():
+        return ensure_dir(studio_root() / "images")
+    return ensure_account_dir(account_path("images"))
 
 
 def _params_text(meta: dict[str, Any]) -> str:
@@ -125,12 +127,16 @@ def image_b64(image_id: str) -> Optional[str]:
 _REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
 
 
-def _read_meta(path: Path) -> Optional[dict[str, Any]]:
+def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any]]:
     from PIL import Image
 
     try:
         with Image.open(path) as im:
             raw = im.text.get(_META_KEY)  # type: ignore[attr-defined]
+    except OSError as exc:
+        if strict_io and exc.errno not in (None, errno.ENOENT):
+            raise
+        return None
     except Exception:
         return None
     if not raw:
@@ -234,19 +240,27 @@ def set_flags(
 
 def delete(image_id: str) -> bool:
     path = image_path(image_id)
-    if path is None:
-        return False
     # a hand-dropped foreign PNG is invisible to list_images, so a guessed id must not destroy it
-    if _read_meta(path) is None:
+    if path is None or _read_meta(path, strict_io = True) is None:
+        if _ID_RE.fullmatch(image_id):
+            # Only prune absent files, preserving foreign files and symlinks.
+            try:
+                (gallery_dir() / f"{image_id}.png").lstat()
+            except FileNotFoundError:
+                gallery_flags.forget(gallery_dir(), [image_id])
         return False
+    removed = True
     try:
         path.unlink()
+    except FileNotFoundError:
+        removed = False
     except OSError as exc:
         logger.warning("image_gallery.delete_failed: %s", exc)
-        return False
+        # Propagate I/O failures instead of reporting a missing image.
+        raise
     # drop the flags with the file, so the id cannot hand out a stale pin and the store cannot grow forever
     gallery_flags.forget(gallery_dir(), [image_id])
-    return True
+    return removed
 
 
 def clear(include_archived: bool = False) -> int:
