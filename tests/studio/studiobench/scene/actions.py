@@ -1606,6 +1606,28 @@ IMAGE_BUTTON_DIAGNOSTIC = """() => {
 }"""
 
 
+#: The composer's attachment container, and the per-attachment element inside it. Both are rendered
+#: by `studio/frontend/src/components/assistant-ui/attachment.tsx`: `ComposerAttachments` is the
+#: container, and every attachment, image tile or pasted-text chip, goes through
+#: `AttachmentPrimitive.Root` as `.aui-attachment-root`. The container scopes the count so the
+#: attachments already sent on earlier messages are not counted as composer state.
+#: `selftest/test_studiobench_composer_attachment_selector.py` pins both names against that file,
+#: because a selector that matches nothing counts zero and reads exactly like an upload that never
+#: happened.
+_COMPOSER_ATTACHMENTS_CONTAINER = ".aui-composer-attachments"
+_COMPOSER_ATTACHMENT_TILE = ".aui-attachment-root"
+
+_COUNT_COMPOSER_ATTACHMENTS_JS = (
+    "() => document.querySelectorAll('"
+    f"{_COMPOSER_ATTACHMENTS_CONTAINER} {_COMPOSER_ATTACHMENT_TILE}"
+    "').length"
+)
+
+_COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS = (
+    f"() => document.querySelectorAll('{_COMPOSER_ATTACHMENTS_CONTAINER}').length"
+)
+
+
 @register_action(name = "image_upload", default_budget_ms = 12000)
 def image_upload(ctx: ActionContext) -> ActionResult:
     """Attach an image through the composer's file chooser.
@@ -1641,11 +1663,7 @@ def image_upload(ctx: ActionContext) -> ActionResult:
             "no visible attachments button on the composer: "
             + json.dumps(_ev(ctx, IMAGE_BUTTON_DIAGNOSTIC) or {})
         )
-    before = _ev(
-        ctx,
-        "() => document.querySelectorAll('.aui-composer-attachment, "
-        '[data-slot="composer-attachment"]\').length',
-    )
+    before = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
     started = time.monotonic()
     # Bounded by what is left of the slot, never by Playwright's 30s default.
     try:
@@ -1664,19 +1682,37 @@ def image_upload(ctx: ActionContext) -> ActionResult:
         ctx.page.keyboard.press("Escape")
         return not_run(f"the file chooser never opened: {type(exc).__name__}: {exc}")
     ctx.page.wait_for_timeout(800)
-    after = _ev(
-        ctx,
-        "() => document.querySelectorAll('.aui-composer-attachment, "
-        '[data-slot="composer-attachment"]\').length',
-    )
+    after = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
     elapsed = (time.monotonic() - started) * 1000
     ok = after is not None and before is not None and after > before
+    containers = None
+    reason = None
+    if not ok:
+        # A STALE SELECTOR AND A FAILED UPLOAD BOTH COUNT ZERO, and that is exactly how this
+        # assertion spent its first life: it counted a class the frontend has never rendered, so
+        # `after > before` could not come out true however well the composer worked. It stayed
+        # invisible because the action only mounts once a model is selected, and until then
+        # `--allow-not-run image_upload` excused every row. Probe the container before blaming the
+        # upload, so the next failure says which file to open.
+        containers = _ev(ctx, _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS)
+        if not containers:
+            reason = (
+                "no attachment appeared, and the composer's attachment container "
+                f"({_COMPOSER_ATTACHMENTS_CONTAINER}) is not in the page either, so this run "
+                "cannot tell a failed upload from a selector that no longer matches the frontend"
+            )
+        else:
+            reason = "no attachment appeared in the composer after the file was set"
     return ActionResult(
         ran = True,
         expect_ok = ok,
-        expect = {"attachments_before": before, "attachments_after": after},
+        expect = {
+            "attachments_before": before,
+            "attachments_after": after,
+            "attachment_containers": containers,
+        },
         timings = {"upload_ms": round(elapsed, 1)},
-        reason = None if ok else "no attachment appeared in the composer after the file was set",
+        reason = reason,
     )
 
 
