@@ -2194,6 +2194,28 @@ def test_a_record_written_before_the_cards_were_named_still_diverts(fake_setting
     assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card B@gfx1100") is True
 
 
+def test_evidence_no_card_was_named_for_survives_a_later_card_tally(fake_settings, monkeypatch):
+    """A failure recorded without a card applies to every card. A later failure naming card A must
+    add to it, not hide it: before, A's fresh one-strike tally replaced it for A, and the new card
+    list excluded every other card from it, a proven host-wide record included."""
+    from core.inference import sd_cpp_backend
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False)
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False, card = "Card A@gfx1201")
+    for _ in range(2):  # in process, then read back from the store
+        assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card A@gfx1201") is True
+        assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card B@gfx1100") is False
+        sd_cpp_backend._accelerator_runtime_failures.clear()
+
+    fake_settings.clear()
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True)
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False, card = "Card A@gfx1201")
+    for _ in range(2):
+        assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card A@gfx1201") is True
+        assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card B@gfx1100") is True
+        sd_cpp_backend._accelerator_runtime_failures.clear()
+
+
 def test_the_condemned_build_is_still_refused_on_the_card_that_failed(fake_settings, monkeypatch):
     from core.inference import sd_cpp_backend
 

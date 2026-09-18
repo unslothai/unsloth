@@ -1118,7 +1118,36 @@ def _normalise_failure_record(key: str, value: object) -> Optional[dict]:
         }
     if per_card:
         record["per_card"] = per_card
+    unscoped = value.get("unscoped")
+    if isinstance(unscoped, dict):
+        record["unscoped"] = _unscoped_evidence({"unscoped": unscoped})
     return record
+
+
+def _unscoped_evidence(record: Optional[dict]) -> dict:
+    """The part of a record no card was named for. It applies to every card, so a later tally for
+    one card must add to it rather than replace it."""
+    if not isinstance(record, dict):
+        return {"strikes": 0, "proven": False}
+    stored = record.get("unscoped")
+    if isinstance(stored, dict):
+        try:
+            strikes = int(stored.get("strikes", 0) or 0)
+        except (TypeError, ValueError):
+            strikes = 0
+        return {"strikes": max(strikes, 0), "proven": bool(stored.get("proven", False))}
+    per_card = record.get("per_card") if isinstance(record.get("per_card"), dict) else {}
+    if not record.get("cards") and not per_card:
+        # Never named a card, so all of it is unscoped (the older shapes included).
+        return {
+            "strikes": int(record.get("strikes", 0) or 0),
+            "proven": bool(record.get("proven", False)),
+        }
+    if not per_card:
+        # Cards named without tallies: nothing here can be told apart as unscoped.
+        return {"strikes": 0, "proven": False}
+    scoped = sum(int((entry or {}).get("strikes", 0) or 0) for entry in per_card.values())
+    return {"strikes": max(int(record.get("strikes", 0) or 0) - scoped, 0), "proven": False}
 
 
 def _stored_accelerator_runtime_failures() -> dict[str, dict]:
@@ -1202,11 +1231,17 @@ def note_accelerator_runtime_failure(
         ).items()
         if isinstance(entry, dict)
     }
+    unscoped = _unscoped_evidence(previous)
     if card:
         seen = per_card.get(card) or {}
         per_card[card] = {
             "strikes": int(seen.get("strikes", 0) or 0) + 1,
             "proven": bool(proven) or bool(seen.get("proven", False)),
+        }
+    else:
+        unscoped = {
+            "strikes": unscoped["strikes"] + 1,
+            "proven": bool(proven) or unscoped["proven"],
         }
     record = {
         "strikes": strikes,
@@ -1219,6 +1254,8 @@ def note_accelerator_runtime_failure(
         record["cards"] = cards
     if per_card:
         record["per_card"] = per_card
+    if unscoped["strikes"] or unscoped["proven"]:
+        record["unscoped"] = unscoped
     if previous == record:
         return
     records[klass] = record
@@ -1244,24 +1281,26 @@ def _record_diverts(
     fingerprint: Optional[dict] = None,
     card: Optional[str] = None,
 ) -> bool:
-    """Whether one record moves this host off its own accelerator. A record naming the cards it was seen on says nothing about a different *card*; unknown keeps it applying."""
+    """Whether one record moves this host off its own accelerator. For a named *card*, evidence from
+    other named cards says nothing; evidence no card was named for still applies."""
     if not isinstance(record, dict):
-        return False
-    known_cards = [c for c in (record.get("cards") or []) if c]
-    if card and known_cards and card not in known_cards:
         return False
     if not _fingerprint_still_applies(
         record.get("fingerprint"),
         _accelerator_fingerprint() if fingerprint is None else fingerprint,
     ):
         return False
-    # This card's OWN evidence whenever the record carries it: a decisive failure on another card
-    # is not proof about this one, and the strikes that convict a host must have been struck here.
+    known_cards = [c for c in (record.get("cards") or []) if c]
     own = (record.get("per_card") or {}).get(card) if card else None
-    if isinstance(own, dict):
-        if own.get("proven"):
+    if card and (isinstance(own, dict) or (known_cards and card not in known_cards)):
+        # This card's own tally plus the unscoped part: a decisive failure on another card is not
+        # proof about this one, and the strikes that convict it must have been struck here or unscoped.
+        own = own if isinstance(own, dict) else {}
+        unscoped = _unscoped_evidence(record)
+        if own.get("proven") or unscoped["proven"]:
             return True
-        return int(own.get("strikes", 0) or 0) >= _AMBIGUOUS_FAILURE_STRIKES
+        strikes = int(own.get("strikes", 0) or 0) + unscoped["strikes"]
+        return strikes >= _AMBIGUOUS_FAILURE_STRIKES
     if record.get("proven"):
         return True
     return int(record.get("strikes", 0) or 0) >= _AMBIGUOUS_FAILURE_STRIKES
