@@ -105,6 +105,43 @@ def test_jupyterlab_is_pinned_to_the_cuda_core_image():
     ), "the labext-builder stage and the final stage must install the same jupyterlab"
 
 
+NOT_MIRRORED = {
+    # no ROCm wheel on any pytorch.org rocm leaf; the shim forwards a notebook's own install
+    "torchcodec",
+    # the ROCm base already carries a newer protobuf than the CUDA pin
+    "protobuf",
+}
+
+
+def test_the_notebook_runtime_pins_match_the_cuda_core_image():
+    """docker/Dockerfile bakes what the notebooks' install cells declare (soundfile,
+    evaluate, librosa, decord, ...); the shim then keeps those cells from moving the
+    stack. The ROCm image runs the same notebooks, so it carries the same pins, or the
+    AMD-* audio, TTS and vision notebooks fail on their first import here."""
+    cuda = _read(CUDA_BASE)
+    cuda_runs = [
+        r for r in _instructions(CUDA_BASE, "RUN") if '"soundfile==' in r or '"decord==' in r
+    ]
+    assert len(cuda_runs) == 2, "the CUDA notebook-deps and decord layers moved"
+    wanted = dict(re.findall(r'"([A-Za-z0-9_.-]+)==([0-9][^"]*)"', " ".join(cuda_runs)))
+    assert {"soundfile", "librosa", "decord", "evaluate"} <= set(wanted), wanted
+    rocm = _read(ROCM_STUDIO)
+    for pkg, ver in wanted.items():
+        if pkg in NOT_MIRRORED:
+            continue
+        assert (
+            f'"{pkg}=={ver}"' in rocm
+        ), f"{pkg}=={ver} is baked in docker/Dockerfile but not in Dockerfile.studio-rocm"
+    for pkg in NOT_MIRRORED:
+        assert pkg in cuda, f"{pkg} is no longer in docker/Dockerfile; drop it from NOT_MIRRORED"
+        assert f'"{pkg}==' not in rocm, f"{pkg} is now baked; drop it from NOT_MIRRORED"
+    # torchcodec dlopens system ffmpeg, and the CUDA image installs it for that
+    (apt,) = [
+        r for r in _instructions(ROCM_STUDIO, "RUN") if "apt-get install" in r and "supervisor" in r
+    ]
+    assert " ffmpeg" in apt, "the notebooks' audio decode needs ffmpeg, which the ROCm base lacks"
+
+
 def test_jupyterlab_goes_into_the_base_venv_and_leaves_torch_alone():
     """The notebook kernel has to be the venv with the ROCm torch, and a resolve
     against pypi alone must not be allowed to replace that torch with a CUDA one."""

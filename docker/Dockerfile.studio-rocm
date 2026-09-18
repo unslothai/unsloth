@@ -90,21 +90,33 @@ ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UNSLOTH_STUDIO_STOP_WAIT_S=150 \
     DEBIAN_FRONTEND=noninteractive
 
-# install.sh needs curl + git; supervisor + openssh-server run the service trio.
+# install.sh needs curl + git; supervisor + openssh-server run the service trio;
+# ffmpeg is what the notebooks' audio decode shells out to (docker/Dockerfile bakes
+# it for the same reason), and it is not in the ROCm base.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-        curl git ca-certificates supervisor openssh-server \
+        curl git ca-certificates supervisor openssh-server ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
-# JupyterLab into the base venv, so the notebook kernel is the ROCm torch. The same
-# three pins as the CUDA core image (docker/Dockerfile); a test keeps them equal.
-# Pure Python, but the resolve runs against pypi alone, where a torch it chose to
-# move would be a CUDA wheel, so the base's torch is asserted unmoved.
+# JupyterLab and the notebooks' runtime packages into the base venv, so the kernel
+# is the ROCm torch. The same pins as the CUDA core image (docker/Dockerfile, which
+# says what each one is for); a test keeps them equal. Left out of that set:
+#   torchcodec  no ROCm wheel on any pytorch.org rocm leaf (see the note in
+#               studio/install_python_stack.py), so a notebook's own
+#               `pip install torchcodec` is forwarded by the shim rather than baked
+#   protobuf    the base already carries a newer one than the CUDA pin
+# Pure Python plus decord (amd64 only, which this image is), but the resolve runs
+# against pypi alone, where a torch it chose to move would be a CUDA wheel, and
+# librosa pulls numba, which constrains numpy; both are asserted unmoved.
 RUN set -eux \
  && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
+ && BASE_NUMPY="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('numpy'))")" \
  && /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python \
-        "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" \
- && /opt/unsloth-venv/bin/python -c "from importlib.metadata import version; v = version('torch'); assert v == '${BASE_TORCH}', 'the JupyterLab install moved torch from ${BASE_TORCH} to ' + v; import jupyterlab, jupyter_server; print('jupyterlab', jupyterlab.__version__, 'jupyter_server', jupyter_server.__version__, 'torch', v)" \
+        "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
+        "soundfile==0.14.0" "evaluate==0.4.6" "jiwer==4.0.0" "tensorboard==2.20.0" \
+        "langid==1.1.6" "easydict==1.13" "omegaconf==2.3.1" "einx==0.4.3" \
+        "librosa==0.11.0" "ftfy==6.3.1" "decord==0.6.0" \
+ && /opt/unsloth-venv/bin/python -c "from importlib.metadata import version; v = version('torch'); assert v == '${BASE_TORCH}', 'the notebook-deps install moved torch from ${BASE_TORCH} to ' + v; n = version('numpy'); assert n == '${BASE_NUMPY}', 'the notebook-deps install moved numpy from ${BASE_NUMPY} to ' + n; import jupyterlab, jupyter_server, numba, soundfile, librosa, evaluate, jiwer, decord, omegaconf, einx, matplotlib, tensorboard, langid, easydict, ftfy; print('jupyterlab', jupyterlab.__version__, 'jupyter_server', jupyter_server.__version__, 'torch', v, 'numpy', n, 'numba', numba.__version__)" \
  && rm -rf /root/.cache/uv
 
 # The linker this build finishes with, and the entrypoint reruns.
