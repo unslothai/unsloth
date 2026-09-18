@@ -10,7 +10,7 @@ export const en = {
     sendShortcut: "Send shortcut",
     sendDescription: "Choose when Enter sends a prompt or inserts a new line.",
     followUp: "Follow-up behavior",
-    followUpDescription: "Choose what happens when you send during a response. Press {shortcut} to do the opposite for one message.",
+    followUpDescription: "What happens when you send during a response. Press {shortcut} to do the opposite once.",
     queue: "Queue",
     steer: "Steer",
     steerDescription: "Steer stops the current response and sends your follow-up next.",
@@ -250,9 +250,19 @@ export const en = {
   settings: {
     accounts: {
       title: "Accounts",
-      description: "Create private Studio accounts. New users sign in with a one-time setup code and choose a password.",
+      description: "Create private Unsloth accounts. New users sign in with a one-time setup code and choose a password.",
       username: "Username",
       create: "Create account",
+      createDescription: "Share a setup code so they can choose their own password.",
+      actionsFor: "Manage {username}",
+      actions: "Actions",
+      search: "Search accounts",
+      noResults: "No matching accounts",
+      created: "Created",
+      status: "Status",
+      loginHint: "Sign in as {username} with this code as the password, then choose a new password.",
+      privateAccount: "Private account",
+      empty: "No other accounts yet",
       setupCode: "Setup code",
       setupFor: "Setup code for {username}",
       shownOnce: "Copy this code now and share it with the account holder. It is shown only here and can be used once within 60 minutes.",
@@ -262,13 +272,13 @@ export const en = {
       copyFailed: "Could not copy. Select and copy the setup code above.",
       dismiss: "Done",
       owner: "Installation owner",
-      active: "Active",
-      inactive: "Inactive",
+      active: "Enabled",
+      inactive: "Disabled",
       regenerate: "Regenerate setup code",
       resetTitle: "Reset {username}'s password?",
       resetDescription: "Regenerating the setup code replaces {username}'s password, signs them out and revokes their API keys. Give them the new code so they can choose a password again.",
-      deactivate: "Deactivate",
-      reactivate: "Reactivate",
+      deactivate: "Disable",
+      reactivate: "Enable",
       delete: "Delete account",
       deleteTitle: "Delete {username}?",
       deleteDescription: "This revokes {username}'s sessions and cancels their work. Their chats, settings, credentials, uploads, datasets, training runs, outputs, exports, galleries, sandboxes, projects and temporary files are retired. Directories are renamed aside, never deleted. Creating this username again starts a fresh account with none of this data.",
@@ -305,9 +315,10 @@ export const en = {
     },
     keyboardShortcuts: {
       title: "Keyboard shortcuts",
-      description:
-        "Change any shortcut, or clear one to free the chord for your browser or OS.",
       searchPlaceholder: "Search shortcuts…",
+      keystrokePlaceholder: "Press shortcut to search",
+      searchByKeystrokes: "Search by keystrokes",
+      searchByName: "Search by name",
       noResults: "No shortcuts match that search.",
       unassigned: "Unassigned",
       recording: "Press keys…",
@@ -504,6 +515,14 @@ export const en = {
           label: "Send message",
           description: "Send what is in the composer",
         },
+        queueMessage: {
+          label: "Queue message",
+          description: "Send the draft to the end of the prompt queue",
+        },
+        steerMessage: {
+          label: "Steer response",
+          description: "Stop the current response and send the draft next",
+        },
         cycleReasoningEffort: {
           label: "Cycle reasoning effort",
           description: "Step through the reasoning effort levels",
@@ -570,7 +589,7 @@ export const en = {
       openLogsFolderFailed: "Could not open the logs folder.",
       exportFailed: "Could not download the logs.",
       exportTooOld: "Running Unsloth backend is too old to export logs. Update that backend and restart.",
-      exportForbidden: "Downloading all logs needs a signed-in Studio session. An API key is not enough.",
+      exportForbidden: "Downloading all logs needs a signed-in Unsloth session. An API key is not enough.",
       // Not rendered: extra terms the settings search matches this tab on.
       keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
@@ -871,6 +890,9 @@ export const en = {
         showLoadedModels: "Loaded models indicator",
         showLoadedModelsDescription:
           "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
+        showWhisperUpdates: "whisper.cpp update notifications",
+        showWhisperUpdatesDescription:
+          "Notify when a newer whisper.cpp build is available for speech-to-text models. Turn off if you never transcribe audio.",
       },
       startup: {
         sectionTitle: "Startup",
@@ -1485,9 +1507,8 @@ export const en = {
         "When off, use the same settings for every model.",
       autoCompactHint: "Uses the context length you set, not available VRAM.",
       pastedTextShortDescription:
-        "Pastes of {count} characters or more become .txt attachments. Shorter pastes stay in the message box.",
-      pastedTextOffDescription:
-        "All pasted text stays in the message box, regardless of length.",
+        "Pastes of {count} characters or more become .txt attachments.",
+      pastedTextOffDescription: "Pasted text always stays in the message box.",
       compactionDescriptionInherit: "Follow the server's context policy.",
       compactionDescriptionCheckpoint:
         "Keep the latest turn and standing instructions.",
