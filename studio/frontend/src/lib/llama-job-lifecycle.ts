@@ -69,6 +69,23 @@ export function llamaUpdatePresentation(
 }
 
 /**
+ * Which notification switch answers for the update card, held across a job.
+ *
+ * The card is muted by the component it names, and a chained apply renames it
+ * when the llama.cpp phase lands and the whisper.cpp phase starts. Reading the
+ * live switch there would take a running update off screen halfway through, so
+ * the switch the card started under is held until the job is over. `null` means
+ * nothing is held and the live switch applies.
+ */
+export function heldUpdateBannerPref(
+  held: boolean | null,
+  inFlight: boolean,
+  live: boolean,
+): boolean | null {
+  return inFlight ? (held ?? live) : null;
+}
+
+/**
  * Whether the banner's version line has anything to say.
  *
  * `updateAvailable` is the only field reporting that the release moved. The tags cannot:

@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  heldUpdateBannerPref,
   llamaReleaseChanged,
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
@@ -194,4 +195,28 @@ test("an ordinary update still reports the release it moved to", () => {
     }),
     "llama.cpp updated to b9600-mix-def.",
   );
+});
+
+// The card is muted per component, and a chained apply renames it when the
+// llama.cpp phase lands and the whisper.cpp phase starts. Reading the live
+// switch there hid a running update for the whole second phase.
+test("the switch a running card started under is held until the job is over", () => {
+  // llama.cpp notifications on, whisper.cpp off, chained update accepted.
+  let held = heldUpdateBannerPref(null, true, true);
+  assert.equal(held, true);
+  // The llama phase lands and the status renames the card mid-job.
+  held = heldUpdateBannerPref(held, true, false);
+  assert.equal(held, true, "the running update was taken off screen");
+  // The whisper phase fails: its retry has to stay reachable.
+  held = heldUpdateBannerPref(held, true, false);
+  assert.equal(held, true);
+  // Job over: the live switch answers again.
+  assert.equal(heldUpdateBannerPref(held, false, false), null);
+});
+
+test("a muted card stays muted for a job it never showed", () => {
+  // Nothing held, whisper.cpp muted, a whisper job running from another surface.
+  assert.equal(heldUpdateBannerPref(null, true, false), false);
+  // And an offer with no job in flight always reads the live switch.
+  assert.equal(heldUpdateBannerPref(null, false, true), null);
 });

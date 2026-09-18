@@ -13,6 +13,7 @@ import {
   useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
 import {
+  heldUpdateBannerPref,
   llamaReleaseChanged,
   llamaUpdateToastMessage,
 } from "@/lib/llama-job-lifecycle";
@@ -149,8 +150,18 @@ export function LlamaUpdateBanner({
   const component = status?.component ?? "llama.cpp";
   // Muted by the component the card names: a chained apply may carry whisper.cpp
   // along, but the offer on screen is the release shown here.
-  const showBannerPref =
+  const livePref =
     component === "whisper.cpp" ? showWhisperBannerPref : showLlamaBannerPref;
+  // Held across a chained apply, which renames the card mid-job. An error counts
+  // as in flight so a failed phase keeps its retry on screen.
+  const jobState = status?.job.state;
+  const [heldPref, setHeldPref] = useState<boolean | null>(null);
+  useEffect(() => {
+    setHeldPref((prev) =>
+      heldUpdateBannerPref(prev, applying || jobState === "error", livePref),
+    );
+  }, [applying, jobState, livePref]);
+  const showBannerPref = heldPref ?? livePref;
   const show =
     showBannerPref &&
     visible &&
