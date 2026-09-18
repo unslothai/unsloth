@@ -122,9 +122,13 @@ jobs:
         # rootdir has to be the repo so the suite's relative paths resolve.
         # Both cap suites in one step: they read the same files and cost seconds, and a
         # separate step would double the OS-axis admission cost for no extra coverage.
+        # One line, no `\` continuation: this job has no `shell:`, so the windows-latest
+        # leg runs under PowerShell, where `\` is not a line continuation and is passed
+        # through as a literal argument. pytest then reads it as the path `\`, collects
+        # the whole working drive, and the leg dies on `D:\System Volume Information`
+        # with 162 collection errors having tested nothing.
         run: |
-          python -m pytest tests/test_transformers_cap_sites.py \
-            tests/test_trl_cap_sites.py -v --tb=short
+          python -m pytest tests/test_transformers_cap_sites.py tests/test_trl_cap_sites.py -v --tb=short
 
   # Catches what the static symbol check cannot (import-time side effects). Two lanes,
   # since one pinned set proves one point of the range and nothing about either end.

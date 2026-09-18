@@ -478,3 +478,117 @@ def test_an_unreachable_guard_is_caught(tmp_path, monkeypatch) -> None:
         test_no_trl_runtime_guard_is_unreachable_through_the_declared_window()
 
     assert "99.0.0" in str(raised.value)
+
+
+# ---------------------------------------------------------------------------
+# The gate has to survive its own runner set.
+# ---------------------------------------------------------------------------
+
+def _steps_exposed_to_the_powershell_default(workflows: Path) -> list[tuple[str, str, str]]:
+    """Every `run:` step that will be handed to PowerShell on a Windows runner.
+
+    GitHub's default shell on `windows-*` is PowerShell, not bash. A step only escapes
+    that by setting `shell:` on itself, its job, or the workflow. Steps gated off Windows
+    by an `if:` naming another platform are not exposed and are skipped.
+    """
+    import yaml
+
+    exposed = []
+    for path in sorted(workflows.glob("*.yml")):
+        try:
+            document = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+        except yaml.YAMLError:
+            continue
+        if not isinstance(document, dict):
+            continue
+        workflow_shell = ((document.get("defaults") or {}).get("run") or {}).get("shell")
+        for job_name, job in (document.get("jobs") or {}).items():
+            if not isinstance(job, dict):
+                continue
+            targets = f"{job.get('runs-on', '')}{job.get('strategy', '')}"
+            if "windows" not in targets.lower():
+                continue
+            job_shell = ((job.get("defaults") or {}).get("run") or {}).get("shell")
+            for index, step in enumerate(job.get("steps") or []):
+                if not isinstance(step, dict):
+                    continue
+                body = step.get("run")
+                if not isinstance(body, str):
+                    continue
+                if step.get("shell") or job_shell or workflow_shell:
+                    continue
+                condition = str(step.get("if", ""))
+                if "ubuntu" in condition or "macos" in condition or "darwin" in condition:
+                    continue
+                name = step.get("name", f"step {index}")
+                exposed.append((path.name, job_name, name, body))
+    return exposed
+
+
+def test_no_windows_step_uses_a_bash_line_continuation() -> None:
+    r"""A `\` at end of line is a bash continuation and NOT a PowerShell one.
+
+    This is not hypothetical and it is not cosmetic. The `cap-site-consistency` job sets
+    no `shell:`, so its windows-latest leg runs under PowerShell. Written as
+
+        python -m pytest tests/test_transformers_cap_sites.py \
+          tests/test_trl_cap_sites.py -v --tb=short
+
+    PowerShell passes the trailing `\` through as a literal argument, pytest reads it as
+    the path `\` (the root of the working drive), collects the entire drive and dies with
+    `PermissionError: [WinError 5] ... 'D:\System Volume Information'` and 162 collection
+    errors -- having asserted nothing about any cap. The Linux and macOS legs pass, so the
+    drift gate reports two of its three runners and looks healthy.
+    """
+    if sys.version_info < (3, 11):
+        pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
+
+    offenders = [
+        f"{workflow}: job {job!r} step {name!r}"
+        for workflow, job, name, body in _steps_exposed_to_the_powershell_default(WORKFLOWS)
+        if re.search(r"\\\s*\n", body)
+    ]
+    assert not offenders, (
+        "these steps run under PowerShell on a Windows runner and use a bash `\\` line "
+        "continuation, so the Windows leg silently runs a different command than the "
+        "Linux one: " + "; ".join(offenders) + ". Put the command on one line or set "
+        "`shell: bash` on the step."
+    )
+
+
+def test_the_powershell_continuation_check_can_fail(tmp_path, monkeypatch) -> None:
+    """NEGATIVE CONTROL: the check above is a "nothing found" shape, so prove it finds
+    the exact construct that broke the Windows leg."""
+    workflows = tmp_path / "workflows"
+    workflows.mkdir()
+    (workflows / "example-ci.yml").write_text(
+        "jobs:\n"
+        "  gate:\n"
+        "    runs-on: windows-latest\n"
+        "    steps:\n"
+        "      - name: Assert every site declares the same window\n"
+        "        run: |\n"
+        "          python -m pytest tests/a.py \\\n"
+        "            tests/b.py -v\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
+
+    with pytest.raises(AssertionError) as raised:
+        test_no_windows_step_uses_a_bash_line_continuation()
+    assert "example-ci.yml" in str(raised.value)
+
+    # ... and does NOT fire once the step declares a shell that understands `\`.
+    (workflows / "example-ci.yml").write_text(
+        "jobs:\n"
+        "  gate:\n"
+        "    runs-on: windows-latest\n"
+        "    steps:\n"
+        "      - name: Assert every site declares the same window\n"
+        "        shell: bash\n"
+        "        run: |\n"
+        "          python -m pytest tests/a.py \\\n"
+        "            tests/b.py -v\n",
+        encoding = "utf-8",
+    )
+    test_no_windows_step_uses_a_bash_line_continuation()
