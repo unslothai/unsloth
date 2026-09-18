@@ -21,11 +21,22 @@ function maxTextLength(): number {
 const OBJECT_OVERHEAD_BYTES = 256;
 const MAX_REFERENCE_DEPTH = 8;
 
+const DOCUMENT = 1;
+const SHOW = 2;
+const SLIDE_NODE = 4;
+const SLIDE = 5;
+const STYLESHEET = 401;
 const TEXT_STORAGE = 2001;
 const PAGES_DOCUMENT = 10000;
+// Objects that link back to the deck, a slide or the styles: following them would repeat another
+// slide's text or walk the whole stylesheet.
+const WALK_STOPS = new Set([DOCUMENT, SHOW, SLIDE_NODE, SLIDE, STYLESHEET]);
+// Title and body placeholders, then drawables. The rest are builds, whose order is not reading
+// order, and the template slide and speaker notes, which the PPTX reader also leaves out.
+const SLIDE_TEXT_FIELDS = [5, 6, 7];
 
 export type IworkAttachmentContent = {
-  label: "PAGES";
+  label: "PAGES" | "KEY";
   text: string;
 };
 
@@ -38,6 +49,9 @@ type Field = {
   bytes: Uint8Array | null;
 };
 type Budget = { remaining: number };
+// Every object is walked at most once per document, so structure that several slides share, or a
+// slide tree that lists a node twice, cannot multiply the work.
+type Walk = { objects: Objects; seen: Set<number> };
 
 class IworkSizeError extends Error {}
 
@@ -48,7 +62,11 @@ export async function readIworkAttachmentContent(
   filename: string,
 ): Promise<IworkAttachmentContent> {
   const objects = await readObjects(file);
-  return { label: "PAGES", text: pagesText(objects, filename) };
+  const types = new Set([...objects.values()].map((object) => object.type));
+  if (types.has(PAGES_DOCUMENT)) {
+    return { label: "PAGES", text: pagesText(objects, filename) };
+  }
+  return { label: "KEY", text: keynoteText(objects, filename) };
 }
 
 async function readObjects(file: File): Promise<Objects> {
@@ -250,6 +268,15 @@ function numberField(message: Uint8Array, field: number): number {
   return 0;
 }
 
+function bytesField(message: Uint8Array, field: number): Uint8Array | null {
+  for (const f of fields(message)) {
+    if (f.field === field && f.wire === 2) {
+      return f.bytes;
+    }
+  }
+  return null;
+}
+
 /** An ArchiveInfo, then its payloads. */
 function readArchives(
   data: Uint8Array,
@@ -374,6 +401,32 @@ function pushLine(lines: string[], line: string, budget: Budget): void {
   }
 }
 
+/** Text boxes reachable from one object, in the order its fields name them. */
+function collect(
+  id: number,
+  walk: Walk,
+  lines: string[],
+  budget: Budget,
+): void {
+  const object = walk.objects.get(id);
+  if (
+    !object ||
+    WALK_STOPS.has(object.type) ||
+    walk.seen.has(id) ||
+    budget.remaining <= 0
+  ) {
+    return;
+  }
+  walk.seen.add(id);
+  if (object.type === TEXT_STORAGE) {
+    pushLine(lines, storageText(object.payload), budget);
+  } else {
+    for (const next of references(object.payload, walk.objects)) {
+      collect(next, walk, lines, budget);
+    }
+  }
+}
+
 function truncated(sections: string[], budget: Budget, kind: string): string {
   if (budget.remaining <= 0) {
     sections.push(
@@ -394,4 +447,54 @@ function pagesText(objects: Objects, filename: string): string {
   const lines: string[] = [];
   pushLine(lines, storageText(body.payload), budget);
   return truncated(lines, budget, "document");
+}
+
+function keynoteText(objects: Objects, filename: string): string {
+  const show = findObject(objects, SHOW);
+  const tree = show && bytesField(show.payload, 3);
+  if (!tree) {
+    throw new Error(`Keynote file has no slide list: ${filename}`);
+  }
+  const budget = { remaining: maxTextLength() };
+  const walk = { objects, seen: new Set<number>() };
+  const slides: string[] = [];
+  let number = 0;
+  // Skipped slides keep their number, so [Slide N] matches Keynote's own numbering.
+  const visit = (nodeId: number): void => {
+    const node = objects.get(nodeId);
+    if (
+      node?.type !== SLIDE_NODE ||
+      walk.seen.has(nodeId) ||
+      budget.remaining <= 0
+    ) {
+      return;
+    }
+    walk.seen.add(nodeId);
+    number += 1;
+    const [slideId = -1] = references(node.payload, objects, 2);
+    const slide = objects.get(slideId);
+    if (
+      slide &&
+      !walk.seen.has(slideId) &&
+      numberField(node.payload, 4) !== 1
+    ) {
+      walk.seen.add(slideId);
+      const lines: string[] = [];
+      for (const field of SLIDE_TEXT_FIELDS) {
+        for (const id of references(slide.payload, objects, field)) {
+          collect(id, walk, lines, budget);
+        }
+      }
+      if (lines.length > 0) {
+        slides.push(`[Slide ${number}]\n${lines.join("\n")}`);
+      }
+    }
+    for (const child of references(node.payload, objects, 1)) {
+      visit(child);
+    }
+  };
+  for (const nodeId of references(tree, objects, 2)) {
+    visit(nodeId);
+  }
+  return truncated(slides, budget, "presentation");
 }

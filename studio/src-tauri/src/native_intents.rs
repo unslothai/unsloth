@@ -676,6 +676,7 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "ppsx" => Some("application/vnd.openxmlformats-officedocument.presentationml.slideshow"),
         "rtf" => Some("application/rtf"),
         "pages" => Some("application/vnd.apple.pages"),
+        "key" => Some("application/vnd.apple.keynote"),
         // Stamped like native_clipboard.rs.
         "json" | "jsonl" | "ndjson" | "jsonc" | "json5" | "geojson" | "har" | "avsc"
         | "tfstate" => Some("application/json"),
@@ -1111,6 +1112,7 @@ mod tests {
             ),
             ("rtf", "application/rtf"),
             ("PAGES", "application/vnd.apple.pages"),
+            ("KEY", "application/vnd.apple.keynote"),
         ] {
             let path = temp_path("open-document").with_extension(ext);
             fs::write(&path, b"open-document").unwrap();

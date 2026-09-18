@@ -56,7 +56,7 @@ pub const OFFICE_OPEN_XML_ATTACHMENT_EXTS: &[&str] =
 /// Rich text files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
 pub const RTF_ATTACHMENT_EXTS: &[&str] = &["rtf"];
 /// iWork files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
-pub const IWORK_ATTACHMENT_EXTS: &[&str] = &["pages"];
+pub const IWORK_ATTACHMENT_EXTS: &[&str] = &["pages", "key"];
 pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
 
 /// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so a

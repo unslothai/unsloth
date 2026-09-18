@@ -1388,6 +1388,54 @@ test("a Pages body reads as text, with inline objects dropped", async () => {
   assert.equal(viaMime.label, "PAGES");
 });
 
+test("Keynote slides read in deck order, numbered past skipped slides", async () => {
+  const storage = (id: number, text: string): [number, number, Bytes] => [
+    id,
+    2001,
+    bytes(3, text),
+  ];
+  const content = await readIwork(
+    "deck.key",
+    iwa([
+      [10, 2, bytes(3, [...ref(2, 20), ...ref(2, 21), ...ref(2, 23)])],
+      [20, 4, [...ref(2, 30), ...ref(1, 22)]],
+      // A node listed twice in the tree is still one slide.
+      [22, 4, [...ref(2, 32), ...int(4, 1), ...ref(1, 21)]],
+      [21, 4, ref(2, 31)],
+      [23, 4, ref(2, 33)],
+      // Builds come first on the wire, and set neither the slide's text nor its order.
+      [
+        30,
+        5,
+        [
+          ...ref(2, 70),
+          ...ref(5, 40),
+          ...ref(7, 50),
+          ...ref(17, 31),
+          ...ref(27, 60),
+        ],
+      ],
+      // A shape links back to a slide, which is not followed.
+      [50, 2011, [...bytes(1, ref(2, 41)), ...ref(3, 31)]],
+      [60, 15, ref(1, 44)],
+      [70, 8, ref(1, 50)],
+      [31, 5, ref(6, 42)],
+      [32, 5, ref(5, 43)],
+      [33, 5, ref(5, 45)],
+      storage(40, "Intro"),
+      storage(41, "Nested box"),
+      storage(42, "End"),
+      storage(43, "Skipped"),
+      storage(44, "Speaker notes"),
+      storage(45, "Last"),
+    ]),
+  );
+  assert.deepEqual(content, {
+    label: "KEY",
+    text: "[Slide 1]\nIntro\nNested box\n\n[Slide 3]\nEnd\n\n[Slide 4]\nLast",
+  });
+});
+
 test("an iWork reader refuses old and oversized files", async () => {
   await assert.rejects(
     readIworkAttachmentContent(
