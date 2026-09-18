@@ -40,7 +40,7 @@ test("a connected row draws its badges through ModelRow", () => {
     /capabilities=\{marks\.capabilities\}\s*\n\s*showVision=\{marks\.vision\}/,
   );
   // No format-dot slot: nothing precedes a connected name, and an empty one left the hover pill
-  // starting 23.5px in front of it. The row's own pl-2.5 is the name's inset instead.
+  // starting 23.5px in front of it. The row's own pl-3.5 is the name's inset instead.
   assert.doesNotMatch(pickers, /reserveLeadingSlot/);
   // The connection is named by the group heading, so it is not repeated on each of its rows.
   assert.doesNotMatch(pickers, /leadingBadge=\{\s*<ApiProviderLogo/);
@@ -666,16 +666,17 @@ test("the info box is a dialog, so it is wide enough and closable", () => {
 });
 
 test("a row's name starts where its heading's label does", () => {
-  // ml-5 plus pl-2.5 is 30px, which is the heading's px-2.5 + a size-3.5 icon + gap-1.5: where
-  // its label starts. Only 10px of that is pill in front of the name, the panel's own px-2.5
-  // rhythm, where the reserved leading slot had left 23.5px of empty pill before every one.
+  // ml-4 plus pl-3.5 is 30px, which is the heading's px-2.5 + a size-3.5 icon + gap-1.5: where
+  // its label starts. The two have to keep summing to 30, since the second of them is the pill's
+  // own inset: widening it moves the pill's left edge, not the name off that label. 14px of pill
+  // now precedes the name, against the 23.5px the reserved leading slot used to leave empty.
   assert.match(
     pickers,
-    /cn\(downloadedRowShellClassName\(isSelected\), "ml-5"\)/,
+    /cn\(downloadedRowShellClassName\(isSelected\), "ml-4"\)/,
   );
   assert.match(
     pickers,
-    /className=\{cn\(downloadedRowButtonClassName, "pl-2\.5"\)\}/,
+    /className=\{cn\(downloadedRowButtonClassName, "pl-3\.5"\)\}/,
   );
   // Nothing precedes the name in the row, so the slot itself goes: an empty one is what put the
   // pill's left edge that far from the name.

@@ -5390,12 +5390,11 @@ export function HubModelPicker({
     return (
       <div
         key={model.id}
-        // ml-2.5 matches the heading's own px-2.5, so the pill starts where the heading does
-        // instead of 10px left of it, and the name lands level with the heading's text.
-        // ml-5 plus the pl-2.5 below is 30px, where a heading's label starts: px-2.5 + a
-        // size-3.5 icon + gap-1.5. The 10px of that inside the pill is the panel's own px-2.5
-        // rhythm; the reserved leading slot put 23.5px of empty pill in front of every name.
-        className={cn(downloadedRowShellClassName(isSelected), "ml-5")}
+        // ml-4 plus the pl-3.5 below is 30px, where a heading's label starts: px-2.5 + a
+        // size-3.5 icon + gap-1.5. The split between them is the pill's own inset, so widening
+        // it takes the pill's left edge leftward rather than moving the name off that label.
+        // The reserved leading slot used to put 23.5px of empty pill in front of every name.
+        className={cn(downloadedRowShellClassName(isSelected), "ml-4")}
         style={
           draggingPinnedConnectedId === model.id ? { opacity: 0.4 } : undefined
         }
@@ -5480,7 +5479,7 @@ export function HubModelPicker({
             vramStatus={null}
             // The name's own inset, since nothing precedes it in the row now: the leading slot a
             // local row gives its format dot is gone with the logo that briefly filled it.
-            className={cn(downloadedRowButtonClassName, "pl-2.5")}
+            className={cn(downloadedRowButtonClassName, "pl-3.5")}
           />
         </div>
         <span className={ROW_ACTIONS_CLASS}>
