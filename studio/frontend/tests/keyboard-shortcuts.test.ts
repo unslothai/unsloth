@@ -2030,7 +2030,7 @@ test("a keystroke search never matches a chord missing a modifier it holds", () 
   }
 });
 
-test("every shipped default is found by its own chord and by its bare key", async () => {
+test("the matcher finds every shipped default by its own chord and bare key", async () => {
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
       for (const mac of [true, false]) {
@@ -2075,4 +2075,30 @@ test("the shortcuts tab arms the keystroke search ahead of Radix and the registr
   assert.match(listener, /binding\.code === "Escape"/);
   // The recorder owns the keyboard while it runs.
   assert.match(src, /if \(!byKeystroke \|\| recording\) return;/);
+});
+
+/**
+ * Bare Escape is the one shipped default the chord box will not take as a query: it is
+ * what backs out of the box. The recorder can free Escape because it swallows keys for a
+ * single chord, while this mode persists, so a focused box would eat the dialog's own
+ * dismiss for as long as it is on. The row stays reachable by name, where the query
+ * matches the cap label too.
+ */
+test("the chord box keeps bare Escape, and the name search still finds that row", () => {
+  const decline = SHORTCUT_DEFS.find((def) => def.id === "declineToolRequest");
+  assert.ok(decline);
+  assert.equal(defaultBindingFor(decline, "primary", true), "Escape");
+  // What the name search matches on, since the label is part of its haystack.
+  const escape = parseBinding("Escape");
+  assert.ok(escape);
+  assert.equal(formatBindingLabel(escape, true), "Esc");
+  assert.ok(formatBindingLabel(escape, true).toLowerCase().includes("esc"));
+  // The branch that reserves it, and the modifier that is left searchable.
+  assert.match(
+    KEYBOARD_SHORTCUTS_TAB,
+    /binding\.code === "Escape" && bare && !binding\.shift/,
+  );
+  const shiftEscape = parseBinding("Shift+Escape");
+  assert.ok(shiftEscape);
+  assert.equal(shiftEscape.shift, true);
 });

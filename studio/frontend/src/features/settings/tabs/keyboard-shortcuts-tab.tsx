@@ -218,7 +218,12 @@ export function KeyboardShortcutsTab() {
       if (binding.code === "Tab" && bare) return;
       event.preventDefault();
       event.stopPropagation();
-      // Escape backs out a step at a time: the chord first, then the mode.
+      // Escape backs out a step at a time: the chord first, then the mode. It is the one
+      // shipped default the box cannot take as a query (declineToolRequest): the recorder
+      // can free Escape because it swallows keys for a single chord, while this mode
+      // persists, so freeing it here would leave a focused box eating the dialog's own
+      // dismiss for as long as the mode is on. That row is found by name instead, where
+      // the query also matches the "Esc" cap. Shift+Escape is unaffected and searchable.
       if (binding.code === "Escape" && bare && !binding.shift) {
         if (keystroke) setKeystroke(null);
         else setByKeystroke(false);
