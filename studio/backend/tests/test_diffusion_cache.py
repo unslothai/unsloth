@@ -1056,15 +1056,9 @@ def test_a_cache_installed_through_the_low_level_api_is_not_torn_down(monkeypatc
 
 
 def test_a_low_level_cache_is_integrated_and_marked_before_being_reported(monkeypatch):
-    """Adopting hooks installed by ``apply_first_block_cache`` must run the SAME post-enable
-    integration as adopting a live config, and must set the marker before reporting success.
-
-    The low-level API sets no ``_cache_config`` and runs neither of our steps, so returning on it
-    bare leaves two defects on a transformer we have just called cached: a stale child-registry
-    list, so the next ``cache_context`` reaches no block and the forward dies with "No context is
-    set", and -- because ``GraphedForward.__call__`` short-circuits to eager ONLY on
-    ``_unsloth_step_cache`` -- a clear marker over live hooks, which lets the CUDA graph wrapper
-    capture a partly-cached forward whose skip decision is data-dependent Python."""
+    """Adopting low-level hooks must run the same post-enable integration as adopting a live
+    config, and must set the marker first: GraphedForward falls back to eager ONLY on that marker,
+    so a clear one over live hooks lets it capture a data-dependent cached forward."""
     registry = _stub_diffusers(monkeypatch)
     import core.inference.diffusion_cache as dc
 
@@ -1098,10 +1092,8 @@ def test_a_low_level_cache_is_integrated_and_marked_before_being_reported(monkey
 
 
 def test_auto_disengage_unhooks_an_adopted_cache_instead_of_trusting_disable_cache(monkeypatch):
-    """A cache adopted from the low-level API has no ``_cache_config``, so diffusers'
-    ``disable_cache`` warns and returns having removed nothing. Clearing the marker on the strength
-    of that call would leave it clear over live hooks, which is the state the CUDA graph wrapper
-    reads as "safe to capture". Take the hooks off by name, as the engage path does."""
+    """An adopted cache has no ``_cache_config``, so ``disable_cache`` removes nothing; clearing
+    the marker on that call alone would leave it clear over live hooks."""
     registry = _stub_diffusers(monkeypatch)
 
     class _AdoptedLowLevel:
@@ -1122,9 +1114,8 @@ def test_auto_disengage_unhooks_an_adopted_cache_instead_of_trusting_disable_cac
 
 
 def test_auto_disengage_keeps_the_marker_when_the_hooks_cannot_be_verified_gone(monkeypatch):
-    """The other side of the same decision: an unverifiable teardown keeps the marker and keeps
-    reporting the cache engaged. That costs eager execution; the reverse risks a captured graph
-    over a cached forward."""
+    """An unverifiable teardown keeps the marker engaged: that costs eager execution, where the
+    reverse risks a captured graph over a cached forward."""
     _stub_diffusers(monkeypatch)
     import core.inference.diffusion_cache as dc
 
