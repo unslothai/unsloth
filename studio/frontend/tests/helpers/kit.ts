@@ -53,11 +53,13 @@ export type StorageFake = {
  */
 export function installLocalStorageFake(): {
   store: Map<string, string>;
-  storage: StorageFake;
+  storage: StorageFake & Pick<Storage, "length" | "key">;
   fireWindowEvent: (type: string, event: unknown) => number;
 } {
   const store = new Map<string, string>();
-  const storage: StorageFake = {
+  const storage: StorageFake & Pick<Storage, "length" | "key"> = {
+    get length() { return store.size; },
+    key: (index) => [...store.keys()][index] ?? null,
     getItem: (key: string) => store.get(key) ?? null,
     setItem: (key: string, value: string) => {
       store.set(key, value);

@@ -46,7 +46,12 @@ import {
   normalizeProjectAttachmentTarget,
   type ProjectAttachmentTarget,
 } from "../utils/project-attachment-target";
-import { getExternalMaxOutputTokens } from "../provider-capabilities";
+import {
+  type ExternalReasoningCapabilities,
+  externalReasoningTakesEffort,
+  getExternalMaxOutputTokens,
+  resolveExternalReasoningEffort,
+} from "../provider-capabilities";
 import {
   PERSISTED_INFERENCE_PARAM_KEYS,
   REMEMBERED_INFERENCE_PARAM_KEYS,
@@ -871,8 +876,11 @@ function readThreadScopedSettings(
 export function threadScopedOverride<K extends ThreadScopedSettingKey>(
   key: K,
 ): ThreadScopedSettings[K] | undefined {
-  // activeThreadScopedSettings only refreshes on the debounce, so for 400ms it holds pre-edit
-  // values a load would revert and persist; prefer the store. A pending pin answers first.
+  // Effort is captured before a model pin can overwrite the live value.
+  if (key === "reasoningEffort" && activeThreadScopedSettings?.reasoningEffort !== undefined) {
+    return activeThreadScopedSettings.reasoningEffort as ThreadScopedSettings[K];
+  }
+  // Other pending edits still live in the store until the debounce.
   if (
     threadSettingsWriteThreadId !== null &&
     threadSettingsWriteThreadId === threadScopedSettingsThreadId
@@ -926,6 +934,7 @@ function keepsStoredValueUnderConstraint(
  *  store so the composer shows it, but it belongs to the model, not to the chat. */
 function pinOwnsLiveReasoningEffort(state: ChatRuntimeStore): boolean {
   return (
+    externalReasoningTakesEffort(state) &&
     pinnedReasoningEffort(
       state.params.checkpoint,
       state.reasoningEffortLevels,
@@ -1109,14 +1118,8 @@ function buildThreadScopedSnapshot(
   ) {
     settings.reasoningEnabled = false;
   }
-  // And for the effort, which a per-model pin overwrites in the live store: that level is the
-  // model's, so persisting it would turn a pin into the chat's own effort and clearing the pin
-  // afterwards could not undo it. The chat keeps the level it is on record with.
-  if (
-    threadId === threadScopedSettingsThreadId &&
-    !explicitlyEditedThreadFields.has("reasoningEffort") &&
-    pinOwnsLiveReasoningEffort(useChatRuntimeStore.getState())
-  ) {
+  // The thread record already includes explicit edits waiting on the debounce.
+  if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
     const onRecord = reasoningEffortOnRecord();
     if (onRecord !== undefined) settings.reasoningEffort = onRecord;
   }
@@ -1672,17 +1675,19 @@ function restoreDefaultsOverCommittedEdits(
 
 /** What the user actually touched, read off the store, which still holds their edits. */
 function heldThreadScopedChanges(
-  held: { field: string }[],
+  held: { field: string; value?: unknown }[],
 ): ThreadScopedSettings {
   const edited: Record<string, unknown> = {};
   const live = useChatRuntimeStore.getState();
   // Same reader the snapshot path uses: sampling keys sit under `params`, so a direct field
   // read returns undefined and the sanitizer drops them.
   for (const edit of held) {
-    edited[edit.field] = readThreadScopedValue(
-      live,
-      edit.field as ThreadScopedSettingKey,
-    );
+    edited[edit.field] = edit.field === "reasoningEffort" && edit.value !== undefined
+      ? edit.value
+      : readThreadScopedValue(
+          live,
+          edit.field as ThreadScopedSettingKey,
+        );
   }
   return sanitizeThreadScopedSettings(edited);
 }
@@ -1752,6 +1757,12 @@ function captureThreadScopedEdit(
   if (threadId === null) return false;
   // Both ids: between a switch and its snapshot arriving the store still holds the old values.
   if (threadId === threadScopedSettingsThreadId) {
+    if (field === "reasoningEffort" && value !== undefined) {
+      activeThreadScopedSettings = {
+        ...activeThreadScopedSettings,
+        reasoningEffort: value as ReasoningEffort,
+      };
+    }
     explicitlyEditedThreadFields.add(field);
     // Set by the user now, so the chat stores this rather than what it had before a constraint moved the same field.
     constraintSuppressedThreadFields.delete(field);
@@ -3444,10 +3455,16 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
     return;
   }
   const writeGlobal = () => {
+    if (key === "reasoningEffort" && globalThreadScopedDefaults !== null) {
+      globalThreadScopedDefaults = {
+        ...globalThreadScopedDefaults,
+        reasoningEffort: value as ReasoningEffort,
+      };
+    }
     scalarSettingMutationVersions[key] += 1;
     saveSettingsPatch({ [key]: value });
   };
-  if (captureThreadScopedEdit(key, writeGlobal)) return;
+  if (captureThreadScopedEdit(key, writeGlobal, value)) return;
   writeGlobal();
 }
 
@@ -3507,6 +3524,35 @@ export function takeEffortDisplacedByPin(): ReasoningEffort | null {
     globalThreadScopedDefaults?.reasoningEffort ??
     displaced
   );
+}
+
+/** Apply a model pin without persisting it as the chat's preference. */
+export function reconcilePinnedReasoningEffort(opts: {
+  checkpoint: string;
+  caps: ExternalReasoningCapabilities;
+  providerType: string | null | undefined;
+}): void {
+  const state = useChatRuntimeStore.getState();
+  if (state.params.checkpoint !== opts.checkpoint) return;
+  const pinned = externalReasoningTakesEffort(opts.caps)
+    ? pinnedReasoningEffort(opts.checkpoint, opts.caps.reasoningEffortLevels)
+    : null;
+  if (!pinned && !pinHoldsLiveEffort()) return;
+  const next = resolveExternalReasoningEffort({
+    caps: opts.caps,
+    providerType: opts.providerType,
+    current: pinned
+      ? state.reasoningEffort
+      : (takeEffortDisplacedByPin() ?? state.reasoningEffort),
+    pinned,
+    restore: pinned === null,
+  });
+  if (pinned) noteEffortDisplacedByPin(state.reasoningEffort);
+  if (next === state.reasoningEffort) return;
+  useChatRuntimeStore.setState((live) => ({
+    reasoningEffort: next,
+    queuedSettingsEpoch: live.queuedSettingsEpoch + 1,
+  }));
 }
 
 function installationReasoningEnabled(state: ChatRuntimeStore): boolean {
@@ -4810,8 +4856,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Edits made while this chat's snapshot was in flight: keep them and store them on the chat,
       // or the read would silently undo a click the user already saw.
       const heldFields = new Set<string>();
+      let heldEffort: ReasoningEffort | undefined;
       if (threadId !== null && threadId === pendingPairingThreadId) {
-        for (const edit of heldThreadScopedEdits) heldFields.add(edit.field);
+        for (const edit of heldThreadScopedEdits) {
+          heldFields.add(edit.field);
+          if (edit.field === "reasoningEffort" && edit.value !== undefined) {
+            heldEffort = edit.value as ReasoningEffort;
+          }
+        }
         heldThreadScopedEdits = [];
         pendingPairingThreadId = null;
         // The window is over, so the next visit samples afresh rather than reusing this round's.
@@ -4861,7 +4913,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // Same reason as the snapshot: a pin applied before the first chat opened is in the live
         // effort, and capturing it here would make one model's level the default every
         // snapshot-less chat follows.
-        if (pinOwnsLiveReasoningEffort(state)) {
+        if (pinOwnsLiveReasoningEffort(state) && !heldFields.has("reasoningEffort")) {
           const onRecord = reasoningEffortOnRecord();
           if (onRecord === undefined) delete captured.reasoningEffort;
           else captured.reasoningEffort = onRecord;
@@ -4884,7 +4936,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       for (const key of THREAD_SCOPED_SETTING_KEYS) {
         // The user set this one while the read was in flight, so it wins over what came back.
         if (heldFields.has(key)) {
-          applied[key] = readThreadScopedValue(state, key);
+          if (key === "reasoningEffort" && heldEffort !== undefined) {
+            applied[key] = heldEffort;
+            activeThreadScopedSettings = { ...activeThreadScopedSettings, reasoningEffort: heldEffort };
+            if (pinOwnsLiveReasoningEffort(state)) effortDisplacedByPin = heldEffort;
+            else nextState.reasoningEffort = heldEffort;
+          } else {
+            applied[key] = readThreadScopedValue(state, key);
+          }
           continue;
         }
         // Full access was accepted through a warning dialog, so a switch must not drop it. The chat

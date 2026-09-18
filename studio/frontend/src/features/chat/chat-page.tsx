@@ -184,7 +184,7 @@ import {
   getTrainingCompareHandoff,
 } from "./lib/training-compare-handoff";
 import {
-  type ExternalReasoningCapabilities,
+  externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   modelCatalogVersion,
@@ -226,6 +226,7 @@ import {
   noteEffortDisplacedByPin,
   pinHoldsLiveEffort,
   readPendingAttachmentTargetClaim,
+  reconcilePinnedReasoningEffort,
   takeEffortDisplacedByPin,
   threadScopedOverride,
   useChatRuntimeStore,
@@ -278,44 +279,6 @@ const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
 
 function getExternalProviderDropdownRank(providerType: string): number {
   return EXTERNAL_PROVIDER_DROPDOWN_ORDER[providerType] ?? 2;
-}
-
-/**
- * Puts the selected model's pinned effort back in force in the live store. Called from every
- * trigger that can dislodge it: the pin changing in another tab, and a catalogue refresh, which
- * changes which levels the same stored pin is legal against and so can make a pin that was
- * ignored at selection time the valid one, or withdraw the one in force.
- */
-function reconcilePinnedReasoningEffort(opts: {
-  checkpoint: string;
-  caps: ExternalReasoningCapabilities;
-  providerType: string | null | undefined;
-}): void {
-  const live = useChatRuntimeStore.getState().reasoningEffort;
-  const pinned = pinnedReasoningEffort(
-    opts.checkpoint,
-    opts.caps.reasoningEffortLevels,
-  );
-  // With no pin there is only something to do when the level in the store is still a departed
-  // pin's, whether it was cleared or a refreshed ladder withdrew it: then the chat's own level
-  // comes back, which is also what keeps the next snapshot from storing that level as the chat's.
-  // Asked of the store, not of the trigger: stating a level in the composer clears the pin too,
-  // and resolving afresh there would put the chat's stored level over the one just chosen.
-  if (!pinned && !pinHoldsLiveEffort()) return;
-  const next = resolveExternalReasoningEffort({
-    caps: opts.caps,
-    providerType: opts.providerType,
-    current: pinned ? live : (takeEffortDisplacedByPin() ?? live),
-    pinned,
-  });
-  if (pinned && next !== live) noteEffortDisplacedByPin(live);
-  if (next === live) return;
-  // The epoch too: a prompt waiting on startup captured the old level, and this is what tells it
-  // the settings it captured are no longer current.
-  useChatRuntimeStore.setState((state) => ({
-    reasoningEffort: next,
-    queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-  }));
 }
 
 function normalizeModelRef(value: string | null | undefined): string {
@@ -2586,10 +2549,9 @@ export function ChatPage({
     // Through the shared resolver, pin included: this runs on reload and on every provider
     // resync, and resolving it without the pin is what put the provider default back over a
     // level the user had set on the model's row.
-    const pinnedEffort = pinnedReasoningEffort(
-      inferenceParams.checkpoint,
-      effortLevels,
-    );
+    const pinnedEffort = externalReasoningTakesEffort(reasoningCaps)
+      ? pinnedReasoningEffort(inferenceParams.checkpoint, effortLevels)
+      : null;
     const nextReasoningEffort = resolveExternalReasoningEffort({
       caps: reasoningCaps,
       providerType: provider?.providerType,
@@ -3260,7 +3222,9 @@ export function ChatPage({
           },
         );
         const effortLevels = reasoningCaps.reasoningEffortLevels;
-        const pinnedEffort = pinnedReasoningEffort(value, effortLevels);
+        const pinnedEffort = externalReasoningTakesEffort(reasoningCaps)
+          ? pinnedReasoningEffort(value, effortLevels)
+          : null;
         const nextReasoningEffort = resolveExternalReasoningEffort({
           caps: reasoningCaps,
           providerType: selectedProvider?.providerType,

@@ -28,9 +28,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   modelCatalogVersion,
-  noteEffortDisplacedByPin,
+  reconcilePinnedReasoningEffort,
   subscribeModelCatalog,
-  takeEffortDisplacedByPin,
   useChatRuntimeStore,
 } from "@/features/chat";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
@@ -39,7 +38,6 @@ import {
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
-  resolveExternalReasoningEffort,
 } from "@/features/chat/provider-capabilities";
 import { useState, useSyncExternalStore } from "react";
 import { useModelReasoningEffortStore } from "./model-reasoning-effort";
@@ -88,7 +86,6 @@ export function ConnectedModelSettingsDialog({
   const isLiveModel = useChatRuntimeStore(
     (state) => state.params.checkpoint === checkpointId,
   );
-  const chatEffort = useChatRuntimeStore((state) => state.reasoningEffort);
   const pinnedEffort = useModelReasoningEffortStore(
     (state) => state.effortByModel[checkpointId],
   );
@@ -170,32 +167,12 @@ export function ConnectedModelSettingsDialog({
     if (liveEffortDraft !== null) {
       const pinned = liveEffortDraft === FOLLOW_CHAT ? null : liveEffortDraft;
       setModelReasoningEffort(checkpointId, pinned);
-      // The pin is read on a model switch, and a switch to the model already loaded returns
-      // before that, so the live model's level has to be set here or the edit would not apply
-      // until the user switched away and back. Through the same resolver the switch uses, so
-      // clearing the pin falls back to the default rather than leaving the cleared level in force.
-      //
-      // setState, not setReasoningEffort: that action persists the value through
-      // setScalarSettingVersion as the chat-wide preference, which is the setting this per-model
-      // pin exists to override. The pin is stored by setModelReasoningEffort above; all this
-      // does is apply it to the model on screen, the way the normalization effect does.
       if (isLiveModel) {
-        // Clearing resolves from the level the pin displaced, not from the live one: the live one
-        // IS the pin, and a ladder with no catalogue default and no "medium" falls back to
-        // clamping it, so "Follow chat" would have kept the level just cleared.
-        const next = resolveExternalReasoningEffort({
+        reconcilePinnedReasoningEffort({
+          checkpoint: checkpointId,
           caps: reasoning,
           providerType,
-          current: pinned ? chatEffort : (takeEffortDisplacedByPin() ?? chatEffort),
-          pinned,
         });
-        if (pinned && next !== chatEffort) noteEffortDisplacedByPin(chatEffort);
-        // The epoch too: a prompt waiting on startup captured the old level, and this is what
-        // tells it the settings it captured are no longer current.
-        useChatRuntimeStore.setState((state) => ({
-          reasoningEffort: next,
-          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-        }));
       }
     }
     onOpenChange(false);
@@ -207,7 +184,7 @@ export function ConnectedModelSettingsDialog({
         <DialogHeader>
           <DialogTitle>{displayName} settings</DialogTitle>
           <DialogDescription>
-            Used whenever you chat with this model, in place of the chat's own.
+            Model defaults. Chats with their own system prompt keep it.
           </DialogDescription>
         </DialogHeader>
 

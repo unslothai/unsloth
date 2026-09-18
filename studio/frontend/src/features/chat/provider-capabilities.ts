@@ -118,6 +118,8 @@ export function resolveExternalReasoningEffort(opts: {
   current: ReasoningEffortLevel;
   /** The level pinned on this model's picker row. Ignored when the model no longer offers it. */
   pinned?: string | null;
+  /** Restore an existing preference without choosing a new model default. */
+  restore?: boolean;
 }): ReasoningEffortLevel {
   const { caps, providerType, current, pinned } = opts;
   const levels = caps.reasoningEffortLevels;
@@ -128,6 +130,7 @@ export function resolveExternalReasoningEffort(opts: {
   if (pinned && levels.includes(pinned as ReasoningEffortLevel)) {
     return pinned as ReasoningEffortLevel;
   }
+  if (opts.restore) return clampReasoningEffortToLevels(current, levels);
   if (caps.defaultEffort && levels.includes(caps.defaultEffort)) {
     return caps.defaultEffort;
   }

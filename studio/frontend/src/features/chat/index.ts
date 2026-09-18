@@ -206,6 +206,7 @@ export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 // What a per-model reasoning pin displaced in the live runtime, so clearing it can put it back.
 export {
   noteEffortDisplacedByPin,
+  reconcilePinnedReasoningEffort,
   takeEffortDisplacedByPin,
 } from "./stores/chat-runtime-store";
 export {
