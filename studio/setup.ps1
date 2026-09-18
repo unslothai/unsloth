@@ -4098,7 +4098,29 @@ if ($vsResult) {
 # ============================================
 # 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
 # ============================================
+# Defined here but invoked lazily right before a Phase 4 source build; the
+# prebuilt llama.cpp path needs no local toolkit. With -RequireOrExit a source
+# build is committed, so hard-fail if no driver-compatible toolkit can be found
+# or installed. Without it, detection is best-effort and only sets the flag.
 # Lazy: the prebuilt path needs no local toolkit. -RequireOrExit hard-fails when none is found.
+# MSBuild CUDA .targets and some cmake+CUDAVS integrations append subpaths to the
+# toolkit root. Without a trailing backslash that becomes `...\v13.3bin` instead of
+# `...\v13.3\bin` (observed on Windows CUDA 13.3 builds).
+function Format-CudaToolkitDir {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    if ([string]::IsNullOrWhiteSpace($Root)) { return $Root }
+    return $Root.TrimEnd('\') + '\'
+}
+
+function Format-CudaToolkitRootForCmake {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    if ([string]::IsNullOrWhiteSpace($Root)) { return $Root }
+    # Windows PowerShell 5.1 misquotes native arguments whose final character is
+    # a backslash. CMake accepts forward slashes on Windows, including the
+    # terminal separator required by the generated CUDA/MSBuild integration.
+    return (Format-CudaToolkitDir $Root).Replace('\', '/')
+}
+
 function Resolve-CudaToolkit {
     param([switch]$RequireOrExit)
 # Toolkit major must be <= the driver's max CUDA major; a newer-major toolkit fails at runtime.
@@ -4294,8 +4316,12 @@ if (-not $NvccPath) {
 $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
 # CUDA_PATH: used by cmake's find_package(CUDAToolkit)
 [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
-# CudaToolkitDir: MSBuild property the CUDA .targets checks; trailing backslash required.
-[Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
+# CudaToolkitDir: the MSBuild property that CUDA .targets checks directly
+# Trailing backslash required -- the .targets file appends subpaths to it
+$CudaToolkitDir = Format-CudaToolkitDir $CudaToolkitRoot
+[Environment]::SetEnvironmentVariable('CudaToolkitDir', $CudaToolkitDir, 'Process')
+# Always persist CUDA_PATH to User registry so the compatible toolkit is used
+# in future sessions (overwrites any existing value pointing to a newer, incompatible version)
 [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
 substep "Persisted CUDA_PATH=$CudaToolkitRoot to user environment"
 # Clear versioned CUDA_PATH_V* vars so cmake/MSBuild cannot find a conflicting install.
@@ -4356,7 +4382,7 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
 
 step "cuda" $NvccPath
 substep "CUDA_PATH      = $CudaToolkitRoot"
-substep "CudaToolkitDir = $CudaToolkitRoot\"
+substep "CudaToolkitDir = $(Format-CudaToolkitDir $CudaToolkitRoot)"
 
 if (-not $CudaArch) {
     substep "could not detect compute capability -- cmake will use defaults" "Yellow"
@@ -8936,7 +8962,7 @@ if ($LocalLlamaCppLinked) {
         }
         # Also re-assert CUDA_PATH and CudaToolkitDir in case they were overwritten
         [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
-        [Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
+        [Environment]::SetEnvironmentVariable('CudaToolkitDir', (Format-CudaToolkitDir $CudaToolkitRoot), 'Process')
     }
 
     if (-not $LlamaPr) {
@@ -9213,8 +9239,10 @@ if ($LocalLlamaCppLinked) {
                     $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
                 }
                 substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
-                $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
-                $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
+                # Trailing slash: cmake may forward this into MSBuild CUDA paths.
+                $CudaToolkitRootForCmake = Format-CudaToolkitRootForCmake $CudaToolkitRoot
+                $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRootForCmake"
+                $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRootForCmake"
                 $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
                 if ($CudaArchOverride) {
                     # Forced arch wins verbatim (no nvcc validation), matching setup.sh.
