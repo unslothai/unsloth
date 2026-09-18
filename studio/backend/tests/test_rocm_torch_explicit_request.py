@@ -2823,9 +2823,12 @@ def test_a_declared_arch_cannot_exempt_a_physical_gfx1033_in_python(stack, monke
     wheels on hardware measured to diverge to NaN (studio/ROCM_RDNA2_APU.md). install.sh
     already records _AMD_REQUEST_TARGET_SOURCE for exactly this; this is the Python twin.
     """
-    assert _declared_on_physical(
-        stack, monkeypatch, declared = "gfx1030", physical = ["gfx1033", "gfx1100"]
-    ) is False
+    assert (
+        _declared_on_physical(
+            stack, monkeypatch, declared = "gfx1030", physical = ["gfx1033", "gfx1100"]
+        )
+        is False
+    )
 
 
 def test_a_probe_resolved_target_still_exempts_the_same_host(stack, monkeypatch):
@@ -2863,15 +2866,18 @@ def test_a_declaration_still_routes_where_no_bad_arch_is_present(stack, monkeypa
     """The second control: the guard keys on a MISCOMPUTING arch in the machine, not on the
     declaration disagreeing with it. gfx1030 declared beside a physical gfx1030 and gfx1100
     is an ordinary host and must stay viable."""
-    assert _declared_on_physical(
-        stack, monkeypatch, declared = "gfx1030", physical = ["gfx1030", "gfx1100"]
-    ) is True
+    assert (
+        _declared_on_physical(
+            stack, monkeypatch, declared = "gfx1030", physical = ["gfx1030", "gfx1100"]
+        )
+        is True
+    )
 
 
 def test_the_documented_strix_declaration_still_routes(stack, monkeypatch):
     """The third control, and the reason the guard cannot simply distrust declarations: the
     documented Strix Halo workaround declares gfx1100 on a physical gfx1151, which install.sh
     calls out by name. No miscomputing arch is present, so the request still stands."""
-    assert _declared_on_physical(
-        stack, monkeypatch, declared = "gfx1100", physical = ["gfx1151"]
-    ) is True
+    assert (
+        _declared_on_physical(stack, monkeypatch, declared = "gfx1100", physical = ["gfx1151"]) is True
+    )
