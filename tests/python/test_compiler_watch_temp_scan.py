@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -36,6 +37,34 @@ SCRIPT = REPO / ".github" / "scripts" / "Watch-ForCompiler.ps1"
 
 PWSH = shutil.which("pwsh")
 pytestmark = pytest.mark.skipif(PWSH is None, reason = "needs PowerShell")
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# PowerShell's error formatter gutters every wrapped continuation line with "   | ".
+_GUTTER = re.compile(r"^\s*\|\s?")
+
+
+def _says(proc: subprocess.CompletedProcess, phrase: str) -> bool:
+    """Did PowerShell emit this sentence, however it chose to format it?
+
+    A `throw` reaches the caller through PowerShell's error formatter, and on Windows that
+    wraps the message across terminal-width lines, interleaves ANSI colour codes AND prefixes
+    each continuation with a gutter, so the sentence arrives as
+
+        ...so this run cannot
+             | say whether a compiler ran.
+
+    Linux pwsh does not wrap the same way, so a plain substring match passes there and fails on
+    Windows against an error that was in fact raised and in fact said the right thing.
+
+    Three things therefore have to come off, and the gutter is the one that is easy to miss:
+    stripping colour codes alone still leaves a `|` sitting in the middle of the sentence, so a
+    match would keep failing for a new reason. Colour codes, then the gutter, then every run of
+    whitespace collapsed, which makes this a test of the message rather than of console width.
+    """
+    text = _ANSI.sub("", proc.stdout + proc.stderr)
+    text = "\n".join(_GUTTER.sub("", line) for line in text.splitlines())
+    return " ".join(phrase.split()) in " ".join(text.split())
 
 
 def _run_pwsh(body: str) -> subprocess.CompletedProcess:
@@ -188,7 +217,9 @@ def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path)
     assert (
         "NO-THROW" not in proc.stdout
     ), "the walk returned a partial snapshot instead of declaring the measurement void"
-    assert "cannot say whether a compiler ran" in (proc.stdout + proc.stderr)
+    assert _says(proc, "cannot say whether a compiler ran"), (
+        f"the walk raised, but not with the message that explains why:\n{proc.stdout}\n{proc.stderr}"
+    )
 
 
 def test_the_artifact_filter_still_selects_by_extension(tmp_path: pathlib.Path) -> None:
@@ -451,7 +482,7 @@ def test_an_unreadable_root_with_no_watcher_still_voids_the_run() -> None:
         "an unread directory with no watcher on its root was treated as a complete "
         f"measurement:\n{proc.stdout}"
     )
-    assert "cannot say whether a compiler ran" in (proc.stdout + proc.stderr), (
+    assert _says(proc, "cannot say whether a compiler ran"), (
         f"the run was voided without saying why:\n{proc.stdout}\n{proc.stderr}"
     )
 
