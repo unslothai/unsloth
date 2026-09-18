@@ -3211,7 +3211,7 @@ exit 1
             if (-not (Test-StudioUvNoCache)) {
                 Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $studioCache
             }
-            step "uv cache" "forced Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
+            step "uv cache" "forced Unsloth Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
             return
         }
 
@@ -3338,19 +3338,19 @@ exit 1
             }
             "studio" {
                 if ($chosenCache) {
-                    step "uv cache" "reusing this install's Studio cache ($selectedCache)"
+                    step "uv cache" "reusing this install's Unsloth Studio cache ($selectedCache)"
                 # Never about the directory we are falling back TO: the Studio cache is itself
                 # a candidate now, so it can be the one refused, and naming it claims a fallback
                 # that did not happen.
                 } elseif ($scanBlocked -and -not [string]::IsNullOrWhiteSpace([string]$blockedCache) -and $blockedCache -ne $selectedCache) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
                 } elseif ($scanBlocked -and [string]::IsNullOrWhiteSpace([string]$blockedCache)) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
                 # Warm and still here means the write probe refused it.
                 } elseif ($warnCache -and $warnCache -ne $selectedCache) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
                 } else {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache)"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache)"
                 }
             }
         }
@@ -3851,9 +3851,13 @@ exit 1
     # files, so neither explains a denied folder.
     #
     # When Defender is not it, name whichever antivirus is registered and running
-    # instead: third-party suites ship the same feature under their own names
-    # (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
-    # user cannot act on advice that does not say which product to open.
+    # instead: third-party suites ship the same protected-folders feature under
+    # their own product names, and the user cannot act on advice that does not say
+    # which product to open. Which suite ships what is recorded in
+    # tests/studio/test_installer_av_shapes.py and deliberately not repeated here,
+    # because this file is scanned in full before a line of it runs and a comment
+    # listing security products raises the score of the very file explaining it.
+    # Nothing below hard-codes a product: it reads what SecurityCenter2 registered.
     #
     # Answers "" whenever it cannot tell, so a machine with no Defender module
     # and no SecurityCenter registration reads the same as one that says no.
@@ -4033,10 +4037,26 @@ exit 1
             $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
             $moved = $false
             try {
-                Move-Item -LiteralPath $dir -Destination $asideDir -ErrorAction Stop
+                # [System.IO.Directory]::Move, not Move-Item. Move-Item falls back to
+                # copy-then-delete when the rename fails, which creates $asideDir and then
+                # dies on the unreadable contents, leaving a stray llama.cpp.denied-* folder
+                # beside the original on every run. Directory.Move is a bare rename: it
+                # either moves the tree or throws having created nothing.
+                # Measured on windows-latest, denying each shape on the folder itself:
+                #   (OI)(CI)(RX)  rename refused, Move-Item left a stray folder
+                #   (OI)(CI)(R)   rename refused, Move-Item left a stray folder
+                #   (RX)          rename refused, Move-Item left a stray folder
+                #   (DE)          rename SUCCEEDED, both ways
+                # So on Windows a read denial always refuses the rename (the open asks for
+                # SYNCHRONIZE, which every read deny removes) and this recovery cannot fire;
+                # denying DELETE, which sounds like the blocker, does not stop it. On POSIX
+                # the rename needs only write+execute on the parent, so the recovery is real
+                # there and is why this stays rather than being deleted.
+                [System.IO.Directory]::Move($dir, $asideDir)
                 $moved = $true
             } catch {
-                # Expected when the denial also covers rename; fall through to guidance.
+                # Expected when the denial covers the rename; fall through to guidance.
+                # Nothing to clean up: Directory.Move creates nothing when it throws.
             }
             if ($moved) {
                 step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
@@ -9517,7 +9537,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.6" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.7" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -9528,7 +9548,7 @@ exit 0
             # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
             # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
             # (tests/test_installer_zoo_floor_parity.py enforces that).
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -9547,7 +9567,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -9799,7 +9819,7 @@ exit 0
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -9819,11 +9839,11 @@ exit 0
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
                 Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
@@ -9860,7 +9880,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.5" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.6" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

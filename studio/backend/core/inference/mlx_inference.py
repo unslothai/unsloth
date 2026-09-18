@@ -618,6 +618,14 @@ def _mlx_fused_decode_conv_silu(model):
     return _mlx_optional_fusion("fused_decode_conv_silu", model)
 
 
+def _mlx_fused_residual_norm(model):
+    return _mlx_optional_fusion("fused_residual_norm", model)
+
+
+def _mlx_fused_moe_router(model):
+    return _mlx_optional_fusion("fused_moe_router", model)
+
+
 def _vlm_generation_context():
     import mlx.core as mx
     from mlx_vlm.generate import generation_stream
@@ -3458,6 +3466,8 @@ class MLXInferenceBackend:
             _temporary_mlx_adapter_state(self._model, _adapter_state),
             _mlx_fused_moe_gate_up(self._model),
             _mlx_fused_decode_conv_silu(self._model),
+            _mlx_fused_residual_norm(self._model),
+            _mlx_fused_moe_router(self._model),
         ):
             (
                 gen_prompt,
@@ -3915,6 +3925,8 @@ class MLXInferenceBackend:
                     self._release_vlm_snapshots()
                 generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
                 generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
+                generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
+                generation_scope.enter_context(_mlx_fused_moe_router(self._model))
                 final_response = None
                 clip_path = None
                 try:
@@ -4104,6 +4116,8 @@ class MLXInferenceBackend:
             self._release_vlm_snapshots()
             generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
             generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
+            generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
+            generation_scope.enter_context(_mlx_fused_moe_router(self._model))
             final_response = None
             try:
                 with closing(

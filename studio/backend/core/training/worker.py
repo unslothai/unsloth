@@ -5057,6 +5057,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     log_frequency = config.get("log_frequency", 50)
 
     from core.training.trainer import _drop_hf_stdout_callbacks, _hf_stdout_progress_disabled
+    from core.training.training import apply_save_strategy
 
     training_args_kwargs = {
         "output_dir": output_dir,
@@ -5088,9 +5089,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     elif warmup_steps_val is not None and warmup_steps_val > 0:
         training_args_kwargs["warmup_steps"] = warmup_steps_val
 
-    if save_steps_val and save_steps_val > 0:
-        training_args_kwargs["save_steps"] = save_steps_val
-        training_args_kwargs["save_strategy"] = "steps"
+    apply_save_strategy(training_args_kwargs, save_steps_val)
 
     args = SentenceTransformerTrainingArguments(**training_args_kwargs)
 

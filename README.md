@@ -167,9 +167,9 @@ docker run -d --name unsloth --gpus all --ipc=host \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth && docker logs -f unsloth
 ```
-The log ends with your links and a generated JupyterLab password, plus a generated Studio password on the first run against a new `unsloth-studio` volume; change that one on first sign-in or Studio stops after an hour. A reused volume keeps the password already stored on it, and `docker exec unsloth unsloth studio reset-password --username unsloth` mints a new one and prints it. Ctrl-C stops following the log, not the container; `docker rm -f unsloth` deletes it. The Hugging Face cache keeps your models and the `unsloth-studio` volume keeps your accounts, chats and trained models, both across `docker rm`; a volume from an older image is migrated on first start, its old code kept under `.unsloth-studio-legacy/`. Those ports publish on every interface: on a cloud host add `-e UNSLOTH_STUDIO_SECURE=1`, drop `-p 8000:8000` and bind JupyterLab to `-p 127.0.0.1:8888:8888`, or bind both to `127.0.0.1` and use an SSH tunnel. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
+The log ends with your links and a generated JupyterLab password, plus a generated Unsloth Studio password on the first run against a new `unsloth-studio` volume; change that one on first sign-in or Unsloth Studio stops after an hour. A reused volume keeps the password already stored on it, and `docker exec unsloth unsloth studio reset-password --username unsloth` mints a new one and prints it. Ctrl-C stops following the log, not the container; `docker rm -f unsloth` deletes it. The Hugging Face cache keeps your models and the `unsloth-studio` volume keeps your accounts, chats and trained models, both across `docker rm`; a volume from an older image is migrated on first start, its old code kept under `.unsloth-studio-legacy/`. Those ports publish on every interface: on a cloud host add `-e UNSLOTH_STUDIO_SECURE=1`, drop `-p 8000:8000` and bind JupyterLab to `-p 127.0.0.1:8888:8888`, or bind both to `127.0.0.1` and use an SSH tunnel. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
-On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm). It carries the training stack only, so there is no Studio or JupyterLab in it, and it needs native Linux: WSL exposes `/dev/dxg` rather than the `/dev/kfd` that ROCm needs.
+On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm). It carries the training stack only, so there is no Unsloth Studio or JupyterLab in it, and it needs native Linux: WSL exposes `/dev/dxg` rather than the `/dev/kfd` that ROCm needs.
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
@@ -331,7 +331,7 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh
 $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex
 ```
 
-Keep the install-time package cache under the Studio directory instead of reusing an existing uv cache. Downloads are slower the first time, and an explicit `UV_CACHE_DIR` still wins over this:
+Keep the install-time package cache under the Unsloth Studio directory instead of reusing an existing uv cache. Downloads are slower the first time, and an explicit `UV_CACHE_DIR` still wins over this:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_ISOLATE_UV_CACHE=1 sh
 ```

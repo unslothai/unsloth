@@ -129,7 +129,7 @@ RUN set -eux \
     # CUDA family) before the dedup symlinks their CUDA libs. Compare to the base's
     # own torch (no hardcoded version); metadata only (QEMU arm64 can't import torch).
  && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
- && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; assert sys.version_info[:2] == (3, 12), 'Studio venv python %d.%d is not 3.12 (UNSLOTH_PYTHON pin ignored) -- CUDA dedup below depends on it' % sys.version_info[:2]; v = version('torch'); assert v == '${BASE_TORCH}', 'Studio venv torch ' + v + ' does not match base venv torch ${BASE_TORCH} (CUDA dedup would link mismatched libs)'; print('Studio venv python %d.%d torch' % sys.version_info[:2], v, '== base', '${BASE_TORCH}')" \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; assert sys.version_info[:2] == (3, 12), 'Unsloth Studio venv python %d.%d is not 3.12 (UNSLOTH_PYTHON pin ignored) -- CUDA dedup below depends on it' % sys.version_info[:2]; v = version('torch'); assert v == '${BASE_TORCH}', 'Unsloth Studio venv torch ' + v + ' does not match base venv torch ${BASE_TORCH} (CUDA dedup would link mismatched libs)'; print('Unsloth Studio venv python %d.%d torch' % sys.version_info[:2], v, '== base', '${BASE_TORCH}')" \
     # setup.sh may relink llama-quantize into build/bin; prove it still resolves its
     # libraries. Content check, not rc: --help exits nonzero but prints usage.
  && { "${UNSLOTH_STUDIO_HOME}/llama.cpp/llama-quantize" --help 2>&1 || true; } | grep -q "usage" \
@@ -141,7 +141,7 @@ RUN set -eux \
             exit 1; \
         }; \
     done \
- && echo "OK: Studio kept the base image's CUDA llama.cpp bundle" \
+ && echo "OK: Unsloth Studio kept the base image's CUDA llama.cpp bundle" \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
           "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
           "${UV_CACHE_DIR:-${UNSLOTH_STUDIO_HOME}/cache/uv}" \
@@ -186,7 +186,7 @@ RUN set -eux \
  && test ! -e "${UNSLOTH_STUDIO_HOME}/cache/uv" \
     # through bash: the exec bit is set further down, with the other bin scripts
  && bash /usr/local/bin/unsloth-studio-home \
- && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import os, sys, studio; print('Studio venv', sys.prefix, 'imports studio from', studio.__file__); assert os.path.realpath(studio.__file__).startswith(os.path.realpath('${UNSLOTH_STUDIO_HOME}/src') + '/'), studio.__file__" \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import os, sys, studio; print('Unsloth Studio venv', sys.prefix, 'imports studio from', studio.__file__); assert os.path.realpath(studio.__file__).startswith(os.path.realpath('${UNSLOTH_STUDIO_HOME}/src') + '/'), studio.__file__" \
  && ls -la "${UNSLOTH_STUDIO_HOME}"
 
 COPY supervisord.conf /etc/supervisor/supervisord.conf
