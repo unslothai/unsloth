@@ -243,9 +243,19 @@ export const zhCN = {
   settings: {
     accounts: {
       title: "账户",
-      description: "创建独立的 Studio 账户。新用户使用一次性设置码登录并设置密码。",
+      description: "创建独立的 Unsloth 账户。新用户使用一次性设置码登录并设置密码。",
       username: "用户名",
       create: "创建账户",
+      createDescription: "把设置码交给对方，让其自行设置密码。",
+      actionsFor: "管理 {username}",
+      actions: "操作",
+      search: "搜索账户",
+      noResults: "没有匹配的账户",
+      created: "创建时间",
+      status: "状态",
+      loginHint: "以 {username} 身份用此设置码作为密码登录，然后设置新密码。",
+      privateAccount: "独立账户",
+      empty: "暂无其他账户",
       setupCode: "设置码",
       setupFor: "{username} 的设置码",
       shownOnce: "请立即复制此设置码并交给账户持有人。它只在此处显示一次，60 分钟内可使用一次。",
@@ -261,7 +271,7 @@ export const zhCN = {
       resetTitle: "重置 {username} 的密码？",
       resetDescription: "重新生成设置码会替换 {username} 的密码、结束其会话并吊销其 API 密钥。请把新的设置码交给对方，让其重新设置密码。",
       deactivate: "停用",
-      reactivate: "重新启用",
+      reactivate: "启用",
       delete: "删除账户",
       deleteTitle: "删除 {username}？",
       deleteDescription: "这将撤销 {username} 的会话并取消其进行中的工作。其聊天、设置、凭据、上传、数据集、训练运行、输出、导出、图库、沙箱、项目和临时文件都会被退役。目录只会重命名移开，绝不删除。再次创建该用户名将开始一个不包含这些数据的新账户。",
@@ -298,9 +308,10 @@ export const zhCN = {
     },
     keyboardShortcuts: {
       title: "键盘快捷键",
-      description:
-        "可以更改任意快捷键，或将其清除，把该组合让给浏览器或操作系统。",
       searchPlaceholder: "搜索快捷键…",
+      keystrokePlaceholder: "按下快捷键进行搜索",
+      searchByKeystrokes: "按键搜索",
+      searchByName: "按名称搜索",
       noResults: "没有匹配的快捷键。",
       unassigned: "未分配",
       recording: "请按下按键…",
@@ -497,6 +508,14 @@ export const zhCN = {
           label: "发送消息",
           description: "发送输入框中的内容",
         },
+        queueMessage: {
+          label: "将消息排队",
+          description: "把草稿发送到队列末尾",
+        },
+        steerMessage: {
+          label: "引导回复",
+          description: "停止当前回复并接着发送草稿",
+        },
         cycleReasoningEffort: {
           label: "循环切换推理强度",
           description: "在各推理强度等级之间循环",
@@ -563,7 +582,7 @@ export const zhCN = {
       openLogsFolderFailed: "无法打开日志文件夹。",
       exportFailed: "无法下载日志。",
       exportTooOld: "正在运行的 Unsloth 后端版本过旧，无法导出日志。请更新该后端并重新启动。",
-      exportForbidden: "下载全部日志需要已登录的 Studio 会话，仅有 API 密钥不够。",
+      exportForbidden: "下载全部日志需要已登录的 Unsloth 会话，仅有 API 密钥不够。",
       keywords: "调试 日志 错误 崩溃 堆栈 跟踪 诊断 排查 故障 debug log logs error",
     },
     voice: {
@@ -847,6 +866,9 @@ export const zhCN = {
         showLoadedModels: "已加载模型指示器",
         showLoadedModelsDescription:
           "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
+        showWhisperUpdates: "whisper.cpp 更新通知",
+        showWhisperUpdatesDescription:
+          "当有可用于语音识别模型的新版 whisper.cpp 构建时通知你。如果不需要转写音频，可以关闭此项。",
       },
       startup: {
         sectionTitle: "启动",

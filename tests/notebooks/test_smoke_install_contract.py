@@ -55,6 +55,19 @@ def _mapping() -> dict:
     return json.loads(MAPPING.read_text(encoding = "utf-8"))
 
 
+def _freeze_names() -> set[str]:
+    """The pinned package names in the Colab snapshot, lowercased.
+
+    Every rule below is scoped to what the freeze actually pins, so a Colab rotation
+    that drops a package cannot fail these on a name that is no longer there.
+    """
+    return {
+        m.group(1).lower()
+        for line in FREEZE.read_text(encoding = "utf-8").splitlines()
+        if (m := re.match(r"^([A-Za-z0-9._-]+)\s*==", line.strip()))
+    }
+
+
 # --- the interpreter the snapshot was taken on ---------------------------------------
 
 
@@ -196,4 +209,163 @@ def test_the_known_unbuildable_pins_are_skipped():
     assert not missing, (
         f"these pins cannot build on ubuntu-latest on any interpreter and only cost "
         f"build time, so they belong in the skip list: {missing}"
+    )
+
+
+# --- the cache key has to represent what the job installs ----------------------------
+
+
+def _restore_step() -> dict:
+    steps = [s for s in _job()["steps"] if "pip-cache-restore" in str(s.get("uses", ""))]
+    assert len(steps) == 1, f"{JOB} should restore the pip cache exactly once, got {len(steps)}"
+    return steps[0]["with"]
+
+
+def test_every_file_the_seed_step_reads_is_a_cache_key_input():
+    """Otherwise an edit changes the install while the key stays put.
+
+    #11270 dropped 39 pins from colab_to_cpu_pin.json and freed nothing, because the
+    mapping was not a key input: the key hash did not move, the restore hit exactly,
+    and pip-cache-save is gated on `cache-hit != 'true'`, so the entry holding the
+    removed wheels was never rewritten. A stale entry cannot serve wrong CONTENT --
+    pip's cache is addressed by URL and hash -- but it pins the entry's SIZE to a pin
+    set that no longer exists.
+
+    The rule is mechanical: whatever the shell opens, the key must hash.
+    """
+    files = set(_restore_step()["key-files"].split())
+    # Only checked-in files under the job's checkout prefix. The seed step also
+    # opens /tmp scratch and the converted _smoke.py, which are its OUTPUTS: they
+    # are derived from the inputs below and cannot be edited into the repo.
+    opened = set(re.findall(r"""open\(\s*["'](unsloth/[^"']+)["']""", _shell(_job())))
+    assert opened, "found no repo files being read by the seed step; the pattern has drifted"
+    missing = sorted(opened - files)
+    assert not missing, (
+        f"the seed step reads {missing} but they are not in key-files {sorted(files)}, so "
+        f"editing them changes what the job installs without minting a new cache key"
+    )
+
+
+def test_the_mapping_is_a_cache_key_input():
+    """Named explicitly, so deleting the rule above cannot quietly drop the one file
+    that caused the bug."""
+    assert "unsloth/scripts/data/colab_to_cpu_pin.json" in _restore_step()["key-files"].split()
+
+
+def test_the_cache_key_inputs_exist():
+    """A glob that matches nothing makes hashFiles return empty, which pip-cache-restore
+    fails on by design -- but it fails in CI, not here, and only on the next run."""
+    for rel in _restore_step()["key-files"].split():
+        # key-files resolve from GITHUB_WORKSPACE and this job checks out under
+        # `unsloth/`, which is the repo root from this test's point of view.
+        assert rel.startswith("unsloth/"), f"{rel} is not prefixed for this job's checkout layout"
+        assert (
+            REPO / rel[len("unsloth/") :]
+        ).exists(), f"key-files names {rel}, which does not exist"
+
+
+# --- what the skip list costs and what it must not spend -----------------------------
+
+
+def test_the_cuda_only_wheels_are_skipped():
+    """The skip list is the only lever on this job's pip cache, which measured 6.97 GB
+    per generation on 2026-09-18 -- 30% of the repo's 50 GiB Actions budget across its
+    two generations, while the repo sat at 92% full and evicted other families' live
+    entries. These cannot execute without a GPU, so caching them buys nothing at all.
+    """
+    skip = set(_mapping()["skip"])
+    cuda_only = {
+        "libcudf-cu12",
+        "libcuml-cu12",
+        "cudf-cu12",
+        "cuml-cu12",
+        "rmm-cu12",
+        "pylibcudf-cu12",
+        "pylibraft-cu12",
+        "raft-dask-cu12",
+        "ucxx-cu12",
+        "dask-cuda",
+        "numba-cuda",
+        "cuda-bindings",
+        "cupy-cuda12x",
+        "jax-cuda12-pjrt",
+        "jax-cuda12-plugin",
+        "nvidia-nvshmem-cu12",
+        "nvidia-cuda-nvcc-cu12",
+        "nvidia-nccl-cu13",
+    }
+    missing = sorted((cuda_only & _freeze_names()) - skip)
+    assert not missing, (
+        f"these are CUDA-only wheels the CPU runner can never load, so they are pure "
+        f"cache weight: {missing}"
+    )
+
+
+def test_the_backends_transformers_detects_stay_installed():
+    """TensorFlow and Flax are 761 MiB that nothing in this repo imports, which makes
+    them look like the obvious next thing to skip. They are not.
+
+    Transformers imports either backend merely because it is INSTALLED, via
+    processing_utils -> image_transforms, so their presence changes what
+    `import unsloth` does. That is the subject of
+    tests/test_broken_tf_does_not_break_import.py, and Colab ships them, so a seed env
+    without them stops reproducing the interaction this job exists to catch.
+
+    Fabricating .dist-info metadata without the wheel is worse than either choice: a
+    find_spec hit whose import fails is the BROKEN-TF path, not Colab's healthy TF.
+    """
+    skip = set(_mapping()["skip"])
+    detected = {"tensorflow", "flax", "jax", "jaxlib", "tf-keras"}
+    wrongly_skipped = sorted((detected & _freeze_names()) & skip)
+    assert not wrongly_skipped, (
+        f"{wrongly_skipped} are detected-if-installed backends. Skipping them saves "
+        f"cache at the cost of the fidelity this job is for; see "
+        f"tests/test_broken_tf_does_not_break_import.py"
+    )
+
+
+def test_skipped_pins_are_not_also_marked_no_binary():
+    """Dead config. The seed step only passes --no-binary for pins still present after
+    the skip filter, so an entry in both lists is silently ignored and reads as though
+    the package were still being built.
+    """
+    mapping = _mapping()
+    both = sorted(set(mapping["skip"]) & set(mapping.get("no_binary", [])))
+    assert not both, f"these are in skip and no_binary at once, so no_binary is dead: {both}"
+
+
+def test_the_skip_list_is_closed_under_the_freezes_dependencies():
+    """A skip only saves the download if nothing retained requires it.
+
+    The seed step installs bare `name==ver`, so pip re-resolves any dropped package a
+    KEPT pin depends on and downloads it anyway, unpinned -- a saving that is not one,
+    and the failure mode is invisible because the install still succeeds. These edges
+    were read off the freeze's own metadata; each pair is `child: parents`, and skipping
+    the child obliges skipping the parents.
+    """
+    skip = set(_mapping()["skip"])
+    names = _freeze_names()
+    edges = {
+        "cupy-cuda12x": {"cudf-cu12", "cuml-cu12", "dask-cudf-cu12"},
+        "libcudf-cu12": {"pylibcudf-cu12"},
+        "pylibcudf-cu12": {"cudf-polars-cu12"},
+        "libcuml-cu12": {"cuml-cu12"},
+        "rmm-cu12": {"ucxx-cu12"},
+        "ucxx-cu12": {"distributed-ucxx-cu12"},
+        "numba-cuda": {"dask-cuda", "distributed-ucxx-cu12"},
+        "cuda-bindings": {"numba-cuda"},
+        "pylibraft-cu12": {"cuml-cu12", "raft-dask-cu12"},
+        "pyspark": {"dataproc-spark-connect"},
+        "intel-openmp": {"mkl"},
+        "tbb": {"mkl"},
+        "nvidia-nccl-cu13": {"xgboost"},
+    }
+    leaks = {
+        child: sorted(parents & names - skip)
+        for child, parents in edges.items()
+        if child in skip and (parents & names - skip)
+    }
+    assert not leaks, (
+        f"each of these is skipped while a retained pin still requires it, so pip "
+        f"downloads it anyway and the skip saves nothing: {leaks}"
     )

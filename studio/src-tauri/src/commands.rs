@@ -221,11 +221,27 @@ pub async fn desktop_preflight(
     app: AppHandle,
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
+    update_state: tauri::State<'_, update::UpdateState>,
+    install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
     let started = Instant::now();
+    // A window reload re-runs this during our own install or update, and the
+    // installer phase does not hold the runtime gate. Checked on both sides of the
+    // probe: one that ends mid-probe still leaves a half-written reading.
+    let mutating = || {
+        install::is_install_running(install_state.inner())
+            || update::is_update_running(update_state.inner())
+            || update::is_repair_running(update_state.inner())
+    };
+    let mutating_before = mutating();
     let (result, adopted_watchdog_generation) =
         crate::preflight::desktop_preflight_result_with_state(state.inner()).await?;
+    let result = if mutating_before || mutating() {
+        crate::preflight::busy_managed_environment(result)
+    } else {
+        result
+    };
     diagnostics::record_preflight(&diagnostics, &result);
 
     info!(
@@ -947,13 +963,7 @@ pub async fn start_managed_repair(
     // duplicate call that slipped through there ran its own update and raced for the installer.
     let _repair_in_flight = install::try_begin_repair(&install_state)?;
 
-    if update_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("Repair is already running.".to_string());
-    }
+    let _repair = update::RepairInFlight::claim(update_state.inner())?;
 
     let diagnostics_state = diagnostics.inner().clone();
 
