@@ -103,7 +103,7 @@ docker run --rm -e UNSLOTH_ALLOW_CPU=1 unsloth/unsloth:core python -c "import un
 | `core` | Training stack + JupyterLab + notebooks, no Studio | Notebooks, scripts, CI, slimmer pulls. |
 | `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>` | The same two images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
 
-`latest` and `core` are rebuilt daily and on every release tag, not on every merge to `main`. Both are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
+`latest` and `core` are rebuilt daily, not on every merge to `main`. Both are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
 
 ## Supported GPUs
 
