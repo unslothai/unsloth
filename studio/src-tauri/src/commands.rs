@@ -786,6 +786,9 @@ pub async fn start_install(
                 .to_string(),
         );
     }
+    if install::repair_in_flight(&state) {
+        return Err("Cannot install while a repair is in progress.".to_string());
+    }
     block_external_conflict(&[]).await?;
 
     let state = state.inner().clone();
@@ -862,6 +865,9 @@ pub async fn start_backend_update(
     {
         return Err("Cannot update while installation is in progress.".to_string());
     }
+    if install::repair_in_flight(&install_state) {
+        return Err("Cannot update while a repair is in progress.".to_string());
+    }
 
     if update_state
         .lock()
@@ -936,13 +942,10 @@ pub async fn start_managed_repair(
         force_installer
     );
 
-    if install_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("Cannot repair while installation is in progress.".to_string());
-    }
+    // Taken before anything else and held to the end: the process handles below are empty
+    // while the backend stops and between the update child and the installer, and every
+    // duplicate call that slipped through there ran its own update and raced for the installer.
+    let _repair_in_flight = install::try_begin_repair(&install_state)?;
 
     if update_state
         .lock()

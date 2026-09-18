@@ -20,12 +20,57 @@ pub struct InstallProcess {
     pub needed_packages: Vec<String>,
     /// Current diagnostics attempt; kept after NEEDS_ELEVATION so apt output can be linked.
     pub current_attempt: Option<AttemptLog>,
+    /// A managed repair is between its first step and its last. `child` covers only the
+    /// moments a process exists; a repair spends seconds between them.
+    pub repair_in_flight: bool,
 }
 
 pub type InstallState = Arc<Mutex<InstallProcess>>;
 
 pub fn new_install_state() -> InstallState {
     Arc::new(Mutex::new(InstallProcess::default()))
+}
+
+/// Held by start_managed_repair for its whole run, so a second call is refused up front.
+///
+/// The child handles alone let five Retry clicks two seconds apart each pass the guards
+/// (no process existed yet while the first repair stopped the backend), each run their own
+/// `studio update`, and then race for the bundled installer: one won and four surfaced
+/// "Installation is already running." over its progress.
+pub struct RepairInFlight {
+    state: InstallState,
+}
+
+pub fn try_begin_repair(state: &InstallState) -> Result<RepairInFlight, String> {
+    let mut install = state.lock().map_err(|e| e.to_string())?;
+    if install.child.is_some() {
+        return Err("Cannot repair while installation is in progress.".to_string());
+    }
+    if install.repair_in_flight {
+        return Err("Repair is already running.".to_string());
+    }
+    install.repair_in_flight = true;
+    Ok(RepairInFlight {
+        state: state.clone(),
+    })
+}
+
+pub fn repair_in_flight(state: &InstallState) -> bool {
+    state
+        .lock()
+        .map(|install| install.repair_in_flight)
+        .unwrap_or(false)
+}
+
+impl Drop for RepairInFlight {
+    fn drop(&mut self) {
+        // Released on every exit, `?` included; a poisoned lock must not pin the flag forever.
+        let mut install = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        install.repair_in_flight = false;
+    }
 }
 
 use crate::process::trim_line_endings;
@@ -1326,6 +1371,34 @@ fn capped_output_text(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_repair_is_refused_until_the_first_releases() {
+        let state = new_install_state();
+        let first = try_begin_repair(&state).expect("the first repair starts");
+        assert!(repair_in_flight(&state));
+        assert_eq!(
+            try_begin_repair(&state).err().as_deref(),
+            Some("Repair is already running.")
+        );
+        drop(first);
+        assert!(!repair_in_flight(&state));
+        assert!(try_begin_repair(&state).is_ok());
+    }
+
+    #[test]
+    fn a_poisoned_lock_still_releases_the_repair() {
+        let state = new_install_state();
+        let first = try_begin_repair(&state).expect("the first repair starts");
+        let poisoner = state.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("poison the install state");
+        })
+        .join();
+        drop(first);
+        assert!(!state.lock().unwrap_or_else(|p| p.into_inner()).repair_in_flight);
+    }
 
     #[cfg(windows)]
     #[test]
