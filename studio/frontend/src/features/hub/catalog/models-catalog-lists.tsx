@@ -467,7 +467,7 @@ export function DownloadedList({
               strokeWidth={1.75}
               className="size-3.5"
             />
-            Pinned
+            Favorites
           </div>
           {/* Pinned rows are few, so render them as a plain grid matching the
               virtualized list's lane count and row spacing. */}

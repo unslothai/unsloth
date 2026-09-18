@@ -948,7 +948,7 @@ const META_COLUMN = {
 // One gutter for every row, gear or no gear, so the columns never shift by a button; the
 // buttons show on hover or while their menu is open.
 const ROW_ACTIONS_CLASS =
-  "mr-0.5 flex w-[38px] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
+  "mr-0.5 flex w-[56px] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 has-[[aria-pressed=true]]:opacity-100 [@media(hover:none)]:opacity-100";
 
 // Partial rows keep their buttons on screen. Everywhere else the gutter hides until hover because
 // the row itself is the action, but a partial cannot be loaded at all: the menu IS its only
@@ -6229,7 +6229,7 @@ export function HubModelPicker({
                         icon={
                           <HugeiconsIcon icon={PinIcon} className="size-3.5" />
                         }
-                        label="Pinned"
+                        label="Favorites"
                         collapsed={pinnedConnectedCollapsed}
                         onToggle={() =>
                           setPinnedConnectedCollapsed((value) => !value)
@@ -6323,7 +6323,7 @@ export function HubModelPicker({
                       collapsed={pinnedCollapsed}
                       onToggle={() => setPinnedCollapsed((v) => !v)}
                     >
-                      Pinned
+                      Favorites
                     </ListLabel>
                     {!pinnedCollapsed &&
                       pinnedRows.map((row) =>

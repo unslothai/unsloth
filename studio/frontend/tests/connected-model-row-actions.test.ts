@@ -298,10 +298,10 @@ test("the connection's own settings hang off the group heading", () => {
     pickers,
     /configureLabel=\{`\$\{group\.providerName\} connection settings`\}/,
   );
-  // The Pinned group spans connections, so there is no single one for its heading to open.
+  // the favorites group spans connections, so its heading has no single connection to open.
   assert.match(
     pickers,
-    /label="Pinned"\s*collapsed=\{pinnedConnectedCollapsed\}\s*onToggle=\{\(\) =>\s*setPinnedConnectedCollapsed/,
+    /label="Favorites"\s*collapsed=\{pinnedConnectedCollapsed\}\s*onToggle=\{\(\) =>\s*setPinnedConnectedCollapsed/,
   );
 });
 

@@ -39,6 +39,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ModelFavoriteAction } from "./model-favorite-action";
 
 /** A caller-supplied entry. Rendered under the pin and above cache/update, so delete stays last. */
 export interface ModelRowMenuItem {
@@ -187,6 +188,13 @@ export function ModelRowMenu({
 
   return (
     <>
+      {pin && (
+        <ModelFavoriteAction
+          favorite={pin.pinned}
+          onToggle={pin.onToggle}
+          className={buttonClassName}
+        />
+      )}
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <button
