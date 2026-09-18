@@ -363,11 +363,15 @@ def _consume_statement(block: str, index: int):
     return block[index:], len(block)
 
 
+# A keyword, not a property of the same name: `s.switch` and `s.default` are reads.
+_KEYWORD = r"(?<![\w$.])"
+
+
 def _labels_at_top_level(body: str) -> list:
     """Where each `case`/`default` arm of this switch body starts, ignoring nested switches."""
     scan = _outside_literals(body)
     depth, ends = 0, []
-    for match in re.finditer(r"[(\[{}\])]|\b(?:case\b[^:]*|default\s*):", scan):
+    for match in re.finditer(rf"[(\[{{}}\])]|{_KEYWORD}(?:case\b[^:]*|default\s*):", scan):
         token = match.group(0)
         if token in "([{":
             depth += 1
@@ -416,17 +420,15 @@ def _breaks_out(arm: str) -> bool:
 def _jumps_out(text: str, keyword: str, *, absorbed_by_switch: bool) -> bool:
     """A `keyword` jump in `text` that nothing nested inside `text` absorbs."""
     scan = _outside_literals(text)
+    absorbers = "for|while|do|switch" if absorbed_by_switch else "for|while|do"
     absorbing = [
         (match.start(), _consume_statement(scan, match.start())[1])
-        for match in re.finditer(
-            r"\b(?:for|while|do|switch)\b" if absorbed_by_switch else r"\b(?:for|while|do)\b",
-            scan,
-        )
+        for match in re.finditer(rf"{_KEYWORD}(?:{absorbers})\b", scan)
     ]
     absorbing += _nested_function_spans(scan)
     return any(
         not any(begin <= match.start() < end for begin, end in absorbing)
-        for match in re.finditer(rf"\b{keyword}\b", scan)
+        for match in re.finditer(rf"{_KEYWORD}{keyword}\b", scan)
     )
 
 
@@ -558,7 +560,7 @@ def _own_scope_returns(block: str) -> list:
     its own value, which is not what zustand compares."""
     nested = _nested_function_spans(block)
     out = []
-    for match in re.finditer(r"\breturn\b", block):
+    for match in re.finditer(rf"{_KEYWORD}return\b", block):
         start = match.start()
         if any(begin <= start < end for begin, end in nested):
             continue
@@ -788,6 +790,10 @@ def _selector_reads(selector: str, field: str) -> bool:
     """
 
     selector = _without_comments(selector)
+    # A `/` outside strings is a division or a regex literal, and a regex can spell `default:`
+    # or `break`. Neither is read here, so the selector is refused rather than misread.
+    if "/" in _outside_literals(selector):
+        return False
     signature, read, access = _selector_signature(selector, field)
     if read is None:
         return False
@@ -1052,6 +1058,19 @@ SELECTOR_CASES = [
         "default: return s.reasoningBudget; } } while (false); }",
         False,
     ),
+    # A property named like a keyword is a read, not a nested switch that absorbs the `break`.
+    (
+        '(s) => { switch (s.mode) { case "x": s.switch; if (s.stop) break; '
+        "return s.reasoningBudget; default: return s.reasoningBudget; } }",
+        False,
+    ),
+    # A regex could spell a label, so any `/` outside a string refuses the selector.
+    (
+        '(s) => { switch (s.mode) { case "x": /default:/.test(s.name); '
+        "return s.reasoningBudget; } }",
+        False,
+    ),
+    ("(s) => s.reasoningBudget / 1", False),
     # A `continue` inside a nested loop belongs to that loop, not to the switch.
     (
         '(s) => { switch (s.mode) { case "x": for (const q of s.l) { continue; } '
