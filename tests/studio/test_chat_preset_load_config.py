@@ -592,15 +592,20 @@ _STRING_BODY = rf"{_QUOTED}|{_TEMPLATE_CONSTANT}"
 _STRING_LITERAL = re.compile(rf"{_QUOTED}|{_TEMPLATE}")
 
 
-def _normalised(expression: str) -> str:
-    """Whitespace outside literals removed, a trailing `,`/`;` dropped, and `s["x"]` as `s.x`."""
+def _dotted(expression: str) -> str:
+    """`s["x"]` written as `s.x`, so one access has one spelling."""
     # Only a bracket outside literals is an access; inside one it is part of a value.
     scan = _outside_literals(expression)
-    expression = re.sub(
+    return re.sub(
         r"\[\s*(['\"])([A-Za-z_$][\w$]*)\1\s*\]",
         lambda match: f".{match.group(2)}" if scan[match.start()] == "[" else match.group(0),
         expression,
     )
+
+
+def _normalised(expression: str) -> str:
+    """Whitespace outside literals removed, a trailing `,`/`;` dropped, and `s["x"]` as `s.x`."""
+    expression = _dotted(expression)
     pieces, last = [], 0
     for match in _STRING_LITERAL.finditer(expression):
         pieces.append(re.sub(r"\s+", "", expression[last : match.start()]))
@@ -828,6 +833,28 @@ def _selector_reads(selector: str, field: str) -> bool:
     # or `break`. Neither is read here, so the selector is refused rather than misread.
     if "/" in _outside_literals(selector):
         return False
+    # Every literal is parked behind a placeholder while the structure is read, so a `;`, a
+    # bracket or a keyword inside a message is never taken for code. Values come back only to
+    # compare pins against results.
+    literals = []
+
+    def _park(match) -> str:
+        literals.append(match.group(0))
+        placeholder = f"'@{len(literals) - 1}'"
+        # A template substitution is code, so it stays readable beside the placeholder.
+        text, substitutions = match.group(0), []
+        start = text.find("${")
+        while start != -1:
+            inner = _balanced(text, start + 1, "{", "}")
+            if text[start - 1] != "\\":
+                substitutions.append(inner)
+            start = text.find("${", start + len(inner) + 3)
+        return f"({placeholder}, {', '.join(substitutions)})" if substitutions else placeholder
+
+    def _restored(text: str) -> str:
+        return re.sub(r"'@(\d+)'", lambda match: literals[int(match.group(1))], text)
+
+    selector = _STRING_LITERAL.sub(_park, _dotted(selector))
     signature, read, access = _selector_signature(selector, field)
     if read is None:
         return False
@@ -849,21 +876,26 @@ def _selector_reads(selector: str, field: str) -> bool:
         results = _split_ternary(body)
     if not results or any(_is_boolean(result) for result, _ in results):
         return False
+    # The field is looked for while literals are still parked: `"s.budget"` is not a read.
     results = [
-        (_normalised(result), tuple((_normalised(guard), taken) for guard, taken in guards))
+        (
+            read.search(_normalised(result)) is not None,
+            _restored(_normalised(result)),
+            tuple((_restored(_normalised(guard)), taken) for guard, taken in guards),
+        )
         for result, guards in results
     ]
     # Every path returns the field, or returns exactly the value a guard pins it to:
     # `s.budget === -1 ? 0 : s.budget` returns 0 for both -1 and 0.
     return all(
-        read.search(result)
+        reads_field
         or any(
             _pinned_literal(guard, taken, access, field) is not None
             and _literal_value(_pinned_literal(guard, taken, access, field))
             == _literal_value(result)
             for guard, taken in guards
         )
-        for result, guards in results
+        for reads_field, result, guards in results
     )
 
 
@@ -1166,6 +1198,10 @@ SELECTOR_CASES = [
     # One access, two spellings: the guard steers nothing if both arms mean the same read.
     ('(s) => s.reasoningBudget ? s.other : s["other"]', False),
     ('(s) => s["reasoningBudget"]', True),
+    ('(s) => "s.reasoningBudget"', False),
+    ("(s) => `${s.reasoningBudget}`", True),
+    ("(s) => `\\${s.reasoningBudget}`", False),
+    ('(s) => s.enabled ? "s.reasoningBudget" : s.reasoningBudget', False),
     # Inside a literal a bracket is part of the value, not an access to rewrite.
     ('(s) => s.reasoningBudget === \'s["x"]\' ? "s.x" : s.reasoningBudget', False),
     ("(s) => s.reasoningBudget === 's[\"x\"]' ? 's[\"x\"]' : s.reasoningBudget", True),
