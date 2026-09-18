@@ -420,6 +420,8 @@ class TestTheUserFacingDocsCoverWsl:
             "-v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro",
             "LD_LIBRARY_PATH=/usr/lib/wsl/lib",
             "ROCM_GFX=<your gfx> bash docker/build.sh --rocm",
+            # run.sh defaults to the published image, which is refused on DXG
+            "UNSLOTH_IMAGE=unsloth-rocm:latest bash run.sh --rocm",
         ):
             assert needle in text, needle
 
@@ -427,6 +429,7 @@ class TestTheUserFacingDocsCoverWsl:
         text = open(_README, encoding = "utf-8").read()
         assert "needs native Linux" not in text
         assert "/dev/dxg" in text and "docker/run.sh --rocm" in text
+        assert "UNSLOTH_IMAGE=unsloth-rocm:latest" in text
 
 
 # ── entrypoint-rocm.sh ───────────────────────────────────────────────────────

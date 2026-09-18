@@ -49,14 +49,15 @@ No `--group-add` here: WSL exposes `/dev/dxg` to everyone and has no `render` gr
 
 The Hugging Face mount is not optional if you care about your downloads: `HF_HOME` inside the container is `/workspace/.cache/huggingface`, which lives in the container's writable layer, so without it every model is fetched again after `docker rm`.
 
-Or let the launcher work out the device nodes, group ids and mounts for you, on Linux and on WSL alike:
+Or let the launcher work out the device nodes, group ids and mounts for you, on Linux and on WSL alike. It defaults to the published image, so on WSL name the build from above:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/run.sh -o run.sh
-bash run.sh --rocm
+bash run.sh --rocm                                   # Linux
+UNSLOTH_IMAGE=unsloth-rocm:latest bash run.sh --rocm # WSL
 ```
 
-Check the GPU is visible before anything else, with `GPU_FLAGS` set as above:
+Check the GPU is visible before anything else, with `GPU_FLAGS` set as above (on WSL, `unsloth-rocm:latest` in place of `unsloth/unsloth-rocm`):
 
 ```bash
 docker run --rm $GPU_FLAGS \
