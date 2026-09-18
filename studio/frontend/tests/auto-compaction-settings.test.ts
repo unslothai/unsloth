@@ -119,8 +119,9 @@ test("the chat adapter sends compaction fields through the shared helper", () =>
   assert.match(adapter, /isGguf: isGgufForCompaction/);
   assert.match(adapter, /loadedIsGguf: runtime\.loadedIsGguf/);
   assert.match(adapter, /isServedByLlamaCpp\(/);
-  // One request object for both streams, so a media turn cannot lose these fields.
-  assert.match(adapter, /image_base64: imageBase64/);
+// One request object for both streams, so a media turn cannot lose these fields; the value is
+  // derived from THIS turn's messages only (durable-gate.ts), not a variable hoisted earlier.
+  assert.match(adapter, /image_base64: findLatestUserImageBase64\(currentTurnMessages\)/);
 });
 
 test("a queued run keeps its own model's llama.cpp verdict after the picker moves on", async () => {

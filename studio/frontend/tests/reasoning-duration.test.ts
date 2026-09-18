@@ -234,3 +234,45 @@ test("lastReasoningGroupTextLength measures only the last reasoning group", () =
   );
   assert.equal(lastReasoningGroupTextLength([]), 0);
 });
+
+test("a seeded group this reader watches grow keeps what the other tab measured AND its own", () => {
+  let now = 1_770_000_000_000;
+  // The array's length says how many groups exist, never whether the last one FINISHED: consecutive closed
+  // blocks coalesce into one rendered group, so a tab that shut mid-thought hands over a number for a thought
+  // that is still running here. `groups > groupCount` is false for it, and there was no `startedAt` to resume
+  // from -- so the value it arrived with stayed all anyone would ever know about it.
+  const tracker = createReasoningDurationTracker(() => now, {
+    durations: [4],
+    lastGroupTextLength: "first block".length,
+  });
+
+  // The first frame this reader folds that carries MORE of the same thought is where its own clock starts;
+  // the seconds before it belong to the tab that shut.
+  now += 3_000;
+  tracker.resumeGroup(0, "first blocksecond block".length);
+  now += 6_000;
+  tracker.finishGroup();
+
+  assert.deepEqual(tracker.metadata(), {
+    reasoningDuration: 10,
+    reasoningDurations: [4 + 6],
+  });
+});
+
+test("a seeded group reopens on growth, never on an answer streaming past it", () => {
+  let now = 1_770_000_000_000;
+  const tracker = createReasoningDurationTracker(() => now, {
+    durations: [4],
+    lastGroupTextLength: "first block".length,
+  });
+
+  // An answer streaming past the end of the block is not growth: nothing reopens, and the number that arrived
+  // here stays untouched -- re-timing a thought nobody here watched would replace 4 real seconds with the gap
+  // between two frames.
+  now += 9_000;
+  tracker.resumeGroup(0, "first block".length);
+  tracker.finishGroup();
+  assert.deepEqual(tracker.metadata().reasoningDurations, [
+    4,
+  ], "a group that never grew here keeps the seconds it arrived with");
+});
