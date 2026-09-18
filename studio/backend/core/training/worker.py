@@ -716,6 +716,21 @@ def _load_embedding_hf_dataset(
     return dataset
 
 
+def _pre_detect_load_in_4bit(config: dict, model_load_target: str, hf_token: str | None) -> bool:
+    """The mode the real load will use, so pre-detect reads the repo the loader fetches.
+
+    The load calls _effective_training_load_in_4bit, which also REFUSES an exact-resource
+    4-bit resume once the sidecar is active. That refusal belongs to the load, not to a
+    metadata read, so the flip is read directly here and the refusal is left to raise where
+    it already does.
+    """
+    if not bool(config.get("load_in_4bit", True)):
+        return False
+    from utils.transformers_version import latest_tier_active_for
+
+    return not latest_tier_active_for(model_load_target, hf_token)
+
+
 def _pre_detect_training_model(
     trainer,
     config: dict,
@@ -735,7 +750,7 @@ def _pre_detect_training_model(
         model_load_name = model_load_name,
         local_files_only = local_files_only,
         model_revision = model_revision,
-        load_in_4bit = config.get("load_in_4bit", True),
+        load_in_4bit = _pre_detect_load_in_4bit(config, model_load_name, hf_token),
     )
     _check_finetune_targets_after_detect(trainer, config)
 

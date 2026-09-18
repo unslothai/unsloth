@@ -332,6 +332,34 @@ def test_gated_check_admits_what_the_worker_can_load(mapper, monkeypatch, model,
         assert session.urls == []
 
 
+def test_a_transient_auth_check_failure_is_retried_then_fails_open(mapper, monkeypatch):
+    # A single timeout used to admit the run, which then died in the worker with the raw Hub
+    # error. The model_info probe above it already retries on two timeouts.
+    class _Flaky(_Session):
+        def get(self, url, **kwargs):
+            self.urls.append(url)
+            if len(self.urls) == 1:
+                raise TimeoutError("first attempt timed out")
+            raise _http_error(401)
+
+    session = _Flaky(None)
+    _route(monkeypatch, gated = "manual", session = session)
+
+    with pytest.raises(HTTPException) as error:
+        tr._remote_untrainable_model_format("google/gemma-2-2b-jpn-it", None)
+
+    assert error.value.detail["code"] == "hf_model_access_denied"
+    assert len(session.urls) == 2
+
+
+def test_an_auth_check_that_never_answers_admits_the_run(mapper, monkeypatch):
+    session = _Session(TimeoutError("timed out"))
+    _route(monkeypatch, gated = "manual", session = session)
+
+    assert tr._remote_untrainable_model_format("google/gemma-2-2b-jpn-it", None) is None
+    assert len(session.urls) == 2
+
+
 def test_start_request_surfaces_the_refusal_code(mapper, monkeypatch):
     session = _Session(_http_error(403))
     _route(monkeypatch, gated = "manual", session = session)
@@ -423,6 +451,33 @@ def test_a_full_finetune_preflights_as_16bit(mapper, monkeypatch):
 
     assert error.value.detail["code"] == "hf_model_access_denied"
     assert request.load_in_4bit is True
+
+
+@pytest.mark.parametrize(
+    "config_4bit,sidecar,expected",
+    [
+        (True, False, True),
+        # The load is flipped to 16-bit by _effective_training_load_in_4bit, so pre-detect has
+        # to read the 16-bit mirror or it inspects a repo the loader never fetches.
+        (True, True, False),
+        (False, False, False),
+        (False, True, False),
+    ],
+)
+def test_pre_detect_follows_the_sidecar_flip_like_the_load_does(
+    monkeypatch, config_4bit, sidecar, expected
+):
+    import core.training.worker as worker_mod
+    import utils.transformers_version as tv
+
+    monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: sidecar)
+    config = {"load_in_4bit": config_4bit}
+    assert worker_mod._pre_detect_load_in_4bit(config, "google/gemma-3-270m-it", None) is expected
+
+    # and it agrees with the mode the real load uses, for every case the load does not refuse
+    from core.training.provenance import effective_training_load_in_4bit
+
+    assert effective_training_load_in_4bit(config, "google/gemma-3-270m-it", None) is expected
 
 
 def test_load_model_gate_checks_the_repo_the_loader_fetches(mapper, monkeypatch):

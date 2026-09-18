@@ -568,21 +568,30 @@ def _remote_untrainable_model_format(
         from huggingface_hub import constants
         from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
 
-        try:
-            response = get_session().get(
-                f"{constants.ENDPOINT}/api/models/{quote(repo_id, safe = '/')}/auth-check",
-                headers = build_hf_headers(token = account_hf_token(hf_token)),
-                timeout = _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
-            )
-            hf_raise_for_status(response)
-        except Exception as error:
-            # Only definite denials block the run.
-            if hf_error_status(error) in (401, 403):
-                raise _hf_preflight_error(
-                    422,
-                    "hf_model_access_denied",
-                    _HF_MODEL_ACCESS_DENIED,
-                ) from error
+        url = f"{constants.ENDPOINT}/api/models/{quote(repo_id, safe = '/')}/auth-check"
+        headers = build_hf_headers(token = account_hf_token(hf_token))
+        # Same two timeouts as the model_info probe above: a transient failure here admits a
+        # run that then dies in the worker with the raw Hub error, which is the whole point of
+        # asking. Retry it, then fail open, since only a definite denial may block a start.
+        for attempt, timeout in enumerate(timeouts):
+            try:
+                hf_raise_for_status(get_session().get(url, headers = headers, timeout = timeout))
+                break
+            except Exception as error:
+                status_code = hf_error_status(error)
+                if status_code in (401, 403):
+                    raise _hf_preflight_error(
+                        422,
+                        "hf_model_access_denied",
+                        _HF_MODEL_ACCESS_DENIED,
+                    ) from error
+                if attempt + 1 < len(timeouts):
+                    continue
+                logger.warning(
+                    "Could not verify access to gated %s (%s); starting anyway",
+                    repo_id,
+                    type(error).__name__,
+                )
 
     load_roots = ("", *(f"{subdir.strip('/')}/" for subdir in load_subdirs if subdir))
     root_files: set[str] = set()
