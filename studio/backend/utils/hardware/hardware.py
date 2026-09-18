@@ -5587,7 +5587,17 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
             free_mib = _apply_igpu_host_reserve_mib(row["free_mib"], shared_memory)
             total_mib = 0 if shared_memory else row["total_mib"]
             budget_mib = total_mib or free_mib
-            used_mib = max(0, total_mib - free_mib) if total_mib else None
+            if shared_memory:
+                # An iGPU's pool is shared RAM, so its total is no VRAM ceiling and the budget above stays
+                # the capped free figure. What the rest of the machine holds in that pool is still a
+                # measurement, though: ggml's budget reports it as total minus free, and leaving it None
+                # rendered the Live monitor's VRAM tile as "Unknown" on every APU (Strix Halo included).
+                pool_mib = row["total_mib"]
+                used_mib = max(0, pool_mib - row["free_mib"]) if pool_mib > 0 else None
+                pct_basis_mib = pool_mib
+            else:
+                used_mib = max(0, total_mib - free_mib) if total_mib else None
+                pct_basis_mib = total_mib
             result["devices"].append(
                 {
                     "index": ordinal,
@@ -5598,8 +5608,8 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
                     "memory_total_gb": round(budget_mib / 1024, 2),
                     "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
                     "vram_free_gb": round(free_mib / 1024, 2),
-                    "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
-                    if used_mib is not None and total_mib > 0
+                    "vram_utilization_pct": round((used_mib / pct_basis_mib) * 100, 1)
+                    if used_mib is not None and pct_basis_mib > 0
                     else None,
                     "shared_memory": shared_memory,
                 }

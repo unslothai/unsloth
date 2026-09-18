@@ -539,9 +539,55 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         device = result["devices"][0]
         self.assertEqual(device["memory_total_gb"], 12.0)
         self.assertEqual(device["vram_free_gb"], 12.0)
-        self.assertIsNone(device["vram_used_gb"])
-        self.assertIsNone(device["vram_utilization_pct"])
+        # The budget is the capped free figure, but what the rest of the machine holds in the
+        # shared pool is ggml's total minus free, and it is reported rather than left unknown.
+        self.assertEqual(device["vram_used_gb"], 20.0)
+        self.assertEqual(device["vram_utilization_pct"], 62.5)
         self.assertTrue(device["shared_memory"])
+
+    def test_vulkan_igpu_info_reports_what_the_pool_holds(self):
+        """Measured on a Windows Strix Halo (Radeon 8060S): ggml sees a 111.6 GiB pool with
+        106.1 GiB free. The Live monitor rendered that device's VRAM as "Unknown" because the
+        iGPU branch never derived a used figure. A row from an older probe that carries no total
+        still has nothing to derive it from."""
+        rows = [
+            {
+                "index": 0,
+                "name": "AMD Radeon(TM) 8060S Graphics",
+                "free_mib": 113886339072 // (1024 * 1024),
+                "total_mib": 119880351744 // (1024 * 1024),
+                "is_igpu": True,
+            },
+            {
+                "index": 1,
+                "name": "Vulkan1",
+                "free_mib": 4096,
+                "total_mib": 0,
+                "is_igpu": True,
+            },
+        ]
+        with (
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._is_vulkan_backend",
+                return_value = True,
+            ),
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend.vulkan_device_inventory",
+                return_value = rows,
+            ),
+        ):
+            result = get_vulkan_inference_gpu_info()
+
+        halo, unsized = result["devices"]
+        # 1 GiB host reserve off the free figure; the budget IS that figure, not the pool.
+        self.assertEqual(halo["vram_free_gb"], 105.06)
+        self.assertEqual(halo["memory_total_gb"], 105.06)
+        self.assertEqual(halo["vram_used_gb"], 5.58)
+        self.assertEqual(halo["vram_utilization_pct"], 5.0)
+        self.assertTrue(halo["shared_memory"])
+        self.assertEqual(unsized["memory_total_gb"], 3.0)
+        self.assertIsNone(unsized["vram_used_gb"])
+        self.assertIsNone(unsized["vram_utilization_pct"])
 
     def test_forced_vulkan_overrides_torch_gpu_visibility_for_inference(self):
         with (
