@@ -249,7 +249,7 @@ export const fr = {
   settings: {
     accounts: {
       title: "Comptes",
-      description: "Créez des comptes Studio privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
+      description: "Créez des comptes Unsloth Studio privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
       username: "Nom d'utilisateur",
       create: "Créer un compte",
       setupCode: "Code de configuration",
@@ -304,9 +304,10 @@ export const fr = {
     },
     keyboardShortcuts: {
       title: "Raccourcis clavier",
-      description:
-        "Modifiez un raccourci, ou effacez-le pour libérer la combinaison pour le navigateur ou le système.",
       searchPlaceholder: "Rechercher des raccourcis…",
+      keystrokePlaceholder: "Appuyez sur un raccourci pour rechercher",
+      searchByKeystrokes: "Rechercher par frappe",
+      searchByName: "Rechercher par nom",
       noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
       recording: "Appuyez sur les touches…",
@@ -503,6 +504,14 @@ export const fr = {
           label: "Envoyer le message",
           description: "Envoyer le contenu de la zone de saisie",
         },
+        queueMessage: {
+          label: "Mettre le message en file",
+          description: "Envoyer le brouillon à la fin de la file",
+        },
+        steerMessage: {
+          label: "Réorienter la réponse",
+          description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
+        },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
           description: "Parcourir les niveaux d’effort de raisonnement",
@@ -569,7 +578,7 @@ export const fr = {
       openLogsFolderFailed: "Le dossier des journaux n'a pas pu être ouvert.",
       exportFailed: "Les journaux n'ont pas pu être téléchargés.",
       exportTooOld: "Le backend Unsloth en cours d'exécution est trop ancien pour exporter les journaux. Mettez-le à jour et redémarrez-le.",
-      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Studio connectée. Une clé d'API ne suffit pas.",
+      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Unsloth Studio connectée. Une clé d'API ne suffit pas.",
       keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {
@@ -883,6 +892,9 @@ export const fr = {
         showLoadedModels: "Indicateur des modèles chargés",
         showLoadedModelsDescription:
           "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
+        showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
       },
       startup: {
         sectionTitle: "Démarrage",

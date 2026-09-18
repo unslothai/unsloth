@@ -10,6 +10,10 @@ import {
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import {
+  isBackendDownForDesktopUpdate,
+  isSilencedDesktopUpdateFailure,
+} from "@/lib/desktop-update-activity";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import {
   type TransferSample,
@@ -475,6 +479,7 @@ async function syncInferenceStatusToStore(options?: {
   externalChatSlotLoad?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
+  const downWhenIssued = isBackendDownForDesktopUpdate();
   const includeLoras = options?.includeLoras ?? true;
   const generation = ++syncGeneration;
   const loraGeneration = includeLoras ? ++loraSyncGeneration : null;
@@ -619,6 +624,8 @@ async function syncInferenceStatusToStore(options?: {
     // A superseded refresh reports nothing, or a stale failure would raise a toast about a read
     // whose answer would have been discarded. The LoRA inventory settles from its own request.
     if (signal?.aborted || superseded()) return;
+    // The update screen already reports the backend it stopped.
+    if (isSilencedDesktopUpdateFailure(error, downWhenIssued)) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);

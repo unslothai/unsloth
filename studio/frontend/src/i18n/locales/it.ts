@@ -213,7 +213,7 @@ export const it = {
   settings: {
     accounts: {
       title: "Account",
-      description: "Crea account Studio privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
+      description: "Crea account Unsloth Studio privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
       username: "Nome utente",
       create: "Crea account",
       setupCode: "Codice di configurazione",
@@ -268,9 +268,10 @@ export const it = {
     },
     keyboardShortcuts: {
       title: "Scorciatoie da tastiera",
-      description:
-        "Modifica una scorciatoia, oppure cancellala per liberare la combinazione per il browser o il sistema.",
       searchPlaceholder: "Cerca scorciatoie…",
+      keystrokePlaceholder: "Premi una scorciatoia per cercare",
+      searchByKeystrokes: "Cerca per combinazione",
+      searchByName: "Cerca per nome",
       noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
       unassigned: "Non assegnata",
       recording: "Premi i tasti…",
@@ -467,6 +468,14 @@ export const it = {
           label: "Invia messaggio",
           description: "Invia il contenuto dell’editor",
         },
+        queueMessage: {
+          label: "Accoda messaggio",
+          description: "Invia la bozza in fondo alla coda",
+        },
+        steerMessage: {
+          label: "Reindirizza la risposta",
+          description: "Interrompi la risposta in corso e invia subito la bozza",
+        },
         cycleReasoningEffort: {
           label: "Scorri lo sforzo di ragionamento",
           description: "Passa in rassegna i livelli di sforzo di ragionamento",
@@ -533,7 +542,7 @@ export const it = {
       openLogsFolderFailed: "Non è stato possibile aprire la cartella dei log.",
       exportFailed: "Non è stato possibile scaricare i log.",
       exportTooOld: "Il backend Unsloth in esecuzione è troppo vecchio per esportare i log. Aggiornalo e riavvialo.",
-      exportForbidden: "Per scaricare tutti i log serve una sessione di Studio con accesso eseguito. Una chiave API non basta.",
+      exportForbidden: "Per scaricare tutti i log serve una sessione di Unsloth Studio con accesso eseguito. Una chiave API non basta.",
       keywords: "debug log logs registro registri errore errori crash traccia diagnostica risoluzione dei problemi",
     },
     voice: {
@@ -856,6 +865,9 @@ export const it = {
         showLoadedModels: "Indicatore dei modelli caricati",
         showLoadedModelsDescription:
           "Mostra una piccola scheda in basso a destra con tutti i modelli attualmente in memoria (chat, voce, immagini, video), con un pulsante per rimuovere ciascuno.",
+        showWhisperUpdates: "Notifiche di aggiornamento di whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Avvisa quando è disponibile una build più recente di whisper.cpp per i modelli di trascrizione vocale. Disattiva le notifiche se non trascrivi mai l'audio.",
       },
       startup: {
         sectionTitle: "Avvio",

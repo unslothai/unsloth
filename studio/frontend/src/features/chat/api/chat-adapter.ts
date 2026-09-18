@@ -6445,7 +6445,7 @@ export function createOpenAIStreamAdapter(
                 throw new ChatGenerationTerminalError(
                   "failed",
                   generationRun?.error ||
-                    "The Studio backend restarted during generation.",
+                    "The Unsloth Studio backend restarted during generation.",
                 );
               }
               if (generationStatus === "cancelled" && !runSignal.aborted) {
@@ -7943,7 +7943,7 @@ export function createOpenAIStreamAdapter(
               toast.error("Response interrupted", {
                 description:
                   err.message ||
-                  "The Studio backend stopped during generation.",
+                  "The Unsloth Studio backend stopped during generation.",
                 duration: 8000,
               });
             }
