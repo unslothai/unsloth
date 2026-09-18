@@ -1787,14 +1787,32 @@ def _corner_rails(provider: str) -> list[str]:
     an assertion, not in the thing that finds the element to assert about. Same reasoning as
     _class_on_testid, which this file already grew for exactly this failure.
     """
+    return [_class_value(tag, RAIL_TESTID) for tag in _rail_openings(provider)]
+
+
+def _rail_openings(provider: str) -> list[str]:
+    """The opening tag of each rail, comments already blanked."""
     clean = _without_comments(provider)
-    rails = []
+    tags = []
     at = clean.find(f'data-testid="{RAIL_TESTID}"')
     while at != -1:
         start, end = _opening_tag(clean, at)
-        rails.append(_class_value(clean[start:end], RAIL_TESTID))
+        tags.append(clean[start:end])
         at = clean.find(f'data-testid="{RAIL_TESTID}"', end)
-    return rails
+    return tags
+
+
+def _rail_padding(tag: str) -> dict[str, str]:
+    """This rail's padding properties mapped to the constant each one is set from.
+
+    The property-to-constant binding, not merely the presence of some STACK_ name: setting
+    paddingLeft from STACK_CARD_INSET_RIGHT renders a 16px left gutter while the 22px floor
+    below still reads a 28px constant nothing applies, and the shadow clips anyway.
+    """
+    return {
+        prop: const
+        for prop, const in re.findall(r"\b(padding(?:Top|Bottom|Left|Right)): (\w+)", tag)
+    }
 
 
 def _rail_style_px(provider: str, name: str) -> int:
@@ -1928,9 +1946,12 @@ def test_both_rails_are_still_pinned_to_the_bottom_right_corner():
     rails = _corner_rails(provider)
     assert len(rails) == 2, f"expected the browser and desktop rails, found {len(rails)}"
     for rail in rails:
-        assert _applies(rail, "fixed"), f"the rail is no longer viewport-fixed: {rail!r}"
-        assert _applies(rail, "bottom-0"), f"the rail left the bottom edge: {rail!r}"
-        assert _applies(rail, "right-0"), f"the rail left the right edge: {rail!r}"
+        # _only_under and not _applies: a positive layout guarantee has to hold everywhere, and
+        # _applies is satisfied by a gated `md:fixed`, under whose breakpoint the rail would not
+        # be in the corner at all. This file's own matcher tests spell that rule out.
+        assert _only_under(rail, "fixed"), f"the rail is no longer always viewport-fixed: {rail!r}"
+        assert _only_under(rail, "bottom-0"), f"the rail can leave the bottom edge: {rail!r}"
+        assert _only_under(rail, "right-0"), f"the rail can leave the right edge: {rail!r}"
 
 
 def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
@@ -1952,10 +1973,20 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
     # The deepest card shadow is 0 8px 28px -6px: 22px left of the card and 14px above it.
     assert left >= 22, f"the left gutter {left}px is inside the card shadow's 22px reach"
     assert top >= 14, f"the top gutter {top}px is inside the card shadow's 14px reach"
-    for name in ("paddingTop", "paddingBottom", "paddingLeft", "paddingRight"):
-        assert provider.count(f"{name}: STACK_") == 2, (
-            f"{name} is not set from a named constant on both rails, so one rail's spacing "
-            f"can drift from the other's"
+    expected = {
+        "paddingTop": "STACK_SHADOW_GUTTER_TOP",
+        "paddingBottom": "STACK_SHADOW_GUTTER_BOTTOM",
+        "paddingLeft": "STACK_SHADOW_GUTTER_LEFT",
+        "paddingRight": "STACK_CARD_INSET_RIGHT",
+    }
+    openings = _rail_openings(provider)
+    assert len(openings) == 2, f"expected the browser and desktop rails, found {len(openings)}"
+    for tag in openings:
+        # The exact binding, per rail. Counting STACK_ names would let paddingLeft be set from
+        # STACK_CARD_INSET_RIGHT: two constants, two rails, count still 2, and the floors above
+        # would go on vouching for a 28px value nothing applies while 16px clips the shadow.
+        assert _rail_padding(tag) == expected, (
+            f"a rail's padding is not bound to its own constant: {_rail_padding(tag)}"
         )
     # A rem-valued utility would scale with the type size and walk the rail off the corner.
     for rail in _corner_rails(provider):
