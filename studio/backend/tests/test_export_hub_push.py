@@ -556,6 +556,18 @@ def test_lora_adapter_push_writes_the_card_the_delegated_push_can_no_longer_writ
     assert success is True, message
     assert seen["card_repo"] == "owner/model"
     assert "base_model: unsloth/Qwen2.5-0.5B-Instruct" in seen["card"]
+    # Same tags upload_to_huggingface produced for this path, trl included and unsloth
+    # not duplicated (the template already carries it).
+    tags = seen["card"].split("tags:", 1)[1].split("license:", 1)[0]
+    assert sorted(line.strip("- ").strip() for line in tags.strip().splitlines()) == [
+        "qwen2",
+        "text-generation-inference",
+        "transformers",
+        "trl",
+        "unsloth",
+    ]
+    # empty `method` leaves a double space the template supplies; markdown collapses it
+    assert "# Uploaded finetuned  model" in seen["card"]
     # written before the weights, never after
     assert calls.index("model_card") < calls.index("model_push:owner/model")
 

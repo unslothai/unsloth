@@ -515,12 +515,15 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         if config is None:
             return
         base_model = getattr(config, "_name_or_path", "unknown") or "unknown"
+        # method/extra reproduce what upload_to_huggingface passed for this path
+        # ("finetuned", "trl"): the template already carries the unsloth tag, so `extra`
+        # is where trl goes, and the heading already reads "Uploaded finetuned ... model".
         content = MODEL_CARD.format(
             username = repo_id.split("/")[0],
             base_model = repo_id if os.path.isdir(base_model) else base_model,
             model_type = getattr(config, "model_type", "llm"),
             method = "",
-            extra = "unsloth",
+            extra = "trl",
         )
         ModelCard(content).push_to_hub(
             repo_id, token = hf_token, commit_message = "Unsloth Model Card"
