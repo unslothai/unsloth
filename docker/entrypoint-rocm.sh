@@ -78,9 +78,15 @@ if [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]; then
         cat >&2 <<'MSG'
 
 This looks like WSL2, where there is no /dev/kfd and the card is reached through
-librocdxg instead. That library is missing from this image, which should not
-happen in a published build; rebuild it, or mount the host's copy:
-  -v /opt/rocm/lib/librocdxg.so.1:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro
+librocdxg instead. The image cannot ship that library (its build needs Windows
+SDK headers), so it comes off the host, along with the libdxcore it dlopens from
+WSL's own lib directory. The bundled wrapper mounts both:
+  bash docker/run.sh --rocm <cmd>
+Or by hand:
+  docker run --device /dev/dxg \
+    -v /opt/rocm/lib/librocdxg.so.1:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro \
+    -v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro -e LD_LIBRARY_PATH=/usr/lib/wsl/lib \
+    <other-flags> unsloth/unsloth-rocm:latest <cmd>
 
 To bypass this check (e.g. offline tooling), set UNSLOTH_SKIP_GPU_CHECK=1.
 MSG

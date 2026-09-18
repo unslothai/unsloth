@@ -533,6 +533,10 @@ class TestRocmEntrypoint:
         )
         assert rc == 1 and not ran
         assert "librocdxg" in err, err
+        # librocdxg dlopens libdxcore from WSL's lib dir: the hand-run recovery must
+        # mount it and put it on the search path, or hsa_init fails after this check.
+        assert "-v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" in err, err
+        assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in err, err
 
     def _dxg_with_torch(self, tmp_path, libnames):
         lib = tmp_path / "dxglib"
