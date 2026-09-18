@@ -594,14 +594,20 @@ _STRING_LITERAL = re.compile(rf"{_QUOTED}|{_TEMPLATE}")
 
 def _normalised(expression: str) -> str:
     """Whitespace outside literals removed, a trailing `,`/`;` dropped, and `s["x"]` as `s.x`."""
+    # Only a bracket outside literals is an access; inside one it is part of a value.
+    scan = _outside_literals(expression)
+    expression = re.sub(
+        r"\[\s*(['\"])([A-Za-z_$][\w$]*)\1\s*\]",
+        lambda match: f".{match.group(2)}" if scan[match.start()] == "[" else match.group(0),
+        expression,
+    )
     pieces, last = [], 0
     for match in _STRING_LITERAL.finditer(expression):
         pieces.append(re.sub(r"\s+", "", expression[last : match.start()]))
         pieces.append(match.group(0))
         last = match.end()
     pieces.append(re.sub(r"\s+", "", expression[last:]))
-    collapsed = "".join(pieces).rstrip(",;")
-    return re.sub(r"\[['\"]([A-Za-z_$][\w$]*)['\"]\]", r".\1", collapsed)
+    return "".join(pieces).rstrip(",;")
 
 
 def _selector_signature(selector: str, field: str):
@@ -1156,6 +1162,9 @@ SELECTOR_CASES = [
     # One access, two spellings: the guard steers nothing if both arms mean the same read.
     ('(s) => s.reasoningBudget ? s.other : s["other"]', False),
     ('(s) => s["reasoningBudget"]', True),
+    # Inside a literal a bracket is part of the value, not an access to rewrite.
+    ("(s) => s.reasoningBudget === 's[\"x\"]' ? \"s.x\" : s.reasoningBudget", False),
+    ("(s) => s.reasoningBudget === 's[\"x\"]' ? 's[\"x\"]' : s.reasoningBudget", True),
     # A comment is not part of the value an arm returns.
     ("(s) => s.reasoningBudget ? s.other : /* same value */ s.other", False),
     ("(s) => s.reasoningBudget ? s.other : s.another // differs", False),
