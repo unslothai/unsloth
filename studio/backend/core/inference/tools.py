@@ -16729,23 +16729,25 @@ def _check_signal_escape_patterns(code: str):
     def _blocks_around(node: ast.AST) -> set:
         return _block_chain(_node_block.get(id(node)))
 
-    def _deferred_read(node: ast.AST) -> bool:
-        """Whether this read sits in a body that runs when called, not where it is written."""
+    def _execution_scope(node: ast.AST):
+        """The body whose call decides when this node runs, or None at module or class level."""
         scope = _node_scope.get(id(node))
-        while scope is not None:
-            if isinstance(scope, (*_FUNCTION_NODES, *_COMPREHENSION_NODES)):
-                return True
+        while scope is not None and not isinstance(
+            scope, (*_FUNCTION_NODES, *_COMPREHENSION_NODES)
+        ):
             scope = _scope_parent.get(id(scope))
-        return False
+        return scope
 
-    def _reaching(stores: list, read: ast.Name) -> list:
+    def _reaching(stores: list, read: ast.Name, owner: ast.AST) -> list:
         """Drop the stores a later one in the same straight line has already replaced."""
         read_at = _position(read)
         around = _blocks_around(read)
         # A store below the read cannot have run yet, unless the read can come round again: a
-        # loop enclosing both, or a function body, which runs whenever it is called.
+        # loop enclosing both, or a name bound outside the body doing the reading, since that
+        # body runs whenever it is called. Inside that body, source order still holds.
         loops = around & _loop_blocks
-        deferred = _deferred_read(read)
+        execution = _execution_scope(read)
+        deferred = execution is not None and owner is not execution
         reaches = [s for s in stores if deferred or s[1] < read_at or (_block_chain(s[2]) & loops)]
         # A store in the same body, after this one and before the read, always runs in between,
         # but only if it is guaranteed to bind at all. Branches, loop bodies and walrus
@@ -16765,7 +16767,7 @@ def _check_signal_escape_patterns(code: str):
         scope = _node_scope.get(id(name), tree)
         if _declared.get((id(scope), name.id)) == "global":
             stores = _name_stores.get((id(tree), name.id))
-            return None if stores is None else _reaching(stores, name)
+            return None if stores is None else _reaching(stores, name, tree)
         read_at = _position(name)
         around = _blocks_around(name)
         values: list = []
@@ -16783,14 +16785,14 @@ def _check_signal_escape_patterns(code: str):
                     if not stores:
                         current = _scope_parent.get(id(current))
                         continue
-                    values.extend(_reaching(stores, name))
+                    values.extend(_reaching(stores, name, current))
                     found = True
                     # Only a class store that certainly ran hides the enclosing binding.
                     if not any(cert and blk in around for _v, _p, blk, cert in stores):
                         current = _scope_parent.get(id(current))
                         continue
                     break
-                values.extend(_reaching(stores, name))
+                values.extend(_reaching(stores, name, current))
                 found = True
                 break
             current = _scope_parent.get(id(current))

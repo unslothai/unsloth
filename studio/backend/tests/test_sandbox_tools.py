@@ -431,7 +431,13 @@ class TestNetworkTargetResolution:
                 f"import socket\ns = socket.socket()\ns.connect_ex(('{_H}', 22))",
                 id = "socket_connect_ex",
             ),
-            # A store below the read still counts where the read can come round again.
+            # A store below the read still counts where the read can come round again, or
+            # where the name is bound outside the body that reads it.
+            pytest.param(
+                f"import requests\nurl = 'https://pypi.org/'\ndef f():\n    requests.get(url)\n"
+                f"url = 'http://{_H}/'\nf()",
+                id = "outer_store_below_a_deferred_read",
+            ),
             pytest.param(
                 f"import requests\nurl = 'https://pypi.org/'\nwhile c:\n    requests.get(url)\n"
                 f"    url = 'http://{_H}/'",
@@ -732,6 +738,9 @@ class TestNetworkTargetResolution:
             # A straight-line store below the call has not run yet.
             "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = input()",
             "import requests\nurl = 'https://pypi.org/'\nrequests.get(url)\nurl = 'http://internal.example/'",
+            # Inside the body doing the reading, source order still holds.
+            "import requests\ndef f():\n    url = 'https://pypi.org/'\n    requests.get(url)\n"
+            "    url = 'http://203.0.113.5/'",
             "import requests\nurl = 'https://pypi.org/'\nclass C:\n    requests.get(url)\n    url = 'http://203.0.113.5/'",
             "import requests\nurl = 'http://203.0.113.5/'\nclass C:\n    url = 'https://pypi.org/'\n    requests.get(url)",
             # urllib3's string helpers open no connection.
