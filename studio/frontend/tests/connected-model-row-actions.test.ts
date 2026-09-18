@@ -312,19 +312,16 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // one, and the pin effect's own guard sees no change in the stored string.
   assert.match(
     chatPage,
-    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*clearsToChatEffort: true,/,
+    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*\}\);\s*\}, \[activePinnedEffort,/,
   );
   assert.match(
     chatPage,
-    /reasoningFieldsAfterCatalogRefresh\(useChatRuntimeStore\.getState\(\), caps\),\s*\);[\s\S]{0,220}?reconcilePinnedReasoningEffort\(\{[\s\S]{0,160}?clearsToChatEffort: false,/,
+    /reasoningFieldsAfterCatalogRefresh\(useChatRuntimeStore\.getState\(\), caps\),\s*\);[\s\S]{0,220}?reconcilePinnedReasoningEffort\(\{/,
   );
-  // A refresh cannot tell a cleared pin from one it never had, so absence alone is not a clear.
-  // A ladder that withdrew the pin in force is, though: the live level is then a clamp of the
-  // withdrawn pin, and leaving it would also store the clamp as the chat's own level next.
-  assert.match(
-    chatPage,
-    /if \(!pinned && !opts\.clearsToChatEffort && !pinHoldsLiveEffort\(\)\) return;/,
-  );
+  // Whether the level came from a pin is asked of the store, never inferred from the trigger:
+  // absence is a clear for the pin effect but not for a refresh, and it is a clear the user can
+  // also cause from the composer, where resolving afresh would undo the level just chosen.
+  assert.match(chatPage, /if \(!pinned && !pinHoldsLiveEffort\(\)\) return;/);
   // Switching to an unpinned model resolves from the chat's own level, not from the outgoing
   // model's pin, which is what the live value holds.
   assert.match(
@@ -335,11 +332,18 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
     chatPage,
     /current:\s*!pinnedEffort && pinHoldsLiveEffort\(\)\s*\? \(takeEffortDisplacedByPin\(\) \?\? state\.reasoningEffort\)\s*: state\.reasoningEffort,/,
   );
-  // The record, not the stored pin: a level the user set through the composer clears it, so it is
-  // the one signal that says the level on screen actually came from a pin.
+  // A pin in force owns the live level outright, whether or not it displaced anything when it
+  // was applied: pinning the level already in the store recorded nothing, and the thread opened
+  // next had its own level held back behind that pin with no record to hand back.
   assert.match(
     readSrc("features/chat/stores/chat-runtime-store.ts"),
-    /export function pinHoldsLiveEffort\(\): boolean \{\s*return effortDisplacedByPin !== null;/,
+    /export function pinHoldsLiveEffort\(\): boolean \{\s*return \(\s*pinOwnsLiveReasoningEffort\(useChatRuntimeStore\.getState\(\)\) \|\|\s*effortDisplacedByPin !== null\s*\);/,
+  );
+  // And the chat's own level is recorded as the snapshot is held back, so the pin can be handed
+  // back the level of the chat that is open now rather than the one before it.
+  assert.match(
+    readSrc("features/chat/stores/chat-runtime-store.ts"),
+    /if \(key === "reasoningEffort" && pinOwnsLiveReasoningEffort\(state\)\) \{[\s\S]{0,500}?effortDisplacedByPin = value as ReasoningEffort;/,
   );
   // Leaving a pinned model for a local one restores the chat's level first: the load and status
   // handlers clamp whatever the store holds to the local ladder, and that is the pin.
@@ -454,6 +458,13 @@ test("editing the live model's effort reaches the chat now", () => {
     store,
     /own level, so whatever a pin displaced before is history\.\s*effortDisplacedByPin = null;/,
   );
+  // And the pin goes with it. Every caller is the user picking a level for the model on screen,
+  // which is what its pin claims to decide, so leaving the pin ran this level now and put the
+  // pin's back on the next switch, with the row naming a level the composer did not show.
+  assert.match(
+    store,
+    /if \(checkpoint && pinned !== undefined && pinned !== reasoningEffort\) \{\s*setModelReasoningEffort\(checkpoint, null\);/,
+  );
   // reasoningEffort is a thread-scoped key, so a snapshot taken while a pin is in force would
   // store the model's level as the chat's own and clearing the pin could not undo it.
   assert.match(
@@ -469,7 +480,7 @@ test("editing the live model's effort reaches the chat now", () => {
   // outranks the chat for as long as its model is selected.
   assert.match(
     store,
-    /applied\[key\] = value;[\s\S]{0,400}?if \(key === "reasoningEffort" && pinOwnsLiveReasoningEffort\(state\)\) \{\s*continue;/,
+    /applied\[key\] = value;[\s\S]{0,400}?if \(key === "reasoningEffort" && pinOwnsLiveReasoningEffort\(state\)\) \{/,
   );
   // With the snapshot pin-free, clearing resolves from the chat's own recorded level first: that
   // one survives a reload and a thread switch, which the in-memory record does not.

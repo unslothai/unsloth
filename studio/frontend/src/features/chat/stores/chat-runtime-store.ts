@@ -7,7 +7,10 @@ import {
   useHfTokenStore,
 } from "@/features/hub/stores/hf-token-store";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
-import { pinnedReasoningEffort } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+import {
+  pinnedReasoningEffort,
+  useModelReasoningEffortStore,
+} from "@/features/model-picker/components/model-selector/model-reasoning-effort";
 import { loadedContextFields } from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
@@ -3481,11 +3484,16 @@ export function noteEffortDisplacedByPin(current: ReasoningEffort): void {
   effortDisplacedByPin ??= current;
 }
 
-/** Whether the live effort is a pin's rather than the chat's own. Recorded when a pin displaced
- *  the chat's level and cleared the moment the user states a level themselves, so it says what a
- *  stored pin cannot: that the level on screen actually came from one. */
+/** Whether the live effort is a pin's rather than the chat's own. A pin in force owns it outright:
+ *  every path that applies one writes it, the snapshot apply holds the chat's level back behind it,
+ *  and stating a level in the composer clears the pin, so the two cannot disagree. The record
+ *  covers the pin that has since gone, whether cleared or withdrawn by a catalogue refresh, while
+ *  the level in the store is still it. */
 export function pinHoldsLiveEffort(): boolean {
-  return effortDisplacedByPin !== null;
+  return (
+    pinOwnsLiveReasoningEffort(useChatRuntimeStore.getState()) ||
+    effortDisplacedByPin !== null
+  );
 }
 
 /** The level to resolve from when a pin is cleared, or null when neither source has one. The
@@ -4909,6 +4917,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // stays the chat's on record, recorded just above, but must not land in the store over
         // the pin. Same shape as the "full" case: recorded, not applied.
         if (key === "reasoningEffort" && pinOwnsLiveReasoningEffort(state)) {
+          // This chat's own level, which the pin is now sitting on top of, so leaving the model
+          // hands it back. Assigned rather than noted: it replaces the last chat's, and the pin
+          // may have been in the store since before this one opened, displacing nothing then.
+          // The value is one the enum sanitizer already passed.
+          effortDisplacedByPin = value as ReasoningEffort;
           continue;
         }
         if (isSameThreadScopedValue(value, readThreadScopedValue(state, key))) {
@@ -5153,7 +5166,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           : {}),
       };
     }),
-  setReasoningEffort: (reasoningEffort) =>
+  setReasoningEffort: (reasoningEffort) => {
+    // Every caller is the user picking a level for the model on screen, which is what its pin
+    // claims to decide, so the pin goes. Leaving it ran this level now and put the pin's back on
+    // the next switch or resync, with the row still naming a level the composer did not show.
+    const checkpoint = useChatRuntimeStore.getState().params.checkpoint;
+    const { effortByModel, setModelReasoningEffort } =
+      useModelReasoningEffortStore.getState();
+    const pinned = checkpoint ? effortByModel[checkpoint] : undefined;
+    // Re-picking the pin's own level states nothing new, so it keeps the pin.
+    if (checkpoint && pinned !== undefined && pinned !== reasoningEffort) {
+      setModelReasoningEffort(checkpoint, null);
+    }
     set((state) => {
       // The user has just stated their own level, so whatever a pin displaced before is history.
       effortDisplacedByPin = null;
@@ -5166,7 +5190,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         reasoningEffort,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
+    });
+  },
   setPreserveThinking: (preserveThinking) =>
     set((state) => {
       setScalarSettingVersion(

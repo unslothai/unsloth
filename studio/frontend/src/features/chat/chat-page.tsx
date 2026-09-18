@@ -290,19 +290,18 @@ function reconcilePinnedReasoningEffort(opts: {
   checkpoint: string;
   caps: ExternalReasoningCapabilities;
   providerType: string | null | undefined;
-  /** Whether no pin means the user just cleared one, in which case the chat's own level comes
-   *  back. A catalogue refresh cannot tell a cleared pin from one it never had, so it says no. */
-  clearsToChatEffort: boolean;
 }): void {
   const live = useChatRuntimeStore.getState().reasoningEffort;
   const pinned = pinnedReasoningEffort(
     opts.checkpoint,
     opts.caps.reasoningEffortLevels,
   );
-  // A ladder that no longer offers the pin has taken it away as surely as clearing it: the level
-  // in the store is a clamp of the withdrawn pin, not the chat's, so the chat's own comes back.
-  // That is also what keeps the next thread snapshot from storing the clamp as the chat's level.
-  if (!pinned && !opts.clearsToChatEffort && !pinHoldsLiveEffort()) return;
+  // With no pin there is only something to do when the level in the store is still a departed
+  // pin's, whether it was cleared or a refreshed ladder withdrew it: then the chat's own level
+  // comes back, which is also what keeps the next snapshot from storing that level as the chat's.
+  // Asked of the store, not of the trigger: stating a level in the composer clears the pin too,
+  // and resolving afresh there would put the chat's stored level over the one just chosen.
+  if (!pinned && !pinHoldsLiveEffort()) return;
   const next = resolveExternalReasoningEffort({
     caps: opts.caps,
     providerType: opts.providerType,
@@ -2725,12 +2724,10 @@ export function ChatPage({
         baseUrl: provider?.baseUrl ?? null,
       },
     );
-    // This guard fires on the stored pin changing, so no pin here means it was cleared.
     reconcilePinnedReasoningEffort({
       checkpoint: inferenceParams.checkpoint,
       caps,
       providerType: provider?.providerType,
-      clearsToChatEffort: true,
     });
   }, [activePinnedEffort, externalProvidersForChat, inferenceParams.checkpoint]);
   // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
@@ -2766,7 +2763,6 @@ export function ChatPage({
       checkpoint: inferenceParams.checkpoint,
       caps,
       providerType: provider?.providerType,
-      clearsToChatEffort: false,
     });
   }, [modelCatalogChange, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
