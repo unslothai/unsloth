@@ -838,3 +838,57 @@ def test_a_configured_16bit_load_does_not_scan_the_4bit_mirror(mapper, monkeypat
         is None
     )
     assert scanned == ["google/gemma-3-270m-it", "unsloth/gemma-3-270m-it"]
+
+
+def test_the_scan_covers_the_repo_left_after_the_4bit_suffix_is_stripped(mapper, monkeypatch):
+    # Where ALLOW_PREQUANTIZED_MODELS is false (ROCm Instinct on bitsandbytes < 0.49.2)
+    # loader.py:581 strips the suffix off the name the mapper produced and downloads that
+    # repo. Meta-Llama-3-70B-Instruct maps only in the 4-bit direction, so the stripped repo
+    # is the one that actually gets fetched there.
+    import core.training.worker as worker_mod
+    import utils.security as security_mod
+
+    scanned: list[str] = []
+
+    class _Decision:
+        blocked = False
+
+        def response_payload(self):
+            return {}
+
+    monkeypatch.setattr(worker_mod, "_model_local_files_only", lambda config: False, raising = False)
+    monkeypatch.setattr(security_mod, "security_load_subdirs", lambda *a, **kw: ())
+    monkeypatch.setattr(security_mod, "load_scan_target", lambda t, s: (t, s))
+    monkeypatch.setattr(
+        security_mod,
+        "evaluate_file_security",
+        lambda target, **kw: (scanned.append(target), _Decision())[1],
+    )
+
+    model = "meta-llama/Meta-Llama-3-70B-Instruct"
+    assert (
+        worker_mod._model_load_security_error(
+            {"model_name": model, "load_in_4bit": True, "trust_remote_code": False}, model, None
+        )
+        is None
+    )
+    # Lower case: that is how the mapper stores this value, and the strip preserves whatever
+    # case it is handed (HF cache directories are case sensitive).
+    assert "unsloth/llama-3-70b-instruct-bnb-4bit" in scanned
+    assert "unsloth/llama-3-70b-instruct" in scanned
+
+
+@pytest.mark.parametrize(
+    "name,stripped",
+    [
+        ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", "unsloth/gemma-3-270m-it"),
+        ("unsloth/llama-3-70b-Instruct-bnb-4bit", "unsloth/llama-3-70b-Instruct"),
+        ("unsloth/gemma-3-270m-it", "unsloth/gemma-3-270m-it"),
+    ],
+)
+def test_the_suffix_strip_matches_the_loader(name, stripped):
+    import core.training.worker as worker_mod
+    from unsloth.models.loader import _strip_unsloth_bnb_4bit_suffix as loader_strip
+
+    assert worker_mod._strip_unsloth_bnb_4bit_suffix(name) == stripped
+    assert loader_strip(name) == stripped

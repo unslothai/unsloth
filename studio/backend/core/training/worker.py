@@ -900,6 +900,16 @@ def _reload_dataset_with_remote_model_tokenizer(
     return reload_dataset()
 
 
+def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
+    """unsloth.models.loader._strip_unsloth_bnb_4bit_suffix, copied rather than imported: that
+    module pulls in torch, and this runs before the worker is allowed to."""
+    stripped = model_name
+    for suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
+        if len(stripped) >= len(suffix) and stripped.lower().endswith(suffix):
+            stripped = stripped[: -len(suffix)]
+    return stripped
+
+
 def _model_load_security_error(config: dict, load_target: str, hf_token: str | None) -> dict | None:
     from utils.models.model_config import get_base_model_from_lora_identifier
     from utils.security import (
@@ -958,6 +968,17 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
                 mirrored = unsloth_public_mirror(load_target, _mode)
                 if mirrored and mirrored != load_target:
                     requested_targets.append(mirrored)
+                    # Where ALLOW_PREQUANTIZED_MODELS is false - ROCm Instinct on
+                    # bitsandbytes < 0.49.2, whose blocksize is 128 while our pre-quants use
+                    # 64 - loader.py:581 strips the 4-bit suffix off the name the mapper just
+                    # produced and downloads THAT repo. For a mapping that only exists in the
+                    # 4-bit direction it is the one repo that actually gets fetched, and
+                    # without it here its files bypass both the malware scan and the
+                    # remote-code consent fingerprint. Unlike a mode that cannot happen, this
+                    # repo really is loaded on a live configuration, so it belongs in the scan.
+                    stripped = _strip_unsloth_bnb_4bit_suffix(mirrored)
+                    if stripped != mirrored and stripped != load_target:
+                        requested_targets.append(stripped)
     except Exception as error:  # noqa: BLE001
         logger.debug("Could not resolve the mirror for the security scan: %s", error)
 
