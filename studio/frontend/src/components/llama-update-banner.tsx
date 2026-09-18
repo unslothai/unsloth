@@ -8,10 +8,16 @@ import {
   llamaUpdateOffered,
   useLlamaUpdateCheck,
 } from "@/hooks/use-llama-update-check";
-import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
 import {
+  useShowLlamaUpdateBanner,
+  useShowWhisperUpdateBanner,
+} from "@/hooks/use-llama-update-pref";
+import {
+  heldUpdateBannerPref,
   llamaReleaseChanged,
   llamaUpdateToastMessage,
+  updateBannerComponent,
+  updateToastTag,
 } from "@/lib/llama-job-lifecycle";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -107,7 +113,8 @@ export function LlamaUpdateBanner({
   enabled = true,
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
-  const showBannerPref = useShowLlamaUpdateBanner();
+  const showLlamaBannerPref = useShowLlamaUpdateBanner();
+  const showWhisperBannerPref = useShowWhisperUpdateBanner();
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   // Not gated on showBannerPref: this hook instance is the app-wide listener
   // for a cross-tab reload_required resync (the settings-sheet's own instance
@@ -119,13 +126,32 @@ export function LlamaUpdateBanner({
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
 
+  // The card names one component and the switches answer per component, so the
+  // shown one is picked here, before the version line and the toast read it.
+  const migrationPending = Boolean(status?.backend_migration_available);
+  const component = updateBannerComponent(
+    status?.component ?? "llama.cpp",
+    {
+      llama: Boolean(status?.llama.update_available) || migrationPending,
+      whisper: Boolean(status?.whisper?.update_available),
+    },
+    { llama: showLlamaBannerPref, whisper: showWhisperBannerPref },
+  );
+  // Its own release pair and download size, not the ones the backend put at the
+  // top level: those are llama's whatever the card shows.
+  const offer =
+    component === "whisper.cpp" ? status?.whisper : status?.llama;
+  const sizeBytes = offer?.update_size_bytes ?? null;
+  const latestTag = offer?.latest_tag ?? null;
+  const installedTag = offer?.installed_tag ?? null;
+
   async function handleUpdate() {
-    const component = status?.component ?? "llama.cpp";
     // Read before applying: the status refreshes as the job runs.
-    const migrating = Boolean(status?.backend_migration_available);
+    const migrating = migrationPending;
     const result = await apply();
     if (result?.ok) {
-      const updatedTag = result.tag ?? status?.latest_tag ?? "the latest build";
+      const updatedTag =
+        updateToastTag(component, result.tag, latestTag) ?? "the latest build";
       toast.success(
         llamaUpdateToastMessage({
           component,
@@ -142,15 +168,24 @@ export function LlamaUpdateBanner({
     }
   }
 
+  // Muted by the component the card shows.
+  const livePref =
+    component === "whisper.cpp" ? showWhisperBannerPref : showLlamaBannerPref;
+  // Held across a chained apply, which renames the card mid-job. An error counts
+  // as in flight so a failed phase keeps its retry on screen.
+  const jobState = status?.job.state;
+  const [heldPref, setHeldPref] = useState<boolean | null>(null);
+  useEffect(() => {
+    setHeldPref((prev) =>
+      heldUpdateBannerPref(prev, applying || jobState === "error", livePref),
+    );
+  }, [applying, jobState, livePref]);
+  const showBannerPref = heldPref ?? livePref;
   const show =
     showBannerPref &&
     visible &&
     status != null &&
     (llamaUpdateOffered(status) || applying);
-  const sizeBytes = status?.update_size_bytes ?? null;
-  const component = status?.component ?? "llama.cpp";
-  const latestTag = status?.latest_tag ?? null;
-  const installedTag = status?.installed_tag ?? null;
   // A migration re-applies the install's own automatic choice, so it can be offered at a
   // release the machine already has, where the backend pair replaces the version line.
   const backendChange =
@@ -158,7 +193,7 @@ export function LlamaUpdateBanner({
       ? `${backendLabel(status.from_backend)} \u2192 ${backendLabel(status.to_backend)}`
       : null;
   const versionChanged = llamaReleaseChanged(
-    Boolean(status?.update_available),
+    Boolean(offer?.update_available),
     installedTag,
     latestTag,
   );

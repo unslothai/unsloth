@@ -732,12 +732,24 @@ def test_the_desktop_update_path_keeps_a_verified_install_offline(install, settl
         "an update with nothing to do failed offline. That is the state a user on a "
         f"plane, or behind a corporate proxy, is in:\n{run.log[-8000:]}"
     )
-    # Either the offline rule or the ordinary fast path: Invoke-RestMethod ignores HTTPS_PROXY, so
-    # on Windows the version check can still answer "up to date". Either way nothing got through the
-    # proxy and nothing on disk moved.
-    assert "keeping the verified install" in run.log or UPTODATE_MARKER.search(run.log), run.log[
-        -8000:
-    ]
+    # Three outcomes are all correct here, because the version check is not behind the proxy:
+    # Invoke-RestMethod ignores HTTPS_PROXY, so on Windows it reaches PyPI and answers for real.
+    #
+    #   - the offline rule fired, which is the case this test exists for;
+    #   - PyPI said the installed version is the latest, the ordinary fast path;
+    #   - PyPI said a NEWER release exists, so the offline rule's precondition ("PyPI is
+    #     unreachable") never held and the pass is supposed to start.
+    #
+    # The third is not a weakening. It is what happens to every branch in the repo for the hours
+    # between a release landing on PyPI and the pin here moving, and asserting it away would mean
+    # this row goes red on a schedule that has nothing to do with the code. The teeth are the two
+    # assertions below, which hold in all three: nothing got through the proxy, and nothing on
+    # disk moved.
+    assert (
+        "keeping the verified install" in run.log
+        or UPTODATE_MARKER.search(run.log)
+        or UPGRADE_MARKER in run.log
+    ), run.log[-8000:]
     assert run.connections == run.refused, run.report()
     assert diff(before, snapshot(install)) == []
 

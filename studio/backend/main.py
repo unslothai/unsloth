@@ -22,6 +22,26 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 # spawned workers inherit it. `setdefault` preserves an explicit override, including "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
+# The desktop app hands this process a GUI environment, and a GUI environment has
+# no ~/.bashrc in it. `fix_path_env::fix()` in src-tauri/src/main.rs spawns the
+# login shell and then takes PATH out of it and nothing else, so an AMD host's
+# HSA_OVERRIDE_GFX_VERSION / ROCM_PATH / USE_CK are dropped on the desktop path
+# and kept on the `unsloth studio` one. #9926 is that difference: identical model
+# and machine, SIGSEGV from the app and a clean run from a terminal.
+#
+# Here because HSA reads HSA_OVERRIDE_GFX_VERSION and USE_CK when torch first
+# touches the GPU, which is far below this. A no-op unless the desktop app owns
+# this process AND the host has an AMD GPU AND the variable is absent, so a
+# terminal launch and every non-AMD host are unchanged.
+_backend_dir = str(_Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+try:
+    from utils.desktop_shell_env import import_rocm_env_from_login_shell as _import_rocm_env
+    _import_rocm_env()
+except Exception:
+    pass
+
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
 # before the startup banner so non-ASCII output cannot crash the backend process.
 if sys.platform == "win32":
@@ -663,11 +683,7 @@ def banner_autofill_available(app_state, environ) -> bool:
 
 
 def bootstrap_banner_lines(
-    username: str,
-    bootstrap_path,
-    password: Optional[str],
-    *,
-    autofill_available: bool,
+    username: str, bootstrap_path, password: Optional[str], *, autofill_available: bool
 ) -> "list[str]":
     """The first-boot banner for a freshly created admin account.
 
@@ -830,9 +846,7 @@ async def lifespan(app: FastAPI):
     # to serve with the default credential: never capture the bootstrap password into app.state.
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
     _created = storage.ensure_default_admin()
-    app.state.bootstrap_password = (
-        None if _suppress_bootstrap else storage.get_bootstrap_password()
-    )
+    app.state.bootstrap_password = None if _suppress_bootstrap else storage.get_bootstrap_password()
     # A tunnel launch runs the pre-bind gate first and that gate seeds the account, so
     # _created is False there and the whole banner would be skipped on exactly the launch
     # that needs it. requires_password_change: the gate may also have taken a new password
