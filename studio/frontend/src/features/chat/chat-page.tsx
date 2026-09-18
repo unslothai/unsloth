@@ -3014,21 +3014,6 @@ export function ChatPage({
         return;
       }
       setPendingHubAutoLoad(null);
-      // A local model is now actually loading, so the chat's own effort goes back before the load
-      // reads it: the load and status handlers clamp whatever the store holds to the local
-      // model's ladder, and what it holds is the external model's pin. Here rather than at the
-      // pick, which also stages downloads that change no model: through one of those the pinned
-      // model is still the one running, and a cancelled or failed download never gets here.
-      const chatEffort = pinHoldsLiveEffort() ? takeEffortDisplacedByPin() : null;
-      if (
-        chatEffort &&
-        chatEffort !== useChatRuntimeStore.getState().reasoningEffort
-      ) {
-        useChatRuntimeStore.setState((state) => ({
-          reasoningEffort: chatEffort,
-          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-        }));
-      }
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
       });
@@ -3403,8 +3388,9 @@ export function ChatPage({
       }
       // Local model picked: drop any cached openrouter/free chosen model.
       useChatRuntimeStore.setState({ lastOpenRouterChosenModel: null });
-      // The chat's own effort goes back in stageOrLoad, at the point a load actually starts: this
-      // path also stages a download that changes no model, and the pinned one keeps running then.
+      // The chat's own effort goes back where the load applies its own reasoning fields, since
+      // everything from here on can still abort or only queue a download, leaving the pinned
+      // model the one running.
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {

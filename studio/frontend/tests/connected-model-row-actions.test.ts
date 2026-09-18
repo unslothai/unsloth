@@ -345,20 +345,28 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
     readSrc("features/chat/stores/chat-runtime-store.ts"),
     /if \(key === "reasoningEffort" && pinOwnsLiveReasoningEffort\(state\)\) \{[\s\S]{0,500}?effortDisplacedByPin = value as ReasoningEffort;/,
   );
-  // Leaving a pinned model for a local one restores the chat's level first: the load and status
-  // handlers clamp whatever the store holds to the local ladder, and that is the pin. At the point
-  // a load actually starts, not at the pick: picking an uncached model only queues its download
-  // and leaves the pinned model running, and a cancelled one never loads at all.
+  // Leaving a pinned model for a local one hands the chat's level to the clamp, which narrows it
+  // to the local model's ladder and would otherwise carry the pin's level onto that model. Taken
+  // where the model has actually become resident, never where one was picked: picking an uncached
+  // model only queues a download, and the load can still abort at a lease, a confirmation or a
+  // token prompt without the model ever changing.
+  const localLoad = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(
-    chatPage,
-    /const chatEffort = pinHoldsLiveEffort\(\) \? takeEffortDisplacedByPin\(\) : null;\s*if \(\s*chatEffort &&\s*chatEffort !== useChatRuntimeStore\.getState\(\)\.reasoningEffort\s*\) \{\s*useChatRuntimeStore\.setState\(\(state\) => \(\{\s*reasoningEffort: chatEffort,\s*queuedSettingsEpoch: state\.queuedSettingsEpoch \+ 1,/,
+    localLoad,
+    /const existingReasoningEffort =\s*\(pinHoldsLiveEffort\(\) \? takeEffortDisplacedByPin\(\) : null\) \?\?\s*useChatRuntimeStore\.getState\(\)\.reasoningEffort;/,
   );
-  // Which is the one place every local load funnels through, the deferred load after a staged
-  // download included, and it is past both staging returns.
+  const statusApply = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
   assert.match(
-    chatPage,
-    /const chatEffort = pinHoldsLiveEffort[\s\S]{0,620}?await selectModel\(\{/,
+    statusApply,
+    /const effortToClamp =\s*\(pinHoldsLiveEffort\(\) \? takeEffortDisplacedByPin\(\) : null\) \?\?\s*prevState\.reasoningEffort;/,
   );
+  // Both clamps read the one value, so neither can keep clamping the pin's.
+  assert.match(
+    statusApply,
+    /\? clampReasoningEffortToLevels\(effortToClamp, reasoningEffortLevels\)\s*: clampLocalReasoningEffort\(effortToClamp\);/,
+  );
+  // And the pick itself takes nothing, so an abort leaves the pin applied with nothing to undo.
+  assert.doesNotMatch(chatPage, /takeEffortDisplacedByPin\(\) : null/);
   // A number field accepts scientific notation and parseInt stops at the "e", so 1e5 was read as
   // 1 and saved clamped to the provider minimum.
   assert.match(
