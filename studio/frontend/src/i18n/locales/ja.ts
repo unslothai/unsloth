@@ -1237,7 +1237,11 @@ export const ja = {
       },
       gpu: {
         title: "GPU デバイス",
-        ggufInference: "GGUF 推論",
+        memory: "GPUメモリ",
+        sharedWithSystemRam: "システムRAMと共有",
+        estimatedAvailable: "推定空き容量: {value}",
+        sharedEstimatedAvailable: "共有システムRAM: 推定空き容量 {value}",
+        ggufInference: "GGUFモデル用メモリ",
         unavailable: "利用不可",
         detecting: "GPU を確認しています...",
         unreadable: "このサーバーのハードウェアを読み取れませんでした。",

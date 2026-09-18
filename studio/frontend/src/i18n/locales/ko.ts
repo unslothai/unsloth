@@ -1253,7 +1253,11 @@ export const ko = {
       },
       gpu: {
         title: "GPU 장치",
-        ggufInference: "GGUF 추론",
+        memory: "GPU 메모리",
+        sharedWithSystemRam: "시스템 RAM과 공유",
+        estimatedAvailable: "예상 사용 가능: {value}",
+        sharedEstimatedAvailable: "공유 시스템 RAM: 예상 사용 가능 {value}",
+        ggufInference: "GGUF 모델 메모리",
         unavailable: "사용할 수 없음",
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
