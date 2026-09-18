@@ -60,7 +60,15 @@ def _auto_switch_waiters_are_not_carried_between_tests(request):
     Two jobs, deliberately. Restoring keeps the next test starting from a known state. Raising
     names the test that left the residue instead of the unrelated one that trips over it later,
     which is the whole difficulty with this class of bug: the failure surfaces nowhere near its
-    cause, and under a random order it surfaces somewhere different each run.
+    cause.
+
+    The two halves have different proofs, and one of them has none. Removing the marker from a
+    staging test makes that test fail, so the detection half is covered. Removing the restore
+    changes nothing any test here can observe: the growth check is per-test, so a carried-over
+    entry only harms files that run LATER in the same worker, and which files share a worker is
+    decided by xdist at run time. A cleanliness assertion in a second file would pass vacuously
+    whenever the two land in different processes, which is worse than no test at all, so the
+    restore is kept as a defensive measure and is deliberately left unproven.
 
     Three tests stage a waiting request on purpose, with ``_note_switch_waiter(key, 1)`` and no
     matching -1, because that is the honest way to set the condition up. They carry
@@ -74,13 +82,20 @@ def _auto_switch_waiters_are_not_carried_between_tests(request):
         after = dict(inference_route._auto_switch_waiters)
         inference_route._auto_switch_waiters.clear()
         inference_route._auto_switch_waiters.update(before)
-    if after != before and request.node.get_closest_marker("stages_switch_waiter") is None:
+    # Only counts that GREW. A test that clears the dict, or decrements a key it did not add,
+    # is tidying up after somebody else and must not be blamed for it: several tests here reset
+    # the registry as part of their own setup, and flagging any difference at all turned every
+    # one of them into a failure the moment another file in the same worker left an entry
+    # behind. Growth is the only direction that inflates _switch_waiter_count() for the tests
+    # that follow.
+    leaked = {key: count for key, count in after.items() if count > before.get(key, 0)}
+    if leaked and request.node.get_closest_marker("stages_switch_waiter") is None:
         raise AssertionError(
             "this test left routes.inference._auto_switch_waiters dirty: "
-            f"{before!r} -> {after!r}. _switch_waiter_count() sums every key, so the entry "
-            "inflates the waiter count for every later test in this xdist worker. Unregister "
-            "it, or mark the test @pytest.mark.stages_switch_waiter if the residue is the "
-            "point."
+            f"{leaked!r} (registry went {before!r} -> {after!r}). _switch_waiter_count() sums "
+            "every key, so the entry inflates the waiter count for every later test in this "
+            "xdist worker. Unregister it, or mark the test @pytest.mark.stages_switch_waiter "
+            "if the residue is the point."
         )
 
 
