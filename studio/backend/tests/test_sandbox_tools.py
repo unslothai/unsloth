@@ -409,6 +409,21 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # The encoded request helpers take the URL after the method, like `request`.
+            pytest.param(
+                f"import urllib3\nurllib3.PoolManager().request_encode_url('GET', 'http://{_H}/')",
+                id = "urllib3_request_encode_url",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.PoolManager().request_encode_body('POST', 'http://{_H}/')",
+                id = "urllib3_request_encode_body",
+            ),
+            # A proxy set on the session sends there, whatever the request URL says.
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f"s.proxies = {{'https': 'http://{_H}:8080'}}\ns.get('https://pypi.org/')",
+                id = "proxy_configured_on_the_session",
+            ),
             # A URL factory reached through the module that defines it.
             pytest.param(
                 f"import urllib3\nurllib3.connectionpool.connection_from_url('http://{_H}/')",
@@ -773,6 +788,7 @@ class TestNetworkTargetResolution:
             # An explicit None is a disabled proxy, not an unknown destination.
             "import httpx\nhttpx.Client(proxy=None).get('https://pypi.org/')",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': None})",
+            "import requests\ns = requests.Session()\ns.proxies = {'https': 'https://pypi.org'}\ns.get('https://pypi.org/')",
             # A receiver that is not the instance keeps its own identity.
             "import requests\nclass A:\n    def __init__(self):\n        self.s = requests.Session()\n"
             "    def go(self, other):\n        other.s.get('https://pypi.org/')",

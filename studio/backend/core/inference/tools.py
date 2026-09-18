@@ -15913,7 +15913,11 @@ def _check_signal_escape_patterns(code: str):
                 for c in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
             },
             **{f"{c}.send": (0, "request", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
-            **{f"{client}.urlopen": (1, "url", "url") for client in _POOL_CLIENTS},
+            **{
+                f"{client}.{method}": (1, "url", "url")
+                for client in _POOL_CLIENTS
+                for method in ("urlopen", "request_encode_url", "request_encode_body")
+            },
             **{f"{client}.connection_from_url": (0, "url", "url") for client in _POOL_CLIENTS},
             **{
                 f"{client}.send": (0, "request", "url")
@@ -16808,17 +16812,19 @@ def _check_signal_escape_patterns(code: str):
         ]
 
     def _attr_values(expr: ast.Attribute) -> "list | None":
+        return _attr_values_for(_node_scope.get(id(expr), tree), expr.value.id, expr.attr)
+
+    def _attr_values_for(scope: ast.AST, receiver_id: str, attr: str) -> "list | None":
         """Return the stores for an `obj.attr` receiver, nearest owning scope first."""
-        scope = _node_scope.get(id(expr), tree)
         cls = _enclosing_class(scope)
         if cls is not None:
             # A subclass reads what its bases set on self, so walk the inheritance chain.
-            receiver = _receiver_key(expr.value.id, scope)
+            receiver = _receiver_key(receiver_id, scope)
             values: list = []
             pending, seen = [cls], {id(cls)}
             while pending:
                 current = pending.pop(0)
-                values.extend(_attr_stores.get((id(current), receiver, expr.attr)) or [])
+                values.extend(_attr_stores.get((id(current), receiver, attr)) or [])
                 for base in _base_classes(current):
                     if id(base) not in seen:
                         seen.add(id(base))
@@ -16826,7 +16832,7 @@ def _check_signal_escape_patterns(code: str):
             return values or None
         current: ast.AST | None = scope
         while current is not None:
-            values = _attr_stores.get((id(current), expr.value.id, expr.attr))
+            values = _attr_stores.get((id(current), receiver_id, attr))
             if values is not None:
                 return values
             current = _scope_parent.get(id(current))
@@ -17224,6 +17230,17 @@ def _check_signal_escape_patterns(code: str):
                         for kw in node.keywords or []
                         if kw.arg in _PROXY_KEYWORDS
                     ]
+                    # `s.proxies = {...}` before the call sends there just the same.
+                    if isinstance(node.func, ast.Attribute) and isinstance(
+                        node.func.value, ast.Name
+                    ):
+                        scope = _node_scope.get(id(node), tree)
+                        targets += [
+                            (True, value, "url")
+                            for attr in _PROXY_KEYWORDS
+                            for value in _attr_values_for(scope, node.func.value.id, attr) or []
+                            if isinstance(value, ast.AST)
+                        ]
                     self._check_target(node, targets, connects = True)
 
             is_open_call = (
