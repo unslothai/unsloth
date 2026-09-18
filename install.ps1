@@ -2691,20 +2691,18 @@ exit 1
     $script:StudioEarlyPythonProbedWithoutVenv = $false
 
     function Get-StudioEarlyPython {
-        # A previous install's own interpreter first: it is the one this installer chose last
-        # time, and reaching it through $VenvDir means an alias of the root resolves to the same
-        # file without anyone canonicalising anything. $VenvDir is not set yet on the earliest
-        # calls, so read it defensively rather than assuming.
+        # $VenvDir is assigned thousands of lines below this function's earliest caller, so it is
+        # read defensively rather than assumed, and WHETHER it was known is recorded with the
+        # answer. One re-probe, and only this one: a miss taken before the variable existed never
+        # looked at the previous install's own interpreter, and latching it for the rest of the
+        # run leaves every rung below without one on a host that has no system Python, which is
+        # the population they exist for. The --tauri path reaches this well before the assignment.
+        # A miss taken WITH the variable known is final and a hit is always final, so the latch
+        # still holds the spawn count down to one.
         $venvDirValue = $null
         try { $venvDirValue = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue } catch {}
         $venvKnown = -not [string]::IsNullOrWhiteSpace($venvDirValue)
         if ($script:StudioEarlyPythonProbed) {
-            # One re-probe, and only this one. A miss recorded before $VenvDir was known never
-            # looked at the previous install's interpreter, and latching it for the rest of the
-            # run leaves every rung below without one on a host that has no system Python, which
-            # is the population they exist for. The --tauri path reaches this well before the
-            # variable is assigned. A miss recorded WITH the variable known is final, and a hit is
-            # always final, so the latch still holds the spawn count down to one.
             if (-not ($script:StudioEarlyPythonProbedWithoutVenv -and $venvKnown -and
                       [string]::IsNullOrWhiteSpace($script:StudioEarlyPython))) {
                 return $script:StudioEarlyPython
@@ -2717,6 +2715,9 @@ exit 1
         # to 0 and the ladder falls through to the lexical resolver exactly as it did before.
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $null }
         $candidates = @()
+        # A previous install's own interpreter first: it is the one this installer chose last
+        # time, and reaching it through $VenvDir means an alias of the root resolves to the same
+        # file without anyone canonicalising anything.
         if ($venvKnown) {
             $candidates += (Join-Path $venvDirValue "Scripts\python.exe")
             $candidates += (Join-Path $venvDirValue "bin/python3")
@@ -2993,11 +2994,32 @@ exit 1
         return $answer
     }
 
+    # One child per DISTINCT path, not per call.
+    #
+    # The process scan resolves the image path of every running process, and the install repeats
+    # that for each protected root, so a machine with a few hundred processes asked this the same
+    # questions two to four times over. Most of those paths are also the same string: many
+    # processes run the same executable. Where the rung above this one declines, which is what
+    # WDAC Dynamic Code Security and Constrained Language Mode do, every one of those was a child
+    # process with a ten second bound behind it.
+    #
+    # The miss is cached too, as $null, because "asked, and there is no exact answer for this
+    # path" is worth exactly as much as an answer and costs the same child to learn twice.
+    $script:StudioPythonFinalPathCache = $null
+
     function Get-StudioPythonFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
+        if ($null -eq $script:StudioPythonFinalPathCache) { $script:StudioPythonFinalPathCache = @{} }
+        if ($script:StudioPythonFinalPathCache.ContainsKey($Path)) {
+            return $script:StudioPythonFinalPathCache[$Path]
+        }
         $exe = Get-StudioEarlyPython
+        # Not cached: the interpreter can appear later in the run (the ladder re-probes once
+        # $VenvDir is known), and recording a miss taken without one would outlive the reason.
         if (-not $exe) { return $null }
-        return (Invoke-StudioEarlyPython -Exe $exe -Path $Path)
+        $answer = Invoke-StudioEarlyPython -Exe $exe -Path $Path
+        $script:StudioPythonFinalPathCache[$Path] = $answer
+        return $answer
     }
 
     # Exact = $true means the native resolver answered, so the string is what it
