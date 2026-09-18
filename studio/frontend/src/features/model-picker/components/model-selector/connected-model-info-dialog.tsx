@@ -7,6 +7,9 @@
 //
 // Each figure is read through the same resolver the rest of the app uses for it, so this cannot
 // disagree with the composer's own chips.
+//
+// What the model is, not what it is set to: the gear beside this opens the three settings it
+// keeps of its own and shows what each holds, so printing them here was that dialog again.
 
 import {
   Dialog,
@@ -14,11 +17,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  modelCatalogVersion,
-  subscribeModelCatalog,
-  useChatRuntimeStore,
-} from "@/features/chat";
+import { modelCatalogVersion, subscribeModelCatalog } from "@/features/chat";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import { resolveModelCatalogEntry } from "@/features/chat/model-catalog";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
@@ -29,7 +28,6 @@ import {
 } from "@/features/chat/provider-capabilities";
 import { type ReactNode, useSyncExternalStore } from "react";
 import { connectedModelMarks } from "./connected-model-meta";
-import { useModelReasoningEffortStore } from "./model-reasoning-effort";
 
 const MODALITY_LABELS: Record<string, string> = {
   text: "Text",
@@ -58,19 +56,10 @@ function Unset({ children }: { children: string }) {
   return <span className="text-muted-foreground">{children}</span>;
 }
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <div className="pt-4 pb-1 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
-      {children}
-    </div>
-  );
-}
-
 export function ConnectedModelInfoDialog({
   open,
   onOpenChange,
   modelId,
-  checkpointId,
   displayName,
   providerName,
   providerType,
@@ -81,8 +70,6 @@ export function ConnectedModelInfoDialog({
   onOpenChange: (open: boolean) => void;
   /** The provider's own id, which is what every lookup here keys on. */
   modelId: string;
-  /** The `external::` id, which is what the per-model memories key on instead. */
-  checkpointId: string;
   displayName: string;
   providerName: string;
   providerType: string;
@@ -110,16 +97,6 @@ export function ConnectedModelInfoDialog({
     getPublishedExternalMaxOutputTokens(providerType, modelId) ??
     entry?.maxOutputTokens ??
     null;
-
-  // What this model carries of its own. Chat has remembered these per model all along, but
-  // nothing ever said so, which is how a prompt set weeks ago comes back as a surprise.
-  const remembered = useChatRuntimeStore(
-    (state) => state.paramsByModel[checkpointId],
-  );
-  const pinnedEffort = useModelReasoningEffortStore(
-    (state) => state.effortByModel[checkpointId],
-  );
-  const ownPrompt = remembered?.systemPrompt?.trim();
 
   const inputs = entry?.inputModalities?.length
     ? entry.inputModalities
@@ -183,39 +160,6 @@ export function ConnectedModelInfoDialog({
               <Unset>No</Unset>
             )}
           </Field>
-        </div>
-
-        <div className="divide-y divide-border/50">
-          <SectionLabel>This model's own settings</SectionLabel>
-          <Field label="System prompt">
-            {ownPrompt ? (
-              <span className="line-clamp-3 text-left">{ownPrompt}</span>
-            ) : (
-              <Unset>None</Unset>
-            )}
-          </Field>
-          <Field label="Max output">
-            {remembered?.maxTokens ? (
-              <span className="tabular-nums">
-                {tokens(remembered.maxTokens)}
-              </span>
-            ) : (
-              <Unset>Follows the chat</Unset>
-            )}
-          </Field>
-          {takesEffort ? (
-            <Field label="Reasoning effort">
-              {/* Only a level the ladder still offers: a catalogue refresh can withdraw one, and
-                  every resolver then ignores the pin, so printing it would be the one place still
-                  claiming it applies. */}
-              {pinnedEffort &&
-              (effortLevels as readonly string[]).includes(pinnedEffort) ? (
-                pinnedEffort
-              ) : (
-                <Unset>Follows the chat</Unset>
-              )}
-            </Field>
-          ) : null}
         </div>
       </DialogContent>
     </Dialog>

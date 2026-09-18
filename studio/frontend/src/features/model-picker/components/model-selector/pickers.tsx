@@ -7533,7 +7533,6 @@ export function HubModelPicker({
             if (!next) setInfoModel(null);
           }}
           modelId={infoModel.providerModelId}
-          checkpointId={infoModel.model.id}
           displayName={infoModel.model.name}
           providerName={infoModel.model.providerName}
           providerType={infoModel.model.providerType}

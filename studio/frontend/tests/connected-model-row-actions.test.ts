@@ -321,12 +321,13 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
     settingsDialog,
     /const effort =\s*liveEffortDraft \?\?\s*\(pinnedEffort && offered\(pinnedEffort\) \? pinnedEffort : FOLLOW_CHAT\);/,
   );
-  // The info box stops printing a withdrawn pin too, which was the last place claiming it applies.
-  assert.match(
+  // And the save is the only place a pin is read for display: the info box does not print one,
+  // so a withdrawn level has nowhere left to be claimed as applying.
+  assert.doesNotMatch(
     readSrc(
       "features/model-picker/components/model-selector/connected-model-info-dialog.tsx",
     ),
-    /\{pinnedEffort &&\s*\(effortLevels as readonly string\[\]\)\.includes\(pinnedEffort\) \? \(/,
+    /pinnedEffort/,
   );
   assert.match(
     settingsDialog,
@@ -444,7 +445,9 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
     capabilities,
     /if \(!externalReasoningTakesEffort\(caps\)\) return current;/,
   );
-  // The info box stops listing the ladder and the pin for them too.
+  // The info box stops listing the ladder for them too: the levels are empty unless a level is
+  // what the style sends, so a bare thinking switch reports "Supported" instead of a ladder of
+  // rungs it never takes.
   const infoDialog = readSrc(
     "features/model-picker/components/model-selector/connected-model-info-dialog.tsx",
   );
@@ -454,7 +457,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   );
   assert.match(
     infoDialog,
-    /\{takesEffort \? \(\s*<Field label="Reasoning effort">/,
+    /const effortLevels = takesEffort\s*\? reasoning\.reasoningEffortLevels\.filter\(\(level\) => level !== "none"\)\s*: \[\];/,
   );
   // Blank or junk is an absence, not a zero the request would then send as the cap.
   assert.match(
@@ -652,6 +655,14 @@ test("the info box is a dialog, so it is wide enough and closable", () => {
   assert.doesNotMatch(infoDialog, /AlertDialog/);
   // An id has no spaces to wrap at, so break-words would let it run past the edge.
   assert.match(infoDialog, /className="break-all font-mono"/);
+  // It reports the model, not the settings. The gear beside it edits those three fields and shows
+  // what they hold, so repeating them here was a second, read-only copy of that dialog.
+  assert.doesNotMatch(infoDialog, /own settings/);
+  assert.doesNotMatch(infoDialog, /paramsByModel/);
+  assert.doesNotMatch(infoDialog, /model-reasoning-effort/);
+  // So it needs no id to key those memories on either.
+  assert.doesNotMatch(infoDialog, /checkpointId/);
+  assert.doesNotMatch(pickers, /checkpointId=\{infoModel\.model\.id\}/);
 });
 
 test("a row's name starts where its heading's label does", () => {
