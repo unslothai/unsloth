@@ -20,7 +20,7 @@ TEST_DIR = Path(__file__).resolve().parent
 if str(TEST_DIR) not in sys.path:
     sys.path.insert(0, str(TEST_DIR))
 
-from _pr10648_helpers import llama_host, load_studio_module  # noqa: E402
+from _pr10648_helpers import POSIX_ONLY, llama_host, load_studio_module  # noqa: E402
 
 # Use an isolated module because tests monkeypatch its globals.
 ILP = load_studio_module(
@@ -256,6 +256,7 @@ def test_a_size_only_dylib_record_still_probes(tmp_path: Path, monkeypatch):
     assert calls[0] == 1
 
 
+@POSIX_ONLY
 def test_a_same_size_dylib_rewrite_is_rejected(tmp_path: Path, monkeypatch):
     host = macos_host()
     install_dir = build_install(tmp_path, host)
@@ -347,6 +348,7 @@ def test_a_bundle_that_cannot_load_is_rejected_when_it_is_probed(tmp_path: Path,
     assert matches_choice(install_dir, host) is False
 
 
+@POSIX_ONLY
 def test_an_install_whose_probe_never_ran_is_not_recorded_as_a_pass(tmp_path: Path, monkeypatch):
     """The probe fails open, so "no issues" is not the same as "it loaded"."""
     host = macos_host()
@@ -391,6 +393,7 @@ def test_a_probe_that_ran_reports_a_pass(tmp_path: Path, monkeypatch):
     assert ILP.preflight_macos_installed_binaries(binaries, install_dir, host) is True
 
 
+@POSIX_ONLY
 def test_a_macos_patch_update_probes_again(tmp_path: Path, monkeypatch):
     """host_profile is (major, minor), so only the recorded product version sees this."""
     host = macos_host()
@@ -403,6 +406,7 @@ def test_a_macos_patch_update_probes_again(tmp_path: Path, monkeypatch):
     assert calls[0] == 1
 
 
+@POSIX_ONLY
 def test_a_reuse_probe_that_passed_is_remembered(tmp_path: Path, monkeypatch):
     """Otherwise the skip is unreachable for every install not born with the record."""
     host = macos_host()
@@ -421,6 +425,7 @@ def test_a_reuse_probe_that_passed_is_remembered(tmp_path: Path, monkeypatch):
     assert calls[0] == 1  # the next one does not
 
 
+@POSIX_ONLY
 def test_a_legacy_size_only_marker_is_upgraded_by_a_passing_probe(tmp_path: Path, monkeypatch):
     """The shape every install written before this PR has: payload recorded, not hashed."""
     host = macos_host()
@@ -458,6 +463,7 @@ def test_a_probe_that_could_not_run_is_not_remembered(tmp_path: Path, monkeypatc
     assert ILP.MACOS_LOAD_PROBE_KEY not in marker_of(install_dir)
 
 
+@POSIX_ONLY
 def test_a_rapid_security_response_probes_again(tmp_path: Path, monkeypatch):
     """An RSR leaves ProductVersion alone and moves ProductVersionExtra and the build."""
     host = macos_host()
