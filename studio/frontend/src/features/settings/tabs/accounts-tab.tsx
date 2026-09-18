@@ -153,22 +153,17 @@ function OwnerAccountsTab() {
     day: "numeric",
   });
   function createdDate(account: StudioAccount) {
-    // Only a non-empty timestamp string becomes a Date. `new Date(null)` is the
-    // epoch rather than an invalid date, so a NaN check alone prints a confident
-    // "Jan 1, 1970" for an account whose created_at the API left null -- and it
-    // can be null, because the column is added nullable on upgrade and the
-    // backfill skips rows that already carry an account_id.
+    // `new Date(null)` is the epoch, not an invalid date, so a NaN check alone
+    // renders "Jan 1, 1970" for the null created_at an upgraded install can
+    // return (nullable column, backfill skips rows that already have an id).
     const raw = account.created_at;
     const date = typeof raw === "string" && raw ? new Date(raw) : new Date(Number.NaN);
     return Number.isNaN(date.getTime()) ? "—" : dateFormatter.format(date);
   }
   function closeEditor() {
-    // Deliberately NOT gated on `busy`. A one-time setup code is displayed as
-    // soon as the mutation resolves, but `perform` stays busy through the
-    // account list refresh that follows it, so gating dismissal on busy leaves
-    // the plaintext code on screen with no way out whenever that refresh is slow
-    // or the backend is unreachable: Done disabled, Escape swallowed, and no
-    // close button. Hiding the code is display state, not a mutation.
+    // Deliberately NOT gated on `busy`: `perform` stays busy through the refresh
+    // that follows the mutation, which would pin a displayed one-time code on
+    // screen with no exit (Done disabled, Escape swallowed, no close button).
     setCreating(false);
     setSetup(null);
     setUsername("");
