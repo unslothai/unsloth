@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One preflight and one repair at a time.
-//
-// After a backend crash the startup screen offers Retry, and Retry runs the preflight. Five
-// clicks two seconds apart ran five preflights; each came back managed_stale with
-// can_auto_repair, and each started its own repair. The Rust side then saw five
-// start_managed_repair calls racing for one installer and surfaced "Installation is already
-// running." over the progress of the one that won.
+// One preflight and one repair at a time. Five Retry clicks after a crash ran five preflights,
+// each answering managed_stale with can_auto_repair, so five start_managed_repair calls raced
+// for one installer and "Installation is already running." landed over the winner's progress.
 //
 // The hook cannot be rendered here, so the guards are read off the shipped source the way
 // desktop-stop-intent.test.ts does beside it.
@@ -45,8 +41,8 @@ test("a preflight already in flight is not run again", () => {
     /finally \{\s*releasePreflight\(\);\s*\}/,
     "a failed preflight must release the flag or Retry is dead for the session",
   );
-  // Held past the probe, a Retry that server-start-timeout offers from inside startManagedServer's
-  // 500 ms port poll is swallowed after clearing the error: error screen, nothing running.
+  // Held past the probe, the Retry that server-start-timeout offers from inside the port poll is
+  // swallowed after clearing the error: error screen, nothing running.
   const release = body.indexOf("releasePreflight();");
   const dispatch = body.indexOf("switch (preflight.disposition)");
   assert.ok(
@@ -59,7 +55,7 @@ test("a preflight already in flight is not run again", () => {
   );
   assert.ok(body.indexOf("await startRepair()") > release);
   // Released twice, and by then a later call may hold the flag: an unowned clear would let a
-  // third preflight through, which is the fan-out this guard exists to stop.
+  // third preflight through.
   assert.match(
     body,
     /const releasePreflight = \(\) => \{\s*if \(!ownsPreflight\) return;\s*ownsPreflight = false;\s*preflightInFlightRef\.current = false;\s*\};/,
@@ -98,8 +94,8 @@ test("the repair body itself is unchanged in what it invokes", () => {
   const body = section("async function runRepair(", "async function startServer()");
   assert.match(body, /invoke\("start_managed_repair", \{ forceInstaller \}\)/);
   assert.match(body, /forcedRepairRef\.current = forceInstaller;/);
-  // The repair ends with the native call; what follows is an ordinary start, and holding the flag
-  // across it swallows the Retry that server-start-timeout offers from inside the port poll.
+  // The repair ends with the native call; holding the flag across the start that follows
+  // swallows the Retry server-start-timeout offers.
   const native = body.indexOf('invoke("start_managed_repair"');
   const release = body.indexOf("releaseRepair();");
   const start = body.indexOf("await startManagedServer();");

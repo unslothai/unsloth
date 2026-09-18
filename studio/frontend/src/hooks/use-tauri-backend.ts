@@ -310,8 +310,8 @@ export function useTauriBackend() {
     }
     if (preflightInFlightRef.current) return;
     preflightInFlightRef.current = true;
-    // Whether THIS call still owns the flag. Released once below and once in the finally, and by
-    // then a later call may hold it: clearing it unowned would let a third preflight through.
+    // Released below and again in the finally; by then a later call may hold the flag, and
+    // clearing it unowned would let a third preflight through.
     let ownsPreflight = true;
     const releasePreflight = () => {
       if (!ownsPreflight) return;
@@ -322,9 +322,8 @@ export function useTauriBackend() {
       const { invoke } = await import("@tauri-apps/api/core");
 
       const preflight = await invoke<DesktopPreflightResult>("desktop_preflight");
-      // The probe is what this guards; the arms below are re-entrant already (startingRef,
-      // repairInFlightRef). Held any longer, a Retry offered by server-start-timeout from inside
-      // startManagedServer's 500 ms port poll clears the error and then returns on the flag.
+      // The probe is what this guards; the arms below are re-entrant already. Held longer, it
+      // swallows the Retry that server-start-timeout offers from inside the port poll.
       releasePreflight();
       switch (preflight.disposition) {
         case "attached_ready": {
@@ -450,8 +449,8 @@ export function useTauriBackend() {
   async function startRepair(options?: { forceInstaller?: boolean }) {
     if (repairInFlightRef.current) return;
     repairInFlightRef.current = true;
-    // Same ownership rule as the preflight flag: handed to runRepair so it can release the moment
-    // the native repair returns, and a no-op afterwards so this call cannot clear a later one's.
+    // Same ownership rule as the preflight flag, handed to runRepair so it can release as soon
+    // as the native repair returns.
     let ownsRepair = true;
     const releaseRepair = () => {
       if (!ownsRepair) return;
@@ -487,8 +486,8 @@ export function useTauriBackend() {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_managed_repair", { forceInstaller });
-      // The repair itself is done here; what follows is an ordinary start. Held across that,
-      // a Retry offered by server-start-timeout would be swallowed after clearing the error.
+      // The repair ends here; what follows is an ordinary start, and holding the flag across it
+      // swallows the Retry that server-start-timeout offers.
       releaseRepair();
 
       setBackendStatus("starting");
