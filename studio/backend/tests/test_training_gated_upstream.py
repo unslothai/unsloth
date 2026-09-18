@@ -47,6 +47,11 @@ _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat1
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
+# core.training.trainer imports torch at module scope. A runner without it errored the whole
+# module out, which reads as a red CI leg rather than as "this runner cannot answer": skip
+# honestly instead. The staging legs install torch so the skip does not make them vacuous.
+pytest.importorskip("torch", reason = "core.training.trainer imports torch at module scope")
+
 import core.training.trainer as trainer_mod  # noqa: E402
 
 for _name in reversed(_STUBBED):
