@@ -1829,7 +1829,9 @@ def _capped_rails(provider: str) -> int:
     so the cards keep the band they had. Reading the class alone stopped being enough when
     #11260 moved the gutters out of the class and into the style, so this reads both.
     """
-    return sum(1 for rail in _corner_rails(provider) if "max-h-[100dvh]" in rail)
+    # _only_under and not a substring: `md:max-h-[100dvh]` contains the utility while leaving
+    # every smaller viewport uncapped, which is the spill this test exists to prevent.
+    return sum(1 for rail in _corner_rails(provider) if _only_under(rail, "max-h-[100dvh]"))
 
 
 def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():
@@ -1989,10 +1991,14 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
             f"a rail's padding is not bound to its own constant: {_rail_padding(tag)}"
         )
     # A rem-valued utility would scale with the type size and walk the rail off the corner.
+    # Read through the variants and the importance marker, because `!px-3` beats the inline px
+    # padding outright and `md:!px-3` does it above a breakpoint, and a bare-token match sees
+    # neither. _split_variants is what this file already uses to get at the utility itself.
     for rail in _corner_rails(provider):
-        for utility in rail.split():
-            assert not re.fullmatch(r"p[xytblr]?-\d+", utility), (
-                f"the rail pads with the rem-valued {utility!r}; #8082 is about exactly that"
+        for token in rail.split():
+            utility = _split_variants(token)[1]
+            assert not re.fullmatch(r"p[xytblr]?-(\d+|\[[^\]]*rem[^\]]*\])", utility), (
+                f"the rail pads with the rem-valued {token!r}; #8082 is about exactly that"
             )
 
 
