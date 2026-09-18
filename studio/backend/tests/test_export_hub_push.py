@@ -420,19 +420,23 @@ class _LoraModel:
         self.calls.append(f"model_push:{repo_id}")
 
 
-# leg -> (gguf, is_mlx, how the repo is opened, what lands in it)
-# The adapter leg never calls create_repo: push_to_hub creates the repo itself, and
-# creating it first would cost a fresh push its Unsloth model card. It only probes, and
-# only when private was asked for.
+# leg -> (gguf, is_mlx, what lands in the repo)
+# Every leg opens the repo itself: leaving a fresh one to push_to_hub would let another
+# client create it public in the gap. The adapter leg writes the model card that the
+# delegated push can then no longer write.
 _LORA_LEGS = {
-    "adapter": (False, False, ["repo_exists"], ["model_push:model", "tokenizer_push:model"]),
-    "gguf": (True, False, ["create_repo"], ["upload_folder"]),
-    "mlx": (False, True, ["create_repo"], ["upload_folder"]),
+    "adapter": (
+        False,
+        False,
+        ["model_card", "model_push:owner/model", "tokenizer_push:owner/model"],
+    ),
+    "gguf": (True, False, ["upload_folder"]),
+    "mlx": (False, True, ["upload_folder"]),
 }
 
 
 def _lora_backend(monkeypatch, name, calls, seen, leg):
-    gguf, is_mlx, opens, uploads = _LORA_LEGS[leg]
+    gguf, is_mlx, uploads = _LORA_LEGS[leg]
     backend = _non_mlx_backend(monkeypatch, name, calls, seen)
     export_module = sys.modules[type(backend).__module__]
     monkeypatch.setattr(export_module, "_IS_MLX", is_mlx)
@@ -441,7 +445,7 @@ def _lora_backend(monkeypatch, name, calls, seen, leg):
     backend.current_model = _LoraModel(calls)
     backend.current_tokenizer = _LoraTokenizer(calls)
     backend.is_peft = True
-    return export_module, backend, gguf, opens, uploads
+    return export_module, backend, gguf, uploads
 
 
 def _push_lora(backend, save_directory, gguf, private):
@@ -462,7 +466,7 @@ def test_lora_export_push_makes_an_existing_repo_private_before_uploading(
 ):
     calls: list[str] = []
     seen: dict = {}
-    _module, backend, gguf, opens, uploads = _lora_backend(
+    _module, backend, gguf, uploads = _lora_backend(
         monkeypatch, f"test_export_hub_push_lora_{leg}_backend", calls, seen, leg
     )
 
@@ -470,20 +474,11 @@ def test_lora_export_push_makes_an_existing_repo_private_before_uploading(
 
     assert success is True, message
     assert seen["token"] == "hf_fake"
-    if leg == "adapter":
-        # Nothing is created here, so the push keeps the fresh-repo model card.
-        assert "repo" not in seen
-        # Probing at all is conditional on private; a public push is untouched.
-        opened = opens if private else []
-        expected_target = "model"
-    else:
-        assert seen["repo"] == {"repo_id": "model", "private": private, "exist_ok": True}
-        opened = opens
-        expected_target = "owner/model"
+    assert seen["repo"] == {"repo_id": "model", "private": private, "exist_ok": True}
     visibility = ["update_repo_settings"] if private else []
-    assert calls == [*opened, *visibility, *uploads]
+    assert calls == ["create_repo", *visibility, *uploads]
     if private:
-        assert seen["visibility"] == {"repo_id": expected_target, "private": True}
+        assert seen["visibility"] == {"repo_id": "owner/model", "private": True}
     else:
         assert "visibility" not in seen
 
@@ -494,7 +489,7 @@ def test_lora_export_push_refuses_to_upload_when_privacy_cannot_be_confirmed(
 ):
     calls: list[str] = []
     seen: dict = {}
-    module, backend, gguf, opens, _uploads = _lora_backend(
+    module, backend, gguf, _uploads = _lora_backend(
         monkeypatch, f"test_export_hub_push_lora_{leg}_denied_backend", calls, seen, leg
     )
 
@@ -514,14 +509,14 @@ def test_lora_export_push_refuses_to_upload_when_privacy_cannot_be_confirmed(
     assert success is False
     assert "could not be confirmed private" in message
     assert output_path is None
-    assert calls == [*opens, "repo_info"]
+    assert calls == ["create_repo", "repo_info"]
 
 
 @pytest.mark.parametrize("leg", list(_LORA_LEGS))
 def test_lora_export_push_uploads_when_the_repo_is_already_private(tmp_path, monkeypatch, leg):
     calls: list[str] = []
     seen: dict = {}
-    module, backend, gguf, opens, uploads = _lora_backend(
+    module, backend, gguf, uploads = _lora_backend(
         monkeypatch, f"test_export_hub_push_lora_{leg}_ok_backend", calls, seen, leg
     )
 
@@ -539,34 +534,56 @@ def test_lora_export_push_uploads_when_the_repo_is_already_private(tmp_path, mon
     success, message, _path = _push_lora(backend, str(tmp_path / "export"), gguf, True)
 
     assert success is True, message
-    assert calls == [*opens, "repo_info", *uploads]
+    assert calls == ["create_repo", "repo_info", *uploads]
 
 
-def test_lora_adapter_push_to_a_fresh_repo_leaves_the_card_to_the_uploader(tmp_path, monkeypatch):
-    """Creating the repo here would make Unsloth's wrapper skip its model card.
+def test_lora_adapter_push_writes_the_card_the_delegated_push_can_no_longer_write(
+    tmp_path, monkeypatch
+):
+    """Opening the repo first makes Unsloth's wrapper skip its own card, so we write it.
 
-    `upload_to_huggingface` calls create_repo with `exist_ok=False` and pushes MODEL_CARD in
-    the same try block, so a repo that already exists costs the card silently.
+    `upload_to_huggingface` writes MODEL_CARD only when its `create_repo(exist_ok=False)`
+    finds the repo absent, which opening it here makes impossible.
     """
     calls: list[str] = []
-    seen: dict = {"repo_exists": False}
-    _module, backend, gguf, _opens, _uploads = _lora_backend(
-        monkeypatch, "test_export_hub_push_lora_fresh_backend", calls, seen, "adapter"
+    seen: dict = {}
+    _module, backend, gguf, _uploads = _lora_backend(
+        monkeypatch, "test_export_hub_push_lora_card_backend", calls, seen, "adapter"
     )
 
     success, message, _path = _push_lora(backend, str(tmp_path / "export"), gguf, True)
 
     assert success is True, message
-    assert calls == ["repo_exists", "model_push:model", "tokenizer_push:model"]
-    assert "repo" not in seen  # no create_repo
-    assert "visibility" not in seen  # nothing to tighten; the push creates it private
+    assert seen["card_repo"] == "owner/model"
+    assert "base_model: unsloth/Qwen2.5-0.5B-Instruct" in seen["card"]
+    # written before the weights, never after
+    assert calls.index("model_card") < calls.index("model_push:owner/model")
+
+
+def test_lora_adapter_push_keeps_the_card_of_an_existing_repo(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {"existing_files": {"README.md": True}}
+    _module, backend, gguf, _uploads = _lora_backend(
+        monkeypatch, "test_export_hub_push_lora_keepcard_backend", calls, seen, "adapter"
+    )
+
+    success, message, _path = _push_lora(backend, str(tmp_path / "export"), gguf, True)
+
+    assert success is True, message
+    assert "card" not in seen
+    assert calls == [
+        "create_repo",
+        "update_repo_settings",
+        "model_push:owner/model",
+        "tokenizer_push:owner/model",
+    ]
 
 
 def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, monkeypatch):
     """The repo is opened after serialisation, so a failed save cannot orphan one."""
     calls: list[str] = []
     seen: dict = {}
-    _module, backend, gguf, _opens, _uploads = _lora_backend(
+    _module, backend, gguf, _uploads = _lora_backend(
         monkeypatch, "test_export_hub_push_lora_mlx_orphan_backend", calls, seen, "mlx"
     )
 
@@ -575,7 +592,7 @@ def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, mon
 
     def _fail_the_upload_save(save_directory):
         saves["n"] += 1
-        if saves["n"] >= 2:  # 1st is the local save, 2nd is the temp dir to upload
+        if saves["n"] >= 2:          # 1st is the local save, 2nd is the temp dir to upload
             raise RuntimeError("MLX serialization failed")
         real_save(save_directory)
 
@@ -585,5 +602,5 @@ def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, mon
 
     assert success is False
     assert "MLX serialization failed" in message
-    assert calls == []  # no create_repo, no tightening, no upload
+    assert calls == []                  # no create_repo, no tightening, no upload
     assert "repo" not in seen

@@ -501,17 +501,32 @@ def _open_hub_repo(hf_api, repo_id, private):
     return repo_id
 
 
-def _tighten_existing_hub_repo(hf_api, repo_id, private):
-    """The privacy gate for a push that creates its own repo.
+def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
+    """Write the card the delegated push can no longer write for itself.
 
-    ``push_to_hub`` creates the repo itself, and Unsloth's wrapper writes the model card
-    only when it finds the repo ABSENT (`upload_to_huggingface` calls create_repo with
-    `exist_ok=False` and swallows the conflict along with the card). Creating the repo here
-    first would silently cost every fresh push its model card, so only an already-existing
-    repo is tightened; a fresh one is created private by the push itself.
+    Unsloth's `upload_to_huggingface` only writes it when its own `create_repo(exist_ok=False)`
+    finds the repo absent, so opening the repo first silently costs a fresh push its card.
+    Best-effort, and an existing card is kept, exactly as the merged and base paths do.
     """
-    if private and hf_api.repo_exists(repo_id):
-        _ensure_hub_repo_private(hf_api, repo_id)
+    try:
+        if hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
+            return
+        config = getattr(model, "config", None)
+        if config is None:
+            return
+        base_model = getattr(config, "_name_or_path", "unknown") or "unknown"
+        content = MODEL_CARD.format(
+            username = repo_id.split("/")[0],
+            base_model = repo_id if os.path.isdir(base_model) else base_model,
+            model_type = getattr(config, "model_type", "llm"),
+            method = "",
+            extra = "unsloth",
+        )
+        ModelCard(content).push_to_hub(
+            repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+        )
+    except Exception as exception:
+        logger.warning(f"Could not publish the model card: {exception}")
 
 
 class ExportBackend:
@@ -1683,7 +1698,13 @@ class ExportBackend:
                             repo_type = "model",
                         )
                 else:
-                    _tighten_existing_hub_repo(hf_api, repo_id, private)
+                    # Opened here rather than left to push_to_hub: a repo that does not exist
+                    # yet is one another client can create public first, and `private` cannot
+                    # change an existing repo's visibility, so the adapter would land in it.
+                    repo_id = _open_hub_repo(hf_api, repo_id, private)
+                    _publish_unsloth_model_card(
+                        hf_api, repo_id, self.current_model, hf_token
+                    )
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
                     self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
                 logger.info(f"Adapter pushed successfully to {repo_id}")
