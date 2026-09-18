@@ -247,9 +247,19 @@ export const ptBR = {
   settings: {
     accounts: {
       title: "Contas",
-      description: "Crie contas privadas do Studio. Novos usuários entram com um código de configuração de uso único e escolhem uma senha.",
+      description: "Crie contas privadas do Unsloth. Novos usuários entram com um código de configuração de uso único e escolhem uma senha.",
       username: "Nome de usuário",
       create: "Criar conta",
+      createDescription: "Compartilhe um código de configuração para que a pessoa escolha a própria senha.",
+      actionsFor: "Gerenciar {username}",
+      actions: "Ações",
+      search: "Pesquisar contas",
+      noResults: "Nenhuma conta correspondente",
+      created: "Criada em",
+      status: "Status",
+      loginHint: "Entre como {username} usando este código como senha e depois escolha uma nova senha.",
+      privateAccount: "Conta privada",
+      empty: "Ainda não há outras contas",
       setupCode: "Código de configuração",
       setupFor: "Código de configuração para {username}",
       shownOnce: "Copie este código agora e compartilhe com o titular da conta. Ele é mostrado apenas aqui e pode ser usado uma vez em até 60 minutos.",
@@ -259,13 +269,13 @@ export const ptBR = {
       copyFailed: "Não foi possível copiar. Selecione e copie o código de configuração acima.",
       dismiss: "Concluído",
       owner: "Proprietário da instalação",
-      active: "Ativa",
-      inactive: "Inativa",
+      active: "Ativada",
+      inactive: "Desativada",
       regenerate: "Gerar novo código de configuração",
       resetTitle: "Redefinir a senha de {username}?",
       resetDescription: "Gerar um novo código de configuração substitui a senha de {username}, encerra as sessões dela e revoga suas chaves de API. Entregue o novo código para que ela escolha outra senha.",
       deactivate: "Desativar",
-      reactivate: "Reativar",
+      reactivate: "Ativar",
       delete: "Excluir conta",
       deleteTitle: "Excluir {username}?",
       deleteDescription: "Isso revoga as sessões de {username} e cancela o trabalho em andamento. Chats, configurações, credenciais, uploads, conjuntos de dados, treinamentos, saídas, exportações, galerias, sandboxes, projetos e arquivos temporários são retirados. Os diretórios são renomeados à parte, nunca excluídos. Criar este nome de usuário novamente inicia uma conta nova sem nenhum desses dados.",
@@ -302,9 +312,10 @@ export const ptBR = {
     },
     keyboardShortcuts: {
       title: "Atalhos de teclado",
-      description:
-        "Altere qualquer atalho, ou apague um para liberar a combinação para o navegador ou o sistema.",
       searchPlaceholder: "Pesquisar atalhos…",
+      keystrokePlaceholder: "Pressione um atalho para pesquisar",
+      searchByKeystrokes: "Pesquisar por tecla",
+      searchByName: "Pesquisar por nome",
       noResults: "Nenhum atalho corresponde a essa pesquisa.",
       unassigned: "Não atribuído",
       recording: "Pressione as teclas…",
@@ -501,6 +512,14 @@ export const ptBR = {
           label: "Enviar mensagem",
           description: "Enviar o que está no compositor",
         },
+        queueMessage: {
+          label: "Enfileirar mensagem",
+          description: "Enviar o rascunho para o fim da fila",
+        },
+        steerMessage: {
+          label: "Direcionar a resposta",
+          description: "Parar a resposta atual e enviar o rascunho em seguida",
+        },
         cycleReasoningEffort: {
           label: "Alternar esforço de raciocínio",
           description: "Percorrer os níveis de esforço de raciocínio",
@@ -567,7 +586,7 @@ export const ptBR = {
       openLogsFolderFailed: "Não foi possível abrir a pasta de logs.",
       exportFailed: "Não foi possível baixar os logs.",
       exportTooOld: "O backend do Unsloth em execução é antigo demais para exportar os logs. Atualize esse backend e reinicie.",
-      exportForbidden: "Para baixar todos os logs é preciso uma sessão do Studio conectada. Uma chave de API não basta.",
+      exportForbidden: "Para baixar todos os logs é preciso uma sessão do Unsloth conectada. Uma chave de API não basta.",
       keywords: "depuracao depurar registro registros log logs erro erros falha rastreamento diagnostico solucao de problemas debug",
     },
     voice: {
@@ -872,6 +891,9 @@ export const ptBR = {
         showLoadedModels: "Indicador de modelos carregados",
         showLoadedModelsDescription:
           "Mostra um pequeno cartão no canto inferior direito listando todos os modelos atualmente na memória (chat, fala, imagem, vídeo), com um botão para liberar cada um.",
+        showWhisperUpdates: "Notificações de atualização do whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Notifica quando uma versão mais recente do whisper.cpp está disponível para modelos de fala para texto. Desative se você nunca transcreve áudio.",
       },
       startup: {
         sectionTitle: "Inicialização",

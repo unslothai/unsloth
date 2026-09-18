@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import {
   useChatPreferencesStore,
   composerShortcutLabels,
@@ -81,8 +82,9 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
             })}
             hint={t("composerSettings.steerDescription")}
           >
+            {/* Shared track + pill selector, as on the API key expiry row. */}
             <div
-              className="inline-flex gap-1 rounded-full bg-muted p-1"
+              className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
               role="group"
               aria-label={t("composerSettings.followUp")}
             >
@@ -92,7 +94,12 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
                   type="button"
                   aria-pressed={prefs.followUpBehavior === behavior}
                   onClick={() => prefs.setFollowUpBehavior(behavior)}
-                  className="cursor-pointer rounded-full px-3 py-1.5 text-sm text-muted-foreground transition-colors aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-sm"
+                  className={cn(
+                    "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    prefs.followUpBehavior === behavior
+                      ? "hub-tab-toggle-pill text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
                 >
                   {t(
                     behavior === "queue"

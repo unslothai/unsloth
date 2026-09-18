@@ -749,7 +749,7 @@ def wait_for_events(
 
 
 def reconcile_runs(
-    *, error: str = "Studio restarted during generation", stale_after_ms: int | None = None
+    *, error: str = "Unsloth restarted during generation", stale_after_ms: int | None = None
 ) -> list[str]:
     """Settle active runs, returning the ids settled. ``stale_after_ms`` is what makes this safe to run
     while Studio is serving: with it, only runs whose progress lease has not moved for that long are
@@ -816,5 +816,5 @@ def reconcile_runs(
         conn.close()
 
 
-def reconcile_orphaned_runs(error: str = "Studio restarted during generation") -> int:
+def reconcile_orphaned_runs(error: str = "Unsloth restarted during generation") -> int:
     return len(reconcile_runs(error = error))

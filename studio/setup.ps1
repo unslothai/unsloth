@@ -187,6 +187,57 @@ function Exit-SetupFailure {
     exit $Code
 }
 
+# The interpreter this setup was launched from, when it lives inside $VenvDir; $null otherwise.
+# `unsloth studio update` names its own sys.executable as UNSLOTH_SETUP_HOST_PYTHON; the process
+# walk covers an older CLI and any wrapper that runs the venv's python.exe by hand. Windows keeps
+# a running image undeletable, so a stale-venv wipe issued from inside the venv guts Lib\ and
+# then fails on Scripts\python.exe: callers repair such an environment in place instead.
+function Get-SetupHostInterpreterInVenv {
+    param([Parameter(Mandatory = $true)][string]$VenvDir)
+    $root = $null
+    # Not a literal '\': off Windows GetFullPath returns '/' and '\' is an ordinary filename
+    # character, so a hardcoded one builds a prefix nothing matches. The pwsh tests run there.
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    try { $root = [System.IO.Path]::GetFullPath($VenvDir).TrimEnd('\', '/') + $sep } catch { return $null }
+    $inside = {
+        param([string]$Candidate)
+        if ([string]::IsNullOrWhiteSpace($Candidate)) { return $false }
+        try { $full = [System.IO.Path]::GetFullPath($Candidate) } catch { return $false }
+        if (-not $full.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        # A path, not a file, is not an interpreter that can be holding anything open. The hint
+        # below is an inherited environment variable and can outlive what it names -- a stale one
+        # pointing inside the venv would otherwise route a venv that genuinely needs rebuilding
+        # into an in-place repair it has no interpreter to perform. A live process's own
+        # ExecutablePath passes this trivially; an unreadable one reads as "not inside", which is
+        # the pre-existing rebuild.
+        return (Test-Path -LiteralPath $full -PathType Leaf)
+    }
+    if (& $inside $env:UNSLOTH_SETUP_HOST_PYTHON) { return $env:UNSLOTH_SETUP_HOST_PYTHON }
+    try {
+        $byPid = @{}
+        foreach ($row in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
+            $byPid[[int]$row.ProcessId] = $row
+        }
+        $cur = [int]$PID
+        # Bounded: ParentProcessId can name a reused id once the real parent is gone.
+        for ($hop = 0; $hop -lt 8 -and $byPid.ContainsKey($cur); $hop++) {
+            $row = $byPid[$cur]
+            if (& $inside $row.ExecutablePath) { return $row.ExecutablePath }
+            $parent = [int]$row.ParentProcessId
+            if ($parent -le 0 -or $parent -eq $cur) { break }
+            # A parent that started AFTER its child is not the parent: Windows reuses process ids
+            # once the real one has exited, and Microsoft's own Win32_Process guidance is to
+            # compare creation dates before trusting ParentProcessId. Unreadable dates on either
+            # side leave the hop alone rather than ending the walk, since the bound already caps it.
+            $parentRow = $byPid[$parent]
+            if ($parentRow -and $row.CreationDate -and $parentRow.CreationDate -and
+                $parentRow.CreationDate -gt $row.CreationDate) { break }
+            $cur = $parent
+        }
+    } catch { }
+    return $null
+}
+
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
@@ -577,9 +628,13 @@ function Get-PathDenialDetail {
 # files, so neither explains a denied folder.
 #
 # When Defender is not it, name whichever antivirus is registered and running
-# instead: third-party suites ship the same feature under their own names
-# (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
-# user cannot act on advice that does not say which product to open.
+# instead: third-party suites ship the same protected-folders feature under
+# their own product names, and the user cannot act on advice that does not say
+# which product to open. Which suite ships what is recorded in
+# tests/studio/test_installer_av_shapes.py and deliberately not repeated here,
+# because this file is scanned in full before a line of it runs and a comment
+# listing security products raises the score of the very file explaining it.
+# Nothing below hard-codes a product: it reads what SecurityCenter2 registered.
 #
 # Answers "" whenever it cannot tell, so a machine with no Defender module
 # and no SecurityCenter registration reads the same as one that says no.
@@ -779,10 +834,26 @@ function Invoke-ManagedLlamaCppPreflight {
         $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
         $moved = $false
         try {
-            Move-Item -LiteralPath $dir -Destination $asideDir -ErrorAction Stop
+            # [System.IO.Directory]::Move, not Move-Item. Move-Item falls back to
+            # copy-then-delete when the rename fails, which creates $asideDir and then
+            # dies on the unreadable contents, leaving a stray llama.cpp.denied-* folder
+            # beside the original on every run. Directory.Move is a bare rename: it
+            # either moves the tree or throws having created nothing.
+            # Measured on windows-latest, denying each shape on the folder itself:
+            #   (OI)(CI)(RX)  rename refused, Move-Item left a stray folder
+            #   (OI)(CI)(R)   rename refused, Move-Item left a stray folder
+            #   (RX)          rename refused, Move-Item left a stray folder
+            #   (DE)          rename SUCCEEDED, both ways
+            # So on Windows a read denial always refuses the rename (the open asks for
+            # SYNCHRONIZE, which every read deny removes) and this recovery cannot fire;
+            # denying DELETE, which sounds like the blocker, does not stop it. On POSIX
+            # the rename needs only write+execute on the parent, so the recovery is real
+            # there and is why this stays rather than being deleted.
+            [System.IO.Directory]::Move($dir, $asideDir)
             $moved = $true
         } catch {
-            # Expected when the denial also covers rename; fall through to guidance.
+            # Expected when the denial covers the rename; fall through to guidance.
+            # Nothing to clean up: Directory.Move creates nothing when it throws.
         }
         if ($moved) {
             step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
@@ -2712,6 +2783,11 @@ $StageRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_STAGE_ROO
 $RuntimeRoot = if ($StageRoot) { $StageRoot } else { $StudioHome }
 $VenvDir = Join-Path $RuntimeRoot "unsloth_studio"
 $StudioOwnedMarker = ".unsloth-studio-owned"
+# Dropped into an environment this script has moved aside, so the sweep that removes such copies
+# can tell one it made from a directory that merely wears the same name. Written after the rename
+# and rewritten if the delete that follows fails, because a half-deleted copy can lose everything
+# else that identified it.
+$StudioStaleMarker = ".unsloth-studio-stale"
 # Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
 $NoTorchMarker = ".unsloth-no-torch"
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
@@ -6107,6 +6183,70 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PreservedInstallerTorchTag = $installedTorchTag
     }
 
+    # A direct `unsloth studio update` has the installer-managed shape: the CLI is this script's
+    # parent and runs from the venv's own python.exe, so the wipe below left a venv with no
+    # unsloth_cli and a desktop whose update AND repair both start from it (#11247). Detected, not
+    # assumed: run by hand from a checkout there is no interpreter inside, and the rebuild stands.
+    # LAST of the direct-update escapes: this condition holds for EVERY stale direct update, so
+    # ahead of the narrower ones it consumes $shouldRebuild and they never fire. Ahead of the
+    # nvidia-smi guard specifically, $script:PreservedInstallerTorchTag goes unset and pairs with
+    # the $PinChangedForceReinstall below to force a CPU wheel over a working cu* venv (#9857).
+    if ($shouldRebuild -and -not $InstallerManagedSetup) {
+        $_hostPy = Get-SetupHostInterpreterInVenv -VenvDir $VenvDir
+        if ($_hostPy) {
+            substep "Environment does not match this host ($reason) -- reinstalling PyTorch in place." "Yellow"
+            substep "setup is running from $_hostPy, which cannot be replaced while it runs." "DarkGray"
+            $script:PinChangedForceReinstall = $true
+            $shouldRebuild = $false
+        }
+    }
+
+    # Outside the rebuild branch: an install that moved a venv aside, failed to delete the copy and
+    # thereafter only repairs in place would never reach a sweep that lived inside it.
+    # Validated like install.ps1's rollback sweep (Test-StudioVenvRollbackMustBePreserved), and then
+    # some, because this one deletes on runs that rebuild nothing and runs ahead of the custom-root
+    # guard: a NAME cannot be its whole authority, or the cost of a false positive is paid by a user
+    # who never had a stale venv. Five refusals: a root that does not show it is ours, anything
+    # outside the generated shape, a reparse point, a live owner (a concurrent setup's rescue copy,
+    # not litter), and a directory carrying no sign of an environment we moved aside.
+    $_venvParent = Split-Path -Parent $VenvDir
+    $_venvLeaf = Split-Path -Leaf $VenvDir
+    # Trailing -<n>: the rename below adds one when the destination is taken, as install.sh's
+    # _start_studio_venv_replacement does, so the sweep must recognise it or that copy is permanent.
+    $_staleShape = '^' + [regex]::Escape($_venvLeaf) + '\.stale-[0-9]{14}-([0-9]+)(?:-[0-9]+)?$'
+    # Hoisted out of the rebuild branch below, which asks the same question before its own delete.
+    $_studioRootIsOurs = (
+        -not $StudioHomeIsCustom -or
+        (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -or
+        (Test-UnslothCmdShimFile (Join-Path $StudioHome "bin\unsloth.cmd"))
+    )
+    # [regex]::Match, not $Matches: which operator fills it, and on which result, moves between
+    # Windows PowerShell 5.1 and 7.x, and a capture group decides what gets deleted here.
+    foreach ($_old in @(
+        if ($_studioRootIsOurs) { Get-ChildItem -LiteralPath $_venvParent -Directory -Force -ErrorAction SilentlyContinue }
+    )) {
+        $_staleMatch = [regex]::Match($_old.Name, $_staleShape)
+        if (-not $_staleMatch.Success) { continue }
+        if (($_old.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        $_ownerPid = 0
+        if (-not [int]::TryParse($_staleMatch.Groups[1].Value, [ref]$_ownerPid)) { continue }
+        if ($_ownerPid -ne $PID -and $null -ne (Get-Process -Id $_ownerPid -ErrorAction SilentlyContinue)) { continue }
+        # pyvenv.cfg is in every environment `python -m venv` and `uv venv` create, the owned
+        # marker is what install.ps1 and this script write into a root they adopt, and the stale
+        # marker is dropped by the rename below and rewritten whenever the delete after it fails.
+        $_looksMoved = $false
+        foreach ($_sign in @("pyvenv.cfg", $StudioOwnedMarker, $StudioStaleMarker)) {
+            if (Test-Path -LiteralPath (Join-Path $_old.FullName $_sign) -PathType Leaf) { $_looksMoved = $true; break }
+        }
+        if (-not $_looksMoved) {
+            substep "left $($_old.FullName) alone: it matches the stale-copy name but holds no environment." "DarkGray"
+            continue
+        }
+        Remove-Item -LiteralPath $_old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     if ($shouldRebuild) {
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         # why: mirror install.ps1 env-mode guard so an update against a custom
@@ -6115,23 +6255,43 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # The .cmd counts too, and for the same reason the uninstaller accepts it: a
         # policy's quarantine can take the unsigned .exe and leave a root that is still
         # ours. Content-checked, never by name -- this guard gates a recursive delete.
-        if (
-            $StudioHomeIsCustom -and
-            -not (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -and
-            -not (Test-UnslothCmdShimFile (Join-Path $StudioHome "bin\unsloth.cmd"))
-        ) {
+        if (-not $_studioRootIsOurs) {
             Write-StudioLine "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
             Exit-SetupFailure "$VenvDir is not an Unsloth Studio environment"
         }
+        # Moved aside, then deleted: a rename takes the whole tree or fails and leaves it intact,
+        # where Remove-Item -Recurse stops at the first locked file and leaves an environment that
+        # can neither start nor update itself. Deleting the copy is best-effort, swept next run.
+        # The pid joins the timestamp so two rebuilds in one second cannot collide on a name, and a
+        # taken name still takes a numeric suffix: one process can reach this twice inside a second,
+        # and a copy it left earlier may be on disk because its delete failed. Same shape, and the
+        # same reason, as install.sh's _start_studio_venv_replacement.
+        $_staleStamp = Get-Date -Format 'yyyyMMddHHmmss'
+        $_staleLeaf = "$_venvLeaf.stale-$_staleStamp-$PID"
+        $_staleTry = 0
+        while ((Test-Path -LiteralPath (Join-Path $_venvParent $_staleLeaf)) -and $_staleTry -lt 64) {
+            $_staleTry++
+            $_staleLeaf = "$_venvLeaf.stale-$_staleStamp-$PID-$_staleTry"
+        }
         try {
-            Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
+            Rename-Item -LiteralPath $VenvDir -NewName $_staleLeaf -ErrorAction Stop
         } catch {
-            Write-StudioLine "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
-            Write-StudioLine "           Close any running Unsloth/Python processes and re-run setup." -ForegroundColor Red
+            Write-StudioLine "   [ERROR] Could not move the stale venv aside: $($_.Exception.Message)" -ForegroundColor Red
+            Write-StudioLine "           The environment was left as it was. Close any running Unsloth/Python processes and re-run setup." -ForegroundColor Red
             Exit-SetupFailure "Could not remove the stale environment at $VenvDir"
+        }
+        $_staleDir = Join-Path $_venvParent $_staleLeaf
+        # Stamped before the delete and again after one fails: the sweep above refuses a copy that
+        # carries no sign of being an environment we moved, and a half-deleted one can have lost
+        # its pyvenv.cfg. Without the rewrite the litter this branch announces would be exactly the
+        # litter the next run declines to touch.
+        try { [System.IO.File]::WriteAllText((Join-Path $_staleDir $StudioStaleMarker), "") } catch {}
+        try {
+            Remove-Item -LiteralPath $_staleDir -Recurse -Force -ErrorAction Stop
+        } catch {
+            try { [System.IO.File]::WriteAllText((Join-Path $_staleDir $StudioStaleMarker), "") } catch {}
+            substep "Could not fully remove the old environment ($($_.Exception.Message)); left at $_staleDir for the next run to sweep." "Yellow"
         }
     }
 }

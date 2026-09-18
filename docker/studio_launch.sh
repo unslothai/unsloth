@@ -161,7 +161,7 @@ elif [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}" ]]; then
     STUDIO_NOTE="user unsloth, password from UNSLOTH_STUDIO_PASSWORD env"
     UNSLOTH_STUDIO_PASSWORD_STATE=initial
 else
-    STUDIO_NOTE="user unsloth, generated password printed below once Studio is up"
+    STUDIO_NOTE="user unsloth, generated password printed below once Unsloth Studio is up"
     UNSLOTH_STUDIO_PASSWORD_STATE=generated
 fi
 unset UNSLOTH_STUDIO_PASSWORD
