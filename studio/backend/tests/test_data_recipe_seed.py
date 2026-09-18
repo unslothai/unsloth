@@ -448,7 +448,11 @@ def test_validate_resolves_the_hf_seed_endpoint_like_jobs(monkeypatch):
         RecipePayload(
             recipe = {
                 "seed_config": {
-                    "source": {"seed_type": "hf", "path": "datasets/a/b/**/*.parquet", "endpoint": None}
+                    "source": {
+                        "seed_type": "hf",
+                        "path": "datasets/a/b/**/*.parquet",
+                        "endpoint": None,
+                    }
                 },
                 "columns": [{"column_type": "expression", "name": "x", "expr": "{{ q }}"}],
             }
