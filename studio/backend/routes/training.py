@@ -563,13 +563,16 @@ def _remote_untrainable_model_format(
         if latest_tier_active_for(repo_id, account_hf_token(hf_token)):
             load_in_4bit = False
 
-    # A 4-bit request can still resolve the SIXTEEN-bit mapping: from_pretrained clears
-    # load_in_4bit when bitsandbytes is absent or its kernels are unusable, which is normal on
-    # a Mac, Intel or CPU install. The parent cannot ask, because importing unsloth to read
-    # ALLOW_BITSANDBYTES starts the GPU stack here. So a public copy for EITHER mode is enough
-    # to not refuse: this check exists to fail fast, and admitting a run the worker may well
-    # complete is the safe direction. The reverse is not true, since a 16-bit request never
-    # becomes 4-bit.
+    # A 4-bit request resolves the SIXTEEN-bit mapping where bitsandbytes cannot be used,
+    # since from_pretrained clears load_in_4bit before it calls get_model_name. Only count
+    # that mapping when the fallback is CERTAIN, which here means bitsandbytes is not
+    # installed at all: a Mac, Intel or CPU install. Counting it unconditionally admitted a
+    # gated 16-bit-only model on a working CUDA host, where the loader keeps 4-bit, reads the
+    # gated upstream and dies in pre-detection with the raw 401 this branch exists to remove.
+    # find_spec rather than an import: the parent must not load bitsandbytes or unsloth.
+    import importlib.util as _importlib_util
+
+    bnb_definitely_absent = _importlib_util.find_spec("bitsandbytes") is None
     # ... and only where the TORCH loader runs. _run_mlx_training hands model_load_name
     # straight to FastMLXModel.from_pretrained, and that loader never consults the
     # upstream-to-Unsloth mapper (unsloth_zoo/mlx/loader.py only strips bnb suffixes off ids
@@ -591,7 +594,11 @@ def _remote_untrainable_model_format(
         and not is_embedding
         and (
             unsloth_public_mirror(repo_id, load_in_4bit) is not None
-            or (load_in_4bit and unsloth_public_mirror(repo_id, False) is not None)
+            or (
+                load_in_4bit
+                and bnb_definitely_absent
+                and unsloth_public_mirror(repo_id, False) is not None
+            )
         )
     )
 

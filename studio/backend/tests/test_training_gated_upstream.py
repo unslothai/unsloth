@@ -499,15 +499,35 @@ def test_pre_detect_follows_the_bitsandbytes_fallback(mapper, monkeypatch, bnb_o
     )
 
 
-def test_a_16bit_only_mirror_is_enough_to_admit_a_4bit_request(mapper, monkeypatch):
-    # gemma-4-26B-A4B maps for 16-bit only. A 4-bit request on a host without bitsandbytes
-    # loads it 16-bit from that public copy, so refusing the start would refuse a model the
-    # worker can train.
+@pytest.mark.parametrize("bnb_installed,refused", [(False, False), (True, True)])
+def test_a_16bit_only_mirror_counts_only_where_4bit_cannot_run(
+    mapper, monkeypatch, bnb_installed, refused
+):
+    # gemma-4-26B-A4B maps for 16-bit only. Without bitsandbytes a 4-bit request loads it
+    # 16-bit from that public copy, so refusing would refuse a model the worker can train.
+    # WITH bitsandbytes the loader keeps 4-bit, reads the gated upstream and dies in
+    # pre-detection with the raw 401, so the check has to run.
+    import importlib.util as importlib_util
+
+    real = importlib_util.find_spec
+    monkeypatch.setattr(
+        importlib_util,
+        "find_spec",
+        lambda name, *a, **kw: (object() if bnb_installed else None)
+        if name == "bitsandbytes"
+        else real(name, *a, **kw),
+    )
     session = _Session(_http_error(401))
     _route(monkeypatch, gated = "manual", session = session)
 
-    assert tr._remote_untrainable_model_format("google/gemma-4-26B-A4B", None, True) is None
-    assert session.urls == []
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            tr._remote_untrainable_model_format("google/gemma-4-26B-A4B", None, True)
+        assert error.value.detail["code"] == "hf_model_access_denied"
+        assert session.urls
+    else:
+        assert tr._remote_untrainable_model_format("google/gemma-4-26B-A4B", None, True) is None
+        assert session.urls == []
 
 
 def test_a_4bit_only_mirror_does_not_admit_a_16bit_request(mapper, monkeypatch):
@@ -679,3 +699,45 @@ def test_the_security_scan_covers_the_repo_the_loader_substitutes(mapper, monkey
     }
     assert worker_mod._model_load_security_error(config, "google/gemma-3-270m-it", None) is None
     assert "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" in scanned
+
+
+def test_the_security_scan_uses_the_effective_load_mode(mapper, monkeypatch):
+    # The sidecar flips a stored 4-bit run to 16-bit, and the two modes have different
+    # mirrors, so the raw config value would scan a repo the run never fetches.
+    import core.training.worker as worker_mod
+    import utils.security as security_mod
+    import utils.transformers_version as tv
+
+    scanned: list[str] = []
+
+    class _Decision:
+        blocked = False
+
+        def response_payload(self):
+            return {}
+
+    monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: True)
+    monkeypatch.setattr(worker_mod, "_model_local_files_only", lambda config: False, raising = False)
+    monkeypatch.setattr(security_mod, "security_load_subdirs", lambda *a, **kw: ())
+    monkeypatch.setattr(security_mod, "load_scan_target", lambda t, s: (t, s))
+    monkeypatch.setattr(
+        security_mod,
+        "evaluate_file_security",
+        lambda target, **kw: (scanned.append(target), _Decision())[1],
+    )
+
+    assert (
+        worker_mod._model_load_security_error(
+            {
+                "model_name": "google/gemma-3-270m-it",
+                "load_in_4bit": True,
+                "trust_remote_code": False,
+            },
+            "google/gemma-3-270m-it",
+            None,
+        )
+        is None
+    )
+    # the SIXTEEN-bit mirror, which is what a sidecar run really fetches
+    assert "unsloth/gemma-3-270m-it" in scanned
+    assert "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" not in scanned

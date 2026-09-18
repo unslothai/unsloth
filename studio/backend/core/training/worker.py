@@ -928,7 +928,11 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
             load_target,
             _model_local_files_only(config),
             config.get("model_revision"),
-            bool(config.get("load_in_4bit", True)),
+            # The EFFECTIVE mode, the one the load site uses. The sidecar flips a stored
+            # 4-bit run to 16-bit, and the two modes have different mirrors, so the raw
+            # config value would scan a repo the run never fetches and leave the one it
+            # does outside both the malware scan and the consent fingerprint.
+            _pre_detect_load_in_4bit(config, load_target, hf_token),
         )
         if mirrored != load_target:
             requested_targets.append(mirrored)
