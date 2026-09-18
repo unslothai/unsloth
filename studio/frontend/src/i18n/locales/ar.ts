@@ -499,6 +499,14 @@ export const ar = {
           label: "إرسال الرسالة",
           description: "إرسال ما في مربع الكتابة",
         },
+        queueMessage: {
+          label: "إضافة الرسالة إلى الطابور",
+          description: "إرسال المسودة إلى نهاية الطابور",
+        },
+        steerMessage: {
+          label: "توجيه الرد",
+          description: "إيقاف الرد الحالي وإرسال المسودة بعده",
+        },
         cycleReasoningEffort: {
           label: "تدوير مستوى التفكير",
           description: "التنقل بين مستويات جهد التفكير",

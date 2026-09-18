@@ -499,6 +499,14 @@ export const ko = {
           label: "메시지 보내기",
           description: "입력창의 내용을 보냅니다",
         },
+        queueMessage: {
+          label: "메시지 대기열에 추가",
+          description: "초안을 대기열 끝으로 보냅니다",
+        },
+        steerMessage: {
+          label: "응답 조정",
+          description: "현재 응답을 중단하고 초안을 다음으로 보냅니다",
+        },
         cycleReasoningEffort: {
           label: "추론 강도 순환",
           description: "추론 강도 단계를 차례로 바꿉니다",

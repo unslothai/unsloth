@@ -467,6 +467,14 @@ export const it = {
           label: "Invia messaggio",
           description: "Invia il contenuto dell’editor",
         },
+        queueMessage: {
+          label: "Accoda messaggio",
+          description: "Invia la bozza in fondo alla coda",
+        },
+        steerMessage: {
+          label: "Reindirizza la risposta",
+          description: "Interrompi la risposta in corso e invia subito la bozza",
+        },
         cycleReasoningEffort: {
           label: "Scorri lo sforzo di ragionamento",
           description: "Passa in rassegna i livelli di sforzo di ragionamento",

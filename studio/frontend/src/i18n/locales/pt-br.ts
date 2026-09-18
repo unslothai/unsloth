@@ -501,6 +501,14 @@ export const ptBR = {
           label: "Enviar mensagem",
           description: "Enviar o que está no compositor",
         },
+        queueMessage: {
+          label: "Enfileirar mensagem",
+          description: "Enviar o rascunho para o fim da fila",
+        },
+        steerMessage: {
+          label: "Direcionar a resposta",
+          description: "Parar a resposta atual e enviar o rascunho em seguida",
+        },
         cycleReasoningEffort: {
           label: "Alternar esforço de raciocínio",
           description: "Percorrer os níveis de esforço de raciocínio",

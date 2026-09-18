@@ -501,6 +501,14 @@ export const ja = {
           label: "メッセージを送信",
           description: "入力欄の内容を送信します",
         },
+        queueMessage: {
+          label: "メッセージをキューに追加",
+          description: "下書きをキューの最後に送信します",
+        },
+        steerMessage: {
+          label: "応答を修正",
+          description: "現在の応答を停止して下書きを次に送信します",
+        },
         cycleReasoningEffort: {
           label: "思考の深さを順に切り替え",
           description: "思考の深さのレベルを順に切り替えます",

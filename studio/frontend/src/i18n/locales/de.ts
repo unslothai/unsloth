@@ -503,6 +503,14 @@ export const de = {
           label: "Nachricht senden",
           description: "Den Inhalt des Eingabefelds senden",
         },
+        queueMessage: {
+          label: "Nachricht einreihen",
+          description: "Den Entwurf ans Ende der Warteschlange senden",
+        },
+        steerMessage: {
+          label: "Antwort steuern",
+          description: "Die laufende Antwort stoppen und den Entwurf als Nächstes senden",
+        },
         cycleReasoningEffort: {
           label: "Denkaufwand durchschalten",
           description: "Durch die Stufen des Denkaufwands blättern",
