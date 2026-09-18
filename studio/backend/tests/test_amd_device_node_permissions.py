@@ -2799,11 +2799,25 @@ def test_the_installer_unnamed_gid_repair_is_runnable_too(tmp_path):
     emitted lines is the assertion that a placeholder would fail. Without the parse this
     would only be testing that a string changed."""
     out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993")
-    _cmds = [
-        _line.strip()
-        for _line in out.splitlines()
-        if _line.strip().startswith("sudo group") or _line.strip().startswith("sudo usermod")
-    ]
+    # Reassembled across the line continuation before being parsed. The installer prints the
+    # repair as `groupadd ... && \` then an indented `usermod ...`, and taking the lines
+    # separately parses a FRAGMENT: the first half ends in a dangling backslash and is not a
+    # command at all. GNU bash accepts one at end of input and returns 0, while bash 3.2, the
+    # one macOS ships, calls it "syntax error: unexpected end of file" -- so this passed here
+    # and failed there while testing the real command on neither.
+    _cmds: "list[str]" = []
+    _pending = ""
+    for _line in out.splitlines():
+        _stripped = _line.strip()
+        if not _pending and not _stripped.startswith(("sudo group", "sudo usermod")):
+            continue
+        _pending = f"{_pending} {_stripped}" if _pending else _stripped
+        if _pending.endswith("\\"):
+            _pending = _pending[:-1].rstrip()
+            continue
+        _cmds.append(_pending)
+        _pending = ""
+    assert not _pending, f"repair ends mid-continuation: {_pending!r}"
     assert _cmds, out
     for _cmd in _cmds:
         assert "<" not in _cmd and ">" not in _cmd
