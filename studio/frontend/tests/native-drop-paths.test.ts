@@ -634,8 +634,29 @@ test("every video MIME Rust stamps is one the video adapter claims", () => {
 
   assert.ok(stamped.length > 0, "Rust stamps no video MIME types");
   for (const mime of stamped) {
+    // Claimed through .m2ts only: browsers give TypeScript .ts files this MIME too.
+    if (mime === "video/mp2t") continue;
     assert.ok(claimed.has(mime), `the video adapter does not claim ${mime}`);
   }
+});
+
+// The video adapter is registered before the text one, so claiming this MIME would take .ts sources.
+test("an .m2ts clip is a video but a TypeScript file under the same MIME is not", async () => {
+  const { fileMatchesAccept } = (await import(
+    new URL(
+      "../node_modules/@assistant-ui/core/dist/adapters/attachment.js",
+      import.meta.url,
+    ).href
+  )) as {
+    fileMatchesAccept: (
+      file: { name: string; type: string },
+      accept: string,
+    ) => boolean;
+  };
+  const as = (name: string) => ({ name, type: "video/mp2t" });
+  assert.ok(fileMatchesAccept(as("clip.M2TS"), VIDEO_ACCEPT));
+  assert.ok(!fileMatchesAccept(as("index.ts"), VIDEO_ACCEPT));
+  assert.ok(!fileMatchesAccept(as("index.mts"), VIDEO_ACCEPT));
 });
 
 test("the rejection hint names video too", () => {

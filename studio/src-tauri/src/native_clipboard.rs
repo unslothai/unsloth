@@ -103,6 +103,7 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "wmv" => "video/x-ms-wmv",
         "flv" => "video/x-flv",
         "ogv" => "video/ogg",
+        "m2ts" => "video/mp2t",
         "pdf" => "application/pdf",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "odt" => "application/vnd.oasis.opendocument.text",
@@ -526,6 +527,7 @@ mod tests {
             ("clip.wmv", "video/x-ms-wmv"),
             ("clip.flv", "video/x-flv"),
             ("clip.ogv", "video/ogg"),
+            ("clip.m2ts", "video/mp2t"),
             ("clip.3gp", "video/3gpp"),
         ] {
             assert_eq!(clipboard_file_mime_type(Path::new(name)), Some(mime_type));

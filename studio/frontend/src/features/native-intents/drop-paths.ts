@@ -63,7 +63,7 @@ const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) =>
  * `VIDEO_ATTACHMENT_EXTS`. llama-server decodes with ffmpeg, so this is what
  * ffmpeg reads, not what the webview can play. */
 export const CHAT_VIDEO_DROP_ACCEPT =
-  ".mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv";
+  ".mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv,.m2ts";
 
 const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),

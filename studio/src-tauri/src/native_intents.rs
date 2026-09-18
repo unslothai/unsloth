@@ -663,6 +663,7 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "flv" => Some("video/x-flv"),
         "3gp" => Some("video/3gpp"),
         "ogv" => Some("video/ogg"),
+        "m2ts" => Some("video/mp2t"),
         "ods" => Some("application/vnd.oasis.opendocument.spreadsheet"),
         "odt" => Some("application/vnd.oasis.opendocument.text"),
         "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
@@ -1119,8 +1120,9 @@ mod tests {
     }
 
     #[test]
-    fn every_text_extension_the_drop_accepts_has_a_mime_type() {
-        for ext in crate::native_path_policy::TEXT_ATTACHMENT_EXTS {
+    fn every_text_and_video_extension_the_drop_accepts_has_a_mime_type() {
+        use crate::native_path_policy::{TEXT_ATTACHMENT_EXTS, VIDEO_ATTACHMENT_EXTS};
+        for ext in TEXT_ATTACHMENT_EXTS.iter().chain(VIDEO_ATTACHMENT_EXTS) {
             let path = PathBuf::from(format!("sample.{ext}"));
             assert!(attachment_mime_type(&path).is_some(), "{ext}");
         }

@@ -3,9 +3,10 @@
 
 /** Containers llama-server can decode. It shells out to ffmpeg, so this is
  * what ffmpeg reads, not what the webview can play. Extensions ride along
- * because MIME is unreliable for mkv and some mov files. */
+ * because MIME is unreliable for mkv and some mov files. .m2ts is claimed by
+ * extension only: browsers also give TypeScript .ts files its video/mp2t. */
 export const VIDEO_ACCEPT =
-  "video/mp4,video/x-m4v,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/x-ms-wmv,video/x-flv,video/3gpp,video/ogg,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv";
+  "video/mp4,video/x-m4v,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/x-ms-wmv,video/x-flv,video/3gpp,video/ogg,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv,.m2ts";
 
 // Matches _MAX_VIDEO_B64_CHARS in the backend, so the composer does not accept
 // a clip the route refuses. The native reader's cap is a higher backstop.
@@ -35,6 +36,7 @@ const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
   ".flv": "video/x-flv",
   ".3gp": "video/3gpp",
   ".ogv": "video/ogg",
+  ".m2ts": "video/mp2t",
 };
 
 const VIDEO_EXTENSIONS = Object.keys(VIDEO_MIME_BY_EXTENSION);
