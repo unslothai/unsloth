@@ -613,6 +613,8 @@ def test_a_mask_with_no_physical_ids_refuses_a_multi_row_join(monkeypatch):
     would advertise a discrete card with a system-RAM-sized pool.
     """
     _llama_common(monkeypatch, avail_mib = 43000)
+    # The DEFAULT ordering is the subject here, and main.py sets PCI_BUS_ID on import.
+    monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
     monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {1}))
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -640,3 +642,60 @@ def test_a_blank_total_is_still_filled_on_a_discrete_card(monkeypatch):
     assert devices[0]["memory_total_gb"] == 24.0
     assert devices[0].get("unified_memory") is not True
     assert devices[0].get("shared_memory") is not True
+
+
+def test_a_numeric_mask_under_fastest_first_refuses_the_join(monkeypatch):
+    """A numeric CUDA_VISIBLE_DEVICES carries CUDA's indices, not PCI ones.
+
+    CUDA_DEVICE_ORDER defaults to FASTEST_FIRST, which pins only device 0 and leaves the
+    rest unspecified, while nvidia-smi numbers by the kernel's NVML enumeration. Joining
+    the two spaces can hand a discrete card the shared pool, so the widening is refused
+    unless the ordering is provably PCI_BUS_ID.
+    """
+    _llama_common(monkeypatch, avail_mib = 43000)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    monkeypatch.setattr(
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [0, 1])
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {1}))
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_integrated_cuda_pool_total_mib",
+        staticmethod(lambda: {1: N1X_POOL_MIB}),
+    )
+    smi_rows = [(0, 2256, N1X_CARVE_OUT_MIB), (1, 20000, 24564)]
+
+    assert LlamaCppBackend._widen_integrated_cuda_rows(list(smi_rows)) == smi_rows
+
+    # PCI_BUS_ID makes the same join provable, so the integrated row widens.
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    widened = LlamaCppBackend._widen_integrated_cuda_rows(list(smi_rows))
+    assert widened[0] == smi_rows[0]
+    assert widened[1][2] == N1X_POOL_MIB
+
+
+def test_the_widened_utilization_is_capped_by_the_cgroup(monkeypatch):
+    """psutil reads host-wide counters in most containers, and unified-memory
+    allocations are charged to memory.max, so the published free bytes must not exceed
+    what this process can still charge."""
+    _cuda_host(monkeypatch, _N1XProps())
+    _host_memory(monkeypatch)
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 2048))
+    utilization = {
+        "devices": [
+            {
+                "index": 0,
+                "visible_ordinal": 0,
+                "vram_total_gb": N1X_CARVE_OUT_GB,
+                "vram_used_gb": N1X_USED_GB,
+                "vram_utilization_pct": 72.2,
+            }
+        ]
+    }
+
+    hw._reconcile_cuda_integrated_memory(utilization, [0])
+    device = utilization["devices"][0]
+
+    assert device["vram_total_gb"] == N1X_POOL_GB
+    free_gb = device["vram_total_gb"] - device["vram_used_gb"]
+    assert free_gb == pytest.approx(2.0, abs = 0.01), device

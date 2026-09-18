@@ -10560,21 +10560,32 @@ class LlamaCppBackend:
             integrated = LlamaCppBackend._integrated_cuda_gpu_ids()
             if not integrated or not gpus:
                 return gpus
-            # The two id spaces have to be the same one. These rows are nvidia-smi
-            # PHYSICAL indices, while _integrated_cuda_gpu_ids falls back to the torch
-            # ORDINAL whenever _resolve_visible_physical_ids() cannot answer -- which is
-            # exactly what a UUID or MIG mask produces, and _visible_devices_mask returns
-            # None on that same mask, so the CLI rows are not filtered down to match.
-            # A UUID naming physical GPU 3 therefore yields the id 0 and would re-price
-            # row 0, a different card: a discrete card advertised with a system-RAM-sized
-            # pool, which is the one shape here that overcommits real VRAM. hardware.py
-            # guards the same join with _cuda_order_matches_smi; with one visible device
-            # the two spaces cannot disagree, so only a multi-row probe is refused.
-            if LlamaCppBackend._resolve_visible_physical_ids() is None and len(gpus) > 1:
+            # The two id spaces have to be the same one, and by default they are not.
+            # These rows are nvidia-smi indices, which NVML orders by the kernel's
+            # enumeration; `_integrated_cuda_gpu_ids` answers in CUDA's space, which
+            # CUDA_DEVICE_ORDER defaults to FASTEST_FIRST, a heuristic that pins only
+            # device 0 and leaves the rest unspecified
+            # (https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/environment-variables.html).
+            # A numeric mask carries CUDA's indices, not PCI ones, and a UUID or MIG mask
+            # resolves to no physical ids at all while `_visible_devices_mask` returns
+            # None on that same mask, leaving the CLI rows unfiltered. Either way the id
+            # can land on another card and advertise a discrete GPU with a system-RAM
+            # sized pool, the one shape here that overcommits real VRAM.
+            #
+            # So widen only where the join is provable: PCI_BUS_ID ordering, or a host
+            # that showed a single unmasked GPU, where there is nothing to confuse. That
+            # is every shipping Spark, Jetson and N1X. hardware.py states the same rule
+            # at `_cuda_join_is_unsafe`.
+            order = (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper()
+            single_gpu_host = (
+                LlamaCppBackend._resolve_visible_physical_ids() is None and len(gpus) == 1
+            )
+            if order != "PCI_BUS_ID" and not single_gpu_host:
                 logger.debug(
-                    "Not widening integrated CUDA rows: the visible mask gives no "
-                    "physical ids, so a torch ordinal cannot be joined to an "
-                    "nvidia-smi index across %d rows.",
+                    "Not widening integrated CUDA rows: CUDA_DEVICE_ORDER is %r and %d "
+                    "rows were probed, so a CUDA id cannot be joined to an nvidia-smi "
+                    "index here.",
+                    order or "unset (FASTEST_FIRST)",
                     len(gpus),
                 )
                 return gpus

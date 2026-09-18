@@ -3864,6 +3864,24 @@ def _integrated_cuda_rows(
     return {k: td for k, td in inventory.items() if td.get("_cuda_integrated")}, key_field
 
 
+def _cgroup_available_memory_gb() -> Optional[float]:
+    """What this process can still charge to an enforcing cgroup, or None.
+
+    Reuses the llama.cpp reader rather than a second copy: it walks the process's
+    cgroup AND its ancestors, since an ancestor slice can be the binding limit and
+    carries sibling usage a leaf never sees, and it handles v2 and legacy v1.
+    Imported lazily and only from the widening branch, so a discrete host, which
+    returns before ever reaching here, pays nothing for it.
+    """
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        mib = LlamaCppBackend._cgroup_available_memory_mib()
+        return None if mib is None else mib / 1024.0
+    except Exception as e:  # noqa: BLE001 - no readable limit means keep the host reading
+        logger.debug("cgroup budget probe failed while sizing an integrated GPU: %s", e)
+        return None
+
+
 def _host_memory_used_gb() -> Optional[float]:
     """Host memory in use, or None. On one shared pool this is not an approximation of
     the GPU's used half, it is the same measurement."""
@@ -3946,6 +3964,13 @@ def _reconcile_cuda_integrated_memory(
             # The floor. A host whose RAM is nearly full would otherwise publish a pool
             # emptier of free bytes than the carve-out reading it replaced.
             pool_used_gb = min(pool_used_gb, max(total_gb - cli_free_gb, 0.0))
+        # Last, so it beats the floor: psutil reads host-wide counters inside most
+        # containers, and unified-memory allocations are charged to memory.max, so a
+        # 2 GiB container on a 121 GiB Spark would otherwise publish most of the host
+        # pool as free and _free_vram_by_index would hand it to the training gate.
+        cgroup_free_gb = _cgroup_available_memory_gb()
+        if cgroup_free_gb is not None:
+            pool_used_gb = min(max(pool_used_gb, total_gb - cgroup_free_gb), total_gb)
         dev["vram_used_gb"] = round(pool_used_gb, 2)
         dev["vram_utilization_pct"] = (
             round((pool_used_gb / total_gb) * 100, 1) if total_gb > 0 else None
