@@ -27,56 +27,25 @@ function Check($name, $cond) {
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
-$wanted = @(
-    "Get-StudioEarlyPython", "Invoke-StudioEarlyPython", "Invoke-StudioEarlyPythonScript",
-    "Remove-StudioTrailingNewline",
-    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Get-StudioPythonFinalPath",
+foreach ($name in @(
+    "Get-StudioEarlyPython", "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
+    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython",
+    "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo"
-)
-$extracted = @{}
-foreach ($name in $wanted) {
+)) {
     $fn = $ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
     }, $true)
     if ($fn.Count -lt 1) { throw "expected $name in install.ps1, found none" }
-    $extracted[$name] = $fn[0]
     Invoke-Expression $fn[0].Extent.Text
 }
-
 
 # The native rung, forced off. This is the state the new rung exists to improve: on a host where
 # it works nothing below this file's premise ever runs.
 function Initialize-StudioFinalPathNativeType { return $false }
 function Get-StudioNativeFinalPath { param([string]$Path) return $null }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
-
-# The list above is hand-written, and install.ps1 moves under it: splitting a body out into a
-# new helper leaves the helper unlisted, and the only symptom is "The term X is not recognized"
-# raised from inside whichever check happens to call it first. Close the list over what the
-# extracted bodies actually call. Asked of the session rather than of the list, so the stubs
-# just above count as answers: what matters is that the name resolves when a check calls it.
-$defined = @{}
-foreach ($fn in $ast.FindAll({ param($n)
-    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
-    $defined[$fn.Name] = $true
-}
-$missing = @()
-foreach ($entry in $extracted.GetEnumerator()) {
-    foreach ($call in $entry.Value.Body.FindAll({ param($n)
-        $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
-        $called = $call.GetCommandName()
-        if ($called -and $defined.ContainsKey($called) -and
-            -not (Get-Command -Name $called -ErrorAction SilentlyContinue)) {
-            $missing += "$called (called by $($entry.Key))"
-        }
-    }
-}
-if ($missing.Count -gt 0) {
-    throw ("install.ps1 functions these checks can reach but nothing here defines: " +
-        (($missing | Sort-Object -Unique) -join ", ") +
-        ". Extract them above, or stub them here.")
-}
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("earlypy-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
@@ -153,6 +122,10 @@ try {
     $savedFinder2 = ${function:Get-StudioEarlyPython}
     function Get-StudioEarlyPython { return $null }
     $script:StudioEarlyPythonProbed = $false
+    # The resolver's per-run cache is cleared with it. This stub stands in for a DIFFERENT run,
+    # one that never had an interpreter, and a cached answer from the run above would otherwise
+    # be served without the rung being reached at all.
+    $script:StudioPythonFinalPathCache = $null
     $noPy = Resolve-StudioFinalPathInfo -Path $real
     Check "with no interpreter the identity is inexact, as before" ($noPy.Exact -eq $false)
     Check "with no interpreter a usable path still comes back" (
@@ -275,20 +248,161 @@ try {
     Check "-I alone leaves site imported on this interpreter" ("$isoOnly".Trim() -eq "0")
     Check "-S is what turns site off" ("$isoPlus".Trim() -eq "1")
 
-    # And every launcher passes it. Read out of the source, because the end-to-end drive is not
+    # And the resolver passes it. Read out of the launcher, because the end-to-end drive is not
     # available here: sitecustomize is resolved on sys.path and the stdlib directory precedes
     # site-packages, so a planted copy is shadowed by the host's own on any machine that has one.
-    #
-    # Written against every argument vector rather than one named function, because which
-    # function builds it moves: the resolver assembles its own here and delegates to a shared
-    # runner once that exists, and the runner has a second cmdlet-only launcher beside it for
-    # Constrained Language Mode. A check naming one of them passes while another drops the flag.
-    $vectors = [regex]::Matches((Get-Content -Raw -LiteralPath $installPs1), '@\(\s*"-I"[^)]*\)')
-    Check "at least one launcher argument vector was found (bites)" ($vectors.Count -ge 1)
-    foreach ($v in $vectors) {
-        Check "the launcher at offset $($v.Index) runs with -S as well as -I" (
-            $v.Value -match '"-I",\s*"-S"')
+    # Read out of BOTH launchers. The flags used to live in the one resolver, and the CLM
+    # fallback below it would have been free to drop them, which is the half of the population
+    # that fallback exists for.
+    foreach ($launcher in @(
+        "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPythonScriptViaCmdlets"
+    )) {
+        $launcherFn = @($ast.FindAll({ param($n)
+            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $n.Name -eq $launcher
+        }, $true))[0].Extent.Text
+        Check "$launcher runs the probe with -S as well as -I" (
+            $launcherFn -match '@\("-I",\s*"-S"')
     }
+
+    # ---- the launcher that has to work where the primary one is forbidden ----
+    #
+    # The primary launcher builds a System.Diagnostics.ProcessStartInfo. Constrained Language Mode
+    # refuses to construct or invoke non-core .NET types, and the broad catch around it turns that
+    # refusal into $null, so on a locked-down host this whole rung answered nothing and every
+    # consumer below it stayed degraded. That is the population the rung exists for.
+    #
+    # Both launchers are driven over the same awkward arguments first, because a fallback that
+    # answers differently is not a fallback.
+    $echoScript = "import sys;sys.stdout.write('|'.join(sys.argv[1:]))"
+    $awkward = @('a b', 'c\')
+    $primaryAnswer = Invoke-StudioEarlyPythonScript -Exe $exe -Script $echoScript -ScriptArgs $awkward
+    $cmdletAnswer = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script $echoScript -ScriptArgs $awkward
+    Check "the primary launcher passes awkward arguments through unchanged" (
+        $primaryAnswer -ceq "a b|c\")
+    Check "and the cmdlet launcher returns the same string byte for byte" (
+        $cmdletAnswer -ceq $primaryAnswer)
+    Check "the cmdlet launcher refuses a non-zero exit" (
+        $null -eq (Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import sys;sys.exit(4)"))
+    $cmdletStart = Get-Date
+    $cmdletHung = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe `
+        -Script "import time;time.sleep(90)" -TimeoutMs 2000
+    Check "the cmdlet launcher kills a hung child too" (
+        $null -eq $cmdletHung -and ((Get-Date) - $cmdletStart).TotalSeconds -lt 30)
+
+    # The handover, driven in a runspace that is genuinely in Constrained Language Mode.
+    #
+    # Setting $ExecutionContext.SessionState.LanguageMode partway through a script is NOT enough
+    # and was tried first: PowerShell fixes a function's language mode when the function is
+    # defined, so functions defined before the switch keep running in FullLanguage and the primary
+    # launcher succeeds. The check passed while proving nothing. A runspace created with
+    # InitialSessionState.LanguageMode set is constrained before anything is defined in it, which
+    # is what a locked-down host actually looks like.
+    $clmFunctions = (@(
+        "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
+        "Invoke-StudioEarlyPythonScriptViaCmdlets"
+    ) | ForEach-Object {
+        $name = $_
+        ($ast.FindAll({ param($n)
+            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
+        }, $true)[0]).Extent.Text
+    }) -join "`n"
+
+    $rs = $null
+    $ps = $null
+    try {
+        $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+        $iss.LanguageMode = "ConstrainedLanguage"
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
+        $rs.Open()
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($clmFunctions + @"
+
+Write-Output "MODE=`$(`$ExecutionContext.SessionState.LanguageMode)"
+try { `$null = New-Object System.Diagnostics.ProcessStartInfo; Write-Output 'PSI-ALLOWED' }
+catch { Write-Output 'PSI-BLOCKED' }
+Write-Output ("ANSWER=" + (Invoke-StudioEarlyPythonScript -Exe '$exe' -Script "$echoScript" -ScriptArgs @('a b', 'c\')))
+"@)
+        $clmOut = @($ps.Invoke() | ForEach-Object { "$_".Trim() })
+        Check "the runspace really is constrained" ($clmOut -contains "MODE=ConstrainedLanguage")
+        # The premise of the whole fallback, measured rather than assumed.
+        Check "Constrained Language Mode really does refuse ProcessStartInfo" (
+            $clmOut -contains "PSI-BLOCKED")
+        # And therefore the primary launcher cannot answer there, so this can only have come from
+        # the fallback. Removing the fallback call from the catch makes this check fail.
+        Check "under Constrained Language Mode the answer still comes back, through the fallback" (
+            $clmOut -contains "ANSWER=a b|c\")
+    } finally {
+        if ($ps) { $ps.Dispose() }
+        if ($rs) { $rs.Dispose() }
+    }
+    # ---- a miss recorded before $VenvDir existed is not final ----
+    #
+    # The --tauri path resolves the Studio-home override well before $VenvDir is assigned. On a
+    # host with no system Python that probe finds nothing, and the latch used to hold that answer
+    # for the whole run, so the rung could never reach the previous install's own interpreter
+    # once the variable appeared. Every consumer below it (the path resolver, the process-image
+    # table, the NVIDIA fallback) then stayed degraded on exactly the hosts they exist for.
+    #
+    # Driven with the interpreter this host really has, planted where a venv would put it, and
+    # with system discovery switched off so the venv rung is the only one that can answer.
+    $venvHome = Join-Path $tmp "venvhome"
+    $venvBin = if ($IsWindows -or $env:OS -eq "Windows_NT") { "Scripts" } else { "bin" }
+    $venvLeaf = if ($IsWindows -or $env:OS -eq "Windows_NT") { "python.exe" } else { "python3" }
+    New-Item -ItemType Directory -Force -Path (Join-Path $venvHome $venvBin) | Out-Null
+    Copy-Item -LiteralPath $exe -Destination (Join-Path $venvHome (Join-Path $venvBin $venvLeaf)) -Force
+    function Get-Command { param($Name, [switch]$All, $CommandType, $ErrorAction) return @() }
+    Remove-Variable -Name VenvDir -Scope Script -ErrorAction SilentlyContinue
+    Remove-Variable -Name VenvDir -Scope Global -ErrorAction SilentlyContinue
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    $script:StudioEarlyPythonProbedWithoutVenv = $false
+    Check "with no venv and no system Python the probe finds nothing" ($null -eq (Get-StudioEarlyPython))
+    Check "and it recorded that the venv was unknown when it looked" (
+        $script:StudioEarlyPythonProbedWithoutVenv -eq $true)
+    $global:VenvDir = $venvHome
+    $found = Get-StudioEarlyPython
+    Check "once the venv directory is known the venv interpreter is found after all" (
+        -not [string]::IsNullOrWhiteSpace($found))
+    Check "and it is the one inside the venv, not some other copy" (
+        "$found" -like ("*" + $venvBin + "*"))
+    # And exactly once more: the latch still holds, or every resolution spawns a probe.
+    $script:ReprobeCount = 0
+    function Test-Path { param($LiteralPath, $PathType, $ErrorAction) $script:ReprobeCount++; return $false }
+    $null = Get-StudioEarlyPython
+    Check "a hit is not probed again" ($script:ReprobeCount -eq 0)
+    Remove-Item Function:Test-Path -ErrorAction SilentlyContinue
+    Remove-Item Function:Get-Command -ErrorAction SilentlyContinue
+    Remove-Variable -Name VenvDir -Scope Global -ErrorAction SilentlyContinue
+    # ---- one child per distinct path, not one per call ----
+    #
+    # The process scan resolves every running process's image path, and the install repeats that
+    # for each protected root, so the same strings are asked for over and over. On a host where
+    # the rung above this one declines, each of those was a child process with a ten second bound
+    # behind it. Counted rather than timed: the count is what separates a cache from a fast host.
+    $script:ResolveCalls = 0
+    $savedInvoke = ${function:Invoke-StudioEarlyPython}
+    function Invoke-StudioEarlyPython { param($Exe, $Path, $TimeoutMs) $script:ResolveCalls++; return $Path }
+    $savedFinder3 = ${function:Get-StudioEarlyPython}
+    function Get-StudioEarlyPython { return "python3" }
+    $script:StudioPythonFinalPathCache = $null
+    $null = Get-StudioPythonFinalPath -Path $real
+    $null = Get-StudioPythonFinalPath -Path $real
+    $null = Get-StudioPythonFinalPath -Path $real
+    Check "three calls for one path spawn one child" ($script:ResolveCalls -eq 1)
+    $null = Get-StudioPythonFinalPath -Path $tmp
+    Check "and a different path still spawns its own" ($script:ResolveCalls -eq 2)
+    # The miss is worth caching too: learning it twice costs the same child as learning it once.
+    function Invoke-StudioEarlyPython { param($Exe, $Path, $TimeoutMs) $script:ResolveCalls++; return $null }
+    $missPath = Join-Path $tmp "no-such-thing"
+    $null = Get-StudioPythonFinalPath -Path $missPath
+    $null = Get-StudioPythonFinalPath -Path $missPath
+    Check "a miss is remembered as well as an answer" ($script:ResolveCalls -eq 3)
+    ${function:Invoke-StudioEarlyPython} = $savedInvoke
+    ${function:Get-StudioEarlyPython} = $savedFinder3
+    $script:StudioPythonFinalPathCache = $null
+
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

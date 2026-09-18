@@ -119,20 +119,11 @@ Check "an interpreter that does not exist yields null, not a throw" ($null -eq $
 # the reason this whole ladder exists, and CLM also refuses New-Object and every method call on
 # System.Diagnostics.Process. A launcher that only worked outside CLM would be absent from half
 # the population it is for, while looking perfectly healthy everywhere it is not needed.
+# test_early_python_path_resolver.ps1 drives the handover itself in a constrained runspace; the
+# checks here cover what that one does not.
 
-$echoScript = "import sys;sys.stdout.write('|'.join(sys.argv[1:]))"
-$awkward = @("a b", "c\")
-
-$primaryAnswer = Invoke-StudioEarlyPythonScript -Exe $exe -Script $echoScript -ScriptArgs $awkward
-$cmdletAnswer = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script $echoScript -ScriptArgs $awkward
-Check "the cmdlet launcher answers at all" ($cmdletAnswer -eq "a b|c\")
-# The property that matters. Start-Process redirection appends a trailing newline the child never
-# wrote, so without normalising both ends a caller silently reads one of two different strings
-# depending on the host's language mode.
-Check "both launchers return the same string, byte for byte" ($primaryAnswer -ceq $cmdletAnswer)
-
-# One payload is not a contract. The check above used a single line with no newline in it, and
-# passed for a year of edits while the two launchers actually DISAGREED on anything containing a
+# One payload is not a contract. The byte-for-byte check in test_early_python_path_resolver.ps1
+# uses a single line with no newline in it, and a check like it passed for a year of edits while the two launchers actually DISAGREED on anything containing a
 # CRLF: the ProcessStartInfo launcher reads the child's bytes straight through, and the cmdlet
 # launcher's redirection goes via a file. Measured at the time this was added: a child writing
 # 61 0d 0a 62 came back 61 0d 0a 62 from one and 61 0a 62 from the other.
@@ -213,29 +204,13 @@ $cmdletUtf8 = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe `
 Check "the cmdlet launcher keeps non-ASCII intact" (
     $cmdletUtf8 -eq ([string][char]0xE9 + [string][char]0x4E2D))
 
-Check "the cmdlet launcher refuses a non-zero exit" (
-    $null -eq (Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import sys;sys.exit(4)"))
-
-$cmdletStart = Get-Date
-$cmdletHung = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import time;time.sleep(90)" -TimeoutMs 2000
-Check "the cmdlet launcher kills a hung child too" (
-    $null -eq $cmdletHung -and ((Get-Date) - $cmdletStart).TotalSeconds -lt 30)
-
-# The whole chain, driven in a runspace that is genuinely in Constrained Language Mode.
-#
-# Two mistakes are baked into this block because both were made here first.
-#
-# One: setting $ExecutionContext.SessionState.LanguageMode partway through a script proves
-# nothing. PowerShell fixes a function's language mode when the function is DEFINED, so functions
-# defined before the switch keep running in FullLanguage and the primary launcher keeps
-# succeeding. A runspace created with InitialSessionState.LanguageMode set is constrained before
-# anything is defined in it, which is what a locked-down host actually looks like.
-#
-# Two: testing the launcher alone proves nothing either. The launcher was fixed first and this
-# check passed while the rung as a whole was still dead, because Get-StudioEarlyPython THREW on
-# [System.IO.Path]::GetDirectoryName before the launcher was ever reached. CLM refuses method
-# calls on System.IO.Path and on Int32, and it throws rather than returning null, so the ladder
-# did not degrade, it failed. Every function between the entry point and the answer runs here.
+# The whole early-Python chain, in a runspace that is genuinely in Constrained Language Mode.
+# test_early_python_path_resolver.ps1 drives the launcher handover there; this drives the rungs
+# around it. The launcher was fixed first and that check passed while the rung as a whole was
+# still dead, because Get-StudioEarlyPython THREW on [System.IO.Path]::GetDirectoryName before the
+# launcher was ever reached. CLM throws on a forbidden method call rather than returning null, so
+# the ladder did not degrade, it failed. Every function between the entry point and the answer
+# runs here.
 $clmFunctions = (@(
     "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
     "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython",
@@ -259,9 +234,6 @@ try {
     $null = $ps.AddScript($clmFunctions + @"
 
 Write-Output "MODE=`$(`$ExecutionContext.SessionState.LanguageMode)"
-try { `$null = New-Object System.Diagnostics.ProcessStartInfo; Write-Output 'PSI-ALLOWED' }
-catch { Write-Output 'PSI-BLOCKED' }
-Write-Output ("ANSWER=" + (Invoke-StudioEarlyPythonScript -Exe '$exe' -Script "$echoScript" -ScriptArgs @('a b', 'c\')))
 `$script:StudioEarlyPythonProbed = `$false
 `$script:StudioEarlyPython = `$null
 try { Write-Output ("DISCOVERY=" + (Get-StudioEarlyPython)) } catch { Write-Output "DISCOVERY-THREW" }
@@ -269,13 +241,8 @@ try { Write-Output ("REALPATH=" + (Get-StudioPythonFinalPath -Path '$root')) } c
 "@)
     $clmOut = @($ps.Invoke() | ForEach-Object { "$_".Trim() })
     Check "the runspace really is constrained" ($clmOut -contains "MODE=ConstrainedLanguage")
-    # The premise of the whole fallback, measured rather than assumed.
-    Check "Constrained Language Mode really does refuse ProcessStartInfo" ($clmOut -contains "PSI-BLOCKED")
-    # So this answer can only have come from the fallback launcher.
-    Check "under Constrained Language Mode the answer still comes back, through the fallback" (
-        $clmOut -contains "ANSWER=a b|c\")
-    # And the rungs around it survive too. A throw here is worse than a null: the ladder stops
-    # instead of falling through to the rung below.
+    # A throw here is worse than a null: the ladder stops instead of falling through to the rung
+    # below.
     Check "interpreter discovery survives Constrained Language Mode" (
         -not ($clmOut -contains "DISCOVERY-THREW") -and ($clmOut | Where-Object { $_ -like "DISCOVERY=?*" }))
     Check "the path resolver answers under Constrained Language Mode" (
