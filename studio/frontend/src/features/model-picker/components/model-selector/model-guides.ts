@@ -245,7 +245,8 @@ const GUIDES: ReadonlyArray<{
 /** The Unsloth guide for `repoId`, or null when no family matches. */
 export function modelGuide(repoId: string | null | undefined): ModelGuide | null {
   if (!repoId) return null;
-  const id = repoId.toLowerCase();
+  // Match the model name, not its owner.
+  const id = repoId.slice(repoId.lastIndexOf("/") + 1).toLowerCase();
   for (const guide of GUIDES) {
     if (guide.match.test(id)) {
       return { title: guide.title, url: `${DOCS}/${guide.path}` };
