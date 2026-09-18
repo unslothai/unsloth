@@ -409,6 +409,25 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # A tracked client's bound connect is a listed call like any other.
+            pytest.param(
+                f"import socket\nc = socket.socket().connect\nc(('{_H}', 80))",
+                id = "bound_socket_connect_alias",
+            ),
+            pytest.param(
+                f"import paramiko\nc = paramiko.SSHClient().connect\nc(hostname='{_H}')",
+                id = "bound_ssh_connect_alias",
+            ),
+            pytest.param(
+                f"import socket\ns = socket.socket()\ns.connect_ex(('{_H}', 22))",
+                id = "socket_connect_ex",
+            ),
+            # A store below the read still counts where the read can come round again.
+            pytest.param(
+                f"import requests\nurl = 'https://pypi.org/'\nwhile c:\n    requests.get(url)\n"
+                f"    url = 'http://{_H}/'",
+                id = "loop_rebinding_below_the_read",
+            ),
             # A store whose own resolution hits a cycle must not hide the one that resolved.
             pytest.param(
                 f"import requests\na = requests\nb = a\na = b\na.get('http://{_H}/')",
@@ -701,6 +720,9 @@ class TestNetworkTargetResolution:
             "import urllib.request\nreq = urllib.request.Request('https://pypi.org/simple/', headers={})\nurllib.request.urlopen(req)",
             "import requests as r\nr.get('https://huggingface.co/api/models')\nr = object()",
             "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = 'https://huggingface.co/'",
+            # A straight-line store below the call has not run yet.
+            "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = input()",
+            "import requests\nurl = 'https://pypi.org/'\nrequests.get(url)\nurl = 'http://internal.example/'",
             "import requests\nurl = 'https://pypi.org/'\nclass C:\n    requests.get(url)\n    url = 'http://203.0.113.5/'",
             "import requests\nurl = 'http://203.0.113.5/'\nclass C:\n    url = 'https://pypi.org/'\n    requests.get(url)",
             # urllib3's string helpers open no connection.
@@ -776,7 +798,6 @@ class TestNetworkTargetResolution:
             "import requests\nsub = input()\nrequests.get(f'https://{sub}.huggingface.co/')",
             "import socket\nwith socket.socket() as s:\n    s.connect((input(), 22))",
             "import requests\nrequests.get(*[input()])",
-            "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = input()",
             "import requests\ns = requests.Session()\ns.get(input())",
             "import httpx\nhttpx.Client(base_url=input()).get('/')",
             "import httpx\nc = httpx.Client()\nc.send(r)",

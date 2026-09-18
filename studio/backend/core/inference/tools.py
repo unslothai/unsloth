@@ -15918,6 +15918,17 @@ def _check_signal_escape_patterns(code: str):
     _CONNECTING_CLIENT_FQ = frozenset(
         {"socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient"}
     )
+    _NETWORK_TARGET_ARGS.update(
+        {
+            "socket.socket.connect": (0, "address", "host"),
+            "socket.socket.connect_ex": (0, "address", "host"),
+            # paramiko names it `hostname`; the old receiver branch also accepted `host`.
+            **{
+                f"{client}.connect": (0, ("hostname", "host"), "host")
+                for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")
+            },
+        }
+    )
     # Everything that owns a listed call. Used to tell `getattr(<owner>, name)` apart from an
     # unrelated attribute lookup, and to decide whether modelling scopes is worth it at all.
     _NETWORK_OWNERS = frozenset(
@@ -16393,6 +16404,7 @@ def _check_signal_escape_patterns(code: str):
     _ROOT_BLOCK = (0, "root")
     _node_block: dict[int, tuple] = {}
     _block_parent: dict[tuple, tuple | None] = {_ROOT_BLOCK: None}
+    _loop_blocks: set = set()
     _UNRESOLVED_FQ = "<unresolved>"
     _fq_cache: dict[int, list] = {}
     _fq_active: set = set()
@@ -16582,6 +16594,8 @@ def _check_signal_escape_patterns(code: str):
                 if field in _BLOCK_FIELDS and isinstance(value, list):
                     child_block = (id(node), field)
                     _block_parent[child_block] = block
+                    if field == "body" and isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+                        _loop_blocks.add(child_block)
                 for child in value if isinstance(value, list) else [value]:
                     if isinstance(child, ast.AST):
                         pending.append((child, inner, child_block))
@@ -16697,27 +16711,45 @@ def _check_signal_escape_patterns(code: str):
             _model_state["built"] = wanted
         return _model_state["built"]
 
-    def _blocks_around(node: ast.AST) -> set:
-        """Return the block holding this node and every block enclosing it."""
+    def _block_chain(block) -> set:
+        """Return this block and every block enclosing it."""
         blocks = set()
-        block = _node_block.get(id(node))
         while block is not None:
             blocks.add(block)
             block = _block_parent.get(block)
         return blocks
 
+    def _blocks_around(node: ast.AST) -> set:
+        return _block_chain(_node_block.get(id(node)))
+
+    def _deferred_read(node: ast.AST) -> bool:
+        """Whether this read sits in a body that runs when called, not where it is written."""
+        scope = _node_scope.get(id(node))
+        while scope is not None:
+            if isinstance(scope, (*_FUNCTION_NODES, *_COMPREHENSION_NODES)):
+                return True
+            scope = _scope_parent.get(id(scope))
+        return False
+
     def _reaching(stores: list, read: ast.Name) -> list:
         """Drop the stores a later one in the same straight line has already replaced."""
         read_at = _position(read)
         around = _blocks_around(read)
+        # A store below the read cannot have run yet, unless the read can come round again: a
+        # loop enclosing both, or a function body, which runs whenever it is called.
+        loops = around & _loop_blocks
+        deferred = _deferred_read(read)
+        reaches = [s for s in stores if deferred or s[1] < read_at or (_block_chain(s[2]) & loops)]
         # A store in the same body, after this one and before the read, always runs in between,
         # but only if it is guaranteed to bind at all. Branches, loop bodies and walrus
         # expressions replace nothing. One pass per block, not one scan per store.
         latest: dict = {}
-        for _value, pos, block, certain in stores:
+        for _value, pos, block, certain in reaches:
             if certain and block in around and pos < read_at and pos > latest.get(block, (0, 0)):
                 latest[block] = pos
-        return [value for value, pos, block, _certain in stores if latest.get(block, (0, 0)) <= pos]
+        return [
+            value for value, pos, block, _certain in reaches if latest.get(block, (0, 0)) <= pos
+        ]
 
     def _name_values(name: ast.Name) -> "list | None":
         """Return the stores visible to this name read."""
@@ -17046,11 +17078,12 @@ def _check_signal_escape_patterns(code: str):
             return [(True, None)] if complete else [(False, None)]
         return [(True, text)] if complete else [(False, None)]
 
-    def _call_target(node: ast.Call, position, keyword: str) -> "tuple[bool, ast.AST | None]":
+    def _call_target(node: ast.Call, position, keyword) -> "tuple[bool, ast.AST | None]":
         """Return the target argument; splats yield (True, None). A position of None is
-        keyword-only."""
+        keyword-only, and a tuple of keywords accepts any of them."""
+        names = (keyword,) if isinstance(keyword, str) else keyword
         for kw in node.keywords or []:
-            if kw.arg == keyword:
+            if kw.arg in names:
                 return True, kw.value
         args = node.args or []
         if position is not None:
@@ -17144,22 +17177,17 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Resolve .connect() keywords once any store on the receiver is a tracked socket or SSH
-            # client. Other receivers retain the existing positional-literal check.
+            # A tracked client's own .connect is in the target table and goes through the
+            # network branch below. Any other .connect keeps main's positional-literal check,
+            # which is what leaves database drivers alone.
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "connect"
-                and not any(fq in _NETWORK_TARGET_ARGS for fq in net_fqs)
+                and not any(_is_network_fq(fq) for fq in net_fqs)
+                and node.args
+                and isinstance(node.args[0], (ast.Tuple, ast.Constant))
             ):
-                if any(fq in _CONNECTING_CLIENT_FQ for fq in _resolved_fqs(node.func.value)):
-                    host_kw = next(
-                        (kw.arg for kw in node.keywords or [] if kw.arg in ("hostname", "host")),
-                        None,
-                    )
-                    target = (*_call_target(node, 0, host_kw or "hostname"), "host")
-                    self._check_target(node, [target], connects = True)
-                elif node.args and isinstance(node.args[0], (ast.Tuple, ast.Constant)):
-                    self._check_target(node, [(True, node.args[0], "host")], connects = False)
+                self._check_target(node, [(True, node.args[0], "host")], connects = False)
 
             # _is_network_fq, not the prefixes alone: a name in the target table is a network
             # call whether or not some prefix also happens to cover it.
