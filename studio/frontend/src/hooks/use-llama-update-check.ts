@@ -39,7 +39,7 @@ export interface LlamaUpdateJob {
   finished_at: string | null;
 }
 
-export interface WhisperSubStatus {
+export interface ComponentOffer {
   update_available: boolean;
   installed_tag: string | null;
   latest_tag: string | null;
@@ -51,8 +51,10 @@ export interface LlamaUpdateStatus {
   update_available: boolean;
   source_build: boolean;
   component: "llama.cpp" | "whisper.cpp";
-  // Carried whatever the card names: both components can be behind at once.
-  whisper: WhisperSubStatus | null;
+  // Carried per component whatever the card names: both can be behind at once,
+  // and the card shows whichever one the notification switches allow.
+  llama: ComponentOffer;
+  whisper: ComponentOffer | null;
   installed_tag: string | null;
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
@@ -125,6 +127,19 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       typeof details.update_size_bytes === "number"
         ? details.update_size_bytes
         : null,
+    // The top-level version fields keep their llama meaning whatever `details` is.
+    llama: {
+      // Absent from a backend older than the whisper piggyback: there the legacy
+      // union is llama's own answer.
+      update_available:
+        typeof s.llama_update_available === "boolean"
+          ? s.llama_update_available
+          : s.update_available === true && component === "llama.cpp",
+      installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
+      latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
+      update_size_bytes:
+        typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
+    },
     whisper: whisper
       ? {
           update_available: whisper.update_available === true,
