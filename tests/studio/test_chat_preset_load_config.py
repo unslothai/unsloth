@@ -780,7 +780,10 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
         return not (isinstance(value, float) and value == 0.0)
 
     if taken:
-        # The comparison must BE a conjunct: `(budget === -1) === false` pins nothing.
+        # The comparison must BE a conjunct: `(budget === -1) === false` pins nothing, and
+        # neither does `budget === -1 && a || b`, which `b` alone can make true.
+        if len(_top_level_operands(_unwrapped(guard), "||")) > 1:
+            return None
         for conjunct in _top_level_operands(_unwrapped(guard)):
             match = re.fullmatch(equal, _unwrapped(conjunct))
             if match is not None:
@@ -906,6 +909,7 @@ SELECTOR_CASES = [
     ('(s) => s.reasoningBudget > 0 && s.mode === "x" ? s.other : s.reasoningBudget', False),
     ('(s) => s.reasoningBudget === -1 && s.mode === "x" ? -1 : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === -1 || s.mode === "x" ? -1 : s.reasoningBudget', False),
+    ("(s) => s.reasoningBudget === -1 && s.enabled || s.override ? -1 : s.reasoningBudget", False),
     ('(s) => s.reasoningBudget !== null && s.mode === "x" ? s.reasoningBudget : null', False),
     # The comparison must be on the field read off the selector's own parameter.
     ("(s) => defaults.reasoningBudget === -1 ? -1 : s.reasoningBudget", False),
