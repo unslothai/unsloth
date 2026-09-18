@@ -794,6 +794,7 @@ pub async fn start_install(
     app: AppHandle,
     state: tauri::State<'_, install::InstallState>,
     backend_state: tauri::State<'_, BackendState>,
+    update_state: tauri::State<'_, update::UpdateState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     if has_owned_backend(&backend_state)? {
@@ -801,6 +802,10 @@ pub async fn start_install(
             "The Unsloth backend is still running. Stop it before starting installation."
                 .to_string(),
         );
+    }
+    // A repair's installer phase runs through run_install_for_repair, so one started here races it.
+    if update::is_repair_running(update_state.inner()) {
+        return Err("Cannot install while a repair is in progress.".to_string());
     }
     block_external_conflict(&[]).await?;
 
@@ -877,6 +882,10 @@ pub async fn start_backend_update(
         .unwrap_or(false)
     {
         return Err("Cannot update while installation is in progress.".to_string());
+    }
+    // A repair holds no child handle between its update and its installer: invisible to the above.
+    if update::is_repair_running(update_state.inner()) {
+        return Err("Cannot update while a repair is in progress.".to_string());
     }
 
     if update_state
@@ -960,6 +969,9 @@ pub async fn start_managed_repair(
         return Err("Cannot repair while installation is in progress.".to_string());
     }
 
+    // Taken before anything else and held to the end: the process handles below are empty
+    // while the backend stops and between the update child and the installer, and every
+    // duplicate call that slipped through there ran its own update and raced for the installer.
     let _repair = update::RepairInFlight::claim(update_state.inner())?;
 
     let diagnostics_state = diagnostics.inner().clone();
