@@ -245,3 +245,41 @@ test("a record read outside the storage handler retires a pin too", () => {
     `a synchronously observed pin stayed classified as ours: ${JSON.stringify(pins.getState().pinned)}`,
   );
 });
+
+test("a pin a peer added and removed between events is retired", () => {
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+  } finally {
+    storage.set = realSet;
+  }
+  // Both events arrive after both writes, so each handler reads the SAME final record and only
+  // the payloads carry the intermediate pin.
+  storage.set(KEY, JSON.stringify([B, A]));
+  storage.set(KEY, JSON.stringify([A]));
+  fireWindowEvent("storage", { key: KEY, newValue: JSON.stringify([B, A]) });
+  fireWindowEvent("storage", { key: KEY, newValue: JSON.stringify([A]) });
+  assert.ok(
+    !pins.getState().pinned.includes(B),
+    `an id the peer pinned then unpinned was resurrected: ${JSON.stringify(pins.getState().pinned)}`,
+  );
+});
+
+test("a newer peer pin sits above an older unpersisted one", () => {
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+  } finally {
+    storage.set = realSet;
+  }
+  externalWrite([C, A]); // a peer pins C after B was attempted
+  assert.deepEqual(pins.getState().pinned, [C, B, A]);
+});

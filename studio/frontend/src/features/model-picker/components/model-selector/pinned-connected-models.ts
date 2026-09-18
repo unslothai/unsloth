@@ -197,6 +197,19 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === KEY || event.key === null) {
+      // Retire from the payload THIS event carries, before reading the record. Two events queued
+      // behind each other both read the latest value, so a model a peer pinned and then unpinned
+      // is never observed as persisted and would be resurrected as one of ours.
+      if (event.newValue != null) {
+        try {
+          const seen: unknown = JSON.parse(event.newValue);
+          if (Array.isArray(seen)) {
+            retirePersisted(seen.filter((v): v is string => typeof v === "string"));
+          }
+        } catch {
+          // A payload we cannot read tells us nothing; the record below still does.
+        }
+      }
       const next = readPinned();
       retirePersisted(next);
       if (dragSnapshot !== null) {
@@ -205,9 +218,13 @@ if (typeof window !== "undefined") {
       }
       // Carry this window's unpersisted pins into the rendered list. Without them the row shows as
       // unpinned while every merge still holds it, so "Pin to top" takes the removal branch and
-      // persists it unpinned once writes recover.
+      // persists it unpinned once writes recover. Newly observed peer additions go in FRONT of
+      // them, which is both the store's newest-first rule and what the drag rebase already does.
+      const current = usePinnedConnectedModelsStore.getState().pinned;
+      const added = next.filter((id) => !current.includes(id));
+      const rest = next.filter((id) => current.includes(id));
       usePinnedConnectedModelsStore.setState({
-        pinned: [...ourPins(next, next), ...next],
+        pinned: [...added, ...ourPins(next, next), ...rest],
       });
     }
   });
