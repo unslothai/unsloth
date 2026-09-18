@@ -461,12 +461,20 @@ export function ThreadDocumentsBar({
 
   // Materialize the thread id on first use; ref-deduped so a double-click can't
   // start two threads. A thread switch gets separate work even if the prior request is pending.
-  const initializeThreadItem = useCallback((): Promise<string> => {
+  const initializeThreadItem = useCallback((
+    clearGeneration: number,
+  ): Promise<string> => {
     const current = initPromiseRef.current;
     if (current) {
       return current;
     }
-    const clearGeneration = chatHistoryClearBoundary.capture();
+    // Captured by the caller, before anything can yield. Capturing it here is too late on the
+    // recovery path: requireStoredThread awaits a Dexie read and an unbounded getChatThread
+    // round trip first, and clearAllChats advances the boundary as its very first statement,
+    // so a clear landing in that window would read as no clear at all.
+    if (chatHistoryClearBoundary.capture() !== clearGeneration) {
+      return Promise.reject(new Error("Chat history was cleared"));
+    }
     const generation = ++initGenerationRef.current;
     // Taken before the await: this composer can be abandoned while it runs, and
     // the choice under the shared key would then be the next composer's.
@@ -500,6 +508,10 @@ export function ThreadDocumentsBar({
   }, [aui]);
 
   const ensureThreadId = useCallback((): Promise<string> => {
+    // Read synchronously with the attach, so a clear landing while the stored-thread check is
+    // still in flight is still seen as a clear: a late initializer must not recreate a chat
+    // after that clear finishes (clear-all-chats.ts).
+    const clearGeneration = chatHistoryClearBoundary.capture();
     return materializeThreadScope({
       threadId: effectiveThreadId,
       readCurrentThreadItem: () => {
@@ -508,7 +520,7 @@ export function ThreadDocumentsBar({
       },
       isThreadDeleted: isChatThreadDeleted,
       requireStoredThread,
-      initialize: initializeThreadItem,
+      initialize: () => initializeThreadItem(clearGeneration),
     });
   }, [aui, effectiveThreadId, initializeThreadItem]);
 
