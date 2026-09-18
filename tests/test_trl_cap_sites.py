@@ -1,20 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The published TRL window, every CI lane that mirrors it, and every runtime guard
-keyed on a TRL version have to agree.
+"""The published TRL window, every CI lane mirroring it, and every TRL-keyed runtime
+guard have to agree. A site left behind when the cap moves keeps CI green while testing
+a range users no longer get, so nothing here asserts "the number is 1.13.0".
 
-The TRL cap is spelled in pyproject.toml twice, in a Studio requirements mirror, and in
-several workflow lanes. A site left behind when the cap moves keeps CI green while
-testing a range users no longer get, so the assertions here are not "the number is
-1.13.0" but "the window admits what was measured, still rejects what was rejected, no
-lane sits below it without saying why, and no runtime guard is unreachable through it".
+Guard reachability is what made the old `<=0.24.0` cap visible: `rl_replacements.py`
+gates `openenv_vllm_reload_weights` on TRL >= 0.26.0 and `vllm_generation_init_patch` on
+>= 0.28.0, so under that window unsloth shipped two patches no resolvable install could
+reach and nothing failed.
 
-The last one is what made the old `<=0.24.0` cap visible. `rl_replacements.py` gates
-`openenv_vllm_reload_weights` on TRL >= 0.26.0 and `vllm_generation_init_patch` on
-TRL >= 0.28.0. Under a `<=0.24.0` window neither can ever run, so unsloth shipped two
-patches that no resolvable install could reach, and nothing failed.
-
-Reads files only, which is what lets it run on the Windows and macOS runners too.
+Reads files only, which is what lets it run on the Windows and macOS runners.
 """
 
 from __future__ import annotations
@@ -32,42 +27,29 @@ from packaging.version import Version
 REPO = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO / "pyproject.toml"
 WORKFLOWS = REPO / ".github" / "workflows"
-# The Studio runtime requirements file restates pyproject's window verbatim rather than
-# resolving it, so it is a second copy that can go stale on its own.
+# Restates pyproject's window verbatim: a second copy that can go stale on its own.
 RUNTIME_MIRROR = REPO / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
 RL_REPLACEMENTS = REPO / "unsloth" / "models" / "rl_replacements.py"
 
-# The newest TRL the version matrix was run against. Moving it means re-running the
-# sweep on the new release first.
+# Newest TRL the matrix was run against; moving it means re-running the sweep first.
 TESTED_CEILING = Version("1.13.0")
 
-# Tested and rejected; a specifier rewrite that drops one silently re-admits a broken
-# release.
+# Tested and rejected; a specifier rewrite dropping one silently re-admits it.
 REJECTED = ("0.19.0",)
 
-# Named rather than generated, so the test still means something after the ceiling
-# moves. Each is a release the sweep actually ran, not a version the window happens to
-# contain: 0.29.1 is the last 0.x, 1.0.0 the first major, 1.7.0 the chunked_nll default
-# flip (trl#5846), 1.13.0 the ceiling.
+# Releases the sweep actually ran, named not generated: 0.29.1 last 0.x, 1.0.0 first
+# major, 1.7.0 the chunked_nll default flip (trl#5846), 1.13.0 the ceiling.
 NEWLY_ADMITTED = ("0.29.1", "1.0.0", "1.6.0", "1.7.0", "1.13.0")
 
-# The ceiling every unsloth_zoo up to and including 2026.9.4 publishes. pip intersects
-# unsloth's window with the zoo's, so this is what decides whether the window above is
-# what a user actually resolves.
+# pip intersects our window with the zoo's, so the zoo ceiling decides what resolves.
 ZOO_TRL_CEILING_BEFORE_THE_LIFT = Version("0.24.0")
 
-# The zoo release carrying the matching trl ceiling (unslothai/unsloth-zoo#1260). 2026.9.5
-# is published and says `trl<=1.13.0`, so pyproject.toml names it as the floor and the gate
-# below is live rather than deferred. The transformers half of the same coordination is
-# still deferred, for its own reason: see ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP in
-# tests/test_transformers_cap_sites.py. One floor serves both, so raising it again for
-# #1227 does not disturb this.
+# Published and says `trl<=1.13.0` (unslothai/unsloth-zoo#1260), so the gate below is
+# live. The transformers half stays deferred; one floor serves both.
 ZOO_FLOOR_WITH_LIFTED_TRL_CAP = Version("2026.9.5")
 
-# Lanes deliberately NOT on the published cap. Each needs a reason, or "lower" is
-# indistinguishable from "forgotten", which is the bug this file is about. Keyed on
-# (workflow, exact requirement string), never the workflow alone: a filename-level
-# exemption blinds the scan to every OTHER trl requirement in that same file.
+# Lanes deliberately off the cap; without a reason "lower" reads as "forgotten". Keyed
+# on (workflow, exact requirement), never filename: that would exempt the whole file.
 PINNED_BY_DESIGN = {
     ("consolidated-tests-ci.yml", "trl>=0.18.2,<1.0.0"): (
         "the TRL<1 half of a deliberate two-lane split; the sibling lane is "
@@ -78,8 +60,8 @@ PINNED_BY_DESIGN = {
 
 
 def _toml() -> dict:
-    """pyproject as a dict; tomllib is 3.11+ and requires-python is >=3.9, so lazy-import
-    and skip rather than failing collection on the older interpreters."""
+    """tomllib is 3.11+ and requires-python is >=3.9: lazy-import and skip, never fail
+    collection on an older interpreter."""
     if sys.version_info < (3, 11):
         pytest.skip("tomllib needs Python 3.11+")
     import tomllib
@@ -117,12 +99,10 @@ def _declared_window() -> SpecifierSet:
 
 
 def _ceiling(window: SpecifierSet) -> Version:
-    """The TIGHTEST upper bound, which is the one that decides what resolves.
+    """The TIGHTEST upper bound, since that is what decides what resolves.
 
-    `max` was wrong: raising a cap by adding a bound without removing the old one, as in
-    `<=0.24.0,<=1.13.0`, still resolves at 0.24.0, and reporting 1.13.0 let the assertions
-    below pass on exactly the stale cap this file exists to catch. At equal versions `<`
-    excludes more than `<=`, so it wins the tie.
+    `max` is WRONG: `<=0.24.0,<=1.13.0` still resolves at 0.24.0, so reporting 1.13.0 let
+    the assertions pass on exactly the stale cap this file exists to catch. `<` wins ties.
     """
     tops = [
         (Version(str(spec.version)), spec.operator)
@@ -206,17 +186,11 @@ def _pyproject_zoo() -> list[Requirement]:
 
 
 def test_the_declared_zoo_floor_can_supply_the_declared_trl_window() -> None:
-    """Widening the window here does nothing while the resolvable zoo still caps TRL.
+    """Widening the window does nothing while the resolvable zoo still caps TRL lower.
 
-    unsloth_zoo publishes its own trl requirement and pip intersects the two, so a user
-    installing any extra gets the LOWER of the two ceilings. Every unsloth_zoo up to and
-    including 2026.9.4 says `trl<=0.24.0`; under that intersection the guards the test
-    above checks for reachability are still unreachable, and asking for a newly admitted
-    TRL by hand is a resolver conflict rather than an install.
-
-    So a ceiling above what the old zoo admits is only real once the declared zoo floor
-    names a release that carries the matching lift. 2026.9.5 is that release, it is on
-    PyPI, and pyproject.toml names it, so this gate was deferred and is now live.
+    pip gives a user the LOWER of the two ceilings, and every zoo up to 2026.9.4 says
+    `trl<=0.24.0`, under which the guards above stay unreachable. So the lift is only
+    real once the zoo floor names a release carrying it; 2026.9.5 is that release.
     """
     ceiling = _ceiling(_declared_window())
     if ceiling <= ZOO_TRL_CEILING_BEFORE_THE_LIFT:
@@ -345,10 +319,8 @@ def _blocking_trl_lanes(path: Path) -> list[tuple[str, str, str]]:
     for job_name, job in (workflow.get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue
-        # A job-level `continue-on-error`, in any form, means this job is not a
-        # guaranteed gate. An expression we cannot evaluate counts as not-blocking:
-        # assuming the safe answer is what keeps this test from going green on a lane
-        # that turned out to be a canary.
+        # `continue-on-error` in any form means this job is not a guaranteed gate; an
+        # expression we cannot evaluate counts as not-blocking, which is the safe answer.
         if job.get("continue-on-error") not in (None, False):
             continue
         includes = (((job.get("strategy") or {}).get("matrix") or {}).get("include")) or []
@@ -409,7 +381,6 @@ def test_the_checker_rejects_the_window_that_stranded_the_patches() -> None:
     assert "1.13.0" not in shipped, "the old window must not admit the newly tested ceiling"
     for rejected in REJECTED:
         assert rejected not in shipped
-    # The two guards the old window stranded.
     assert not shipped.contains("0.26.0")
     assert not shipped.contains("0.28.0")
 
@@ -480,18 +451,11 @@ def test_an_unreachable_guard_is_caught(tmp_path, monkeypatch) -> None:
     assert "99.0.0" in str(raised.value)
 
 
-# ---------------------------------------------------------------------------
-# The gate has to survive its own runner set.
-# ---------------------------------------------------------------------------
-
 
 def _steps_exposed_to_the_powershell_default(workflows: Path) -> list[tuple[str, str, str]]:
-    """Every `run:` step that will be handed to PowerShell on a Windows runner.
-
-    GitHub's default shell on `windows-*` is PowerShell, not bash. A step only escapes
-    that by setting `shell:` on itself, its job, or the workflow. Steps gated off Windows
-    by an `if:` naming another platform are not exposed and are skipped.
-    """
+    """Every `run:` step a Windows runner hands to PowerShell, GitHub's default there. A
+    step escapes only via `shell:` on itself, its job or the workflow; steps an `if:`
+    gates off Windows are not exposed."""
     import yaml
 
     exposed = []
@@ -527,19 +491,14 @@ def _steps_exposed_to_the_powershell_default(workflows: Path) -> list[tuple[str,
 
 
 def test_no_windows_step_uses_a_bash_line_continuation() -> None:
-    r"""A `\` at end of line is a bash continuation and NOT a PowerShell one.
+    r"""A trailing `\` is a bash continuation and NOT a PowerShell one.
 
-    This is not hypothetical and it is not cosmetic. The `cap-site-consistency` job sets
-    no `shell:`, so its windows-latest leg runs under PowerShell. Written as
-
-        python -m pytest tests/test_transformers_cap_sites.py \
-          tests/test_trl_cap_sites.py -v --tb=short
-
-    PowerShell passes the trailing `\` through as a literal argument, pytest reads it as
-    the path `\` (the root of the working drive), collects the entire drive and dies with
-    `PermissionError: [WinError 5] ... 'D:\System Volume Information'` and 162 collection
-    errors -- having asserted nothing about any cap. The Linux and macOS legs pass, so the
-    drift gate reports two of its three runners and looks healthy.
+    `cap-site-consistency` sets no `shell:`, so its windows-latest leg runs under
+    PowerShell, which passes the `\` through as a literal argument. pytest read it as the
+    path `\`, collected the whole working drive and died with `PermissionError:
+    [WinError 5] ... 'D:\System Volume Information'` and 162 collection errors, having
+    asserted nothing. Linux and macOS split it correctly, so the gate looked healthy while
+    reporting two of its three runners.
     """
     if sys.version_info < (3, 11):
         pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
@@ -558,8 +517,7 @@ def test_no_windows_step_uses_a_bash_line_continuation() -> None:
 
 
 def test_the_powershell_continuation_check_can_fail(tmp_path, monkeypatch) -> None:
-    """NEGATIVE CONTROL: the check above is a "nothing found" shape, so prove it finds
-    the exact construct that broke the Windows leg."""
+    """NEGATIVE CONTROL: proves the check finds the construct that broke the Windows leg."""
     workflows = tmp_path / "workflows"
     workflows.mkdir()
     (workflows / "example-ci.yml").write_text(
@@ -595,18 +553,10 @@ def test_the_powershell_continuation_check_can_fail(tmp_path, monkeypatch) -> No
     test_no_windows_step_uses_a_bash_line_continuation()
 
 
-# ---------------------------------------------------------------------------
-# A lane named "ceiling" has to pin the ceiling that is actually declared.
-# ---------------------------------------------------------------------------
-
 
 def _ceiling_lane_trl_pins(workflows: Path) -> list[tuple[str, str, str]]:
-    """(workflow, job, pinned trl version) for every matrix lane with `slug: ceiling`.
-
-    Lanes are matrix `include:` entries whose package list is a single `pkg_pins` string,
-    so the pin is recovered by scanning that string rather than by resolving a requirement
-    file.
-    """
+    """(workflow, job, pinned trl version) per matrix lane with `slug: ceiling`; the pin
+    is scanned out of the lane's single `pkg_pins` string."""
     import yaml
 
     found = []
@@ -620,8 +570,7 @@ def _ceiling_lane_trl_pins(workflows: Path) -> list[tuple[str, str, str]]:
         for job_name, job in (document.get("jobs") or {}).items():
             if not isinstance(job, dict):
                 continue
-            # `strategy:` and `matrix:` can each be a bare `${{ ... }}` expression string
-            # rather than a mapping, so every level is checked before it is indexed.
+            # `strategy:` and `matrix:` can each be a bare `${{ }}` string, not a mapping.
             strategy = job.get("strategy")
             matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
             includes = matrix.get("include") if isinstance(matrix, dict) else None
@@ -635,20 +584,14 @@ def _ceiling_lane_trl_pins(workflows: Path) -> list[tuple[str, str, str]]:
 
 
 def test_a_ceiling_lane_pins_the_declared_ceiling() -> None:
-    """The one assertion the `<0.26`-style range sweep structurally cannot make.
+    """The assertion the range sweep structurally cannot make.
 
-    An exact `==` pin is a point, not a cap, so `test_no_workflow_lane_sits_below_the
-    _declared_ceiling` deliberately exempts it: pinning trl 0.18.2 in the floor lane is
-    correct and must not be flagged. That exemption leaves one hole, and the shipped tree
-    fell into it. `zoo-imports-under-spoof`'s `ceiling` lane, whose own comment says "what
-    this lane measures ... is the dependency ceiling", pinned `transformers==5.17.0`
-    alongside `trl==0.24.0` -- the transformers ceiling after the lift and the trl ceiling
-    from before it. Nothing was red: 0.24.0 is still inside the declared window, it is
-    simply no longer its top. A lane that measures a superseded ceiling reports on a range
-    that is no longer the edge of anything.
-
-    Scoped to `slug: ceiling` on purpose. Floor and latest lanes pin other things by
-    design and are none of this assertion's business.
+    That sweep exempts exact `==` pins, since a pin is a point not a cap and the floor
+    lane's `trl==0.18.2` is correct. The shipped tree fell in the resulting hole: the
+    `ceiling` lane pinned `transformers==5.17.0` next to `trl==0.24.0`, the post-lift
+    transformers ceiling beside the pre-lift trl one. Nothing went red because 0.24.0 is
+    still inside the window, just no longer its top. Scoped to `slug: ceiling`; floor and
+    latest lanes pin what they like.
     """
     if sys.version_info < (3, 11):
         pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
@@ -672,8 +615,8 @@ def test_a_ceiling_lane_pins_the_declared_ceiling() -> None:
 
 
 def test_the_ceiling_lane_check_can_fail(tmp_path, monkeypatch) -> None:
-    """NEGATIVE CONTROL: this is the exact drift that shipped, so prove it is caught, and
-    prove the check is not merely asserting on its own input."""
+    """NEGATIVE CONTROL: the exact drift that shipped, plus proof the check is not just
+    asserting on its own input."""
     workflows = tmp_path / "workflows"
     workflows.mkdir()
 
@@ -693,7 +636,6 @@ def test_the_ceiling_lane_check_can_fail(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
 
-    # The shipped state: ceiling lane left on the pre-lift trl.
     write("trl==0.24.0")
     with pytest.raises(AssertionError) as raised:
         test_a_ceiling_lane_pins_the_declared_ceiling()
