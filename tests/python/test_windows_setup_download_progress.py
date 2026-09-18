@@ -144,10 +144,11 @@ def test_windows_download_output(tmp_path, shell, component, mode, exit_code):
 
 @pytest.mark.parametrize("shell", SHELLS or [None])
 @pytest.mark.parametrize("component", ["node", "llama", "whisper"])
-def test_windows_real_download_reports_progress_while_active(tmp_path, shell, component):
+def test_windows_real_download_reports_progress_while_active(tmp_path, shell, component, monkeypatch):
     if shell is None:
         pytest.skip("PowerShell is unavailable")
-    payload = b"x" * (4 * 1024 * 1024)
+    monkeypatch.setenv("UNSLOTH_PROGRESS_PERCENT_STEP", "5")
+    payload = b"x" * (20 * 1024 * 1024)
     release = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
@@ -155,10 +156,10 @@ def test_windows_real_download_reports_progress_while_active(tmp_path, shell, co
             self.send_response(200)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
-            self.wfile.write(payload[: len(payload) // 2])
+            self.wfile.write(payload[: len(payload) // 5])
             self.wfile.flush()
             release.wait(30)
-            self.wfile.write(payload[len(payload) // 2 :])
+            self.wfile.write(payload[len(payload) // 5 :])
 
         def log_message(self, *args):
             pass
@@ -179,8 +180,9 @@ def test_windows_real_download_reports_progress_while_active(tmp_path, shell, co
     process, lines, reader = start_installer(tmp_path, shell, component, "1", child)
     received = []
     try:
-        while not any("50.0%" in line for line in received):
+        while not any("20.0%" in line for line in received):
             received.append(lines.get(timeout = 15))
+        assert [float(line.split(": ")[1].split("%")[0]) for line in received] == [5, 10, 15, 20]
         assert process.poll() is None
         assert not archive.exists()
     finally:
