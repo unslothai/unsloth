@@ -3862,6 +3862,30 @@ _kfd_topology_amd_state() {
     esac
 }
 
+# Whether this host has AMD silicon behind a /dev/kfd that is not there. Mirrors
+# utils/hardware/amd.py::_amd_nodes_the_runtime_lacks, which asks the same two questions in
+# the same order, and the two halves have to agree or one of them stays silent on a host the
+# other diagnoses.
+#
+# The KFD topology is the first evidence and settles it whenever it can be READ. Where it
+# cannot -- state 2, the container that maps /dev/dri and masks /sys/class/kfd -- a
+# CONFIRMED AMD render node stands in: that host is precisely the one a HIP caller cannot
+# run on, and gating on the topology alone left it with no diagnosis at all, since amd-smi
+# answers through libdrm there and so silences the two PCI branches below, while a node that
+# does not EXIST can never appear in the closed-node list.
+#
+# Confirmed, not merely present: the vendor is read rather than assumed, or an NVIDIA-only
+# box whose sysfs is masked the same way would claim an AMD card.
+_amd_silicon_behind_a_missing_kfd() {
+    if _kfd_topology_has_an_amd_gpu; then return 0; fi
+    # Captured rather than tested inline: this runs under set -e, where a bare non-zero
+    # command ends the installer instead of answering the question.
+    _asbmk_state=0
+    _kfd_topology_amd_state || _asbmk_state=$?
+    [ "$_asbmk_state" -eq 2 ] || return 1
+    _a_confirmed_amd_render_node_exists
+}
+
 # Whether DRM names an AMD render node outright, with the vendor actually READ. The strict
 # counterpart to _amd_render_node_present, which counts an unreadable vendor as present on
 # purpose: this is used as INDEPENDENT evidence of AMD silicon, so an unknown vendor would
@@ -6119,7 +6143,7 @@ esac
 # suppressed on exactly the container shape it was written for.
 if [ "$_amd_node_diag_route" = true ] && \
    _run_may_open_kfd && [ "$OS" != "macos" ] && \
-   [ ! -e /dev/kfd ] && _kfd_topology_has_an_amd_gpu; then
+   [ ! -e /dev/kfd ] && _amd_silicon_behind_a_missing_kfd; then
     substep "An AMD GPU is in the KFD topology but /dev/kfd is not present, so the" "$C_WARN"
     substep "  driver is loaded and reinstalling ROCm changes nothing: the node itself"
     substep "  is missing. Under Docker, recreate the container with --device /dev/kfd"

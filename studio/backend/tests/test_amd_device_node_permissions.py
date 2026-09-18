@@ -2002,6 +2002,8 @@ def _install_sh_missing_kfd(
     *,
     topology: bool,
     kfd_present: bool = False,
+    topology_readable: bool = True,
+    confirmed_drm: bool = False,
     amd_smi_sees_it: "bool | None" = None,
     rocm_visible: "bool | None" = None,
     skip_torch: bool = False,
@@ -2038,6 +2040,13 @@ def _install_sh_missing_kfd(
             "_amd_node_diag_route=true",
             *_run_scope_defs(lines, nvidia = nvidia),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
+            # The branch asks _amd_silicon_behind_a_missing_kfd, not the topology directly,
+            # so the real one is LIFTED and only its inputs are stubbed: a copy here would
+            # answer for itself and the container fallback would go untested.
+            # State 0 names AMD, 1 read it and found none, 2 could not read it at all.
+            f"_kfd_topology_amd_state() {{ return {0 if topology else (1 if topology_readable else 2)}; }}",
+            f"_a_confirmed_amd_render_node_exists() {{ return {0 if confirmed_drm else 1}; }}",
+            _shell_fn(lines, "_amd_silicon_behind_a_missing_kfd"),
             # Stubbed when the arm is about something else and only needs a verdict; run
             # for real over stubbed command lookups when the arm IS about which probe the
             # branch consults, since a stub of the probe under test would answer for it.
@@ -2082,6 +2091,27 @@ _ABSENT_KFD = "/dev/kfd is not present"
     ("a_no_torch_rocm_bundle_is_told_its_kfd_is_missing", _NO_TORCH, [_ABSENT_KFD], []),
     ("a_no_torch_vulkan_run_is_not_told_about_it", {**_NO_TORCH, "backend": "vulkan"}, None, []),
     ("a_no_torch_cuda_run_is_not_told_about_it_either", {**_NO_TORCH, "backend": "cuda"}, None, []),
+    # Codex 4049894549, and the container this whole feature was written for: --device
+    # /dev/dri with no --device /dev/kfd, and /sys/class/kfd masked with it. The topology
+    # cannot be READ, so gating on it alone left this host with no diagnosis at all -- the
+    # two PCI branches below need `! _has_amd_rocm_gpu`, and amd-smi answers through libdrm
+    # here, while a node that does not EXIST can never reach the closed-node list. A
+    # confirmed AMD render node is the standing evidence, exactly as the Python half reads
+    # it. Fails without the fallback.
+    ("an_unreadable_topology_with_a_confirmed_amd_render_node",
+     {"topology": False, "amd_smi_sees_it": True, "topology_readable": False,
+      "confirmed_drm": True}, ["--device /dev/kfd"], [_STACK]),
+    # The control that keeps it from becoming "always advise": same masked sysfs, but no
+    # AMD render node confirmed, so there is no evidence of AMD silicon and naming one
+    # would invent the finding.
+    ("an_unreadable_topology_with_no_confirmed_node_stays_silent",
+     {"topology": False, "amd_smi_sees_it": True, "topology_readable": False,
+      "confirmed_drm": False}, None, ["--device /dev/kfd"]),
+    # And the vendor really is read: a readable topology that names no AMD is not rescued
+    # by the fallback, or an NVIDIA-only host would claim the card.
+    ("a_readable_topology_naming_no_amd_is_not_rescued_by_drm",
+     {"topology": False, "amd_smi_sees_it": True, "topology_readable": True,
+      "confirmed_drm": True}, None, ["--device /dev/kfd"]),
 ))
 # fmt: on
 def test_what_the_installer_says_when_the_kfd_node_is_absent(tmp_path, kwargs, contains, absent):
