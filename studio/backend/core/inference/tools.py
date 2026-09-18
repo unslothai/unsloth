@@ -16947,12 +16947,9 @@ def _check_signal_escape_patterns(code: str):
         while isinstance(cur, ast.NamedExpr):
             cur = cur.value
         while isinstance(cur, ast.Attribute):
-            # `self.session.get(...)`: the client lives on the attribute, not in a name.
-            stores = (
-                _attr_values(cur)
-                if isinstance(cur.value, ast.Name) and _scope_model_ready()
-                else None
-            )
+            # `self.session.get(...)`: the client lives on the attribute, not in a name. The
+            # receiver may be a dotted path, which is what _record_store stores it under.
+            stores = _attr_values(cur) if _scope_model_ready() else None
             attr_fqs = [
                 fq
                 for value in stores or []

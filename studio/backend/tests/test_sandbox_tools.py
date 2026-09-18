@@ -462,6 +462,13 @@ class TestNetworkTargetResolution:
                 '    def go(self):\n        self.session.get("https://pypi.org/")',
                 id = "proxy_on_a_session_held_on_self",
             ),
+            # A client stored below more than one attribute resolves the same way.
+            pytest.param(
+                "import requests\nclass A:\n    def __init__(self):\n"
+                "        self.transport.session = requests.Session()\n"
+                f'    def go(self):\n        self.transport.session.get("http://{_H}/")',
+                id = "client_on_a_nested_attribute_path",
+            ),
             # A URL factory reached through the module that defines it.
             pytest.param(
                 f"import urllib3\nurllib3.connectionpool.connection_from_url('http://{_H}/')",
