@@ -175,6 +175,11 @@ def pytest_configure(config):
         "markers",
         "allow_network: let this test make non-loopback connections (see _no_outbound_network)",
     )
+    config.addinivalue_line(
+        "markers",
+        "stages_switch_waiter: this test leaves routes.inference._auto_switch_waiters populated "
+        "on purpose (see the autouse fixture in test_openai_auto_switch.py)",
+    )
 
 
 def pytest_addoption(parser):
