@@ -80,7 +80,8 @@ def _walk(root: pathlib.Path, patterns: str = "'*.dll','*.cmdline'") -> list[str
     reason = (
         "POSIX permissions only. Windows has no os.geteuid, and chmod there sets the read-only "
         "attribute rather than making a directory unopenable, so this would not deny anything. "
-        "The Windows half of the same question is the ACL-based control below."
+        "There is deliberately NO Windows equivalent of this row: see the note below on what "
+        "Windows does and does not cover here."
     ),
 )
 def test_an_unreadable_directory_costs_only_itself(tmp_path: pathlib.Path) -> None:
@@ -107,6 +108,26 @@ def test_an_unreadable_directory_costs_only_itself(tmp_path: pathlib.Path) -> No
     assert not any(name.endswith("hidden.dll") for name in found), found
 
 
+# What Windows covers here, and what it does not.
+#
+# Three rows in this file are POSIX-only and SKIP on Windows: the two chmod-denial walks and the
+# vanished-directory row. Nothing replaces them, so on a Windows runner the denial behaviour of
+# this walk is not exercised at all. An earlier version of this comment claimed an ACL-based
+# Windows control existed "below". It never did.
+#
+# Writing one means icacls-denying a directory to the running account and undoing it in a finally,
+# and it cannot be authored honestly from a Linux host: the failure mode worth catching is a
+# control that silently denies nothing and passes, which is exactly what happened when an ACL
+# denial was first tried as a stand-in for the race (see the note below). So it is recorded as a
+# gap rather than guessed at.
+#
+# What Windows DOES cover is the rest of the file, which is platform-neutral and drives the real
+# PowerShell: the traversal ceiling, the extension filter, the withholding comparison, the
+# coverage check and the path-prefix rules. That is not nothing. The separator bug in
+# Test-StudioPathUnder - DirectorySeparatorChar being '/' under pwsh on Linux, which made every
+# Windows-shaped path compare false - is precisely the class those rows catch, and it is why they
+# are written against Windows-shaped literals rather than tmp_path.
+#
 # There is no control here for "the old shape really would have died", and that is deliberate.
 #
 # The CI failure was a RACE: a directory in the shared temp root disappeared partway through a
