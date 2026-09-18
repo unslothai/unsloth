@@ -595,9 +595,7 @@ def test_a_cgroup_ceiling_survives_the_never_shrink_floor(monkeypatch):
     memory the kernel will not give and the child is killed rather than offloaded.
     """
     _integrated_llama_host(monkeypatch, avail_mib = 40000)
-    monkeypatch.setattr(
-        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 2048)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 2048))
 
     rows = LlamaCppBackend._widen_integrated_cuda_rows([(0, 6000, N1X_CARVE_OUT_MIB)])
 
