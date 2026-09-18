@@ -428,7 +428,10 @@ def maybe_toggle_step_cache(
         if callable(disable_cache):
             # Read BEFORE the teardown: it is what says whether diffusers' own disable_cache can
             # do the removal, and disable_cache clears it.
-            ours = type(getattr(transformer, "_cache_config", None)).__name__ == "FirstBlockCacheConfig"
+            ours = (
+                type(getattr(transformer, "_cache_config", None)).__name__
+                == "FirstBlockCacheConfig"
+            )
             try:
                 # Restore before remove_hook splices original_forward back, so compiled wrappers do not leak onto the
                 # uncached path.
