@@ -672,7 +672,13 @@ def _top_level_conjuncts(guard: str) -> list:
 
 
 _STRING_ESCAPES = {
-    "n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "v": "\v", "0": "\0",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "b": "\b",
+    "f": "\f",
+    "v": "\v",
+    "0": "\0",
 }
 
 
