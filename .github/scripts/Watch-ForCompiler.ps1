@@ -706,21 +706,23 @@ function Invoke-WithCompilerWatch {
                 $watchFailedRoots -notcontains $_
             }
         ), [StringComparer]::OrdinalIgnoreCase)
-    if ($unread.Count -gt 0) {
-        foreach ($dir in $unread) {
-            # Withholding is only safe while the watcher is covering that root: it reports
-            # creations live, so a compile inside an unread directory still lands in
-            # $transient. With no watcher on the root the listing is the only evidence there
-            # is, and withholding part of it would report a hole as a clean result. That is
-            # the same call as the traversal cap in Get-StudioTempSubtree, for the same
-            # reason, so it is the same answer: declare the measurement void.
-            $covered = @($watchedRoots | Where-Object { Test-StudioPathUnder -Path $dir -Directory $_ })
-            if ($covered.Count -eq 0) {
-                throw ("the temp sweep could not read $dir, and no file watcher is attached " +
-                       "to the root containing it. The listing is the only evidence here and " +
-                       "it is incomplete, so this run cannot say whether a compiler ran.")
-            }
-        }
+    # Collected, not thrown on. Withholding is only safe while the watcher is covering that
+    # root: it reports creations live, so a compile inside an unread directory still lands in
+    # $transient. With no watcher on the root the listing is the only evidence there is, and
+    # withholding part of it would report a hole as a clean result. That is the same call as
+    # the traversal cap in Get-StudioTempSubtree, for the same reason, so it is the same
+    # answer: declare the measurement void.
+    #
+    # Raised at the END of this function rather than here. The action may already have thrown,
+    # and that failure is held in $failure to be written to <name>-error.txt and rethrown
+    # below. Voiding from this point would run before either, so an installer that genuinely
+    # died would be reported as a scanner problem and its promised evidence file would never
+    # be written. The scan being incomplete is worth failing on; it is not worth failing on
+    # INSTEAD of what the caller was actually measuring.
+    $uncovered = @()
+    foreach ($dir in $unread) {
+        $covered = @($watchedRoots | Where-Object { Test-StudioPathUnder -Path $dir -Directory $_ })
+        if ($covered.Count -eq 0) { $uncovered += $dir }
     }
 
     $left = @(
@@ -753,7 +755,19 @@ function Invoke-WithCompilerWatch {
         $failure | Out-String | Out-File -FilePath "$stem-error.txt" -Encoding utf8
     }
 
+    # The action's own failure first, always. It is the thing under measurement, it is already
+    # on disk as <name>-error.txt, and an incomplete sweep is the lesser report of the two.
     if ($failure) { throw $failure }
+
+    # Only once the action itself succeeded and all the evidence is written does an unreadable
+    # directory with nothing watching it void the run. $uncovered is in the evidence either
+    # way, through <name>-unread-dirs.txt.
+    if ($uncovered.Count -gt 0) {
+        throw ("the temp sweep could not read " + ($uncovered -join ', ') + ", and no file " +
+               "watcher is attached to the root containing it. The listing is the only " +
+               "evidence here and it is incomplete, so this run cannot say whether a " +
+               "compiler ran.")
+    }
 
     return @{
         Compilers     = $compilers

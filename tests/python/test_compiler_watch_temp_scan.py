@@ -407,17 +407,19 @@ def test_the_prefix_test_does_not_match_a_sibling_by_name() -> None:
 
 
 def _shipped_coverage_check() -> str:
-    """The `if ($unread.Count -gt 0) { ... }` block from Invoke-WithCompilerWatch.
+    """The uncovered-directory collection and the throw it feeds, from the shipped file.
 
-    Read from the shipped file for the same reason as the `$left` expression: a copy here
-    would keep passing after the real check changed.
+    These are no longer adjacent: the loop collects and the raise happens at the very end of
+    the measurement, after the evidence is written and after the action's own failure is
+    rethrown. Both halves are lifted so this drives the real pair rather than a copy, and so
+    the test keeps working if more code lands between them.
     """
-    text = SCRIPT.read_text(encoding = "utf-8")
-    start = text.index("    if ($unread.Count -gt 0) {")
-    end = text.index("\n    }\n", start) + len("\n    }\n")
-    block = text[start:end]
-    assert "Test-StudioPathUnder" in block and "throw" in block, block
-    return block
+    body = _measured_action_body()
+    loop_start = body.index("    $uncovered = @()")
+    loop_end = body.index("    $left = @(", loop_start)
+    raise_start = body.index("    if ($uncovered.Count -gt 0) {")
+    raise_end = body.index("\n    }\n", raise_start) + len("\n    }\n")
+    return body[loop_start:loop_end] + body[raise_start:raise_end]
 
 
 def test_an_unreadable_root_with_a_watcher_on_it_does_not_void_the_run() -> None:
@@ -430,9 +432,8 @@ def test_an_unreadable_root_with_a_watcher_on_it_does_not_void_the_run() -> None
     """
     proc = _run_pwsh(
         r"$unread = @('C:\t')" + "\n"
-        r"$watch = @([pscustomobject]@{ Root = 'C:\t' })" + "\n"
-        "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
-        "([string[]]@($watch | ForEach-Object { $_.Root }), [StringComparer]::OrdinalIgnoreCase)\n"
+        r"$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' ([string[]]@('C:\t'), [StringComparer]::OrdinalIgnoreCase)"
+        + "\n"
         + _shipped_coverage_check()
         + "Write-Output 'SURVIVED'\n"
     )
@@ -598,3 +599,52 @@ def test_the_classifier_answers_both_cases() -> None:
         "an access-denied error was classified as a deleted directory, so the directory is "
         f"dropped out of the comparison instead of recorded as a gap: {out}"
     )
+
+
+def _measured_action_body() -> str:
+    """Invoke-WithCompilerWatch, as shipped."""
+    text = SCRIPT.read_text(encoding = "utf-8")
+    return text[text.index("function Invoke-WithCompilerWatch") :]
+
+
+def test_the_action_failure_is_persisted_and_rethrown_before_the_scan_is_rejected() -> None:
+    """An installer that died must not be reported as a scanner problem.
+
+    The void-the-run throw and the action's own failure can both be pending at the end of a
+    measurement. If the void fires first, the caller loses the thing it was actually measuring
+    AND the <name>-error.txt this function promises, because the write and the rethrow both
+    come later in the body.
+
+    Ordering is the whole claim here, so ordering is what is asserted: the offsets are taken
+    from the shipped function rather than from a re-implementation.
+    """
+    body = _measured_action_body()
+    write_error = body.index('"$stem-error.txt"')
+    rethrow = body.index("if ($failure) { throw $failure }")
+    void = body.index("$uncovered.Count -gt 0")
+
+    assert write_error < rethrow, (
+        "the action's failure is rethrown before it is written to disk, so the evidence file "
+        "this function promises is never produced"
+    )
+    assert rethrow < void, (
+        "the incomplete-scan throw runs before the action's own failure is rethrown. An "
+        "installer that genuinely died is then reported as a scanner problem."
+    )
+
+
+def test_the_coverage_check_no_longer_throws_from_inside_the_loop() -> None:
+    """The collect-then-raise shape, pinned.
+
+    A throw inside the per-directory loop is what put the rejection ahead of the evidence in
+    the first place, and it is an easy thing to reintroduce while editing that loop.
+    """
+    body = _measured_action_body()
+    loop_start = body.index("foreach ($dir in $unread) {")
+    loop_end = body.index("$left = @(", loop_start)
+    loop = body[loop_start:loop_end]
+    assert "throw" not in loop, (
+        "the coverage loop raises directly again, which puts it ahead of the evidence write "
+        f"and the action's own failure:\n{loop}"
+    )
+    assert "$uncovered += $dir" in loop, "the uncovered directories are no longer collected"
