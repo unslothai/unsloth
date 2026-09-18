@@ -341,6 +341,7 @@ mod appimage_environment_tests {
 const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
 
 pub(crate) const STUDIO_RUNTIME_GATE_HANDOFF_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF";
+pub(crate) const STUDIO_RUNTIME_GATE_BUSY: &str = "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again.";
 const STUDIO_RUNTIME_GATE_ACQUIRE_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_ACQUIRE";
 
 #[cfg(windows)]
@@ -402,10 +403,7 @@ fn acquire_named_studio_runtime_launch_guard(
             unsafe {
                 let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
             }
-            Err(
-                "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
-                    .to_string(),
-            )
+            Err(STUDIO_RUNTIME_GATE_BUSY.to_string())
         }
         _ => {
             let error = std::io::Error::last_os_error();
@@ -520,26 +518,23 @@ fn acquire_file_studio_runtime_launch_guard(
     use std::os::fd::AsRawFd;
 
     std::fs::create_dir_all(home)
-        .map_err(|error| format!("Could not create the Unsloth Studio runtime lock directory: {error}"))?;
+        .map_err(|error| format!("Could not create the Unsloth runtime lock directory: {error}"))?;
     let path = home.join(".studio-runtime.lock");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(&path)
-        .map_err(|error| format!("Could not open the Unsloth Studio runtime lock: {error}"))?;
+        .map_err(|error| format!("Could not open the Unsloth runtime lock: {error}"))?;
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if result == 0 {
         return Ok(StudioManagedRuntimeLaunchGuard { file });
     }
     let error = std::io::Error::last_os_error();
     if error.kind() == std::io::ErrorKind::WouldBlock {
-        return Err(
-            "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
-                .to_string(),
-        );
+        return Err(STUDIO_RUNTIME_GATE_BUSY.to_string());
     }
-    Err(format!("Could not acquire the Unsloth Studio runtime lock: {error}"))
+    Err(format!("Could not acquire the Unsloth runtime lock: {error}"))
 }
 
 #[cfg(unix)]

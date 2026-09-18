@@ -771,7 +771,7 @@ _configure_uv_cache() {
         _UV_CACHE_MODE=isolated
         export UV_CACHE_DIR
         _uv_no_cache_requested || _record_uv_cache_choice
-        step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
+        step "uv cache" "forced Unsloth Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
         return 0
     fi
 
@@ -953,17 +953,17 @@ _configure_uv_cache() {
             ;;
         studio)
             if [ -n "$_uv_chosen_cache" ]; then
-                step "uv cache" "reusing this install's Studio cache ($UV_CACHE_DIR)"
+                step "uv cache" "reusing this install's Unsloth Studio cache ($UV_CACHE_DIR)"
             # Never about the directory we are falling back TO: the Studio cache is itself a
             # candidate now, so it can be the one refused, and naming it claims a fallback
             # that did not happen.
             elif [ "$_uv_scan_blocked" = true ] && [ "$_uv_blocked_cache" != "$UV_CACHE_DIR" ]; then
-                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_blocked_cache could not be read, so cached packages may download again" "$C_WARN"
+                step "uv cache" "using new Unsloth Studio-owned cache ($UV_CACHE_DIR); part of $_uv_blocked_cache could not be read, so cached packages may download again" "$C_WARN"
             # Warm and still here means the write probe refused it.
             elif [ -n "$_uv_warn_cache" ] && [ "$_uv_warn_cache" != "$UV_CACHE_DIR" ]; then
-                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_warn_cache is populated but not writable, so cached packages may download again" "$C_WARN"
+                step "uv cache" "using new Unsloth Studio-owned cache ($UV_CACHE_DIR); $_uv_warn_cache is populated but not writable, so cached packages may download again" "$C_WARN"
             else
-                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
+                step "uv cache" "using new Unsloth Studio-owned cache ($UV_CACHE_DIR)"
             fi
             ;;
     esac

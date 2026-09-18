@@ -543,7 +543,7 @@ def _load_run_module():
 
     spec = importlib.util.spec_from_file_location("studio.backend.run", run_py)
     if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load studio backend from {run_py}")
+        raise ImportError(f"Could not load Unsloth backend from {run_py}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["studio.backend.run"] = module
     try:

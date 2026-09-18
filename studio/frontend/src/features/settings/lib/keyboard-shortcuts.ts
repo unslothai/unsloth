@@ -562,6 +562,24 @@ export function matchesBinding(
   return event.shiftKey === binding.shift && event.altKey === binding.alt;
 }
 
+/**
+ * Whether `bound` answers to everything `pressed` holds: the same key, with no modifier
+ * missing. For searching the list by chord, where the press narrows as modifiers are
+ * added: N finds ⌘N and ⇧⌘N, ⌘N drops the ones without ⌘, and ⇧⌘N finds only itself.
+ * Not matchesBinding, which is exact because a keypress must run one action.
+ */
+export function keystrokeMatchesBinding(
+  pressed: ShortcutBinding,
+  bound: ShortcutBinding,
+): boolean {
+  if (pressed.code !== bound.code) return false;
+  if (pressed.mod && !bound.mod) return false;
+  if (pressed.ctrl && !bound.ctrl) return false;
+  if (pressed.shift && !bound.shift) return false;
+  if (pressed.alt && !bound.alt) return false;
+  return true;
+}
+
 /** Human label for a code: "KeyO" -> "O", "Comma" -> ",", "ArrowUp" -> "↑". */
 export function formatCode(code: string): string {
   if (code.startsWith("Key") && code.length === 4) return code.slice(3);
