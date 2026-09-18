@@ -18,6 +18,7 @@ from utils.paths import (
     resolve_export_dir,
 )
 from hub.utils.hf_tokens import (
+    note_repo_fetched_with_a_request_token,
     ANONYMOUS_CACHE_IDENTITY,
     cached_read_refused,
     hub_answered_no,
@@ -620,6 +621,10 @@ def load_model_config(
         raise OSError(f"config.json for {model_name} is not available to an unauthorized caller")
 
     if token:
+        # config.json lands in the hub cache under this credential, which may be a one-off the
+        # host stores nowhere; unrecorded it reads later as "nothing here needed one".
+        if not local_files_only:
+            note_repo_fetched_with_a_request_token(token, model_name, "model")
         return AutoConfig.from_pretrained(
             model_name,
             trust_remote_code = trust_remote_code,

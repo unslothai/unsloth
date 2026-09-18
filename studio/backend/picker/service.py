@@ -10,7 +10,11 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused
+from hub.utils.hf_tokens import (
+    cache_reads_authorized,
+    cached_read_refused,
+    note_repo_fetched_with_a_request_token,
+)
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
@@ -445,6 +449,9 @@ def read_default_chat_template(
             if not _remote_worth_downloading(rel):
                 return None
             try:
+                # Same provenance rule as every other credentialed fetch: this lands files in the
+                # hub cache under a token that may be a one-off the host stores nowhere.
+                note_repo_fetched_with_a_request_token(hf_token, resolved, "model")
                 path = hf_hub_download(
                     resolved,
                     rel,

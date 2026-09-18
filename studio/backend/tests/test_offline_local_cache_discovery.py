@@ -407,6 +407,27 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
 
     assert "note_repo_fetched_with_a_request_token" not in inspect.getsource(downloads)
 
+    # The DIRECT fetches, which do not go through a download worker or a load route at all: each
+    # lands files in the hub cache under the caller's credential, and an unrecorded one reads back
+    # later as "nothing here needed a credential" on a host that now holds none.
+    from hub.services.datasets import formatting
+    from picker import service as picker_module
+
+    preview = inspect.getsource(formatting.check_format_response)
+    assert "note_repo_fetched_with_a_request_token(hf_token, request.dataset_name" in preview
+    assert preview.index("note_repo_fetched_with_a_request_token") < preview.index(
+        "load_dataset("
+    ), "the preview recorded its fetch only after making it"
+
+    template = inspect.getsource(picker_module)
+    assert "note_repo_fetched_with_a_request_token(hf_token, resolved" in template
+    assert template.index("note_repo_fetched_with_a_request_token") < template.index(
+        "path = hf_hub_download("
+    )
+
+    config_read = inspect.getsource(model_config_module)
+    assert "note_repo_fetched_with_a_request_token(token, model_name" in config_read
+
 
 def test_every_credentialed_fetch_is_recorded_not_only_a_foreign_one(monkeypatch):
     calls: list = []
