@@ -354,7 +354,7 @@ export function parseImportText(
 
 async function writeConversation(
   conversation: ParsedConversation,
-  projectId: string | null,
+  projectId: string | null | undefined,
 ): Promise<void> {
   const { title, threadId, messages } = conversation;
   const thread: ThreadRecord = {
@@ -364,7 +364,13 @@ async function writeConversation(
     archived: conversation.archived ?? false,
     createdAt: messages[0]?.createdAt ?? conversation.createdAt ?? Date.now(),
     ...conversation.thread,
-    projectId: projectId ?? conversation.thread?.projectId ?? null,
+    // undefined is "the caller did not choose", which is the only case where the backup's own
+    // grouping decides. null is a choice: the projects page offers Recents as a destination and
+    // says so in its toast, so a backup must not quietly file the chats under projects instead.
+    projectId:
+      projectId === undefined
+        ? (conversation.thread?.projectId ?? null)
+        : projectId,
   };
   try {
     await saveStoredChatThread(thread);
@@ -408,7 +414,7 @@ async function restoreBackupProjects(
 
 export async function importConversationsFromSource(
   source: ImportSource,
-  projectId: string | null = null,
+  projectId?: string | null,
   options: ImportOptions = {},
 ): Promise<ImportResult> {
   const basename = source.name.replace(/\.[^.]+$/, "");
@@ -460,7 +466,7 @@ export async function importConversationsFromSource(
         ? studioBackupToConversations(
             record,
             basename,
-            projectId === null
+            projectId === undefined
               ? await restoreBackupProjects(record).catch(() => new Set<string>())
               : undefined,
           )
@@ -523,7 +529,7 @@ export async function importConversationsFromSource(
 
 export async function importConversationsFromFile(
   file: File,
-  projectId: string | null = null,
+  projectId?: string | null,
   options: ImportOptions = {},
 ): Promise<ImportResult> {
   return importConversationsFromSource(

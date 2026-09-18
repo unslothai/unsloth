@@ -503,6 +503,30 @@ test("a restored project cannot carry instructions into the system prompt", asyn
   );
 });
 
+test("choosing Recents as the destination puts the chats in Recents, backup or not", async () => {
+  // projects-page.tsx offers Recents as an explicit destination and its toast says the
+  // chats went there, so null has to mean Recents rather than "no preference". Only an
+  // absent destination, which is what the Data tab passes, lets the backup group itself.
+  const chosen = harness();
+  const result = await chosen.module.importConversationsFromSource(
+    sourceOf("backup.json", backup()),
+    null,
+  );
+
+  assert.deepEqual(result, { imported: 2, failed: 0 });
+  assert.deepEqual(chosen.threads.map(({ projectId }) => projectId), [null, null]);
+  // Nor may it create the projects the user declined to import into.
+  assert.deepEqual(chosen.projects, []);
+
+  const unspecified = harness();
+  await unspecified.module.importConversationsFromSource(sourceOf("backup.json", backup()));
+  assert.equal(
+    unspecified.threads.find(({ title }) => title === "Trip plan")?.projectId,
+    "p1",
+  );
+  assert.deepEqual(unspecified.projects.map(({ id }) => id), ["p1", "p2"]);
+});
+
 test("a message whose content was stored as a plain string keeps its text", async () => {
   // The backend stores content_json verbatim and _chat_message_from_row hands it back
   // unchanged, so the export can carry a string from a legacy or previously imported
