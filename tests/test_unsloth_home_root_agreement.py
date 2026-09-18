@@ -148,6 +148,39 @@ def test_a_master_root_the_cli_declined_is_still_told_to_the_backend(tmp_path):
     assert result["backend"] == legacy
 
 
+def test_a_whitespace_studio_home_does_not_defeat_the_export(tmp_path):
+    """The same fallback as above, with an inherited UNSLOTH_STUDIO_HOME of "   ".
+
+    Every resolver strips before deciding, so "   " means unset to _resolve_studio_home and to
+    studio_root alike. The export guard read the raw value, where "   " is truthy, so it left the
+    whitespace in place: the CLI ran the legacy install and the backend under it resolved
+    <master>/studio, which is the split this file exists to prevent. Blank was already covered by
+    the guard; whitespace-only was the shape that got through.
+    """
+    home = tmp_path / "home"
+    conf = home / ".unsloth" / "studio" / "share" / "studio.conf"
+    conf.parent.mkdir(parents = True)
+    conf.write_text("installed\n", encoding = "utf-8")
+
+    legacy = str(home / ".unsloth" / "studio")
+    for inherited in ("   ", "", "\t\n"):
+        result = _probe(
+            {
+                "HOME": str(home),
+                "USERPROFILE": str(home),
+                "UNSLOTH_HOME": str(tmp_path / "portable"),
+                "UNSLOTH_STUDIO_HOME": inherited,
+                "UNSLOTH_LLAMA_CPP_PATH": inherited,
+            }
+        )
+        assert result["cli"] == legacy, inherited
+        assert result["exported_studio_home"] == legacy, inherited
+        assert result["backend"] == legacy, inherited
+        # The runtimes live beside studio/ at the master root, and a whitespace value left in
+        # place would be scanned as a directory rather than replaced.
+        assert result["cli_llama"] == str(tmp_path / "portable" / "llama.cpp"), inherited
+
+
 def test_a_legacy_install_still_keeps_llama_cpp_at_the_legacy_path(tmp_path):
     home = tmp_path / "home"
     (home / ".unsloth" / "studio").mkdir(parents = True)

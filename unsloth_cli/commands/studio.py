@@ -130,7 +130,7 @@ def _ensure_studio_env_exported() -> None:
     if not _STUDIO_HOME_IS_CUSTOM and not (os.environ.get("UNSLOTH_HOME") or "").strip():
         return
     # Truthy-check, not setdefault: a blank UNSLOTH_STUDIO_HOME= must not win.
-    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+    if not (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip():
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     try:
         _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
@@ -149,7 +149,7 @@ def _ensure_studio_env_exported() -> None:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
     else:
         _llama_dir = STUDIO_HOME / "llama.cpp"
-    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+    if not (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip():
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
 
 
