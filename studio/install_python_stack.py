@@ -2906,9 +2906,7 @@ def _forced_rocm_route_is_viable() -> bool:
                 _explicit_rocm_torch_index_url() is None
                 and not _inferred
                 and not _generic_rocm_wheel_lacks_kernels(_target)
-                and not _rocm_torch_family_needs_repair(
-                    _target, None, _host_codes or [_target]
-                )
+                and not _rocm_torch_family_needs_repair(_target, None, _host_codes or [_target])
                 and not _rocm_compat_reroute_pending(_target, (0, 0), _installed_ver)
             ):
                 return False

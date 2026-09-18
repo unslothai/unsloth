@@ -2728,9 +2728,7 @@ def _unreadable_version_host(stack, monkeypatch, gfx: str) -> None:
     monkeypatch.setattr(stack, "_is_wsl", lambda: False)
     monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
     monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [gfx])
-    monkeypatch.setattr(
-        stack, "_detect_amd_gfx_codes", lambda dedup = True, **k: [gfx]
-    )
+    monkeypatch.setattr(stack, "_detect_amd_gfx_codes", lambda dedup = True, **k: [gfx])
     monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: [gfx])
     monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
     monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: None)
