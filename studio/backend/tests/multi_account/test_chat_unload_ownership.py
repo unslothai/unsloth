@@ -5,6 +5,7 @@
 
 import asyncio
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -131,25 +132,48 @@ def test_only_the_yours_key_separates_the_two_answers(chat_resident, accounts):
 def test_a_torn_down_backend_does_not_yet_mean_a_released_claim(
     chat_resident, accounts, monkeypatch
 ):
-    """The window the idle test below used to race, reproduced on purpose.
+    """Between the unload and the release, the claim is still alice's and bob sees the mask.
 
-    ``FakeLlama.unload_model`` runs in a worker thread, so ``unloaded`` is visible to a poller
-    the moment the thread sets it, which can be before the loop task is rescheduled. Cancel
-    there and the CancelledError is delivered at the ``await asyncio.to_thread(...)`` the loop
-    is still suspended on, so ``clear_resident`` and ``release_chat_gpu_claim`` never run at
-    all and alice's claim outlives her model. Bob is then shown the mask, correctly.
+    That interval is the reason the test below waits on the release rather than on the
+    teardown: a status read landing inside it gets the masked body, correctly, and a test that
+    called that a phantom would be blaming the product for its own timing.
 
-    Polling with ``sleep(0)`` rather than ``sleep(0.01)`` is the whole trick: it wins that race
-    every time instead of once a CI runner is loaded enough. Same failure, same body, no
-    timing. It is the one below with the clock taken out.
+    The window is held open with a hook on the release itself, not by winning a scheduler
+    race. Racing would make this depend on undocumented asyncio wakeup order, and worse, it
+    would fail against an implementation that made teardown and release atomic - punishing a
+    genuine improvement. A hook on release still fires in that implementation, so this test
+    keeps asking its question rather than becoming a tripwire.
     """
     arm_the_idle_loop(monkeypatch)
 
+    reached_release = threading.Event()
+    may_release = threading.Event()
+    real_release = inference.release_chat_gpu_claim
+
+    def held_open():
+        reached_release.set()
+        assert may_release.wait(timeout = 5.0), "the test never let the release proceed"
+        return real_release()
+
+    monkeypatch.setattr(inference, "release_chat_gpu_claim", held_open)
+
     async def tick():
         task = asyncio.ensure_future(llama_keepwarm.idle_unload_loop(poll_seconds = 0.01))
-        for _ in range(500_000):
-            await asyncio.sleep(0)
-            if chat_resident.unloaded:
+        for _ in range(500):
+            await asyncio.sleep(0.01)
+            if reached_release.is_set():
+                break
+        assert reached_release.is_set(), "the loop never reached the claim release"
+
+        # Inside the window now, and it stays open until may_release is set.
+        assert chat_resident.unloaded, "the backend should already be down here"
+        assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+        assert bob_status(accounts).json() == {"loaded": [], "loading": [], "yours": False}
+
+        may_release.set()
+        for _ in range(500):
+            await asyncio.sleep(0.01)
+            if gpu_arbiter.current_owner() is None:
                 break
         task.cancel()
         try:
@@ -159,11 +183,9 @@ def test_a_torn_down_backend_does_not_yet_mean_a_released_claim(
 
     asyncio.run(tick())
 
-    assert chat_resident.unloaded, "the loop never tore the backend down"
-    assert (
-        gpu_arbiter.current_owner() == gpu_arbiter.CHAT
-    ), "the release ran after all, so this no longer reproduces the window it documents"
-    assert bob_status(accounts).json() == {"loaded": [], "loading": [], "yours": False}
+    # And once it closes, the claim is gone and bob gets the real answer.
+    assert gpu_arbiter.current_owner() is None
+    assert "yours" not in bob_status(accounts).json()
 
 
 def test_idle_auto_unload_releases_chat_ownership(chat_resident, accounts, monkeypatch):
