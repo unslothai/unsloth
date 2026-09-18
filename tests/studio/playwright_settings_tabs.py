@@ -468,8 +468,8 @@ def run_keystroke_search(page) -> None:
     settle_panel(page)
     rows_js = """() => [...document.querySelectorAll('[data-settings-label]')]
         .map(r => r.dataset.settingsLabel)"""
-    box = page.locator(f'{PANEL} input')
-    toggle = page.locator(f'{PANEL} button[aria-pressed]')
+    box = page.locator(f"{PANEL} input")
+    toggle = page.locator(f"{PANEL} button[aria-pressed]")
     click_forced(toggle, timeout = 15000)
     page.wait_for_timeout(SETTLE_MS)
     state: dict = {"armed": toggle.get_attribute("aria-pressed")}
