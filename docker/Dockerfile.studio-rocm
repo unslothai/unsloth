@@ -16,18 +16,27 @@
 # Build (on the published ROCm base, or one built from docker/Dockerfile.rocm):
 #   docker buildx build --build-arg BASE_IMAGE=unsloth/unsloth-rocm:latest \
 #     -f docker/Dockerfile.studio-rocm -t unsloth/unsloth-rocm:studio docker/
-# Run (Linux):
-#   docker run --rm --device /dev/kfd --device /dev/dri --group-add video \
-#     --group-add render --ipc=host -p 127.0.0.1:8000:8000 \
+# Run (Linux) with the wrapper, which adds the device nodes, the NUMERIC group ids
+# and the Studio volume, but publishes no port and picks :latest unless told:
+#   UNSLOTH_IMAGE=unsloth/unsloth-rocm:studio UNSLOTH_PORTS="-p 127.0.0.1:8000:8000" \
+#     UNSLOTH_STUDIO_VOLUME=unsloth-studio-rocm bash docker/run.sh --rocm
+# or by hand (group ids as numbers: the names do not exist inside the image):
+#   docker run --rm --device /dev/kfd --device /dev/dri \
+#     --group-add "$(getent group video | cut -d: -f3)" \
+#     --group-add "$(getent group render | cut -d: -f3)" \
+#     --ipc=host -p 127.0.0.1:8000:8000 \
 #     -v unsloth-studio-rocm:/opt/unsloth-studio unsloth/unsloth-rocm:studio
-# Run (Windows/WSL2): bash docker/run.sh --rocm passes the DXG bridge instead.
+# Windows/WSL2 has no /dev/kfd: the card is reached over /dev/dxg, which the
+# wrapper and the entrypoint only learn in #11212. Until that lands, pass
+# /dev/dxg, the host's librocdxg and HSA_ENABLE_DXG_DETECTION=1 by hand, with
+# UNSLOTH_SKIP_GPU_CHECK=1 to get past the entrypoint's /dev/kfd gate.
 
 ARG BASE_IMAGE=unsloth/unsloth-rocm:latest
 
 FROM ${BASE_IMAGE}
 
-# Studio source ref to clone. Defaults to main; CI pins it (the same UNSLOTH_REF
-# as the base) so the published image is reproducible.
+# Studio source ref to clone. Defaults to main; docker-publish-rocm.yml pins it
+# to the UNSLOTH_REF the base baked, so the published image is reproducible.
 ARG UNSLOTH_STUDIO_REF=main
 # unsloth-zoo ref overlaid into the Studio venv by install.sh --local, so Studio
 # runs the same zoo as the base.
