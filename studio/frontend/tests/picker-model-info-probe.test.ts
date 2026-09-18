@@ -18,6 +18,7 @@ type DialogProps = {
 function renderInfo(props: DialogProps, online = true): Probe[] {
   const probes: Probe[] = [];
   const react = {
+    useRef: (initial: unknown) => ({ current: initial }),
     useState: (initial: unknown) => [
       typeof initial === "function" ? initial() : initial,
       () => {},

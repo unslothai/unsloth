@@ -28,7 +28,7 @@ import { useHfEndpoint } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import { BookOpen01Icon, LinkSquare02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { type MouseEvent, useRef, useState } from "react";
 import { ChatTemplateEditorDialog } from "../chat-template-editor-dialog";
 import type { LicenseOpenness } from "./license-openness";
 import { localModelInfoFacts } from "./local-model-facts";
@@ -69,7 +69,7 @@ function FactRow({
 }: {
   fact: InfoRow;
   /** Makes the row a button. Used by the chat-template row, which opens the template. */
-  onActivate?: () => void;
+  onActivate?: (event: MouseEvent<HTMLButtonElement>) => void;
 }) {
   const value =
     fact.key === "license" && fact.openness ? (
@@ -117,7 +117,13 @@ function FactRow({
   if (!fact.detail) return row;
   return (
     <Tooltip delayDuration={0}>
-      <TooltipTrigger asChild={true}>{row}</TooltipTrigger>
+      <TooltipTrigger
+        asChild={true}
+        tabIndex={0}
+        className="rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {row}
+      </TooltipTrigger>
       <TooltipContent side="left" className="max-w-[280px]">
         {fact.detail}
       </TooltipContent>
@@ -131,6 +137,7 @@ export function ModelInfoDialog({
   hasLocalGguf = false,
   open,
   onOpenChange,
+  onCloseAutoFocus,
 }: {
   repoId: string;
   /** Quant to read the header of, when the row names one. */
@@ -138,11 +145,13 @@ export function ModelInfoDialog({
   hasLocalGguf?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const online = useOnlineStatus();
   const hfToken = useHfTokenStore((s) => s.token);
   const hfEndpoint = useHfEndpoint();
   const [templateOpen, setTemplateOpen] = useState(false);
+  const templateTriggerRef = useRef<HTMLButtonElement>(null);
 
   // Only fetches while the dialog is open, and shares one in-flight request per repo with
   // the Hub through hf-cache, so opening this for a model the catalog already showed is free.
@@ -170,7 +179,10 @@ export function ModelInfoDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[460px]">
+      <DialogContent
+        className="max-w-[460px]"
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <DialogHeader>
           <DialogTitle className="truncate">{repoId}</DialogTitle>
           {/* The chip and its tooltip already carry the verdict. Kept for screen readers. */}
@@ -191,7 +203,10 @@ export function ModelInfoDialog({
                 fact={fact}
                 onActivate={
                   fact.key === "chatTemplate" && template
-                    ? () => setTemplateOpen(true)
+                    ? (event) => {
+                        templateTriggerRef.current = event.currentTarget;
+                        setTemplateOpen(true);
+                      }
                     : undefined
                 }
               />
@@ -288,6 +303,10 @@ export function ModelInfoDialog({
         <ChatTemplateEditorDialog
           open={templateOpen}
           onOpenChange={setTemplateOpen}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            templateTriggerRef.current?.focus();
+          }}
           value={null}
           defaultTemplate={template}
           defaultLoading={false}

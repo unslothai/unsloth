@@ -23,6 +23,7 @@ import {
 interface ChatTemplateEditorDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
   value: string | null;
   defaultTemplate: string | null;
   defaultLoading: boolean;
@@ -36,6 +37,7 @@ interface ChatTemplateEditorDialogProps {
 export function ChatTemplateEditorDialog({
   open,
   onOpenChange,
+  onCloseAutoFocus,
   value,
   defaultTemplate,
   defaultLoading,
@@ -110,7 +112,10 @@ export function ChatTemplateEditorDialog({
         handleClose();
       }}
     >
-      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
+      <DialogContent
+        className="corner-squircle dialog-soft-surface sm:max-w-3xl"
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <DialogHeader>
           <DialogTitle>
             {readOnly ? "Chat Template" : "Edit Chat Template"}
