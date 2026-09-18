@@ -789,6 +789,11 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(proxy=None).get('https://pypi.org/')",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': None})",
             "import requests\ns = requests.Session()\ns.proxies = {'https': 'https://pypi.org'}\ns.get('https://pypi.org/')",
+            # An attribute replaced before the call, or set after it, cannot reach it.
+            "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5'}\n"
+            "s.proxies = {}\ns.get('https://pypi.org/')",
+            "import requests\ns = requests.Session()\ns.get('https://pypi.org/')\n"
+            "s.proxies = {'https': 'http://203.0.113.5'}",
             # A receiver that is not the instance keeps its own identity.
             "import requests\nclass A:\n    def __init__(self):\n        self.s = requests.Session()\n"
             "    def go(self, other):\n        other.s.get('https://pypi.org/')",

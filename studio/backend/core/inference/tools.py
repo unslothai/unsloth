@@ -16547,7 +16547,14 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(owner, ast.ClassDef)
                     else target.value.id
                 )
-                _attr_stores.setdefault((id(owner), receiver, target.attr), []).append(value)
+                _attr_stores.setdefault((id(owner), receiver, target.attr), []).append(
+                    (
+                        value,
+                        position or _position(target),
+                        _node_block.get(id(target)),
+                        certain,
+                    )
+                )
 
     def _evaluated_outside(node: ast.AST) -> list:
         """Return child expressions evaluated in the enclosing scope."""
@@ -16812,10 +16819,12 @@ def _check_signal_escape_patterns(code: str):
         ]
 
     def _attr_values(expr: ast.Attribute) -> "list | None":
-        return _attr_values_for(_node_scope.get(id(expr), tree), expr.value.id, expr.attr)
+        return _attr_values_for(_node_scope.get(id(expr), tree), expr.value.id, expr.attr, expr)
 
-    def _attr_values_for(scope: ast.AST, receiver_id: str, attr: str) -> "list | None":
-        """Return the stores for an `obj.attr` receiver, nearest owning scope first."""
+    def _attr_values_for(
+        scope: ast.AST, receiver_id: str, attr: str, read: ast.AST
+    ) -> "list | None":
+        """Return the stores an `obj.attr` receiver can hold here, nearest owning scope first."""
         cls = _enclosing_class(scope)
         if cls is not None:
             # A subclass reads what its bases set on self, so walk the inheritance chain.
@@ -16824,7 +16833,8 @@ def _check_signal_escape_patterns(code: str):
             pending, seen = [cls], {id(cls)}
             while pending:
                 current = pending.pop(0)
-                values.extend(_attr_stores.get((id(current), receiver, attr)) or [])
+                stores = _attr_stores.get((id(current), receiver, attr)) or []
+                values.extend(_reaching(stores, read, current))
                 for base in _base_classes(current):
                     if id(base) not in seen:
                         seen.add(id(base))
@@ -16832,9 +16842,9 @@ def _check_signal_escape_patterns(code: str):
             return values or None
         current: ast.AST | None = scope
         while current is not None:
-            values = _attr_stores.get((id(current), receiver_id, attr))
-            if values is not None:
-                return values
+            stores = _attr_stores.get((id(current), receiver_id, attr))
+            if stores is not None:
+                return _reaching(stores, read, current)
             current = _scope_parent.get(id(current))
         return None
 
@@ -17238,7 +17248,8 @@ def _check_signal_escape_patterns(code: str):
                         targets += [
                             (True, value, "url")
                             for attr in _PROXY_KEYWORDS
-                            for value in _attr_values_for(scope, node.func.value.id, attr) or []
+                            for value in _attr_values_for(scope, node.func.value.id, attr, node)
+                            or []
                             if isinstance(value, ast.AST)
                         ]
                     self._check_target(node, targets, connects = True)
