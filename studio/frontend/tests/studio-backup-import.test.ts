@@ -377,3 +377,53 @@ test("a fork keeps its badge when only the branch-point message is gone", async 
   assert.equal(recipe.forkedFromThreadId, trip.id);
   assert.equal(recipe.forkedFromMessageId, undefined);
 });
+
+test("a settings snapshot this build rejects costs the settings, not the chat", async () => {
+  // routes/chat_history.py validates ChatThreadSettings with extra = "forbid", so a backup from a
+  // newer Studio carrying one unknown knob 422s the thread write. Restoring fewer chats than the
+  // backup holds is worse than restoring one without its settings.
+  const saved: ThreadRecord[] = [];
+  const attempts: (ThreadRecord["settings"] | undefined)[] = [];
+  const module = loadWithStubs<Module>(
+    new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
+    {
+      "../api/chat-api": {
+        notifyChatHistoryUpdated: () => {},
+        listChatProjects: async () => [],
+        saveChatProject: async (project: ProjectRecord) => project,
+      },
+      "./chat-history-storage": {
+        saveStoredChatThread: async (thread: ThreadRecord) => {
+          attempts.push(thread.settings);
+          if (thread.settings && "brandNewKnob" in thread.settings) {
+            throw new Error("422 extra_forbidden: settings.brandNewKnob");
+          }
+          saved.push(thread);
+          return thread;
+        },
+        syncStoredChatMessages: async (
+          _threadId: string,
+          records: MessageRecord[],
+        ) => records,
+        deleteStoredChatThreads: async () => [],
+      },
+    },
+    { relativePassthrough: true },
+  );
+
+  const data = backup();
+  data.threads[0].settings = {
+    temperature: 0.7,
+    brandNewKnob: true,
+  } as unknown as ThreadRecord["settings"];
+
+  const result = await module.importConversationsFromSource(
+    sourceOf("backup.json", data),
+  );
+
+  assert.deepEqual(result, { imported: 2, failed: 0 });
+  assert.deepEqual(saved.map(({ title }) => title).sort(), ["Old recipe", "Trip plan"]);
+  assert.equal(saved.find(({ title }) => title === "Trip plan")?.settings, undefined);
+  // One rejected write, one retry without the snapshot, and nothing extra for the other chat.
+  assert.equal(attempts.length, 3);
+});

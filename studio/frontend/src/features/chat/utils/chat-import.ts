@@ -366,7 +366,16 @@ async function writeConversation(
     ...conversation.thread,
     projectId: projectId ?? conversation.thread?.projectId ?? null,
   };
-  await saveStoredChatThread(thread);
+  try {
+    await saveStoredChatThread(thread);
+  } catch (error) {
+    // A settings snapshot is the one field a backup can carry that this build may not accept:
+    // the thread endpoint validates it strictly, so one knob added by a newer Studio fails the
+    // whole write. The chat matters more than its settings, so drop them and try once more.
+    const { settings, ...withoutSettings } = thread;
+    if (settings === undefined || settings === null) throw error;
+    await saveStoredChatThread(withoutSettings);
+  }
   try {
     await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
   } catch (error) {
