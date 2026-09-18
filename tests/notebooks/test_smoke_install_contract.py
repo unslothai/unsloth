@@ -212,6 +212,56 @@ def test_the_known_unbuildable_pins_are_skipped():
     )
 
 
+# --- the cache key has to represent what the job installs ----------------------------
+
+
+def _restore_step() -> dict:
+    steps = [s for s in _job()["steps"] if "pip-cache-restore" in str(s.get("uses", ""))]
+    assert len(steps) == 1, f"{JOB} should restore the pip cache exactly once, got {len(steps)}"
+    return steps[0]["with"]
+
+
+def test_every_file_the_seed_step_reads_is_a_cache_key_input():
+    """Otherwise an edit changes the install while the key stays put.
+
+    #11270 dropped 39 pins from colab_to_cpu_pin.json and freed nothing, because the
+    mapping was not a key input: the key hash did not move, the restore hit exactly,
+    and pip-cache-save is gated on `cache-hit != 'true'`, so the entry holding the
+    removed wheels was never rewritten. A stale entry cannot serve wrong CONTENT --
+    pip's cache is addressed by URL and hash -- but it pins the entry's SIZE to a pin
+    set that no longer exists.
+
+    The rule is mechanical: whatever the shell opens, the key must hash.
+    """
+    files = set(_restore_step()["key-files"].split())
+    # Only checked-in files under the job's checkout prefix. The seed step also
+    # opens /tmp scratch and the converted _smoke.py, which are its OUTPUTS: they
+    # are derived from the inputs below and cannot be edited into the repo.
+    opened = set(re.findall(r"""open\(\s*["'](unsloth/[^"']+)["']""", _shell(_job())))
+    assert opened, "found no repo files being read by the seed step; the pattern has drifted"
+    missing = sorted(opened - files)
+    assert not missing, (
+        f"the seed step reads {missing} but they are not in key-files {sorted(files)}, so "
+        f"editing them changes what the job installs without minting a new cache key"
+    )
+
+
+def test_the_mapping_is_a_cache_key_input():
+    """Named explicitly, so deleting the rule above cannot quietly drop the one file
+    that caused the bug."""
+    assert "unsloth/scripts/data/colab_to_cpu_pin.json" in _restore_step()["key-files"].split()
+
+
+def test_the_cache_key_inputs_exist():
+    """A glob that matches nothing makes hashFiles return empty, which pip-cache-restore
+    fails on by design -- but it fails in CI, not here, and only on the next run."""
+    for rel in _restore_step()["key-files"].split():
+        # key-files resolve from GITHUB_WORKSPACE and this job checks out under
+        # `unsloth/`, which is the repo root from this test's point of view.
+        assert rel.startswith("unsloth/"), f"{rel} is not prefixed for this job's checkout layout"
+        assert (REPO / rel[len("unsloth/"):]).exists(), f"key-files names {rel}, which does not exist"
+
+
 # --- what the skip list costs and what it must not spend -----------------------------
 
 
