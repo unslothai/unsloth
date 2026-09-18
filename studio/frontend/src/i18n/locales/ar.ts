@@ -303,6 +303,9 @@ export const ar = {
       description:
         "غيّر أي اختصار، أو امسحه لتحرير التركيبة لمتصفحك أو نظام التشغيل.",
       searchPlaceholder: "بحث في الاختصارات…",
+      keystrokePlaceholder: "اضغط اختصارًا للبحث",
+      searchByKeystrokes: "البحث بضغط المفاتيح",
+      searchByName: "البحث بالاسم",
       noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
       unassigned: "غير معيّن",
       recording: "اضغط المفاتيح…",

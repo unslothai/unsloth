@@ -308,6 +308,9 @@ export const en = {
       description:
         "Change any shortcut, or clear one to free the chord for your browser or OS.",
       searchPlaceholder: "Search shortcuts…",
+      keystrokePlaceholder: "Press shortcut to search",
+      searchByKeystrokes: "Search by keystrokes",
+      searchByName: "Search by name",
       noResults: "No shortcuts match that search.",
       unassigned: "Unassigned",
       recording: "Press keys…",

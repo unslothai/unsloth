@@ -15,14 +15,22 @@ import {
   Alert01Icon,
   ArrowTurnBackwardIcon,
   Delete02Icon,
+  KeyboardIcon,
   PencilEdit02Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   SHORTCUT_DEFS,
   SHORTCUT_SLOTS,
+  type ShortcutBinding,
   type ShortcutDef,
   type ShortcutId,
   type ShortcutSlot,
@@ -33,6 +41,7 @@ import {
   isAcceptableBinding,
   isBrowserReservedBinding,
   isMacPlatform,
+  keystrokeMatchesBinding,
   parseBinding,
 } from "../lib/keyboard-shortcuts";
 import {
@@ -130,6 +139,10 @@ export function KeyboardShortcutsTab() {
   const [recording, setRecording] = useState<RecordingTarget | null>(null);
   // Shown under the row being recorded when the pressed chord is rejected.
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  // Search the list by pressing a chord instead of typing its name.
+  const [byKeystroke, setByKeystroke] = useState(false);
+  const [keystroke, setKeystroke] = useState<ShortcutBinding | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const mac = isMacPlatform();
   const conflicts = useMemo(() => findConflicts(overrides), [overrides]);
@@ -187,7 +200,58 @@ export function KeyboardShortcutsTab() {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [recording, setBinding, t]);
 
+  // Capture phase, as the recorder is: the chord has to arrive before the shortcut
+  // it names fires, and before Radix's Escape closes the dialog. The recorder owns
+  // the keyboard while it runs, so this stands down for it.
+  useEffect(() => {
+    if (!byKeystroke || recording) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Only while the box has focus: the rest of the tab keeps its own keys.
+      if (document.activeElement !== searchRef.current) return;
+      // Read the key through the binding, not event.code, so the fallback for an
+      // engine that reports no code covers Tab and Escape here too.
+      const binding = bindingFromEvent(event);
+      // Modifier on its own: the chord is still being assembled.
+      if (!binding) return;
+      const bare = !binding.mod && !binding.ctrl && !binding.alt;
+      // Tab still moves focus: a mode that swallowed it would trap the keyboard here.
+      if (binding.code === "Tab" && bare) return;
+      event.preventDefault();
+      event.stopPropagation();
+      // Escape backs out a step at a time: the chord first, then the mode.
+      if (binding.code === "Escape" && bare && !binding.shift) {
+        if (keystroke) setKeystroke(null);
+        else setByKeystroke(false);
+        return;
+      }
+      setKeystroke(binding);
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [byKeystroke, recording, keystroke]);
+
+  const toggleByKeystroke = () => {
+    // The two searches filter the same list, so leaving one arms the other empty.
+    setByKeystroke((on) => !on);
+    setQuery("");
+    setKeystroke(null);
+    searchRef.current?.focus();
+  };
+
   const matches = useMemo(() => {
+    if (byKeystroke) {
+      // Nothing pressed yet: the whole list, not an empty one.
+      if (!keystroke) return null;
+      return new Set(
+        SHORTCUT_DEFS.filter((def) =>
+          SHORTCUT_SLOTS.some((slot) => {
+            const parsed = parseBinding(resolveBinding(overrides, def.id, slot));
+            return parsed ? keystrokeMatchesBinding(keystroke, parsed) : false;
+          }),
+        ).map((def) => def.id),
+      );
+    }
     const q = query.trim().toLowerCase();
     if (!q) return null;
     return new Set(
@@ -202,7 +266,7 @@ export function KeyboardShortcutsTab() {
         });
       }).map((def) => def.id),
     );
-  }, [query, t, overrides, mac]);
+  }, [query, t, overrides, mac, byKeystroke, keystroke]);
 
   // One list, in registry order, so the daily rows sit above the fold.
   const visible = SHORTCUT_DEFS.filter(
@@ -361,12 +425,64 @@ export function KeyboardShortcutsTab() {
           className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         />
         <Input
-          value={query}
+          ref={searchRef}
+          // Chord mode shows the press, not text: the field is read-only there and
+          // the capture listener above is what fills it.
+          value={
+            byKeystroke
+              ? keystroke
+                ? formatBindingLabel(keystroke, mac)
+                : ""
+              : query
+          }
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={t("settings.keyboardShortcuts.searchPlaceholder")}
-          className="h-11 rounded-full pl-11"
-          aria-label={t("settings.keyboardShortcuts.searchPlaceholder")}
+          readOnly={byKeystroke}
+          placeholder={t(
+            byKeystroke
+              ? "settings.keyboardShortcuts.keystrokePlaceholder"
+              : "settings.keyboardShortcuts.searchPlaceholder",
+          )}
+          className={cn(
+            "h-11 rounded-full pl-11 pr-12",
+            byKeystroke && "font-medium tabular-nums",
+          )}
+          aria-label={t(
+            byKeystroke
+              ? "settings.keyboardShortcuts.keystrokePlaceholder"
+              : "settings.keyboardShortcuts.searchPlaceholder",
+          )}
         />
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              aria-pressed={byKeystroke}
+              aria-label={t(
+                byKeystroke
+                  ? "settings.keyboardShortcuts.searchByName"
+                  : "settings.keyboardShortcuts.searchByKeystrokes",
+              )}
+              onClick={toggleByKeystroke}
+              className={cn(
+                "absolute right-2 top-1/2 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                byKeystroke && "bg-muted text-foreground",
+              )}
+            >
+              <HugeiconsIcon
+                icon={KeyboardIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {t(
+              byKeystroke
+                ? "settings.keyboardShortcuts.searchByName"
+                : "settings.keyboardShortcuts.searchByKeystrokes",
+            )}
+          </TooltipContent>
+        </Tooltip>
       </div>
 
       {visible.length === 0 ? (

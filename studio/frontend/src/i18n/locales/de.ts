@@ -307,6 +307,9 @@ export const de = {
       description:
         "Ändere ein Kürzel oder lösche es, um die Tastenkombination für Browser oder Betriebssystem freizugeben.",
       searchPlaceholder: "Kürzel suchen…",
+      keystrokePlaceholder: "Kürzel drücken, um zu suchen",
+      searchByKeystrokes: "Nach Tastendruck suchen",
+      searchByName: "Nach Name suchen",
       noResults: "Keine Kürzel passen zu dieser Suche.",
       unassigned: "Nicht zugewiesen",
       recording: "Tasten drücken…",

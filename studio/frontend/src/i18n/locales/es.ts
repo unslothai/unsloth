@@ -306,6 +306,9 @@ export const es = {
       description:
         "Cambia cualquier atajo, o bórralo para liberar la combinación para el navegador o el sistema.",
       searchPlaceholder: "Buscar atajos…",
+      keystrokePlaceholder: "Pulsa un atajo para buscar",
+      searchByKeystrokes: "Buscar por pulsación",
+      searchByName: "Buscar por nombre",
       noResults: "Ningún atajo coincide con esa búsqueda.",
       unassigned: "Sin asignar",
       recording: "Pulsa las teclas…",

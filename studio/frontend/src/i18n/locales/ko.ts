@@ -303,6 +303,9 @@ export const ko = {
       description:
         "단축키를 바꾸거나, 지워서 해당 조합을 브라우저나 운영체제에 넘길 수 있습니다.",
       searchPlaceholder: "단축키 검색…",
+      keystrokePlaceholder: "단축키를 눌러 검색",
+      searchByKeystrokes: "키 입력으로 검색",
+      searchByName: "이름으로 검색",
       noResults: "검색과 일치하는 단축키가 없습니다.",
       unassigned: "지정 안 됨",
       recording: "키를 누르세요…",

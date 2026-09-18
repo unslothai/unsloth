@@ -307,6 +307,9 @@ export const fr = {
       description:
         "Modifiez un raccourci, ou effacez-le pour libérer la combinaison pour le navigateur ou le système.",
       searchPlaceholder: "Rechercher des raccourcis…",
+      keystrokePlaceholder: "Appuyez sur un raccourci pour rechercher",
+      searchByKeystrokes: "Rechercher par frappe",
+      searchByName: "Rechercher par nom",
       noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
       recording: "Appuyez sur les touches…",

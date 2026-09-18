@@ -15,6 +15,7 @@ import {
   isAcceptableBinding,
   isBrowserReservedBinding,
   isShortcutId,
+  keystrokeMatchesBinding,
   matchesBinding,
   parseBinding,
 } from "../src/features/settings/lib/keyboard-shortcuts.ts";
@@ -1978,4 +1979,100 @@ test("the follow-up chords are registered in both composers", async () => {
   }
   // The reason the second registration is needed rather than optional.
   assert.match(CHAT_PAGE, /<Thread hideComposer=\{true\}/);
+});
+
+/** Searching the list by chord: the press narrows, it does not have to be exact. */
+function chord(value: string) {
+  const parsed = parseBinding(value);
+  assert.ok(parsed, `unparsable test binding ${value}`);
+  return parsed;
+}
+
+test("a keystroke search matches the chord it names", () => {
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Shift+KeyO")),
+    true,
+  );
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Shift+KeyN")),
+    false,
+    "a different key is a different chord",
+  );
+});
+
+test("a keystroke search widens as modifiers come off", () => {
+  // Bare O finds every chord on O, which is what makes the key alone a useful search.
+  for (const bound of ["Mod+Shift+KeyO", "Mod+Alt+KeyO", "Mod+Alt+Shift+KeyO"]) {
+    assert.equal(
+      keystrokeMatchesBinding(chord("KeyO"), chord(bound)),
+      true,
+      bound,
+    );
+  }
+  // ⇧⌘O keeps the ones carrying both, and drops ⌥⌘O.
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Alt+Shift+KeyO")),
+    true,
+  );
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Alt+KeyO")),
+    false,
+  );
+});
+
+test("a keystroke search never matches a chord missing a modifier it holds", () => {
+  for (const pressed of ["Mod+KeyB", "Ctrl+KeyB", "Alt+KeyB", "Shift+KeyB"]) {
+    assert.equal(
+      keystrokeMatchesBinding(chord(pressed), chord("KeyB")),
+      false,
+      pressed,
+    );
+  }
+});
+
+test("every shipped default is found by its own chord and by its bare key", async () => {
+  for (const def of SHORTCUT_DEFS) {
+    for (const slot of SHORTCUT_SLOTS) {
+      for (const mac of [true, false]) {
+        const value = defaultBindingFor(def, slot, mac);
+        if (!value) continue;
+        const bound = chord(value);
+        assert.equal(
+          keystrokeMatchesBinding(bound, bound),
+          true,
+          `${def.id}.${slot} does not find itself`,
+        );
+        assert.equal(
+          keystrokeMatchesBinding({ ...bound, mod: false, ctrl: false, shift: false, alt: false }, bound),
+          true,
+          `${def.id}.${slot} is not found by its bare key`,
+        );
+      }
+    }
+  }
+});
+
+test("the shortcuts tab arms the keystroke search ahead of Radix and the registry", async () => {
+  const src = await readFile(
+    new URL(
+      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // Capture phase, or the dialog's Escape closes it before the box sees the key.
+  assert.match(
+    src,
+    /window\.addEventListener\("keydown", onKeyDown, \{ capture: true \}\)/,
+  );
+  // Keys read through bindingFromEvent, which carries the fallback for an engine
+  // reporting no code. Off event.code, Tab and Escape would not be recognised there.
+  const listener = src.slice(
+    src.indexOf("if (!byKeystroke || recording) return;"),
+  );
+  assert.doesNotMatch(listener, /event\.code\s*===/);
+  assert.match(listener, /const binding = bindingFromEvent\(event\);/);
+  assert.match(listener, /binding\.code === "Escape"/);
+  // The recorder owns the keyboard while it runs.
+  assert.match(src, /if \(!byKeystroke \|\| recording\) return;/);
 });

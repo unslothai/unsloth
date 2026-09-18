@@ -306,6 +306,9 @@ export const hi = {
       description:
         "कोई भी शॉर्टकट बदलें, या उसे हटाकर वह कुंजी-संयोजन अपने ब्राउज़र या OS के लिए खाली करें।",
       searchPlaceholder: "शॉर्टकट खोजें…",
+      keystrokePlaceholder: "खोजने के लिए शॉर्टकट दबाएँ",
+      searchByKeystrokes: "कीस्ट्रोक से खोजें",
+      searchByName: "नाम से खोजें",
       noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
       unassigned: "असाइन नहीं",
       recording: "कुंजियाँ दबाएँ…",

@@ -305,6 +305,9 @@ export const ru = {
       description:
         "Измените любое сочетание или очистите его, чтобы освободить комбинацию для браузера или ОС.",
       searchPlaceholder: "Поиск сочетаний…",
+      keystrokePlaceholder: "Нажмите сочетание для поиска",
+      searchByKeystrokes: "Поиск по нажатию",
+      searchByName: "Поиск по названию",
       noResults: "Ни одно сочетание не соответствует запросу.",
       unassigned: "Не назначено",
       recording: "Нажмите клавиши…",

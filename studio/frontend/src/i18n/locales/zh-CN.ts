@@ -301,6 +301,9 @@ export const zhCN = {
       description:
         "可以更改任意快捷键，或将其清除，把该组合让给浏览器或操作系统。",
       searchPlaceholder: "搜索快捷键…",
+      keystrokePlaceholder: "按下快捷键进行搜索",
+      searchByKeystrokes: "按键搜索",
+      searchByName: "按名称搜索",
       noResults: "没有匹配的快捷键。",
       unassigned: "未分配",
       recording: "请按下按键…",

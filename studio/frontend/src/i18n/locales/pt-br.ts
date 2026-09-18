@@ -305,6 +305,9 @@ export const ptBR = {
       description:
         "Altere qualquer atalho, ou apague um para liberar a combinação para o navegador ou o sistema.",
       searchPlaceholder: "Pesquisar atalhos…",
+      keystrokePlaceholder: "Pressione um atalho para pesquisar",
+      searchByKeystrokes: "Pesquisar por tecla",
+      searchByName: "Pesquisar por nome",
       noResults: "Nenhum atalho corresponde a essa pesquisa.",
       unassigned: "Não atribuído",
       recording: "Pressione as teclas…",

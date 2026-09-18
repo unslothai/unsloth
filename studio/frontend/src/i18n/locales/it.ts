@@ -271,6 +271,9 @@ export const it = {
       description:
         "Modifica una scorciatoia, oppure cancellala per liberare la combinazione per il browser o il sistema.",
       searchPlaceholder: "Cerca scorciatoie…",
+      keystrokePlaceholder: "Premi una scorciatoia per cercare",
+      searchByKeystrokes: "Cerca per combinazione",
+      searchByName: "Cerca per nome",
       noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
       unassigned: "Non assegnata",
       recording: "Premi i tasti…",
