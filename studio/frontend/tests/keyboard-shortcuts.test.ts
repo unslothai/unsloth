@@ -26,6 +26,7 @@ import {
   resolveAllBindings,
   resolveBinding,
   resolveBindings,
+  shortcutMatchingEvent,
   shortcutOwningBinding,
 } from "../src/features/settings/stores/keyboard-shortcuts-store.ts";
 import { SETTINGS_TABS } from "../src/features/settings/stores/settings-dialog-store.ts";
@@ -1864,4 +1865,97 @@ test("the logout row is not offered on the desktop build", async () => {
     ["logOut"],
   );
   assert.match(KEYBOARD_SHORTCUTS_TAB, /!\(isTauri && def\.webOnly\)/);
+});
+
+// The composer's own keydown runs before the window listener and calls
+// preventDefault, which useShortcut treats as "already handled". A queue or
+// steer chord bound onto an Enter combination would therefore submit with the
+// send preference's intent instead of the behaviour it names, so the composer
+// looks the chord up itself.
+const FOLLOW_UP_IDS = ["queueMessage", "steerMessage"] as const;
+
+/** Mod+Enter as it arrives on each platform: Cmd on macOS, Ctrl elsewhere. */
+const modEnterOn = (mac: boolean) => ({
+  code: "Enter",
+  metaKey: mac,
+  ctrlKey: !mac,
+  shiftKey: false,
+  altKey: false,
+});
+
+test("an Enter chord bound to queue or steer is recognised in the composer", () => {
+  for (const mac of [true, false]) {
+    const modEnter = modEnterOn(mac);
+    assert.equal(shortcutMatchingEvent({}, FOLLOW_UP_IDS, modEnter, mac), null);
+    assert.equal(
+      shortcutMatchingEvent(
+        { queueMessage: { primary: "Mod+Enter" } },
+        FOLLOW_UP_IDS,
+        modEnter,
+        mac,
+      ),
+      "queueMessage",
+    );
+    // A different chord is not this one: the composer keeps its own intent.
+    assert.equal(
+      shortcutMatchingEvent(
+        { queueMessage: { primary: "Mod+Enter" } },
+        FOLLOW_UP_IDS,
+        { ...modEnter, shiftKey: true },
+        mac,
+      ),
+      null,
+    );
+    // Shared with an action the registry ranks higher, so that one runs and
+    // this row is shadowed, the same rule useShortcut applies.
+    assert.equal(
+      shortcutMatchingEvent(
+        {
+          newChat: { primary: "Mod+Enter" },
+          queueMessage: { primary: "Mod+Enter" },
+        },
+        FOLLOW_UP_IDS,
+        modEnter,
+        mac,
+      ),
+      null,
+    );
+  }
+});
+
+test("the composer submits an Enter-bound chord with the named behavior", async () => {
+  const { composerFollowUpBehavior, followUpSubmitIntent } = await import(
+    "../src/features/chat/utils/composer-preferences.ts"
+  );
+  // ⌘⏎ with the send preference on Enter is the "opposite" chord, so a steer
+  // user pressing it would queue. Bound to Queue message it has to queue for
+  // both, and bound to Steer response it has to steer for both.
+  for (const preference of ["queue", "steer"] as const) {
+    for (const [id, behavior] of [
+      ["queueMessage", "queue"],
+      ["steerMessage", "steer"],
+    ] as const) {
+      const named = shortcutMatchingEvent(
+        { [id]: { primary: "Mod+Enter" } },
+        FOLLOW_UP_IDS,
+        modEnterOn(true),
+        true,
+      );
+      assert.equal(named, id);
+      assert.equal(
+        composerFollowUpBehavior(
+          preference,
+          followUpSubmitIntent(preference, behavior),
+        ),
+        behavior,
+        `${preference} preference, ${id} chord`,
+      );
+    }
+  }
+  // The composer path has to consult the chord before it uses the intent the
+  // send preference produced.
+  const submitOnKey = THREAD.slice(THREAD.indexOf("const submitOnKey = useCallback("));
+  const body = submitOnKey.slice(0, submitOnKey.indexOf("\n  );"));
+  assert.match(body, /const named = followUpShortcutBehavior\(event\);/);
+  assert.match(body, /submitIntentRef\.current = named\n?\s*\?/);
 });
