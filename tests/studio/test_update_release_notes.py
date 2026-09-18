@@ -1987,9 +1987,9 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
         # The exact binding, per rail. Counting STACK_ names would let paddingLeft be set from
         # STACK_CARD_INSET_RIGHT: two constants, two rails, count still 2, and the floors above
         # would go on vouching for a 28px value nothing applies while 16px clips the shadow.
-        assert _rail_padding(tag) == expected, (
-            f"a rail's padding is not bound to its own constant: {_rail_padding(tag)}"
-        )
+        assert (
+            _rail_padding(tag) == expected
+        ), f"a rail's padding is not bound to its own constant: {_rail_padding(tag)}"
     # A rem-valued utility would scale with the type size and walk the rail off the corner.
     # Read through the variants and the importance marker, because `!px-3` beats the inline px
     # padding outright and `md:!px-3` does it above a breakpoint, and a bare-token match sees
@@ -1997,9 +1997,9 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
     for rail in _corner_rails(provider):
         for token in rail.split():
             utility = _split_variants(token)[1]
-            assert not re.fullmatch(r"p[xytblr]?-(\d+|\[[^\]]*rem[^\]]*\])", utility), (
-                f"the rail pads with the rem-valued {token!r}; #8082 is about exactly that"
-            )
+            assert not re.fullmatch(
+                r"p[xytblr]?-(\d+|\[[^\]]*rem[^\]]*\])", utility
+            ), f"the rail pads with the rem-valued {token!r}; #8082 is about exactly that"
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():
