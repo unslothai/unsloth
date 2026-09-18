@@ -147,6 +147,7 @@ def test_a_cache_fallback_after_a_refused_remote_probe_needs_a_grant(
         model_name,
         hf_token,
         load_in_4bit = True,
+        is_embedding = False,
     ):
         raise HTTPException(status_code = 422, detail = {"code": "hf_model_access_denied"})
 

@@ -468,18 +468,9 @@ _HF_MODEL_ACCESS_DENIED = (
 )
 
 
-def _preflight_load_in_4bit(request) -> bool:
-    """The load mode the worker will really use: a full finetune is forced to 16-bit by
-    _build_training_worker_config. getattr, because model_construct() may leave the field unset."""
-    return bool(getattr(request, "load_in_4bit", True)) and (
-        getattr(request, "training_type", None) != "Full Finetuning"
-    )
-
-
 def _remote_untrainable_model_format(
     model_name: str,
     hf_token: HfTokenArg,
-    load_in_4bit: bool = True,
     is_embedding: bool = False,
 ) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
@@ -556,50 +547,41 @@ def _remote_untrainable_model_format(
                 ),
             ) from error
 
-    if load_in_4bit and getattr(info, "gated", False):
-        from utils.transformers_version import latest_tier_active_for
-
-        # The start flips a latest-sidecar model to a 16-bit load, which has its own mapping.
-        if latest_tier_active_for(repo_id, account_hf_token(hf_token)):
-            load_in_4bit = False
-
-    # A 4-bit request resolves the SIXTEEN-bit mapping where bitsandbytes cannot be used,
-    # since from_pretrained clears load_in_4bit before it calls get_model_name. Only count
-    # that mapping when the fallback is CERTAIN, which here means bitsandbytes is not
-    # installed at all: a Mac, Intel or CPU install. Counting it unconditionally admitted a
-    # gated 16-bit-only model on a working CUDA host, where the loader keeps 4-bit, reads the
-    # gated upstream and dies in pre-detection with the raw 401 this branch exists to remove.
-    # find_spec rather than an import: the parent must not load bitsandbytes or unsloth.
-    import importlib.util as _importlib_util
-
-    bnb_definitely_absent = _importlib_util.find_spec("bitsandbytes") is None
-    # ... and only where the TORCH loader runs. _run_mlx_training hands model_load_name
-    # straight to FastMLXModel.from_pretrained, and that loader never consults the
-    # upstream-to-Unsloth mapper (unsloth_zoo/mlx/loader.py only strips bnb suffixes off ids
-    # already under unsloth/). On Apple Silicon the worker really does fetch the gated
-    # upstream, so a Torch mapping is no evidence at all there. The check is a platform
-    # test, not a device probe, so the parent can ask it.
+    # Which mirror a run fetches depends on the mode the WORKER ends up in, and this process
+    # cannot know it. A full finetune forces 16-bit, the latest-transformers sidecar forces
+    # 16-bit, and from_pretrained silently clears load_in_4bit wherever bitsandbytes is
+    # unusable - which is not "not installed": unsloth/device_type.py decides it with a guarded
+    # import plus native_kernels_ready(bnb, DEVICE_TYPE), because from 0.46 a dead native
+    # library still imports and only raises when called. Reading that here would import
+    # bitsandbytes and torch into the backend parent, which this whole helper exists to avoid.
+    #
+    # So do not guess. A mirror in EITHER mode admits the model. The two directions are not
+    # symmetric in cost: a wrong refusal blocks a model the worker would have trained, which is
+    # a regression against main, while a wrong admission only lets the run reach the worker and
+    # fail there exactly as it does on main today. 36 of the 1617 mapper keys map in one mode
+    # only, so the widened set is small either way.
+    #
+    # This deliberately supersedes the earlier narrowing to "bitsandbytes is not installed at
+    # all": find_spec answers a different question from the one the loader asks.
+    # "Could not read the tables" is not "no public copy": they live in the installed unsloth
+    # package and find_spec can land on a directory with no models/mapper.py under it, in which
+    # case every lookup answers None and every gated model is refused, the trainable ones
+    # included. Unknown admits, exactly as an unanswered auth-check does.
+    #
+    # And only where the TORCH loader runs. _run_mlx_training hands model_load_name straight to
+    # FastMLXModel.from_pretrained, and that loader never consults the upstream-to-Unsloth
+    # mapper (unsloth_zoo/mlx/loader.py only strips bnb suffixes off ids already under
+    # unsloth/), so on Apple Silicon the worker really does fetch the gated upstream.
+    # Embedding runs take _run_embedding_training, whose primary path is
+    # `SentenceTransformer(model_name, ...)` with the name as given: same reasoning, separate
+    # backend. Both are platform/route tests rather than device probes, so the parent may ask.
     from core.training.training import should_use_mlx_training_backend
     from utils.models.unsloth_mirror import mirror_lookup_available
 
-    # "Could not read the tables" is not "no public copy". They live in the installed unsloth
-    # package and find_spec can land on a directory with no models/mapper.py under it, in which
-    # case every lookup answers None and every gated model would be refused, the trainable ones
-    # included. Unknown admits, exactly as an unanswered auth-check does.
-    # Embedding runs take _run_embedding_training, whose primary path is
-    # `SentenceTransformer(model_name, ...)` with the name as given, so the mapper never runs
-    # there either. Same reasoning as MLX, separate backend.
     has_public_copy = not mirror_lookup_available() or (
         not should_use_mlx_training_backend()
         and not is_embedding
-        and (
-            unsloth_public_mirror(repo_id, load_in_4bit) is not None
-            or (
-                load_in_4bit
-                and bnb_definitely_absent
-                and unsloth_public_mirror(repo_id, False) is not None
-            )
-        )
+        and any(unsloth_public_mirror(repo_id, mode) is not None for mode in (True, False))
     )
 
     # Gated model metadata is public, so verify access to its files separately.
@@ -1073,8 +1055,7 @@ def _reject_untrainable_model_request(
             remote_format = _remote_untrainable_model_format(
                 request.model_name,
                 hf_token,
-                _preflight_load_in_4bit(request),
-                bool(getattr(request, "is_embedding", False)),
+                is_embedding = bool(getattr(request, "is_embedding", False)),
             )
         except HTTPException as error:
             metadata_error = error

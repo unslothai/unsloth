@@ -386,39 +386,46 @@ def test_a_4bit_public_copy_admits_a_gated_upstream(mapper, monkeypatch):
     assert session.urls == []
 
 
-@pytest.mark.parametrize(
-    "model,load_in_4bit",
-    [
-        # Mapped for 4-bit only, loaded 16-bit. The 16-bit-only-mapped-but-loaded-4-bit case
-        # used to be here and asserted a refusal; it is admitted now, because a 4-bit request
-        # falls back to the 16-bit mapping wherever bitsandbytes is unusable. See
-        # test_a_16bit_only_mirror_is_enough_to_admit_a_4bit_request.
-        ("meta-llama/Meta-Llama-3-70B-Instruct", False),
-    ],
-)
-def test_a_mirror_for_the_other_load_mode_does_not_skip_the_check(
-    mapper, monkeypatch, model, load_in_4bit
-):
+def test_a_mirror_in_either_load_mode_admits_the_model(mapper, monkeypatch):
+    # Llama-3-70B-Instruct maps for 4-bit only, gemma-4-26B-A4B for 16-bit only. This process
+    # cannot tell which mode the worker lands in (full finetune, latest-transformers sidecar
+    # and an unusable bitsandbytes all force 16-bit, and the last needs torch to detect), so
+    # either mapping admits. The alternative refuses models the worker would have trained.
+    session = _Session(_http_error(401))
+    _route(monkeypatch, gated = "manual", session = session)
+
+    for model in ("meta-llama/Meta-Llama-3-70B-Instruct", "google/gemma-4-26B-A4B"):
+        assert tr._remote_untrainable_model_format(model, None) is None
+    assert session.urls == []
+
+
+def test_a_gated_model_with_no_mirror_in_any_mode_is_still_refused(mapper, monkeypatch):
+    # The widening above must not reach the PR's headline case.
     session = _Session(_http_error(401))
     _route(monkeypatch, gated = "manual", session = session)
 
     with pytest.raises(HTTPException) as error:
-        tr._remote_untrainable_model_format(model, None, load_in_4bit)
-
+        tr._remote_untrainable_model_format("google/gemma-2-2b-jpn-it", None)
     assert error.value.detail["code"] == "hf_model_access_denied"
     assert session.urls
 
 
-def test_the_start_route_passes_the_requested_load_mode(mapper, monkeypatch):
+def test_the_start_route_does_not_pass_a_guessed_load_mode(mapper, monkeypatch):
+    # Regression guard for the signature: a 4th positional argument here broke stubs in
+    # test_account_cached_resource_paths and test_training_ambient_hf_token.
+    import inspect
+
+    params = list(inspect.signature(tr._remote_untrainable_model_format).parameters)
+    assert params == ["model_name", "hf_token", "is_embedding"]
+
     seen = {}
 
     def probe(
         model_name,
         hf_token,
-        load_in_4bit = True,
         is_embedding = False,
     ):
-        seen["load_in_4bit"] = load_in_4bit
+        seen["args"] = (model_name, is_embedding)
         return None
 
     monkeypatch.setattr(tr, "_remote_untrainable_model_format", probe)
@@ -433,19 +440,22 @@ def test_the_start_route_passes_the_requested_load_mode(mapper, monkeypatch):
         load_in_4bit = False,
     )
     tr._reject_untrainable_model_request(request, hf_token = None)
-    assert seen == {"load_in_4bit": False}
+    assert seen == {"args": ("google/gemma-3-270m-it", False)}
 
 
-def test_a_full_finetune_preflights_as_16bit(mapper, monkeypatch):
+def test_a_full_finetune_of_a_gated_unmirrored_model_is_still_refused(mapper, monkeypatch):
+    # Full Finetuning is forced to 16-bit by _build_training_worker_config. The route no longer
+    # derives that, because it cannot derive the other two flips (sidecar, unusable
+    # bitsandbytes) without importing torch; a model with no mirror in EITHER mode is refused
+    # regardless, which is what this path has to keep doing.
     session = _Session(_http_error(401))
     _route(monkeypatch, gated = "manual", session = session)
     monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
     monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
     monkeypatch.setattr(tr, "cached_read_refused", lambda *a, **kw: False)
 
-    # Full Finetuning is forced to 16-bit, so the 4-bit-only mirror does not apply.
     request = TrainingStartRequest(
-        model_name = "meta-llama/Meta-Llama-3-70B-Instruct",
+        model_name = "google/gemma-2-2b-jpn-it",
         training_type = "Full Finetuning",
         format_type = "alpaca",
     )
@@ -499,48 +509,6 @@ def test_pre_detect_follows_the_bitsandbytes_fallback(mapper, monkeypatch, bnb_o
     )
 
 
-@pytest.mark.parametrize("bnb_installed,refused", [(False, False), (True, True)])
-def test_a_16bit_only_mirror_counts_only_where_4bit_cannot_run(
-    mapper, monkeypatch, bnb_installed, refused
-):
-    # gemma-4-26B-A4B maps for 16-bit only. Without bitsandbytes a 4-bit request loads it
-    # 16-bit from that public copy, so refusing would refuse a model the worker can train.
-    # WITH bitsandbytes the loader keeps 4-bit, reads the gated upstream and dies in
-    # pre-detection with the raw 401, so the check has to run.
-    import importlib.util as importlib_util
-
-    real = importlib_util.find_spec
-    monkeypatch.setattr(
-        importlib_util,
-        "find_spec",
-        lambda name, *a, **kw: (object() if bnb_installed else None)
-        if name == "bitsandbytes"
-        else real(name, *a, **kw),
-    )
-    session = _Session(_http_error(401))
-    _route(monkeypatch, gated = "manual", session = session)
-
-    if refused:
-        with pytest.raises(HTTPException) as error:
-            tr._remote_untrainable_model_format("google/gemma-4-26B-A4B", None, True)
-        assert error.value.detail["code"] == "hf_model_access_denied"
-        assert session.urls
-    else:
-        assert tr._remote_untrainable_model_format("google/gemma-4-26B-A4B", None, True) is None
-        assert session.urls == []
-
-
-def test_a_4bit_only_mirror_does_not_admit_a_16bit_request(mapper, monkeypatch):
-    # The reverse does not hold: a 16-bit request never becomes 4-bit, so the check still runs.
-    session = _Session(_http_error(401))
-    _route(monkeypatch, gated = "manual", session = session)
-
-    with pytest.raises(HTTPException) as error:
-        tr._remote_untrainable_model_format("meta-llama/Meta-Llama-3-70B-Instruct", None, False)
-    assert error.value.detail["code"] == "hf_model_access_denied"
-    assert session.urls
-
-
 def test_load_model_gate_checks_the_repo_the_loader_fetches(mapper, monkeypatch):
     import huggingface_hub
 
@@ -562,24 +530,6 @@ def test_load_model_gate_checks_the_repo_the_loader_fetches(mapper, monkeypatch)
     assert checked == ["unsloth/gemma-3-270m-it"]
 
 
-@pytest.mark.parametrize("sidecar,checked", [(False, False), (True, True)])
-def test_the_latest_sidecar_flip_is_folded_into_the_mode(mapper, monkeypatch, sidecar, checked):
-    import utils.transformers_version as tv
-
-    session = _Session(_http_error(401))
-    _route(monkeypatch, gated = "manual", session = session)
-    monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: sidecar)
-
-    model = "meta-llama/Meta-Llama-3-70B-Instruct"
-    if checked:
-        with pytest.raises(HTTPException) as error:
-            tr._remote_untrainable_model_format(model, None)
-        assert error.value.detail["code"] == "hf_model_access_denied"
-    else:
-        assert tr._remote_untrainable_model_format(model, None) is None
-    assert bool(session.urls) is checked
-
-
 def test_mlx_has_no_mirror_so_the_check_still_runs(mapper, monkeypatch):
     # unsloth_zoo/mlx/loader.py only remaps ids already under unsloth/ (stripping bnb
     # suffixes); it never consults the upstream-to-Unsloth mapper. _run_mlx_training hands
@@ -592,7 +542,7 @@ def test_mlx_has_no_mirror_so_the_check_still_runs(mapper, monkeypatch):
     monkeypatch.setattr(training_mod, "should_use_mlx_training_backend", lambda **kw: True)
 
     with pytest.raises(HTTPException) as error:
-        tr._remote_untrainable_model_format("google/gemma-3-270m-it", None, True)
+        tr._remote_untrainable_model_format("google/gemma-3-270m-it", None)
     assert error.value.detail["code"] == "hf_model_access_denied"
     assert session.urls
 
@@ -620,7 +570,7 @@ def test_an_unreadable_mapper_admits_instead_of_refusing(monkeypatch):
     _route(monkeypatch, gated = "manual", session = session)
     try:
         assert unsloth_mirror.mirror_lookup_available() is False
-        assert tr._remote_untrainable_model_format("google/gemma-3-270m-it", None, True) is None
+        assert tr._remote_untrainable_model_format("google/gemma-3-270m-it", None) is None
         assert session.urls == []
     finally:
         unsloth_mirror._mapper_tables.cache_clear()
@@ -635,7 +585,7 @@ def test_an_embedding_run_has_no_mirror_so_the_check_still_runs(mapper, monkeypa
     _route(monkeypatch, gated = "manual", session = session)
 
     with pytest.raises(HTTPException) as error:
-        tr._remote_untrainable_model_format("google/gemma-3-270m-it", None, True, True)
+        tr._remote_untrainable_model_format("google/gemma-3-270m-it", None, is_embedding = True)
     assert error.value.detail["code"] == "hf_model_access_denied"
     assert session.urls
 
@@ -701,12 +651,13 @@ def test_the_security_scan_covers_the_repo_the_loader_substitutes(mapper, monkey
     assert "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" in scanned
 
 
-def test_the_security_scan_uses_the_effective_load_mode(mapper, monkeypatch):
-    # The sidecar flips a stored 4-bit run to 16-bit, and the two modes have different
-    # mirrors, so the raw config value would scan a repo the run never fetches.
+def test_the_security_scan_covers_both_load_modes(mapper, monkeypatch):
+    # The sidecar and the bitsandbytes fallback both change which mirror a run fetches, and
+    # neither can be read here: this runs before the torchao stub and before the MLX path's
+    # first torch import, so it must not reach ALLOW_BITSANDBYTES or core.training.trainer.
+    # Scanning both candidates is a superset of whichever the run picks.
     import core.training.worker as worker_mod
     import utils.security as security_mod
-    import utils.transformers_version as tv
 
     scanned: list[str] = []
 
@@ -716,7 +667,6 @@ def test_the_security_scan_uses_the_effective_load_mode(mapper, monkeypatch):
         def response_payload(self):
             return {}
 
-    monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: True)
     monkeypatch.setattr(worker_mod, "_model_local_files_only", lambda config: False, raising = False)
     monkeypatch.setattr(security_mod, "security_load_subdirs", lambda *a, **kw: ())
     monkeypatch.setattr(security_mod, "load_scan_target", lambda t, s: (t, s))
@@ -738,6 +688,29 @@ def test_the_security_scan_uses_the_effective_load_mode(mapper, monkeypatch):
         )
         is None
     )
-    # the SIXTEEN-bit mirror, which is what a sidecar run really fetches
     assert "unsloth/gemma-3-270m-it" in scanned
-    assert "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" not in scanned
+    assert "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" in scanned
+
+
+def test_the_security_scan_imports_nothing_heavy():
+    # It runs before the Windows ROCm torchao stub and after the MLX path's "no torch yet"
+    # guarantee, so reaching core.training.trainer (which imports unsloth at module scope)
+    # would initialise torch ahead of the patches those paths depend on.
+    import ast
+    import pathlib as _pathlib
+
+    src = _pathlib.Path("core/training/worker.py").read_text()
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.FunctionDef) and node.name == "_model_load_security_error"
+    )
+    imported = {n.module for n in ast.walk(fn) if isinstance(n, ast.ImportFrom) and n.module} | {
+        alias.name for n in ast.walk(fn) if isinstance(n, ast.Import) for alias in n.names
+    }
+    assert not any(
+        m == "torch"
+        or m.startswith(("torch.", "unsloth.", "core.training.trainer"))
+        or m in {"unsloth", "unsloth_zoo"}
+        for m in imported
+    ), sorted(imported)

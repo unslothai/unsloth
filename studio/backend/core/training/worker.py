@@ -921,21 +921,20 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
     # other than the name the user picked, and scanning only the picked name would let the
     # bytes that are actually fetched, and any custom code they carry, past both the malware
     # scan and the trust_remote_code consent fingerprint.
+    #
+    # BOTH modes, and nothing heavier than utils.models.unsloth_mirror. This runs early in
+    # run_training_process, after the MLX fast path's "before any torch import" guarantee and
+    # before the Windows ROCm torchao stub, so it must not reach anything that imports torch
+    # or unsloth: not core.training.trainer, and not ALLOW_BITSANDBYTES. The 4-bit and 16-bit
+    # candidates together are a superset of whichever the run picks, which is the safe
+    # direction for a scan and needs no load mode at all.
     try:
-        from core.training.trainer import _metadata_lookup_name
-        mirrored = _metadata_lookup_name(
-            load_target,
-            load_target,
-            _model_local_files_only(config),
-            config.get("model_revision"),
-            # The EFFECTIVE mode, the one the load site uses. The sidecar flips a stored
-            # 4-bit run to 16-bit, and the two modes have different mirrors, so the raw
-            # config value would scan a repo the run never fetches and leave the one it
-            # does outside both the malware scan and the consent fingerprint.
-            _pre_detect_load_in_4bit(config, load_target, hf_token),
-        )
-        if mirrored != load_target:
-            requested_targets.append(mirrored)
+        from utils.models.unsloth_mirror import unsloth_public_mirror
+        if not _model_local_files_only(config) and not config.get("model_revision"):
+            for _mode in (True, False):
+                mirrored = unsloth_public_mirror(load_target, _mode)
+                if mirrored and mirrored != load_target:
+                    requested_targets.append(mirrored)
     except Exception as error:  # noqa: BLE001
         logger.debug("Could not resolve the mirror for the security scan: %s", error)
 
