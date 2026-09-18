@@ -63,11 +63,89 @@ def _resolved(value: str) -> Path:
         return Path(value).expanduser()
 
 
+MASTER_ROOT_NOTE = ".unsloth-master-root"
+
+_recorded_master_roots: dict[tuple[str, ...], Path | None] = {}
+_recorded_master_lock = threading.Lock()
+
+
+def _studio_roots_without_master() -> list[Path]:
+    """Every studio root derivable WITHOUT consulting the master root.
+
+    studio_root() asks unsloth_home() where the studio tree is, so the note reader cannot ask
+    studio_root() back. These are the same three answers studio_root() reaches for once the
+    master root is out of the picture, in its order.
+    """
+    roots: list[Path] = []
+    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
+    if not override:
+        override = (os.environ.get("STUDIO_HOME") or "").strip()
+    if override:
+        roots.append(_resolved(override))
+    inferred = _infer_studio_home_from_venv()
+    if inferred is not None:
+        roots.append(inferred)
+    roots.append(Path.home() / ".unsloth" / "studio")
+    return roots
+
+
+def _recorded_master_root() -> Path | None:
+    """The master root setup recorded inside the studio tree, or None.
+
+    UNSLOTH_HOME is documented as settable for a single command -- `UNSLOTH_HOME=/mnt/portable
+    unsloth studio update` -- and setup then installs node, llama.cpp and whisper.cpp as SIBLINGS
+    of studio/ under that root. Nothing persists the variable, so without this every later launch
+    resolved those three somewhere else: bare, at the legacy ~/.unsloth; and even with the studio
+    root correctly known, at its studio/ CHILD, which is not where they were put. setup already
+    writes the root to share/.unsloth-master-root for the uninstallers; read it here so the rest
+    of the process agrees with the install on disk.
+
+    Only a note that still describes reality is honoured: the recorded root must exist and its
+    studio/ child must be the very directory the note was read from. A note left behind by a
+    tree that has since moved, or copied into an unrelated install, names a root this process
+    would otherwise adopt for caches and runtimes both.
+    """
+    candidates = _studio_roots_without_master()
+    key = tuple(str(root) for root in candidates)
+    with _recorded_master_lock:
+        if key in _recorded_master_roots:
+            return _recorded_master_roots[key]
+    found: Path | None = None
+    for studio in candidates:
+        try:
+            raw = (studio / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8")
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        recorded = raw.strip()
+        if not recorded:
+            continue
+        master = _resolved(recorded)
+        try:
+            if not master.is_dir() or not (master / "studio").samefile(studio):
+                continue
+        except (OSError, ValueError):
+            continue
+        found = master
+        break
+    with _recorded_master_lock:
+        _recorded_master_roots[key] = found
+    return found
+
+
+def forget_recorded_master_root() -> None:
+    """Drop the cached note reading. For tests, and for an installer that writes the note into
+    a tree this process has already looked at."""
+    with _recorded_master_lock:
+        _recorded_master_roots.clear()
+
+
 def unsloth_home() -> Path | None:
     """The master root, or None. STUDIO_HOME is its studio/ child; llama.cpp, node and
     whisper.cpp are SIBLINGS of studio/, the layout setup.sh already gives UNSLOTH_HOME."""
     override = (os.environ.get("UNSLOTH_HOME") or "").strip()
-    return _resolved(override) if override else None
+    if override:
+        return _resolved(override)
+    return _recorded_master_root()
 
 
 _PORTABLE_ON_VALUES = ("1", "true", "yes", "on")

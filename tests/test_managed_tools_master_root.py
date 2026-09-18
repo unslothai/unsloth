@@ -137,6 +137,83 @@ def test_the_builder_and_the_resolver_agree_on_the_same_directory(tmp_path):
     assert r["whisper"] == str(built)
 
 
+def _record_note(studio: Path, master: Path) -> None:
+    """What setup.sh writes at the end of a master-root install."""
+    (studio / "share").mkdir(parents = True, exist_ok = True)
+    (studio / "share" / ".unsloth-master-root").write_text(f"{master}\n", encoding = "utf-8")
+
+
+def test_a_recorded_master_root_outlives_the_command_that_set_it(tmp_path):
+    # UNSLOTH_HOME is documented as settable for one command -- `UNSLOTH_HOME=/mnt/portable
+    # unsloth studio update` -- and that command installs node and whisper.cpp BESIDE studio/.
+    # Nothing persists the variable, so the next launch used to resolve both one level down, at
+    # <studio>/node and <studio>/whisper.cpp, with the real trees sitting untouched next door.
+    home = tmp_path / "home"
+    home.mkdir()
+    root = tmp_path / "portable"
+    studio = root / "studio"
+    studio.mkdir(parents = True)
+    _record_note(studio, root)
+    # UNSLOTH_STUDIO_HOME alone: what the installer's launcher actually persists.
+    r = _resolve({"UNSLOTH_STUDIO_HOME": str(studio)}, home)
+    assert r["master"] == str(root)
+    assert r["studio"] == str(studio)
+    assert r["node"] == str(root / "node")
+    assert r["whisper"] == str(root / "whisper.cpp")
+    assert r["warnings"] == []
+
+
+def test_a_note_whose_root_has_since_moved_is_ignored(tmp_path):
+    # A note licenses this process to adopt a root for caches and runtimes both. One naming a
+    # tree that is no longer there must not win over the layout in front of it.
+    home = tmp_path / "home"
+    home.mkdir()
+    studio = tmp_path / "custom"
+    studio.mkdir()
+    _record_note(studio, tmp_path / "gone")
+    r = _resolve({"UNSLOTH_STUDIO_HOME": str(studio)}, home)
+    assert r["master"] is None
+    assert r["node"] == str(studio / "node")
+
+
+def test_a_note_copied_into_an_unrelated_install_is_ignored(tmp_path):
+    # The recorded root exists and has a studio/ child, but it is not THIS install's studio
+    # directory, so the note travelled rather than described. Checking only is_dir() would
+    # redirect this install's runtimes into someone else's tree.
+    home = tmp_path / "home"
+    home.mkdir()
+    other = tmp_path / "other"
+    (other / "studio").mkdir(parents = True)
+    studio = tmp_path / "custom"
+    studio.mkdir()
+    _record_note(studio, other)
+    r = _resolve({"UNSLOTH_STUDIO_HOME": str(studio)}, home)
+    assert r["master"] is None
+    assert r["node"] == str(studio / "node")
+
+
+def test_an_empty_note_is_not_a_root(tmp_path):
+    # A truncated or zero-length note must read as "no record", not as the current directory.
+    home = tmp_path / "home"
+    home.mkdir()
+    studio = tmp_path / "custom"
+    (studio / "share").mkdir(parents = True)
+    (studio / "share" / ".unsloth-master-root").write_text("\n", encoding = "utf-8")
+    r = _resolve({"UNSLOTH_STUDIO_HOME": str(studio)}, home)
+    assert r["master"] is None
+    assert r["node"] == str(studio / "node")
+
+
+def test_a_default_install_reads_no_note(tmp_path):
+    # Nothing writes the note for a default install, so the legacy tree must not acquire a
+    # master root by accident: this is the path every existing user is on.
+    home = tmp_path / "home"
+    (home / ".unsloth" / "studio" / "share").mkdir(parents = True)
+    r = _resolve({}, home)
+    assert r["master"] is None
+    assert r["node"] == str(home / ".unsloth" / "node")
+
+
 _DISCOVERY_PROBE = """
 import json, os, sys
 sys.path.insert(0, os.environ["_BACKEND"])
