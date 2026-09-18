@@ -217,6 +217,15 @@ def _split_ternary(expression: str, guards: tuple = ()) -> list:
             break
         index += 1
     if question == -1:
+        # `a && b` returns `a` whenever `a` is falsy, and `a || b` whenever it is truthy, so the
+        # left operand is a path of its own. `||` binds looser, so it is split first.
+        for operator, head_taken in (("||", True), ("&&", False)):
+            operands = _top_level_operands(expression, operator)
+            if len(operands) > 1:
+                head, tail = operands[0], f" {operator} ".join(operands[1:])
+                return [(head, guards + ((head, head_taken),))] + _split_ternary(
+                    tail, guards + ((head, not head_taken),)
+                )
         return [(expression.strip(), guards)]
 
     # An unparenthesised nested ternary in the true arm owns the next colon, so count `?` here
@@ -652,8 +661,8 @@ def _unwrapped(expression: str) -> str:
     return expression
 
 
-def _top_level_conjuncts(guard: str) -> list:
-    """`guard` split on the `&&` operators that are not inside brackets."""
+def _top_level_operands(guard: str, operator: str = "&&") -> list:
+    """`guard` split on the `operator`s that are not inside brackets."""
     parts, depth, start = [], 0, 0
     scan = _outside_literals(guard)
     index = 0
@@ -663,7 +672,7 @@ def _top_level_conjuncts(guard: str) -> list:
             depth += 1
         elif char in ")]}":
             depth -= 1
-        elif depth == 0 and scan.startswith("&&", index):
+        elif depth == 0 and scan.startswith(operator, index):
             parts.append(guard[start:index])
             index += 2
             start = index
@@ -766,7 +775,7 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
 
     if taken:
         # The comparison must BE a conjunct: `(budget === -1) === false` pins nothing.
-        for conjunct in _top_level_conjuncts(_unwrapped(guard)):
+        for conjunct in _top_level_operands(_unwrapped(guard)):
             match = re.fullmatch(equal, _unwrapped(conjunct))
             if match is not None:
                 found = match.group(1) or match.group(2)
@@ -1092,6 +1101,10 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget > 0", False),
     ("(s) => !s.reasoningBudget", False),
     ("(s) => (s.reasoningBudget !== null)", False),
+    # The left operand of `&&` or `||` is returned on its own path, and holds there.
+    ("(s) => s.enabled && s.reasoningBudget", False),
+    ("(s) => s.reasoningBudget || -1", False),
+    ("(s) => s.reasoningBudget && s.reasoningBudget.toString()", True),
     # A `let` can be reassigned, so it is not inlined as its initializer.
     ("(s) => { let value = s.reasoningBudget; value = s.other; return value; }", False),
     # A `continue` inside a nested loop belongs to that loop, not to the switch.
