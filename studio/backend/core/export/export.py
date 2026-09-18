@@ -466,8 +466,7 @@ def _staging_dir(export_parent):
 def _dir_is_fresh(directory):
     # Finder metadata does not count; the upload drops it anyway.
     return not (
-        Path(directory).is_dir()
-        and any_not_appledouble_metadata(Path(directory).iterdir())
+        Path(directory).is_dir() and any_not_appledouble_metadata(Path(directory).iterdir())
     )
 
 
