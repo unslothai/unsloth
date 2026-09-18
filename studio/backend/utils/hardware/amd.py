@@ -1838,11 +1838,17 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                 f"AppArmor."
             )
         if external:
+            # Worded by the class that APPLIES rather than by the owner one. This bucket
+            # holds two shapes: a node this account owns whose owner bits grant rw, and one
+            # it neither owns nor shares a group with whose other bits do. Naming the owner
+            # for both told the second kind it owns a node it does not, which is a claim the
+            # reader can check and find false, in the one sentence whose job is to say the
+            # mode is not the problem.
             parts.append(
-                f"{', '.join(external)} is owned by this account and its owner bits already "
-                f"grant read and write, so the mode is not what is shutting it: something "
-                f"outside the file mode is denying it, typically a container device cgroup "
-                f"or an LSM such as SELinux or AppArmor."
+                f"{', '.join(external)} is already granted read and write by the permission "
+                f"bits that apply to this account, so the mode is not what is shutting it: "
+                f"something outside the file mode is denying it, typically a container "
+                f"device cgroup or an LSM such as SELinux or AppArmor."
             )
         if privileged:
             parts.append(

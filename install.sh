@@ -6318,8 +6318,13 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
         substep "  however its group bits read: fix the mode, or the udev rule behind it."
     fi
     if [ -n "$_closed_amd_external" ]; then
-        substep "  $_closed_amd_external is owned by this account and its owner bits" "$C_WARN"
-        substep "  already grant read and write, so the mode is not what is shutting it:"
+        # Worded by the class that APPLIES, not by the owner one: this bucket holds a node
+        # this account owns whose owner bits grant rw AND one it neither owns nor shares a
+        # group with whose other bits do, and naming the owner for both told the second kind
+        # it owns a node it does not. Mirrors the external sentence in amd.py.
+        substep "  $_closed_amd_external is already granted read and write by the" "$C_WARN"
+        substep "  permission bits that apply to this account, so the mode is not what"
+        substep "  is shutting it:"
         substep "  something outside the file mode is denying it, typically a container"
         substep "  device cgroup or an LSM such as SELinux or AppArmor."
     fi

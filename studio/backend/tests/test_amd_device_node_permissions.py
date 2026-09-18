@@ -434,8 +434,12 @@ def _asserts(text: str, says, does_not_say):
     # The sentence for the external-denial bucket, since the bucket cases below only
     # decide it: naming a mode to fix on a node whose mode already grants rw cannot work.
     pytest.param((_KFD_SHUT, dict(external = ["/dev/kfd"]), True,
-                  ("owner bits already grant read and write", "container device cgroup or an LSM"),
-                  ("chmod",)),
+                  ("granted read and write by the permission bits that apply to this account",
+                   "container device cgroup or an LSM"),
+                  # Not "owner": this bucket also holds a node the account neither owns nor
+                  # shares a group with, whose OTHER bits grant rw, and claiming ownership
+                  # there is a statement the reader can check and find false.
+                  ("chmod", "is owned by this account")),
                  id = "the_external_denial_sentence_does_not_prescribe_a_mode_change"),
     # docker's --group-add takes ONE value, so two unnamed groups need the flag twice.
     # Fails before the fix, which interpolated unnamed[0] alone.
@@ -1580,7 +1584,10 @@ def test_the_installer_makes_the_same_owner_versus_external_distinction(tmp_path
 
     node.chmod(0o600)  # owner rw: the mode is not what is shutting it
     out = _install_sh_hint(str(node), self_uid = str(os.getuid()), repairs = None)
-    assert "owner bits" in out and "already grant read and write" in out
+    assert "granted read and write by the" in out
+    # Never by naming the owner: the same bucket carries other-class nodes this account
+    # does not own, and one wording has to be true of both.
+    assert "is owned by this account and its owner bits" not in out
     # The installer wraps one sentence over several substep lines, so match a fragment
     # that cannot straddle the break.
     assert "device cgroup or an LSM" in out
