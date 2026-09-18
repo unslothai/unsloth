@@ -877,6 +877,8 @@ def _selector_reads(selector: str, field: str) -> bool:
         return re.sub(r"'@(\d+)'", lambda match: literals[int(match.group(1))], text)
 
     selector = _STRING_LITERAL.sub(_park, _dotted(selector))
+    # `s. switch` and `s .x` are member accesses like `s.switch`: one spelling for every scan.
+    selector = re.sub(r"\s*\.\s*(?=[A-Za-z_$])", ".", selector)
     signature, read, access = _selector_signature(selector, field)
     if read is None:
         return False
@@ -1246,6 +1248,13 @@ SELECTOR_CASES = [
     ),
     ("(s) => { { const s = { reasoningBudget: 1 }; return s.reasoningBudget; } }", False),
     ("({ reasoningBudget }) => s.other.reasoningBudget", False),
+    ("(s) => { const value = s.reasoningBudget; return s.other. value; }", False),
+    (
+        '(s) => { switch (s.mode) { case "x": s. switch; if (s.stop) break; '
+        "return s.reasoningBudget; default: return s.reasoningBudget; } }",
+        False,
+    ),
+    ("(s) => s .reasoningBudget", True),
     ('(s) => s.enabled ? "s.reasoningBudget" : s.reasoningBudget', False),
     # Inside a literal a bracket is part of the value, not an access to rewrite.
     ('(s) => s.reasoningBudget === \'s["x"]\' ? "s.x" : s.reasoningBudget', False),
