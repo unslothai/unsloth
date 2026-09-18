@@ -19,10 +19,13 @@ import {
   OPEN_DOCUMENT_TEXT_MIME,
   OFFICE_OPEN_XML_MIMES,
   isOfficeOpenXmlAttachmentName,
+  RTF_MIMES,
+  isRtfAttachmentName,
 } from "./open-document-accept";
+import { readRtfAttachmentContent } from "./rtf";
 
 export type AttachmentTextLabel =
-  "PDF" | "DOCX" | "HTML" | "ODS" | "ODT" | "XLSX" | "PPTX";
+  "PDF" | "DOCX" | "HTML" | "ODS" | "ODT" | "XLSX" | "PPTX" | "RTF";
 
 export { TEXT_ATTACHMENT_ACCEPT };
 
@@ -42,7 +45,7 @@ const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
 const LABELLED_ATTACHMENT_TEXT_RE =
-  /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n/;
+  /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n/;
 const ATTACHMENT_TAG_OPEN_RE = /^<attachment name=[^\n]*>\n/;
 const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 // Both wrappers start on the first line, so only a prefix is matched against.
@@ -487,6 +490,14 @@ export function isOfficeOpenXmlAttachment(
   );
 }
 
+export function isRtfAttachment(
+  name: string | undefined,
+  contentType: string | undefined,
+): boolean {
+  const mime = contentType?.toLowerCase() ?? "";
+  return RTF_MIMES.includes(mime) || isRtfAttachmentName(name ?? "");
+}
+
 // CompositeAttachmentAdapter selects the first matching accept string. Text comes before the
 // document-specific adapters, so previews must apply the same MIME-or-extension match
 // before looking at PDF/DOCX/HTML names.
@@ -843,6 +854,10 @@ export async function readAttachmentText(
       file,
       name,
     );
+    return { label, text, truncated: false };
+  }
+  if (isRtfAttachment(name, contentType)) {
+    const { label, text } = await readRtfAttachmentContent(file, name);
     return { label, text, truncated: false };
   }
   return { label: null, ...(await readBoundedText(file)) };

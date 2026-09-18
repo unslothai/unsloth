@@ -667,6 +667,7 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
         "pptm" => Some("application/vnd.ms-powerpoint.presentation.macroEnabled.12"),
         "ppsx" => Some("application/vnd.openxmlformats-officedocument.presentationml.slideshow"),
+        "rtf" => Some("application/rtf"),
         // Stamped like native_clipboard.rs.
         "json" | "jsonl" | "ndjson" | "jsonc" | "json5" | "geojson" | "har" | "avsc"
         | "tfstate" => Some("application/json"),
@@ -1063,6 +1064,7 @@ mod tests {
                 "PPSX",
                 "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
             ),
+            ("rtf", "application/rtf"),
         ] {
             let path = temp_path("open-document").with_extension(ext);
             fs::write(&path, b"open-document").unwrap();

@@ -87,8 +87,10 @@ import {
 } from "./open-document";
 import {
   OFFICE_OPEN_XML_ATTACHMENT_ACCEPT,
+  RTF_ATTACHMENT_ACCEPT,
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
 } from "./open-document-accept";
+import { readRtfAttachmentContent } from "./rtf";
 import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
@@ -689,6 +691,14 @@ class OfficeOpenXmlAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
 
   protected read(file: File, filename: string) {
     return readOfficeOpenXmlAttachmentContent(file, filename);
+  }
+}
+
+class RtfAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
+  accept = RTF_ATTACHMENT_ACCEPT;
+
+  protected read(file: File, filename: string) {
+    return readRtfAttachmentContent(file, filename);
   }
 }
 
@@ -2293,6 +2303,7 @@ function useStudioRuntimeAdapters(
           new DocxAttachmentAdapter(),
           new OpenDocumentAttachmentAdapter(),
           new OfficeOpenXmlAttachmentAdapter(),
+          new RtfAttachmentAdapter(),
         ]),
         () => {
           const state = aui.threadListItem().getState();

@@ -34,6 +34,8 @@ const {
 const { definePDFJSModule } = await import("unpdf");
 const { readOfficeOpenXmlAttachmentContent } =
   await import("../src/features/chat/open-document.ts");
+const { readRtfAttachmentContent } =
+  await import("../src/features/chat/rtf.ts");
 
 type StubNode = {
   nodeType: number;
@@ -1224,4 +1226,74 @@ test("a presentation reads its visible slides in deck order", async () => {
       "after",
     ].join("\n"),
   );
+});
+
+async function readRtf(rtf: string | Uint8Array<ArrayBuffer>): Promise<string> {
+  const content = await readRtfAttachmentContent(
+    new File([rtf], "doc.rtf"),
+    "doc.rtf",
+  );
+  assert.equal(content.label, "RTF");
+  return content.text;
+}
+
+test("TextEdit output decodes bytes by the font charset, not the ANSI code page", async () => {
+  const text = await readRtf(
+    [
+      "{\\rtf1\\ansi\\ansicpg936\\cocoartf2870",
+      "{\\fonttbl\\f0\\fswiss\\fcharset0 Helvetica;}",
+      "{\\colortbl;\\red255\\green255\\blue255;}",
+      "{\\*\\expandedcolortbl;;}",
+      "\\f0\\fs24 \\cf0 H\\'e9llo \\'93world\\'94\\",
+      "\\",
+      "Tab\there \\uc0\\u26085 \\u26412 \\",
+      "}",
+    ].join("\n"),
+  );
+  assert.equal(text, "Héllo “world”\n\nTab\there 日本");
+});
+
+test("Word-style output reads fields, tables and double-byte fonts", async () => {
+  const text = await readRtf(
+    new Uint8Array([
+      ...new TextEncoder().encode(
+        [
+          "{\\rtf1\\ansi\\ansicpg1252\\deff0\\uc1",
+          "{\\fonttbl{\\f0\\fnil\\fcharset134 SimSun;}{\\f1\\fcharset0 Arial;}{\\f2\\fcharset128 MS Mincho;}{\\f3\\fcharset204 Arial;}}",
+          "{\\header Page header\\par}",
+          "{\\info{\\title Secret title}}",
+          "\\pard \\'c4\\'e3\\'ba\\'c3 \\f1 caf\\'e9\\emdash\\u8364?\\u-10179?\\u-8704?\\{x\\}\\par",
+          '{\\field{\\*\\fldinst{HYPERLINK "https://x.test"}}{\\fldrslt link}}\\par',
+          "{\\pict\\bin4 ",
+        ].join("\n"),
+      ),
+      0x7d,
+      0x7b,
+      0x5c,
+      0x7d,
+      ...new TextEncoder().encode(
+        [
+          "}",
+          "\\trowd\\cellx100\\cellx200",
+          "\\pard\\intbl first\\par second\\par\\cell b\\cell\\row",
+          "\\pard after\\par more \\f2\\'83e\\'83X\\'83g\\'83\\\\ \\f3\\'cf\\plain\\'c4\\'e3\\par}",
+        ].join("\n"),
+      ),
+    ]),
+  );
+  assert.equal(
+    text,
+    "你好 café—€😀{x}\nlink\nfirst second\tb\nafter\nmore テストソ П你",
+  );
+});
+
+test("an RTF reader stays bounded", async () => {
+  // Nesting past the text budget is never reached, so it cannot fail the read.
+  const long = await readRtf(
+    `{\\rtf1 ${"x".repeat(11 * 1024 * 1024)}${"{".repeat(2000)}`,
+  );
+  assert.ok(long.length < 11 * 1024 * 1024);
+  assert.match(long, /^x+\n\n\[Truncated: [^\n]*\]$/);
+  await assert.rejects(readRtf(`{\\rtf1 ${"{".repeat(2000)}`), /nest too deeply/);
+  await assert.rejects(readRtf("plain text"), /Not an RTF file/);
 });

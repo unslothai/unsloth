@@ -41,3 +41,14 @@ export function isOfficeOpenXmlAttachmentName(filename: string): boolean {
     lower.endsWith(extension),
   );
 }
+
+export const RTF_ATTACHMENT_EXTENSIONS = ".rtf";
+export const RTF_MIMES = ["application/rtf", "text/rtf"];
+export const RTF_ATTACHMENT_ACCEPT = [
+  RTF_ATTACHMENT_EXTENSIONS,
+  ...RTF_MIMES,
+].join(",");
+
+export function isRtfAttachmentName(filename: string): boolean {
+  return filename.toLowerCase().endsWith(RTF_ATTACHMENT_EXTENSIONS);
+}

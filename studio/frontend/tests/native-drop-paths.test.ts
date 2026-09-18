@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
+  RTF_ATTACHMENT_EXTENSIONS,
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
 } from "../src/features/chat/open-document-accept.ts";
@@ -99,8 +100,8 @@ const VISION_ADAPTER_ACCEPT_RE =
 const OPEN_DOCUMENT_EXTENSION_RE = /\.ods/;
 const OFFICE_OPEN_XML_ADAPTER_RE =
   /class OfficeOpenXmlAttachmentAdapter[^{]*\{[\s\S]*?accept = OFFICE_OPEN_XML_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readOfficeOpenXmlAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new OfficeOpenXmlAttachmentAdapter\(\),/;
-const RUST_OFFICE_OPEN_XML_ATTACHMENT_EXTS_RE =
-  /OFFICE_OPEN_XML_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RTF_ADAPTER_RE =
+  /class RtfAttachmentAdapter[^{]*\{[\s\S]*?accept = RTF_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readRtfAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new RtfAttachmentAdapter\(\),/;
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
@@ -184,24 +185,31 @@ test("OpenDocument picker types are accepted by native drops", () => {
   assert.deepEqual(rust, frontend);
 });
 
-test("Office Open XML drops route to the composer and match the native allowlist", () => {
-  for (const extension of OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS.split(",")) {
-    const path = `/docs/Book${extension.toUpperCase()}`;
-    assert.equal(classifyDropPaths([path]).kind, "docs", path);
-    assert.ok(isComposerAttachmentName(path), path);
-    assert.ok(SUPPORTED_DROP_HINT.includes(extension));
-  }
-  assert.match(RUNTIME_PROVIDER, OFFICE_OPEN_XML_ADAPTER_RE);
-  const rust = [
-    ...(readText("../../src-tauri/src/native_path_policy.rs")
-      .match(RUST_OFFICE_OPEN_XML_ATTACHMENT_EXTS_RE)?.[1]
-      .matchAll(RUST_EXTENSION_RE) ?? []),
-  ].map((match) => `.${match[1]}`);
-  assert.deepEqual(
-    rust.sort(),
-    OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS.split(",").sort(),
-  );
-});
+for (const [format, extensions, adapter, rustList] of [
+  [
+    "Office Open XML",
+    OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
+    OFFICE_OPEN_XML_ADAPTER_RE,
+    "OFFICE_OPEN_XML_ATTACHMENT_EXTS",
+  ],
+  ["RTF", RTF_ATTACHMENT_EXTENSIONS, RTF_ADAPTER_RE, "RTF_ATTACHMENT_EXTS"],
+] as const) {
+  test(`${format} drops route to the composer and match the native allowlist`, () => {
+    for (const extension of extensions.split(",")) {
+      const path = `/docs/Book${extension.toUpperCase()}`;
+      assert.equal(classifyDropPaths([path]).kind, "docs", path);
+      assert.ok(isComposerAttachmentName(path), path);
+      assert.ok(SUPPORTED_DROP_HINT.includes(extension));
+    }
+    assert.match(RUNTIME_PROVIDER, adapter);
+    const rust = [
+      ...(readText("../../src-tauri/src/native_path_policy.rs")
+        .match(new RegExp(`${rustList}[^=]*=\\s*&\\[([^\\]]+)\\]`))?.[1]
+        .matchAll(RUST_EXTENSION_RE) ?? []),
+    ].map((match) => `.${match[1]}`);
+    assert.deepEqual(rust.sort(), extensions.split(",").sort());
+  });
+}
 
 test("images route to chat vision attachments, one or many", () => {
   const dropped = classifyDropPaths([
