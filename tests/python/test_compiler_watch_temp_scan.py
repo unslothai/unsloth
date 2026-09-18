@@ -438,8 +438,9 @@ def _shipped_coverage_check() -> str:
     body = _measured_action_body()
     loop_start = body.index("    $uncovered = @()")
     loop_end = body.index("    $left = @(", loop_start)
-    raise_start = body.index("    if ($uncovered.Count -gt 0) {")
-    raise_end = body.index("\n    }\n", raise_start) + len("\n    }\n")
+    raise_start = body.index("    $incomplete = @()")
+    raise_end = body.index("This run cannot say whether a compiler ran.", raise_start)
+    raise_end = body.index("\n    }\n", raise_end) + len("\n    }\n")
     return body[loop_start:loop_end] + body[raise_start:raise_end]
 
 
@@ -455,6 +456,7 @@ def test_an_unreadable_root_with_a_watcher_on_it_does_not_void_the_run() -> None
         r"$unread = @('C:\t')" + "\n"
         r"$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' ([string[]]@('C:\t'), [StringComparer]::OrdinalIgnoreCase)"
         + "\n"
+        "$watchFailedRoots = @()\n"
         + _shipped_coverage_check()
         + "Write-Output 'SURVIVED'\n"
     )
@@ -475,6 +477,7 @@ def test_an_unreadable_root_with_no_watcher_still_voids_the_run() -> None:
         r"$unread = @('C:\t')" + "\n"
         "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
         "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
+        "$watchFailedRoots = @()\n"
         + _shipped_coverage_check()
         + "Write-Output 'SURVIVED'\n"
     )
@@ -670,3 +673,66 @@ def test_the_coverage_check_no_longer_throws_from_inside_the_loop() -> None:
         f"and the action's own failure:\n{loop}"
     )
     assert "$uncovered += $dir" in loop, "the uncovered directories are no longer collected"
+
+
+def test_an_overflowed_watcher_voids_the_measurement_on_its_own() -> None:
+    """A dropped event stream is an incomplete measurement, with or without unread directories.
+
+    This half of the detector exists for artifacts that never reach the listing: CodeDom deletes
+    its intermediate directory once the assembly is loaded, so a compile can be invisible to the
+    before/after diff and present only as live events. An overflow drops those silently, so two
+    clean scans plus a failed watcher is the exact shape of a missed compile - and there is
+    nothing in $uncovered to notice it, because no directory was unreadable.
+
+    Excluding the root from $watchedRoots is therefore not enough on its own. That only changes
+    the answer when $unread happens to hold something beneath the same root.
+    """
+    proc = _run_pwsh(
+        "$unread = @()\n"
+        "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
+        "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
+        r"$watchFailedRoots = @('C:\t')" + "\n"
+        + _shipped_coverage_check()
+        + "Write-Output 'SURVIVED'\n"
+    )
+    assert "SURVIVED" not in proc.stdout, (
+        "a watcher that raised was accepted as a complete measurement because no directory "
+        f"happened to be unreadable:\n{proc.stdout}"
+    )
+    assert _says(proc, "may have been dropped"), (
+        f"the run was voided without naming the dropped events:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_a_healthy_watcher_and_a_readable_sweep_still_pass() -> None:
+    """The control: voiding on watcher health must not void every ordinary run."""
+    proc = _run_pwsh(
+        "$unread = @()\n"
+        "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
+        r"([string[]]@('C:\t'), [StringComparer]::OrdinalIgnoreCase)" + "\n"
+        "$watchFailedRoots = @()\n"
+        + _shipped_coverage_check()
+        + "Write-Output 'SURVIVED'\n"
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SURVIVED" in proc.stdout, (
+        f"a clean measurement was voided, which would fail every run:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_both_incompleteness_reasons_are_reported_together() -> None:
+    """One throw naming everything wrong, rather than whichever check happened to run first."""
+    proc = _run_pwsh(
+        r"$unread = @('C:\gap')" + "\n"
+        "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
+        "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
+        r"$watchFailedRoots = @('C:\t')" + "\n"
+        + _shipped_coverage_check()
+        + "Write-Output 'SURVIVED'\n"
+    )
+    assert "SURVIVED" not in proc.stdout, proc.stdout
+    assert _says(proc, "may have been dropped"), proc.stdout + proc.stderr
+    assert _says(proc, "could not read"), (
+        "only one of the two reasons reached the caller, so fixing that one would leave the "
+        f"run failing again for a reason never reported:\n{proc.stdout}\n{proc.stderr}"
+    )

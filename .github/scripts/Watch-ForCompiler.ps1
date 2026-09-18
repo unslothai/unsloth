@@ -751,6 +751,9 @@ function Invoke-WithCompilerWatch {
     # Written even when empty, so "the sweep read everything" is a statement the evidence
     # makes rather than the absence of a file, which is also what a crash looks like.
     $unread | Out-File -FilePath "$stem-unread-dirs.txt" -Encoding utf8
+    # Written even when empty, for the same reason as the unread list: "every watcher stayed
+    # healthy" should be a statement the evidence makes, not the absence of a file.
+    $watchFailedRoots | Out-File -FilePath "$stem-watch-failures.txt" -Encoding utf8
     if ($failure) {
         $failure | Out-String | Out-File -FilePath "$stem-error.txt" -Encoding utf8
     }
@@ -759,14 +762,31 @@ function Invoke-WithCompilerWatch {
     # on disk as <name>-error.txt, and an incomplete sweep is the lesser report of the two.
     if ($failure) { throw $failure }
 
-    # Only once the action itself succeeded and all the evidence is written does an unreadable
-    # directory with nothing watching it void the run. $uncovered is in the evidence either
-    # way, through <name>-unread-dirs.txt.
+    # Only once the action itself succeeded and all the evidence is written does an incomplete
+    # measurement void the run. Both reasons are reported together rather than racing each
+    # other, so the caller is told everything that was wrong with the sweep at once.
+    $incomplete = @()
+    if ($watchFailedRoots.Count -gt 0) {
+        # A watcher that raised is not merely "not covering unread directories". This half of
+        # the detector exists for artifacts that never reach the listing at all: CodeDom
+        # deletes its intermediate directory once the assembly is loaded, so a compile can be
+        # invisible to the before/after diff and visible only as live events. An overflow drops
+        # those events silently, so two clean scans plus a failed watcher is exactly the shape
+        # of a missed compile, with nothing in $uncovered to notice it.
+        $incomplete += ("the file watcher on " + ($watchFailedRoots -join ', ') + " raised an " +
+                        "error, so creations under it may have been dropped. A compile whose " +
+                        "intermediates were deleted before the final sweep is visible only in " +
+                        "those events")
+    }
     if ($uncovered.Count -gt 0) {
-        throw ("the temp sweep could not read " + ($uncovered -join ', ') + ", and no file " +
-               "watcher is attached to the root containing it. The listing is the only " +
-               "evidence here and it is incomplete, so this run cannot say whether a " +
-               "compiler ran.")
+        $incomplete += ("the temp sweep could not read " + ($uncovered -join ', ') + ", and no " +
+                        "file watcher is attached to the root containing it, so the listing is " +
+                        "the only evidence here and it is incomplete")
+    }
+    if ($incomplete.Count -gt 0) {
+        # $uncovered and $watchFailedRoots are in the evidence either way, through
+        # <name>-unread-dirs.txt and <name>-watch-failures.txt.
+        throw (($incomplete -join '; ') + ". This run cannot say whether a compiler ran.")
     }
 
     return @{
@@ -774,5 +794,6 @@ function Invoke-WithCompilerWatch {
         TempLibraries = $newLibraries
         TempArtifacts = $newArtifacts
         UnreadDirs    = $unread
+        WatchFailures = $watchFailedRoots
     }
 }
