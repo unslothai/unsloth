@@ -2204,13 +2204,9 @@ def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
     mirrored/air-gapped Linux repair reaches the index install.sh chose rather
     than falling back to repo.amd.com. Both default to repo.amd.com when unset.
     """
-    # rocminfo prints gcnArchName WITH its feature suffix (gfx1100:sramecc-:xnack-), which is
-    # the spelling users copy into UNSLOTH_ROCM_GFX_ARCH, while both tables below are keyed on
-    # the bare arch. Unstripped, this answered None for a routable card: the caller then took
-    # the generic wheel, or on a host with no readable ROCm version installed nothing at all
-    # while _forced_rocm_route_is_viable -- which strips it -- had already stood the CUDA
-    # repair down. Normalised here so every caller asks one question. It also makes the
-    # gfx1033 guard below see a suffixed spelling, which it previously fell straight past.
+    # rocminfo prints gcnArchName with its feature suffix (gfx1100:sramecc-:xnack-), the
+    # spelling users copy into UNSLOTH_ROCM_GFX_ARCH, while both tables key on the bare arch:
+    # unstripped this answered None for a routable card and let a suffixed gfx1033 past.
     gfx_arch = (gfx_arch or "").strip().split(":")[0] or None
     if IS_WINDOWS:
         return _windows_rocm_index_url(gfx_arch)
@@ -2859,25 +2855,15 @@ def _forced_rocm_route_is_viable() -> bool:
         return False
     if _miscomputing_arch_host():
         return False
-    # The card the runtime will hand torch, not any sibling on the bus: "does some AMD arch
-    # here have a route" answers yes on a mixed host whose mask selects the unsupported one.
-    # _runtime_gfx_target composes both mask layers and returns the whole machine beside the
-    # target, the shape _gfx_route_on_host needs for the gfx906 mixed-host rule. The arch is
-    # normalized here too: rocminfo prints gcnArchName with its feature suffix
-    # (gfx1100:sramecc-:xnack-), which users copy into UNSLOTH_ROCM_GFX_ARCH, while
-    # _amd_arch_index_url keys on the bare arch. _physical_amd_gfx_archs splits the same way.
+    # The card the runtime will hand torch, not any sibling: "does some AMD arch here have a
+    # route" answers yes on a host whose mask selects the unsupported one. _runtime_gfx_target
+    # returns the whole machine beside the target, which _gfx_route_on_host's gfx906 rule needs.
     _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0] or None
     _target, _, _, _host_codes = _runtime_gfx_target(_inferred)
-    # A DECLARED arch cannot vouch for what is in the machine, and _runtime_gfx_target's
-    # declared early return REPLACES the inventory with it: host_codes becomes [gfx1030] on a
-    # box holding [gfx1033, gfx1100], so the target test below sees a healthy arch and
-    # _miscomputing_arch_host() above sees a host where not every arch is bad. A stale or
-    # copied gfx1030 beside a physical gfx1033 therefore stood the CUDA repair down and
-    # installed gfx103X wheels on hardware measured to diverge to NaN
-    # (studio/ROCM_RDNA2_APU.md). install.sh already separates the two, recording
-    # _AMD_REQUEST_TARGET_SOURCE so only a PROBE-resolved target may clear this gate; this is
-    # the Python half catching up. Probe-resolved stays exempt, which is what keeps the
-    # [gfx1033, gfx1100] host the discrete-GPU preference already handles viable.
+    # _runtime_gfx_target's declared early return REPLACES the inventory, so a stale
+    # UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a [gfx1033, gfx1100] box leaves host_codes as [gfx1030]
+    # and BOTH guards miss the Van Gogh part (studio/ROCM_RDNA2_APU.md). Probe-resolved stays
+    # exempt, as install.sh's _AMD_REQUEST_TARGET_SOURCE already has it.
     if (
         (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip()
         and _target is not None
@@ -2897,25 +2883,17 @@ def _forced_rocm_route_is_viable() -> bool:
         # [gfx1033, gfx1100] pair passed it and the install then declined the target.
         if _target in _ROCM_MISCOMPUTING_GFX:
             return False
-        # And a route in the arch tables is not a route this host can install: below ROCm 6.0
-        # (what an unreadable version reads as) no generic rocmX.Y tag resolves, so
-        # _ensure_rocm_torch installs nothing while _ensure_cuda_torch stood down for it
-        # (gfx908 on ROCm 5.7). Ask exactly what its three version-independent arms ask: an
-        # explicit pin, the missing-kernel reroute (the Strix one is a floor on it), and the
-        # inferred-arch install.
+        # A route in the tables is not a route this host can install: below ROCm 6.0 no
+        # generic tag resolves, so _ensure_rocm_torch installs nothing while _ensure_cuda_torch
+        # stood down (gfx908 on ROCm 5.7). Ask its three version-independent arms verbatim.
         _raw_ver = _detect_rocm_version()
         _ver = _raw_ver or (0, 0)
         _declared = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip()
         if _raw_ver is None:
-            # An unreadable version is not "ROCm 0.0" to _ensure_rocm_torch. Its `ver is None`
-            # branch asks _generic_rocm_wheel_lacks_kernels with NO version, which keeps the
-            # union reading and answers False for gfx1102 / gfx1200 / gfx1201, while the (0, 0)
-            # spelling below answers True for exactly those three: no tag resolves at (0, 0), so
-            # _generic_tag_lacks_kernels reads them as needing the per-arch reroute. Asking the
-            # (0, 0) question here approved a swap that branch then declines, and
-            # _ensure_cuda_torch had already stood down for it -- the host kept whatever torch
-            # it had, a broken one included. Ask that branch's four conjuncts verbatim instead,
-            # so the two halves cannot answer differently about the same unreadable host.
+            # An unreadable version is not "ROCm 0.0" to _ensure_rocm_torch: its `ver is None`
+            # branch asks _generic_rocm_wheel_lacks_kernels with NO version, answering False for
+            # gfx1102 / gfx1200 / gfx1201 where the (0, 0) spelling answers True. Asking (0, 0)
+            # here approved a swap that branch declines, after the CUDA repair had stood down.
             _torch_ran, _torch_imp, _torch_ver, _, _ = _probe_torch_runtime()
             _installed_ver = (_torch_ver or "").lower() if (_torch_ran and _torch_imp) else ""
             if (
@@ -3078,11 +3056,9 @@ def _runtime_gfx_target(
         # beside HIP_VISIBLE_DEVICES=7 approved the swap where HIP hands torch nothing. Only
         # when a mask is set, so the ordinary declared-arch host still costs no probe.
         if _visible_devices_pinned():
-            # KFD topology first: its node order IS the order HIP and ROCr index, and it
-            # answers on the runtime-less hosts a declared arch exists for.
-            # ignore_visible_masks because rocminfo is renumbered by ROCR_VISIBLE_DEVICES
-            # while the ordinals below index the list BEFORE that mask -- without it a valid
-            # ROCR_VISIBLE_DEVICES=1 reads as out of range and declines what the user declared.
+            # KFD node order IS the order HIP and ROCr index, and it answers on runtime-less
+            # hosts. ignore_visible_masks because rocminfo is renumbered by ROCR_VISIBLE_DEVICES
+            # while the ordinals below index the list BEFORE that mask.
             _mask_devices = _kfd_gfx_targets() or _detect_amd_gfx_codes(
                 dedup = False, ignore_visible_masks = True
             )
@@ -3561,11 +3537,8 @@ def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":
         _seen.add(_idx)
         _kept.append(gfx_devices[_idx])
     # A mask whose FIRST index resolves to nothing keeps the whole list, deliberately:
-    # _pick_visible_index warns and falls back to GPU 0 for that value (matching setup.ps1's
-    # Resolve-VisibleGpuIndex), and a stricter rule here would split the two.
-    # ROCR_VISIBLE_DEVICES=1 on a one-GPU box is a typo, and reading it as "no GPU" withdraws
-    # the repair from the hosts this exists for. _LAST_ROCR_MASK_RESOLVED is the fail-closed
-    # half of the same question.
+    # _pick_visible_index falls back to GPU 0 there (matching setup.ps1's
+    # Resolve-VisibleGpuIndex). _LAST_ROCR_MASK_RESOLVED is the fail-closed half.
     return (_kept or gfx_devices), _unresolved
 
 
@@ -4185,22 +4158,11 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     # Never undo a deliberate ROCm install (setup.ps1 sets this marker).
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         return
-    # Nor one this run was asked for. install.sh resolves a ROCm index under the request, so
-    # _TORCH_BACKEND already stops this; a standalone `studio update` leaves it empty, and
-    # there this repair sees an NVIDIA GPU beside a HIP build, reads it as poisoning, and
-    # reinstalls the CUDA trio just for _ensure_rocm_torch to force ROCm back (#10450). An
-    # explicit CUDA pin still wins below, naming the more specific instruction.
-    #
-    # Standing down needs an AMD card with a wheel ROUTE to stand down FOR, which is the one
-    # predicate _ensure_rocm_torch is itself gated on, so the two halves cannot drift:
-    #   * no AMD card (removed since the variable was set): both sides find no target and a
-    #     stale HIP build is left on a working NVIDIA GPU with nothing to fix it;
-    #   * a card the runtime cannot see: _ensure_rocm_torch still installs off an inferred
-    #     arch, so gating on _has_rocm_gpu() alone swapped CUDA in and ROCm back, twice a run;
-    #   * a card no index serves (gfx1010) or one measured to miscompute (gfx1033):
-    #     _ensure_rocm_torch declines and _ensure_cpu_torch demotes, leaving CPU torch on a
-    #     working NVIDIA card.
-    # Probed only under the request, so an ordinary install pays nothing for it.
+    # Nor one this run was asked for. A standalone `studio update` leaves _TORCH_BACKEND
+    # empty, where this repair reads the requested HIP build as poisoning and reinstalls CUDA
+    # just for _ensure_rocm_torch to force ROCm back (#10450). Gated on the same wheel-ROUTE
+    # predicate _ensure_rocm_torch uses, so the two cannot drift: _has_rocm_gpu() alone swapped
+    # CUDA in and ROCm back twice a run. Probed only under the request.
     if (
         _rocm_torch_explicitly_requested()
         and _explicit_cuda_torch_index_url() is None
@@ -5741,12 +5703,10 @@ def _ensure_rocm_torch() -> None:
     if IS_WINDOWS:
         # An explicit ROCm pin overrides the per-arch index: retry the PINNED one, not repo.amd.com.
         _win_rocm_pin = _explicit_rocm_torch_index_url()
-        # UNSLOTH_FORCE_ROCM_TORCH is deliberately NOT read here. On Windows install.ps1's
-        # Get-TorchIndexUrl picks CUDA from the NVIDIA probe alone and setup.ps1 publishes a
-        # matching UNSLOTH_EXPECTED_TORCH_TAG that _ensure_expected_torch_flavor() restores at
-        # the end of the run, so honouring the request only here is a multi-gigabyte round
-        # trip, not a swap. Windows needs the same change in both PowerShell installers; until
-        # then a mixed Windows host keeps the index pin.
+        # UNSLOTH_FORCE_ROCM_TORCH is deliberately NOT read here: install.ps1 picks CUDA from
+        # the NVIDIA probe and setup.ps1 republishes a tag _ensure_expected_torch_flavor()
+        # restores, so honouring it only here is a multi-GB round trip, not a swap. Windows
+        # needs the same change in both PowerShell installers.
         if _win_rocm_pin is None and _has_usable_nvidia_gpu():
             return
         gfx_arch = _detect_windows_gfx_arch()
@@ -5834,17 +5794,11 @@ def _ensure_rocm_torch() -> None:
         _infer_linux_amd_gfx_arch() if (_rocm_pin is None and not IS_WINDOWS) else None
     )
     if _rocm_pin is None:
-        # NVIDIA takes precedence on mixed hosts (only if a GPU is usable), unless this run
-        # asked for ROCm outright. The AMD-presence test below still has to pass: the request
-        # relaxes which vendor wins, not whether there is a card to serve.
-        #
-        # An explicit pin of another known family outranks the request, as
-        # _rocm_torch_explicitly_requested promises: a pin names the exact wheels, the request
-        # only a preference. _rocm_pin is the ROCm pin, so any other family leaves it None and
-        # this is the only place the check can happen -- otherwise a CUDA pin is installed by
-        # _ensure_cuda_torch and replaced here, and a /cpu pin has the multi-GB ROCm stack
-        # installed here and undone by _ensure_cpu_torch, on every update. An unknown-family
-        # pin is not named: the install applied it verbatim, so nothing here can judge it.
+        # NVIDIA takes precedence on mixed hosts unless this run asked for ROCm: the request
+        # relaxes which vendor wins, not whether there is a card, so the presence test below
+        # still has to pass. A pin of another known family outranks it, and this is the only
+        # place that can be checked -- elsewhere each update installs and undoes a multi-GB
+        # stack. An unknown-family pin is not judged: the install applied it verbatim.
         if _has_usable_nvidia_gpu() and (
             not _rocm_torch_explicitly_requested()
             or _explicit_cuda_torch_index_url() is not None
@@ -5855,13 +5809,10 @@ def _ensure_rocm_torch() -> None:
         # the old /opt/rocm-or-hipcc gate broke runtime-only ROCm installs.
         if not _has_rocm_gpu() and not _inferred_linux_gfx:
             return  # no AMD GPU visible
-        # Under the request the NVIDIA return above was skipped, so this gate is the only
-        # thing between a DECLARED arch and AMD wheels landing over a working CUDA stack:
-        # _infer_linux_amd_gfx_arch() takes UNSLOTH_ROCM_GFX_ARCH before it looks at hardware,
-        # so a stale one satisfies the line above on a host with no AMD card. The bar is a
-        # viable ROUTE, the same one _ensure_cuda_torch stands down on: a present gfx1010 no
-        # index serves would otherwise reach the generic fallback below. Scoped to the
-        # request, so an ordinary install is judged exactly as before.
+        # The request skipped the NVIDIA return, so this is the only thing between a DECLARED
+        # arch and AMD wheels over a working CUDA stack: _infer_linux_amd_gfx_arch() takes
+        # UNSLOTH_ROCM_GFX_ARCH before it looks at hardware, so a stale one satisfies the line
+        # above with no AMD card. The bar is the viable ROUTE _ensure_cuda_torch stands down on.
         if (
             _rocm_torch_explicitly_requested()
             and _has_usable_nvidia_gpu()
