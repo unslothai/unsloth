@@ -43,8 +43,6 @@ class ApiRateLimited(RuntimeError):
 
 
 class FakeReleases:
-    """Provide fake CDN and API releases while recording resolution."""
-
     def __init__(
         self,
         monkeypatch,
@@ -149,7 +147,6 @@ def test_asking_for_the_next_plan_resolves_one_more_and_no_further(monkeypatch):
     _tag, plans = resolve(macos_host())
     assert releases.resolved == [RELEASE_TAGS[0]]
 
-    assert ILP._has_release_plan(plans, 1) is True
     assert plans[1].release_tag == RELEASE_TAGS[1]
     assert releases.resolved == RELEASE_TAGS[:2]
 
@@ -215,25 +212,13 @@ def test_a_403_on_the_deferred_lookup_reaches_the_installer_as_a_fallback(monkey
         api_error = ApiRateLimited("GitHub API returned 403 for .../releases?per_page=100"),
     )
     _tag, plans = resolve(macos_host())
-    assert plans[0].release_tag == RELEASE_TAGS[0]
+    remaining = ILP.iter_release_plans(plans, PUBLISHED_REPO)
+    assert next(remaining).release_tag == RELEASE_TAGS[0]
     assert releases.api_listing_reads == 0
 
     with pytest.raises(ILP.PrebuiltFallback, match = "failed to inspect published releases"):
-        ILP._has_release_plan(plans, 1, PUBLISHED_REPO)
+        next(remaining)
     assert releases.api_listing_reads == 1
-
-
-def test_the_install_loop_reads_a_deferred_403_the_same_way(monkeypatch):
-    FakeReleases(
-        monkeypatch,
-        cdn_tag = RELEASE_TAGS[0],
-        api_error = ApiRateLimited("GitHub API returned 403 for .../releases?per_page=100"),
-    )
-    _tag, plans = resolve(macos_host())
-
-    with pytest.raises(ILP.PrebuiltFallback, match = "failed to inspect published releases"):
-        for _plan in ILP.iter_release_plans(plans, PUBLISHED_REPO):
-            pass
 
 
 def test_the_resolver_itself_still_fails_hard_on_a_403(monkeypatch):

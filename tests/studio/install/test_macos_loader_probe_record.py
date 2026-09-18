@@ -123,7 +123,6 @@ def write_marker(install_dir: Path, marker: dict) -> None:
 
 
 def count_spawns(monkeypatch) -> list[int]:
-    """Count dyld probes without starting a process."""
     calls = [0]
 
     def _probe(*_args, **_kwargs):
@@ -259,6 +258,17 @@ def test_a_macos_upgrade_probes_again(tmp_path: Path, monkeypatch):
 
     assert matches_choice(install_dir, upgraded) is True
     assert calls[0] == 1
+
+
+def test_an_unknown_macos_version_still_probes(tmp_path: Path, monkeypatch):
+    host = macos_host(macos_version = None)
+    install_dir = build_install(tmp_path, host)
+    calls = count_spawns(monkeypatch)
+    monkeypatch.setattr(ILP, "_binary_image_runs", lambda *a, **k: True)
+
+    assert matches_choice(install_dir, host) is True
+    assert ILP._existing_install_runs(install_dir, host) is True
+    assert calls[0] == 2
 
 
 def test_full_check_forces_the_probe(tmp_path: Path, monkeypatch):
