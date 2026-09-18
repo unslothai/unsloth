@@ -578,10 +578,14 @@ def _remote_untrainable_model_format(
     from core.training.training import should_use_mlx_training_backend
     from utils.models.unsloth_mirror import mirror_lookup_available
 
-    has_public_copy = not mirror_lookup_available() or (
-        not should_use_mlx_training_backend()
-        and not is_embedding
-        and any(unsloth_public_mirror(repo_id, mode) is not None for mode in (True, False))
+    # Fail open only INSIDE the Torch path. MLX and embedding runs fetch the picked repo
+    # directly, so an unreadable mapper tells us nothing about them and the auth-check is the
+    # only thing standing between an inaccessible gated model and a worker-side failure.
+    # Written the other way round, an unreadable mapper admitted those runs too.
+    torch_loader_path = not should_use_mlx_training_backend() and not is_embedding
+    has_public_copy = torch_loader_path and (
+        not mirror_lookup_available()
+        or any(unsloth_public_mirror(repo_id, mode) is not None for mode in (True, False))
     )
 
     # Gated model metadata is public, so verify access to its files separately.

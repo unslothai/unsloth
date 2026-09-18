@@ -964,21 +964,26 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
             # become 4-bit, and scanning the 4-bit mirror there would let an unused repo's
             # findings block a run whose real repo is clean.
             _modes = (True, False) if config.get("load_in_4bit", True) else (False,)
-            for _mode in _modes:
-                mirrored = unsloth_public_mirror(load_target, _mode)
-                if mirrored and mirrored != load_target:
-                    requested_targets.append(mirrored)
-                    # Where ALLOW_PREQUANTIZED_MODELS is false - ROCm Instinct on
-                    # bitsandbytes < 0.49.2, whose blocksize is 128 while our pre-quants use
-                    # 64 - loader.py:581 strips the 4-bit suffix off the name the mapper just
-                    # produced and downloads THAT repo. For a mapping that only exists in the
-                    # 4-bit direction it is the one repo that actually gets fetched, and
-                    # without it here its files bypass both the malware scan and the
-                    # remote-code consent fingerprint. Unlike a mode that cannot happen, this
-                    # repo really is loaded on a live configuration, so it belongs in the scan.
-                    stripped = _strip_unsloth_bnb_4bit_suffix(mirrored)
-                    if stripped != mirrored and stripped != load_target:
-                        requested_targets.append(stripped)
+            # Every resolved seed, not just the picked name. For a remote LoRA adapter the
+            # loader takes peft_config.base_model_name_or_path and runs get_model_name over it
+            # (loader.py:756-765), so the base has a mirror of its own and that mirror is what
+            # gets downloaded. Expanding only the adapter id left it unscanned.
+            for _seed in list(dict.fromkeys(requested_targets)):
+                for _mode in _modes:
+                    mirrored = unsloth_public_mirror(_seed, _mode)
+                    if mirrored and mirrored != _seed:
+                        requested_targets.append(mirrored)
+                        # Where ALLOW_PREQUANTIZED_MODELS is false - ROCm Instinct on
+                        # bitsandbytes < 0.49.2, whose blocksize is 128 while our pre-quants use
+                        # 64 - loader.py:581 strips the 4-bit suffix off the name the mapper just
+                        # produced and downloads THAT repo. For a mapping that only exists in the
+                        # 4-bit direction it is the one repo that actually gets fetched, and
+                        # without it here its files bypass both the malware scan and the
+                        # remote-code consent fingerprint. Unlike a mode that cannot happen, this
+                        # repo really is loaded on a live configuration, so it belongs in the scan.
+                        stripped = _strip_unsloth_bnb_4bit_suffix(mirrored)
+                        if stripped != mirrored and stripped != _seed:
+                            requested_targets.append(stripped)
     except Exception as error:  # noqa: BLE001
         logger.debug("Could not resolve the mirror for the security scan: %s", error)
 

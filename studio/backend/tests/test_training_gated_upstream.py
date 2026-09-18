@@ -899,3 +899,69 @@ def test_the_suffix_strip_matches_the_loader(name, stripped):
 
     assert worker_mod._strip_unsloth_bnb_4bit_suffix(name) == stripped
     assert loader_strip(name) == stripped
+
+
+@pytest.mark.parametrize("backend", ["mlx", "embedding"])
+def test_an_unreadable_mapper_does_not_admit_a_non_torch_backend(monkeypatch, backend):
+    # The fail-open for an unreadable mapper is about the Torch loader, whose target the
+    # mapper decides. MLX and embedding runs fetch the picked repo directly, so there the
+    # auth-check is the only thing between an inaccessible gated model and a worker failure.
+    import core.training.training as training_mod
+    import utils.models.unsloth_mirror as mirror_mod
+
+    monkeypatch.setattr(mirror_mod, "mirror_lookup_available", lambda: False)
+    session = _Session(_http_error(401))
+    _route(monkeypatch, gated = "manual", session = session)
+
+    kwargs = {}
+    if backend == "mlx":
+        monkeypatch.setattr(training_mod, "should_use_mlx_training_backend", lambda **kw: True)
+    else:
+        kwargs["is_embedding"] = True
+
+    with pytest.raises(HTTPException) as error:
+        tr._remote_untrainable_model_format("google/gemma-3-270m-it", None, **kwargs)
+    assert error.value.detail["code"] == "hf_model_access_denied"
+    assert session.urls
+
+
+def test_a_lora_adapter_base_gets_its_own_mirror_scanned(mapper, monkeypatch):
+    # loader.py:756-765 runs get_model_name over peft_config.base_model_name_or_path, so the
+    # adapter's BASE has a mirror of its own and that mirror is what gets downloaded.
+    import core.training.worker as worker_mod
+    import utils.models.model_config as model_config_mod
+    import utils.security as security_mod
+
+    scanned: list[str] = []
+
+    class _Decision:
+        blocked = False
+
+        def response_payload(self):
+            return {}
+
+    monkeypatch.setattr(
+        model_config_mod,
+        "get_base_model_from_lora_identifier",
+        lambda target, token: "google/gemma-3-270m-it",
+    )
+    monkeypatch.setattr(worker_mod, "_model_local_files_only", lambda config: False, raising = False)
+    monkeypatch.setattr(security_mod, "security_load_subdirs", lambda *a, **kw: ())
+    monkeypatch.setattr(security_mod, "load_scan_target", lambda t, s: (t, s))
+    monkeypatch.setattr(
+        security_mod,
+        "evaluate_file_security",
+        lambda target, **kw: (scanned.append(target), _Decision())[1],
+    )
+
+    adapter = "someone/my-lora-adapter"
+    assert (
+        worker_mod._model_load_security_error(
+            {"model_name": adapter, "load_in_4bit": True, "trust_remote_code": False},
+            adapter,
+            None,
+        )
+        is None
+    )
+    assert "google/gemma-3-270m-it" in scanned
+    assert "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" in scanned
