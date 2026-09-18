@@ -10,7 +10,7 @@ import hmac
 import logging
 import threading
 import time
-from typing import Literal, MutableMapping, Optional, Union
+from typing import Iterable, Literal, MutableMapping, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +227,9 @@ def reset_repo_access_cache() -> None:
         _repo_access_inflight.clear()
         _denied_repo_access.clear()
         _denial_memory_is_complete = True
+    # The ledger's write memo is process-local, and a test that recorded one identity would
+    # otherwise decide what the next one is allowed to record.
+    _noted_credential_identities.clear()
 
 
 def cache_reads_authorized(
@@ -528,6 +531,78 @@ def _recorded_request_token_repos() -> "Optional[dict]":
     return recorded if isinstance(recorded, dict) else None
 
 
+# Which credentials this host has EVER held, as one-way digests. The gate below can otherwise
+# only ask "is this the credential the host holds NOW", which says nothing about the credential
+# the cache was filled WITH: remove the credential and a tokenless caller inherits what it
+# downloaded, rotate it and the new one inherits what the old one downloaded. Deleting a stored
+# credential is a hard DELETE with no tombstone, so there is no way to recover this after the
+# fact; the ledger is written going forward and a cache older than it stays unattributable.
+_HOST_CREDENTIAL_IDENTITIES_SETTING_KEY = "hub_hf_credential_identities_seen"
+_HOST_CREDENTIAL_IDENTITIES_MAX = 64
+# Process-local, so the common path is not a database write per authorization check.
+_noted_credential_identities: "set[str]" = set()
+
+
+def _credential_identity(token: str) -> str:
+    """A credential as an opaque identity. One-way and domain-separated: the ledger answers
+    "was it this one" and must never be a place a credential can be read back out of."""
+    return hashlib.sha256(
+        b"unsloth-hf-credential-identity:" + token.encode("utf-8", "surrogatepass")
+    ).hexdigest()
+
+
+def _host_credential_identities() -> "Optional[dict]":
+    """The ledger, ``{}`` when nothing was ever recorded and ``None`` when it cannot be read.
+    Same three-valued contract as the repo map: unreadable is not "empty"."""
+    try:
+        from storage.studio_db import get_app_setting
+        seen = _as_owner(get_app_setting, _HOST_CREDENTIAL_IDENTITIES_SETTING_KEY, None)
+    except Exception:  # noqa: BLE001
+        return None
+    if seen is None:
+        return {}
+    return seen if isinstance(seen, dict) else None
+
+
+def _note_host_credential_identities(tokens: Iterable[str]) -> None:
+    """Record THAT this host held each credential. Best effort: a ledger that cannot be written
+    leaves the gate reading an older one, which only ever authorizes less than the truth."""
+    for token in tokens:
+        if not isinstance(token, str) or not token:
+            continue
+        identity = _credential_identity(token)
+        if identity in _noted_credential_identities:
+            continue
+        _noted_credential_identities.add(identity)
+        try:
+            from storage.studio_db import upsert_app_setting_map_entry
+
+            seen = _host_credential_identities()
+            if seen is None or identity in seen or len(seen) >= _HOST_CREDENTIAL_IDENTITIES_MAX:
+                continue
+            _as_owner(
+                upsert_app_setting_map_entry,
+                _HOST_CREDENTIAL_IDENTITIES_SETTING_KEY,
+                identity,
+                {"at": time.time()},
+            )
+        except Exception:  # noqa: BLE001
+            continue
+
+
+def _no_other_credential_ever_held(tokens: Iterable[str]) -> Optional[bool]:
+    """Whether *tokens* are the only credentials this host is known to have held.
+
+    ``None`` when the ledger cannot be read. A ledger that predates a rotation cannot report
+    the credential it never saw, which is the documented limit of recording this forward.
+    """
+    seen = _host_credential_identities()
+    if seen is None:
+        return None
+    mine = {_credential_identity(token) for token in tokens if isinstance(token, str) and token}
+    return not (set(seen) - mine)
+
+
 def _repo_was_fetched_with_a_request_token(
     repo_id: Optional[str], repo_type: Optional[str]
 ) -> Optional[bool]:
@@ -568,8 +643,13 @@ def _caller_populated_the_cache(
     if not known:
         # Could not be established. Authorize nobody rather than guess, on either branch.
         return False
+    _note_host_credential_identities(host_tokens)
     if token is None:
         if host_tokens:
+            return False
+        # Held none, and never has: nothing here needed one. A credential the host has SINCE
+        # given up downloaded whatever it downloaded, and no tokenless caller inherits that.
+        if _no_other_credential_ever_held(()) is not True:
             return False
         # Nothing in the cache NEEDED one -- unless a one-off request token was used.
         return _repo_was_fetched_with_a_request_token(repo_id, repo_type) is False
@@ -577,6 +657,10 @@ def _caller_populated_the_cache(
         return False
     if len({held for held in host_tokens}) > 1:
         # Two DIFFERENT credentials on one host: either could have filled the cache.
+        return False
+    if _no_other_credential_ever_held(host_tokens) is not True:
+        # Holding the credential now is not having filled the cache with it: after a rotation
+        # the new credential would otherwise inherit every repo the old one downloaded.
         return False
     matched = False
     for held in host_tokens:

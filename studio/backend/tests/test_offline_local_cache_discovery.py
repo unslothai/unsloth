@@ -55,6 +55,13 @@ def _isolate_repo_access_cache():
 
 
 @pytest.fixture(autouse = True)
+def _no_credential_ledger(monkeypatch):
+    """Every test here is an install whose ledger predates it, which is what the vast majority of
+    hosts are on upgrade. The tests ABOUT the ledger set their own."""
+    monkeypatch.setattr(hf_tokens, "_host_credential_identities", lambda: {})
+
+
+@pytest.fixture(autouse = True)
 def _host_credential(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OPERATOR_TOKEN))
 
@@ -1310,3 +1317,80 @@ def test_a_non_ascii_credential_is_compared_not_crashed_on(monkeypatch, tmp_path
     # it correctly, so the answer is a real match rather than a crash.
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, "hf_opérateur"))
     assert cache_reads_authorized("hf_opérateur", repo_id = ON_DISK) is True
+
+
+def _ledger(monkeypatch, *tokens: str) -> None:
+    """The credentials this host is recorded as having held."""
+    monkeypatch.setattr(
+        hf_tokens,
+        "_host_credential_identities",
+        lambda: {hf_tokens._credential_identity(token): {"at": 1.0} for token in tokens},
+    )
+
+
+ROTATED_AWAY = "hf_the_credential_this_host_used_to_hold"
+
+
+def test_a_rotated_credential_does_not_inherit_what_the_old_one_downloaded(monkeypatch, on_disk):
+    """Holding the credential NOW is not having filled the cache with it. The operator rotates
+    from one login to another; the new one must not be handed the old one's private downloads."""
+    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OPERATOR_TOKEN))
+
+    _ledger(monkeypatch, ROTATED_AWAY, OPERATOR_TOKEN)
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+
+    # BOUNDARY: a host that never rotated is unchanged, which is nearly every host.
+    _ledger(monkeypatch, OPERATOR_TOKEN)
+    hf_tokens.reset_repo_access_cache()
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+
+
+def test_a_credential_this_host_gave_up_is_not_inherited_by_a_tokenless_caller(
+    monkeypatch, on_disk
+):
+    """The other half of the same fact: remove the credential and the private repos it
+    downloaded are still on the disk, so "the host holds none" stops meaning "none was needed"."""
+    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
+    _no_host_credential(monkeypatch)
+    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: {})
+
+    _ledger(monkeypatch, ROTATED_AWAY)
+    assert public_cache_read_authorized(repo_id = ON_DISK) is False
+
+    # BOUNDARY: a host that never held one downloaded only what needed none.
+    _ledger(monkeypatch)
+    hf_tokens.reset_repo_access_cache()
+    assert public_cache_read_authorized(repo_id = ON_DISK) is True
+
+
+def test_an_unreadable_ledger_authorizes_nobody(monkeypatch, on_disk):
+    """Same rule as the credential stores: cannot be established is not "empty"."""
+    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
+    monkeypatch.setattr(hf_tokens, "_host_credential_identities", lambda: None)
+
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    _no_host_credential(monkeypatch)
+    assert public_cache_read_authorized(repo_id = ON_DISK) is False
+
+
+def test_the_ledger_records_an_identity_and_never_the_credential(monkeypatch):
+    """It answers "was it this one" and must not be somewhere a credential is readable."""
+    written: dict = {}
+    monkeypatch.setattr(hf_tokens, "_host_credential_identities", lambda: dict(written))
+    monkeypatch.setattr(
+        hf_tokens, "_as_owner", lambda call, _key, entry, value: written.setdefault(entry, value)
+    )
+    hf_tokens.reset_repo_access_cache()
+
+    hf_tokens._note_host_credential_identities((OPERATOR_TOKEN,))
+    assert list(written) == [hf_tokens._credential_identity(OPERATOR_TOKEN)]
+    assert OPERATOR_TOKEN not in repr(written)
+    assert hf_tokens._credential_identity(OPERATOR_TOKEN) != hf_tokens._credential_identity(
+        ROTATED_AWAY
+    )
+
+    # Written once: this runs on the authorization path, not on a settings save.
+    written.clear()
+    hf_tokens._note_host_credential_identities((OPERATOR_TOKEN,))
+    assert written == {}, "the ledger was rewritten on every check"
