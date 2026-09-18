@@ -456,7 +456,7 @@ def test_the_reuse_fast_paths_do_not_record_a_pass(tmp_path: Path, monkeypatch):
 
     assert matches_choice(install_dir, host) is True
     assert fast_path(install_dir, host) is True
-    assert calls[0] == 2                                    # both probed
+    assert calls[0] == 2  # both probed
     assert ILP.MACOS_LOAD_PROBE_KEY not in marker_of(install_dir)
 
 
