@@ -2801,7 +2801,7 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 # Human label per resolved spec mode, for launch logging and the UI notice.
@@ -2833,9 +2833,10 @@ _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORE
 def _is_companion_gguf_path(path: str) -> bool:
     """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
     drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
-    drafters for DeepSeek V4 Flash). Mirrors hub.utils.gguf so variant resolution
-    never picks a companion as the main model -- a Gemma ``Q8_0`` request must not
-    resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight.
+    drafters for DeepSeek V4 Flash, the ``eagle3-*.gguf`` draft heads). Mirrors
+    hub.utils.gguf so variant resolution never picks a companion as the main model --
+    a Gemma ``Q8_0`` request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts
+    ahead of the real weight.
 
     EXCLUSION ONLY. Use ``_is_mtp_only_drafter_path`` to pick a drafter to launch.
     """
@@ -25352,7 +25353,7 @@ class LlamaCppBackend:
                         # _detected_gpus, not gpus: Manual modes empty gpus on purpose.
                         # gpu_ids is pinned for the child below; the arch gate warns better.
                         logger.warning(
-                            "Studio could not enumerate any GPU, so this load was planned "
+                            "Unsloth could not enumerate any GPU, so this load was planned "
                             "without device information: %s",
                             LlamaCppBackend._explain_empty_gpu_probe(binary),
                         )
