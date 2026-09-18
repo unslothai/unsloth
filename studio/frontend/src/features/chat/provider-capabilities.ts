@@ -93,6 +93,16 @@ export function clampReasoningEffortToLevels(
   return effortLevels[0] ?? "low";
 }
 
+/** Whether a level reaches the provider at all. The external request path sends reasoning_effort
+ *  for that style alone; every other style carries a bare thinking on/off, so a level chosen for
+ *  one of those is never sent. The default ladder is present either way, so the style is the only
+ *  thing that can say so. */
+export function externalReasoningTakesEffort(
+  caps: ExternalReasoningCapabilities,
+): boolean {
+  return caps.supportsReasoning && caps.reasoningStyle === "reasoning_effort";
+}
+
 /** The effort an external model should run at, pin first.
  *
  *  One resolver, because there are three callers and they must not disagree: a model switch, the
@@ -111,7 +121,9 @@ export function resolveExternalReasoningEffort(opts: {
 }): ReasoningEffortLevel {
   const { caps, providerType, current, pinned } = opts;
   const levels = caps.reasoningEffortLevels;
-  if (!caps.supportsReasoning) return current;
+  // A style that sends no level has nothing to resolve, and moving the chat's level for it would
+  // change what every other model runs at on the strength of a setting this one never sends.
+  if (!externalReasoningTakesEffort(caps)) return current;
   // Set deliberately, for this model, so it outranks every default below.
   if (pinned && levels.includes(pinned as ReasoningEffortLevel)) {
     return pinned as ReasoningEffortLevel;

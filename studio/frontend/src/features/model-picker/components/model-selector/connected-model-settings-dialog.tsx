@@ -35,6 +35,7 @@ import {
 } from "@/features/chat";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import {
+  externalReasoningTakesEffort,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
@@ -101,7 +102,10 @@ export function ConnectedModelSettingsDialog({
     isReasoningProvider,
     baseUrl,
   });
-  const efforts = reasoning.supportsReasoning
+  // Offered only where a level is actually sent: the default low/medium/high ladder is present
+  // even for a model whose style carries a bare thinking on/off, so gating on supportsReasoning
+  // alone let a pin be set on Kimi that no request could ever carry.
+  const efforts = externalReasoningTakesEffort(reasoning)
     ? reasoning.reasoningEffortLevels.filter((level) => level !== "none")
     : [];
 

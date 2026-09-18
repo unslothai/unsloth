@@ -23,6 +23,7 @@ import {
 import { resolveModelCatalogEntry } from "@/features/chat/model-catalog";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import {
+  externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
   getPublishedExternalMaxOutputTokens,
 } from "@/features/chat/provider-capabilities";
@@ -98,10 +99,13 @@ export function ConnectedModelInfoDialog({
     isReasoningProvider,
     baseUrl,
   });
-  // "none" is the off switch, not a rung.
-  const effortLevels = reasoning.reasoningEffortLevels.filter(
-    (level) => level !== "none",
-  );
+  // "none" is the off switch, not a rung. Only where a level is sent at all: the default ladder
+  // is there even for a style that carries a bare thinking on/off, and listing it read as a
+  // choice this model takes.
+  const takesEffort = externalReasoningTakesEffort(reasoning);
+  const effortLevels = takesEffort
+    ? reasoning.reasoningEffortLevels.filter((level) => level !== "none")
+    : [];
   const publishedMaxOutput =
     getPublishedExternalMaxOutputTokens(providerType, modelId) ??
     entry?.maxOutputTokens ??
@@ -199,9 +203,11 @@ export function ConnectedModelInfoDialog({
               <Unset>Follows the chat</Unset>
             )}
           </Field>
-          <Field label="Reasoning effort">
-            {pinnedEffort ?? <Unset>Follows the chat</Unset>}
-          </Field>
+          {takesEffort ? (
+            <Field label="Reasoning effort">
+              {pinnedEffort ?? <Unset>Follows the chat</Unset>}
+            </Field>
+          ) : null}
         </div>
       </DialogContent>
     </Dialog>

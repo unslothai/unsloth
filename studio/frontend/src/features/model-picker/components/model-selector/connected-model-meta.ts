@@ -3,8 +3,10 @@
 
 // What a connected (API-served) model can do, in the shape the picker's row badges take. A
 // connected model carries no HF tags and no local metadata, so every mark comes from what the app
-// already resolves: the backend capability registry, the connection's cached catalogue, and the
-// name fallback the On Device rows use.
+// already resolves: the backend capability registry and the connection's cached catalogue. Not
+// from the name, unlike an On Device row: that badge describes a repo you may be about to fetch,
+// while this one describes what happens when you pick the row and send a message, so a guess here
+// promises something the request path may have no way to do.
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import { providerModelSupportsVision } from "@/features/chat/external-providers";
@@ -12,10 +14,7 @@ import { providerModelSupportsVision } from "@/features/chat/external-providers"
 import { resolveModelCatalogEntry } from "@/features/chat/model-catalog";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import { providerSupportsBuiltinImageGeneration } from "@/features/chat/provider-capabilities";
-import {
-  type ModelCapabilities,
-  detectCapabilities,
-} from "./model-capabilities";
+import type { ModelCapabilities } from "./model-capabilities";
 
 export interface ConnectedModelMarks {
   /** Capability glyphs (audio / generates images / generates video). */
@@ -48,9 +47,6 @@ export function connectedModelMarks(opts: {
   baseUrl?: string | null;
 }): ConnectedModelMarks {
   const { providerType, modelId, baseUrl } = opts;
-  // The fallback for ids no catalogue covers: a self-hosted "whisper-large-v3" or an
-  // OpenRouter-served diffusion model is only ever described by what it is called.
-  const byName = detectCapabilities({ id: modelId ?? "" });
   const entry = resolveModelCatalogEntry(providerType, modelId);
   const modalities = entry?.inputModalities ?? null;
   // Already layered: the backend's per-model registry entry, the image-stripping provider list,
@@ -63,13 +59,15 @@ export function connectedModelMarks(opts: {
       // No glyph reads this (CAPABILITY_BADGES draws none for reasoning), so it is not worth a
       // second catalogue lookup here.
       reasoning: false,
-      audio: modalities?.includes("audio") === true || byName.audio,
-      imageGen:
-        providerSupportsBuiltinImageGeneration(
-          providerType,
-          modelId,
-          baseUrl,
-        ) || byName.imageGen,
+      audio: modalities?.includes("audio") === true,
+      // The helper alone, with no fallback to the model's name. It is the same gate the adapter
+      // enables image generation through, and the composer's Images pill with it, so a name that
+      // reads like a diffusion model but resolves to false here can never be asked for an image.
+      imageGen: providerSupportsBuiltinImageGeneration(
+        providerType,
+        modelId,
+        baseUrl,
+      ),
       // Never claimed. Nothing we connect to serves video generation through the chat route and
       // no provider publishes a capability for it, so the name is the only evidence there could
       // be, and a glyph resting on that promises a row something selecting it cannot do. An On

@@ -86,7 +86,17 @@ test("modality comes from the resolvers the app already has", () => {
   // it and nothing we connect to serves it through the chat route, so the name would be the only
   // evidence, and the glyph would promise a row something selecting it cannot do.
   assert.match(marks, /videoGen: false,/);
-  assert.doesNotMatch(marks, /videoGen: byName\.videoGen/);
+  // Nor is any other mark guessed from the name. Image generation is enabled in the adapter
+  // through providerSupportsBuiltinImageGeneration alone, and the composer's Images pill with it,
+  // so a name that reads like a diffusion model but resolves to false there can never be asked
+  // for one. Audio keeps the catalogue's published input modality and nothing else.
+  assert.doesNotMatch(marks, /byName/);
+  assert.doesNotMatch(marks, /detectCapabilities/);
+  assert.match(
+    marks,
+    /imageGen: providerSupportsBuiltinImageGeneration\(\s*providerType,\s*modelId,\s*baseUrl,\s*\),/,
+  );
+  assert.match(marks, /audio: modalities\?\.includes\("audio"\) === true,/);
   // Unknown is not a promise: only an explicit true draws the eye.
   assert.doesNotMatch(
     marks,
@@ -387,6 +397,36 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
     /const typedCap = Math\.round\(Number\(maxTokens\.trim\(\)\)\);/,
   );
   assert.doesNotMatch(settingsDialog, /Number\.parseInt\(/);
+  // The effort control is offered only where a level is actually sent. The default low/medium/high
+  // ladder is there even for a style that carries a bare thinking on/off, so gating on
+  // supportsReasoning alone let a pin be set on Kimi that no request could ever carry.
+  assert.match(
+    settingsDialog,
+    /const efforts = externalReasoningTakesEffort\(reasoning\)\s*\? reasoning\.reasoningEffortLevels\.filter\(\(level\) => level !== "none"\)\s*: \[\];/,
+  );
+  const capabilities = readSrc("features/chat/provider-capabilities.ts");
+  assert.match(
+    capabilities,
+    /export function externalReasoningTakesEffort\([\s\S]{0,120}?return caps\.supportsReasoning && caps\.reasoningStyle === "reasoning_effort";/,
+  );
+  // And nothing resolves a level for such a model, or selecting it would move the level every
+  // other model runs at on the strength of a setting it never sends.
+  assert.match(
+    capabilities,
+    /if \(!externalReasoningTakesEffort\(caps\)\) return current;/,
+  );
+  // The info box stops listing the ladder and the pin for them too.
+  const infoDialog = readSrc(
+    "features/model-picker/components/model-selector/connected-model-info-dialog.tsx",
+  );
+  assert.match(
+    infoDialog,
+    /const takesEffort = externalReasoningTakesEffort\(reasoning\);/,
+  );
+  assert.match(
+    infoDialog,
+    /\{takesEffort \? \(\s*<Field label="Reasoning effort">/,
+  );
   // Blank or junk is an absence, not a zero the request would then send as the cap.
   assert.match(
     settingsDialog,
