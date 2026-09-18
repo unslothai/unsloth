@@ -1097,6 +1097,51 @@ def test_a_low_level_cache_is_integrated_and_marked_before_being_reported(monkey
     assert registry.removed == []  # and the working hooks were still never touched
 
 
+def test_auto_disengage_unhooks_an_adopted_cache_instead_of_trusting_disable_cache(monkeypatch):
+    """A cache adopted from the low-level API has no ``_cache_config``, so diffusers'
+    ``disable_cache`` warns and returns having removed nothing. Clearing the marker on the strength
+    of that call would leave it clear over live hooks, which is the state the CUDA graph wrapper
+    reads as "safe to capture". Take the hooks off by name, as the engage path does."""
+    registry = _stub_diffusers(monkeypatch)
+
+    class _AdoptedLowLevel:
+        _cache_config = None
+        _unsloth_step_cache = TC_FBCACHE
+
+        def __init__(self):
+            self.disable_calls = 0
+
+        def disable_cache(self):
+            self.disable_calls += 1  # diffusers' no-op: there is no config for it to act on
+
+    t = _AdoptedLowLevel()
+    assert maybe_toggle_step_cache(_pipe(t), steps = 8) is None
+    assert t.disable_calls == 1
+    assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
+    assert t._unsloth_step_cache is None  # cleared only because the hooks are now KNOWN gone
+
+
+def test_auto_disengage_keeps_the_marker_when_the_hooks_cannot_be_verified_gone(monkeypatch):
+    """The other side of the same decision: an unverifiable teardown keeps the marker and keeps
+    reporting the cache engaged. That costs eager execution; the reverse risks a captured graph
+    over a cached forward."""
+    _stub_diffusers(monkeypatch)
+    import core.inference.diffusion_cache as dc
+
+    monkeypatch.setattr(dc, "_unhook_first_block_cache", lambda t: False)
+
+    class _Unverifiable:
+        _cache_config = None
+        _unsloth_step_cache = TC_FBCACHE
+
+        def disable_cache(self):
+            pass
+
+    t = _Unverifiable()
+    assert maybe_toggle_step_cache(_pipe(t), steps = 8) == TC_FBCACHE
+    assert t._unsloth_step_cache == TC_FBCACHE
+
+
 def test_the_hook_probe_sees_the_names_the_low_level_api_installs(monkeypatch):
     """The probe above is the whole basis for that decision, so it is pinned against the real hook
     names rather than a stub: a rename upstream must fail here, not silently start tearing down

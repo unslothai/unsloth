@@ -475,6 +475,18 @@ def maybe_toggle_step_cache(
                 # uncached path.
                 _restore_hooked_block_inners(transformer)
                 disable_cache()
+                # disable_cache cannot decide this. It warns and returns without removing anything
+                # when _cache_config is None, which is exactly the state of a cache adopted from the
+                # low-level apply_first_block_cache, so trusting it here would clear the marker over
+                # live hooks and hand the CUDA graph wrapper a cached forward. Take the hooks off by
+                # name and keep the marker until they are KNOWN gone.
+                if not _unhook_first_block_cache(transformer):
+                    _warn(
+                        logger,
+                        "fbcache disable",
+                        RuntimeError("cache hooks could not be verified removed"),
+                    )
+                    return TC_FBCACHE
                 transformer._unsloth_step_cache = None
                 if logger is not None:
                     logger.info(
