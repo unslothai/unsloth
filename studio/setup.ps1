@@ -1081,17 +1081,153 @@ function Get-StudioSystem32Tool {
     return $candidate
 }
 
+# Does an SDDL rights field let its holder change what is in a directory.
+#
+# The field is either a hex mask or a run of two-letter aliases, and both spellings turn up on
+# the same machine, so both are read. Anything that cannot be read at all answers YES, because
+# this feeds a gate whose safe answer is to decline.
+function Test-StudioSddlRightsAreWrite {
+    param([string]$Rights)
+    if ([string]::IsNullOrWhiteSpace($Rights)) { return $true }
+    $text = "$Rights".Trim().ToUpper()
+    if ($text -like "0X*") {
+        # Parsed a digit at a time rather than with [Convert]::ToInt64: this whole helper runs
+        # on Constrained Language Mode hosts, and a [long] accumulator is needed anyway because
+        # a full 32-bit mask overflows [int] into a Double, which -band then refuses.
+        $mask = [long]0
+        foreach ($ch in $text.Substring(2).ToCharArray()) {
+            $digit = "0123456789ABCDEF".IndexOf($ch)
+            if ($digit -lt 0) { return $true }
+            $mask = ($mask * 16) + $digit
+        }
+        # WRITE_DATA, APPEND_DATA, WRITE_EA, DELETE_CHILD, WRITE_ATTRIBUTES, DELETE, WRITE_DAC,
+        # WRITE_OWNER, GENERIC_ALL, GENERIC_WRITE.
+        return (($mask -band 0x500D0156) -ne 0)
+    }
+    foreach ($alias in @("GA", "GW", "WD", "WO", "SD", "DT", "FA", "FW", "KA", "KW",
+                         "CC", "DC", "WP", "SW")) {
+        if ($text.Contains($alias)) { return $true }
+    }
+    return $false
+}
+
+# Is this SDDL principal one that a standard user cannot act as.
+#
+# An allowlist, not a denylist of the well-known user groups. A denylist has to be complete to
+# be correct, and the one principal that matters most is a domain account nobody can enumerate
+# ahead of time. Both spellings are accepted because which one Get-Acl prints depends on the
+# build rather than on the ACL.
+function Test-StudioSddlPrincipalIsAdminOnly {
+    param([string]$Principal)
+    if ([string]::IsNullOrWhiteSpace($Principal)) { return $false }
+    $who = "$Principal".Trim().ToUpper()
+    return (@(
+        "BA", "SY", "S-1-5-32-544", "S-1-5-18",
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+    ) -contains $who)
+}
+
+# Can anyone but an administrator change what is in the directory this SDDL describes.
+#
+# Unreadable answers YES throughout, so a shape this parser does not understand declines the
+# interpreter rather than accepting it.
+function Test-StudioSddlWritableByNonAdmin {
+    param([string]$Sddl)
+    if ([string]::IsNullOrWhiteSpace($Sddl)) { return $true }
+    $text = "$Sddl".Trim()
+    # The owner first, and it is not a formality. The owner of an object holds WRITE_DAC
+    # implicitly whatever the DACL says, so a directory an attacker created can carry an ACL
+    # that reads as locked down and still be entirely theirs to rewrite.
+    # Non-greedy up to the next section marker: the owner and the group run together in the
+    # string, so "O:BAG:SY" is owner BA and group SY, and a class that simply stops at the next
+    # colon reads the owner as "BAG".
+    if (-not ($text -match '^O:([A-Za-z0-9\-]+?)(?:G:|D:|S:|$)')) { return $true }
+    if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $Matches[1])) { return $true }
+    $daclAt = $text.IndexOf("D:")
+    if ($daclAt -lt 0) { return $true }
+    $dacl = $text.Substring($daclAt)
+    $saclAt = $dacl.IndexOf("S:")
+    if ($saclAt -ge 0) { $dacl = $dacl.Substring(0, $saclAt) }
+    $seen = 0
+    # Split rather than [regex]::Matches, which is not a Constrained Language Mode type. A
+    # conditional ACE carries parentheses of its own and comes apart here into fields that do
+    # not parse, which the field-count check below turns into a decline.
+    foreach ($chunk in ($dacl -split '\)')) {
+        $open = $chunk.IndexOf("(")
+        if ($open -lt 0) { continue }
+        $seen++
+        $fields = $chunk.Substring($open + 1) -split ';'
+        if ($fields.Count -lt 6) { return $true }
+        $type = "$($fields[0])".Trim().ToUpper()
+        $flags = "$($fields[1])".Trim().ToUpper()
+        # Everything that is not a deny counts as a grant, including the conditional forms this
+        # cannot evaluate. An inherit-only ACE does not apply to this directory at all, and that
+        # exemption is load-bearing rather than tidy: CREATOR OWNER is spelled exactly that way
+        # on every one of these roots, so reading it as an effective grant rejects all of them.
+        if (@("D", "OD", "XD") -contains $type) { continue }
+        if ($flags.Contains("IO")) { continue }
+        if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
+        if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $fields[5])) { return $true }
+    }
+    # A DACL with no ACEs in it is not evidence of anything, and neither is one this did not
+    # manage to split.
+    if ($seen -eq 0) { return $true }
+    return $false
+}
+
+# Is this one directory administrator-only, by its own ACL.
+function Test-StudioDirectoryIsAdminOnly {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $sddl = ""
+    try {
+        # Select-Object -ExpandProperty, not a property read: Constrained Language Mode refuses
+        # property access on types outside its allowed list, and the security descriptor is one.
+        $sddl = "$(Get-Acl -LiteralPath $Path -ErrorAction Stop |
+            Select-Object -ExpandProperty Sddl)"
+    } catch { return $false }
+    if ([string]::IsNullOrWhiteSpace($sddl)) { return $false }
+    return (-not (Test-StudioSddlWritableByNonAdmin -Sddl $sddl))
+}
+
+# The parent directory, computed lexically and for both separators.
+#
+# Split-Path is the obvious way to do this and is wrong here: on a non-Windows host it does not
+# treat a backslash as a separator at all, so "C:\Program Files\Python312\python.exe" has no
+# parent and the walk below ends before it starts. That matters because the parity lane runs
+# these checks on Linux, where a silently empty walk reads as a clean decline.
+function Get-StudioLexicalParent {
+    param([string]$Path)
+    $trimmed = "$Path".TrimEnd('\', '/')
+    $cut = $trimmed.LastIndexOfAny(@([char]92, [char]47))
+    if ($cut -lt 0) { return "" }
+    return $trimmed.Substring(0, $cut)
+}
+
 # Is this path inside a root that only an administrator can write.
 #
-# An elevated run launches whatever interpreter is handed to it WITH THE ADMINISTRATOR TOKEN.
-# A per-user CPython, or the venv one under a per-user Studio root, is then a way to have
-# arbitrary code run elevated: replace the executable, wait for the next run. The labelled
-# child directory does not help, because it protects the script this runs, not the thing
-# running it.
+# An elevated run launches whatever interpreter this ladder settles on WITH THE ADMINISTRATOR
+# TOKEN. A per-user CPython under %LOCALAPPDATA%, or one on PATH from a directory the same
+# user's medium-integrity token can write, is then a way to have arbitrary code run elevated:
+# replace the executable, wait for the next install. The labelled child directory does not
+# help, because it protects the script this runs, not the thing running it.
 #
-# Matched by location rather than by reading the ACL. The Windows-protected roots are the ones
-# whose default ACLs give write to administrators and TrustedInstaller only, and asking icacls
-# instead would mean parsing account names that are rendered in the OS language.
+# Being under one of the Windows-protected roots is necessary but NOT sufficient, and the
+# earlier version of this helper stopped there. Microsoft's own AppLocker guidance says why:
+# %WINDIR% contains a Temp subfolder the Users group is deliberately given Create Files/Write
+# Data and Create Folders/Append Data on for application compatibility, and a handful of
+# siblings are the same, which is precisely what makes a path rule over %WINDIR% a documented
+# bypass. C:\Windows\Temp\python.exe passed the prefix test and would have been launched with
+# the administrator token.
+#
+# So the location test is kept as the cheap first filter, the documented compatibility
+# directories are refused outright, and then every directory from the interpreter's own up to
+# the matched root has to be administrator-only by its ACL. The ACL is read as SDDL, which
+# carries SIDs and two-letter aliases rather than the account names icacls renders in the OS
+# language, so nothing here depends on the machine's locale.
+#
+# Every unknown declines. An unelevated run is not affected at all: it has no token worth
+# stealing, and this gate is only consulted when the run is elevated.
 function Test-StudioPathUnderAdminRoot {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -1101,6 +1237,7 @@ function Test-StudioPathUnderAdminRoot {
     foreach ($value in @($env:SystemRoot, $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)})) {
         if (-not [string]::IsNullOrWhiteSpace($value)) { $roots += "$value".TrimEnd('\', '/') }
     }
+    $matchedRoot = ""
     foreach ($root in $roots) {
         # The separator is part of the comparison: "C:\Program Files" must not match
         # "C:\Program Files Evil", which any user can create.
@@ -1110,8 +1247,42 @@ function Test-StudioPathUnderAdminRoot {
         # case-insensitive. The root is escaped first, because a bracket in it would
         # otherwise be read as a character class and match the wrong thing.
         $escapedRoot = $root -replace '([\[\]\*\?])', '`$1'
-        if ("$Path" -like ($escapedRoot + "\*")) { return $true }
-        if ("$Path" -like ($escapedRoot + "/*")) { return $true }
+        if (("$Path" -like ($escapedRoot + "\*")) -or ("$Path" -like ($escapedRoot + "/*"))) {
+            $matchedRoot = $root
+            break
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($matchedRoot)) { return $false }
+    # The documented compatibility directories, refused without asking anything. They are
+    # fixed English names rather than display names, so this holds in every OS language, and it
+    # still holds on a host where the ACL cannot be read at all.
+    $windowsRoot = "$($env:SystemRoot)".TrimEnd('\', '/')
+    if (-not [string]::IsNullOrWhiteSpace($windowsRoot)) {
+        foreach ($leaf in @(
+            "Temp", "Tasks", "Tracing", "Registration\CRMLog", "debug\WIA",
+            "System32\Tasks", "System32\spool\drivers\color", "System32\spool\PRINTERS",
+            "System32\spool\SERVERS", "System32\com\dmp", "System32\FxsTmp",
+            "SysWOW64\Tasks", "SysWOW64\com\dmp", "SysWOW64\FxsTmp"
+        )) {
+            $writable = $windowsRoot + "\" + $leaf
+            $escapedWritable = $writable -replace '([\[\]\*\?])', '`$1'
+            if (("$Path" -like ($escapedWritable + "\*")) -or
+                ("$Path" -like ($escapedWritable + "/*"))) { return $false }
+        }
+    }
+    # And then the ACL, every level from the interpreter's own directory up to the root. Only
+    # the immediate directory is not enough: a directory created under one that grants Users
+    # write belongs to whoever created it, and its own ACL can say anything they like.
+    $current = Get-StudioLexicalParent -Path "$Path"
+    $guard = 0
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        $guard++
+        if ($guard -gt 64) { return $false }
+        if (-not (Test-StudioDirectoryIsAdminOnly -Path $current)) { return $false }
+        if ("$current".TrimEnd('\', '/') -eq $matchedRoot) { return $true }
+        $next = Get-StudioLexicalParent -Path "$current"
+        if ("$next" -eq "$current") { return $false }
+        $current = $next
     }
     return $false
 }

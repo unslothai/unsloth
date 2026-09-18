@@ -71,7 +71,12 @@ $blockNames = @(
     # Appended rather than inserted: the indices below are positional.
     "Test-StudioChildScriptDirectoryElevated",
     "Get-StudioSystem32Tool",
-    "Test-StudioPathUnderAdminRoot"
+    "Test-StudioPathUnderAdminRoot",
+    "Test-StudioSddlRightsAreWrite",
+    "Test-StudioSddlPrincipalIsAdminOnly",
+    "Test-StudioSddlWritableByNonAdmin",
+    "Test-StudioDirectoryIsAdminOnly",
+    "Get-StudioLexicalParent"
 )
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
@@ -294,6 +299,11 @@ Invoke-Expression ($setupParts[4])   # Get-NvidiaLibraryInventory
 Invoke-Expression ($setupParts[5])   # Test-StudioChildScriptDirectoryElevated
 Invoke-Expression ($setupParts[6])   # Get-StudioSystem32Tool
 Invoke-Expression ($setupParts[7])   # Test-StudioPathUnderAdminRoot
+Invoke-Expression ($setupParts[8])   # Test-StudioSddlRightsAreWrite
+Invoke-Expression ($setupParts[9])   # Test-StudioSddlPrincipalIsAdminOnly
+Invoke-Expression ($setupParts[10])  # Test-StudioSddlWritableByNonAdmin
+Invoke-Expression ($setupParts[11])  # Test-StudioDirectoryIsAdminOnly
+Invoke-Expression ($setupParts[12])  # Get-StudioLexicalParent
 # The emitted rung declines, which is the whole point: this is what a Constrained Language Mode
 # or WDAC host sees, and the capabilities below are recovered with nothing emitted.
 function Get-NvidiaLibraryProbeType { return $null }
@@ -441,6 +451,11 @@ try {
     Invoke-Expression ($setupParts[5])
     Invoke-Expression ($setupParts[6])
     Invoke-Expression ($setupParts[7])
+    Invoke-Expression ($setupParts[8])
+    Invoke-Expression ($setupParts[9])
+    Invoke-Expression ($setupParts[10])
+    Invoke-Expression ($setupParts[11])
+    Invoke-Expression ($setupParts[12])
     if ($null -eq $savedOs) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOs }
 }
 

@@ -35,7 +35,11 @@ $wanted = @(
     "Invoke-StudioEarlyPythonScriptViaCmdlets", "Get-StudioPythonFinalPath",
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
+    "Get-StudioSystem32Tool",
     "Test-StudioPathUnderAdminRoot",
+    "Test-StudioSddlRightsAreWrite", "Test-StudioSddlPrincipalIsAdminOnly",
+    "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly",
+    "Get-StudioLexicalParent",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo", "Resolve-StudioFinalPathsInOneChild",
     # Called by Resolve-StudioFinalPathInfo on the rung below this one. Extracted rather than
@@ -521,6 +525,31 @@ try {
     $savedSystemRoot = $env:SystemRoot
     $env:ProgramFiles = "C:\Program Files"
     $env:SystemRoot = "C:\Windows"
+    # The ACL half is driven through a stubbed Get-Acl, because the real one is Windows-only and
+    # this file runs on every OS in the parity lane. The strings are the shapes Windows really
+    # prints: System32's, %WINDIR%\Temp's, and one for a directory an attacker created.
+    $script:AclTable = @{}
+    $script:AclDefault = ("O:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464G:SY" +
+        "D:AI(A;;FA;;;S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464)" +
+        "(A;OICIIO;GA;;;S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464)" +
+        "(A;;0x1301bf;;;SY)(A;OICIIO;GA;;;SY)(A;;0x1301bf;;;BA)(A;OICIIO;GA;;;BA)" +
+        "(A;;0x1200a9;;;BU)(A;OICIIO;GXGR;;;BU)(A;;0x1200a9;;;AC)(A;OICIIO;GXGR;;;AC)")
+    $script:AclThrows = $false
+    function Get-Acl {
+        param($LiteralPath, $Path, $ErrorAction)
+        if ($script:AclThrows) { throw "access denied" }
+        $key = "$LiteralPath".TrimEnd('\', '/')
+        $sddl = $script:AclDefault
+        if ($script:AclTable.ContainsKey($key)) { $sddl = $script:AclTable[$key] }
+        return [pscustomobject]@{ Sddl = $sddl }
+    }
+    # %WINDIR%\Temp as Windows really ships it: the two 0x1000xx ACEs are the Create Files/Write
+    # Data and Create Folders/Append Data grants to BUILTIN\Users that AppLocker's own default
+    # rule documentation calls out as the reason a path rule over %WINDIR% is a bypass.
+    $tempSddl = ("O:BAG:SYD:PAI(A;;FA;;;SY)(A;OICIIO;GA;;;SY)(A;;FA;;;BA)(A;OICIIO;GA;;;BA)" +
+        "(A;;0x100004;;;BU)(A;;0x100002;;;BU)(A;OICIIO;GA;;;CO)")
+    $ownedSddl = "O:S-1-5-21-1-2-3-1001G:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)"
+
     Check "the admin-root test accepts a system-wide location" (
         (Test-StudioPathUnderAdminRoot -Path "C:\Program Files\Python312\python.exe") -eq $true)
     # A directory any user can create, whose name merely starts with a protected one.
@@ -529,6 +558,77 @@ try {
     Check "and rejects a per-user install" (
         (Test-StudioPathUnderAdminRoot -Path "C:\Users\me\AppData\Local\Programs\Python\python.exe") -eq $false)
     Check "and rejects an empty path" ((Test-StudioPathUnderAdminRoot -Path "") -eq $false)
+
+    # ---- being under a protected root is necessary, not sufficient ----
+    #
+    # %WINDIR%\Temp is below $env:SystemRoot and every standard user can create files in it, by
+    # design and by Microsoft's documentation. The prefix-only version of this helper called it
+    # administrator-protected and the elevated run would have launched it.
+    Check "a location test alone would have accepted C:\Windows\Temp (bites)" (
+        "C:\Windows\Temp\python.exe" -like "C:\Windows\*")
+    Check "but the compatibility directories are refused outright" (
+        (Test-StudioPathUnderAdminRoot -Path "C:\Windows\Temp\python.exe") -eq $false)
+    foreach ($leaf in @("Tasks", "Tracing", "System32\Tasks", "System32\spool\drivers\color",
+                        "System32\com\dmp", "SysWOW64\FxsTmp")) {
+        Check "and so is C:\Windows\$leaf" (
+            (Test-StudioPathUnderAdminRoot -Path "C:\Windows\$leaf\python.exe") -eq $false)
+    }
+    # And the ACL is read as well, so a directory that is user-writable without being on that
+    # list is refused too. This is the general case the list is only a cheap backstop for.
+    $script:AclTable["C:\Windows\Sloppy"] = $tempSddl
+    Check "a user-writable directory under a protected root is refused by its ACL" (
+        (Test-StudioPathUnderAdminRoot -Path "C:\Windows\Sloppy\python.exe") -eq $false)
+    # A parent that grants Users write is enough on its own, and the leaf's own ACL reading as
+    # administrator-only does not redeem it. That is not a hypothetical: write access to a
+    # directory is permission to create a junction in it, and Get-Acl on a junction reports the
+    # TARGET's descriptor, so a link the attacker can retarget at will reads here as System32.
+    # This row leaves the leaf on the default System32 descriptor for exactly that reason, so it
+    # can only be refused by walking up.
+    Check "and so is a directory whose parent is user-writable, however tight its own ACL" (
+        (Test-StudioPathUnderAdminRoot -Path "C:\Windows\Sloppy\mine\python.exe") -eq $false)
+    # Owner, separately: an attacker who owns a directory holds WRITE_DAC whatever its DACL says.
+    $script:AclTable["C:\Program Files\Mine"] = $ownedSddl
+    Check "a directory owned by a standard user is refused however tight its DACL" (
+        (Test-StudioPathUnderAdminRoot -Path "C:\Program Files\Mine\python.exe") -eq $false)
+    $script:AclTable.Remove("C:\Program Files\Mine")
+    Check "control: the same path passes once its owner is administrators (bites)" (
+        (Test-StudioPathUnderAdminRoot -Path "C:\Program Files\Mine\python.exe") -eq $true)
+    # Unknown declines. An ACL that cannot be read is not evidence that it is a safe one.
+    $script:AclThrows = $true
+    Check "an unreadable ACL declines rather than trusting the location" (
+        (Test-StudioPathUnderAdminRoot -Path "C:\Program Files\Python312\python.exe") -eq $false)
+    $script:AclThrows = $false
+
+    # The SDDL reader on its own, over the shapes above and the ones that must not parse.
+    Check "System32's own descriptor is not user-writable" (
+        (Test-StudioSddlWritableByNonAdmin -Sddl $script:AclDefault) -eq $false)
+    Check "Temp's is" ((Test-StudioSddlWritableByNonAdmin -Sddl $tempSddl) -eq $true)
+    Check "an owner that is a plain user is enough" (
+        (Test-StudioSddlWritableByNonAdmin -Sddl $ownedSddl) -eq $true)
+    Check "a descriptor this cannot parse is treated as writable" (
+        (Test-StudioSddlWritableByNonAdmin -Sddl "not a descriptor") -eq $true)
+    Check "and so is an empty one" ((Test-StudioSddlWritableByNonAdmin -Sddl "") -eq $true)
+    # The owner really is read as BA and not as BAG: the owner and the group run together in the
+    # string, and a class that stops at the next colon reads the owner as "BAG" and declines
+    # every genuinely administrator-owned directory on the machine.
+    Check "the owner is split from the group correctly" (
+        (Test-StudioSddlWritableByNonAdmin -Sddl "O:BAG:SYD:PAI(A;;FA;;;BA)") -eq $false)
+    Check "read and execute is not write" (
+        (Test-StudioSddlRightsAreWrite -Rights "0x1200a9") -eq $false)
+    Check "create files is" ((Test-StudioSddlRightsAreWrite -Rights "0x100002") -eq $true)
+    Check "append data is" ((Test-StudioSddlRightsAreWrite -Rights "0x100004") -eq $true)
+    Check "a full 32-bit mask does not overflow into a Double" (
+        (Test-StudioSddlRightsAreWrite -Rights "0xffffffff") -eq $true)
+    Check "the word forms are read too" ((Test-StudioSddlRightsAreWrite -Rights "FA") -eq $true)
+    Check "and a read-only word form is not a write" (
+        (Test-StudioSddlRightsAreWrite -Rights "FRFX") -eq $false)
+    Check "an inherit-only CREATOR OWNER grant is not an effective one" (
+        (Test-StudioSddlWritableByNonAdmin -Sddl "O:BAG:SYD:PAI(A;;FA;;;BA)(A;OICIIO;GA;;;CO)") -eq $false)
+    Check "but the same grant without the inherit-only flag is" (
+        (Test-StudioSddlWritableByNonAdmin -Sddl "O:BAG:SYD:PAI(A;;FA;;;BA)(A;OICI;GA;;;CO)") -eq $true)
+    Check "a deny ACE is not a grant" (
+        (Test-StudioSddlWritableByNonAdmin -Sddl "O:BAG:SYD:PAI(A;;FA;;;BA)(D;;FA;;;BU)") -eq $false)
+    Remove-Item Function:Get-Acl -ErrorAction SilentlyContinue
     if ($null -eq $savedProgramFiles) { Remove-Item Env:ProgramFiles -ErrorAction SilentlyContinue } else { $env:ProgramFiles = $savedProgramFiles }
     if ($null -eq $savedSystemRoot) { Remove-Item Env:SystemRoot -ErrorAction SilentlyContinue } else { $env:SystemRoot = $savedSystemRoot }
 
