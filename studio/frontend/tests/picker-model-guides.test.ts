@@ -75,3 +75,22 @@ test("every guide points at an unsloth docs URL", () => {
     assert.ok(guide.title.trim().length > 0, `${repo} guide has a title`);
   }
 });
+
+// A distill carries its base family's name, so the named family it actually is must win.
+test("a named family beats a base family named in the same id", () => {
+  assert.equal(
+    modelGuide("unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF")?.title,
+    "DeepSeek-R1",
+  );
+  assert.equal(
+    modelGuide("unsloth/DeepSeek-R1-Distill-Qwen-32B")?.title,
+    "DeepSeek-R1",
+  );
+  assert.equal(
+    modelGuide("unsloth/DeepSeek-R1-Distill-Llama-8B")?.title,
+    "DeepSeek-R1",
+  );
+  // Reordering must not cost the plain Qwen matches.
+  assert.equal(modelGuide("unsloth/Qwen3-8B-GGUF")?.title, "Qwen3");
+  assert.equal(modelGuide("unsloth/Qwen3.8-27B-GGUF")?.title, "Qwen3.8");
+});

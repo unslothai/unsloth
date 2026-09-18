@@ -166,3 +166,17 @@ test("the panel does not restate the licence or show popularity", () => {
   // The verdict line survives only for screen readers.
   assert.match(DIALOG, /DialogDescription className="sr-only"/);
 });
+
+// A non-GGUF Hub result never expands, so without a menu of its own there was no way to read
+// its licence before selecting it and starting a download.
+test("Hub result rows carry an info-only menu, whatever their format", () => {
+  const rows = PICKERS.match(
+    /<div className="group flex items-center">\s*<div className="min-w-0 flex-1">\s*<ModelRow/g,
+  );
+  assert.ok(rows && rows.length >= 3, `expected the Hub result rows wrapped, saw ${rows?.length ?? 0}`);
+  assert.match(
+    PICKERS,
+    /ariaLabel=\{`More options for \$\{id\}`\}\s*\n\s*info=\{\{ repoId: id \}\}/,
+    "the parent row's menu should carry info and nothing format-gated",
+  );
+});

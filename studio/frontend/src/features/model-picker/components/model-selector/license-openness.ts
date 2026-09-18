@@ -126,6 +126,13 @@ const UNCLEAR_LICENSES: Readonly<
   },
 };
 
+// These tables are plain objects, so a bare index also resolves Object.prototype: a repo
+// tagged `license:__proto__` or `license:constructor` read as open, with a non-string label
+// that is not a valid React child. Own keys only.
+function own<T>(table: Readonly<Record<string, T>>, slug: string): T | undefined {
+  return Object.hasOwn(table, slug) ? table[slug] : undefined;
+}
+
 export function classifyLicense(
   license: string | null | undefined,
 ): LicenseVerdict {
@@ -140,7 +147,7 @@ export function classifyLicense(
     };
   }
 
-  const openLabel = OPEN_LICENSES[slug];
+  const openLabel = own(OPEN_LICENSES, slug);
   if (openLabel) {
     return {
       openness: "open",
@@ -149,7 +156,7 @@ export function classifyLicense(
     };
   }
 
-  const restricted = RESTRICTED_LICENSES[slug];
+  const restricted = own(RESTRICTED_LICENSES, slug);
   if (restricted) {
     return {
       openness: "restricted",
@@ -158,7 +165,7 @@ export function classifyLicense(
     };
   }
 
-  const unclear = UNCLEAR_LICENSES[slug];
+  const unclear = own(UNCLEAR_LICENSES, slug);
   if (unclear) {
     return {
       openness: "unknown",
@@ -167,7 +174,7 @@ export function classifyLicense(
     };
   }
 
-  const proprietaryLabel = PROPRIETARY_LICENSES[slug];
+  const proprietaryLabel = own(PROPRIETARY_LICENSES, slug);
   if (proprietaryLabel) {
     return {
       openness: "proprietary",

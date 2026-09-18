@@ -104,12 +104,13 @@ test("reasoning with no way out is always on, not hybrid", () => {
   assert.equal(reasoningSupport("<think>\n</think>"), "always");
 });
 
-test("a template that renders no thinking reports none", () => {
+// The markers recognise reasoning; they cannot prove its absence, so no match is unknown.
+test("a template with no markers is unknown, not a verdict of no", () => {
   assert.equal(
     reasoningSupport(
       "{% for message in messages %}{{ message.role }}: {{ message.content }}{% endfor %}",
     ),
-    "none",
+    "unknown",
   );
 });
 
@@ -176,4 +177,28 @@ test("every emitted fact has a non-empty label and value", () => {
     assert.ok(fact.label.trim().length > 0, `${fact.key} has a label`);
     assert.ok(fact.value.trim().length > 0, `${fact.key} has a value`);
   }
+});
+
+// A real counterexample, not one built around the markers: QwQ-32B-Preview is a reasoning
+// model whose published template carries no thinking markers at all. Verbatim excerpt.
+const QWQ_32B_PREVIEW_TEMPLATE = `{%- else %}
+    {%- if messages[0]['role'] == 'system' %}
+        {{- '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' }}
+    {%- else %}
+        {{- '<|im_start|>system\\nYou are a helpful and harmless assistant. You are Qwen developed by Alibaba. You should think step-by-step.<|im_end|>\\n' }}
+    {%- endif %}
+{%- endif %}
+{%- for message in messages %}
+    {%- if (message.role == "user") or (message.role == "system" and not loop.first) or (message.role == "assistant" and not message.tool_calls) %}
+`;
+
+test("a reasoning model with no markers is not called unsupported", () => {
+  assert.equal(reasoningSupport(QWQ_32B_PREVIEW_TEMPLATE), "unknown");
+  assert.equal(
+    factsByKey({
+      contextLength: 32768,
+      chatTemplate: QWQ_32B_PREVIEW_TEMPLATE,
+    }).get("reasoning"),
+    "Not detected",
+  );
 });

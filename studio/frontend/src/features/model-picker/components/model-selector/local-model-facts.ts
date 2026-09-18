@@ -39,23 +39,25 @@ const THINKING_TOGGLE = /\benable_thinking\b|\/no_?think\b|\bthinking_?budget\b/
 const REASONING_MARKERS =
   /\breasoning_effort\b|<\/?think>|<\|channel\|>analysis|\breasoning_content\b/;
 
-export type ReasoningSupport = "hybrid" | "always" | "none" | "unknown";
+export type ReasoningSupport = "hybrid" | "always" | "unknown";
 
-/** Whether the model reasons, and whether that can be switched off. `unknown` when no
- *  template was read, which is not the same as one that does not reason. */
+/** Whether the model reasons, and whether that can be switched off.
+ *
+ *  No match is `unknown`, never "no". These markers recognise a template that reasons; they
+ *  cannot prove one does not. QwQ-32B-Preview reasons and matches neither, so a "not
+ *  supported" verdict here would be wrong about a whole class of model. */
 export function reasoningSupport(
   template: string | null | undefined,
 ): ReasoningSupport {
   if (!template || !template.trim()) return "unknown";
   if (THINKING_TOGGLE.test(template)) return "hybrid";
-  return REASONING_MARKERS.test(template) ? "always" : "none";
+  return REASONING_MARKERS.test(template) ? "always" : "unknown";
 }
 
 const REASONING_VALUE: Record<ReasoningSupport, string> = {
   hybrid: "Hybrid",
   always: "Always on",
-  none: "Not supported",
-  unknown: "Unknown",
+  unknown: "Not detected",
 };
 
 const REASONING_DETAIL: Record<ReasoningSupport, string> = {
@@ -63,9 +65,8 @@ const REASONING_DETAIL: Record<ReasoningSupport, string> = {
     "Reasoning can be turned on or off per request, so this model can answer with or without thinking first.",
   always:
     "This model always reasons before answering; its template offers no way to turn thinking off.",
-  none: "This model's template renders no thinking, so it answers directly.",
   unknown:
-    "No chat template was read for this model, so whether it reasons is unknown.",
+    "No thinking markers in this model's chat template. It may still reason, so this is not a verdict that it does not.",
 };
 
 function formatTokens(tokens: number): string {

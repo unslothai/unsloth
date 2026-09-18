@@ -118,3 +118,21 @@ test("every verdict carries a non-empty summary", () => {
     assert.ok(summary.length > 0, `empty summary for ${String(slug)}`);
   }
 });
+
+// A `license:` tag is arbitrary repo text, and the tables are plain objects, so a bare index
+// also resolved Object.prototype: `__proto__` and `constructor` read as open, with an object
+// and a function for a label. Neither is a valid React child.
+test("inherited property names stay unknown, with a string label", () => {
+  for (const slug of ["__proto__", "constructor", "toString", "valueOf"]) {
+    const verdict = classifyLicense(slug);
+    assert.equal(verdict.openness, "unknown", `${slug} must not classify`);
+    assert.equal(typeof verdict.label, "string", `${slug} label must be a string`);
+    assert.equal(typeof verdict.summary, "string");
+  }
+});
+
+test("every verdict's label is a string, for the recognised slugs too", () => {
+  for (const slug of ["apache-2.0", "llama3.1", "gemma", "proprietary", "other", ""]) {
+    assert.equal(typeof classifyLicense(slug).label, "string", slug);
+  }
+});

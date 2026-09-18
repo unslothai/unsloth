@@ -18,6 +18,30 @@ const GUIDES: ReadonlyArray<{
   title: string;
   path: string;
 }> = [
+  // A distilled model carries its base family's name too, so the named family it actually is
+  // must match first: DeepSeek-R1-0528-Qwen3-8B is an R1 release, not a Qwen3 one.
+  // DeepSeek
+  { match: /deepseek[-_]?v4/, title: "DeepSeek-V4", path: "models/deepseek-v4" },
+  {
+    match: /deepseek[-_]?ocr[-_]?2/,
+    title: "DeepSeek-OCR 2",
+    path: "models/tutorials/deepseek-ocr-2",
+  },
+  {
+    match: /deepseek[-_]?ocr/,
+    title: "DeepSeek-OCR",
+    path: "models/tutorials/deepseek-ocr-how-to-run-and-fine-tune",
+  },
+  {
+    match: /deepseek[-_]?v3\.1/,
+    title: "DeepSeek-V3.1",
+    path: "models/tutorials/deepseek-v3.1-how-to-run-locally",
+  },
+  {
+    match: /deepseek[-_]?r1/,
+    title: "DeepSeek-R1",
+    path: "models/tutorials/deepseek-r1-how-to-run-locally",
+  },
   // Qwen
   {
     match: /qwen-?image/,
@@ -89,28 +113,6 @@ const GUIDES: ReadonlyArray<{
     match: /gemma[-_]?3/,
     title: "Gemma 3",
     path: "models/tutorials/gemma-3-how-to-run-and-fine-tune",
-  },
-  // DeepSeek
-  { match: /deepseek[-_]?v4/, title: "DeepSeek-V4", path: "models/deepseek-v4" },
-  {
-    match: /deepseek[-_]?ocr[-_]?2/,
-    title: "DeepSeek-OCR 2",
-    path: "models/tutorials/deepseek-ocr-2",
-  },
-  {
-    match: /deepseek[-_]?ocr/,
-    title: "DeepSeek-OCR",
-    path: "models/tutorials/deepseek-ocr-how-to-run-and-fine-tune",
-  },
-  {
-    match: /deepseek[-_]?v3\.1/,
-    title: "DeepSeek-V3.1",
-    path: "models/tutorials/deepseek-v3.1-how-to-run-locally",
-  },
-  {
-    match: /deepseek[-_]?r1/,
-    title: "DeepSeek-R1",
-    path: "models/tutorials/deepseek-r1-how-to-run-locally",
   },
   // Llama
   {
