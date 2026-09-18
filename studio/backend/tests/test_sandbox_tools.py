@@ -420,6 +420,15 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # A store whose own resolution hits a cycle must not hide the one that resolved.
+            pytest.param(
+                f"import requests\na = requests\nb = a\na = b\na.get('http://{_H}/')",
+                id = "alias_cycle_keeps_the_resolved_store",
+            ),
+            pytest.param(
+                f"import requests\na = requests\nb = a\na = b\nb.get('http://{_H}/')",
+                id = "alias_cycle_from_the_other_name",
+            ),
             # A definition binds its name only after its header has been evaluated.
             pytest.param(
                 f"import requests as fetch\ndef fetch(arg=fetch.get('http://{_H}/')):\n    pass",
@@ -736,6 +745,7 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
             "import requests\nrequests.options('https://pypi.org/')",
+            "import requests\na = requests\nb = a\na = b\na.get('https://pypi.org/')",
             "import requests\ngetattr(requests, 'get')('https://pypi.org/')",
             # An unrelated object's attribute is not dispatch into the network surface.
             "obj = make()\ngetattr(obj, 'get')('http://203.0.113.5/')",

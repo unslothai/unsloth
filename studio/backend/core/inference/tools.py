@@ -17137,8 +17137,11 @@ def _check_signal_escape_patterns(code: str):
                 network.append(_UNRESOLVED_FQ)
             if network:
                 return list(dict.fromkeys(network))
-            if bases and len(set(bases)) == 1 and bases[0]:
-                return [".".join([bases[0], *parts])]
+            # Every base that resolved, not only a unanimous one: a store whose own resolution
+            # hit a cycle contributes nothing, and it must not hide the store that did resolve.
+            resolved = list(dict.fromkeys(".".join([b, *parts]) for b in bases if b))
+            if resolved:
+                return resolved
             parts.insert(0, cur.id)
         return [".".join(parts)] if parts else [""]
 
