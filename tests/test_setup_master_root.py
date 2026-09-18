@@ -1049,3 +1049,79 @@ def test_neither_uninstaller_sweeps_a_stale_lock_name_it_did_not_make():
     assert '-like ".*.install.lock.stale.*"' not in ps_code
     assert "$script:StaleLockPattern" in ps_code
     assert "[0-9]+$" in ps_code
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
+    """The note is staged under an unpredictable name, so a link left in share/ is not followed.
+
+    The staging name used to be "$notePath.$$", and a shell redirection into an existing symlink
+    truncates its target. Anyone who could write share/ -- a portable volume mounted for two
+    accounts is the shape that matters, since a master root is what this note records -- could
+    therefore point that name at a file of theirs and have setup empty it. The attacker's
+    capability is simulated exactly rather than approximated: the link is created by the same
+    shell that then runs the shipped block, so "$$" matches the way a guessed pid would.
+
+    setup.sh already states this rule for the uv cache probe ("mktemp (O_EXCL) not $$"); the note
+    writer is now held to it too.
+    """
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    block = _slice(src, 'if [ -n "$_MASTER_ROOT" ] && [ -z "$STAGE_ROOT" ]; then', "LLAMA_CPP_DIR=")
+
+    studio_home = tmp_path / "studio"
+    (studio_home / "share").mkdir(parents = True)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("do not truncate me\n", encoding = "utf-8")
+    master = tmp_path / "portable"
+
+    script = "\n".join(
+        (
+            "set -u",
+            # The predictable name the old block would have opened.
+            'ln -s "$VICTIM" "$STUDIO_HOME/share/.unsloth-master-root.$$"',
+            block,
+        )
+    )
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "STUDIO_HOME": str(studio_home),
+            "UNSLOTH_HOME": str(master),
+            "_MASTER_ROOT": str(master),
+            "STAGE_ROOT": "",
+            "VICTIM": str(victim),
+        },
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    assert victim.read_text(encoding = "utf-8") == "do not truncate me\n"
+    note = studio_home / "share" / ".unsloth-master-root"
+    assert note.read_text(encoding = "utf-8").strip() == str(master)
+    # The rename replaces a link at the final path rather than writing through it.
+    assert not note.is_symlink()
+    # No staging file survives the run, whatever name it was given.
+    leftovers = sorted(
+        p.name for p in (studio_home / "share").iterdir()
+        if p.name.startswith(".unsloth-master-root.") and not p.is_symlink()
+    )
+    assert leftovers == [], leftovers
+
+
+def test_the_windows_note_writer_creates_its_staging_file_exclusively():
+    """The setup.ps1 half of the test above. Held structurally: the Linux runners have no
+    Windows filesystem to plant a link on, and CreateNew is the thing that must not regress."""
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    block = _slice(ps, "if ((Get-MasterRootOverride) -and -not $StageRoot) {", "\n# ")
+    # Comments stripped, as the other structural checks here do: the block explains the old
+    # staging name in prose, and the name is only a finding when something executes it.
+    block = "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("#"))
+
+    assert "$notePath.$PID" not in block, "predictable staging name is back"
+    assert "GetRandomFileName()" in block
+    assert "[System.IO.FileMode]::CreateNew" in block
+    # WriteAllText opens an existing path rather than failing on it.
+    assert "WriteAllText($noteTmp" not in block

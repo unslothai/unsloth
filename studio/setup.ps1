@@ -2798,8 +2798,23 @@ if ((Get-MasterRootOverride) -and -not $StageRoot) {
         # Staged then renamed: a reader that caught a half-written note would name a truncated
         # path, and this note licenses deletions.
         $notePath = Join-Path $noteDir ".unsloth-master-root"
-        $noteTmp = "$notePath.$PID"
-        [System.IO.File]::WriteAllText($noteTmp, $UnslothHome + [Environment]::NewLine)
+        # An unpredictable name opened CreateNew, not "$notePath.$PID" written through
+        # WriteAllText: the predictable pair lets anyone who can write share/ precreate that name
+        # and have this write land on whatever it points at. CreateNew fails on an existing entry
+        # instead of opening it, and Move-Item -Force below replaces a link at the final path.
+        $noteTmp = Join-Path $noteDir (".unsloth-master-root." + [System.IO.Path]::GetRandomFileName())
+        $noteStream = [System.IO.File]::Open(
+            $noteTmp,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        try {
+            $noteBytes = [System.Text.Encoding]::UTF8.GetBytes($UnslothHome + [Environment]::NewLine)
+            $noteStream.Write($noteBytes, 0, $noteBytes.Length)
+        } finally {
+            $noteStream.Dispose()
+        }
         # Move-Item -Force, not [IO.File]::Move with an overwrite flag: that overload is .NET
         # Core only and setup.ps1 still runs under Windows PowerShell 5.1.
         Move-Item -LiteralPath $noteTmp -Destination $notePath -Force

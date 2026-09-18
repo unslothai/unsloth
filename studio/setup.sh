@@ -3547,11 +3547,19 @@ if [ -n "$_MASTER_ROOT" ] && [ -z "$STAGE_ROOT" ]; then
     if mkdir -p "$STUDIO_HOME/share" 2>/dev/null; then
         # Staged then renamed: a reader that catches a half-written note would name a truncated
         # path, and this note licenses deletions.
-        _mrn_tmp="$STUDIO_HOME/share/.unsloth-master-root.$$"
-        if printf '%s\n' "$UNSLOTH_HOME" > "$_mrn_tmp" 2>/dev/null; then
+        #
+        # mktemp (O_EXCL, unpredictable suffix) rather than "$$", the same rule
+        # _uv_cache_root_is_writable states above: a redirection into a predictable name follows
+        # whatever is already there, so anyone who can write share/ could precreate that name as
+        # a symlink and have this write truncate the file it points at. The rename below replaces
+        # a link at the final path rather than following it, so only the staging name was open.
+        if ! _mrn_tmp=$(mktemp "$STUDIO_HOME/share/.unsloth-master-root.XXXXXX" 2>/dev/null); then
+            _mrn_tmp=""
+        fi
+        if [ -n "$_mrn_tmp" ] && printf '%s\n' "$UNSLOTH_HOME" > "$_mrn_tmp" 2>/dev/null; then
             mv -f "$_mrn_tmp" "$STUDIO_HOME/share/.unsloth-master-root" 2>/dev/null \
                 || rm -f "$_mrn_tmp" 2>/dev/null || true
-        else
+        elif [ -n "$_mrn_tmp" ]; then
             rm -f "$_mrn_tmp" 2>/dev/null || true
         fi
         unset _mrn_tmp
