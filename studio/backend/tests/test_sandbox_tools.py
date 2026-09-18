@@ -420,6 +420,15 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # A constant getattr on a tracked module names the call it selects.
+            pytest.param(
+                f"import requests\ngetattr(requests, 'get')('http://{_H}/')",
+                id = "constant_getattr_dispatch",
+            ),
+            pytest.param(
+                f"import requests\nf = getattr(requests, 'get')\nf('http://{_H}/')",
+                id = "constant_getattr_alias",
+            ),
             # The lowercase session factory is the same client as the class.
             pytest.param(
                 f"import requests\nrequests.session().get('http://{_H}/')",
@@ -718,6 +727,9 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
             "import requests\nrequests.options('https://pypi.org/')",
+            "import requests\ngetattr(requests, 'get')('https://pypi.org/')",
+            # An unrelated object's attribute is not dispatch into the network surface.
+            "obj = make()\ngetattr(obj, 'get')('http://203.0.113.5/')",
             "import requests\ns = requests.session()\ns.get('https://pypi.org/')",
             "import aiohttp\naiohttp.request('GET', 'https://pypi.org/')",
             # An explicit None is a disabled proxy, not an unknown destination.
@@ -770,6 +782,8 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url=input()).get('/')",
             "import httpx\nc = httpx.Client()\nc.send(r)",
             "import requests\n(fetch := requests.get)(input())",
+            # A runtime attribute of a tracked module is a call we cannot name.
+            "import requests\ngetattr(requests, name)('http://203.0.113.5/')",
             "import aiohttp\naiohttp.ClientSession().ws_connect(input())",
             "import requests\nclass A:\n    def __init__(self):\n        self.session = requests.Session()\n"
             "    def go(self):\n        self.session.get(input())",
@@ -894,6 +908,11 @@ class TestUploadDenylist:
                 "import requests\n"
                 's = requests.session()\ns.post("https://huggingface.co/", files={"x": open("r.txt")})',
                 id = "requests_session_factory_post_files_blocked",
+            ),
+            pytest.param(
+                "import aiohttp\n"
+                'aiohttp.request("POST", "https://huggingface.co/x", data=open("artifact", "rb"))',
+                id = "aiohttp_request_data_open_handle_blocked",
             ),
         ],
     )

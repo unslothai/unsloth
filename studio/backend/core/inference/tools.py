@@ -16129,6 +16129,13 @@ def _check_signal_escape_patterns(code: str):
     _CONNECTING_CLIENT_FQ = frozenset(
         {"socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient"}
     )
+    # Modules and classes that own a listed call, so `getattr(<owner>, name)` is dynamic
+    # dispatch into the network surface rather than an unrelated attribute lookup.
+    _NETWORK_OWNERS = frozenset(
+        fq.rsplit(".", 1)[0]
+        for fq in (*_NETWORK_TARGET_ARGS, *_NETWORK_FQ_PREFIXES, *_CONNECTING_CLIENT_FQ)
+        if "." in fq
+    )
     _UPLOAD_VERBS = ("post", "put", "patch", "delete", "request")
     _UPLOAD_HTTP_METHODS = (
         # Uploading through a session is the same upload as through the module function.
@@ -16139,6 +16146,8 @@ def _check_signal_escape_patterns(code: str):
         ),
         "urllib.request.urlopen",
         "urllib.request.Request",
+        "aiohttp.request",
+        "aiohttp.client.request",
     )
     _UPLOAD_HF_FQ = (
         "huggingface_hub.upload_file",
@@ -17058,6 +17067,21 @@ def _check_signal_escape_patterns(code: str):
             cur = cur.value
             while isinstance(cur, ast.NamedExpr):
                 cur = cur.value
+        if isinstance(cur, ast.Call) and "getattr" in _resolved_fqs(cur.func, depth + 1):
+            args = cur.args or []
+            owners = [b for b in _resolved_fqs(args[0], depth + 1) if b] if args else []
+            attr = args[1] if len(args) > 1 else None
+            if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+                dynamic = [
+                    fq
+                    for fq in (".".join([b, attr.value, *parts]) for b in owners)
+                    if _is_network_fq(fq)
+                ]
+                if dynamic:
+                    return list(dict.fromkeys(dynamic))
+            elif any(b in _NETWORK_OWNERS for b in owners):
+                # A runtime attribute of a tracked module is a call we cannot name, so ask.
+                return [_UNRESOLVED_FQ]
         if isinstance(cur, ast.Call):
             # An instance stands for the constructor that made it, but only when that lands on a
             # known client: an opaque helper's name says nothing about what it returned.
