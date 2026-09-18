@@ -203,12 +203,23 @@ function Test-StudioPathUnder {
     Case-insensitive, like the rest of this script's path handling, because the paths reach
     here from two different APIs: the directory from Get-ChildItem and the file path from the
     same walk or from FileSystemWatcher.
+
+    The directory itself counts, and that is load-bearing rather than tidiness. A temp ROOT
+    can be the thing that could not be enumerated, and the root is also what the watcher
+    attaches to, so the coverage check asks whether an unread directory is at or under a
+    watched root and gets back the root itself. Descendants-only there means a root that
+    failed to enumerate twice, on a machine where the watcher did attach to it, is declared
+    uncovered and the run throws - which is the temp-scan failure this whole change exists to
+    contain, put back one layer up.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Directory
     )
     $trimmed = $Directory.TrimEnd('\', '/')
+    if ($Path.TrimEnd('\', '/').Equals($trimmed, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
     foreach ($separator in @('\', '/')) {
         if ($Path.StartsWith($trimmed + $separator, [System.StringComparison]::OrdinalIgnoreCase)) {
             return $true

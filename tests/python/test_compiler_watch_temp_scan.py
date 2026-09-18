@@ -352,6 +352,13 @@ def test_the_prefix_test_does_not_match_a_sibling_by_name() -> None:
         + "\n"
         r"Write-Output ('case=' + (Test-StudioPathUnder -Path 'C:\T\A\x.dll' -Directory 'c:\t\a'))"
         + "\n"
+        # The directory itself. A temp ROOT can be what failed to enumerate, and the root is
+        # also what the watcher attaches to, so descendants-only makes the coverage check
+        # below declare a watched root uncovered and throw.
+        r"Write-Output ('self=' + (Test-StudioPathUnder -Path 'C:\t\a' -Directory 'C:\t\a'))"
+        + "\n"
+        r"Write-Output ('selfslash=' + (Test-StudioPathUnder -Path 'C:\t\a\' -Directory 'C:\t\a'))"
+        + "\n"
     )
     assert proc.returncode == 0, proc.stderr
     out = dict(
@@ -363,3 +370,66 @@ def test_the_prefix_test_does_not_match_a_sibling_by_name() -> None:
         f"one, which would withhold real evidence: {out}"
     )
     assert out["case"] == "True", out
+    assert out["self"] == "True" and out["selfslash"] == "True", (
+        "the directory itself did not count as covered. An unreadable temp ROOT is then "
+        f"declared to have no watcher on it and the run throws for nothing: {out}"
+    )
+
+
+def _shipped_coverage_check() -> str:
+    """The `if ($unread.Count -gt 0) { ... }` block from Invoke-WithCompilerWatch.
+
+    Read from the shipped file for the same reason as the `$left` expression: a copy here
+    would keep passing after the real check changed.
+    """
+    text = SCRIPT.read_text(encoding = "utf-8")
+    start = text.index("    if ($unread.Count -gt 0) {")
+    end = text.index("\n    }\n", start) + len("\n    }\n")
+    block = text[start:end]
+    assert "Test-StudioPathUnder" in block and "throw" in block, block
+    return block
+
+
+def test_an_unreadable_root_with_a_watcher_on_it_does_not_void_the_run() -> None:
+    """The case that would reintroduce the failure this change exists to contain.
+
+    A temp ROOT can be the directory that could not be enumerated, and the root is also
+    exactly what Start-StudioTempWatch attaches to. If the coverage check only recognises
+    descendants of a watched root, an unreadable root is declared to have no watcher, the run
+    throws, and the job goes red again for a transient condition in somebody else's TEMP.
+    """
+    proc = _run_pwsh(
+        r"$unread = @('C:\t')" + "\n"
+        r"$watch = @([pscustomobject]@{ Root = 'C:\t' })" + "\n"
+        "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
+        "([string[]]@($watch | ForEach-Object { $_.Root }), [StringComparer]::OrdinalIgnoreCase)\n"
+        + _shipped_coverage_check()
+        + "Write-Output 'SURVIVED'\n"
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SURVIVED" in proc.stdout, (
+        "an unreadable temp root voided the measurement even though the watcher was attached "
+        f"to that very root:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_an_unreadable_root_with_no_watcher_still_voids_the_run() -> None:
+    """The control: the throw has to survive, or the fix above would gut the guard.
+
+    With nothing watching, the listing is the only evidence there is, and withholding part of
+    it would hand back a hole as a clean result.
+    """
+    proc = _run_pwsh(
+        r"$unread = @('C:\t')" + "\n"
+        "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
+        "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
+        + _shipped_coverage_check()
+        + "Write-Output 'SURVIVED'\n"
+    )
+    assert "SURVIVED" not in proc.stdout, (
+        "an unread directory with no watcher on its root was treated as a complete "
+        f"measurement:\n{proc.stdout}"
+    )
+    assert "cannot say whether a compiler ran" in (proc.stdout + proc.stderr), (
+        f"the run was voided without saying why:\n{proc.stdout}\n{proc.stderr}"
+    )
