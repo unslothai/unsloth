@@ -484,6 +484,7 @@ def test_an_unreachable_guard_is_caught(tmp_path, monkeypatch) -> None:
 # The gate has to survive its own runner set.
 # ---------------------------------------------------------------------------
 
+
 def _steps_exposed_to_the_powershell_default(workflows: Path) -> list[tuple[str, str, str]]:
     """Every `run:` step that will be handed to PowerShell on a Windows runner.
 
