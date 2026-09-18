@@ -584,3 +584,61 @@ def _smi_free_total(monkeypatch, rows):
         "core.inference.llama_cpp.subprocess.run",
         lambda *a, **k: types.SimpleNamespace(returncode = 0, stdout = stdout, stderr = ""),
     )
+
+
+def test_a_cgroup_ceiling_survives_the_never_shrink_floor(monkeypatch):
+    """Inside a container the floor must not hand back memory `memory.max` forbids.
+
+    The free half is floored at the reading nvidia-smi already vouched for, which is
+    right on bare metal and wrong inside a cgroup: allocations on a unified part are
+    charged to it, so republishing the larger carve-out figure prices a fit against
+    memory the kernel will not give and the child is killed rather than offloaded.
+    """
+    _integrated_llama_host(monkeypatch, avail_mib = 40000)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 2048)
+    )
+
+    rows = LlamaCppBackend._widen_integrated_cuda_rows([(0, 6000, N1X_CARVE_OUT_MIB)])
+
+    assert rows[0][1] <= 2048, rows
+    # A cgroup-bound row publishes no total, which is the shared-pool marker.
+    assert rows[0][2] == 0
+
+
+def test_a_mask_with_no_physical_ids_refuses_a_multi_row_join(monkeypatch):
+    """A UUID or MIG mask leaves torch ordinals and nvidia-smi indices unjoinable.
+
+    `_resolve_visible_physical_ids()` returns None there, so `_integrated_cuda_gpu_ids`
+    falls back to the ordinal, while `_visible_devices_mask` also returns None and the
+    CLI rows are NOT filtered to match. Re-pricing row 1 because ordinal 1 is integrated
+    would advertise a discrete card with a system-RAM-sized pool.
+    """
+    _llama_common(monkeypatch, avail_mib = 43000)
+    monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {1}))
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_integrated_cuda_pool_total_mib",
+        staticmethod(lambda: {1: N1X_POOL_MIB}),
+    )
+    smi_rows = [(0, 2256, N1X_CARVE_OUT_MIB), (1, 20000, 24564)]
+
+    assert LlamaCppBackend._widen_integrated_cuda_rows(list(smi_rows)) == smi_rows
+
+
+def test_a_blank_total_is_still_filled_on_a_discrete_card(monkeypatch):
+    """MIG and vGPU rows read [N/A] for memory.total on a card that is not integrated.
+
+    Filling those was this function's original job and is not part of the widening; a
+    row left blank sends the whole response down get_backend_visible_gpu_info's torch
+    fallback instead of publishing the nvidia-smi rows it already has.
+    """
+    _cuda_host(monkeypatch, _DiscreteProps())
+    devices = [{"index": 0, "visible_ordinal": 0, "memory_total_gb": None}]
+
+    complete = hw._repair_smi_visible_devices(devices, [0])
+
+    assert complete is True
+    assert devices[0]["memory_total_gb"] == 24.0
+    assert devices[0].get("unified_memory") is not True
+    assert devices[0].get("shared_memory") is not True

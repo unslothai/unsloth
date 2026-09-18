@@ -10560,6 +10560,24 @@ class LlamaCppBackend:
             integrated = LlamaCppBackend._integrated_cuda_gpu_ids()
             if not integrated or not gpus:
                 return gpus
+            # The two id spaces have to be the same one. These rows are nvidia-smi
+            # PHYSICAL indices, while _integrated_cuda_gpu_ids falls back to the torch
+            # ORDINAL whenever _resolve_visible_physical_ids() cannot answer -- which is
+            # exactly what a UUID or MIG mask produces, and _visible_devices_mask returns
+            # None on that same mask, so the CLI rows are not filtered down to match.
+            # A UUID naming physical GPU 3 therefore yields the id 0 and would re-price
+            # row 0, a different card: a discrete card advertised with a system-RAM-sized
+            # pool, which is the one shape here that overcommits real VRAM. hardware.py
+            # guards the same join with _cuda_order_matches_smi; with one visible device
+            # the two spaces cannot disagree, so only a multi-row probe is refused.
+            if LlamaCppBackend._resolve_visible_physical_ids() is None and len(gpus) > 1:
+                logger.debug(
+                    "Not widening integrated CUDA rows: the visible mask gives no "
+                    "physical ids, so a torch ordinal cannot be joined to an "
+                    "nvidia-smi index across %d rows.",
+                    len(gpus),
+                )
+                return gpus
             totals = LlamaCppBackend._integrated_cuda_pool_total_mib()
             avail = LlamaCppBackend._available_system_memory_mib()
             cgroup_mib = LlamaCppBackend._cgroup_available_memory_mib()
@@ -10572,6 +10590,7 @@ class LlamaCppBackend:
                 if idx not in integrated:
                     out.append((idx, free_mib, total_mib))
                     continue
+                cli_total_mib = total_mib
                 pool_mib = totals.get(idx) or 0
                 if pool_mib > total_mib:
                     total_mib = pool_mib
@@ -10597,8 +10616,17 @@ class LlamaCppBackend:
                 # The floor promised above. The host reserve could otherwise take a
                 # nearly full machine below the carve-out reading, which is memory the
                 # driver had already vouched for.
-                capped = max(capped, free_mib // shared_count)
-                if capped != free_mib or total_mib != 0:
+                #
+                # NOT when the cgroup bound it. memory.max is a ceiling this process
+                # cannot allocate past whatever the driver vouched for outside the
+                # container, and allocations on a unified part are charged to it, so a
+                # floor here would hand the fit planner a budget the kernel kills.
+                if not cgroup_bound:
+                    capped = max(capped, free_mib // shared_count)
+                # Only when something actually moved: _get_gpu_memory is uncached and
+                # _wait_for_vram_settle polls it every 0.25 s, so an unconditional line
+                # here is one per poll saying nothing. The torch arm logs the same way.
+                if capped != free_mib or total_mib != cli_total_mib:
                     logger.info(
                         f"CUDA device {idx} is a unified-memory SoC sharing system RAM; "
                         f"sizing it against the shared pool "

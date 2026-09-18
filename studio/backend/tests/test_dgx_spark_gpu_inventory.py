@@ -503,8 +503,19 @@ def test_a_known_usage_still_gets_its_percentage(monkeypatch):
     Filling the total is what makes the percentage computable, so a device that already
     carries a usage must not be skipped: it was the one case where both operands existed
     and the monitor still showed an unknown.
+
+    The host counter has to be stubbed. On one shared pool the used half is
+    ``max(host_used, cli_used)``, so without this the assertion below reads whatever the
+    machine running the suite happens to be using and the test passes or fails by how
+    busy the runner is. Held at 20 GiB, under the 30.0 the CLI reports, so the CLI's own
+    figure is the larger one and the assertion is about the rule rather than the host.
     """
     _cuda_host(monkeypatch, _SparkProps())
+    monkeypatch.setattr(
+        psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(total = 121 * GIB, available = 101 * GIB),
+    )
     utilization = {
         "devices": [
             {
@@ -521,6 +532,7 @@ def test_a_known_usage_still_gets_its_percentage(monkeypatch):
     device = utilization["devices"][0]
 
     assert device["vram_total_gb"] == SPARK_TOTAL_GB
-    # The CLI's own figure, not the host counter that stands in when it is absent.
+    # Whichever of the two is larger. Both are lower bounds on occupancy of one pool,
+    # and here the CLI's own figure is the larger one.
     assert device["vram_used_gb"] == 30.0
     assert device["vram_utilization_pct"] == round((30.0 / SPARK_TOTAL_GB) * 100, 1)

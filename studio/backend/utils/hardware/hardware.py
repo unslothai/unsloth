@@ -5608,23 +5608,30 @@ def _repair_smi_visible_devices(
     Spark N1X, the dedicated carve-out of a part whose CUDA budget is 46477 MiB, so the
     old shortcut here -- return early whenever every row carried a number -- published a
     45 GiB device as a 7.94 GiB one on the System tab while the About tab, which reads
-    torch, showed 45.39 GiB for the same machine. The capacity is therefore widened on a
-    confirmed integrated part as well as filled on a blank one, and on nothing else.
+    torch, showed 45.39 GiB for the same machine. So a BLANK total is still filled on any
+    part, as it always was, and a READABLE one is additionally widened on a confirmed
+    integrated part, and on nothing else.
     """
     if not devices:
         return False
     try:
-        integrated, key_field = _integrated_cuda_rows(parent_visible_ids)
+        inventory, key_field = _integrated_cuda_inventory(parent_visible_ids)
     except Exception as e:  # noqa: BLE001 - the caller keeps the rows nvidia-smi found
         logger.debug("torch inventory unavailable while repairing a GPU capacity: %s", e)
         return all(dev.get("memory_total_gb") is not None for dev in devices)
-    if not integrated:
-        # Discrete: byte for byte the rows nvidia-smi reported, as before this existed.
-        return all(dev.get("memory_total_gb") is not None for dev in devices)
     for dev in devices:
-        td = integrated.get(dev.get(key_field))
+        td = inventory.get(dev.get(key_field))
         if td is None:
             continue
+        # A BLANK total is filled whatever the part is, which is what this function did
+        # before the widening was added: a discrete card whose memory.total reads [N/A]
+        # (MIG, vGPU) had its capacity filled here too, and dropping that sent the whole
+        # response down get_backend_visible_gpu_info's torch fallback instead.
+        if dev.get("memory_total_gb") is None:
+            dev["memory_total_gb"] = td["total_gb"]
+        if not td.get("_cuda_integrated"):
+            continue
+        # A READABLE total is only widened on a confirmed integrated part.
         if _integrated_total_is_understated(dev.get("memory_total_gb"), td["total_gb"]):
             dev["memory_total_gb"] = td["total_gb"]
         dev["unified_memory"] = True
