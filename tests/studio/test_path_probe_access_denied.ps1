@@ -495,10 +495,14 @@ foreach ($fn in $preflightFns) {
     Check "install.ps1 defines $fn" ($null -ne $src)
     if ($src) { $preflightSrc += $src }
 }
-# Anything the lifted bodies call that is not itself lifted, and is not one of the stubs the
-# harness defines. A missing helper does not announce itself: the child dies on the first call,
-# every Write-Host after it is lost, and the assertions below fail as though the preflight had
-# resolved the wrong directory. This is how Get-MasterRootOverride was missed.
+# Anything the lifted bodies call that install.ps1 defines and the lift then leaves behind,
+# other than the stubs the harness supplies. A missing helper does not announce itself: the
+# child dies on the first call, every Write-Host after it is lost, and the assertions below
+# fail as though the preflight had resolved the wrong directory. This is how
+# Get-MasterRootOverride was missed. The test is "install.ps1 defines it", not "this session
+# can resolve it": Get-SecuritySoftwareNote reaches Get-CimInstance and Get-MpPreference, which
+# exist on the Windows host that runs the preflight and on no Linux runner, so resolvability
+# would report those two as unlifted helpers here and nothing at all there.
 $harnessStubs = @("step", "substep", "Write-StudioLine")
 $preflightCalls = @()
 foreach ($src in $preflightSrc) {
@@ -511,7 +515,7 @@ foreach ($src in $preflightSrc) {
 }
 $unlifted = @($preflightCalls | Sort-Object -Unique | Where-Object {
     $_ -notin $preflightFns -and $_ -notin $harnessStubs -and
-    -not (Get-Command $_ -ErrorAction SilentlyContinue)
+    $null -ne (Get-FunctionSource -Path $installPath -Name $_)
 })
 Check ("the preflight lifts every install.ps1 helper it calls" +
        $(if ($unlifted.Count) { " (not lifted: " + ($unlifted -join ", ") + ")" } else { "" })) `
