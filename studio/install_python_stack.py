@@ -2887,8 +2887,32 @@ def _forced_rocm_route_is_viable() -> bool:
         # (gfx908 on ROCm 5.7). Ask exactly what its three version-independent arms ask: an
         # explicit pin, the missing-kernel reroute (the Strix one is a floor on it), and the
         # inferred-arch install.
-        _ver = _detect_rocm_version() or (0, 0)
+        _raw_ver = _detect_rocm_version()
+        _ver = _raw_ver or (0, 0)
         _declared = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip()
+        if _raw_ver is None:
+            # An unreadable version is not "ROCm 0.0" to _ensure_rocm_torch. Its `ver is None`
+            # branch asks _generic_rocm_wheel_lacks_kernels with NO version, which keeps the
+            # union reading and answers False for gfx1102 / gfx1200 / gfx1201, while the (0, 0)
+            # spelling below answers True for exactly those three: no tag resolves at (0, 0), so
+            # _generic_tag_lacks_kernels reads them as needing the per-arch reroute. Asking the
+            # (0, 0) question here approved a swap that branch then declines, and
+            # _ensure_cuda_torch had already stood down for it -- the host kept whatever torch
+            # it had, a broken one included. Ask that branch's four conjuncts verbatim instead,
+            # so the two halves cannot answer differently about the same unreadable host.
+            _torch_ran, _torch_imp, _torch_ver, _, _ = _probe_torch_runtime()
+            _installed_ver = (_torch_ver or "").lower() if (_torch_ran and _torch_imp) else ""
+            if (
+                _explicit_rocm_torch_index_url() is None
+                and not _inferred
+                and not _generic_rocm_wheel_lacks_kernels(_target)
+                and not _rocm_torch_family_needs_repair(
+                    _target, None, _host_codes or [_target]
+                )
+                and not _rocm_compat_reroute_pending(_target, (0, 0), _installed_ver)
+            ):
+                return False
+            return _gfx_route_on_host(_target, _host_codes or [_target])
         if (
             _explicit_rocm_torch_index_url() is None
             and _generic_pytorch_rocm_tag(_ver) is None

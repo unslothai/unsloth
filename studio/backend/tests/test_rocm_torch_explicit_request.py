@@ -2703,3 +2703,73 @@ def test_a_single_family_host_is_unchanged():
         )
         == "gfx110X-all"
     )
+
+
+def _unreadable_version_host(stack, monkeypatch, gfx: str) -> None:
+    """A mixed NVIDIA + AMD host whose ROCm version cannot be read.
+
+    Every probe is stubbed, because the point of these three cases is what the two halves
+    answer about ONE host: left to the runner's own silicon they would describe different
+    machines and agree by accident.
+    """
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_mask, raising = False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    # _forced_rocm_route_is_viable leads with an x86_64 test, so on an ARM64 Linux or Apple
+    # Silicon runner it answers False before reaching the version arm these cases are about
+    # and every one of them would pass for the wrong reason, or fail for it.
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_is_wsl", lambda: False)
+    monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [gfx])
+    monkeypatch.setattr(
+        stack, "_detect_amd_gfx_codes", lambda dedup = True, **k: [gfx]
+    )
+    monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: [gfx])
+    monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
+    monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: None)
+    monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: None)
+    # Healthy CUDA torch: the build the stand-down leaves in place when nothing replaces it.
+    monkeypatch.setattr(
+        stack, "_probe_torch_runtime", lambda *a, **k: (True, True, "2.13.0+cu130", "", "13.0")
+    )
+    monkeypatch.setattr(stack, "_detect_rocm_version", lambda: None)
+
+
+@pytest.mark.parametrize("gfx", ["gfx1102", "gfx1200", "gfx1201"])
+def test_an_unreadable_version_is_judged_as_the_installer_judges_it(stack, monkeypatch, gfx):
+    """The two halves must not read the same unreadable version differently.
+
+    _ensure_rocm_torch's `ver is None` branch asks _generic_rocm_wheel_lacks_kernels with NO
+    version, which keeps the union reading and answers False for these three. The viability
+    test used to substitute (0, 0), where no tag resolves and _generic_tag_lacks_kernels
+    answers True, so it approved the missing-kernel reroute the installer then does not take:
+    _ensure_cuda_torch stood down and _ensure_rocm_torch printed "version unreadable --
+    skipping torch reinstall", leaving the host on whatever torch it started with.
+    """
+    _unreadable_version_host(stack, monkeypatch, gfx)
+    assert stack._forced_rocm_route_is_viable() is False
+
+
+@pytest.mark.parametrize("gfx", ["gfx1151", "gfx1103"])
+def test_an_unreadable_version_still_serves_the_arches_that_do_install(stack, monkeypatch, gfx):
+    """The narrowing control. gfx1151 reaches the Strix compatibility reroute and gfx1103 is
+    per-arch only, so _ensure_rocm_torch DOES install for both with no readable version. A fix
+    that declined every unreadable host would pass the case above and fail here."""
+    _unreadable_version_host(stack, monkeypatch, gfx)
+    assert stack._forced_rocm_route_is_viable() is True
+
+
+@pytest.mark.parametrize("gfx", ["gfx1102", "gfx1200", "gfx1201"])
+def test_a_readable_version_still_routes_the_same_three_arches(stack, monkeypatch, gfx):
+    """The other control: the change is scoped to an unreadable version. On ROCm 6.4 these
+    same three still approve, so the fix cannot be a blanket refusal of the arches."""
+    _unreadable_version_host(stack, monkeypatch, gfx)
+    monkeypatch.setattr(stack, "_detect_rocm_version", lambda: (6, 4))
+    assert stack._forced_rocm_route_is_viable() is True
