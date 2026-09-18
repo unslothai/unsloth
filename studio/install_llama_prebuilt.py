@@ -7973,6 +7973,13 @@ def persist_macos_load_probe(install_dir: Path, host: HostInfo) -> bool:
     Re-recording the runtime files is safe HERE and nowhere else: the minos check, the
     digests the marker did carry and dyld itself all passed on these exact bytes
     moments ago, which is the same evidence the install path records on.
+
+    Called only from _existing_install_runs, and only once every image has started.
+    The record covers the ROOT copies too, and a later run skips starting them on the
+    strength of it, so only a caller that has started them all can write it. The two
+    reuse fast paths probe build/bin alone and never reach a root wrapper, which can be
+    a separate file rather than a symlink: persisting from there recorded a wrapper
+    nothing had run, and the next run trusted the record and never ran it either.
     """
     record = macos_load_probe_record(host)
     if record is None:
@@ -8587,7 +8594,7 @@ def existing_install_current_without_plan(
         return False
     try:
         preflight_linux_installed_binaries(binaries, install_dir, host)
-        probed = preflight_macos_installed_binaries(
+        preflight_macos_installed_binaries(
             binaries,
             install_dir,
             host,
@@ -8598,8 +8605,6 @@ def existing_install_current_without_plan(
     # The one backfill that is not a release change, so it has to be asked separately.
     if _diffusion_visual_server_missing_for_marker(install_dir, host, marker):
         return False
-    if probed:
-        persist_macos_load_probe(install_dir, host)
     # "already matches" is what setup.sh and setup.ps1 grep for to report the install up to date.
     log(
         "existing llama.cpp install already matches selected release "
@@ -8852,7 +8857,6 @@ def existing_install_matches_choice(
     # match. Only a marker carrying the record is held to it.
     recorded_files = metadata.get("runtime_files")
     runtime_files_matched = False
-    macos_probed = False
     if isinstance(recorded_files, dict) and recorded_files:
         if not _runtime_files_match(install_dir, host, metadata):
             return False
@@ -8888,7 +8892,7 @@ def existing_install_matches_choice(
     # reject it, so a matching fingerprint would reuse the broken tree forever.
     elif host.is_macos:
         try:
-            macos_probed = preflight_macos_installed_binaries(
+            preflight_macos_installed_binaries(
                 [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
                 install_dir,
                 host,
@@ -8928,10 +8932,6 @@ def existing_install_matches_choice(
     for key, expected in expected_pairs.items():
         if metadata.get(key) != expected:
             return False
-    # Only once this install is the answer: recording earlier would re-hash the payload
-    # of a tree we are about to reject over its fingerprint.
-    if macos_probed:
-        persist_macos_load_probe(install_dir, host)
     return True
 
 

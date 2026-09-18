@@ -447,6 +447,19 @@ def test_a_legacy_size_only_marker_is_upgraded_by_a_passing_probe(tmp_path: Path
     assert calls[0] == 1
 
 
+def test_the_reuse_fast_paths_do_not_record_a_pass(tmp_path: Path, monkeypatch):
+    """They probe build/bin only, so they never reach a root wrapper and cannot vouch
+    for a record that a later run uses to skip starting one."""
+    host = macos_host()
+    install_dir = build_install(tmp_path, host, load_probe_passed = False)
+    calls = count_spawns(monkeypatch)
+
+    assert matches_choice(install_dir, host) is True
+    assert fast_path(install_dir, host) is True
+    assert calls[0] == 2                                    # both probed
+    assert ILP.MACOS_LOAD_PROBE_KEY not in marker_of(install_dir)
+
+
 @POSIX_ONLY
 def test_a_broken_root_wrapper_is_not_blessed_into_the_record(tmp_path: Path, monkeypatch):
     """The root entrypoint can be its own file, and it is started AFTER the dyld probe.
