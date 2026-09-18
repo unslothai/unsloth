@@ -6536,8 +6536,8 @@ function Find-InstalledUv {
         # would reach an unbounded uv pip. Asked twice: one miss (a scanner holding a fresh
         # binary) sent setup to the pinned download, which put an OLDER uv over this one.
         if ((Get-InstalledUvVerdict -Path $exe) -ne "ok") { continue }
-        # install.ps1's UvMinVersion, for its reason: below it uv's managed-Python manifest tops
-        # out at a CPython that cannot import torch. Unreadable leaves the candidate alone.
+        # install.ps1's UvMinVersion: reuse accepts what the Windows installer accepts, no more.
+        # Unreadable leaves the candidate alone.
         if (-not (Test-SetupUvVersionAtLeast -VersionLine $script:SetupUvVersionLine -Minimum $SetupUvMinVersion)) {
             $script:InstalledUvTooOld = $exe
             continue
@@ -6547,8 +6547,13 @@ function Find-InstalledUv {
     return $null
 }
 
-# The floor a found uv has to clear. install.ps1 keeps the same number as UvMinVersion.
-$SetupUvMinVersion = "0.9.3"
+# The floor a found uv has to clear: install.ps1's UvMinVersion, so reuse accepts exactly what
+# the Windows installer accepts. It is not install.sh's 0.9.3, and deliberately: that number is
+# about uv's managed-Python manifest topping out at a CPython that cannot import torch, and
+# nothing here asks uv for an interpreter -- the one uv command this file runs is
+# `uv pip install --python <the venv's python>`. install.ps1 keeps 3.13.8 out with its own
+# $PythonSkip instead.
+$SetupUvMinVersion = "0.8.16"
 
 function Test-SetupUvVersionAtLeast {
     # "uv 0.12.1 (abcdef0 2026-01-01)" -> $true when 0.12.1 is at least $Minimum. Unparseable is

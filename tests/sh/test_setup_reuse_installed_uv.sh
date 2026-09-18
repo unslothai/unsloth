@@ -331,11 +331,14 @@ else
     bad "setup.ps1 reuses only a uv with an ok verdict"
 fi
 
-# ...and on both sides it clears the floor, at the SAME number install.sh keeps: below it uv
-# resolves a CPython that cannot import torch, which the installer refuses outright.
+# ...and on each side it clears that platform's installer floor, so reuse accepts exactly what
+# the installer would have accepted. The two numbers differ on purpose: install.sh refuses a uv
+# whose managed-Python manifest tops out at a CPython that cannot import torch, install.ps1 keeps
+# that patch out with $PythonSkip instead and stays at 0.8.16.
 _sh_floor=$(grep '^_SETUP_UV_MIN_VERSION="' "$SETUP_SH" | head -1 | sed 's/.*"\(.*\)"/\1/')
 _ps_floor=$(grep '^\$SetupUvMinVersion = "' "$SETUP_PS1" | head -1 | sed 's/.*"\(.*\)"/\1/')
 _install_floor=$(grep '^UV_MIN_VERSION="' "$SCRIPT_DIR/../../install.sh" | head -1 | sed 's/.*"\(.*\)"/\1/')
+_install_ps_floor=$(grep '^    \$UvMinVersion = "' "$SCRIPT_DIR/../../install.ps1" | head -1 | sed 's/.*"\(.*\)"/\1/')
 if printf '%s\n' "$HELPER" | grep -q '_setup_uv_version_at_least "\$_sfu_ver"'; then
     ok "setup.sh gates the reused uv on a minimum version"
 else
@@ -346,10 +349,15 @@ if printf '%s\n' "$PS_FINDER" | grep -q 'Test-SetupUvVersionAtLeast'; then
 else
     bad "setup.ps1 gates the reused uv on a minimum version"
 fi
-if [ -n "$_sh_floor" ] && [ "$_sh_floor" = "$_ps_floor" ] && [ "$_sh_floor" = "$_install_floor" ]; then
-    ok "both shells keep install.sh's floor ($_sh_floor)"
+if [ -n "$_sh_floor" ] && [ "$_sh_floor" = "$_install_floor" ]; then
+    ok "setup.sh keeps install.sh's floor ($_sh_floor)"
 else
-    bad "both shells keep install.sh's floor (setup.sh=$_sh_floor setup.ps1=$_ps_floor install.sh=$_install_floor)"
+    bad "setup.sh keeps install.sh's floor (setup.sh=$_sh_floor install.sh=$_install_floor)"
+fi
+if [ -n "$_ps_floor" ] && [ "$_ps_floor" = "$_install_ps_floor" ]; then
+    ok "setup.ps1 keeps install.ps1's floor ($_ps_floor)"
+else
+    bad "setup.ps1 keeps install.ps1's floor (setup.ps1=$_ps_floor install.ps1=$_install_ps_floor)"
 fi
 
 # Get-SetupUvExecutableVerdict returns the verdict only: a Write-Output in it rode along in

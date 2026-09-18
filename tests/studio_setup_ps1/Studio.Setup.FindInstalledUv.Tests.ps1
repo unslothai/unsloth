@@ -260,6 +260,14 @@ Describe "the uv version floor" {
         @{ line = 'uv 0.9.3+build5';                floor = '0.9.3'; expected = $false }
         @{ line = 'uv 0.9.4-rc1';                   floor = '0.9.3'; expected = $true }
         @{ line = 'uv 1.0.0-beta';                  floor = '0.9.3'; expected = $true }
+        # The floor this file actually ships is install.ps1's, which is lower than install.sh's:
+        # nothing here asks uv for an interpreter, so the manifest reason that raised the POSIX
+        # number does not apply, and refusing 0.8.16-0.9.2 would decline to reuse a uv the
+        # Windows installer installs and keeps.
+        @{ line = 'uv 0.8.16';                      floor = '0.8.16'; expected = $true }
+        @{ line = 'uv 0.9.2';                       floor = '0.8.16'; expected = $true }
+        @{ line = 'uv 0.8.15';                      floor = '0.8.16'; expected = $false }
+        @{ line = 'uv 0.8.16-rc1';                  floor = '0.8.16'; expected = $false }
         @{ line = 'not a version at all';           floor = '0.9.3'; expected = $false }
         @{ line = '';                               floor = '0.9.3'; expected = $false }
     ) {
