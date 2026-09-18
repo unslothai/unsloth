@@ -52,6 +52,7 @@ try:
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
+        normalize_training_optimizer_for_device,
     )
     from core.training.resume import (
         can_resume_run,
@@ -73,6 +74,7 @@ except ImportError:
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
+        normalize_training_optimizer_for_device,
     )
     from core.training.resume import (
         can_resume_run,
@@ -1635,6 +1637,12 @@ async def start_training(
             if not request.dataset_streaming and _hf_dataset_is_the_source(request):
                 await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
 
+        device_backend = getattr(_hw.DEVICE, "value", "") or ""
+        training_optimizer = normalize_training_optimizer_for_device(
+            request.optim,
+            device_backend = device_backend,
+        )
+
         training_kwargs = {
             "model_name": model_preflight.model_name,
             "project_name": request.project_name,
@@ -1681,7 +1689,7 @@ async def start_training(
             "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
             "random_seed": request.random_seed,
             "packing": request.packing,
-            "optim": request.optim,
+            "optim": training_optimizer,
             "lr_scheduler_type": request.lr_scheduler_type,
             "use_lora": request.use_lora,
             "lora_r": request.lora_r,
