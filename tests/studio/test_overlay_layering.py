@@ -28,6 +28,9 @@ from pathlib import Path
 
 import pytest
 
+# tests/conftest.py puts tests/_shared on sys.path for everything under tests/.
+from jsx_tags import opening_tag, without_comments  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
 Z_LAYERS = FRONTEND / "lib/z-layers.ts"
@@ -111,12 +114,16 @@ def test_the_notification_stack_uses_the_named_layer():
     is asserted in tests/studio/test_update_release_notes.py, which is the file about its
     layout; this one is only about the layer it draws on.
     """
-    src = PROVIDER.read_text(encoding = "utf-8")
+    src = without_comments(PROVIDER.read_text(encoding = "utf-8"))
     stacks = []
     at = src.find(_RAIL_TESTID)
     while at != -1:
-        end = src.find(">", at)
-        stacks.append(src[src.rfind("<", 0, at) : end])
+        # opening_tag, not rfind("<")/find(">"): an attribute before the test id can hold a
+        # comparison (`disabled={count < limit}`) and one after it an arrow function, either
+        # of which truncates a hand-rolled scan. A truncated tag drops the classes this test
+        # reads, so it would pass over the very z-index regression it exists to catch.
+        start, end = opening_tag(src, at)
+        stacks.append(src[start:end])
         at = src.find(_RAIL_TESTID, end)
     assert len(stacks) == 2, f"expected the two bottom-right stacks, found {len(stacks)}"
     for stack in stacks:

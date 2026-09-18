@@ -150,110 +150,13 @@ def _class_const(source: str, name: str) -> str:
 _COMMENT_SPAN = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
 
 
-def _without_comments(source: str) -> str:
-    """`source` with every comment blanked, each index left where it was.
-
-    Blanked rather than removed so that the offsets the scanners hand around
-    stay valid. Both forms, and before any scan, for two reasons. Prose is not
-    code: an apostrophe in `// notes don't shrink` would open a string literal
-    that never closes, and a `}` written in a block comment would unbalance the
-    tag. Prose is not classes either: the comment beside these very rules says
-    "shrink-0 keeps the compact card at its natural height", so in block form
-    it would satisfy the assertion that the class is there after the class
-    itself had been deleted.
-    """
-    out = list(source)
-    index = 0
-    while index < len(source):
-        char = source[index]
-        # A literal first: `bg-[url(https://example.com/a.svg)]` is a class, and
-        # blanking from its `//` would eat the rest of the line and its quote.
-        if char in _QUOTES:
-            index = _skip_literal(source, index)
-            continue
-        if source.startswith("//", index):
-            end = source.find("\n", index)
-            end = len(source) if end == -1 else end
-        elif source.startswith("/*", index):
-            end = source.find("*/", index)
-            assert end != -1, "unterminated block comment"
-            end += 2
-        else:
-            index += 1
-            continue
-        for blank in range(index, end):
-            if out[blank] != "\n":
-                out[blank] = " "
-        index = end
-    return "".join(out)
-
-
-def _skip_literal(source: str, at: int) -> int:
-    """The index just past the string or template literal opening at `at`."""
-    quote = source[at]
-    index = at + 1
-    while index < len(source):
-        if source[index] == "\\":
-            index += 2
-            continue
-        if source[index] == quote:
-            return index + 1
-        index += 1
-    raise AssertionError(f"unterminated {quote} literal")
-
-
-def _tag_end(source: str, start: int, at: int) -> int | None:
-    """The end of the tag opening at `start`, if `at` is one of its attributes.
-
-    `None` when it is not, which is how a `<` that opens no tag is rejected.
-    Brackets and string literals are tracked, so the `>` of an inline arrow
-    (`onClick={() => go()}`) does not end the tag early and a comparison inside
-    an attribute expression (`disabled={count < limit}`) runs out of depth.
-    """
-    depth = 0
-    index = start + 1
-    reached = False
-    while index < len(source):
-        if index == at:
-            reached = depth == 0
-        char = source[index]
-        if char in _QUOTES:
-            index = _skip_literal(source, index)
-            continue
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
-            if depth < 0:
-                return None
-        elif char == ">" and depth == 0:
-            return index if reached else None
-        index += 1
-    return None
-
-
-def _opening_tag(source: str, at: int) -> tuple[int, int]:
-    """The bounds of the JSX opening tag whose attributes include index `at`.
-
-    Not simply the nearest `<` before it: an attribute expression may hold one
-    of its own, as `disabled={count < limit}` does, and starting the scan there
-    runs into an unmatched brace. Candidates are tried from the nearest
-    outwards and one is accepted only if the tag it opens actually reaches `at`
-    with the tag still open and at depth zero.
-
-    Both ends are returned so that attributes can be searched over the whole
-    tag rather than the part before some other attribute, which is an order
-    dependency of exactly the kind this file is being fixed for.
-    """
-    start = at
-    while True:
-        try:
-            start = source.rindex("<", 0, start)
-        except ValueError:
-            raise AssertionError("no JSX opening tag encloses this attribute") from None
-        end = _tag_end(source, start, at)
-        if end is not None:
-            return start, end
+# Moved to tests/_shared/jsx_tags.py so tests/studio/test_overlay_layering.py reads rails with
+# the same bracket- and literal-aware scanner instead of a private rfind("<")/find(">") pair.
+from jsx_tags import (  # noqa: E402
+    opening_tag as _opening_tag,
+    skip_literal as _skip_literal,
+    without_comments as _without_comments,
+)
 
 
 def _class_on_testid(source: str, testid: str) -> str:
@@ -1990,16 +1893,19 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
         assert (
             _rail_padding(tag) == expected
         ), f"a rail's padding is not bound to its own constant: {_rail_padding(tag)}"
-    # A rem-valued utility would scale with the type size and walk the rail off the corner.
-    # Read through the variants and the importance marker, because `!px-3` beats the inline px
-    # padding outright and `md:!px-3` does it above a breakpoint, and a bare-token match sees
-    # neither. _split_variants is what this file already uses to get at the utility itself.
+    # No padding utility at all, in any spelling. The rail's padding comes from the inline
+    # px style above, and ANY Tailwind padding class is either rem-scaled (walking the rail
+    # off its corner with the user's type size, #8082) or, with !important, an outright
+    # override of the inline declaration. Enumerating the spellings is how this went wrong
+    # twice: the first form missed `!px-3`, the second missed `px-2.5` and `!pr-[0px]`.
+    # Matching the property instead of its value has no such tail.
     for rail in _corner_rails(provider):
         for token in rail.split():
             utility = _split_variants(token)[1]
-            assert not re.fullmatch(
-                r"p[xytblr]?-(\d+|\[[^\]]*rem[^\]]*\])", utility
-            ), f"the rail pads with the rem-valued {token!r}; #8082 is about exactly that"
+            assert not re.match(r"p[xytblr]?-", utility), (
+                f"the rail carries the padding utility {token!r}; its padding is the inline "
+                f"px style, and a class here is rem-scaled or !important-overrides it (#8082)"
+            )
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():
