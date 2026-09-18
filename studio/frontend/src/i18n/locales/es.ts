@@ -248,7 +248,7 @@ export const es = {
   settings: {
     accounts: {
       title: "Cuentas",
-      description: "Crea cuentas privadas de Studio. Los nuevos usuarios inician sesión con un código de configuración de un solo uso y eligen una contraseña.",
+      description: "Crea cuentas privadas de Unsloth Studio. Los nuevos usuarios inician sesión con un código de configuración de un solo uso y eligen una contraseña.",
       username: "Nombre de usuario",
       create: "Crear cuenta",
       setupCode: "Código de configuración",
@@ -576,7 +576,7 @@ export const es = {
       openLogsFolderFailed: "No se pudo abrir la carpeta de registros.",
       exportFailed: "No se pudieron descargar los registros.",
       exportTooOld: "El backend de Unsloth en ejecución es demasiado antiguo para exportar los registros. Actualízalo y reinícialo.",
-      exportForbidden: "Para descargar todos los registros hace falta una sesión de Studio iniciada. Una clave de API no basta.",
+      exportForbidden: "Para descargar todos los registros hace falta una sesión de Unsloth Studio iniciada. Una clave de API no basta.",
       keywords: "depuracion depurar registro registros log logs error errores fallo traza diagnostico solucion de problemas debug",
     },
     voice: {

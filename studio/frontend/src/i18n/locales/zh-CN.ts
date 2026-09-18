@@ -243,7 +243,7 @@ export const zhCN = {
   settings: {
     accounts: {
       title: "账户",
-      description: "创建独立的 Studio 账户。新用户使用一次性设置码登录并设置密码。",
+      description: "创建独立的 Unsloth Studio 账户。新用户使用一次性设置码登录并设置密码。",
       username: "用户名",
       create: "创建账户",
       setupCode: "设置码",
@@ -571,7 +571,7 @@ export const zhCN = {
       openLogsFolderFailed: "无法打开日志文件夹。",
       exportFailed: "无法下载日志。",
       exportTooOld: "正在运行的 Unsloth 后端版本过旧，无法导出日志。请更新该后端并重新启动。",
-      exportForbidden: "下载全部日志需要已登录的 Studio 会话，仅有 API 密钥不够。",
+      exportForbidden: "下载全部日志需要已登录的 Unsloth Studio 会话，仅有 API 密钥不够。",
       keywords: "调试 日志 错误 崩溃 堆栈 跟踪 诊断 排查 故障 debug log logs error",
     },
     voice: {

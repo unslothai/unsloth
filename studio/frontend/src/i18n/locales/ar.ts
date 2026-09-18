@@ -245,7 +245,7 @@ export const ar = {
   settings: {
     accounts: {
       title: "الحسابات",
-      description: "أنشئ حسابات Studio خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
+      description: "أنشئ حسابات Unsloth Studio خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
       username: "اسم المستخدم",
       create: "إنشاء حساب",
       setupCode: "رمز الإعداد",
@@ -573,7 +573,7 @@ export const ar = {
       openLogsFolderFailed: "تعذّر فتح مجلد السجلات.",
       exportFailed: "تعذّر تنزيل السجلات.",
       exportTooOld: "خادم Unsloth العامل أقدم من أن يدعم تصدير السجلات. حدِّثه وأعد تشغيله.",
-      exportForbidden: "يتطلب تنزيل كل السجلات جلسة Studio مسجّل الدخول إليها. لا يكفي مفتاح API.",
+      exportForbidden: "يتطلب تنزيل كل السجلات جلسة Unsloth Studio مسجّل الدخول إليها. لا يكفي مفتاح API.",
       keywords: "تصحيح الأخطاء سجل السجلات خطأ أخطاء تعطل تتبع تشخيص استكشاف الأخطاء debug log logs error",
     },
     voice: {

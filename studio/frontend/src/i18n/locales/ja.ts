@@ -247,7 +247,7 @@ export const ja = {
   settings: {
     accounts: {
       title: "アカウント",
-      description: "個別の Studio アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
+      description: "個別の Unsloth Studio アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
       username: "ユーザー名",
       create: "アカウントを作成",
       setupCode: "セットアップコード",
@@ -575,7 +575,7 @@ export const ja = {
       openLogsFolderFailed: "ログフォルダーを開けませんでした。",
       exportFailed: "ログをダウンロードできませんでした。",
       exportTooOld: "実行中の Unsloth バックエンドが古すぎるため、ログを書き出せません。バックエンドを更新して再起動してください。",
-      exportForbidden: "すべてのログをダウンロードするには、サインイン済みの Studio セッションが必要です。API キーだけでは実行できません。",
+      exportForbidden: "すべてのログをダウンロードするには、サインイン済みの Unsloth Studio セッションが必要です。API キーだけでは実行できません。",
       keywords: "デバッグ ログ エラー クラッシュ トレースバック スタックトレース 診断 障害 調査 debug log logs error",
     },
     voice: {
