@@ -90,7 +90,11 @@ function persistedBase(fallback: readonly string[]): string[] {
   if (stored === null) return [...fallback];
   retirePersisted(stored);
   if (storageWritable) return stored;
-  return [...ourPins(stored, stored), ...stored];
+  // The SAME merge the drag commit uses, applied to the rendered list, so the two paths cannot
+  // disagree about order: prepending every unpersisted pin to the record instead put an older
+  // failed pin back above a peer addition the handler had just placed correctly, and the next
+  // successful write made that durable.
+  return rebaseOnStored(fallback);
 }
 
 // movePinnedConnected runs on every dragenter: writing each would make a cancelled drag permanent.

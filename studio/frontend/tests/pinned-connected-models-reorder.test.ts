@@ -283,3 +283,21 @@ test("a newer peer pin sits above an older unpersisted one", () => {
   externalWrite([C, A]); // a peer pins C after B was attempted
   assert.deepEqual(pins.getState().pinned, [C, B, A]);
 });
+
+test("a later successful toggle persists the rendered order", () => {
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+  } finally {
+    storage.set = realSet;
+  }
+  externalWrite([C, A]);
+  assert.deepEqual(pins.getState().pinned, [C, B, A]);
+  pins.getState().togglePinnedConnected(D); // this one lands
+  assert.deepEqual(pins.getState().pinned, [D, C, B, A]);
+  assert.deepEqual(storedOrder(), [D, C, B, A]);
+});
