@@ -569,8 +569,17 @@ def _remote_untrainable_model_format(
     # to not refuse: this check exists to fail fast, and admitting a run the worker may well
     # complete is the safe direction. The reverse is not true, since a 16-bit request never
     # becomes 4-bit.
-    has_public_copy = unsloth_public_mirror(repo_id, load_in_4bit) is not None or (
-        load_in_4bit and unsloth_public_mirror(repo_id, False) is not None
+    # ... and only where the TORCH loader runs. _run_mlx_training hands model_load_name
+    # straight to FastMLXModel.from_pretrained, and that loader never consults the
+    # upstream-to-Unsloth mapper (unsloth_zoo/mlx/loader.py only strips bnb suffixes off ids
+    # already under unsloth/). On Apple Silicon the worker really does fetch the gated
+    # upstream, so a Torch mapping is no evidence at all there. The check is a platform
+    # test, not a device probe, so the parent can ask it.
+    from core.training.training import should_use_mlx_training_backend
+
+    has_public_copy = not should_use_mlx_training_backend() and (
+        unsloth_public_mirror(repo_id, load_in_4bit) is not None
+        or (load_in_4bit and unsloth_public_mirror(repo_id, False) is not None)
     )
 
     # Gated model metadata is public, so verify access to its files separately.

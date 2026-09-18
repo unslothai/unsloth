@@ -195,6 +195,12 @@ def _metadata_lookup_name(
     """Return the repo whose config and tokenizer the loader will read."""
     if local_files_only or model_revision is not None or lookup_name != model_name:
         return lookup_name
+    # MLX loads the picked name as given: unsloth_zoo/mlx/loader.py never consults the
+    # upstream-to-Unsloth mapper, so on Apple Silicon there is no mirror to read from.
+    from core.training.training import should_use_mlx_training_backend
+
+    if should_use_mlx_training_backend():
+        return lookup_name
     mirror = unsloth_public_mirror(model_name, load_in_4bit and _bitsandbytes_allows_4bit())
     if mirror is None:
         return lookup_name

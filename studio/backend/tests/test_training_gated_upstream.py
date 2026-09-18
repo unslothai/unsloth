@@ -557,3 +557,31 @@ def test_the_latest_sidecar_flip_is_folded_into_the_mode(mapper, monkeypatch, si
     else:
         assert tr._remote_untrainable_model_format(model, None) is None
     assert bool(session.urls) is checked
+
+
+def test_mlx_has_no_mirror_so_the_check_still_runs(mapper, monkeypatch):
+    # unsloth_zoo/mlx/loader.py only remaps ids already under unsloth/ (stripping bnb
+    # suffixes); it never consults the upstream-to-Unsloth mapper. _run_mlx_training hands
+    # model_load_name straight to FastMLXModel.from_pretrained, so on Apple Silicon the worker
+    # fetches the gated upstream and a Torch mapping proves nothing.
+    import core.training.training as training_mod
+
+    session = _Session(_http_error(401))
+    _route(monkeypatch, gated = "manual", session = session)
+    monkeypatch.setattr(training_mod, "should_use_mlx_training_backend", lambda **kw: True)
+
+    with pytest.raises(HTTPException) as error:
+        tr._remote_untrainable_model_format("google/gemma-3-270m-it", None, True)
+    assert error.value.detail["code"] == "hf_model_access_denied"
+    assert session.urls
+
+
+def test_mlx_pre_detect_reads_the_repo_the_mlx_loader_fetches(mapper, monkeypatch):
+    import core.training.training as training_mod
+    monkeypatch.setattr(training_mod, "should_use_mlx_training_backend", lambda **kw: True)
+    assert (
+        trainer_mod._metadata_lookup_name(
+            "google/gemma-3-270m-it", "google/gemma-3-270m-it", False, None, True
+        )
+        == "google/gemma-3-270m-it"
+    )
