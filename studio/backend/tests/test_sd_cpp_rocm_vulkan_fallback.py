@@ -2416,7 +2416,7 @@ def test_the_router_counts_its_launch_failures_against_the_card_it_selected(fake
 
     body = inspect.getsource(router.select_and_activate_engine)
     calls = body.count("note_unlaunchable_accelerator_build(")
-    assert calls == 1, body                       # one bundle, one recorder
+    assert calls == 1, body  # one bundle, one recorder
     assert body.count("card = selected_card") == calls, body
 
 
@@ -2779,7 +2779,10 @@ class TestTheRouterRecordsTheBundleNotTheServer:
         held_cli = source.index("unlaunchable_cli = binary")
         recorded = source.index("note_unlaunchable_accelerator_build(")
         assert held_server < cli_probe < held_cli < recorded, (
-            held_server, cli_probe, held_cli, recorded
+            held_server,
+            cli_probe,
+            held_cli,
+            recorded,
         )
 
     def test_a_bundle_where_nothing_runs_is_still_recorded(self):
@@ -2914,7 +2917,7 @@ def test_a_damaged_cli_beside_a_healthy_server_is_not_a_strike(fake_settings, mo
     monkeypatch.setattr(router, "_install_allowed", lambda: True)
     monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server")
     monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
-    monkeypatch.setattr(router, "_server_binary_runnable", lambda _b: True)   # server is fine
+    monkeypatch.setattr(router, "_server_binary_runnable", lambda _b: True)  # server is fine
     monkeypatch.setattr(
         router, "SdCppEngine", lambda binary: types.SimpleNamespace(version = lambda: None)
     )  # cli is not
@@ -2929,5 +2932,5 @@ def test_a_damaged_cli_beside_a_healthy_server_is_not_a_strike(fake_settings, mo
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
 
     chosen = router.select_and_activate_engine(_detect_load_family(H3_REPO, None, "minimax-h3"))
-    assert chosen == "sd_cpp", chosen              # the healthy server carries the load
-    assert _recorded_strikes(fake_settings) == 0   # and nothing was held against ROCm
+    assert chosen == "sd_cpp", chosen  # the healthy server carries the load
+    assert _recorded_strikes(fake_settings) == 0  # and nothing was held against ROCm
