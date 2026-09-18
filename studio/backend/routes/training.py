@@ -576,10 +576,18 @@ def _remote_untrainable_model_format(
     # upstream, so a Torch mapping is no evidence at all there. The check is a platform
     # test, not a device probe, so the parent can ask it.
     from core.training.training import should_use_mlx_training_backend
+    from utils.models.unsloth_mirror import mirror_lookup_available
 
-    has_public_copy = not should_use_mlx_training_backend() and (
-        unsloth_public_mirror(repo_id, load_in_4bit) is not None
-        or (load_in_4bit and unsloth_public_mirror(repo_id, False) is not None)
+    # "Could not read the tables" is not "no public copy". They live in the installed unsloth
+    # package and find_spec can land on a directory with no models/mapper.py under it, in which
+    # case every lookup answers None and every gated model would be refused, the trainable ones
+    # included. Unknown admits, exactly as an unanswered auth-check does.
+    has_public_copy = not mirror_lookup_available() or (
+        not should_use_mlx_training_backend()
+        and (
+            unsloth_public_mirror(repo_id, load_in_4bit) is not None
+            or (load_in_4bit and unsloth_public_mirror(repo_id, False) is not None)
+        )
     )
 
     # Gated model metadata is public, so verify access to its files separately.

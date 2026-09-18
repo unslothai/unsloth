@@ -98,6 +98,17 @@ def _bad_mappings() -> Optional[dict]:
     return None
 
 
+def mirror_lookup_available() -> bool:
+    """Whether a None from :func:`unsloth_public_mirror` means "no public copy" at all.
+
+    It can also mean "could not tell": the tables live in the installed unsloth package, and
+    find_spec can resolve to a directory that has no models/mapper.py under it. Callers that
+    REFUSE on a missing mirror have to tell those apart, or an unreadable table turns every
+    gated model into a refusal, including the ones Unsloth would have trained.
+    """
+    return _mapper_tables() is not None and _bad_mappings() is not None
+
+
 def unsloth_public_mirror(model_name: Optional[str], load_in_4bit: bool = True) -> Optional[str]:
     """Return the public repo substituted by Unsloth's loader for this load mode, if any."""
     if (

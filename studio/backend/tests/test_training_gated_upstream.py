@@ -585,3 +585,22 @@ def test_mlx_pre_detect_reads_the_repo_the_mlx_loader_fetches(mapper, monkeypatc
         )
         == "google/gemma-3-270m-it"
     )
+
+
+def test_an_unreadable_mapper_admits_instead_of_refusing(monkeypatch):
+    # The tables live in the installed unsloth package and find_spec can land on a directory
+    # with no models/mapper.py under it, which is how this was found: a real Studio install
+    # answered None for every lookup and refused google/gemma-3-270m-it, a model it trains.
+    # Unknown must admit, the same way an unanswered auth-check does.
+    monkeypatch.setattr(unsloth_mirror.importlib.util, "find_spec", lambda name: None)
+    unsloth_mirror._mapper_tables.cache_clear()
+    unsloth_mirror._bad_mappings.cache_clear()
+    session = _Session(_http_error(401))
+    _route(monkeypatch, gated = "manual", session = session)
+    try:
+        assert unsloth_mirror.mirror_lookup_available() is False
+        assert tr._remote_untrainable_model_format("google/gemma-3-270m-it", None, True) is None
+        assert session.urls == []
+    finally:
+        unsloth_mirror._mapper_tables.cache_clear()
+        unsloth_mirror._bad_mappings.cache_clear()
