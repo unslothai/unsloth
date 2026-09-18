@@ -205,7 +205,15 @@ export function ConnectedModelInfoDialog({
           </Field>
           {takesEffort ? (
             <Field label="Reasoning effort">
-              {pinnedEffort ?? <Unset>Follows the chat</Unset>}
+              {/* Only a level the ladder still offers: a catalogue refresh can withdraw one, and
+                  every resolver then ignores the pin, so printing it would be the one place still
+                  claiming it applies. */}
+              {pinnedEffort &&
+              (effortLevels as readonly string[]).includes(pinnedEffort) ? (
+                pinnedEffort
+              ) : (
+                <Unset>Follows the chat</Unset>
+              )}
             </Field>
           ) : null}
         </div>

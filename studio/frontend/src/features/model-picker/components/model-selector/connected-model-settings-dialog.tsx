@@ -131,7 +131,19 @@ export function ConnectedModelSettingsDialog({
   const [capDraft, setCapDraft] = useState<string | null>(null);
   const [effortDraft, setEffortDraft] = useState<string | null>(null);
   const systemPrompt = promptDraft ?? remembered?.systemPrompt ?? "";
-  const effort = effortDraft ?? pinnedEffort ?? FOLLOW_CHAT;
+  // Against the ladder as it stands now, since the catalogue subscription below can withdraw a
+  // level while this is open. A draft the model no longer offers reverts to what is stored and
+  // Save leaves the pin alone, rather than writing a level every resolver then refuses. A stored
+  // pin the ladder dropped reads as Follow chat for the same reason: that is what it now does.
+  const offered = (level: string): boolean =>
+    (efforts as readonly string[]).includes(level);
+  const liveEffortDraft =
+    effortDraft !== null && (effortDraft === FOLLOW_CHAT || offered(effortDraft))
+      ? effortDraft
+      : null;
+  const effort =
+    liveEffortDraft ??
+    (pinnedEffort && offered(pinnedEffort) ? pinnedEffort : FOLLOW_CHAT);
   // Always a real number. A blank would have to mean "forget the cap", and nothing can express
   // that: paramsByModel merges per key here and the settings row deep-merges on the server, so an
   // omitted key keeps the old value and the clear would be dropped without saying so.
@@ -155,8 +167,8 @@ export function ConnectedModelSettingsDialog({
     // Untouched writes nothing at all: another tab can change this pin while the dialog is open,
     // and a save of an unrelated field would otherwise put the value this select opened with back
     // over it. It would also reset the composer's own Think level for no reason.
-    if (effortDraft !== null) {
-      const pinned = effortDraft === FOLLOW_CHAT ? null : effortDraft;
+    if (liveEffortDraft !== null) {
+      const pinned = liveEffortDraft === FOLLOW_CHAT ? null : liveEffortDraft;
       setModelReasoningEffort(checkpointId, pinned);
       // The pin is read on a model switch, and a switch to the model already loaded returns
       // before that, so the live model's level has to be set here or the edit would not apply

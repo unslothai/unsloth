@@ -289,9 +289,23 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // the dialog happened to be showing over the stored value. null is untouched, so an untouched
   // field keeps reading the store even when hydration lands while the dialog is open.
   assert.match(settingsDialog, /const systemPrompt = promptDraft \?\? remembered\?\.systemPrompt \?\? "";/);
+  // And a touched one is checked against the ladder as it stands at Save, since the catalogue
+  // subscription can withdraw a level while the dialog is open: a draft the model no longer
+  // offers reverts to what is stored rather than being written as a pin every resolver refuses.
   assert.match(
     settingsDialog,
-    /const effort = effortDraft \?\? pinnedEffort \?\? FOLLOW_CHAT;/,
+    /const liveEffortDraft =\s*effortDraft !== null && \(effortDraft === FOLLOW_CHAT \|\| offered\(effortDraft\)\)\s*\? effortDraft\s*: null;/,
+  );
+  assert.match(
+    settingsDialog,
+    /const effort =\s*liveEffortDraft \?\?\s*\(pinnedEffort && offered\(pinnedEffort\) \? pinnedEffort : FOLLOW_CHAT\);/,
+  );
+  // The info box stops printing a withdrawn pin too, which was the last place claiming it applies.
+  assert.match(
+    readSrc(
+      "features/model-picker/components/model-selector/connected-model-info-dialog.tsx",
+    ),
+    /\{pinnedEffort &&\s*\(effortLevels as readonly string\[\]\)\.includes\(pinnedEffort\) \? \(/,
   );
   assert.match(
     settingsDialog,
@@ -302,7 +316,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // the composer's own Think level while it was at it.
   assert.match(
     settingsDialog,
-    /if \(effortDraft !== null\) \{\s*const pinned = effortDraft === FOLLOW_CHAT \? null : effortDraft;\s*setModelReasoningEffort\(checkpointId, pinned\);/,
+    /if \(liveEffortDraft !== null\) \{\s*const pinned = liveEffortDraft === FOLLOW_CHAT \? null : liveEffortDraft;\s*setModelReasoningEffort\(checkpointId, pinned\);/,
   );
   // Which is the listener that makes that reachable.
   const effortStore = readSrc(
