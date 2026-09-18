@@ -134,7 +134,16 @@ function Get-StudioTempSubtree {
             # reason is how a transient lock gets a second chance.
             if (Test-Path -LiteralPath $dir) {
                 try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
-                catch { $unread.Add($dir); continue }
+                catch {
+                    # Existence is rechecked HERE and not only above. The window between the
+                    # Test-Path and this retry is the deletion race itself, so a directory that
+                    # went away inside it would otherwise be recorded as unread, and an unread
+                    # directory under an unwatched root voids the run. That is the ordinary
+                    # temp-directory deletion this change exists to tolerate, so it must not be
+                    # the thing that fails the job.
+                    if (Test-Path -LiteralPath $dir) { $unread.Add($dir) }
+                    continue
+                }
             } else {
                 continue
             }
@@ -326,11 +335,21 @@ function Start-StudioTempWatch {
             $identifier = "StudioTempWatch-" + [guid]::NewGuid().ToString('N')
             $null = Register-ObjectEvent -InputObject $watcher -EventName Created `
                 -SourceIdentifier $identifier
+            # The Error event, subscribed for the same reason the buffer was enlarged above. An
+            # overflow raises Error and drops the events it could not queue, silently, and a
+            # watcher that dropped events is one the caller must not count as covering its root:
+            # an artifact can then be missing from the live stream AND from the listing, which
+            # reads as a clean run. Without this subscription the failure is not observable at
+            # all, so the handle would stay in $watchedRoots looking healthy.
+            $errorIdentifier = $identifier + "-error"
+            $null = Register-ObjectEvent -InputObject $watcher -EventName Error `
+                -SourceIdentifier $errorIdentifier
             $watcher.EnableRaisingEvents = $true
             $handles += [pscustomobject]@{
-                Watcher          = $watcher
-                SourceIdentifier = $identifier
-                Root             = $root
+                Watcher               = $watcher
+                SourceIdentifier      = $identifier
+                ErrorSourceIdentifier = $errorIdentifier
+                Root                  = $root
             }
         } catch {
             continue
@@ -355,6 +374,7 @@ function Stop-StudioTempWatch {
     Start-Sleep -Milliseconds 750
 
     $seen = @()
+    $failedRoots = @()
     foreach ($entry in $Handle) {
         try { $entry.Watcher.EnableRaisingEvents = $false } catch { }
         try {
@@ -366,10 +386,30 @@ function Stop-StudioTempWatch {
                 Remove-Event -EventIdentifier $record.EventIdentifier -ErrorAction SilentlyContinue
             }
         } catch { }
+        # Any Error at all condemns the root. There is no partial credit available here: the
+        # event carries the exception, not the list of creations it dropped, so a watcher that
+        # raised once cannot say what it missed and the caller cannot treat it as covering
+        # anything.
+        if ($entry.PSObject.Properties['ErrorSourceIdentifier']) {
+            try {
+                $errors = @(Get-Event -SourceIdentifier $entry.ErrorSourceIdentifier `
+                        -ErrorAction SilentlyContinue)
+                if ($errors.Count -gt 0) { $failedRoots += $entry.Root }
+                foreach ($record in $errors) {
+                    Remove-Event -EventIdentifier $record.EventIdentifier `
+                        -ErrorAction SilentlyContinue
+                }
+            } catch { }
+            Unregister-Event -SourceIdentifier $entry.ErrorSourceIdentifier `
+                -ErrorAction SilentlyContinue
+        }
         Unregister-Event -SourceIdentifier $entry.SourceIdentifier -ErrorAction SilentlyContinue
         try { $entry.Watcher.Dispose() } catch { }
     }
-    return ,[string[]]$seen
+    return [pscustomobject]@{
+        Paths       = [string[]]$seen
+        FailedRoots = [string[]]$failedRoots
+    }
 }
 
 function Get-StudioEventField {
@@ -575,6 +615,7 @@ function Invoke-WithCompilerWatch {
 
     $failure = $null
     $live = @()
+    $watchFailedRoots = @()
     try {
         # Out-Host, not the success stream. The installer action tees its log, and those
         # lines would be emitted as function output ahead of the result hashtable, making
@@ -587,7 +628,12 @@ function Invoke-WithCompilerWatch {
         $failure = $_
     } finally {
         # In the finally, so an action that threw still closes its subscriptions.
-        $live = @(Stop-StudioTempWatch -Handle $watch)
+        $drained = Stop-StudioTempWatch -Handle $watch
+        $live = @($drained.Paths)
+        # Roots whose watcher raised. Carried out of the finally so the coverage check
+        # below can refuse to count them, and initialised above so an action that threw
+        # before the watch started still leaves the variable defined.
+        $watchFailedRoots = @($drained.FailedRoots)
     }
 
     # Closed before the temp sweep, which can take seconds: anything the machine
@@ -614,8 +660,17 @@ function Invoke-WithCompilerWatch {
     # $left, and which directories those were is recorded in the evidence rather than
     # dropped silently.
     $unread = @($beforeScan.Unread + $afterScan.Unread | Sort-Object -Unique)
+    # Only the roots whose watcher stayed healthy. A FileSystemWatcher that overflowed its
+    # buffer raises Error and drops the creations it could not queue, and its handle is still
+    # in $watch looking exactly like a working one. Counting it as coverage is what would let
+    # an artifact go missing from the live stream AND from the listing at once, which is the
+    # only combination that reports a compile as a clean run.
     $watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' (
-        [string[]]@($watch | ForEach-Object { $_.Root }), [StringComparer]::OrdinalIgnoreCase)
+        [string[]]@(
+            $watch | ForEach-Object { $_.Root } | Where-Object {
+                $watchFailedRoots -notcontains $_
+            }
+        ), [StringComparer]::OrdinalIgnoreCase)
     if ($unread.Count -gt 0) {
         foreach ($dir in $unread) {
             # Withholding is only safe while the watcher is covering that root: it reports

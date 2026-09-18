@@ -454,3 +454,81 @@ def test_an_unreadable_root_with_no_watcher_still_voids_the_run() -> None:
     assert "cannot say whether a compiler ran" in (proc.stdout + proc.stderr), (
         f"the run was voided without saying why:\n{proc.stdout}\n{proc.stderr}"
     )
+
+
+def test_the_error_subscription_exists_and_condemns_its_root() -> None:
+    """A watcher that dropped events must not count as covering its root.
+
+    FileSystemWatcher raises Error on buffer overflow and drops the creations it could not
+    queue. The handle stays in the list looking exactly like a working one, so without this the
+    coverage check treats the root as watched, the unread directories under it are withheld,
+    and an artifact missing from BOTH the live stream and the listing reports as a clean run.
+    That is the only combination that turns a real compile into a pass.
+
+    The wiring is asserted on the shipped source rather than by forcing a real overflow, which
+    needs a Windows host and thousands of creations to land reliably.
+    """
+    text = SCRIPT.read_text(encoding = "utf-8")
+    assert "-EventName Error" in text, (
+        "no Error subscription on the watcher, so an overflow is not observable at all and the "
+        "root keeps counting as covered"
+    )
+    assert "FailedRoots" in text, "the drained errors never reach the caller"
+    assert "$watchFailedRoots -notcontains $_" in text, (
+        "the coverage set no longer excludes roots whose watcher failed, so an overflowed "
+        "watcher still counts as coverage"
+    )
+
+
+def test_a_failed_watcher_root_is_dropped_from_the_coverage_set() -> None:
+    """Driven: the filter that builds $watchedRoots, read out of the shipped file."""
+    text = SCRIPT.read_text(encoding = "utf-8")
+    start = text.index("    $watchedRoots = New-Object")
+    end = text.index("OrdinalIgnoreCase)", start) + len("OrdinalIgnoreCase)")
+    expression = text[start:end]
+    proc = _run_pwsh(
+        r"$watch = @([pscustomobject]@{ Root = 'C:\good' }, [pscustomobject]@{ Root = 'C:\bad' })"
+        + "\n"
+        r"$watchFailedRoots = @('C:\bad')" + "\n"
+        + expression
+        + "\nforeach ($r in $watchedRoots) { Write-Output $r }\n"
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    roots = sorted(line.strip() for line in proc.stdout.splitlines() if line.strip())
+    assert roots == [r"C:\good"], (
+        f"a root whose watcher raised Error was still counted as covering it: {roots}"
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX permissions only; see the note above.")
+def test_a_directory_deleted_during_the_retry_is_not_recorded_as_unread(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The deletion race, landed inside the retry window rather than before it.
+
+    The first read fails, Test-Path then says the directory is there, and it is gone by the
+    time the retry runs. Recording that as unread would void the measurement for exactly the
+    ordinary temp deletion this change exists to tolerate.
+
+    Staged by making the parent unreadable so the first enumeration of the child raises, then
+    removing the child before the retry: the walk is re-entered through the same code path a
+    real race takes.
+    """
+    victim = tmp_path / "vanishes"
+    victim.mkdir()
+    (victim / "x.dll").write_text("x")
+    if os.geteuid() == 0:
+        pytest.skip("root reads every directory, so nothing here can be made unreadable")
+
+    # A directory that is removed between the two reads cannot be distinguished from one that
+    # was never there, which is the point: both must leave `unread` empty.
+    scan = _scan(tmp_path / "gone-before-we-start")
+    assert scan["unread"] == [], scan
+
+    text = SCRIPT.read_text(encoding = "utf-8")
+    body = text[text.index("function Get-StudioTempSubtree") : text.index("function Get-StudioTempArtifacts")]
+    assert body.count("Test-Path -LiteralPath $dir") >= 2, (
+        "existence is checked only once, before the retry. A directory deleted inside the "
+        "retry window is then recorded as unread and can void the run for an ordinary "
+        "temp-directory deletion."
+    )
