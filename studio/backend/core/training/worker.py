@@ -928,9 +928,25 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
     # or unsloth: not core.training.trainer, and not ALLOW_BITSANDBYTES. The 4-bit and 16-bit
     # candidates together are a superset of whichever the run picks, which is the safe
     # direction for a scan and needs no load mode at all.
+    #
+    # And only where the TORCH loader runs. _run_mlx_training hands the name straight to
+    # FastMLXModel.from_pretrained and _run_embedding_training to SentenceTransformer, and
+    # neither consults this mapper, so on those paths a mirror is a repo that will never be
+    # fetched: scanning it can block a valid run on an unrelated repo's files and fingerprints
+    # remote-code consent against something that is never loaded. core.training.training is
+    # safe to import here - the MLX fast path above already imports it for its own guard.
     try:
+        from core.training.training import should_use_mlx_training_backend
         from utils.models.unsloth_mirror import unsloth_public_mirror
-        if not _model_local_files_only(config) and not config.get("model_revision"):
+
+        torch_loader_path = not config.get("is_embedding", False) and (
+            not should_use_mlx_training_backend()
+        )
+        if (
+            torch_loader_path
+            and not _model_local_files_only(config)
+            and not config.get("model_revision")
+        ):
             for _mode in (True, False):
                 mirrored = unsloth_public_mirror(load_target, _mode)
                 if mirrored and mirrored != load_target:

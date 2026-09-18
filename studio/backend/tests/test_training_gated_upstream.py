@@ -106,8 +106,10 @@ def mapper(monkeypatch):
         ("meta-llama/Meta-Llama-3-70B-Instruct", False, None),
         ("google/gemma-4-26B-A4B", False, "unsloth/gemma-4-26B-A4B"),
         ("google/gemma-4-26B-A4B", True, None),
-        # Do not remap public Unsloth repos.
-        ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", False, None),
+        # A public Unsloth repo is not automatically a fixed point: see
+        # test_an_unsloth_id_is_not_a_fixed_point. get_model_name resolves this one back
+        # through INT_TO_FLOAT_MAPPER for a 16-bit load.
+        ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", False, "unsloth/gemma-3-270m-it"),
         ("google/gemma-2-2b-jpn-it", True, None),
         ("google/gemma-2-2b-jpn-it", False, None),
         ("/models/google/gemma-3-270m-it", True, None),
@@ -719,3 +721,65 @@ def test_the_security_scan_imports_nothing_heavy():
         or m in {"unsloth", "unsloth_zoo"}
         for m in imported
     ), sorted(imported)
+
+
+@pytest.mark.parametrize(
+    "name,load_in_4bit,mirror",
+    [
+        # Verified against unsloth.models.loader_utils.get_model_name. A 16-bit load of an
+        # explicit dynamic-quant id resolves back through INT_TO_FLOAT_MAPPER...
+        ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", False, "unsloth/gemma-3-270m-it"),
+        # ...while a 4-bit load keeps it, so the tables resolve nothing and BAD_MAPPINGS is
+        # applied to the input name instead, landing on a DIFFERENT repo.
+        ("unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit", True, "unsloth/qwen3-30b-a3b"),
+        # An id the loader really does leave alone still answers None.
+        ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", True, None),
+        ("unsloth/gemma-3-270m-it", False, None),
+    ],
+)
+def test_an_unsloth_id_is_not_a_fixed_point(mapper, name, load_in_4bit, mirror):
+    # These used to return None from an early "starts with unsloth/" branch, which let the
+    # security scan check a repo the loader never fetches while the one it does fetch went
+    # unscanned.
+    assert unsloth_mirror.unsloth_public_mirror(name, load_in_4bit) == mirror
+
+
+@pytest.mark.parametrize("config_key", ["is_embedding", "mlx"])
+def test_the_scan_does_not_expand_mirrors_off_the_torch_path(mapper, monkeypatch, config_key):
+    # _run_mlx_training and _run_embedding_training never consult this mapper, so a mirror
+    # there is a repo that will never be fetched: scanning it can block a valid run on an
+    # unrelated repo's files and fingerprints remote-code consent against something that is
+    # never loaded.
+    import core.training.training as training_mod
+    import core.training.worker as worker_mod
+    import utils.security as security_mod
+
+    scanned: list[str] = []
+
+    class _Decision:
+        blocked = False
+
+        def response_payload(self):
+            return {}
+
+    config = {
+        "model_name": "google/gemma-3-270m-it",
+        "load_in_4bit": True,
+        "trust_remote_code": False,
+    }
+    if config_key == "is_embedding":
+        config["is_embedding"] = True
+    else:
+        monkeypatch.setattr(training_mod, "should_use_mlx_training_backend", lambda **kw: True)
+
+    monkeypatch.setattr(worker_mod, "_model_local_files_only", lambda config: False, raising = False)
+    monkeypatch.setattr(security_mod, "security_load_subdirs", lambda *a, **kw: ())
+    monkeypatch.setattr(security_mod, "load_scan_target", lambda t, s: (t, s))
+    monkeypatch.setattr(
+        security_mod,
+        "evaluate_file_security",
+        lambda target, **kw: (scanned.append(target), _Decision())[1],
+    )
+
+    assert worker_mod._model_load_security_error(config, "google/gemma-3-270m-it", None) is None
+    assert scanned == ["google/gemma-3-270m-it"]

@@ -122,8 +122,14 @@ def unsloth_public_mirror(model_name: Optional[str], load_in_4bit: bool = True) 
         return None
     int_to_float, float_to_int, map_to_unsloth_16bit = tables
     lower = model_name.strip().lower()
-    if lower.startswith("unsloth/"):
-        return None
+    # An unsloth/ id is NOT a fixed point. A 16-bit load of an explicit -unsloth-bnb-4bit id
+    # resolves through INT_TO_FLOAT_MAPPER (unsloth/gemma-3-270m-it-unsloth-bnb-4bit ->
+    # unsloth/gemma-3-270m-it), and BAD_MAPPINGS is applied to the INPUT name when the tables
+    # resolve nothing (loader_utils.py:1014-1016), which is how a 4-bit
+    # unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit becomes unsloth/qwen3-30b-a3b. Both were verified
+    # against get_model_name. Returning None for these let the security scan check a repo the
+    # loader never fetches while the one it does fetch, and any custom code in it, went
+    # unscanned. Identity results are still dropped at the end.
     if load_in_4bit:
         # A 4-bit load resolves through FLOAT_TO_INT_MAPPER alone, and keeps an explicit
         # -bnb-4bit name as given (unsloth.models.loader_utils.__get_model_name).
