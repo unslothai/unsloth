@@ -469,3 +469,28 @@ test("an unpin stays an unpin when a peer unpinned it first", () => {
   assert.deepEqual(storedOrder(), [B]);
   assert.deepEqual(pins.getState().pinned, [B]);
 });
+
+test("a record we cannot read does not make older pins ours", () => {
+  // Blind in both directions, the only id this window knows is unpublished is the one it just
+  // added. Claiming the whole screen made pins that WERE stored ours, so a peer unpinning one of
+  // them was undone by the next write that landed.
+  reset([A, B]);
+  const realSet = storage.set.bind(storage);
+  const realGet = storage.get.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  storage.get = () => {
+    throw new Error("SecurityError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(C);
+    assert.deepEqual(pins.getState().pinned, [C, A, B]);
+  } finally {
+    storage.set = realSet;
+    storage.get = realGet;
+  }
+  externalWrite([A]); // a peer unpinned B while this window was blind
+  pins.getState().togglePinnedConnected(D); // this one lands
+  assert.deepEqual(storedOrder(), [D, C, A]);
+});

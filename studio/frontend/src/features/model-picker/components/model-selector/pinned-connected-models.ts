@@ -58,21 +58,33 @@ function storedRecord(): StoredRecord {
 let storageWritable = true;
 let unpersisted = new Set<string>();
 
-function writePinned(pinned: string[]): void {
+/** `added` is the id this edit introduced, or null for a reorder, an unpin, or a drag commit.
+ *  It is the only thing a window that can neither write NOR read the record still knows. */
+function writePinned(pinned: string[], added: string | null = null): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(pinned));
     storageWritable = true;
     unpersisted.clear();
+    return;
   } catch {
     storageWritable = false;
-    // REPLACED, not added to: undoing a failed pin while writes are still failing has to take the
-    // id back out, else the next merge resurrects a model the user just unpinned.
-    // Only a record we can READ narrows this: if storage cannot be read either, every pin on
-    // screen is one this window is carrying, which is exactly what it is.
-    const record = storedRecord();
-    const stored = record.kind === "list" ? record.ids : [];
-    unpersisted = new Set(pinned.filter((id) => !stored.includes(id)));
   }
+  const record = storedRecord();
+  if (record.kind === "unreadable") {
+    // Blind in both directions: we cannot tell a pin the record already holds from one it does
+    // not, so claiming the whole screen made pins that WERE stored ours, and a peer unpinning one
+    // of them was then undone by the next write that landed. Carry what was already ours, minus
+    // whatever this edit removed, plus the id it added.
+    const carried = new Set([...unpersisted].filter((id) => pinned.includes(id)));
+    if (added !== null) carried.add(added);
+    unpersisted = carried;
+    return;
+  }
+  // REPLACED, not added to: undoing a failed pin while writes are still failing has to take the
+  // id back out, else the next merge resurrects a model the user just unpinned. An ABSENT record
+  // holds nothing, so on that path every pin on screen really is one this window is carrying.
+  const stored = record.kind === "list" ? record.ids : [];
+  unpersisted = new Set(pinned.filter((id) => !stored.includes(id)));
 }
 
 /** Ids this window pinned and could not persist, which the record cannot be asked about. Read from
@@ -187,7 +199,7 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
         // Newest pin first, as On Device does, so "Pin to top" literally lands on top of the
         // pinned group rather than under earlier pins.
         const next = unpinning ? without : [modelId, ...without];
-        writePinned(next);
+        writePinned(next, unpinning ? null : modelId);
         return { pinned: next };
       }),
     movePinnedConnected: (fromId, toId) =>
