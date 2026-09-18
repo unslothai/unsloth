@@ -340,12 +340,17 @@ def test_the_branding_sweep_still_covers_the_crate() -> None:
     # An exemption for a line no longer in the tree is an exemption nobody re-read. It has to be
     # spent, and spent on the fixture it was written for.
     present = {
-        line.strip() for path in swept for line in read(path).splitlines() if "Unsloth Studio" in line
+        line.strip()
+        for path in swept
+        for line in read(path).splitlines()
+        if "Unsloth Studio" in line
     }
-    assert RUST_VERBATIM_LINES <= present, (
-        f"stale Rust exemptions: {sorted(RUST_VERBATIM_LINES - present)}"
-    )
-    assert len(RUST_VERBATIM_LINES) < 5, "the verbatim allowlist is for transcribed output, not copy"
+    assert (
+        RUST_VERBATIM_LINES <= present
+    ), f"stale Rust exemptions: {sorted(RUST_VERBATIM_LINES - present)}"
+    assert (
+        len(RUST_VERBATIM_LINES) < 5
+    ), "the verbatim allowlist is for transcribed output, not copy"
 
     # Nothing is dropped beyond the allowlist: every raw hit is either reported or exempt. A filter
     # that quietly skipped a directory, a file extension or a line shape would show up here as a
