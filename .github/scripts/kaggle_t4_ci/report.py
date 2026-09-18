@@ -3,16 +3,9 @@
 
 """Turn collected Kaggle evidence into a job summary and an exit code.
 
-The only place that decides whether the workflow goes red, on a deliberately
-narrow line: red means the payload RAN on a T4 and disagreed with its
-assertions. Everything else is a warning, because Kaggle is a free service with
-a hard concurrency cap, a weekly quota and its own queue, any of which can stop
-the test from producing a result; if those turned a PR red the check would be
-noise within a week and ignored the one time it was right.
+The only place that decides whether the workflow goes red, on a deliberately narrow line: red means the payload RAN on a T4 and disagreed with its assertions. Everything else is a warning, because Kaggle is a free service with a hard concurrency cap, a weekly quota and its own queue, any of which can stop the test from producing a result; if those turned a PR red the check would be noise within a week and ignored the one time it was right.
 
-Exit codes:
-    0  passed, partially reported, or never ran
-    1  a payload ran and failed its assertions
+Exit codes: 0 passed, partially reported, or never ran; 1 a payload ran and failed its assertions.
 """
 
 from __future__ import annotations
@@ -48,12 +41,7 @@ def _fmt_metric(value) -> str:
 
 
 def resolved_versions(report: dict) -> dict:
-    """The installed version of every watched package, whichever leg wrote it.
-
-    The SFT payload nests it under ``environment.resolved`` because its
-    environment block predates this and the committed reference carries that
-    shape; gpt-oss and GRPO write ``versions_flat`` at the top level.
-    """
+    """The installed version of every watched package, whichever leg wrote it. The SFT payload nests it under ``environment.resolved`` because its environment block predates this and the committed reference carries that shape; gpt-oss and GRPO write ``versions_flat`` at the top level."""
     flat = report.get("versions_flat")
     if isinstance(flat, dict):
         return flat
@@ -62,12 +50,7 @@ def resolved_versions(report: dict) -> dict:
 
 
 def version_table(reports: list) -> list[str]:
-    """Every leg's library set side by side, with what differs called out.
-
-    The payoff of a pinned control beside a canary: when the canary is the only
-    red leg, "which bump did it" is answered on the summary page, without
-    downloading an artifact or reconstructing an install log.
-    """
+    """Every leg's library set side by side, with what differs called out: when the canary is the only red leg beside a pinned control, "which bump did it" is answered on the summary page without downloading an artifact or reconstructing an install log."""
     columns = [(r.get("label", "?"), resolved_versions(r)) for r in reports]
     columns = [(label, versions) for label, versions in columns if versions]
     if len(columns) < 2:
@@ -92,31 +75,16 @@ def version_table(reports: list) -> list[str]:
     return lines
 
 
-# The label the Studio payload reports under. Duplicated in
-# kaggle_studio_ci/report.py rather than shared: these two packages have no
-# import relationship and both already ship a module called `report`, so a
-# shared helper would mean putting one of them on the other's sys.path -- which
-# is how `import report` starts resolving to the wrong file.
+# The label the Studio payload reports under. Duplicated in kaggle_studio_ci/report.py rather than shared: these two packages have no import relationship and both already ship a module called `report`, so a shared helper would put one on the other's sys.path, which is how `import report` starts resolving to the wrong file.
 STUDIO_LABEL = "studio-gpu"
 
 
 def own_verdict(kernel_verdict: str, kernel_reason: str, reports: list, expect: int):
     """This reporter's verdict over ITS OWN payloads, not the kernel's.
 
-    The launcher writes one verdict for the whole kernel, and since
-    --with-studio that kernel holds two unrelated experiments. Reading the
-    kernel verdict here means a failing training leg prints "Kaggle T4 smoke: FAIL"
-    above a section listing zero failures, and a failing Studio payload prints
-    the same over four green legs. Both are the misleading-red twin of the
-    green tick that tested nothing, and both would send someone to read the
-    wrong payload.
+    The launcher writes one verdict for the whole kernel, and since --with-studio that kernel holds two unrelated experiments. Reading the kernel verdict here means a failing training leg prints "Kaggle T4 smoke: FAIL" above a section listing zero failures, and a failing Studio payload prints the same over four green legs: both are the misleading-red twin of the green tick that tested nothing, and both send someone to read the wrong payload. So the verdict is recomputed from the filtered reports, keeping the kernel reason only when the two agree.
 
-    So the verdict is recomputed from the filtered reports. The kernel reason
-    is kept only when the two agree; otherwise it describes the other half.
-
-    `infra` is deliberately not synthesised: with nothing of ours back, the
-    kernel-level reason (quota, concurrency cap, a push that was throttled) is
-    the only account of why, and it applies to every payload equally.
+    `infra` is deliberately not synthesised: with nothing of ours back, the kernel-level reason (quota, concurrency cap, a throttled push) is the only account of why, and it applies to every payload equally.
     """
     if not reports:
         return (kernel_verdict if kernel_verdict == "infra" else "partial"), kernel_reason
@@ -212,8 +180,7 @@ def render(report: dict) -> list[str]:
                 "configuration, so nothing was compared."
             )
         elif ref.get("note"):
-            # A refusal, not a deviation: the deviations list is empty for
-            # these, so printing it alone would read like a clean result.
+            # A refusal, not a deviation: the deviations list is empty for these, so printing it alone would read like a clean result.
             lines.append(f"Reference band: **{status}** - {ref['note']}")
         else:
             lines.append(f"Reference band: **{status}** - {ref.get('deviations')}")
@@ -258,11 +225,7 @@ def render(report: dict) -> list[str]:
             )
         lines.append("")
 
-    # The whole point of the instrumentation: a reader answers "is the Hub
-    # download worth optimising" from the job summary, without downloading the
-    # evidence artifact. `fetch_seconds` is None when the timer never attached,
-    # and that is rendered as its own sentence rather than as a zero -- "no
-    # download happened" and "nothing was measured" are different findings.
+    # The whole point of the instrumentation: a reader answers "is the Hub download worth optimising" from the job summary without downloading the evidence artifact. `fetch_seconds` is None when the timer never attached, rendered as its own sentence rather than a zero, since "no download happened" and "nothing was measured" are different findings.
     phases = report.get("load_phases")
     if phases:
         if phases.get("fetch_seconds") is None:
@@ -292,8 +255,7 @@ def render(report: dict) -> list[str]:
 
     history = report.get("log_history")
     if history:
-        # GRPO: loss is ~0 by construction at num_iterations=1 and beta=0, so reward and reward_std are what is worth
-        # showing.
+        # GRPO: loss is ~0 by construction at num_iterations=1 and beta=0, so reward and reward_std are what is worth showing.
         lines += ["| step | reward | reward_std |", "| --- | --- | --- |"]
         for entry in history:
             if entry.get("reward") is None:
@@ -333,15 +295,9 @@ SENTINELS = (
 
 
 def kernel_log_text(evidence: Path) -> str:
-    """The kernel log as flat text, whichever shape Kaggle returned it in.
-
-    Kaggle's `kernels/output` returns the log as a JSON array of
-    ``{stream_name, time, data}`` records, not as text, so reading the file
-    directly shows a wall of JSON with one word of message per line.
-    """
+    """The kernel log as flat text, whichever shape Kaggle returned it in: `kernels/output` returns a JSON array of ``{stream_name, time, data}`` records, not text, so reading the file directly shows a wall of JSON with one word of message per line."""
     chunks = []
-    # rglob: a run is several kernels, each collecting into its own directory, so there is no single kernel.log any
-    # more.
+    # rglob: a run is several kernels, each collecting into its own directory, so there is no single kernel.log any more.
     for path in sorted(evidence.rglob("kernel.log")):
         raw = path.read_text(encoding = "utf-8", errors = "replace")
         try:
@@ -362,15 +318,9 @@ PREFETCH_SENTINEL = "KAGGLE_CI_PREFETCH"
 def prefetch_table(evidence: Path) -> list[str]:
     """What the prefetch lane actually achieved, from the kernel log.
 
-    This is the instrument, not decoration. The gpt-oss download time was never
-    measured -- an earlier estimate of "~282s" was subtraction, not measurement
-    -- and the whole leg order is arranged around it. Putting the number in the
-    job summary is what lets the next person confirm or reject the reorder
-    without downloading an artifact, including the case where it did not pay
-    for itself.
+    This is the instrument, not decoration. The gpt-oss download time was never measured (an earlier estimate of "~282s" was subtraction) and the whole leg order is arranged around it, so putting the number in the job summary is what lets the next person confirm or reject the reorder without downloading an artifact, including the case where it did not pay for itself.
 
-    Absent on a kernel built without the lane, which reads as no section at
-    all rather than as a table of zeroes.
+    Absent on a kernel built without the lane, which reads as no section at all rather than as a table of zeroes.
     """
     text = kernel_log_text(evidence)
     if not text:
@@ -402,10 +352,7 @@ def prefetch_table(evidence: Path) -> list[str]:
     failed = [r for r in records if not r.get("ok")]
     lines.append("")
     if failed:
-        # Not a failure of the run. Said out loud anyway, because the schedule
-        # assumes this lane worked: legs.KERNELS starts gptoss third to give it
-        # a window, and if the window went unused the makespan is the ~568s
-        # fallback rather than the ~500s the order was chosen for.
+        # Not a failure of the run, but said out loud because the schedule assumes this lane worked: legs.KERNELS starts gptoss third to give it a window, and if the window went unused the makespan is the ~568s fallback rather than the ~500s the order was chosen for.
         lines.append(
             f"{len(failed)} of {len(records)} prefetch(es) failed. This does not fail "
             "the run -- the leg downloads the model itself -- but the leg order in "
@@ -417,13 +364,7 @@ def prefetch_table(evidence: Path) -> list[str]:
 
 
 def diagnostic_lines(evidence: Path, limit: int = 40) -> list[str]:
-    """The lines of the kernel log worth putting in front of a human.
-
-    A kernel that finished but reported nothing is the hardest outcome to read:
-    no metrics to show, cause buried in an artifact nobody downloads. Both real
-    instances so far, a dependency probe that mis-ordered its imports and a
-    generated cell with a syntax error, were one grep away in this log.
-    """
+    """The lines of the kernel log worth putting in front of a human. A kernel that finished but reported nothing is the hardest outcome to read: no metrics to show, cause buried in an artifact nobody downloads. Both real instances so far, a dependency probe that mis-ordered its imports and a generated cell with a syntax error, were one grep away in this log."""
     text = kernel_log_text(evidence)
     if not text:
         return []
@@ -453,12 +394,7 @@ def main() -> int:
     reason = result.get("reason", "")
     reports = result.get("reports", [])
 
-    # The Studio payload can share this kernel (see kaggle_t4_ci/build_kernel.py
-    # --with-studio), and it emits its report through the same prefix, so it
-    # arrives in this list. It is a different SHAPE -- assertions rather than a
-    # per-step metric trace, no `config`, no `model` -- so rendering it here
-    # produces a training leg made of question marks. kaggle_studio_ci/report.py
-    # renders it properly; each reporter owns its own labels.
+    # The Studio payload can share this kernel (see kaggle_t4_ci/build_kernel.py --with-studio) and emits its report through the same prefix, so it arrives in this list. It is a different SHAPE (assertions rather than a per-step metric trace, no `config`, no `model`), so rendering it here produces a training leg made of question marks; kaggle_studio_ci/report.py renders it properly, each reporter owning its own labels.
     reports = [r for r in reports if r.get("label") != STUDIO_LABEL]
     verdict, reason = own_verdict(verdict, reason, reports, args.expect)
 

@@ -65,7 +65,9 @@ export function MediaPageLink({
             />
           </button>
         </TooltipTrigger>
-        <TooltipContent>{tooltip ?? `Go to ${label}`}</TooltipContent>
+        <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
+          {tooltip ?? `Go to ${label}`}
+        </TooltipContent>
       </Tooltip>
     </>
   );

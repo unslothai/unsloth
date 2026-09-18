@@ -5,11 +5,12 @@
 // view pulls in the whole app, so it is read as text; the store runs for real.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { en } from "../src/i18n/locales/en.ts";
 
 import {
   installLocalStorageFake,
+  readSrcAsync,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -24,12 +25,8 @@ const { rangeBetween } = await import(
 );
 
 async function manageChatsSource(): Promise<string> {
-  return await readFile(
-    new URL(
-      "../src/features/settings/components/manage-chats-view.tsx",
-      import.meta.url,
-    ),
-    "utf8",
+  return await readSrcAsync(
+    "features/settings/components/manage-chats-view.tsx",
   );
 }
 
@@ -108,8 +105,9 @@ test("bulk delete passes the always-delete-files preference through", async () =
 
 test("the header checkbox says it selects the visible chats, which is what it does", async () => {
   const src = await manageChatsSource();
-  // Rows sit behind a "Show more", so the label must not promise the whole list.
+  // rows sit behind "show more", so the label must not promise the whole list.
   assert.match(src, /onCheckedChange=\{toggleAllVisible\}/);
-  assert.match(src, /aria-label="Select all visible chats"/);
+  assert.match(src, /aria-label=\{t\("settings\.data\.library\.selectAll"\)\}/);
+  assert.equal(en.settings.data.library.selectAll, "Select all visible chats");
   assert.doesNotMatch(src, /aria-label="Select all chats"/);
 });

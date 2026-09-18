@@ -67,10 +67,10 @@ class TestSetupPs1NoWipeEscape:
 
     def test_the_escape_sits_ahead_of_the_wipe(self):
         escape = _line_of(_SETUP_SRC, "nvidia-smi did not answer, but this venv holds a")
-        wipe = _line_of(_SETUP_SRC, "Remove-Item -LiteralPath $VenvDir -Recurse -Force")
+        wipe = _line_of(_SETUP_SRC, "Rename-Item -LiteralPath $VenvDir")
         stale = _line_of(_SETUP_SRC, "Stale venv detected ($reason) -- rebuilding...")
         assert escape < stale < wipe, (
-            "the no-wipe escape must be evaluated before the stale-venv branch that deletes "
+            "the no-wipe escape must be evaluated before the stale-venv branch that replaces "
             f"the venv (escape={escape}, stale={stale}, wipe={wipe})"
         )
 
@@ -294,7 +294,8 @@ class TestStepThirteenWiring:
         # spec and the leaf are read from. Nothing else may join the set.
         assert step13 == (
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
-            + repairs + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
+            + repairs
+            + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
         ), step13
         assert "_install_torchao_for_torch" not in _calls_in(guards[0])
 
@@ -327,15 +328,18 @@ def _base_total(**flags) -> int:
 
 class TestStepTotals:
     def test_windows_totals_include_torchcodec(self):
-        assert _base_total(IS_WINDOWS = True) == 15
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 13
+        # Both carry the Windows-only accelerate repair (8c), which ignores NO_TORCH; the
+        # no-torch case also gets the runtime-deps slot an update announces separately.
+        assert _base_total(IS_WINDOWS = True) == 16
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 15
 
     @pytest.mark.parametrize(
         "flags,total",
         [
             ({}, 17),  # Linux, torch
-            ({"NO_TORCH": True}, 14),  # Linux, GGUF-only
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 14),  # Apple Silicon
+            ({"NO_TORCH": True}, 15),  # Linux, GGUF-only (incl. the no-torch runtime step)
+            # Two MLX slots: the install step and the post-core-phase re-resolve.
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 15),  # Apple Silicon
             ({"IS_MACOS": True}, 13),  # Intel Mac
         ],
     )
@@ -414,7 +418,7 @@ class TestManifestRecordsTheFlavor:
         read = _line_of(
             _STACK_SRC, "_RECORDED_TORCH_TAG = install_manifest.recorded_torch_flavor()"
         )
-        drop = _line_of(_STACK_SRC, "if not install_manifest.remove_manifest():")
+        drop = _line_of(_STACK_SRC, "if install_manifest.remove_manifest():")
         assert read < drop
         assert (
             "def install_python_stack"
@@ -496,9 +500,8 @@ class TestABrokenTorchForcesItsOwnReinstall:
             f"other order leaves the reinstall announced but unreachable"
         )
 
-    @pytest.mark.parametrize("force_var", ["$xpuForce", "$cpuForce"])
+    @pytest.mark.parametrize("force_var", ["$rocmForce", "$xpuForce", "$cpuForce"])
     def test_every_conditional_force_gate_reads_the_flag(self, force_var):
-        # The ROCm arm forces unconditionally, so only these two have a gate to miss.
         assignments = [
             line
             for line in _SETUP_SRC.splitlines()
@@ -514,13 +517,6 @@ class TestABrokenTorchForcesItsOwnReinstall:
             f"{force_var} never forces on a definitively unimportable wheel, so the "
             f"resolver keeps it: its on-disk tag is unchanged and the range is satisfied"
         )
-
-    def test_the_rocm_arm_needs_no_gate(self):
-        rocm = _SETUP_SRC[_SETUP_SRC.index("if ($ROCmIndexUrl) {") :]
-        rocm = rocm[: rocm.index("if ($XpuIndexUrl) {")]
-        assert (
-            "--force-reinstall" in rocm and "$rocmForce" not in rocm
-        ), "the ROCm arm forces every time, so a broken wheel is already replaced there"
 
     def test_the_flag_is_still_raised_where_the_import_definitively_failed(self):
         assert "$script:TorchImportDefinitivelyFailed = $true" in _SETUP_SRC
@@ -606,3 +602,101 @@ class TestPinProvenanceMustBeABoolean:
             encoding = "utf-8",
         )
         assert install_manifest.recorded_torch_flavor_was_pinned(tmp_path) is True
+
+
+def test_the_rocm_arm_forces_a_reinstall_only_when_the_other_arms_would():
+    """The ROCm arm used to pass --force-reinstall unconditionally, so every update on a
+    Windows ROCm venv re-resolved torch, torchvision and torchaudio against the ROCm index
+    and moved their resolved dependencies. It now keys the flag on the same three facts
+    the XPU and CPU arms read."""
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    start = text.index('substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."')
+    end = text.index('substep "GPU ROCm PyTorch installed', start)
+    arm = text[start:end]
+    assert "--force-reinstall --index-url $ROCmIndexUrl" not in arm
+    assert arm.count("@rocmForce --index-url $ROCmIndexUrl") == 2
+    assert 'if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }' in arm
+    assert "if ($script:PinChangedForceReinstall) { $rocmForce" in arm
+    assert "if ($script:TorchImportDefinitivelyFailed) { $rocmForce" in arm
+    # ...and the escape hatch the Python pass honours reaches this arm too, in the same
+    # spellings: this runs before the pass, so UNSLOTH_STUDIO_FULL_DEPS would not otherwise
+    # reach the one install that used to be forced every time.
+    assert '@("1", "true", "yes", "on") -contains' in arm
+    assert '"$($env:UNSLOTH_STUDIO_FULL_DEPS)".Trim().ToLowerInvariant()' in arm
+    # torch alone names the family: a companion re-resolved from PyPI satisfies its pin
+    # without linking ROCm, and only a forced reinstall replaces a satisfied package.
+    companion = arm[arm.index("$_companionNames = ") :]
+    companion = companion[: companion.index("while ($true)")]
+    # Both spellings: Windows on ARM installs no torchaudio, so it is not probed there.
+    assert "('torchvision', 'torchaudio')" in companion
+    assert "('torchvision',)" in companion
+    assert "$WinArm64NoAudio" in companion
+    # +cpu, +cuNNN and +xpu companions beside a ROCm torch all force the trio.
+    assert "t.startswith('cpu') or t.startswith('cu') or t.startswith('xpu')" in companion
+    assert '$rocmForce = @("--force-reinstall")' in companion
+    assert '"' not in companion[companion.index("-Code ") + 7 : companion.index("print(")]
+
+
+def test_the_rocm_trio_is_reinstalled_when_the_architecture_index_moves():
+    """The +rocm tag names the family, not the GPU architecture: AMD publishes one index
+    per architecture family, so a changed UNSLOTH_ROCM_GFX_ARCH or a replaced card moves
+    the index while the resident trio still satisfies its pins. The index a trio came
+    from is recorded after each successful install and compared before the fast path."""
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    force = text.index("$_recordedRocmIndex -ne $_rocmIndexIdentity")
+    record = text.index("Set-Content -LiteralPath $script:RocmIndexRecord")
+    installed = text.index('$env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"')
+    assert force < installed < record
+    # Recorded, compared and logged as a credential-free identity: a mirror URL can carry
+    # userinfo or a token, and the record and the reinstall message must carry neither.
+    record_line = text[record : text.index("\n", record)]
+    assert "Get-IndexIdentity $ROCmIndexUrl" in record_line
+    assert "$ROCmIndexUrl.TrimEnd" not in record_line
+    message = text.index("the ROCm trio was installed from $_recordedRocmIndex")
+    message_line = text[message : text.index("\n", message)]
+    assert "$ROCmIndexUrl" not in message_line
+    identity = text[
+        text.index("function Get-IndexIdentity") : text.index("function Test-RocmGfx211Leaf")
+    ]
+    assert "]+@', '$1'" in identity and "-split '[?#]'" in identity
+    # The record follows the install, never precedes it: a failed trio must not be recorded.
+    failed = text.index("AMD ROCm PyTorch install failed -- falling back to CPU")
+    assert failed < record
+
+
+class TestSetupPs1WindowsOnArmCudaPreservation:
+    """The win_arm64 CUDA shortcut is for an INFERRED expectation, not a stated one.
+
+    It runs ahead of the pin branch that raises $script:PinChangedForceReinstall, and that
+    flag is the only thing that clears $SkipPythonDeps. So without the exemption an
+    explicit pin skipped the dependency pass, install_python_stack.py and every
+    --force-reinstall at once, and `studio update` kept the old CUDA build while reporting
+    success. Exempting only /cpu was not enough: a user moving the venv to their own
+    cu129 mirror is stating an instruction just as much, and the index selection further
+    down is written to let a pin outrank the persisted NVIDIA channel.
+    """
+
+    _GUARD = "if ((Test-WinArm64Venv) -and $installedTorchTag -and"
+
+    def _condition(self) -> str:
+        start = _SETUP_SRC.index(self._GUARD)
+        return _SETUP_SRC[start : _SETUP_SRC.index("{", start + len(self._GUARD))]
+
+    def test_any_explicit_pin_is_exempt(self):
+        condition = self._condition()
+        assert "-not $_pinnedIdx" in condition
+        assert (
+            "$_woaCpuPinned" not in condition
+        ), "a cu129 mirror pin is as much an instruction as a /cpu one"
+
+    def test_the_exemption_reads_a_variable_that_is_always_assigned(self):
+        # Not $_pinLeaf: it is assigned only inside `if ($_pinnedIdx)`, so reading it here would
+        # be fatal under Set-StrictMode. $_pinnedIdx is assigned unconditionally above.
+        block = _SETUP_SRC[: _SETUP_SRC.index(self._GUARD)]
+        assert "$_pinnedIdx = Get-PinnedTorchIndexUrl" in block
+        assert "$_pinLeaf" not in self._condition()
+
+    def test_it_still_sits_ahead_of_the_pin_branch(self):
+        shortcut = _line_of(_SETUP_SRC, self._GUARD)
+        pin_branch = _line_of(_SETUP_SRC, "Torch-index pin changed ($installedTorchTag)")
+        assert shortcut < pin_branch

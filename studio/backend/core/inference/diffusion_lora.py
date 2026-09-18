@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
-from utils.paths.storage_roots import studio_root
+from utils.paths.storage_roots import account_path
 
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
 from utils.paths.path_utils import is_appledouble_metadata
@@ -37,8 +37,6 @@ _ALL_EXTS = (".safetensors", ".gguf")
 
 @dataclass(frozen = True)
 class LoraCatalogEntry:
-    """One discoverable LoRA adapter."""
-
     id: str
     display_name: str
     source: str
@@ -61,9 +59,6 @@ class ResolvedLora:
     path: str
     fmt: str
     weight: float
-
-
-# curated HF repos with a single-file weight; local discovery and any public HF LoRA repo id also work
 
 
 # Curated, family-tagged catalog of known-good diffusion LoRAs (HF repos with a single-file weight). Local discovery and
@@ -96,8 +91,7 @@ _CURATED: tuple[LoraCatalogEntry, ...] = (
 
 
 def loras_dir() -> Path:
-    """Local directory Unsloth scans for user-provided diffusion LoRA files."""
-    d = studio_root() / "loras" / "diffusion"
+    d = account_path("loras/diffusion")
     d.mkdir(parents = True, exist_ok = True)
     return d
 
@@ -130,7 +124,6 @@ def _scan_local() -> list[LoraCatalogEntry]:
         for p in children
         if p.is_file() and p.suffix.lower() in _ALL_EXTS and not is_appledouble_metadata(p)
     ]
-    # two files sharing a stem collide on id (== stem)
     # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full
     # filename.
     stem_counts: dict[str, int] = {}
@@ -291,10 +284,8 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
             return f
     if safes:
         return safes[0]
-    # gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked here, while a .safetensors never
-    # is
-    # The gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked here, while a .safetensors is
-    # never one, so the candidates above stay untouched.
+    # The gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked here, while a .safetensors
+    # is never one, so the candidates above stay untouched.
     ggufs = [
         f
         for f in files
@@ -426,10 +417,9 @@ _NATIVE_LORA_FAMILY_TOKENS = (
     "sd3",
     "stable-diffusion",
 )
-# LoRA path is the load-time BAKE: adapters attach on the dense transformer BEFORE torchao quantize_ + compile
-# Diffusers quant schemes whose LoRA path is the load-time BAKE: adapters attach on the dense transformer BEFORE torchao
-# quantize_ + compile (peft's TorchaoLoraLinear dispatch needs quantizer metadata a manual quantize_ lacks). Verified on
-# peft 0.18.1 / torchao 0.17 / torch 2.10: scale 0 reproduces the quantized base bit-exactly.
+# Diffusers quant schemes whose LoRA path is the load-time BAKE: adapters attach on the dense transformer BEFORE
+# torchao quantize_ + compile (peft's TorchaoLoraLinear dispatch needs quantizer metadata a manual quantize_ lacks).
+# Verified on peft 0.18.1 / torchao 0.17 / torch 2.10: scale 0 reproduces the quantized base bit-exactly.
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")

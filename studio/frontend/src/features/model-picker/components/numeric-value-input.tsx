@@ -171,7 +171,18 @@ export const NumericValueInput = forwardRef<
         setDraft(next);
         setFocused(true);
         const target = e.currentTarget;
-        requestAnimationFrame(() => target.select());
+        requestAnimationFrame(() => {
+          // Only while this input still holds focus. select() FOCUSES a blurred input in
+          // Chrome, and it takes focus off another element to do it, so an unconditional
+          // select a frame later steals focus back from wherever the user moved to. Two of
+          // these focused in the same task (tab, or a click straight from one field to the
+          // next) then steal from each other every frame forever: each steal fires focus on
+          // the other input, whose onFocus queues the next frame's steal. Measured on
+          // /images with Steps and Guidance: 7870 of 9081 animation frames in 76s scheduled
+          // from here, and every popover opened while it runs is dismissed immediately
+          // because focus keeps landing outside it.
+          if (document.activeElement === target) target.select();
+        });
       }}
       onBlur={() => {
         if (cancelBlurCommitRef.current) {
@@ -185,13 +196,12 @@ export const NumericValueInput = forwardRef<
             lastBlurCommittedRef.current = null;
           } else {
             draftRef.current = String(final);
-            // Only bridge the still-stale parent value when the blur actually
-            // dispatched onChange. Otherwise the parent is already current and
-            // there is nothing to bridge; caching here would leave a stale pin
-            // that a later Reset or external edit (which doesn't change the
-            // displayed value) can never clear, so a following Load/Save would
-            // recreate the override Reset removed. Same test as the dispatch, so
-            // a click in the same turn as the blur cannot see them disagree.
+            // Only bridge the still-stale parent value when the blur actually dispatched onChange.
+            // Otherwise the parent is already current and there is nothing to bridge; caching here
+            // would leave a stale pin that a later Reset or external edit (which doesn't change the
+            // displayed value) can never clear, so a following Load/Save would recreate the
+            // override Reset removed. Same test as the dispatch, so a click in the same turn as the
+            // blur cannot see them disagree.
             lastBlurCommittedRef.current = isEdit(final) ? final : null;
           }
         }

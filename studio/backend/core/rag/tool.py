@@ -151,6 +151,9 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
                 # ordinals are not UNIQUE.
                 "chunkIndex": _row_value(r, "chunk_index"),
                 "createdAt": _row_value(r, "created_at"),
+                # And insertion order under that, for archives whose rows share a timestamp
+                # the clock was too coarse to separate; without it the merge key runs out.
+                "documentRowid": _row_value(r, "document_rowid"),
                 "score": round(float(h.score), 4) if h.score is not None else None,
             }
         )
@@ -251,7 +254,6 @@ def search_knowledge_base_with_sources(
 
 
 def store_rows(conn, hits):
-    """Hydrate chunk rows for a list of hits."""
     from . import store
     return store.chunks_by_id(conn, [h.chunk_id for h in hits])
 
@@ -373,7 +375,6 @@ def search_knowledge_base(
     min_score: float = 0.0,
     model_name: str | None = None,
 ) -> str:
-    """Text-only variant of :func:`search_knowledge_base_with_sources`."""
     text, _sources = search_knowledge_base_with_sources(
         query = query,
         scope_kb_id = scope_kb_id,

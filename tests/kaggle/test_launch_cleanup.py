@@ -29,11 +29,30 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(proc, tmp_path):
+    try:
+        _await_ready(proc)
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc, tmp_path)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"
 sys.path.insert(0, str(CI_DIR))
 
 import launch  # noqa: E402
+
+# One worker for this file. The tests below start a real launcher and signal it, then give it
+# _DEATH_BUDGET_SEC to die; under `-n 4` with xdist's default scheduling four of them land on four
+# workers of a four-core runner, and the budget stops measuring "did the handler run" and starts
+# measuring "was the child ever scheduled". That is how CI produced a 120s timeout whose own
+# faulthandler stack showed the child still parked on the stall line, having never reached its
+# handler. Needs `--dist loadgroup`, which the jobs running this file pass.
+pytestmark = pytest.mark.xdist_group(name = "kaggle_launch_signals")
 
 
 class _StubKaggleApi:
@@ -569,13 +588,7 @@ def test_the_exit_status_still_says_it_was_killed(tmp_path):
     """A handler that swallows the signal and exits 0 makes a cancelled job
     look like a completed one."""
     proc = _runner(tmp_path, _waiting_launcher(tmp_path / "out"))
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     assert proc.returncode == -signal.SIGTERM, (
         f"expected death by SIGTERM, got returncode {proc.returncode}. "
         f"Launcher said: {_tail(proc)}"
@@ -611,13 +624,7 @@ def test_the_exit_status_survives_a_release_that_fails(tmp_path):
             ),
         ),
     )
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     assert proc.returncode == -signal.SIGTERM, (
         f"a release() that raised turned SIGTERM into returncode {proc.returncode}; "
         f"a cancelled job would read as a completed one. Launcher said: {_tail(proc)}"
@@ -669,13 +676,7 @@ def test_the_handler_survives_its_own_logging_failing(tmp_path):
             ),
         ),
     )
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     assert proc.returncode == -signal.SIGTERM, (
         f"a log call that raised inside the handler turned SIGTERM into returncode "
         f"{proc.returncode}. Launcher said: {_tail(proc)}"
@@ -785,13 +786,7 @@ def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_pat
         stderr = subprocess.STDOUT,
         text = True,
     )
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
 
     attempts = _deletions(tmp_path)
     assert len(attempts) >= 3, (
@@ -1080,13 +1075,7 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
         ]
     )
     proc = _runner(tmp_path, body)
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     deleted = _deletions(tmp_path)
     assert any(
         "me/k-1" in c for c in deleted

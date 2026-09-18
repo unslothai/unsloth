@@ -52,6 +52,18 @@ export type {
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export {
+  applyInterfaceScale,
+  useInterfaceScaleStore,
+} from "./stores/interface-scale-store";
+// The runtime module, not the store, so consumers outside this feature do not have to pull
+// zustand in with them. native-drop-position.ts imports it directly for that reason.
+export {
+  NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
+  NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
+  getAppliedInterfaceZoom,
+  subscribeAppliedInterfaceZoom,
+} from "./lib/interface-scale-runtime";
+export {
   type MonitorFrame,
   useMonitorFrameStore,
 } from "./stores/monitor-frame-store";
@@ -72,9 +84,13 @@ export {
 export { Shortcut } from "./components/shortcut";
 export {
   currentBinding,
+  shortcutMatchingEvent,
   useKeyboardShortcutsStore,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { useSettingsDialogStore } from "./stores/settings-dialog-store";
 export type { SettingsTab } from "./stores/settings-dialog-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
+
+export { useVoiceSettingsStore } from "./stores/voice-settings-store";
+export { isMacPlatform } from "./lib/keyboard-shortcuts";

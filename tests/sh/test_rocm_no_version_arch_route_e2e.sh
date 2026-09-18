@@ -8,10 +8,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
 [ -r "$INSTALL_SH" ] || { echo "  FAIL: no install.sh at $INSTALL_SH"; exit 1; }
 
 _ROOT=$(mktemp -d)
@@ -101,17 +99,6 @@ bash -n "$_FUNCS" || _fatal "spliced functions do not parse"
 bash -n "$_BLOCK" || _fatal "spliced block does not parse"
 sh -n "$_FUNCS" || _fatal "spliced functions are not POSIX-parseable"
 sh -n "$_BLOCK" || _fatal "spliced block is not POSIX-parseable"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
 
 reset_host() {
     rm -rf "$_FAKE" "$_MOCK"
@@ -472,7 +459,6 @@ fedora_no_version_host gfx1100
 mock_strix_cpuinfo; mock_kfd_gfx 110000
 assert_eq "a real gfx1100 corroborated by the kernel keeps its own family" \
     "$_AMD/gfx110X-all/" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_index)"
-
 
 # gfx1033 (Van Gogh) shares gfx103X-all with gfx1030-gfx1036, so a mixed 103X host is the one
 # shape where _amd_agreed_index_family AGREES while _amd_sole_index_arch declines, and the

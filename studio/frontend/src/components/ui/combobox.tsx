@@ -171,9 +171,8 @@ function ComboboxContent({
           data-chips={!!anchor}
           onWheel={(event) => {
             onWheel?.(event);
-            // Dialog scroll locks cancel native wheel scrolling on this
-            // body-portaled popup, so scroll the list by hand while one is
-            // active.
+            // Dialog scroll locks cancel native wheel scrolling on this body-portaled popup, so
+            // scroll the list by hand while one is active.
             if (!document.body.hasAttribute("data-scroll-locked")) return;
             const list = event.currentTarget.querySelector<HTMLElement>(
               '[data-slot="combobox-list"]',

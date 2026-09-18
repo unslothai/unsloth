@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolve a usable Node.js executable at runtime.
-
-The installer provisions an isolated Node under ``<UNSLOTH_HOME>/node`` but only
-puts it on PATH for the *setup* process, never the user's shell. So backend code
-that shells out to ``node`` at runtime (the OXC validator) cannot rely on PATH.
-``resolve_node_executable`` prefers a version-adequate system Node, else the
-managed isolated Node (same floor the installer applies: ^20.19 || >=22.12 || >=23).
-"""
+"""Resolve a usable Node.js executable at runtime. The installer provisions an isolated Node under ``<UNSLOTH_HOME>/node`` but only puts it on PATH for the *setup* process, never the user's shell, so backend code that shells out to ``node`` at runtime (the OXC validator) cannot rely on PATH. ``resolve_node_executable`` prefers a version-adequate system Node, else the managed isolated Node (same floor the installer applies: ^20.19 || >=22.12 || >=23)."""
 
 from __future__ import annotations
 
@@ -25,9 +18,7 @@ _NODE_VERSION_PROBE_TIMEOUT_SECONDS = 10
 _IS_WINDOWS = os.name == "nt"
 
 
-# Keep in sync with the setup scripts' floors, decide_node_source (setup.sh) / Get-NodeDecision
-# (setup.ps1): Vite 8 needs Node ^20.19 || >=22.12 || >=23, and both require npm >= 11 before
-# accepting a system runtime.
+# Keep in sync with the setup scripts' floors, decide_node_source (setup.sh) / Get-NodeDecision (setup.ps1): Vite 8 needs Node ^20.19 || >=22.12 || >=23, and both require npm >= 11 before accepting a system runtime.
 _NPM_MAJOR_FLOOR = 11
 
 
@@ -47,12 +38,10 @@ def _version_meets_floor(version: str) -> bool:
 
 
 def managed_node_dir() -> Path:
-    """Isolated Node install dir. Mirrors ``_find_llama_server_binary``: shares a
-    parent with llama.cpp -- ``<STUDIO_HOME>`` in custom mode, else legacy ``~/.unsloth``."""
+    """Isolated Node install dir. Mirrors ``_find_llama_server_binary``: shares a parent with llama.cpp, ``<STUDIO_HOME>`` in custom mode, else legacy ``~/.unsloth``."""
     legacy_node = Path.home() / ".unsloth" / "node"
     try:
-        # Lazy import (mirrors _find_llama_server_binary) so this module stays
-        # importable even if utils.paths cannot be loaded.
+        # Lazy import (mirrors _find_llama_server_binary) so this module stays importable even if utils.paths cannot be loaded.
         from utils.paths.storage_roots import studio_root
 
         resolved = studio_root()
@@ -63,8 +52,7 @@ def managed_node_dir() -> Path:
             is_legacy = resolved == legacy_studio
         return legacy_node if is_legacy else (resolved / "node")
     except (ImportError, OSError, ValueError):
-        # Degraded env (utils.paths unavailable): still honor an explicit
-        # STUDIO_HOME override before the legacy default, mirroring studio_root().
+        # Degraded env (utils.paths unavailable): still honor an explicit STUDIO_HOME override before the legacy default, mirroring studio_root().
         override = (
             os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
         ).strip()
@@ -94,8 +82,7 @@ def managed_node_bin_dir() -> Path | None:
         return None
 
 
-# Success-only memoization, like _resolved_node: the installer may finish after the first probe, so a negative verdict
-# must not stick until restart.
+# Success-only memoization, like _resolved_node: the installer may finish after the first probe, so a negative verdict must not stick until restart.
 _managed_node_ok: bool = False
 _usable_node_cache: dict[tuple[str, str | None], bool] = {}
 
@@ -112,9 +99,7 @@ def _path_has_usable_node(
     require_npm: bool = True,
     require_npx: bool = True,
 ) -> bool:
-    """Whether ``path`` provides what a stdio command actually uses. The installers gate
-    on node plus npm and never look at npx, so each launcher is checked against what it
-    needs: node alone, node plus npm, or node plus the npx that launches it."""
+    """Whether ``path`` provides what a stdio command actually uses. The installers gate on node plus npm and never look at npx, so each launcher is checked against what it needs: node alone, node plus npm, or node plus the npx that launches it."""
     try:
         node = shutil.which("node", path = path)
         npm = shutil.which("npm", path = path) if require_npm else None
@@ -129,9 +114,7 @@ def _path_has_usable_node(
         return False
     launcher = npx if require_npx else npm
     if _IS_WINDOWS and launcher:
-        # npm's generated npm.cmd and npx.cmd both run the node.exe beside them when
-        # there is one, so that is the runtime to validate, not whatever ``node``
-        # resolves to first.
+        # npm's generated npm.cmd and npx.cmd both run the node.exe beside them when there is one, so that is the runtime to validate, not whatever ``node`` resolves to first.
         sibling = os.path.join(os.path.dirname(launcher), "node.exe")
         try:
             if os.path.isfile(sibling):
@@ -140,9 +123,7 @@ def _path_has_usable_node(
             return False
     if not _probe_ok(node, _node_version_ok, path):
         return False
-    # The installers' npm floor still applies to an npx-only PATH: npx-cli.js hands off to
-    # the npm library beside it, so ``npx -v`` prints that npm's version and stands in for
-    # the missing npm launcher. Falling back to it keeps the floor instead of skipping it.
+    # The installers' npm floor still applies to an npx-only PATH: npx-cli.js hands off to the npm library beside it, so ``npx -v`` prints that npm's version and stands in for the missing npm launcher. Falling back to it keeps the floor instead of skipping it.
     floor_launcher = npm if require_npm else (npx if require_npx else None)
     return _probe_ok(floor_launcher, _npm_version_ok, path) if floor_launcher else True
 
@@ -152,11 +133,7 @@ def _probe_ok(
     check,
     path: str | None = None,
 ) -> bool:
-    """Version check for one executable, memoized on success (see _usable_node_cache).
-    The PATH is part of the key: npm and npx are ``#!/usr/bin/env node`` scripts, so the
-    same shim resolves a different runtime under a different PATH and can clear the floor
-    on one and fail it on another. Keying on the executable alone would let the first
-    PATH that passed answer for every later one."""
+    """Version check for one executable, memoized on success (see _usable_node_cache). The PATH is part of the key: npm and npx are ``#!/usr/bin/env node`` scripts, so the same shim resolves a different runtime under a different PATH and can clear the floor on one and fail it on another. Keying on the executable alone would let the first PATH that passed answer for every later one."""
     cache_key = (executable, path)
     if _usable_node_cache.get(cache_key):
         return True
@@ -173,9 +150,7 @@ def _managed_probe_path() -> str | None:
 
 
 def managed_node_usable() -> bool:
-    """Whether the managed Node clears the version floor, mirroring the managed branch
-    of resolve_node_executable(). Setup leaves an install in place when it picks the
-    system runtime, so a stale dir must not win the lookup."""
+    """Whether the managed Node clears the version floor, mirroring the managed branch of resolve_node_executable(). Setup leaves an install in place when it picks the system runtime, so a stale dir must not win the lookup."""
     global _managed_node_ok
     if _managed_node_ok:
         return True
@@ -193,9 +168,7 @@ def path_with_managed_node(
     require_npm: bool = True,
     require_npx: bool = True,
 ) -> str:
-    """``base_path`` (default: this process's PATH) with the managed Node bin dir
-    moved to the front, unchanged when it is unusable or the PATH already resolves a
-    runtime. The installer puts it on PATH for setup only, so subprocesses need it."""
+    """``base_path`` (default: this process's PATH) with the managed Node bin dir moved to the front, unchanged when it is unusable or the PATH already resolves a runtime. The installer puts it on PATH for setup only, so subprocesses need it."""
     current = os.environ.get("PATH", "") if base_path is None else base_path
     bin_dir = managed_node_bin_dir()
     if bin_dir is None:
@@ -209,8 +182,7 @@ def path_with_managed_node(
     # An empty component means the working directory on POSIX; dropping it loses it.
     entries = current.split(os.pathsep) if current else []
     normalized = os.path.normcase(os.path.normpath(bin_str))
-    # Drop any existing occurrence rather than keep it: this runs only when PATH resolves no usable
-    # runtime, so a managed dir sitting behind a stale one must move up.
+    # Drop any existing occurrence rather than keep it: this runs only when PATH resolves no usable runtime, so a managed dir sitting behind a stale one must move up.
     kept = [
         entry
         for entry in entries
@@ -234,9 +206,7 @@ def _probe_version(
     meets_floor,
     path: str | None = None,
 ) -> bool:
-    """Run ``<executable> -v`` and apply ``meets_floor``; False on any error. ``path`` is
-    the PATH the server would run with: npm and npx are ``#!/usr/bin/env node`` scripts,
-    so probing them under the backend's own PATH can fail to find the candidate's node."""
+    """Run ``<executable> -v`` and apply ``meets_floor``; False on any error. ``path`` is the PATH the server would run with: npm and npx are ``#!/usr/bin/env node`` scripts, so probing them under the backend's own PATH can fail to find the candidate's node."""
     try:
         result = subprocess.run(
             [executable, "-v"],
@@ -255,8 +225,7 @@ def _probe_version(
     return meets_floor(result.stdout)
 
 
-# Memoize ONLY a confirmed version-adequate executable: the installer runs in a separate process
-# and may finish after the first probe, so a negative result must not stick until a restart.
+# Memoize ONLY a confirmed version-adequate executable: the installer runs in a separate process and may finish after the first probe, so a negative result must not stick until a restart.
 _resolved_node: str | None = None
 
 
@@ -267,12 +236,7 @@ def _reset_resolved_node() -> None:
 
 
 def resolve_node_executable() -> str | None:
-    """Resolve a usable node executable, or None.
-
-    Order: version-adequate system ``node`` on PATH; else the managed isolated
-    Node if adequate; else bare ``node`` (may be None). Only an adequate result
-    is memoized, so a Node installed after the first probe is picked up live.
-    """
+    """Resolve a usable node executable, or None. Order: version-adequate system ``node`` on PATH, else the managed isolated Node if adequate, else bare ``node`` (may be None). Only an adequate result is memoized, so a Node installed after the first probe is picked up live."""
     global _resolved_node
     if _resolved_node is not None:
         return _resolved_node

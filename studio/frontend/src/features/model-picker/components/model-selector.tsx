@@ -9,16 +9,17 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { isCustomProviderType } from "@/features/chat";
+import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+// eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
   CloudIcon,
-  DashboardSquare01Icon,
   Download01Icon,
   RemoveCircleIcon,
   StarIcon,
@@ -68,65 +69,6 @@ import type {
   ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
-
-const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
-  openai: "svg",
-  mistral: "svg",
-  gemini: "svg",
-  anthropic: "svg",
-  deepseek: "svg",
-  huggingface: "svg",
-  kimi: "jpg",
-  qwen: "png",
-  openrouter: "svg",
-  vllm: "svg",
-  ollama: "svg",
-  llama_cpp: "svg",
-};
-
-function providerLogoSrc(providerType: string | undefined): string | undefined {
-  if (!providerType) return undefined;
-  const ext = PROVIDER_LOGO_EXT[providerType];
-  if (!ext) return undefined;
-  return `${import.meta.env.BASE_URL}provider-logos/${providerType}.${ext}`;
-}
-
-function ExternalProviderLogo({
-  providerType,
-  className,
-  title,
-}: {
-  providerType: string | undefined;
-  className?: string;
-  title?: string;
-}) {
-  const src = providerLogoSrc(providerType);
-  if (!src && isCustomProviderType(providerType)) {
-    return (
-      <span title={title} aria-hidden={true} className="inline-flex shrink-0">
-        <HugeiconsIcon
-          icon={DashboardSquare01Icon}
-          className={cn("shrink-0", className)}
-        />
-      </span>
-    );
-  }
-
-  if (!src) return null;
-  return (
-    <img
-      src={src}
-      alt=""
-      title={title}
-      aria-hidden={true}
-      className={cn(
-        "shrink-0 object-contain",
-        providerType === "openai" && "dark:invert",
-        className,
-      )}
-    />
-  );
-}
 
 export type {
   DeletedModelRef,
@@ -380,6 +322,7 @@ function ModelSelectorContent({
   onEject,
   onFoldersChange,
   onBrowseHub,
+  onConfigureConnection,
   onModelsChange,
   deleteDisabled,
   className,
@@ -408,6 +351,7 @@ function ModelSelectorContent({
   onEject?: () => void;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
+  onConfigureConnection?: (providerId: string) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   className?: string;
@@ -670,6 +614,7 @@ function ModelSelectorContent({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
               onBrowseHub={onBrowseHub}
+              onConfigureConnection={onConfigureConnection}
               onModelsChange={onModelsChange}
               onConfigure={openConfigPage}
               deleteDisabled={deleteDisabled}
@@ -787,7 +732,7 @@ export function ModelSelector({
         ...externalModel,
         description: externalModel.providerName,
         icon: (
-          <ExternalProviderLogo
+          <ApiProviderLogo
             providerType={externalModel.providerType}
             className="size-4"
             title={externalModel.providerName}
@@ -862,6 +807,13 @@ export function ModelSelector({
     void navigate({ to: "/hub", search: { tab: "discover" } });
   }
 
+  // A Connected group's gear. What is configurable about a remote model lives on its connection,
+  // so open that form rather than ModelConfigPage's local load settings.
+  function handleConfigureConnection(providerId: string) {
+    setOpen(false);
+    useSettingsDialogStore.getState().openConnectionSettings(providerId);
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -901,6 +853,7 @@ export function ModelSelector({
         onBrowseHub={
           task && communityModelPolicy === "none" ? undefined : handleBrowseHub
         }
+        onConfigureConnection={handleConfigureConnection}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}
