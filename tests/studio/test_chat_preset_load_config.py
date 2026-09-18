@@ -672,6 +672,16 @@ def _bindings(block: str, name: str) -> int:
     return sum(len(re.findall(pattern, block)) for pattern in patterns)
 
 
+def _assigned(block: str, name: str) -> bool:
+    """Does `block` write to `name`: `name = x`, a compound assignment, or `++` / `--`?"""
+    reference = rf"(?<![\w$.]){re.escape(name)}(?![\w$])"
+    compound = r"(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])?"
+    return bool(
+        re.search(rf"{reference}\s*{compound}=(?![=>])", block)
+        or re.search(rf"(?:\+\+|--)\s*{reference}|{reference}\s*(?:\+\+|--)", block)
+    )
+
+
 def _selector_signature(selector: str, field: str):
     """Where the selector's body starts, and the pattern that finds `field` being read in it.
 
@@ -682,7 +692,8 @@ def _selector_signature(selector: str, field: str):
     """
     plain = re.match(r"\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?::[^=]*)?=>", selector)
     if plain is not None:
-        if _bindings(selector[plain.end() :], plain.group(1)):
+        body = selector[plain.end() :]
+        if _bindings(body, plain.group(1)) or _assigned(body, plain.group(1)):
             return 0, None, None
         access = rf"{re.escape(plain.group(1))}\.{field}"
         return plain.end(), re.compile(rf"(?<![\w$.]){access}\b"), access
@@ -694,7 +705,8 @@ def _selector_signature(selector: str, field: str):
         name, _, alias = entry.partition(":")
         if name.strip() == field:
             local = alias.strip() or field
-            if _bindings(selector[destructured.end() :], local):
+            body = selector[destructured.end() :]
+            if _bindings(body, local) or _assigned(body, local):
                 return 0, None, None
             access = re.escape(local)
             # Not preceded by `.`: `s.other.reasoningBudget` is some other object's property.
@@ -1301,6 +1313,9 @@ SELECTOR_CASES = [
     ),
     ("(s) => { { const s = { reasoningBudget: 1 }; return s.reasoningBudget; } }", False),
     ("({ reasoningBudget }) => s.other.reasoningBudget", False),
+    # Nor is the parameter once it is written to.
+    ("(s) => { s = other; return s.reasoningBudget; }", False),
+    ("({ reasoningBudget }) => { reasoningBudget ??= 1; return reasoningBudget; }", False),
     ("(s) => { const value = s.reasoningBudget; return s.other. value; }", False),
     # A comma expression returns its last operand, and a declarator list declares two names.
     ("(s) => (s.reasoningBudget, s.other)", False),
