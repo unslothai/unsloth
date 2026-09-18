@@ -248,7 +248,7 @@ export const es = {
   settings: {
     accounts: {
       title: "Cuentas",
-      description: "Crea cuentas privadas de Studio. Los nuevos usuarios inician sesión con un código de configuración de un solo uso y eligen una contraseña.",
+      description: "Crea cuentas privadas de Unsloth Studio. Los nuevos usuarios inician sesión con un código de configuración de un solo uso y eligen una contraseña.",
       username: "Nombre de usuario",
       create: "Crear cuenta",
       setupCode: "Código de configuración",
@@ -303,9 +303,10 @@ export const es = {
     },
     keyboardShortcuts: {
       title: "Atajos de teclado",
-      description:
-        "Cambia cualquier atajo, o bórralo para liberar la combinación para el navegador o el sistema.",
       searchPlaceholder: "Buscar atajos…",
+      keystrokePlaceholder: "Pulsa un atajo para buscar",
+      searchByKeystrokes: "Buscar por pulsación",
+      searchByName: "Buscar por nombre",
       noResults: "Ningún atajo coincide con esa búsqueda.",
       unassigned: "Sin asignar",
       recording: "Pulsa las teclas…",
@@ -502,6 +503,14 @@ export const es = {
           label: "Enviar mensaje",
           description: "Enviar lo que hay en el redactor",
         },
+        queueMessage: {
+          label: "Poner el mensaje en cola",
+          description: "Enviar el borrador al final de la cola",
+        },
+        steerMessage: {
+          label: "Dirigir la respuesta",
+          description: "Detener la respuesta actual y enviar el borrador a continuación",
+        },
         cycleReasoningEffort: {
           label: "Alternar esfuerzo de razonamiento",
           description: "Recorrer los niveles de esfuerzo de razonamiento",
@@ -568,7 +577,7 @@ export const es = {
       openLogsFolderFailed: "No se pudo abrir la carpeta de registros.",
       exportFailed: "No se pudieron descargar los registros.",
       exportTooOld: "El backend de Unsloth en ejecución es demasiado antiguo para exportar los registros. Actualízalo y reinícialo.",
-      exportForbidden: "Para descargar todos los registros hace falta una sesión de Studio iniciada. Una clave de API no basta.",
+      exportForbidden: "Para descargar todos los registros hace falta una sesión de Unsloth Studio iniciada. Una clave de API no basta.",
       keywords: "depuracion depurar registro registros log logs error errores fallo traza diagnostico solucion de problemas debug",
     },
     voice: {
@@ -881,6 +890,9 @@ export const es = {
         showLoadedModels: "Indicador de modelos cargados",
         showLoadedModelsDescription:
           "Muestra una pequeña tarjeta en la esquina inferior derecha con todos los modelos actualmente en memoria (chat, voz, imagen, vídeo), con un botón para expulsar cada uno.",
+        showWhisperUpdates: "Notificaciones de actualización de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Avisa cuando haya una compilación más reciente de whisper.cpp para los modelos de voz a texto. Desactívalo si nunca transcribes audio.",
       },
       startup: {
         sectionTitle: "Inicio",

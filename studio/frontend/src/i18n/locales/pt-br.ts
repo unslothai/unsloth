@@ -247,7 +247,7 @@ export const ptBR = {
   settings: {
     accounts: {
       title: "Contas",
-      description: "Crie contas privadas do Studio. Novos usuários entram com um código de configuração de uso único e escolhem uma senha.",
+      description: "Crie contas privadas do Unsloth Studio. Novos usuários entram com um código de configuração de uso único e escolhem uma senha.",
       username: "Nome de usuário",
       create: "Criar conta",
       setupCode: "Código de configuração",
@@ -302,9 +302,10 @@ export const ptBR = {
     },
     keyboardShortcuts: {
       title: "Atalhos de teclado",
-      description:
-        "Altere qualquer atalho, ou apague um para liberar a combinação para o navegador ou o sistema.",
       searchPlaceholder: "Pesquisar atalhos…",
+      keystrokePlaceholder: "Pressione um atalho para pesquisar",
+      searchByKeystrokes: "Pesquisar por tecla",
+      searchByName: "Pesquisar por nome",
       noResults: "Nenhum atalho corresponde a essa pesquisa.",
       unassigned: "Não atribuído",
       recording: "Pressione as teclas…",
@@ -501,6 +502,14 @@ export const ptBR = {
           label: "Enviar mensagem",
           description: "Enviar o que está no compositor",
         },
+        queueMessage: {
+          label: "Enfileirar mensagem",
+          description: "Enviar o rascunho para o fim da fila",
+        },
+        steerMessage: {
+          label: "Direcionar a resposta",
+          description: "Parar a resposta atual e enviar o rascunho em seguida",
+        },
         cycleReasoningEffort: {
           label: "Alternar esforço de raciocínio",
           description: "Percorrer os níveis de esforço de raciocínio",
@@ -567,7 +576,7 @@ export const ptBR = {
       openLogsFolderFailed: "Não foi possível abrir a pasta de logs.",
       exportFailed: "Não foi possível baixar os logs.",
       exportTooOld: "O backend do Unsloth em execução é antigo demais para exportar os logs. Atualize esse backend e reinicie.",
-      exportForbidden: "Para baixar todos os logs é preciso uma sessão do Studio conectada. Uma chave de API não basta.",
+      exportForbidden: "Para baixar todos os logs é preciso uma sessão do Unsloth Studio conectada. Uma chave de API não basta.",
       keywords: "depuracao depurar registro registros log logs erro erros falha rastreamento diagnostico solucao de problemas debug",
     },
     voice: {
@@ -872,6 +881,9 @@ export const ptBR = {
         showLoadedModels: "Indicador de modelos carregados",
         showLoadedModelsDescription:
           "Mostra um pequeno cartão no canto inferior direito listando todos os modelos atualmente na memória (chat, fala, imagem, vídeo), com um botão para liberar cada um.",
+        showWhisperUpdates: "Notificações de atualização do whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Notifica quando uma versão mais recente do whisper.cpp está disponível para modelos de fala para texto. Desative se você nunca transcreve áudio.",
       },
       startup: {
         sectionTitle: "Inicialização",
