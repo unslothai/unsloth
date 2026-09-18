@@ -1,29 +1,33 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The installer must survive a host where the native path helper cannot be built.
+"""The installer must survive a host where no exact path resolver can be reached.
 
-install.ps1 resolves path identity through three kernel32 imports. It used to get
+install.ps1 used to resolve path identity through three kernel32 imports. It got
 them by compiling C#, and Windows PowerShell 5.1 -- the interpreter
 studio/src-tauri/src/install.rs spawns -- compiles by writing the source into
 %TEMP% and running csc.exe. A %TEMP% that could not hold a file made Add-Type
 throw CS2001, and that exception travelled up Get-StudioPathHash to end a first
 launch as "Could not create the Unsloth install lock" (#9140). Behavioural
-antivirus then blocked the DLL the compiler produced, which is a failure no
-retry can route around, so the imports are emitted with DefinePInvokeMethod now
-and no compiler runs at all.
+antivirus then blocked the DLL the compiler produced, which is a failure no retry
+can route around, so the imports moved to DefinePInvokeMethod and no compiler ran
+at all. Reflection emit is now gone too: Skyhigh scored the apparatus as the
+largest single contributor to a BehavesLike.PS.Suspicious verdict on the shipped
+installer, and removing it cleared that verdict on a matched pair.
 
-Both halves are still guarded here. That no compiler is reachable is the first
-half, and this file asserts it by sabotaging Add-Type and showing nothing changes.
-That a host where even the emit fails still installs is the second, and it is the
-same fallback the compile failure used to land on: a lexical answer, Exact false,
-and a lock that is still acquired.
+What replaced it is a child interpreter. pathlib.Path.resolve is
+GetFinalPathNameByHandleW on Windows, the same system call the imports made, so an
+exact answer is still exact. Beneath it is the same fallback the compile failure
+used to land on: a lexical answer, Exact = $false, and a lock that is still
+acquired.
 
-These run under pwsh on any platform. Emit succeeds here while kernel32 does not
-resolve, so the type builds exactly as it does on 5.1 and every call through it
-fails, which covers the build side and the call side separately. Windows
-PowerShell 5.1 behaviour itself is exercised by the Windows-only tests in
-test_windows_installer_concurrency_guard.py.
+Both halves are still guarded here. That no compiler is reachable is the first, and
+this file asserts it by sabotaging Add-Type and showing nothing changes. That a host
+with no interpreter to ask still installs is the second, reached through the
+UNSLOTH_EARLY_PYTHON_PROBE kill switch.
+
+These run under pwsh on any platform. Windows PowerShell 5.1 behaviour itself is
+exercised by the Windows-only tests in test_windows_installer_concurrency_guard.py.
 """
 
 from __future__ import annotations
@@ -71,15 +75,12 @@ SABOTAGE = (
     """function Add-Type { throw "(0) : error CS2001: Source file 'a.0.cs' could not be found" }"""
 )
 
-# What a host that cannot emit looks like. Constrained Language Mode and App Control's
-# Dynamic Code Security both come through Test-StudioCanDefineNativeTypes, so overriding
-# that gate is the whole of "no native side".
-# "No exact resolver of any kind", which is what these tests mean by degraded. The Python rung
-# added below the native one would otherwise answer exactly on any host that has an interpreter,
-# and an exact answer is the opposite of the state being exercised here. The rung has its own
-# coverage in tests/studio/test_early_python_path_resolver.ps1.
-NO_NATIVE = """$env:UNSLOTH_EARLY_PYTHON_PROBE = "0"
-function Test-StudioCanDefineNativeTypes { return $false }"""
+# What a host with no exact resolver looks like, which is what these tests mean by degraded.
+# There is exactly one exact rung left: a child interpreter running pathlib.resolve. The kill
+# switch is the supported way to remove it, and it reaches the same branch a machine carrying no
+# Python of its own reaches. The rung itself has its own coverage in
+# tests/studio/test_early_python_path_resolver.ps1 and tests/studio/test_path_resolver_degrades.ps1.
+NO_NATIVE = '$env:UNSLOTH_EARLY_PYTHON_PROBE = "0"'
 
 
 def _extract(pattern: str, source: str) -> str:
@@ -103,17 +104,20 @@ LOCK_CHAIN = (
     "Initialize-StudioTempEnvironment",
     "Restore-StudioTempEnvironment",
     "Write-StudioFinalPathDegraded",
-    "Test-StudioCanDefineNativeTypes",
-    "Test-StudioEmitInChildProcess",
-    "New-StudioDynamicAssembly",
-    "New-StudioEmittedNativeType",
-    "Initialize-StudioFinalPathNativeType",
-    "Get-StudioNativeFinalPath",
     "Resolve-StudioLinkTarget",
     "Get-StudioSubstTarget",
     "Get-StudioEarlyPython",
     "Invoke-StudioEarlyPythonScript",
     "Invoke-StudioEarlyPythonScriptViaCmdlets",
+    "New-StudioChildScriptDirectory",
+    "Test-StudioChildScriptDirectoryElevated",
+    "Get-StudioSystem32Tool",
+    "Test-StudioPathUnderAdminRoot",
+    "Test-StudioSddlRightsAreWrite",
+    "Test-StudioSddlPrincipalIsAdminOnly",
+    "Test-StudioSddlWritableByNonAdmin",
+    "Test-StudioDirectoryIsAdminOnly",
+    "Get-StudioLexicalParent",
     "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
@@ -158,11 +162,25 @@ def _run_powershell(script: str, env: dict[str, str] | None = None) -> subproces
             pass
 
 
+# An ordinary, unelevated run, stated rather than inherited from whoever is running the test.
+#
+# An elevated install refuses to launch an interpreter a standard user could replace, since it
+# would be launching it with the administrator token, and every interpreter on a hosted Windows
+# runner is under C:\hostedtoolcache rather than a protected root. The runner account is an
+# administrator, so without this the rung declines, every EXACT below reads False, and the
+# failure looks like the ladder being broken rather than like the gate doing its job.
+#
+# The gate itself is driven directly in test_an_elevated_run_declines_a_user_writable_interpreter
+# and in tests/studio/test_early_python_path_resolver.ps1.
+NOT_ELEVATED = "function Test-StudioChildScriptDirectoryElevated { return $false }"
+
+
 def _script(
     body: str,
     *,
     sabotage: bool = True,
     names: tuple[str, ...] = LOCK_CHAIN,
+    elevated: bool = False,
 ) -> str:
     return "\n".join(
         [
@@ -172,6 +190,9 @@ def _script(
             "$script:StudioStdoutRedirected = $true",
             _helpers(*names),
             SABOTAGE if sabotage else "",
+            "function Test-StudioChildScriptDirectoryElevated { return $true }"
+            if elevated
+            else NOT_ELEVATED,
             body,
         ]
     )
@@ -185,9 +206,10 @@ def _lines(result: subprocess.CompletedProcess, prefix: str) -> list[str]:
 def test_install_lock_is_acquired_when_the_native_helper_is_unavailable(tmp_path: Path):
     """The bug from #9140, at the rung it lives on now.
 
-    It was a throwing Add-Type then and it is a host that cannot define a type at
-    all now, which is the same thing to every caller: no exact answer. The lock
-    must still be acquired, and the reason said once.
+    It was a throwing Add-Type then, then a host that could not define a type at all,
+    and it is a host with no interpreter to ask now. All three are the same thing to
+    every caller: no exact answer. The lock must still be acquired, and the reason
+    said once.
     """
     studio_home = tmp_path / "studio"
     studio_home.mkdir()
@@ -210,7 +232,9 @@ Exit-StudioInstallMutex -Mutex $mutex
         r"NAME:Global\\UnslothStudioInstall-[0-9a-f]{64}", _lines(result, "NAME:")[0]
     )
     # And it says why it degraded, once, without dumping anything it tried to build.
-    warnings = [line for line in result.stdout.splitlines() if "native path resolver" in line]
+    warnings = [
+        line for line in result.stdout.splitlines() if "Could not resolve a path exactly" in line
+    ]
     assert len(warnings) == 1
     assert "using System" not in result.stdout
 
@@ -220,8 +244,9 @@ def test_a_dead_compiler_is_not_something_the_installer_can_notice(tmp_path: Pat
     """The other half, and the reason the file is named for a fallback it no longer needs.
 
     install.ps1 reaches no compiler, so replacing Add-Type with one that always throws
-    has to change nothing at all: the lock is taken, the native side is built anyway,
-    and no degraded warning is printed. A failure here means a compile came back.
+    has to change nothing at all: the lock is taken, the path resolves exactly through
+    the child interpreter, and no degraded warning is printed. A failure here means a
+    compile came back.
     """
     studio_home = tmp_path / "studio"
     studio_home.mkdir()
@@ -231,14 +256,17 @@ def test_a_dead_compiler_is_not_something_the_installer_can_notice(tmp_path: Pat
 $mutex = Enter-StudioInstallMutex -Path '{studio_home}'
 Write-Output "LOCK:$($null -ne $mutex)"
 Exit-StudioInstallMutex -Mutex $mutex
-Write-Output "TYPE:$([bool]("UnslothStudioFinalPathV3" -as [type]))"
+Write-Output "EXACT:$((Resolve-StudioFinalPathInfo -Path '{studio_home}').Exact)"
 """
         )
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "LOCK:") == ["LOCK:True"]
-    assert _lines(result, "TYPE:") == ["TYPE:True"]
-    assert not [line for line in result.stdout.splitlines() if "native path resolver" in line]
+    # Exact, because the interpreter rung answered. A compiler never entered into it.
+    assert _lines(result, "EXACT:") == ["EXACT:True"]
+    assert not [
+        line for line in result.stdout.splitlines() if "Could not resolve a path exactly" in line
+    ]
 
 
 @requires_pwsh
@@ -265,40 +293,49 @@ Write-Output "CALLS:$global:AddTypeCalls"
 
 
 @requires_pwsh
-def test_the_type_is_built_once_however_many_paths_are_resolved(tmp_path: Path):
-    """The caching the retry count used to stand in for. The install scan resolves a
-    path per running process, so building the type per call would be paid dozens of
-    times."""
+def test_the_interpreter_is_looked_for_once_however_many_paths_are_resolved(tmp_path: Path):
+    """The caching the retry count used to stand in for, at the rung that has it now.
+
+    Finding an interpreter means running a probe against every candidate on PATH until
+    one answers, and that search is latched. Resolving a path still costs one child, so
+    five resolutions cost five children plus the ONE search: six calls, not ten. Without
+    the latch every resolution pays the search again, and on a host whose first few
+    candidates are slow or broken that is the expensive half.
+    """
     result = _run_powershell(
         _script(
             f"""
-$global:Emits = 0
+$global:Probes = 0
 # A scriptblock copy, not Get-Item function:. A FunctionInfo re-resolves by NAME when
 # it is invoked, so calling it from the replacement calls the replacement.
-$global:RealEmit = ${{function:New-StudioEmittedNativeType}}
-function New-StudioEmittedNativeType {{
-    param([string]$TypeName, [object[]]$Imports)
-    $global:Emits++
-    & $global:RealEmit -TypeName $TypeName -Imports $Imports
+$global:RealProbe = ${{function:Invoke-StudioEarlyPython}}
+function Invoke-StudioEarlyPython {{
+    param([string]$Exe, [string]$Path, [int]$TimeoutMs = 10000)
+    $global:Probes++
+    & $global:RealProbe -Exe $Exe -Path $Path -TimeoutMs $TimeoutMs
 }}
 foreach ($i in 1..5) {{ Get-StudioFinalPath -Path '{tmp_path}' | Out-Null }}
-Write-Output "EMITS:$global:Emits"
+Write-Output "PROBES:$global:Probes"
 """,
             sabotage = False,
         )
     )
     assert result.returncode == 0, result.stderr
-    assert _lines(result, "EMITS:") == ["EMITS:1"]
+    if _lines(result, "PROBES:") == ["PROBES:0"]:
+        pytest.skip("no interpreter on this host, so there is no search to latch")
+    assert _lines(result, "PROBES:") == ["PROBES:6"]
 
 
 @requires_pwsh
-def test_the_native_helper_is_built_with_no_usable_temp_at_all(tmp_path: Path):
-    """What replaced the private-%TEMP% retry: nothing, because nothing needs %TEMP%.
+def test_a_path_still_resolves_with_no_usable_temp_at_all(tmp_path: Path):
+    """What replaced the private-%TEMP% retry: a ladder that cannot be ended by %TEMP%.
 
-    The retry existed because compiling wrote a source file there and a %TEMP% that
-    could not hold one failed the install. Emit writes nothing anywhere, so the same
-    unusable %TEMP% that used to need a retry is now simply irrelevant, and the
-    variables are handed back exactly as they arrived.
+    The retry existed because compiling wrote a source file there, and a %TEMP% that
+    could not hold one failed the install outright (#9140). The rungs left do use %TEMP%
+    -- the child interpreter is handed its script through a file -- so an unusable one
+    can still cost the EXACT answer. What it may no longer cost is the install: the
+    ladder drops to the lexical rung, says so, and hands the caller's broken variables
+    back exactly as they arrived rather than repairing them behind its back.
     """
     blocker = tmp_path / "blocker"
     blocker.write_text("not a directory", encoding = "utf-8")
@@ -318,8 +355,6 @@ def test_the_native_helper_is_built_with_no_usable_temp_at_all(tmp_path: Path):
 # Skip the session-wide temp fix, so nothing but the emit itself can save this.
 $script:StudioTempChecked = $true
 $info = Resolve-StudioFinalPathInfo -Path '{studio_home}'
-Write-Output "LOADED:$([bool]("UnslothStudioFinalPathV3" -as [type]))"
-Write-Output "INMEMORY:$([string]::IsNullOrEmpty(("UnslothStudioFinalPathV3" -as [type]).Assembly.Location))"
 Write-Output "PATH:$($info.Path)"
 Write-Output "TMP:$env:TMP"
 Write-Output "TEMP:$env:TEMP"
@@ -329,15 +364,14 @@ Write-Output "TEMP:$env:TEMP"
         env = env,
     )
     assert result.returncode == 0, result.stderr
-    assert _lines(result, "LOADED:") == ["LOADED:True"]
-    assert _lines(result, "INMEMORY:") == ["INMEMORY:True"]
-    assert not [line for line in result.stdout.splitlines() if "native path resolver" in line]
     # Handed back exactly, broken values and all: they are the caller's, not ours.
     assert _lines(result, "TMP:") == [f"TMP:{dead}"]
     assert _lines(result, "TEMP:") == [f"TEMP:{dead}"]
     assert list((local_app_data / "Unsloth Studio" / "temp").glob("ust-*")) == []
-    # The imports target kernel32, so off Windows the type builds and the CALL fails:
-    # it must degrade to a usable answer rather than throw.
+    # An answer, not an exception and not an empty string. Whether it came from the
+    # interpreter or from the lexical rung is deliberately not asserted: that depends on
+    # whether this host's interpreter can be reached without a writable %TEMP%, and the
+    # claim being made is only that the install continues either way.
     assert _lines(result, "PATH:")[0].startswith("PATH:")
     assert _lines(result, "PATH:") != ["PATH:"]
 
@@ -1126,47 +1160,36 @@ def test_the_sweep_only_takes_directories_the_allocator_could_have_made(tmp_path
 
 
 @requires_pwsh
-def test_a_native_resolver_that_throws_says_so_once(tmp_path: Path):
-    """Compiling and then failing to resolve is not the same as no compiler.
+def test_a_resolver_that_runs_and_fails_says_so_once(tmp_path: Path):
+    """An interpreter that answers nothing is not the same as no interpreter.
 
-    The install still proceeds on the lexical answer, and Exact = $false already
-    makes the runtime lock fail closed, but nothing said so: the degraded warning
-    fires only when the COMPILE failed. That left an operator with a silently
-    inexact identity on a host that looks perfectly healthy.
+    The install proceeds on the lexical answer either way, and Exact = $false already
+    makes the runtime lock fail closed, but for a long time nothing said so: the
+    degraded warning fired only where the exact rung was known to be unavailable. That
+    left an operator with a silently inexact identity on a host that looks perfectly
+    healthy. A child that starts, runs and returns nothing -- a sandboxed interpreter, a
+    symlink loop under the requested path, an AV hook that kills it -- has to reach the
+    same warning.
     """
     studio = tmp_path / "studio"
     studio.mkdir()
     result = _run_powershell(
         _script(
             f"""
-# The subject here is the warning, not the answer, so the Python rung is switched off: it
-# would resolve exactly on any host with an interpreter and the assertion below is about the
-# degraded identity. That the rung rescues a throwing native resolver is covered in
-# tests/studio/test_early_python_path_resolver.ps1.
-$env:UNSLOTH_EARLY_PYTHON_PROBE = "0"
-# The helper is "available" and throws anyway, which is what a rename between
-# the Test-Path walk and CreateFileW looks like. The stub has to be the type the
-# resolver actually calls, and it has to count its calls: a stub the resolver
-# never reaches produces the same outward fallback as one that threw, so without
-# the counter this test passes while proving nothing. Add-Type here is the test's
-# own scaffolding; install.ps1 does not call it.
-function Initialize-StudioFinalPathNativeType {{ return $true }}
-Add-Type -TypeDefinition @'
-public class UnslothStudioFinalPathV3 {{
-    public static int Calls = 0;
-    public static System.IntPtr CreateFileW(
-        string path, uint access, uint share, System.IntPtr security,
-        uint disposition, uint flags, System.IntPtr template) {{
-        Calls++;
-        throw new System.Exception("access is denied");
-    }}
+# Present and useless, which is the state under test. Counted, because a stub the
+# resolver never reaches produces the same outward fallback as one that answered
+# nothing: without the counter this test passes while proving nothing.
+$global:Calls = 0
+function Get-StudioPythonFinalPath {{
+    param([string]$Path)
+    $global:Calls++
+    return $null
 }}
-'@
 foreach ($i in 1..3) {{ $null = Resolve-StudioFinalPathInfo -Path '{studio}' }}
 $info = Resolve-StudioFinalPathInfo -Path '{studio}'
 Write-Output "EXACT:$($info.Exact)"
 Write-Output "PATH:$($info.Path)"
-Write-Output "CALLS:$([UnslothStudioFinalPathV3]::Calls)"
+Write-Output "CALLS:$global:Calls"
 """,
             sabotage = False,
         )
@@ -1174,10 +1197,12 @@ Write-Output "CALLS:$([UnslothStudioFinalPathV3]::Calls)"
     assert result.returncode == 0, result.stderr
     assert _lines(result, "EXACT:") == ["EXACT:False"]
     assert _lines(result, "PATH:")[0].endswith("studio")
-    warnings = [line for line in result.stdout.splitlines() if "native helper; continuing" in line]
+    warnings = [
+        line for line in result.stdout.splitlines() if "Could not resolve a path exactly" in line
+    ]
     assert len(warnings) == 1, warnings
-    # The throwing resolver was really reached, four times, rather than everything
-    # falling back because the type was absent.
+    # The failing rung was really reached, four times, rather than everything falling
+    # back because the helper was absent.
     assert _lines(result, "CALLS:") == ["CALLS:4"]
 
 
@@ -1724,623 +1749,64 @@ def test_split_path_never_pairs_literalpath_with_parent(name: str) -> None:
     )
 
 
-SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
+def test_the_lock_chain_defines_everything_it_reaches() -> None:
+    """A helper the chain calls but the list forgets is a runtime break, not a missing test.
 
+    These scripts run under -ErrorActionPreference Stop, so the first call to an undefined name
+    ends the run, and the failure names the caller rather than the omission:
 
-def _one_function(source: str, name: str) -> str:
-    match = re.search(
-        rf"^(?P<indent>\s*)function {name} \{{.*?\n(?P=indent)\}}\n",
-        source,
-        flags = re.DOTALL | re.MULTILINE,
-    )
-    assert match is not None, f"{name} not found"
-    return match.group(0)
+        Get-StudioPythonFinalPath: The term 'Get-StudioSystem32Tool' is not recognized
 
-
-def _gate(source: str) -> str:
-    """The capability gate plus the child probe it delegates to, from either script."""
-    return "\n".join(
-        _one_function(source, name)
-        for name in ("Test-StudioCanDefineNativeTypes", "Test-StudioEmitInChildProcess")
-    )
-
-
-# Both, because both still carry the apparatus. What changed is its only CONSUMER in
-# studio/setup.ps1: a cosmetic ANSI colour thunk. A CI pre-flight measured Windows PowerShell 5.1
-# attached to a real console and found the console mode already 0x7 before anything of ours ran, so
-# bit 0x4, ENABLE_VIRTUAL_TERMINAL_PROCESSING, was set by the host at startup and the SetConsoleMode
-# was re-setting a bit that was already set. The thunk became a read of
-# $Host.UI.SupportsVirtualTerminal.
-#
-# The apparatus itself stays in setup.ps1 and so does its coverage here: Get-NvidiaLibraryProbeType
-# emits the nvml and nvcuda imports through the same gate, so deleting the apparatus would break the
-# GPU inventory. Only the tests about the CONSOLE helper specifically are install-only now.
-EMIT_SCRIPTS = ["install", "setup"]
-CONSOLE_HELPER_SCRIPTS = ["install"]
-
-
-# Status 0 is "no policy" and answers without spawning anything. Anything else is a policy
-# whose OPTIONS decide the answer, and Win32_DeviceGuard does not report them: option 19
-# Dynamic Code Security always blocks unsigned System.Reflection.Emit assemblies and is
-# enforced even in an audit policy before Windows 11 24H2, while an audit policy without it
-# emits fine. So the gate asks a child process, and these assert that it delegates.
-@requires_pwsh
-@pytest.mark.parametrize("script", EMIT_SCRIPTS)
-@pytest.mark.parametrize("status", ["1", "2"])
-@pytest.mark.parametrize("probe,expected", [("$true", "True"), ("$false", "False")])
-def test_an_active_policy_is_decided_by_the_child_probe(
-    script: str, status: str, probe: str, expected: str
-):
-    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                _gate(source),
-                # Every parameter the real call passes has to bind, or the stub is skipped and
-                # the test measures the absent-provider path instead of the reported status.
-                "function Get-CimInstance {",
-                "    param([string]$Namespace, [string]$ClassName, [string]$ErrorAction)",
-                f"    [pscustomobject]@{{ UsermodeCodeIntegrityPolicyEnforcementStatus = {status} }}",
-                "}",
-                "$script:ProbeCalls = 0",
-                f"function Test-StudioEmitInChildProcess {{ $script:ProbeCalls++; return {probe} }}",
-                'Write-Output "CAN:$(Test-StudioCanDefineNativeTypes)"',
-                'Write-Output "CALLS:$script:ProbeCalls"',
-            ]
-        )
-    )
-    assert result.returncode == 0, result.stderr
-    assert _lines(result, "CAN:") == [f"CAN:{expected}"]
-    assert _lines(result, "CALLS:") == ["CALLS:1"]
-
-
-@requires_pwsh
-@pytest.mark.parametrize("script", EMIT_SCRIPTS)
-def test_no_policy_answers_without_spawning_a_probe(script: str):
-    """The probe costs a process. A machine with no policy is the overwhelming majority and
-    must not pay for it."""
-    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                _gate(source),
-                "function Get-CimInstance {",
-                "    param([string]$Namespace, [string]$ClassName, [string]$ErrorAction)",
-                "    [pscustomobject]@{ UsermodeCodeIntegrityPolicyEnforcementStatus = 0 }",
-                "}",
-                "$script:ProbeCalls = 0",
-                "function Test-StudioEmitInChildProcess { $script:ProbeCalls++; return $false }",
-                'Write-Output "CAN:$(Test-StudioCanDefineNativeTypes)"',
-                'Write-Output "CALLS:$script:ProbeCalls"',
-            ]
-        )
-    )
-    assert result.returncode == 0, result.stderr
-    assert _lines(result, "CAN:") == ["CAN:True"]
-    assert _lines(result, "CALLS:") == ["CALLS:0"]
-
-
-# The runtime test below catches this by executing it, but only where emit succeeds. This
-# one is the invariant itself, and the one a future edit trips: one double quote added to
-# the probe body is enough, and the resulting failure points nowhere near the quote.
-@pytest.mark.parametrize("script", EMIT_SCRIPTS)
-def test_the_probe_body_carries_no_double_quote(script: str):
-    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    body = re.search(r"\$probe = @'\n(.*?)\n'@", source, flags = re.DOTALL)
-    assert body is not None, "the probe here-string is gone"
-    assert '"' not in body.group(1), (
-        "the emit probe body gained a double quote. Windows PowerShell 5.1 appends a native "
-        "argument verbatim inside its own double quotes, so the first one here closes the "
-        "wrapper and the child runs something else entirely, silently answering no."
-    )
-
-
-# The acceptance rules, one child at a time. $PSHOME is an ordinary variable, so a fake host
-# under a temporary one exercises each rule without a policy, a Windows box or luck. Each case
-# is a way a real child answers badly: printed the marker then died, ran in a language mode
-# its parent did not, printed something that merely CONTAINS the marker, or never returned.
-# A #!/bin/sh host, so POSIX only: Windows CreateProcess rejects a file with no
-# executable format, every case would come back false through the catch, and the
-# accept case would fail while the deadline case passed without waiting.
-@pytest.mark.skipif(os.name == "nt", reason = "the fake host is a shell script")
-@requires_pwsh
-@pytest.mark.parametrize("script", EMIT_SCRIPTS)
-@pytest.mark.parametrize(
-    "emits,code,expected,outcome,label",
-    [
-        ("STUDIO_EMIT_OK FullLanguage", 0, "True", "ok", "the good case"),
-        ("STUDIO_EMIT_OK FullLanguage", 23, "False", "blocked", "marker then a bad exit"),
-        (
-            "STUDIO_EMIT_OK ConstrainedLanguage",
-            0,
-            "False",
-            "blocked",
-            "a child restricted differently",
-        ),
-        ("", 1, "False", "blocked", "a child that ran and refused"),
-        (
-            "NOT_STUDIO_EMIT_OK_FAILURE",
-            0,
-            "False",
-            "indeterminate",
-            "a line that merely contains the marker",
-        ),
-        ("", 0, "False", "indeterminate", "silence"),
-    ],
-)
-def test_the_probe_only_accepts_a_clean_exact_answer(
-    script: str, emits: str, code: int, expected: str, outcome: str, label: str, tmp_path: Path
-):
-    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    home = tmp_path / "fakehome"
-    home.mkdir()
-    fake = home / "pwsh"
-    fake.write_text(
-        "#!/bin/sh\n" + (f'echo "{emits}"\n' if emits else "") + f"exit {code}\n",
-        encoding = "utf-8",
-    )
-    fake.chmod(0o755)
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                _one_function(source, "Test-StudioEmitInChildProcess"),
-                f"Write-Output \"ANSWER:$(Test-StudioEmitInChildProcess -HostPath '{fake}')\"",
-                'Write-Output "OUTCOME:$script:StudioEmitProbeOutcome"',
-            ]
-        )
-    )
-    assert result.returncode == 0, f"{label}: {result.stderr}"
-    assert _lines(result, "ANSWER:") == [f"ANSWER:{expected}"], label
-    # And WHY, which is not the same fact as the boolean: a child that ran and refused is a
-    # machine that cannot emit, a child that never answered is a failed process. The gate
-    # retries only the second and reports a different reason for it.
-    assert _lines(result, "OUTCOME:") == [f"OUTCOME:{outcome}"], label
-
-
-# One transient process failure used to be indistinguishable from a policy: cached for the
-# whole run, it sends the installer down the lexical path, where two unequal roots compare as
-# unknown and a second runtime lock is taken, turning an unrelated install elsewhere into
-# "the managed Unsloth environment is busy". The compiled version tried twice before caching
-# a negative. A genuinely blocked machine still pays for exactly one probe.
-@requires_pwsh
-@pytest.mark.parametrize("script", EMIT_SCRIPTS)
-@pytest.mark.parametrize(
-    "outcome,calls",
-    [("indeterminate", "2"), ("blocked", "1")],
-    ids = ["never-answered-is-retried", "answered-no-is-not"],
-)
-def test_only_a_probe_that_never_answered_is_retried(script: str, outcome: str, calls: str):
-    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                "$script:StudioCanDefineNativeTypes = $null",
-                "$script:StudioEmitProbeOutcome = $null",
-                "$script:ProbeCalls = 0",
-                # An active policy, so the gate reaches the probe on any host. Without
-                # this the real query answers 0 on a Windows runner and the gate returns
-                # before the stub below is ever called.
-                "function Get-CimInstance {",
-                "    param([string]$Namespace, [string]$ClassName, [string]$ErrorAction)",
-                "    [pscustomobject]@{ UsermodeCodeIntegrityPolicyEnforcementStatus = 1 }",
-                "}",
-                # A stub, because the gate calls the real probe through $PSHOME, which is
-                # read-only and cannot be pointed at a fake host. What is under test here is
-                # the gate's retry rule, not the child.
-                "function Test-StudioEmitInChildProcess {",
-                "    $script:ProbeCalls = $script:ProbeCalls + 1",
-                f'    $script:StudioEmitProbeOutcome = "{outcome}"',
-                "    return $false",
-                "}",
-                _one_function(source, "Test-StudioCanDefineNativeTypes"),
-                "$answer = Test-StudioCanDefineNativeTypes",
-                'Write-Output "ANSWER:$answer"',
-                'Write-Output "CALLS:$script:ProbeCalls"',
-            ]
-        )
-    )
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert _lines(result, "ANSWER:") == ["ANSWER:False"]
-    assert _lines(result, "CALLS:") == [f"CALLS:{calls}"]
-
-
-# The reason printed alongside the degradation. Naming a machine setting for what was really
-# an unspawnable process sends whoever reads the log looking for a policy that is not there.
-@requires_pwsh
-@pytest.mark.parametrize(
-    "outcome,expected",
-    [
-        ("blocked", "this host enforces user-mode code integrity"),
-        ("indeterminate", "a probe process could not confirm native type support"),
-    ],
-    ids = ["a-real-refusal", "a-probe-that-never-answered"],
-)
-def test_the_degradation_reason_says_what_was_actually_established(outcome: str, expected: str):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                "$script:StudioFinalPathNativeState = $null",
-                f'$script:StudioEmitProbeOutcome = "{outcome}"',
-                "function Test-StudioCanDefineNativeTypes { return $false }",
-                # Straight to the console, not Write-Output: the initializer's return value is
-                # discarded below, and that discards everything else on the success stream with
-                # it, including the warning this test is here to read.
-                "function Write-StudioLine { param($Message, $ForegroundColor)",
-                '    [Console]::Out.WriteLine("LINE:$Message") }',
-                _one_function(source, "Write-StudioFinalPathDegraded"),
-                _one_function(source, "Initialize-StudioFinalPathNativeType"),
-                "$null = Initialize-StudioFinalPathNativeType",
-            ]
-        )
-    )
-    assert result.returncode == 0, result.stderr + result.stdout
-    warning = [line for line in _lines(result, "LINE:") if "native path resolver" in line]
-    assert warning, result.stdout
-    assert expected in warning[0], warning[0]
-
-
-# The compiled version carried the path helper and the process-image helper on ONE type, so
-# they could not disagree about whether this session can emit. Two types can: a session that
-# emitted the path type and came back to a probe that now fails would keep native path
-# resolution and silently lose native process inspection, which is how a running Studio stops
-# being seen. A type already published here outweighs any child.
-@requires_pwsh
-def test_an_already_emitted_type_settles_it_without_asking_a_child():
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                "$script:StudioProcessImageNativeState = $null",
-                "$script:GateCalls = 0",
-                "function Test-StudioCanDefineNativeTypes {",
-                "    $script:GateCalls = $script:GateCalls + 1",
-                "    return $false",
-                "}",
-                _one_function(source, "New-StudioDynamicAssembly"),
-                _one_function(source, "New-StudioEmittedNativeType"),
-                _one_function(source, "Initialize-StudioFinalPathNativeType"),
-                # The real path type, emitted the way a real run emits it, so what stands in
-                # for the interrupted session is the same evidence that session would leave.
-                "$script:StudioFinalPathNativeState = $null",
-                "function Write-StudioFinalPathDegraded { param($Reason) }",
-                "$null = New-StudioEmittedNativeType -TypeName 'UnslothStudioFinalPathV3' -Imports @(",
-                "    @{ Name = 'CloseHandle'; Library = 'kernel32.dll'; Return = [bool]",
-                "       Args = @([IntPtr]); Ansi = $true }",
-                ")",
-                "Write-Output \"PATHTYPE:$($null -ne ('UnslothStudioFinalPathV3' -as [type]))\"",
-                _one_function(source, "Initialize-StudioProcessImageNativeType"),
-                "$ok = Initialize-StudioProcessImageNativeType",
-                'Write-Output "PROCESS:$ok"',
-                'Write-Output "GATE:$script:GateCalls"',
-            ]
-        )
-    )
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert _lines(result, "PATHTYPE:") == ["PATHTYPE:True"], result.stdout
-    assert _lines(result, "PROCESS:") == ["PROCESS:True"], result.stdout
-    assert _lines(result, "GATE:") == ["GATE:0"], (
-        "the process-image helper asked a child whether emit works in a process that had "
-        "already emitted a type"
-    )
-
-
-# Same rule for the cosmetic helpers. The console one asked the gate before looking for its
-# type, so one failed probe threw away a helper already loaded and working in this process.
-# The compiled version checked the type first.
-@requires_pwsh
-@pytest.mark.parametrize("script", CONSOLE_HELPER_SCRIPTS)
-def test_the_console_helper_keeps_a_type_it_already_has(script: str):
-    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                "$env:NO_COLOR = $null",
-                "$script:StudioStdoutRedirected = $false",
-                "$script:GateCalls = 0",
-                "function Test-StudioCanDefineNativeTypes {",
-                "    $script:GateCalls = $script:GateCalls + 1",
-                "    return $false",
-                "}",
-                "function Get-StudioAnsi { param($Name) return '' }",
-                _one_function(source, "New-StudioDynamicAssembly"),
-                _one_function(source, "New-StudioEmittedNativeType"),
-                # Published exactly as a successful earlier call in the same session would
-                # have left it. The calls themselves fail off Windows and are caught; what
-                # is under test is whether the gate is consulted at all.
-                "$null = New-StudioEmittedNativeType -TypeName 'StudioVTNative' -Imports @(",
-                "    @{ Name = 'GetStdHandle'; Library = 'kernel32.dll'; Return = [IntPtr]",
-                "       Args = @([int]); Ansi = $true }",
-                ")",
-                _one_function(source, "Enable-StudioVirtualTerminal"),
-                "$null = Enable-StudioVirtualTerminal",
-                '[Console]::Out.WriteLine("GATE:$script:GateCalls")',
-            ]
-        )
-    )
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert _lines(result, "GATE:") == [
-        "GATE:0"
-    ], "a published console type was discarded because a child probe said no"
-
-
-# A #!/bin/sh host, so POSIX only: Windows CreateProcess rejects a file with no
-# executable format, every case would come back false through the catch, and the
-# accept case would fail while the deadline case passed without waiting.
-@pytest.mark.skipif(os.name == "nt", reason = "the fake host is a shell script")
-@requires_pwsh
-def test_a_child_that_never_returns_does_not_hang_the_installer(tmp_path: Path):
-    """The deadline. A probe that exists to keep the installer alive must not be the thing
-    that wedges it, and the call operator waits forever. Reachable in practice through a
-    security product inspecting a freshly spawned interpreter."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    home = tmp_path / "fakehome"
-    home.mkdir()
-    fake = home / "pwsh"
-    fake.write_text("#!/bin/sh\nsleep 600\n", encoding = "utf-8")
-    fake.chmod(0o755)
-    # The wait is bounded in the script; this only has to outlast it.
-    started = time.monotonic()
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                _one_function(source, "Test-StudioEmitInChildProcess"),
-                f"Write-Output \"ANSWER:$(Test-StudioEmitInChildProcess -HostPath '{fake}')\"",
-            ]
-        )
-    )
-    elapsed = time.monotonic() - started
-    assert result.returncode == 0, result.stderr
-    assert _lines(result, "ANSWER:") == ["ANSWER:False"]
-    assert elapsed < 60, f"the probe took {elapsed:.0f}s, so the deadline is not bounding it"
-
-
-# Legacy is how Windows PowerShell 5.1 ALWAYS binds a native command's arguments, and 5.1
-# is the interpreter studio/src-tauri/src/install.rs spawns. It wraps the value in quotes
-# and appends the body verbatim without escaping the quotes inside it, so a probe passed
-# with -Command arrives as `if (UnslothStudioEmitProbe -as [type])`, a command lookup that
-# throws into the probe's own catch and answers "no emit here" on every 5.1 host. pwsh can
-# be put into that binder with $PSNativeCommandArgumentPassing, so this is reachable from
-# Linux.
-@requires_pwsh
-@pytest.mark.parametrize("script", EMIT_SCRIPTS)
-@pytest.mark.parametrize("binding", ["Legacy", "Standard"])
-def test_the_child_probe_survives_the_5_1_argument_binder(script: str, binding: str):
-    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                f'$PSNativeCommandArgumentPassing = "{binding}"',
-                _one_function(source, "Test-StudioEmitInChildProcess"),
-                "$answer = Test-StudioEmitInChildProcess",
-                'Write-Output "TYPE:$($answer.GetType().Name)"',
-                'Write-Output "ANSWER:$answer"',
-            ]
-        )
-    )
-    assert result.returncode == 0, result.stderr
-    # Boolean either way, since the gate calls this under ErrorActionPreference Stop.
-    assert _lines(result, "TYPE:") == ["TYPE:Boolean"]
-    # And True either way: emit works on this host, and the binder must not turn a
-    # working host into a refusal.
-    assert _lines(result, "ANSWER:") == ["ANSWER:True"]
-
-
-@requires_pwsh
-@pytest.mark.parametrize("script", EMIT_SCRIPTS)
-@pytest.mark.parametrize(
-    "provider,label",
-    [
-        ('throw "no such namespace"', "the query throws"),
-        ("$null", "the query returns nothing"),
-        ("[pscustomobject]@{ Other = 1 }", "the object has no status property"),
-    ],
-)
-def test_an_unreadable_policy_asks_the_probe_rather_than_assuming(
-    script: str, provider: str, label: str
-):
-    """Unknown is not zero.
-
-    Treating an unreadable Device Guard as unrestricted lets exactly one case through: option
-    19 enforced on a host whose CIM query happens to fail, where the documented outcome is a
-    stopped process. The cost of asking anyway is one short-lived child.
-    """
-    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                _gate(source),
-                "function Get-CimInstance {",
-                "    param([string]$Namespace, [string]$ClassName, [string]$ErrorAction)",
-                f"    {provider}",
-                "}",
-                "$script:ProbeCalls = 0",
-                "function Test-StudioEmitInChildProcess { $script:ProbeCalls++; return $true }",
-                'Write-Output "CAN:$(Test-StudioCanDefineNativeTypes)"',
-                'Write-Output "CALLS:$script:ProbeCalls"',
-            ]
-        )
-    )
-    assert result.returncode == 0, f"{label}: {result.stderr}"
-    assert _lines(result, "CALLS:") == ["CALLS:1"], label
-    assert _lines(result, "CAN:") == ["CAN:True"], label
-
-
-# CharSet is not decoration on an emitted import: it picks the export the runtime looks for
-# first. Unicode asks for <Name>W, Ansi asks for <Name>. Every one of these names an export
-# that exists exactly as written, so a wrong charset still resolves on the second probe; it
-# just stops describing the C# it replaced.
-@requires_pwsh
-@pytest.mark.parametrize(
-    "method,charset",
-    [
-        ("CreateFileW", "Unicode"),
-        ("GetFinalPathNameByHandleW", "Unicode"),
-        ("CloseHandle", "Ansi"),
-    ],
-)
-def test_each_import_carries_the_charset_its_declaration_had(method: str, charset: str):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                _helpers(
-                    "Write-StudioLine",
-                    "Write-StudioFinalPathDegraded",
-                    "Test-StudioCanDefineNativeTypes",
-                    "Test-StudioEmitInChildProcess",
-                    "New-StudioDynamicAssembly",
-                    "New-StudioEmittedNativeType",
-                    "Initialize-StudioFinalPathNativeType",
-                ),
-                "$null = Initialize-StudioFinalPathNativeType",
-                f'$m = [UnslothStudioFinalPathV3].GetMethod("{method}")',
-                # The pseudo-custom attribute the runtime synthesises from the P/Invoke
-                # metadata, which is the metadata itself rather than a copy of the intent.
-                "$a = $m.GetCustomAttributes(",
-                "    [System.Runtime.InteropServices.DllImportAttribute], $false)[0]",
-                'Write-Output "CHARSET:$($a.CharSet)"',
-                'Write-Output "ENTRY:$($a.EntryPoint)"',
-                'Write-Output "LIB:$($a.Value)"',
-            ]
-        )
-    )
-    assert result.returncode == 0, result.stderr
-    assert _lines(result, "CHARSET:") == [f"CHARSET:{charset}"]
-    assert _lines(result, "ENTRY:") == [f"ENTRY:{method}"]
-    assert _lines(result, "LIB:") == ["LIB:kernel32.dll"]
-
-
-# `out uint` in the C# this replaces. A by-ref type alone emits `ref`, leaving In and Out
-# unset, and DefinePInvokeMethod has no argument for it, so the emitter calls DefineParameter.
-# The value is blittable and callers initialise it first, so writeback works either way; this
-# pins that the metadata says what the declaration said and that the Out key is wired through.
-@requires_pwsh
-@pytest.mark.parametrize("script", EMIT_SCRIPTS)
-def test_the_emitter_still_honours_an_out_position(script: str):
-    """No import declares one any more, and the capability stays anyway.
-
-    The only by-ref import was GetConsoleMode, which went with the console thunk. Six lines in the
-    emitter keep honouring an `Out` position, and they are worth keeping without a consumer: the
-    next native import that needs one would otherwise marshal silently wrong -- the call succeeds,
-    the out value never comes back, and nothing raises. That is the kind of bug that costs a day.
-
-    So this probes the emitter directly with a locally invented type rather than asserting against a
-    declaration in the script, which is what it used to do and which no longer has anything to read.
-    """
-    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                _one_function(source, "New-StudioDynamicAssembly"),
-                _one_function(source, "New-StudioEmittedNativeType"),
-                '$null = New-StudioEmittedNativeType -TypeName "UnslothOutParamProbe" -Imports @(',
-                '    @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]',
-                "       Args = @([IntPtr], [uint32].MakeByRefType())",
-                "       Ansi = $true",
-                "       Out = @(2) }",
-                ")",
-                '$p = ([type]"UnslothOutParamProbe").GetMethod("GetConsoleMode").GetParameters()[1]',
-                'Write-Output "OUT:$($p.IsOut)"',
-                'Write-Output "BYREF:$($p.ParameterType.IsByRef)"',
-            ]
-        )
-    )
-    assert result.returncode == 0, result.stderr
-    assert _lines(result, "OUT:") == ["OUT:True"]
-    assert _lines(result, "BYREF:") == ["BYREF:True"]
-    # Deliberately no assertion that some declaration in the script uses it. There is no longer such
-    # a declaration, and writing one purely to keep this test alive would be adding a native import
-    # to a file this work exists to remove native imports from.
-    # A declaration, not a substring: the replacement code explains in a comment which three native
-    # calls it replaced, and naming them is the point of that comment.
-    assert not re.search(r'Name\s*=\s*"GetConsoleMode"', source), (
-        "an import named GetConsoleMode is declared in the installer again. It was removed because "
-        "the host already enables virtual terminal processing before our code runs -- the console "
-        "mode is 0x7 before we touch it -- so the call was a no-op. If it is genuinely needed "
-        "again, say why here."
-    )
-
-
-# Almost every import declares no Out position, and reading an absent hashtable key is fatal
-# under Set-StrictMode -Version Latest, which raises PropertyNotFound rather than returning
-# $null. install.ps1 sets strict mode Off for itself but setup.ps1 sets none, so the caller's
-# setting runs and a profile with strict mode on would have taken out every emitted type. The
-# emitter asks ContainsKey first, as it does for CharSet; this runs it under the strictest
-# setting.
-@requires_pwsh
-@pytest.mark.parametrize("script", EMIT_SCRIPTS)
-def test_an_import_without_an_out_position_survives_strict_mode(script: str):
-    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    result = _run_powershell(
-        "\n".join(
-            [
-                "Set-StrictMode -Version Latest",
-                '$ErrorActionPreference = "Stop"',
-                _one_function(source, "New-StudioDynamicAssembly"),
-                _one_function(source, "New-StudioEmittedNativeType"),
-                # No Out key, and no Ansi key either: both reads have to be guarded.
-                '$ok = New-StudioEmittedNativeType -TypeName "UnslothStrictModeProbe" -Imports @(',
-                '    @{ Name = "CloseHandle"; Library = "kernel32.dll"; Return = [bool]',
-                "       Args = @([IntPtr]) }",
-                ")",
-                'Write-Output "OK:$ok"',
-            ]
-        )
-    )
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert _lines(result, "OK:") == ["OK:True"]
-
-
-@requires_pwsh
-def test_a_published_type_counts_even_when_creation_threw():
-    """CreateType can publish the type and then fail on the way back.
-
-    The compiled version asked whether the type had arrived anyway before it gave up, and
-    dropping that turned a recoverable failure into lexical resolution for the whole run.
+    LOCK_CHAIN is hand-written and install.ps1 moves under it, so splitting a body out into a new
+    helper silently breaks every case in this file. Found exactly that way on the windows-latest
+    parity row, hours after the helper landed. Closing the list over what the extracted bodies
+    actually call turns that into a local failure on every platform.
     """
     source = INSTALL_PS1.read_text(encoding = "utf-8")
+    extracted = _helpers(*LOCK_CHAIN)
+    installer_functions = set(re.findall(r"^    function ([\w-]+) \{", source, flags = re.M))
+    provided = set(re.findall(r"^    function ([\w-]+) \{", extracted, flags = re.M))
+    assert provided, "the helper extraction produced nothing"
+    assert len(installer_functions) > 50, (
+        f"only {len(installer_functions)} installer functions found, so the scan is not reading "
+        "install.ps1 and this test would pass on an empty set"
+    )
+    # Whole-line comments dropped first: a helper NAMED in prose is not a call, and treating it
+    # as one grows the list to satisfy a mention rather than a dependency.
+    code = "\n".join(line for line in extracted.splitlines() if not line.lstrip().startswith("#"))
+    called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", code))
+    missing = sorted((called & installer_functions) - provided)
+    assert not missing, (
+        f"LOCK_CHAIN extracts functions that call {missing}, which nothing here defines. "
+        "Add them to LOCK_CHAIN, or the scripts in this file die on the first call."
+    )
+
+
+@requires_pwsh
+def test_an_elevated_run_declines_a_user_writable_interpreter(tmp_path: Path):
+    """The other side of the stub above, so neither half is an assumption.
+
+    Whatever this ladder settles on is launched WITH THE ADMINISTRATOR TOKEN when the install is
+    elevated, so an interpreter in a directory the same user's medium-integrity token can write
+    is a way to have arbitrary code run elevated. This host's own interpreter is exactly that, so
+    the rung has to decline, the answer stops being exact, and the reason is printed rather than
+    the degradation being silent.
+    """
+    studio_home = tmp_path / "studio"
+    studio_home.mkdir()
     result = _run_powershell(
-        "\n".join(
-            [
-                '$ErrorActionPreference = "Stop"',
-                _helpers(
-                    "Write-StudioLine",
-                    "Write-StudioFinalPathDegraded",
-                    "Test-StudioCanDefineNativeTypes",
-                    "Test-StudioEmitInChildProcess",
-                    "New-StudioDynamicAssembly",
-                    "New-StudioEmittedNativeType",
-                    "Initialize-StudioFinalPathNativeType",
-                ),
-                # Publishes the type under the name the initializer wants, then throws, which
-                # is the shape being tested. Add-Type here is the test's own scaffolding, not
-                # the installer's: it is the shortest way to put a real type in the session.
-                "$real = ${function:New-StudioEmittedNativeType}",
-                "function New-StudioEmittedNativeType {",
-                "    param([string]$TypeName, [object[]]$Imports)",
-                "    Add-Type -TypeDefinition 'public static class UnslothStudioFinalPathV3 { }'",
-                '    throw "published, then failed"',
-                "}",
-                'Write-Output "OK:$(Initialize-StudioFinalPathNativeType)"',
-                'Write-Output "AGAIN:$(Initialize-StudioFinalPathNativeType)"',
-            ]
+        _script(
+            f"""
+# The gate is Windows-only, and the point of this case is the gate. Named here so the row
+# means the same thing on the Linux parity runner as on the Windows one.
+$env:OS = "Windows_NT"
+Write-Output "EXACT:$((Resolve-StudioFinalPathInfo -Path '{studio_home}').Exact)"
+""",
+            elevated = True,
         )
     )
     assert result.returncode == 0, result.stderr
-    assert _lines(result, "OK:") == ["OK:True"]
-    assert _lines(result, "AGAIN:") == ["AGAIN:True"]
-    # The degraded warning belongs to a run that really has no native side.
-    assert "Could not load the native path resolver" not in result.stdout
+    assert _lines(result, "EXACT:") == ["EXACT:False"]
+    assert [
+        line for line in result.stdout.splitlines() if "Could not resolve a path exactly" in line
+    ], result.stdout

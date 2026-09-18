@@ -63,11 +63,20 @@ Write-Host ""
 Write-Host "=== the two copies agree ==="
 
 $blockNames = @(
+    "New-StudioChildScriptDirectory",
     "Get-NvidiaNvmlLibraryPath",
-    "Get-NvidiaLibraryProbeType",
     "Read-NvidiaLibraryRawViaPython",
     "Read-NvidiaLibraryRaw",
-    "Get-NvidiaLibraryInventory"
+    "Get-NvidiaLibraryInventory",
+    # Appended rather than inserted: the indices below are positional.
+    "Test-StudioChildScriptDirectoryElevated",
+    "Get-StudioSystem32Tool",
+    "Test-StudioPathUnderAdminRoot",
+    "Test-StudioSddlRightsAreWrite",
+    "Test-StudioSddlPrincipalIsAdminOnly",
+    "Test-StudioSddlWritableByNonAdmin",
+    "Test-StudioDirectoryIsAdminOnly",
+    "Get-StudioLexicalParent"
 )
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
@@ -91,8 +100,11 @@ Write-Host "=== the embedded probe matches studio/nvidia_probe.py ==="
 
 $referenceProbe = [System.IO.File]::ReadAllText($probePy)
 
-# Every native symbol the emitted type imports, and the two attribute numbers. If the embedded
-# probe and nvidia_probe.py ever disagree on one of these, they are probing different things.
+# Every native symbol the probe calls, and the two attribute numbers. If the embedded probe and
+# nvidia_probe.py ever disagree on one of these, they are probing different things.
+#
+# Two implementations now, not three: the emitted type that carried the same import list is
+# gone, and comparing against its old index would compare the probe with itself.
 $symbols = @(
     "nvmlInit_v2", "nvmlShutdown", "nvmlSystemGetCudaDriverVersion_v2",
     "nvmlDeviceGetCount_v2", "nvmlDeviceGetHandleByIndex_v2", "nvmlDeviceGetCudaComputeCapability",
@@ -101,8 +113,6 @@ $symbols = @(
 foreach ($symbol in $symbols) {
     Check "both the embedded probe and nvidia_probe.py call $symbol" `
         (($installProbe -match [regex]::Escape($symbol)) -and ($referenceProbe -match [regex]::Escape($symbol)))
-    Check "the emitted type imports $symbol too, so all three agree" `
-        ($installParts[1] -match [regex]::Escape($symbol))
 }
 
 # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR / _MINOR. A wrong number here returns a
@@ -117,8 +127,6 @@ Check "the embedded probe unpacks the version as major*1000 + minor*10" `
     ($installProbe -match 'packed // 1000, \(packed % 1000\) // 10')
 Check "nvidia_probe.py unpacks the version identically" `
     ($referenceProbe -match 'packed // 1000, \(packed % 1000\) // 10')
-Check "the emitted rung unpacks the version identically" `
-    (($installParts[3] -match 'Floor\(\$ver / 1000\)') -and ($installParts[3] -match 'Floor\(\(\$ver % 1000\) / 10\)'))
 
 Check "the embedded probe is stdlib-only" `
     (($installProbe -match '(?m)^import ctypes, os, sys$') -and ($installProbe -notmatch '(?m)^\s*(import|from)\s+(?!ctypes|os|sys)'))
@@ -127,15 +135,22 @@ Write-Host ""
 Write-Host "=== the rung stays underneath the emitted one ==="
 
 $rawBlock = & $strip $setupParts[3]
-Check "the emitted rung is attempted first" `
-    ($rawBlock.IndexOf("Get-NvidiaLibraryProbeType") -lt $rawBlock.IndexOf("Read-NvidiaLibraryRawViaPython"))
-Check "Python is only reached when the emitted rung returned nothing" `
-    ($rawBlock -match 'if \(\$native\) \{ return \$native \}')
-# One budget, not two: a driver that wedges the full timeout inside the emitted rung must not
-# then buy a second timeout's worth of child process. Without this the worst case doubles.
-Check "both rungs share one deadline" ($rawBlock -match '\$deadline = \(Get-Date\)\.AddMilliseconds\(\$TimeoutMs\)')
-Check "Python gets only what the emitted rung left" ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \$remainingMs')
-Check "an exhausted budget skips the child process entirely" ($rawBlock -match 'if \(\$remainingMs -lt 2000\) \{ return "" \}')
+# ONE rung. The emitted UnslothNvidiaProbeV2 type is gone, so there is no first rung to sit
+# behind, no shared deadline to split and no leftover budget to pass on. The reader hands the
+# whole timeout to the interpreter and does nothing else.
+Check "the reader delegates straight to the Python rung" `
+    ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \$TimeoutMs')
+Check "the whole budget goes to it, not a remainder" ($rawBlock -notmatch 'remainingMs')
+Check "there is no emitted rung left to attempt first" ($rawBlock -notmatch 'Get-NvidiaLibraryProbeType|\$native')
+Check "a throw in the rung is an empty answer, not a failed install" ($rawBlock -match 'catch \{ return "" \}')
+# The apparatus is gone from both files, not merely unused by this reader.
+foreach ($file in @($installPs1, $setupPs1)) {
+    $whole = [System.IO.File]::ReadAllText($file)
+    Check "$(Split-Path -Leaf $file) defines no emitted native types at all" (
+        $whole -notmatch 'New-StudioEmittedNativeType|New-StudioDynamicAssembly|DefinePInvokeMethod')
+    Check "$(Split-Path -Leaf $file) no longer carries the capability gate they needed" (
+        $whole -notmatch 'Test-StudioCanDefineNativeTypes')
+}
 
 $pyBlock = & $strip $setupParts[2]
 # The banned constructs are NAMED in this rung's own comments, explaining why they are absent.
@@ -276,10 +291,19 @@ foreach ($row in @(
 Write-Host ""
 Write-Host "=== behaviour, driven through the real functions ==="
 
-Invoke-Expression ($setupParts[0])   # Get-NvidiaNvmlLibraryPath
+Invoke-Expression ($setupParts[0])   # New-StudioChildScriptDirectory
+Invoke-Expression ($setupParts[1])   # Get-NvidiaNvmlLibraryPath
 Invoke-Expression ($setupParts[2])   # Read-NvidiaLibraryRawViaPython
 Invoke-Expression ($setupParts[3])   # Read-NvidiaLibraryRaw
 Invoke-Expression ($setupParts[4])   # Get-NvidiaLibraryInventory
+Invoke-Expression ($setupParts[5])   # Test-StudioChildScriptDirectoryElevated
+Invoke-Expression ($setupParts[6])   # Get-StudioSystem32Tool
+Invoke-Expression ($setupParts[7])   # Test-StudioPathUnderAdminRoot
+Invoke-Expression ($setupParts[8])   # Test-StudioSddlRightsAreWrite
+Invoke-Expression ($setupParts[9])   # Test-StudioSddlPrincipalIsAdminOnly
+Invoke-Expression ($setupParts[10])  # Test-StudioSddlWritableByNonAdmin
+Invoke-Expression ($setupParts[11])  # Test-StudioDirectoryIsAdminOnly
+Invoke-Expression ($setupParts[12])  # Get-StudioLexicalParent
 # The emitted rung declines, which is the whole point: this is what a Constrained Language Mode
 # or WDAC host sees, and the capabilities below are recovered with nothing emitted.
 function Get-NvidiaLibraryProbeType { return $null }
@@ -288,6 +312,172 @@ $script:PythonExe = ""
 function Get-NvidiaProbePythonExe { return $script:PythonExe }
 
 Check "no interpreter means no answer, not an error" ((Read-NvidiaLibraryRawViaPython -TimeoutMs 5000) -eq "")
+
+# ---- where the program is written ----
+#
+# The program is written, closed, and then its PATHNAME is handed to Start-Process. Anything of
+# the same user watching the directory can swap the file in that gap, and when this shell is
+# elevated the child then runs that file with the administrator token. A directory of our own
+# closes it: a name nothing can predict, and a High mandatory integrity label that a medium
+# integrity process of the same user cannot write through. A DACL cannot express this, because
+# the attacker is the OWNER and an owner can always rewrite its own DACL.
+foreach ($file in @($installPs1, $setupPs1)) {
+    $leaf = Split-Path -Leaf $file
+    $dirFn = @(Get-HelperSources $file @("New-StudioChildScriptDirectory"))[0]
+    Check "$leaf carries the private child-script directory" ($dirFn.Length -gt 100)
+    Check "$leaf refuses a directory that already exists" (
+        $dirFn -match 'New-Item -ItemType Directory[^\r\n]*-ErrorAction Stop' -and
+        $dirFn -notmatch 'New-Item -ItemType Directory[^\r\n]*-Force')
+    Check "$leaf raises the integrity label rather than trusting a DACL" (
+        $dirFn -match 'icacls' -and $dirFn -match 'setintegritylevel')
+    # icacls can be absent, blocked by application control, or fail for its own reasons, and none
+    # of that throws. Setting the label and assuming it took hands back a directory that looks
+    # protected and is not, which is the whole of the escalation this closes. So the label is read
+    # back, and a run that could not raise it while elevated refuses instead of returning a path.
+    Check "$leaf reads the label back rather than assuming it took" (
+        $dirFn -match '\$labelled' -and $dirFn -match 'High Mandatory Level')
+    # And reads it in a way a non-English Windows can answer. icacls renders the well-known
+    # account name in the OS language, so matching only the English spelling made an elevated
+    # non-English host delete the directory it had just correctly labelled.
+    Check "$leaf does not depend on the English spelling of the label" (
+        $dirFn -match '\$LASTEXITCODE -eq 0' -and $dirFn -match 'S-1-16-12288')
+    # And the create is accepted on the path it will HAND BACK, not on New-Item not throwing:
+    # a bracketed %TEMP% is a pattern, and a pattern can match a different existing directory.
+    Check "$leaf confirms the directory it returns really exists" (
+        $dirFn -match 'Test-Path -LiteralPath \$dir -PathType Container')
+    Check "$leaf cleans up a directory the pattern created elsewhere" (
+        $dirFn -match 'Remove-Item -LiteralPath \$createdPath')
+    # Until the label lands the directory carries the medium one it inherited from %TEMP%, so a
+    # same-user process can plant early.py or nvprobe.py inside it in that window. Writing over
+    # that file leaves the attacker's DACL on it, so it can be rewritten again before the launch.
+    # Nothing can be planted afterwards, so anything present once the label is on was planted
+    # during the window and the directory has to be refused.
+    Check "$leaf refuses a directory something was planted in before the label landed" (
+        $dirFn -match 'Get-ChildItem -LiteralPath \$dir -Force' -and $dirFn -match '\$planted')
+    Check "$leaf refuses an unlabelled directory when it is elevated" (
+        $dirFn -match 'Test-StudioChildScriptDirectoryElevated' -and
+        $dirFn -match 'Remove-Item[^\r\n]*\$dir')
+    $elevFn = @(Get-HelperSources $file @("Test-StudioChildScriptDirectoryElevated"))[0]
+    # Comments stripped first. The helper's own comment NAMES the construct it avoids, so the
+    # check below read the explanation and failed on it rather than on any code.
+    $elevCode = (($elevFn -split "`r?`n") | Where-Object { $_.Trim() -notmatch '^#' }) -join "`n"
+    # whoami, not WindowsPrincipal: the managed identity types are not reachable under
+    # Constrained Language Mode, which is the population this whole ladder exists for.
+    Check "$leaf asks the token for its own label with an in-box tool" (
+        $elevCode -match 'whoami' -and $elevCode -match 'S-1-16-')
+    Check "$leaf does not use the managed principal types for it" (
+        $elevCode -notmatch 'WindowsPrincipal')
+    # Unknown has to answer YES. whoami can be missing or blocked by application control, and
+    # neither is evidence of a medium token: reading that as "not elevated" hands back an
+    # unlabelled directory on a host that may well be elevated, which is the escalation this
+    # exists to stop. The only confirmed no is a token naming a mandatory label below High.
+    Check "$leaf treats an unreadable token as elevated" (
+        $elevCode -match 'catch \{ return \$true \}' -and
+        $elevCode -match 'IsNullOrWhiteSpace\(\$groups\)\) \{ return \$true \}')
+    # And the tools are the real ones. `& icacls.exe` is PowerShell command resolution, so a
+    # function or executable of that name from the user's session would run with the
+    # administrator token, and a fake one can report success without applying the label at all.
+    Check "$leaf names the in-box tools by absolute path" (
+        $dirFn -match 'Get-StudioSystem32Tool -Name "icacls\.exe"' -and
+        $elevCode -match 'Get-StudioSystem32Tool -Name "whoami\.exe"')
+    Check "$leaf does not resolve either of them through PATH" (
+        $dirFn -notmatch '& icacls\.exe' -and $elevCode -notmatch '& whoami\.exe')
+    $toolFn = @(Get-HelperSources $file @("Get-StudioSystem32Tool"))[0]
+    Check "$leaf builds that path under System32" (
+        $toolFn -match 'System32' -and $toolFn -match 'Test-Path -LiteralPath \$candidate')
+    # And the NVIDIA probe will not launch a user-writable interpreter while elevated: it runs
+    # whatever it is given, and a venv under a per-user Studio root is exactly that.
+    $probePick = @(Get-HelperSources $file @("Get-NvidiaProbePythonExe"))[0]
+    Check "$leaf refuses a user-writable probe interpreter on an elevated run" (
+        $probePick -match 'Test-StudioChildScriptDirectoryElevated' -and
+        $probePick -match 'Test-StudioPathUnderAdminRoot -Path \$candidate')
+    Check "$leaf only answers no for a label it actually read" (
+        $elevCode -match 'S-1-16-\\d\+.*return \$false')
+    Check "$leaf comment stripper kept the code (bites)" ($elevCode -match 'return')
+    # And every launcher in the file uses it, rather than naming the shared root itself. The
+    # shared-root spelling is what the finding was about, so its absence is the check.
+    $whole = [System.IO.File]::ReadAllText($file)
+    Check "$leaf writes no child program straight into the shared temp root" (
+        $whole -notmatch '\$stem = Join-Path \$tempRoot')
+}
+# A temp root with wildcard characters in it. "C:\Users\Mike [work]" is a legal profile path, and
+# New-Item takes -Path with no -LiteralPath on 5.1, so the create there reads the brackets as a
+# pattern. Nothing about such a host should cost it the Python rungs.
+$bracketRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth [test] " + [guid]::NewGuid().ToString("N"))
+$null = New-Item -ItemType Directory -Path $bracketRoot -Force
+$savedTemp = $env:TEMP
+$savedTmpdir = $env:TMPDIR
+try {
+    $env:TEMP = $bracketRoot
+    $env:TMPDIR = $bracketRoot
+    $bracketDir = New-StudioChildScriptDirectory
+    Check "a temp root with brackets still yields a directory" (
+        -not [string]::IsNullOrWhiteSpace($bracketDir))
+    # The path it HANDED BACK has to be the one that exists. The escaped spelling can succeed at a
+    # different path, so a helper that trusted New-Item not throwing would return a name with
+    # nothing behind it and every write into it would fail.
+    Check "and the path it returned is the directory that exists" (
+        $bracketDir -and (Test-Path -LiteralPath $bracketDir -PathType Container))
+    Check "and it is inside the bracketed root, not beside it" (
+        "$bracketDir".StartsWith($bracketRoot))
+    if ($bracketDir) { Remove-Item -LiteralPath $bracketDir -Recurse -Force -ErrorAction SilentlyContinue }
+} finally {
+    if ($null -eq $savedTemp) { Remove-Item Env:TEMP -ErrorAction SilentlyContinue } else { $env:TEMP = $savedTemp }
+    if ($null -eq $savedTmpdir) { Remove-Item Env:TMPDIR -ErrorAction SilentlyContinue } else { $env:TMPDIR = $savedTmpdir }
+    Remove-Item -LiteralPath $bracketRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Driven rather than read: stub the label as applied and the directory as non-empty, and the
+# helper has to decline. This is a Windows-only branch, so $env:OS is set for the call.
+$savedOs = $env:OS
+try {
+    $env:OS = "Windows_NT"
+    function Test-StudioChildScriptDirectoryElevated { return $false }
+    function Get-ChildItem {
+        param($LiteralPath, [switch]$Force, $ErrorAction)
+        return @([pscustomobject]@{ Name = "early.py" })
+    }
+    # icacls is absent on this host, and the branch under test is gated on the label having
+    # been applied, so stand in for the executable and leave the exit code at success.
+    function icacls.exe { $global:LASTEXITCODE = 0 }
+    $plantedAnswer = New-StudioChildScriptDirectory
+    Check "a directory with something already in it is refused" (
+        [string]::IsNullOrWhiteSpace($plantedAnswer))
+} finally {
+    Remove-Item Function:Get-ChildItem -ErrorAction SilentlyContinue
+    Remove-Item Function:icacls.exe -ErrorAction SilentlyContinue
+    # Restored rather than removed: this one came from the file under test, and the rows below
+    # still drive it. Removing it left them failing on a missing command instead of on the code.
+    Invoke-Expression ($setupParts[5])
+    Invoke-Expression ($setupParts[6])
+    Invoke-Expression ($setupParts[7])
+    Invoke-Expression ($setupParts[8])
+    Invoke-Expression ($setupParts[9])
+    Invoke-Expression ($setupParts[10])
+    Invoke-Expression ($setupParts[11])
+    Invoke-Expression ($setupParts[12])
+    if ($null -eq $savedOs) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOs }
+}
+
+# Driven: with whoami absent the answer has to be "elevated", not "not elevated".
+$savedPath = $env:PATH
+try {
+    $env:PATH = ""
+    Check "an unreadable token reads as elevated" (
+        (Test-StudioChildScriptDirectoryElevated) -eq $true)
+} finally {
+    $env:PATH = $savedPath
+}
+
+# Run it: a directory really is created, really is fresh, and really is cleaned up.
+$madeDir = New-StudioChildScriptDirectory
+Check "the directory is created" (-not [string]::IsNullOrWhiteSpace($madeDir))
+if ($madeDir) {
+    Check "and it is empty, so nothing was adopted" (
+        @(Get-ChildItem -LiteralPath $madeDir -Force -ErrorAction SilentlyContinue).Count -eq 0)
+    Check "and two calls never collide" ($madeDir -ne (New-StudioChildScriptDirectory))
+    Remove-Item -LiteralPath $madeDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 $python = $null
 foreach ($name in @("python3", "python")) {

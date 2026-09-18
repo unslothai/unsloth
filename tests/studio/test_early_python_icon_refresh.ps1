@@ -46,12 +46,39 @@ if (-not (Get-StudioEarlyPython)) {
     # BROKEN EXTRACTION looks like from here: a helper this file forgot to pull out of
     # install.ps1 makes Get-StudioEarlyPython fail, the probe finds nothing, and the suite exits 0
     # having tested nothing. That happened once and CI recorded it as a pass. Tell the two apart.
-    $onPath = $null
-    foreach ($n in @("python3", "python")) {
-        if (-not $onPath) { $onPath = (Get-Command $n -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1) }
+    # The documented opt-out first. UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter
+    # on this host", so discovery returning nothing is the switch working, not a broken extraction.
+    if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") {
+        Write-Host "  SKIP  UNSLOTH_EARLY_PYTHON_PROBE=0, so this rung is switched off by request" -ForegroundColor Yellow
+        exit 0
     }
-    if ($onPath) {
-        Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $($onPath.Source) is on PATH." -ForegroundColor Red
+    # USABLE, not merely present. The installer rejects an interpreter that cannot complete its own
+    # probe, so presence on PATH is not proof that discovery should have found one: Python 2, any
+    # Python below 3.8 (whose Windows resolve() does not follow links), a broken executable, and a
+    # Windows Store App Execution Alias are all on PATH and all correctly refused. Failing here on
+    # those hosts blames this file for the installer behaving as designed.
+    #
+    # So ask the same question Invoke-StudioEarlyPython asks, of the same candidates, and only then
+    # decide. The WindowsApps aliases are excluded WITHOUT running them: they are zero-length stubs
+    # that open the Microsoft Store, which a test must not do to whoever is running it.
+    $usable = $null
+    foreach ($n in @("python3", "python")) {
+        foreach ($src in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)) {
+            if ($usable) { break }
+            if ([string]::IsNullOrWhiteSpace($src)) { continue }
+            if ("$src" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
+            $here = Split-Path -Parent $src
+            if ([string]::IsNullOrWhiteSpace($here)) { continue }
+            $answer = ""
+            try {
+                $answer = "$(& $src -I -S -c "import pathlib,sys`nsys.exit(2) if sys.version_info < (3,8) else None`nsys.stdout.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)))" $here 2>$null)".Trim()
+            } catch { $answer = "" }
+            if (-not [string]::IsNullOrWhiteSpace($answer)) { $usable = $src }
+        }
+    }
+    if ($usable) {
+        Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $usable answers the same probe." -ForegroundColor Red
         Write-Host "        That is a broken extraction in this file, not a host without Python." -ForegroundColor Red
         exit 1
     }
@@ -147,6 +174,17 @@ try {
     Check "New-StudioShortcuts passes its own interpreter to the refresh" (
         $shortcutFn -match '(?s)Invoke-StudioPythonShellIconRefresh[^\r\n]*[\r\n\s`]*-Paths \$createdShortcutPaths -Exe \$ManagedPythonPath')
 
+    # And it does not hand that interpreter over on an ELEVATED run when it sits where a standard
+    # user can write it, which a per-user Studio root does. Launching it there would run whatever
+    # is at that path with the administrator token, and this refresh is cosmetic: a stale icon
+    # until Explorer notices is the entire cost of skipping it. Same rule as the early-Python
+    # ladder applies to the interpreters it discovers.
+    Check "an elevated run does not launch a user-writable interpreter for it" (
+        $shortcutFn -match 'Test-StudioChildScriptDirectoryElevated' -and
+        $shortcutFn -match 'Test-StudioPathUnderAdminRoot -Path "\$ManagedPythonPath"')
+    Check "and the refresh is behind that decision, not beside it" (
+        $shortcutFn -match '(?s)if \(\$iconRefreshSafe\) \{[^}]*Invoke-StudioPythonShellIconRefresh')
+
     # The kill switch must still win, even with an interpreter handed straight in.
     #
     # UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter on this host". That is a
@@ -202,13 +240,19 @@ Check "the probe still sends the global SHCNE_ASSOCCHANGED broadcast" (
 Check "the probe declares SHChangeNotify's signature" (
     $probeText -match "SHChangeNotify\.argtypes" -and $probeText -match "LPCWSTR")
 
-# The rung above is untouched: this is a fallback, not a replacement. If the type can be defined,
-# the installer must still use it and never reach the child.
+# This is now the ONLY rung, not a fallback. The emitted UnslothShellIconRefresh type it used to
+# sit behind is gone, and with it the hosts where the refresh simply did not happen: under
+# Constrained Language Mode or WDAC the type could not be defined at all, so the icon stayed
+# stale until something else invalidated Explorer's cache. ctypes reaches the same shell32 entry
+# point everywhere.
 $source = Get-Content -LiteralPath $installPs1 -Raw
-Check "the type-defining rung is still tried first" (
-    $source -match "UnslothShellIconRefresh`" -as \[type\]")
-Check "the child is reached only from the catch of that rung" (
-    $source -match "(?s)\}\s*catch\s*\{[^}]*?Invoke-StudioPythonShellIconRefresh")
+Check "no emitted shell-icon type is left to try first" ($source -notmatch "UnslothShellIconRefresh")
+Check "the refresh goes straight through the child interpreter" (
+    $source -match "Invoke-StudioPythonShellIconRefresh")
+# Cosmetic, and it must stay that way: a failure here cannot be allowed to fail an install.
+# Single-quoted, so PowerShell does not eat the `$ as an escape and quietly change the pattern.
+Check "the call is still wrapped so a failure cannot fail the install" (
+    $source -match '(?s)try \{[^{}]*Invoke-StudioPythonShellIconRefresh[^{}]*\} catch \{\}')
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red

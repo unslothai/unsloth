@@ -1023,14 +1023,391 @@ function Get-NvidiaProbePythonExe {
     if (-not $VenvDir) { return "" }
     foreach ($leaf in @("Scripts\python.exe", "bin/python3", "bin/python")) {
         $candidate = Join-Path $VenvDir $leaf
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        # Elevated runs only take an interpreter a standard user cannot replace. This probe
+        # launches whatever it returns, so on an elevated run a venv interpreter under a per-user
+        # Studio root is a way to have arbitrary code run as administrator. Declining costs the
+        # CUDA version and the compute capabilities, which the caller already treats as unknown.
+        if ($env:OS -eq "Windows_NT" -and (Test-StudioChildScriptDirectoryElevated) -and
+            -not (Test-StudioPathUnderAdminRoot -Path $candidate)) { continue }
+        return $candidate
     }
     return ""
+}
+
+# Writing the program into the shared %TEMP% and then naming that path to Start-Process leaves a
+# time-of-check to time-of-use gap: any process of the same user can watch the directory and
+# swap the file between the write and the launch. That only becomes a privilege question when
+# THIS shell is elevated, and then it is the whole of one, because the child runs our program
+# with the administrator token.
+#
+# A fresh directory nothing else can predict the name of, then a mandatory integrity label of
+# High on it. An unelevated process of the same user runs at medium integrity and cannot write
+# into a High-labelled directory. A DACL cannot express that: the attacker is the owner, and an
+# owner can always rewrite its own DACL. icacls is the in-box tool for the label and stays
+# reachable under Constrained Language Mode, where the managed ACL APIs do not.
+#
+# The label is READ BACK rather than assumed. icacls can be missing, blocked by application
+# control, or fail for its own reasons, and none of that throws: the directory would come back
+# looking protected while still being writable by the same user's medium-integrity processes,
+# which is exactly the escalation this helper exists to close. So when the label did not take,
+# ask whether it MATTERS: an unelevated run cannot raise the label and does not need to, since
+# a medium-integrity child has no token worth stealing, while an elevated run that could not
+# raise it must refuse rather than hand back the directory. Every caller already treats "" as
+# "this rung declined" and falls to the one below it.
+#
+# Declared here, above its first caller, and not beside the NVIDIA inventory it was written
+# for. All of this file is one function, so these declarations run in order: a helper defined
+# further down does not exist yet when an earlier statement calls it, and the throw is caught
+# and read as "the rung declined" rather than as a missing definition.
+#
+# New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
+# or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
+# An in-box tool, named by its full path, or "" when it is not there.
+#
+# `& icacls.exe` is PowerShell command resolution: a function, alias or executable of that
+# name from the user's session or PATH wins, and on an elevated run it would then execute
+# with the administrator token. A fake one can also report success without applying the
+# label, which reopens the file-swap this helper is here to close. So the real one, by
+# absolute path, and nothing at all rather than whatever PATH offers.
+#
+# System32 resolves to SysWOW64 in a 32-bit process, which carries both of these tools, so
+# this spelling is right in either bitness.
+function Get-StudioSystem32Tool {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { return "" }
+    $candidate = Join-Path (Join-Path $env:SystemRoot "System32") $Name
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return "" }
+    return $candidate
+}
+
+# Does an SDDL rights field let its holder change what is in a directory.
+#
+# The field is either a hex mask or a run of two-letter aliases, and both spellings turn up on
+# the same machine, so both are read. Anything that cannot be read at all answers YES, because
+# this feeds a gate whose safe answer is to decline.
+function Test-StudioSddlRightsAreWrite {
+    param([string]$Rights)
+    if ([string]::IsNullOrWhiteSpace($Rights)) { return $true }
+    $text = "$Rights".Trim().ToUpper()
+    if ($text -like "0X*") {
+        # Parsed a digit at a time rather than with [Convert]::ToInt64: this whole helper runs
+        # on Constrained Language Mode hosts, and a [long] accumulator is needed anyway because
+        # a full 32-bit mask overflows [int] into a Double, which -band then refuses.
+        $mask = [long]0
+        foreach ($ch in $text.Substring(2).ToCharArray()) {
+            $digit = "0123456789ABCDEF".IndexOf($ch)
+            if ($digit -lt 0) { return $true }
+            $mask = ($mask * 16) + $digit
+        }
+        # WRITE_DATA, APPEND_DATA, WRITE_EA, DELETE_CHILD, WRITE_ATTRIBUTES, DELETE, WRITE_DAC,
+        # WRITE_OWNER, GENERIC_ALL, GENERIC_WRITE.
+        return (($mask -band 0x500D0156) -ne 0)
+    }
+    foreach ($alias in @("GA", "GW", "WD", "WO", "SD", "DT", "FA", "FW", "KA", "KW",
+                         "CC", "DC", "WP", "SW")) {
+        if ($text.Contains($alias)) { return $true }
+    }
+    return $false
+}
+
+# Is this SDDL principal one that a standard user cannot act as.
+#
+# An allowlist, not a denylist of the well-known user groups. A denylist has to be complete to
+# be correct, and the one principal that matters most is a domain account nobody can enumerate
+# ahead of time. Both spellings are accepted because which one Get-Acl prints depends on the
+# build rather than on the ACL.
+function Test-StudioSddlPrincipalIsAdminOnly {
+    param([string]$Principal)
+    if ([string]::IsNullOrWhiteSpace($Principal)) { return $false }
+    $who = "$Principal".Trim().ToUpper()
+    return (@(
+        "BA", "SY", "S-1-5-32-544", "S-1-5-18",
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+    ) -contains $who)
+}
+
+# Can anyone but an administrator change what is in the directory this SDDL describes.
+#
+# Unreadable answers YES throughout, so a shape this parser does not understand declines the
+# interpreter rather than accepting it.
+function Test-StudioSddlWritableByNonAdmin {
+    param([string]$Sddl)
+    if ([string]::IsNullOrWhiteSpace($Sddl)) { return $true }
+    $text = "$Sddl".Trim()
+    # The owner first, and it is not a formality. The owner of an object holds WRITE_DAC
+    # implicitly whatever the DACL says, so a directory an attacker created can carry an ACL
+    # that reads as locked down and still be entirely theirs to rewrite.
+    # Non-greedy up to the next section marker: the owner and the group run together in the
+    # string, so "O:BAG:SY" is owner BA and group SY, and a class that simply stops at the next
+    # colon reads the owner as "BAG".
+    if (-not ($text -match '^O:([A-Za-z0-9\-]+?)(?:G:|D:|S:|$)')) { return $true }
+    if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $Matches[1])) { return $true }
+    $daclAt = $text.IndexOf("D:")
+    if ($daclAt -lt 0) { return $true }
+    $dacl = $text.Substring($daclAt)
+    $saclAt = $dacl.IndexOf("S:")
+    if ($saclAt -ge 0) { $dacl = $dacl.Substring(0, $saclAt) }
+    $seen = 0
+    # Split rather than [regex]::Matches, which is not a Constrained Language Mode type. A
+    # conditional ACE carries parentheses of its own and comes apart here into fields that do
+    # not parse, which the field-count check below turns into a decline.
+    foreach ($chunk in ($dacl -split '\)')) {
+        $open = $chunk.IndexOf("(")
+        if ($open -lt 0) { continue }
+        $seen++
+        $fields = $chunk.Substring($open + 1) -split ';'
+        if ($fields.Count -lt 6) { return $true }
+        $type = "$($fields[0])".Trim().ToUpper()
+        $flags = "$($fields[1])".Trim().ToUpper()
+        # Everything that is not a deny counts as a grant, including the conditional forms this
+        # cannot evaluate. An inherit-only ACE does not apply to this directory at all, and that
+        # exemption is load-bearing rather than tidy: CREATOR OWNER is spelled exactly that way
+        # on every one of these roots, so reading it as an effective grant rejects all of them.
+        if (@("D", "OD", "XD") -contains $type) { continue }
+        if ($flags.Contains("IO")) { continue }
+        if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
+        if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $fields[5])) { return $true }
+    }
+    # A DACL with no ACEs in it is not evidence of anything, and neither is one this did not
+    # manage to split.
+    if ($seen -eq 0) { return $true }
+    return $false
+}
+
+# Is this one directory administrator-only, by its own ACL.
+function Test-StudioDirectoryIsAdminOnly {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $sddl = ""
+    try {
+        # Select-Object -ExpandProperty, not a property read: Constrained Language Mode refuses
+        # property access on types outside its allowed list, and the security descriptor is one.
+        $sddl = "$(Get-Acl -LiteralPath $Path -ErrorAction Stop |
+            Select-Object -ExpandProperty Sddl)"
+    } catch { return $false }
+    if ([string]::IsNullOrWhiteSpace($sddl)) { return $false }
+    return (-not (Test-StudioSddlWritableByNonAdmin -Sddl $sddl))
+}
+
+# The parent directory, computed lexically and for both separators.
+#
+# Split-Path is the obvious way to do this and is wrong here: on a non-Windows host it does not
+# treat a backslash as a separator at all, so "C:\Program Files\Python312\python.exe" has no
+# parent and the walk below ends before it starts. That matters because the parity lane runs
+# these checks on Linux, where a silently empty walk reads as a clean decline.
+function Get-StudioLexicalParent {
+    param([string]$Path)
+    $trimmed = "$Path".TrimEnd('\', '/')
+    $cut = $trimmed.LastIndexOfAny(@([char]92, [char]47))
+    if ($cut -lt 0) { return "" }
+    return $trimmed.Substring(0, $cut)
+}
+
+# Is this path inside a root that only an administrator can write.
+#
+# An elevated run launches whatever interpreter this ladder settles on WITH THE ADMINISTRATOR
+# TOKEN. A per-user CPython under %LOCALAPPDATA%, or one on PATH from a directory the same
+# user's medium-integrity token can write, is then a way to have arbitrary code run elevated:
+# replace the executable, wait for the next install. The labelled child directory does not
+# help, because it protects the script this runs, not the thing running it.
+#
+# Being under one of the Windows-protected roots is necessary but NOT sufficient, and the
+# earlier version of this helper stopped there. Microsoft's own AppLocker guidance says why:
+# %WINDIR% contains a Temp subfolder the Users group is deliberately given Create Files/Write
+# Data and Create Folders/Append Data on for application compatibility, and a handful of
+# siblings are the same, which is precisely what makes a path rule over %WINDIR% a documented
+# bypass. C:\Windows\Temp\python.exe passed the prefix test and would have been launched with
+# the administrator token.
+#
+# So the location test is kept as the cheap first filter, the documented compatibility
+# directories are refused outright, and then every directory from the interpreter's own up to
+# the matched root has to be administrator-only by its ACL. The ACL is read as SDDL, which
+# carries SIDs and two-letter aliases rather than the account names icacls renders in the OS
+# language, so nothing here depends on the machine's locale.
+#
+# Every unknown declines. An unelevated run is not affected at all: it has no token worth
+# stealing, and this gate is only consulted when the run is elevated.
+function Test-StudioPathUnderAdminRoot {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    # $env: rather than [Environment]::GetEnvironmentVariable: System.Environment is not on
+    # Constrained Language Mode's allowed type list, and this helper runs on hosts under it.
+    $roots = @()
+    foreach ($value in @($env:SystemRoot, $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)})) {
+        if (-not [string]::IsNullOrWhiteSpace($value)) { $roots += "$value".TrimEnd('\', '/') }
+    }
+    $matchedRoot = ""
+    foreach ($root in $roots) {
+        # The separator is part of the comparison: "C:\Program Files" must not match
+        # "C:\Program Files Evil", which any user can create.
+        #
+        # -like, not String.StartsWith with a StringComparison: that enum is not on
+        # Constrained Language Mode's allowed type list either, and -like is already
+        # case-insensitive. The root is escaped first, because a bracket in it would
+        # otherwise be read as a character class and match the wrong thing.
+        $escapedRoot = $root -replace '([\[\]\*\?])', '`$1'
+        if (("$Path" -like ($escapedRoot + "\*")) -or ("$Path" -like ($escapedRoot + "/*"))) {
+            $matchedRoot = $root
+            break
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($matchedRoot)) { return $false }
+    # The documented compatibility directories, refused without asking anything. They are
+    # fixed English names rather than display names, so this holds in every OS language, and it
+    # still holds on a host where the ACL cannot be read at all.
+    $windowsRoot = "$($env:SystemRoot)".TrimEnd('\', '/')
+    if (-not [string]::IsNullOrWhiteSpace($windowsRoot)) {
+        foreach ($leaf in @(
+            "Temp", "Tasks", "Tracing", "Registration\CRMLog", "debug\WIA",
+            "System32\Tasks", "System32\spool\drivers\color", "System32\spool\PRINTERS",
+            "System32\spool\SERVERS", "System32\com\dmp", "System32\FxsTmp",
+            "SysWOW64\Tasks", "SysWOW64\com\dmp", "SysWOW64\FxsTmp"
+        )) {
+            $writable = $windowsRoot + "\" + $leaf
+            $escapedWritable = $writable -replace '([\[\]\*\?])', '`$1'
+            if (("$Path" -like ($escapedWritable + "\*")) -or
+                ("$Path" -like ($escapedWritable + "/*"))) { return $false }
+        }
+    }
+    # And then the ACL, every level from the interpreter's own directory up to the root. Only
+    # the immediate directory is not enough: a directory created under one that grants Users
+    # write belongs to whoever created it, and its own ACL can say anything they like.
+    $current = Get-StudioLexicalParent -Path "$Path"
+    $guard = 0
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        $guard++
+        if ($guard -gt 64) { return $false }
+        if (-not (Test-StudioDirectoryIsAdminOnly -Path $current)) { return $false }
+        if ("$current".TrimEnd('\', '/') -eq $matchedRoot) { return $true }
+        $next = Get-StudioLexicalParent -Path "$current"
+        if ("$next" -eq "$current") { return $false }
+        $current = $next
+    }
+    return $false
+}
+
+function Test-StudioChildScriptDirectoryElevated {
+    # whoami is in-box and prints the token's own mandatory label, as a SID, which is the same
+    # text in every language. The WindowsPrincipal route the rest of this file uses for
+    # elevation is a managed type Constrained Language Mode refuses, and CLM is the population
+    # this ladder exists for.
+    #
+    # Unknown answers YES. whoami can be missing or blocked by application control, and
+    # neither is evidence of a medium token: reading that as "not elevated" hands back an
+    # unlabelled directory on a host that may well be elevated, which is the whole of the
+    # escalation this is here to stop. The only confirmed no is a token that names a
+    # mandatory label below High. Costs an unelevated host with whoami blocked the Python
+    # rungs, which degrade to the lexical resolver and say so.
+    $groups = ""
+    $whoami = Get-StudioSystem32Tool -Name "whoami.exe"
+    if (-not $whoami) { return $true }
+    try { $groups = "$(& $whoami /groups 2>&1)" } catch { return $true }
+    if ([string]::IsNullOrWhiteSpace($groups)) { return $true }
+    if ($groups -match "S-1-16-(12288|16384)") { return $true }
+    if ($groups -match "S-1-16-\d+") { return $false }
+    return $true
+}
+
+function New-StudioChildScriptDirectory {
+    $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+    $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N"))
+    # New-Item takes -Path and Windows PowerShell 5.1 has no -LiteralPath, so a profile like
+    # "C:\Users\Mike [work]" turns %TEMP% into a wildcard pattern there and the create fails,
+    # which would decline this rung on a host with nothing wrong with it. Elsewhere this file
+    # reaches for [System.IO.Directory]::CreateDirectory for the same reason; that is not
+    # available here, because this helper has to keep working under Constrained Language Mode,
+    # where the type is refused.
+    #
+    # So: the path as written first, and the bracket-escaped spelling only if that failed.
+    # Not the escaped one first. Measured on PowerShell 7: it takes -Path literally and the
+    # escaped spelling creates a directory whose NAME contains the backticks, somewhere else
+    # entirely. Hence the confirmation below rather than trusting either call to have made
+    # the directory the caller is about to be handed.
+    # Success is "the path we are about to hand back exists", never "New-Item did not throw".
+    # A pattern can MATCH SOMETHING ELSE: with a %TEMP% of "C:\Users\Mike [work]" a sibling
+    # "C:\Users\Mike w" satisfies it, and the create then succeeds under that other directory.
+    # Taking that as done would skip the escaped spelling, hand back a path with nothing behind
+    # it, and leave a directory behind somewhere the caller never named. The created path is
+    # read back through Select-Object, not off the object: property reads on DirectoryInfo are
+    # refused under Constrained Language Mode, and cmdlets are not.
+    $made = $false
+    try {
+        $createdPath = "$(New-Item -ItemType Directory -Path $dir -ErrorAction Stop |
+            Select-Object -ExpandProperty FullName)"
+        $made = (Test-Path -LiteralPath $dir -PathType Container)
+        if ((-not $made) -and $createdPath) {
+            Remove-Item -LiteralPath $createdPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+    if ((-not $made) -and $dir -match '[\[\]]') {
+        $escaped = $dir -replace '([\[\]])', '`$1'
+        try {
+            $null = New-Item -ItemType Directory -Path $escaped -ErrorAction Stop
+            $made = (Test-Path -LiteralPath $dir -PathType Container)
+        } catch { }
+    }
+    # Created by THIS call. New-Item without -Force throws on a directory that already exists,
+    # which is the point: a pre-created one carrying an attacker's ACL is refused, not adopted.
+    if (-not $made) { return "" }
+    if ($env:OS -eq "Windows_NT") {
+        $labelled = $false
+        $icacls = Get-StudioSystem32Tool -Name "icacls.exe"
+        if (-not $icacls) {
+            # No way to raise the label, and no way to tell whether it mattered either, so
+            # the directory is given up rather than handed back unprotected.
+            try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+            return ""
+        }
+        try {
+            $null = & $icacls "$dir" /setintegritylevel "(OI)(CI)H" 2>&1
+            # Two signals, both locale-independent. icacls reports through its exit code that
+            # it wrote the ACE, and the label's SID is the same text in every language. The
+            # English name is accepted as well, for a host that resolves it that way.
+            #
+            # Matching only the English name was wrong: icacls renders the well-known account
+            # name in the OS language, so an elevated non-English host read its own correctly
+            # applied label as missing and the helper deleted the directory it had just made.
+            $labelled = ($LASTEXITCODE -eq 0)
+            if (-not $labelled) {
+                $labelled = ("$(& $icacls "$dir" 2>&1)" -match "S-1-16-12288|High Mandatory Level")
+            }
+        } catch { $labelled = $false }
+        if ((-not $labelled) -and (Test-StudioChildScriptDirectoryElevated)) {
+            try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+            return ""
+        }
+        # The gap between creating the directory and raising its label is the rest of the
+        # race. Until the label lands the directory carries the medium one it inherited from
+        # %TEMP%, and a same-user process watching that root can drop its own early.py or
+        # nvprobe.py in. Writing our program over that file does not help: an existing file
+        # keeps its own DACL, so the attacker can rewrite it again between our write and the
+        # launch, and an elevated run then executes it with the administrator token.
+        #
+        # Nothing can be planted once the label is on, so anything in here now was planted
+        # inside that window. The directory is refused rather than emptied: this one is
+        # cheap to give up, the caller treats "" as the rung declining, and the next call
+        # gets a fresh name.
+        if ($labelled) {
+            $planted = $true
+            try {
+                $planted = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop).Count -ne 0
+            } catch { $planted = $true }
+            if ($planted) {
+                try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+                return ""
+            }
+        }
+    }
+    return $dir
 }
 
 # ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
 # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
 # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
+# A directory for a program this installer is about to hand a child interpreter.
+#
+#
 function Get-NvidiaNvmlLibraryPath {
     $dirs = @()
     if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
@@ -1042,42 +1419,10 @@ function Get-NvidiaNvmlLibraryPath {
     return "nvml.dll"
 }
 
-# The driver's libraries as P/Invoke methods, emitted rather than compiled: the installer must
-# not spawn csc.exe (New-StudioEmittedNativeType). $null when the type cannot be built. A
-# missing library throws at the first call, not here.
-function Get-NvidiaLibraryProbeType {
-    $name = "UnslothNvidiaProbeV2"
-    $existing = $name -as [type]
-    if ($existing) { return $existing }
-    # Dynamic Code Security can kill the process on an emitted load rather than throw: the
-    # same gate every other emitted type checks first, and no inventory when it says no.
-    if (-not (Test-StudioCanDefineNativeTypes)) { return $null }
-    $windows = ($env:OS -eq "Windows_NT")
-    $nvml = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
-    $cuda = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
-    $int = [int]; $uint = [uint32]; $refInt = [int].MakeByRefType()
-    $refUInt = [uint32].MakeByRefType(); $refPtr = [IntPtr].MakeByRefType()
-    try {
-        $null = New-StudioEmittedNativeType -TypeName $name -Imports @(
-            @{ Name = "nvmlInit_v2"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
-            @{ Name = "nvmlShutdown"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
-            @{ Name = "nvmlSystemGetCudaDriverVersion_v2"; Library = $nvml; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
-            @{ Name = "nvmlDeviceGetCount_v2"; Library = $nvml; Return = $int; Args = @($refUInt); Out = @(1); Ansi = $true },
-            @{ Name = "nvmlDeviceGetHandleByIndex_v2"; Library = $nvml; Return = $int; Args = @($uint, $refPtr); Out = @(2); Ansi = $true },
-            @{ Name = "nvmlDeviceGetCudaComputeCapability"; Library = $nvml; Return = $int; Args = @([IntPtr], $refInt, $refInt); Out = @(2, 3); Ansi = $true },
-            @{ Name = "cuInit"; Library = $cuda; Return = $int; Args = @($uint); Ansi = $true },
-            @{ Name = "cuDriverGetVersion"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
-            @{ Name = "cuDeviceGetCount"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
-            @{ Name = "cuDeviceGet"; Library = $cuda; Return = $int; Args = @($refInt, $int); Out = @(1); Ansi = $true },
-            @{ Name = "cuDeviceGetAttribute"; Library = $cuda; Return = $int; Args = @($refInt, $int, $int); Out = @(1); Ansi = $true }
-        )
-    } catch { return $null }
-    return ($name -as [type])
-}
 
 # The same inventory with nothing emitted: CPython's ctypes makes the identical NVML and CUDA
 # driver calls, and the interop leaves the scanned surface rather than moving within it.
-# A second source BENEATH the emitted one, never ahead of it: "" whenever no interpreter is
+# The only source now, and it declines rather than guesses: "" whenever no interpreter is
 # available or the probe itself says nothing.
 # Get-NvidiaProbePythonExe is deliberately per-file. The installer has its early read-only
 # interpreter ladder; setup.ps1 has the venv a previous run already built.
@@ -1221,10 +1566,11 @@ def main():
 main()
 '@
     # Cmdlets only. Constrained Language Mode refuses New-Object ProcessStartInfo and
-    # [Process]::Start, and CLM is one of the two policies that make the emitted rung decline,
-    # so this launcher has to work on exactly the hosts that need it most.
-    $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
-    $stem = Join-Path $tempRoot ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N"))
+    # [Process]::Start, and CLM is one of the policies that used to leave a locked-down host with
+    # no GPU detection at all, so this launcher has to work on the hosts that need it most.
+    $probeDir = New-StudioChildScriptDirectory
+    if (-not $probeDir) { return "" }
+    $stem = Join-Path $probeDir "nvprobe"
     $scriptFile = "$stem.py"
     $outFile = "$stem.out"
     $errFile = "$stem.err"
@@ -1270,6 +1616,9 @@ main()
         $raw = "$(Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)"
     } catch { return "" }
     finally {
+        # The directory, not just the three files: it is ours, nothing else may be in it, and
+        # leaving an empty one behind per probe would litter %TEMP% on every run.
+        Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue
         foreach ($stale in @($scriptFile, $outFile, $errFile)) {
             Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
         }
@@ -1278,79 +1627,16 @@ main()
 }
 
 # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-# answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
-# a wedged driver can block inside the library, and the deadline leaves that runspace behind.
-# The Python rung below spends what the emitted rung left of ONE budget, so the worst-case wall
-# clock is unchanged: a driver that wedges the full $TimeoutMs leaves nothing and is not retried.
+# answers. Versions are major*1000 + minor*10.
+#
+# One rung now. The emitted UnslothNvidiaProbeV2 type that used to run first is gone, and with
+# it the child runspace that bounded it: CPython's ctypes makes the identical NVML and CUDA
+# driver calls, returns the identical string, and is not blocked by the policies that stopped
+# the emitted rung being defined at all. Those policies are exactly where an NVIDIA GPU used to
+# go unnoticed, so this is the wider source, not the narrower one.
 function Read-NvidiaLibraryRaw {
     param([int]$TimeoutMs = 10000)
-    $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
-    $native = ""
-    $type = Get-NvidiaLibraryProbeType
-    if ($type) {
-        $reader = {
-            param($T)
-            function Read-Nvml {
-                if ($T::nvmlInit_v2() -ne 0) { return "" }
-                try {
-                    [uint32]$count = 0
-                    if ($T::nvmlDeviceGetCount_v2([ref]$count) -ne 0 -or $count -eq 0) { return "" }
-                    [int]$ver = 0
-                    if ($T::nvmlSystemGetCudaDriverVersion_v2([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
-                    $caps = @()
-                    for ([uint32]$i = 0; $i -lt $count; $i++) {
-                        [IntPtr]$dev = [IntPtr]::Zero; [int]$major = 0; [int]$minor = 0
-                        # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
-                        if ($T::nvmlDeviceGetHandleByIndex_v2($i, [ref]$dev) -ne 0) { return "" }
-                        if ($T::nvmlDeviceGetCudaComputeCapability($dev, [ref]$major, [ref]$minor) -ne 0) { return "" }
-                        $caps += "$major.$minor"
-                    }
-                    return "nvml;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
-                } finally { $null = $T::nvmlShutdown() }
-            }
-            function Read-Cuda {
-                # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one,
-                # so a hidden pre-Turing card still caps the family. cuInit reads the mask once.
-                $saved = $env:CUDA_VISIBLE_DEVICES
-                Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
-                try { $init = $T::cuInit([uint32]0) } finally { if ($null -ne $saved) { $env:CUDA_VISIBLE_DEVICES = $saved } }
-                if ($init -ne 0) { return "" }
-                [int]$count = 0
-                if ($T::cuDeviceGetCount([ref]$count) -ne 0 -or $count -eq 0) { return "" }
-                [int]$ver = 0
-                if ($T::cuDriverGetVersion([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
-                $caps = @()
-                for ($i = 0; $i -lt $count; $i++) {
-                    [int]$dev = 0; [int]$major = 0; [int]$minor = 0
-                    if ($T::cuDeviceGet([ref]$dev, $i) -ne 0) { return "" }
-                    # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
-                    if ($T::cuDeviceGetAttribute([ref]$major, 75, $dev) -ne 0) { return "" }
-                    if ($T::cuDeviceGetAttribute([ref]$minor, 76, $dev) -ne 0) { return "" }
-                    $caps += "$major.$minor"
-                }
-                return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
-            }
-            $r = ""
-            try { $r = Read-Nvml } catch { $r = "" }
-            if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
-            return "$r"
-        }
-        $ps = $null; $handle = $null
-        try {
-            $ps = [powershell]::Create()
-            $null = $ps.AddScript($reader.ToString()).AddArgument($type)
-            $handle = $ps.BeginInvoke()
-            if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
-                $native = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-            }
-        } catch { $native = "" }
-        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
-    }
-    if ($native) { return $native }
-    $remainingMs = [int]($deadline - (Get-Date)).TotalMilliseconds
-    # Not worth a child process we cannot wait out; the emitted rung already spent the budget.
-    if ($remainingMs -lt 2000) { return "" }
-    try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs $remainingMs) } catch { return "" }
+    try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs $TimeoutMs) } catch { return "" }
 }
 
 # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
@@ -2152,261 +2438,8 @@ function Ensure-VCRedist {
 # ─────────────────────────────────────────────
 $Rule = [string]::new([char]0x2500, 52)
 
-# Native declarations are emitted, never compiled. Add-Type on Windows PowerShell 5.1 has no
-# in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to %TEMP% and run
-# csc.exe, and security software blocks the result. Reflection emit builds the same stub in
-# memory: no compiler process, no source, no DLL, empty assembly Location. install.ps1 carries
-# the same helper for the same reason, and which product blocked what is recorded in
-# tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-# See install.ps1: App Control's Dynamic Code Security always blocks loading unsigned
-# System.Reflection.Emit assemblies by usually stopping or crashing the parent rather than
-# raising, so this has to be a gate and not a catch.
-$script:StudioCanDefineNativeTypes = $null
-# Why the last probe answered as it did, so a caller can tell "the child ran and
-# said no" (a policy) from "the child never answered" (failed to start, killed
-# at the deadline, or lost its output). Same boolean, different facts.
-$script:StudioEmitProbeOutcome = $null
-function Test-StudioCanDefineNativeTypes {
-    if ($null -ne $script:StudioCanDefineNativeTypes) { return $script:StudioCanDefineNativeTypes }
-    $languageMode = "FullLanguage"
-    try { $languageMode = [string]$ExecutionContext.SessionState.LanguageMode } catch {}
-    if ($languageMode -ne "FullLanguage") {
-        $script:StudioCanDefineNativeTypes = $false
-        return $false
-    }
-    # Read-and-zero is the only outcome that skips the probe. A query that threw, returned
-    # nothing, or lacked the property is UNKNOWN, and treating unknown as unrestricted lets
-    # option 19 through on a host whose CIM query failed. install.ps1 carries the full note.
-    $known = $false
-    $active = $false
-    try {
-        # -OperationTimeoutSec bounds the CIM operation on a responsive target only:
-        # it does not interrupt DCOM connection setup, and a wedged provider's own
-        # timeout wins. Good for the slow case, not a hang guard. The child probe
-        # below carries the real deadline.
-        $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
-            -ClassName "Win32_DeviceGuard" -OperationTimeoutSec 10 -ErrorAction Stop
-        # 0 off, 1 audit, 2 enforced. A null property is not a zero.
-        if ($guard -and $null -ne $guard.UsermodeCodeIntegrityPolicyEnforcementStatus) {
-            $known = $true
-            if ([int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -ne 0) {
-                $active = $true
-            }
-        }
-    } catch {}
-    if ($known -and -not $active) {
-        $script:StudioCanDefineNativeTypes = $true
-        return $true
-    }
-    # Which policy decides this, and Win32_DeviceGuard does not say. Option 19 Dynamic Code
-    # Security always blocks unsigned System.Reflection.Emit assemblies and is enforced even in
-    # an audit policy before Windows 11 24H2, while an audit policy without it emits fine. So a
-    # child process tries it. Same reasoning as install.ps1, which carries the full note.
-    $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
-    # One retry, only when the first attempt never reached an answer (the
-    # compiled version this replaces also tried twice before caching a
-    # negative). Otherwise one transient process failure is cached for the whole
-    # run as if it were a policy, sending the installer down the lexical path
-    # where two unequal roots compare as unknown and a second lock gets taken. A
-    # child that RAN and said no is not retried, so a blocked machine pays for
-    # one probe.
-    if (-not $script:StudioCanDefineNativeTypes -and
-        $script:StudioEmitProbeOutcome -eq "indeterminate") {
-        $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
-    }
-    return $script:StudioCanDefineNativeTypes
-}
-
-# The same emit, in a process that is allowed to die. A blocked dynamic load usually stops the
-# parent, so this is asked in a child; silence is refusal.
-function Test-StudioEmitInChildProcess {
-    # HostPath is for the tests, which have no policy to trigger the real path and
-    # cannot shadow the read-only $PSHOME. Production never passes it.
-    param([string]$HostPath)
-    # Until something below establishes otherwise.
-    $script:StudioEmitProbeOutcome = "indeterminate"
-    $probe = @'
-try {
-    $name = New-Object System.Reflection.AssemblyName 'UnslothStudioEmitProbe'
-    $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
-    $assembly = $null
-    try { $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($name, $access) }
-    catch { $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, $access) }
-    $module = $assembly.DefineDynamicModule('UnslothStudioEmitProbe')
-    $builder = $module.DefineType('UnslothStudioEmitProbe', 'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')
-    $method = $builder.DefinePInvokeMethod('CloseHandle', 'kernel32.dll', 'CloseHandle',
-        'Public, Static, HideBySig, PinvokeImpl',
-        [System.Reflection.CallingConventions]::Standard, [bool], @([IntPtr]),
-        [System.Runtime.InteropServices.CallingConvention]::Winapi,
-        [System.Runtime.InteropServices.CharSet]::Ansi)
-    $method.SetImplementationFlags(
-        $method.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
-    $null = $builder.CreateType()
-} catch {}
-# Outside the try, because CreateType can publish the type and then throw on the way
-# back, and a published type works. The parent recovers from exactly that; a check
-# inside the try answered no for a machine that had just succeeded.
-# One line, and no closing brace in column 0: this body sits inside a here-string that
-# starts at column 0 in both entrypoints, and the tests extract a function by finding the
-# first line that is exactly its closing brace. A block here ends the extraction early.
-if ('UnslothStudioEmitProbe' -as [type]) { Write-Output ('STUDIO_EMIT_OK ' + [string]$ExecutionContext.SessionState.LanguageMode); exit 0 }
-exit 1
-'@
-    # This host, not a guessed one: a 5.1 answer does not carry to pwsh or back.
-    # Both spellings of the leaf, so a non-Windows lane can execute this function
-    # end to end rather than leaving a Windows-only path untested.
-    $hostExe = $HostPath
-    if (-not $hostExe) {
-        try {
-            $leaves = if ($PSVersionTable.PSEdition -eq "Core") { @("pwsh.exe", "pwsh") }
-                      else { @("powershell.exe", "powershell") }
-            foreach ($leaf in $leaves) {
-                $candidate = Join-Path $PSHOME $leaf
-                if (Test-Path -LiteralPath $candidate) { $hostExe = $candidate; break }
-            }
-        } catch {}
-    }
-    if (-not $hostExe) { return $false }
-    # A Process object rather than the call operator, for a deadline: the call
-    # operator waits forever, and forever is reachable (a security product
-    # inspecting a fresh interpreter, a wedged runtime start, a child blocking on
-    # shutdown). A probe meant to keep the installer alive must not hang it.
-    #
-    # BOTH streams are redirected and drained asynchronously. Draining stops a
-    # chatty child filling a pipe and deadlocking against the wait. Redirecting
-    # stderr keeps the probe out of the installer's own stderr, which the desktop
-    # app reads and anything the child spawns would inherit and hold open.
-    #
-    $info = New-Object System.Diagnostics.ProcessStartInfo
-    $info.FileName = $hostExe
-    $info.Arguments = "-NoProfile -NonInteractive -Command `"$probe`""
-    $info.UseShellExecute = $false
-    $info.RedirectStandardOutput = $true
-    $info.RedirectStandardError = $true
-    $info.CreateNoWindow = $true
-    $child = $null
-    try {
-        $child = [System.Diagnostics.Process]::Start($info)
-        $reader = $child.StandardOutput.ReadToEndAsync()
-        $null = $child.StandardError.ReadToEndAsync()
-        if (-not $child.WaitForExit(20000)) {
-            try { $child.Kill() } catch {}
-            return $false
-        }
-        # Exit code AND an exact record. A marker followed by a crash is a crash:
-        # the question is whether this machine can emit and live. FullLanguage
-        # because an approved script can run in FullLanguage while a fresh inline
-        # command does not, and a child restricted differently from its parent
-        # has measured a different machine.
-        if ($child.ExitCode -ne 0) {
-            $script:StudioEmitProbeOutcome = "blocked"
-            return $false
-        }
-        $lines = ($reader.GetAwaiter().GetResult() -split "`r?`n")
-        foreach ($line in $lines) {
-            if ($line.Trim() -eq "STUDIO_EMIT_OK FullLanguage") {
-                $script:StudioEmitProbeOutcome = "ok"
-                return $true
-            }
-            # Emitted, but in a language mode this parent is not in: the child
-            # measured a different machine, which is an answer, not a miss.
-            if ($line.Trim() -like "STUDIO_EMIT_OK *") {
-                $script:StudioEmitProbeOutcome = "blocked"
-                return $false
-            }
-        }
-        # Exit 0 with no marker: the child cannot have emitted and reported
-        # nothing, so its output was lost rather than negative.
-        return $false
-    } catch {
-        return $false
-    } finally {
-        if ($child) {
-            # The read end goes first: a killed child can leave a grandchild
-            # holding the write end, and the pending async read would then keep
-            # this process alive past the deadline it just enforced.
-            try { $child.StandardOutput.Close() } catch {}
-            try { $child.StandardError.Close() } catch {}
-            try { $child.Dispose() } catch {}
-        }
-    }
-}
-
-function New-StudioDynamicAssembly {
-    <#
-    Both spellings of "define a dynamic assembly", because the two PowerShell hosts
-    that run this file are on different runtimes. The static
-    AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5
-    through 4.8.1 as well as .NET Core, so 5.1 should take the first branch; it is
-    tried rather than assumed because nothing here can test a .NET Framework host
-    and getting it wrong is invisible: the catch would cache the thunk as
-    unavailable and every install would silently lose it.
-
-    AppDomain.CurrentDomain.DefineDynamicAssembly is the .NET Framework spelling and
-    is absent on .NET Core, so it is the fallback.
-    #>
-    param([Parameter(Mandatory = $true)][System.Reflection.AssemblyName]$AssemblyName)
-    $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
-    try {
-        return [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
-            $AssemblyName, $access)
-    } catch [System.Management.Automation.MethodException] {
-        return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
-    } catch [System.Management.Automation.RuntimeException] {
-        # Some hosts surface a missing static as RuntimeException, not
-        # MethodException. Both mean "no such method here", and a real emit failure
-        # throws from the AppDomain call too, so the caller still sees it.
-        return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
-    }
-}
-
-function New-StudioEmittedNativeType {
-    param(
-        [Parameter(Mandatory = $true)][string]$TypeName,
-        [Parameter(Mandatory = $true)][object[]]$Imports
-    )
-    $assemblyName = New-Object System.Reflection.AssemblyName $TypeName
-    $assembly = New-StudioDynamicAssembly -AssemblyName $assemblyName
-    $module = $assembly.DefineDynamicModule($TypeName)
-    $builder = $module.DefineType(
-        $TypeName, "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
-
-    $winapi = [System.Runtime.InteropServices.CallingConvention]::Winapi
-    # Per import, because CharSet selects name mangling as well as marshalling:
-    # Unicode probes <Name>W before <Name>, Ansi probes <Name> before <Name>A.
-    # Matching the C# these replace keeps the metadata honest and tries the existing
-    # export first.
-    $unicode = [System.Runtime.InteropServices.CharSet]::Unicode
-    $ansi = [System.Runtime.InteropServices.CharSet]::Ansi
-    $standard = [System.Reflection.CallingConventions]::Standard
-    $attributes = "Public, Static, HideBySig, PinvokeImpl"
-    $preserveSig = [System.Reflection.MethodImplAttributes]::PreserveSig
-
-    foreach ($import in $Imports) {
-        $charSet = if ($import.ContainsKey("Ansi") -and $import.Ansi) { $ansi } else { $unicode }
-        $method = $builder.DefinePInvokeMethod(
-            $import.Name, $import.Library, $import.Name, $attributes,
-            $standard, $import.Return, $import.Args, $winapi, $charSet)
-        $method.SetImplementationFlags(
-            $method.GetMethodImplementationFlags() -bor $preserveSig)
-        # `out uint` in the C# this replaces; DefinePInvokeMethod cannot say so,
-        # since a by-ref type alone emits `ref` (In and Out unset). The value is
-        # blittable and every caller initialises it, so marshalling works either
-        # way, but the metadata is what a reader and any future marshalling
-        # change go by.
-        # ContainsKey, not a bare property read: most imports have no Out key and
-        # reading a missing one is fatal under Set-StrictMode. install.ps1 turns
-        # strict mode off for itself, studio/setup.ps1 inherits the caller's, so
-        # the guard is mirrored rather than left to one of them.
-        if ($import.ContainsKey("Out")) {
-            foreach ($position in @($import.Out)) {
-                if ($position) { $null = $method.DefineParameter($position, "Out", $null) }
-            }
-        }
-    }
-    $null = $builder.CreateType()
-    return $null -ne ($TypeName -as [type])
-}
+# This script declares no native method at all, and neither does install.ps1. Which product
+# blocked what is recorded in tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD).
 
 function Enable-StudioVirtualTerminal {
     if ($env:NO_COLOR) { return $false }
