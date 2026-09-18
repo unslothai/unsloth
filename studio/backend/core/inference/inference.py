@@ -82,8 +82,11 @@ def _load_cached_repo_as_named(config: ModelConfig, load_in_4bit: bool) -> bool:
     if config.is_local or config.is_lora or not config.path:
         return False
     try:
-        from unsloth.models import loader_utils
+        from unsloth.models import loader, loader_utils
 
+        # Resolve the repo the loader will fetch on this host, after its bitsandbytes fallbacks.
+        if not loader.ALLOW_BITSANDBYTES:
+            load_in_4bit = False
         name = config.path.lower()
         if name in loader_utils.BAD_MAPPINGS:
             return False
@@ -94,6 +97,8 @@ def _load_cached_repo_as_named(config: ModelConfig, load_in_4bit: bool) -> bool:
         if name not in table:
             return False
         target = loader_utils.get_model_name(config.path, load_in_4bit = load_in_4bit)
+        if target and not loader.ALLOW_PREQUANTIZED_MODELS:
+            target = loader._strip_unsloth_bnb_4bit_suffix(target)
     except Exception as e:
         logger.debug(f"Could not resolve the Unsloth mapping for {config.path}: {e}")
         return False

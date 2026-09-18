@@ -94,13 +94,20 @@ def mapper(monkeypatch):
         return table.get(model_name.lower(), model_name)
 
     loader_utils.get_model_name = get_model_name
+    loader = types.ModuleType("unsloth.models.loader")
+    loader.ALLOW_BITSANDBYTES = True
+    loader.ALLOW_PREQUANTIZED_MODELS = True
+    loader._strip_unsloth_bnb_4bit_suffix = lambda name: name.removesuffix("-unsloth-bnb-4bit")
+    loader_utils.loader = loader
     models = types.ModuleType("unsloth.models")
     models.loader_utils = loader_utils
+    models.loader = loader
     unsloth = types.ModuleType("unsloth")
     unsloth.models = models
     monkeypatch.setitem(sys.modules, "unsloth", unsloth)
     monkeypatch.setitem(sys.modules, "unsloth.models", models)
     monkeypatch.setitem(sys.modules, "unsloth.models.loader_utils", loader_utils)
+    monkeypatch.setitem(sys.modules, "unsloth.models.loader", loader)
     return loader_utils
 
 
@@ -153,6 +160,27 @@ def test_cached_swap_target_keeps_the_swap(mapper, hub_cache, load_in_4bit):
     _cache_repo(hub_cache, PREQUANT if load_in_4bit else UNSLOTH_16BIT)
 
     assert _load_cached_repo_as_named(_config(), load_in_4bit) is False
+
+
+def test_without_bitsandbytes_the_16bit_target_decides(mapper, hub_cache):
+    # The loader drops 4-bit here, so an unusable cached prequant does not count.
+    mapper.loader.ALLOW_BITSANDBYTES = False
+    _cache_repo(hub_cache, UPSTREAM)
+    _cache_repo(hub_cache, PREQUANT)
+    assert _load_cached_repo_as_named(_config(), True) is True
+
+    _cache_repo(hub_cache, UNSLOTH_16BIT)
+    assert _load_cached_repo_as_named(_config(), True) is False
+
+
+def test_without_prequantized_models_the_stripped_target_decides(mapper, hub_cache):
+    mapper.loader.ALLOW_PREQUANTIZED_MODELS = False
+    _cache_repo(hub_cache, UPSTREAM)
+    _cache_repo(hub_cache, PREQUANT)
+    assert _load_cached_repo_as_named(_config(), True) is True
+
+    _cache_repo(hub_cache, PREQUANT.removesuffix("-unsloth-bnb-4bit"))
+    assert _load_cached_repo_as_named(_config(), True) is False
 
 
 def test_named_repo_short_a_shard_keeps_the_swap(mapper, hub_cache):
