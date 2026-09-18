@@ -502,3 +502,38 @@ test("a restored project cannot carry instructions into the system prompt", asyn
     "p1",
   );
 });
+
+test("a message whose content was stored as a plain string keeps its text", async () => {
+  // The backend stores content_json verbatim and _chat_message_from_row hands it back
+  // unchanged, so the export can carry a string from a legacy or previously imported
+  // row. Restoring that as [] would blank the message, and a backup is the last copy.
+  const { module, threads, messages } = harness();
+  const data = {
+    exportedAt: "2026-09-18T00:00:00.000Z",
+    version: 1,
+    threadCount: 1,
+    projects: [],
+    threads: [
+      { id: "t1", title: "Legacy", modelType: "base", archived: false, createdAt: 1 },
+    ],
+    messages: [
+      { id: "s1", threadId: "t1", parentId: null, role: "user", content: "plain string turn", createdAt: 1 },
+      { id: "s2", threadId: "t1", parentId: "s1", role: "assistant", content: [{ type: "text", text: "array turn" }], createdAt: 2 },
+      { id: "s3", threadId: "t1", parentId: "s2", role: "assistant", content: "   ", createdAt: 3 },
+    ],
+  };
+
+  const result = await module.importConversationsFromSource(
+    sourceOf("backup.json", data),
+  );
+
+  assert.deepEqual(result, { imported: 1, failed: 0 });
+  const records = messages.get(threads[0].id) as MessageRecord[];
+  assert.deepEqual(records.map(({ content }) => content), [
+    [{ type: "text", text: "plain string turn" }],
+    [{ type: "text", text: "array turn" }],
+    // Whitespace-only carries no text to lose, so it stays empty rather than
+    // becoming a blank bubble.
+    [],
+  ]);
+});

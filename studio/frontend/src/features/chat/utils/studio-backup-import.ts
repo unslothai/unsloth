@@ -55,6 +55,23 @@ function isDict(value: unknown): value is Dict {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// The export emits content_json exactly as it was stored, so the importer has to
+// accept every shape storage accepts, not just the one it writes today. A string
+// becomes a text part rather than nothing: the backup is the user's last copy, and
+// dropping the text of a message is not recoverable. Same normalisation
+// oaiContentToParts already does for the OpenAI path in chat-import.ts.
+function messageContent(raw: unknown): MessageRecord["content"] {
+  if (Array.isArray(raw)) {
+    return raw.map((part) =>
+      isDict(part) ? withoutServerLinks(part) : part,
+    ) as MessageRecord["content"];
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    return [{ type: "text", text: raw }] as MessageRecord["content"];
+  }
+  return [] as MessageRecord["content"];
+}
+
 function restorableSettings(settings: Dict): Dict {
   return Object.fromEntries(
     Object.entries(settings).filter(([key]) => RESTORABLE_SETTING_KEYS.has(key)),
@@ -168,9 +185,7 @@ export function studioBackupToConversations(
         id: messageIds.get(id) as string,
         threadId,
         role: raw.role as MessageRecord["role"],
-        content: (Array.isArray(raw.content)
-          ? raw.content.map((part) => (isDict(part) ? withoutServerLinks(part) : part))
-          : []) as MessageRecord["content"],
+        content: messageContent(raw.content),
         createdAt: ts,
       };
       if (typeof raw.parentId === "string") {
