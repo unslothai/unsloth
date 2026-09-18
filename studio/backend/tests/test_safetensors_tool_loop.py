@@ -10,6 +10,7 @@ calls, tool-result feedback, bad-JSON heal, duplicate-call short-circuit,
 ``__IMAGES__`` sentinel stripping, executor errors, cancel, and the iteration cap.
 """
 
+import copy
 import json
 import threading
 from typing import cast
@@ -25,6 +26,7 @@ from core.inference.safetensors_agentic import (
     strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
+    BUDGET_EXHAUSTED_NUDGE,
     NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
@@ -4087,17 +4089,67 @@ class TestGuardrails:
             '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
             for i in range(n)
         )
-        loop, exec_fn = _make_loop(
-            turns = [[turn], ["final"]],
-            exec_results = ["r"] * n,
+        seen_messages = []
+        turns = iter([turn, "final"])
+
+        def _gen(messages):
+            seen_messages.append(copy.deepcopy(messages))
+            yield next(turns)
+
+        exec_fn = FakeExecuteTool(["r"] * n)
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = exec_fn,
             max_tool_iterations = 2,
         )
-        _collect_events(loop)
+        events = _collect_events(loop)
         assert len(exec_fn.calls) == _MAX_TOOL_CALLS_PER_TURN
         # The first N distinct queries executed, in document order.
         assert [a["query"] for _name, a in exec_fn.calls] == [
             "q%d" % i for i in range(_MAX_TOOL_CALLS_PER_TURN)
         ]
+        assert len([e for e in events if e.get("type") == "tool_start"]) == _MAX_TOOL_CALLS_PER_TURN
+        (notice,) = [m for m in seen_messages[1] if "more tool call(s)" in m.get("content", "")]
+        assert notice["role"] == "user"
+        assert notice["content"].startswith("4 more tool call(s)")
+        for i in range(_MAX_TOOL_CALLS_PER_TURN, n):
+            assert '"q%d"' % i in notice["content"]
+        assert '"q%d"' % (_MAX_TOOL_CALLS_PER_TURN - 1) not in notice["content"]
+
+    def test_over_cap_on_last_turn_does_not_ask_for_retry(self):
+        from core.inference.safetensors_agentic import _MAX_TOOL_CALLS_PER_TURN
+
+        n = _MAX_TOOL_CALLS_PER_TURN + 2
+        turn = "".join(
+            '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+            for i in range(n)
+        )
+        seen_messages = []
+        turns = iter([turn, "final"])
+
+        def _gen(messages):
+            seen_messages.append(copy.deepcopy(messages))
+            yield next(turns)
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["r"] * n),
+            max_tool_iterations = 1,
+        )
+        _collect_events(loop)
+        messages = seen_messages[1]
+        last = messages[-1]
+        assert last["role"] == "user"
+        assert last["content"].startswith("2 more tool call(s)")
+        assert BUDGET_EXHAUSTED_NUDGE in last["content"]
+        assert not any("Call them again" in m.get("content", "") for m in messages)
+        assert not any(
+            a["role"] == "user" and b["role"] == "user" for a, b in zip(messages, messages[1:])
+        )
 
     def test_coerce_string_args_python_uses_code_key(self):
         assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {"code": "print(1)"}

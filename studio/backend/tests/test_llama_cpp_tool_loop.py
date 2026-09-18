@@ -4933,13 +4933,197 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "go"}],
             tools = [{"type": "function", "function": {"name": f"t{i}"}} for i in range(n)],
-            max_tool_iterations = 1,
+            max_tool_iterations = 2,
         )
     )
 
     assert len(calls) == _MAX_TOOL_CALLS_PER_TURN, [c[0] for c in calls]
     # The cap keeps the first calls in order (no reordering / drop of leading ones).
     assert [c[0] for c in calls] == [f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN)]
+    (notice,) = [
+        m for m in payloads[1]["messages"] if "more tool call(s)" in (m.get("content") or "")
+    ]
+    assert notice["role"] == "user"
+    assert notice["content"].startswith("4 more tool call(s)")
+    for i in range(_MAX_TOOL_CALLS_PER_TURN, n):
+        assert f"t{i} " in notice["content"]
+
+
+def test_gguf_textual_fallback_over_cap_notice_is_not_folded_into_tool_result(monkeypatch):
+    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+
+    def _call(i):
+        return '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+
+    streams = [
+        [_sse({"content": _call(0)}), _done()],
+        [
+            _sse({"content": "".join(_call(i) for i in range(_MAX_TOOL_CALLS_PER_TURN + 2))}),
+            _done(),
+        ],
+        [_sse({"content": "done"}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 3,
+        )
+    )
+
+    last = payloads[2]["messages"][-1]
+    assert last["role"] == "user"
+    assert "2 more tool call(s)" in last["content"]
+    assert not any(
+        "more tool call(s)" in (m.get("content") or "")
+        for m in payloads[2]["messages"]
+        if m.get("role") == "tool"
+    )
+
+
+def test_gguf_textual_fallback_over_cap_on_last_turn_does_not_ask_for_retry(monkeypatch):
+    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+
+    blocks = "".join(
+        '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+        for i in range(_MAX_TOOL_CALLS_PER_TURN + 2)
+    )
+    streams = [[_sse({"content": blocks}), _done()], [_sse({"content": "done"}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    last = messages[-1]
+    assert last["role"] == "tool"
+    assert "2 more tool call(s)" in last["content"]
+    assert BUDGET_EXHAUSTED_NUDGE in last["content"]
+    assert not any("Call them again" in (m.get("content") or "") for m in messages)
+    assert not any(
+        a.get("role") == "user" and b.get("role") == "user" for a, b in zip(messages, messages[1:])
+    )
+
+
+def test_gguf_over_cap_notice_is_not_folded_into_an_unrelated_tools_result(monkeypatch):
+    """The final-turn notice must not ride a result whose tool it says nothing about.
+
+    Templates label a folded block with the result's own tool name (gemma-4.jinja resolves
+    tool_call_id -> name and wraps the body), so a note about t8..t11 inside t7's result
+    reads as t7's own output. max_tool_iterations = 1 is the value that routes the notice
+    through the final branch, which is why the cap test above uses 2 and this one does not.
+    """
+    n = 12
+    blocks = "".join(
+        '<tool_call>{"name":"t%d","arguments":{"x":"t%d"}}</tool_call>' % (i, i) for i in range(n)
+    )
+    streams = [[_sse({"content": blocks}), _done()], [_sse({"content": "done"}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": "t%d" % i}} for i in range(n)],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    holders = [m for m in messages if "more tool call(s)" in (m.get("content") or "")]
+    assert len(holders) == 1
+    holder = holders[0]
+    skipped = {"t8", "t9", "t10", "t11"}
+    if holder["role"] == "tool":
+        assert holder.get("name") in skipped, "a note about %s must not sit inside %r's result" % (
+            sorted(skipped),
+            holder.get("name"),
+        )
+
+
+def test_gguf_over_cap_notice_for_several_tools_is_not_folded_into_one_tools_result(monkeypatch):
+    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+
+    blocks = "".join(
+        '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+        for i in range(_MAX_TOOL_CALLS_PER_TURN + 1)
+    )
+    blocks += '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+    streams = [[_sse({"content": blocks}), _done()], [_sse({"content": "done"}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "python"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    (holder,) = [m for m in messages if "more tool call(s)" in (m.get("content") or "")]
+    assert holder["role"] == "user"
+    assert "python" in holder["content"] and '"q8"' in holder["content"]
+    assert holder == messages[-1]
+    assert BUDGET_EXHAUSTED_NUDGE in holder["content"]
+    assert not any(
+        a.get("role") == "user" and b.get("role") == "user" for a, b in zip(messages, messages[1:])
+    )
+
+
+def test_gguf_over_cap_does_not_ask_for_a_retry_when_the_range_check_ends_the_loop(monkeypatch):
+    """The iteration range is a second exit; the notice must not ask for a retry there.
+
+    No-op turns burn the range budget without advancing the executed-tool counter, so the
+    loop can stop without the tool-iteration cap ever tripping. Asking for a retry there
+    lands next to the budget nudge that says not to call any more tools.
+    """
+
+    def _call(q):
+        return '<tool_call>{"name":"web_search","arguments":{"query":"%s"}}</tool_call>' % q
+
+    # Six real calls, then five no-op turns each re-issuing a DIFFERENT already-successful
+    # key (repeating one key twice trips the duplicate limit and forces the final answer
+    # through another exit), then a turn that overflows the cap. The no-ops burn the range
+    # without advancing the executed-tool count, so at max_tool_iterations = 3 the loop stops
+    # on the range check with only 2 executed-tool turns behind it.
+    streams = [[_sse({"content": "".join(_call("q%d" % i) for i in range(6))}), _done()]]
+    streams += [[_sse({"content": _call("q%d" % i)}), _done()] for i in range(5)]
+    streams.append([_sse({"content": "".join(_call("z%d" % i) for i in range(10))}), _done()])
+    streams += [[_sse({"content": "done"}), _done()] for _ in range(6)]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 3,
+        )
+    )
+
+    # Assert the scenario really happened rather than letting the check pass vacuously: the
+    # loop ended without offering tools again, and it did produce exactly one notice.
+    assert not payloads[-1].get("tools")
+    messages = payloads[-1]["messages"]
+    notices = [m for m in messages if "more tool call(s)" in (m.get("content") or "")]
+    assert len(notices) == 1
+    assert "Call them again" not in notices[0]["content"]
 
 
 def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):

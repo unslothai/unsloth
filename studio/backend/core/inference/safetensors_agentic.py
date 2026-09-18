@@ -60,6 +60,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     coerce_tool_arguments,
     status_for_tool,
+    tool_call_limit_nudge,
     tool_event_provenance,
 )
 from core.inference.chat_template_helpers import (
@@ -1305,6 +1306,7 @@ def run_safetensors_tool_loop(
             return
 
         # Collapse exact-duplicate calls and cap the count (runaway-turn guard).
+        over_cap: list = []
         if tool_calls:
             seen_keys: set = set()
             last_workspace_key = None
@@ -1329,14 +1331,21 @@ def run_safetensors_tool_loop(
                 elif _key in seen_keys:
                     continue
                 seen_keys.add(_key)
-                deduped.append(_tc)
-                if len(deduped) >= _MAX_TOOL_CALLS_PER_TURN:
-                    break
-            if len(deduped) != len(tool_calls):
+                if len(deduped) < _MAX_TOOL_CALLS_PER_TURN:
+                    deduped.append(_tc)
+                else:
+                    over_cap.append(_tc)
+            if len(deduped) + len(over_cap) != len(tool_calls):
                 logger.info(
                     "Safetensors: collapsed %d repeated tool call(s) in one turn to %d",
                     len(tool_calls),
-                    len(deduped),
+                    len(deduped) + len(over_cap),
+                )
+            if over_cap:
+                logger.info(
+                    "Safetensors: skipped %d tool call(s) over the per-turn limit of %d",
+                    len(over_cap),
+                    _MAX_TOOL_CALLS_PER_TURN,
                 )
             tool_calls = deduped
 
@@ -1552,6 +1561,11 @@ def run_safetensors_tool_loop(
                             {"role": "assistant", "content": json.dumps(call, default = str)}
                             for call in pending
                         ]
+                        # the notice restores skipped arguments after the retained results.
+                        if over_cap:
+                            pending_args.append(
+                                tool_call_limit_nudge(over_cap, _MAX_TOOL_CALLS_PER_TURN)
+                            )
                         kwargs["result_budget_tokens"] = tool_result_budget(
                             int(context_length),
                             max_tokens,
@@ -1595,6 +1609,26 @@ def run_safetensors_tool_loop(
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
 
+        # The turn that ends the loop offers no tools again, so do not ask for a retry there.
+        over_cap_final = bool(over_cap) and (
+            tool_controller.force_final_answer
+            or (not unrestricted_tools and not tool_controller.active_tools())
+            or (_turn_executed_real_tool and _executed_tool_iters + 1 >= max_tool_iterations)
+        )
+        if over_cap:
+            deferred_noop_msgs.append(
+                tool_call_limit_nudge(
+                    over_cap,
+                    _MAX_TOOL_CALLS_PER_TURN,
+                    final = over_cap_final,
+                    unavailable_tools = {
+                        _limit_decision.tool_name
+                        for call in over_cap
+                        if (_limit_decision := tool_controller.prepare_call(call)).action
+                        in ("disabled", "render_html_repeat")
+                    },
+                )
+            )
         append_deferred_nudges(conversation, deferred_noop_msgs)
 
         yield {"type": "status", "text": ""}
@@ -1611,6 +1645,12 @@ def run_safetensors_tool_loop(
             _executed_tool_iters += 1
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
-            conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
+            if over_cap:
+                conversation[-1] = {
+                    **conversation[-1],
+                    "content": f"{conversation[-1]['content']}\n\n{BUDGET_EXHAUSTED_NUDGE}",
+                }
+            else:
+                conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
     yield {"type": "status", "text": ""}
