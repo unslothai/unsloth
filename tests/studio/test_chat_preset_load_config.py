@@ -677,10 +677,12 @@ def _assigned(block: str, name: str) -> bool:
     `for (name of xs)` head, or a destructuring pattern that names it, such as `[name] = xs`?"""
     reference = rf"(?<![\w$.]){re.escape(name)}(?![\w$])"
     compound = r"(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])?"
+    # Parentheses around a target do not change it: `(name) = x` writes `name`.
+    wrapped = rf"{reference}(?:\s*\))*"
     if (
-        re.search(rf"{reference}\s*{compound}=(?![=>])", block)
-        or re.search(rf"(?:\+\+|--)\s*{reference}|{reference}\s*(?:\+\+|--)", block)
-        or re.search(rf"\bfor\s*\([^;)]*{reference}[^;)]*\b(?:of|in)\b", block)
+        re.search(rf"{wrapped}\s*{compound}=(?![=>])", block)
+        or re.search(rf"(?:\+\+|--)[\s(]*{reference}|{wrapped}\s*(?:\+\+|--)", block)
+        or re.search(rf"\bfor\s*\([^;)]*{reference}[^;]*?\b(?:of|in)\b", block)
     ):
         return True
     for match in re.finditer(r"[\]}]\s*=(?![=>])", block):
@@ -1334,6 +1336,8 @@ SELECTOR_CASES = [
     ("(s) => { s = other; return s.reasoningBudget; }", False),
     ("({ reasoningBudget }) => { reasoningBudget ??= 1; return reasoningBudget; }", False),
     ("(s) => { [s] = [other]; return s.reasoningBudget; }", False),
+    ("(s) => { (s) = other; return s.reasoningBudget; }", False),
+    ("(s) => { for ((s) of others) break; return s.reasoningBudget; }", False),
     ("(s) => { ({ s } = holder); return s.reasoningBudget; }", False),
     ("(s) => { for (s of others) break; return s.reasoningBudget; }", False),
     ("(s) => { for (const x of s.list) {} return s.reasoningBudget; }", True),
