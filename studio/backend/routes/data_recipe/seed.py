@@ -115,13 +115,21 @@ def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
         return []
 
 
-def _select_best_file(data_files: list[str], split: str = DEFAULT_SPLIT) -> str | None:
+def _select_best_file(
+    data_files: list[str],
+    split: str = DEFAULT_SPLIT,
+    subset: str | None = None,
+) -> str | None:
     if not data_files:
         return None
     split_lower = split.lower()
+    if subset:
+        subset_lower = subset.lower()
+        in_subset = [f for f in data_files if subset_lower in f.lower().split("/")[:-1]]
+        data_files = in_subset or data_files
 
     def score(path: str) -> tuple[int, int]:
-        name = path.lower()
+        name = f"/{path.lower()}"
         if f"/{split_lower}/" in name:
             return (0, len(path))
         if (
@@ -141,19 +149,32 @@ def _resolve_seed_hf_path(
     dataset_name: str,
     data_files: list[str],
     split: str = DEFAULT_SPLIT,
+    subset: str | None = None,
 ) -> str | None:
-    selected = _select_best_file(data_files, split)
+    selected = _select_best_file(data_files, split, subset)
     if not selected:
         return None
 
-    ext = Path(selected).suffix.lower()
+    suffix = Path(selected).suffix
+    ext = suffix.lower()
     if ext not in DATA_EXTS:
         return f"datasets/{dataset_name}/{selected}"
 
     parent = Path(selected).parent.as_posix()
-    if not parent or parent == ".":
-        return f"datasets/{dataset_name}/**/*{ext}"
-    return f"datasets/{dataset_name}/{parent}/**/*{ext}"
+    base = f"datasets/{dataset_name}"
+    if parent and parent != ".":
+        base = f"{base}/{parent}"
+
+    split_lower = split.lower()
+    if f"/{split_lower}/" not in f"/{selected.lower()}":
+        name = Path(selected).name
+        stem = name[: -len(suffix)]
+        stem_lower = stem.lower()
+        if stem_lower.startswith((f"{split_lower}-", f"{split_lower}_", f"{split_lower}.")):
+            return f"{base}/{stem[: len(split_lower) + 1]}*{suffix}"
+        if stem_lower == split_lower or stem_lower.endswith((f"_{split_lower}", f"-{split_lower}")):
+            return f"{base}/{name}"
+    return f"{base}/**/*{ext}"
 
 
 def _build_stream_load_kwargs(
@@ -358,7 +379,7 @@ def inspect_seed_dataset(
     preview_rows: list[dict[str, Any]] = []
     data_files = _list_hf_data_files(dataset_name = dataset_name, token = token)
 
-    selected_file = _select_best_file(data_files, split)
+    selected_file = _select_best_file(data_files, split, subset)
     if selected_file:
         try:
             single_file_kwargs = _build_stream_load_kwargs(
@@ -406,7 +427,7 @@ def inspect_seed_dataset(
     if not data_files:
         resolved_path = f"datasets/{dataset_name}/**/*.parquet"
     else:
-        resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split)
+        resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split, subset)
         if not resolved_path:
             raise HTTPException(status_code = 422, detail = "unable to resolve seed dataset path")
 
