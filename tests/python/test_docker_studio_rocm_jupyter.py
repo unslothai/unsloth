@@ -46,9 +46,7 @@ def _logical_lines(text: str) -> list[str]:
 
 def _instructions(path: Path, name: str) -> list[str]:
     return [
-        ln[len(name):].strip()
-        for ln in _logical_lines(_read(path))
-        if ln.startswith(name + " ")
+        ln[len(name) :].strip() for ln in _logical_lines(_read(path)) if ln.startswith(name + " ")
     ]
 
 
@@ -59,7 +57,7 @@ def _copies(path: Path) -> list[tuple[str, list[str], str]]:
         words = args.split()
         stage = ""
         if words and words[0].startswith("--from="):
-            stage = words.pop(0)[len("--from="):]
+            stage = words.pop(0)[len("--from=") :]
         out.append((stage, words[:-1], words[-1]))
     return out
 
@@ -73,10 +71,7 @@ def _env(path: Path) -> dict[str, str]:
 
 
 def _pins(text: str, packages) -> dict[str, set[str]]:
-    return {
-        pkg: set(re.findall(rf'"{re.escape(pkg)}==([0-9][^"]*)"', text))
-        for pkg in packages
-    }
+    return {pkg: set(re.findall(rf'"{re.escape(pkg)}==([0-9][^"]*)"', text)) for pkg in packages}
 
 
 def _branding_module():
@@ -104,9 +99,9 @@ def test_jupyterlab_is_pinned_to_the_cuda_core_image():
         )
     # the labext-builder stage builds the extension against the jupyterlab it will run under
     (jl,) = cuda["jupyterlab"]
-    assert _read(ROCM_STUDIO).count(f'"jupyterlab=={jl}"') == 2, (
-        "the labext-builder stage and the final stage must install the same jupyterlab"
-    )
+    assert (
+        _read(ROCM_STUDIO).count(f'"jupyterlab=={jl}"') == 2
+    ), "the labext-builder stage and the final stage must install the same jupyterlab"
 
 
 def test_jupyterlab_goes_into_the_base_venv_and_leaves_torch_alone():
@@ -114,9 +109,9 @@ def test_jupyterlab_goes_into_the_base_venv_and_leaves_torch_alone():
     against pypi alone must not be allowed to replace that torch with a CUDA one."""
     (install,) = [r for r in _instructions(ROCM_STUDIO, "RUN") if '"notebook==' in r]
     assert f"{VENV}/bin/uv pip install --python {VENV}/bin/python" in install
-    assert "BASE_TORCH=" in install and "version('torch')" in install, (
-        "the install must assert the base venv's torch is the same before and after"
-    )
+    assert (
+        "BASE_TORCH=" in install and "version('torch')" in install
+    ), "the install must assert the base venv's torch is the same before and after"
 
 
 # ── the labextension, theme and branding chain ───────────────────────────────
@@ -138,11 +133,13 @@ def test_the_labextension_lands_where_the_branding_guard_looks():
         (src[0], dest) for stage, src, dest in copies if stage == "labext-builder"
     )
     (staged_src,) = [dest for stage, src, dest in copies if src == ["jupyter/unsloth_labext"]]
-    assert labext_src == f"{staged_src}/{output_dir}", (
-        "the --from copy must take the labextension from where jlpm build:prod writes it"
-    )
+    assert (
+        labext_src == f"{staged_src}/{output_dir}"
+    ), "the --from copy must take the labextension from where jlpm build:prod writes it"
     assert labext_dest == paths["labext_dir"]
-    assert paths["overrides"] in [dest for _, src, dest in copies if src == ["jupyter/overrides.json"]]
+    assert paths["overrides"] in [
+        dest for _, src, dest in copies if src == ["jupyter/overrides.json"]
+    ]
     text = _read(ROCM_STUDIO)
     assert paths["license"] in text, "the AGPLv3 text must be staged where the guard reads it"
     assert "-m unsloth_branding --verify" in text, "the build must run the branding guard"
@@ -172,15 +169,15 @@ def test_the_notebook_tooling_matches_the_cuda_core_image():
         (src,) = [src for _, src, dest in _copies(path) if dest == "/opt/unsloth-nb/"]
         return set(src)
 
-    assert helpers(ROCM_STUDIO) == helpers(CUDA_BASE), (
-        "a notebook helper added to one image and not the other"
-    )
+    assert helpers(ROCM_STUDIO) == helpers(
+        CUDA_BASE
+    ), "a notebook helper added to one image and not the other"
     cuda_env, rocm_env = _env(CUDA_BASE), _env(ROCM_STUDIO)
     assert rocm_env["IPYTHONDIR"] == cuda_env["IPYTHONDIR"]
     for env in (cuda_env, rocm_env):
-        assert env["PATH"].startswith("/opt/unsloth-nb/bin:"), (
-            "the pip/uv shim has to sit ahead of the venv on PATH or install cells clobber torch"
-        )
+        assert env["PATH"].startswith(
+            "/opt/unsloth-nb/bin:"
+        ), "the pip/uv shim has to sit ahead of the venv on PATH or install cells clobber torch"
 
 
 def test_the_notebooks_are_baked_where_the_sync_script_looks():
@@ -201,11 +198,15 @@ def test_every_supervisord_program_is_installed_by_the_dockerfile():
     commands = re.findall(r"^command=(\S+)", conf, re.M)
     assert commands, "supervisord.conf lost its programs"
     dests = {dest for _, _, dest in _copies(ROCM_STUDIO)}
-    chmod = " ".join(r for r in _instructions(ROCM_STUDIO, "RUN") if r.startswith("chmod +x /usr/local/bin/"))
+    chmod = " ".join(
+        r for r in _instructions(ROCM_STUDIO, "RUN") if r.startswith("chmod +x /usr/local/bin/")
+    )
     apt = " ".join(r for r in _instructions(ROCM_STUDIO, "RUN") if "apt-get install" in r)
     for command in commands:
         if command.startswith("/usr/local/bin/"):
-            assert command in dests, f"supervisord runs {command}, which the Dockerfile never copies"
+            assert (
+                command in dests
+            ), f"supervisord runs {command}, which the Dockerfile never copies"
             assert command in chmod, f"{command} is copied but not made executable"
         elif command == "/usr/sbin/sshd":
             assert "openssh-server" in apt
@@ -279,9 +280,9 @@ def test_the_entrypoint_syncs_the_notebooks_before_every_exec():
     assert len(execs) >= 2, "the skip path and the checked path both exec the command"
     for pos in execs:
         preceding = body[:pos].rstrip().splitlines()[-1].strip()
-        assert preceding == "sync_notebooks", (
-            f"exec at offset {pos} is not preceded by sync_notebooks but by {preceding!r}"
-        )
+        assert (
+            preceding == "sync_notebooks"
+        ), f"exec at offset {pos} is not preceded by sync_notebooks but by {preceding!r}"
 
 
 # ── the build context ────────────────────────────────────────────────────────
@@ -290,11 +291,7 @@ def test_the_entrypoint_syncs_the_notebooks_before_every_exec():
 def test_every_copy_source_is_allowed_by_the_dockerignore():
     """docker/.dockerignore denies everything and allow-lists by name, so a file
     COPY'd here but not listed there fails the build with 'not found'."""
-    allowed = [
-        ln[1:].strip()
-        for ln in _read(DOCKERIGNORE).splitlines()
-        if ln.startswith("!")
-    ]
+    allowed = [ln[1:].strip() for ln in _read(DOCKERIGNORE).splitlines() if ln.startswith("!")]
 
     def is_allowed(source: str) -> bool:
         for pattern in allowed:
