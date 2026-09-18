@@ -422,6 +422,9 @@ class TestTheUserFacingDocsCoverWsl:
             "ROCM_GFX=<your gfx> bash docker/build.sh --rocm",
             # run.sh defaults to the published image, which is refused on DXG
             "UNSLOTH_IMAGE=unsloth-rocm:latest bash run.sh --rocm",
+            # Dockerfile.rocm maps no RDNA3 arch to a per-arch index, so the page must not
+            # promise one
+            "RDNA3 cards (`gfx1100` to `gfx1103`) have no bridge path yet",
         ):
             assert needle in text, needle
 
@@ -430,6 +433,7 @@ class TestTheUserFacingDocsCoverWsl:
         assert "needs native Linux" not in text
         assert "/dev/dxg" in text and "docker/run.sh --rocm" in text
         assert "UNSLOTH_IMAGE=unsloth-rocm:latest" in text
+        assert "RDNA3 cards have no bridge path yet" in text
 
 
 # ── entrypoint-rocm.sh ───────────────────────────────────────────────────────
