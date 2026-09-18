@@ -25,6 +25,7 @@ interface ChartsSectionProps {
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
   evalLossHistory: TrainingSeriesPoint[];
+  rewardHistory: TrainingSeriesPoint[];
 }
 
 export function ChartsSection({
@@ -36,6 +37,7 @@ export function ChartsSection({
   lrHistory,
   gradNormHistory,
   evalLossHistory,
+  rewardHistory,
 }: ChartsSectionProps): ReactElement | null {
   const series = useMemo(
     () => ({
@@ -57,14 +59,27 @@ export function ChartsSection({
         step: point.step,
         loss: point.value,
       })),
+      rewardHistory: rewardHistory.map((point) => ({
+        step: point.step,
+        reward: point.value,
+      })),
     }),
-    [currentStep, evalLossHistory, gradNormHistory, lossHistory, lrHistory, totalSteps],
+    [
+      currentStep,
+      evalLossHistory,
+      gradNormHistory,
+      lossHistory,
+      lrHistory,
+      rewardHistory,
+      totalSteps,
+    ],
   );
 
   if (
     series.lossHistory.length === 0 &&
     series.lrHistory.length === 0 &&
-    series.gradNormHistory.length === 0
+    series.gradNormHistory.length === 0 &&
+    series.rewardHistory.length === 0
   ) {
     return null;
   }

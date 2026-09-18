@@ -12,4 +12,6 @@ export interface TrainingChartSeries {
   lrHistory: { step: number; lr: number }[];
   gradNormHistory: { step: number; gradNorm: number }[];
   evalLossHistory: { step: number; loss: number }[];
+  /** GRPO only: empty for supervised runs, which is how the reward chart stays hidden. */
+  rewardHistory: { step: number; reward: number }[];
 }

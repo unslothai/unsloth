@@ -54,6 +54,12 @@ function mapToViewData(
     .map((step, i) => ({ step, value: metrics.eval_loss_history[i] }))
     .filter((p): p is { step: number; value: number } => p.value != null);
 
+  // Reward is a live-run metric today: the run store persists loss/lr/grad-norm only,
+  // so a reloaded GRPO run charts an empty reward series.
+  const rewardHistory = (metrics.reward_step_history ?? [])
+    .map((step, i) => ({ step, value: (metrics.reward_history ?? [])[i] }))
+    .filter((p): p is { step: number; value: number } => p.value != null);
+
   const phase =
     run.status === "completed"
       ? "completed"
@@ -104,6 +110,7 @@ function mapToViewData(
     lrHistory,
     gradNormHistory,
     evalLossHistory,
+    rewardHistory,
   };
 }
 
@@ -234,6 +241,7 @@ export function HistoricalTrainingView({
         lrHistory={viewData.lrHistory}
         gradNormHistory={viewData.gradNormHistory}
         evalLossHistory={viewData.evalLossHistory}
+        rewardHistory={viewData.rewardHistory}
       />
     </div>
   );

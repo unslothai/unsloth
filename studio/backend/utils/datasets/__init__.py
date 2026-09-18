@@ -10,6 +10,11 @@ from .format_detection import (
     detect_vlm_dataset_structure,
 )
 
+from .prompt_only import (
+    detect_prompt_only_format,
+    prepare_prompt_only_dataset,
+)
+
 from .format_conversion import (
     standardize_chat_format,
     convert_chatml_to_alpaca,
@@ -56,6 +61,8 @@ __all__ = [
     "detect_custom_format_heuristic",
     "detect_multimodal_dataset",
     "detect_vlm_dataset_structure",
+    "detect_prompt_only_format",
+    "prepare_prompt_only_dataset",
     # Conversion
     "standardize_chat_format",
     "convert_chatml_to_alpaca",

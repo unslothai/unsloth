@@ -114,6 +114,11 @@ def test_the_terminal_summary_still_reports_elapsed_time():
         eta_seconds = None
         grad_norm = None
         num_tokens = 12345
+        reward = None
+        reward_std = None
+        reward_breakdown = None
+        kl = None
+        completion_length = None
         status_message = ""
         warnings: list = []
 
@@ -150,6 +155,11 @@ def test_a_lossless_mid_run_record_is_still_dropped():
         eta_seconds = None
         grad_norm = None
         num_tokens = 1
+        reward = None
+        reward_std = None
+        reward_breakdown = None
+        kl = None
+        completion_length = None
         status_message = ""
         warnings: list = []
 
@@ -185,6 +195,11 @@ def test_an_early_stopped_run_still_reports_its_duration():
         eta_seconds = None
         grad_norm = None
         num_tokens = 5
+        reward = None
+        reward_std = None
+        reward_breakdown = None
+        kl = None
+        completion_length = None
         status_message = ""
         is_run_summary = True
         warnings: list = []
