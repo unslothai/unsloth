@@ -131,6 +131,7 @@ def detect_custom_format_heuristic(dataset):
         "template",
         "task",
     ]
+    role_words = assistant_words + user_words + system_words
     metadata_exact_match = {
         "id",
         "idx",
@@ -165,7 +166,15 @@ def detect_custom_format_heuristic(dataset):
     def has_keyword(col_name, keywords):
         col_lower = col_name.lower()
         col_normalized = col_lower.replace("_", "").replace("-", "").replace(" ", "")
-        return any(keyword in col_lower or keyword in col_normalized for keyword in keywords)
+        for keyword in keywords:
+            if keyword in col_lower or keyword in col_normalized:
+                shadowed = any(
+                    keyword != other and keyword in other and other in col_normalized
+                    for other in role_words
+                )
+                if not shadowed:
+                    return True
+        return False
 
     def is_metadata(col_name):
         col_lower = col_name.lower()
@@ -273,6 +282,9 @@ def detect_custom_format_heuristic(dataset):
                 mapping[col] = "user"
                 has_user = True
                 break
+    if not has_user and system_col:
+        mapping[system_col] = "user"
+        has_user = True
     return mapping if has_user and has_assistant else None
 
 
