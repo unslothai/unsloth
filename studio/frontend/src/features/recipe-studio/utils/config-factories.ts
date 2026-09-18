@@ -14,10 +14,12 @@ import type {
   SamplerConfig,
   SamplerType,
   ToolProfileConfig,
+  TrainingCardConfig,
   ValidatorCodeLang,
   ValidatorType,
   ValidatorConfig,
 } from "../types";
+import { DEFAULT_HYPERPARAMS } from "@/config/training";
 import { nextName } from "./naming";
 
 export function makeUnstructuredUploadUid(): string {
@@ -386,6 +388,52 @@ export function makeMarkdownNoteConfig(
     markdown: "## Note\n\nAdd markdown here.",
     note_color: "#FDE68A",
     note_opacity: "35",
+  };
+}
+
+export function makeTrainConfig(
+  id: string,
+  existing: NodeConfig[],
+): TrainingCardConfig {
+  const name = nextName(existing, "train");
+  return {
+    id,
+    kind: "train",
+    name,
+    advancedOpen: false,
+    baseModel: "",
+    trainingMethod: "qlora",
+    datasetSource: "recipe",
+    hfDataset: "",
+    hfSubset: "",
+    hfSplit: "",
+    datasetFormat: "auto",
+    uploadedFile: "",
+    epochs: DEFAULT_HYPERPARAMS.epochs,
+    loraRank: DEFAULT_HYPERPARAMS.loraRank,
+    loraAlpha: DEFAULT_HYPERPARAMS.loraAlpha,
+    loraDropout: DEFAULT_HYPERPARAMS.loraDropout,
+    loraVariant: DEFAULT_HYPERPARAMS.loraVariant,
+    batchSize: DEFAULT_HYPERPARAMS.batchSize,
+    learningRate: DEFAULT_HYPERPARAMS.learningRate,
+    contextLength: DEFAULT_HYPERPARAMS.contextLength,
+    outputName: name,
+    gradientAccumulation: DEFAULT_HYPERPARAMS.gradientAccumulation,
+    warmupSteps: DEFAULT_HYPERPARAMS.warmupSteps,
+    maxSteps: DEFAULT_HYPERPARAMS.maxSteps,
+    weightDecay: DEFAULT_HYPERPARAMS.weightDecay,
+    optimizerType: DEFAULT_HYPERPARAMS.optimizerType,
+    lrSchedulerType: DEFAULT_HYPERPARAMS.lrSchedulerType,
+    packing: DEFAULT_HYPERPARAMS.packing,
+    trainOnCompletions: DEFAULT_HYPERPARAMS.trainOnCompletions,
+    gradientCheckpointing: DEFAULT_HYPERPARAMS.gradientCheckpointing,
+    randomSeed: DEFAULT_HYPERPARAMS.randomSeed,
+    targetModules: [...DEFAULT_HYPERPARAMS.targetModules],
+    enableWandb: DEFAULT_HYPERPARAMS.enableWandb,
+    wandbProject: DEFAULT_HYPERPARAMS.wandbProject,
+    enableTensorboard: DEFAULT_HYPERPARAMS.enableTensorboard,
+    tensorboardDir: DEFAULT_HYPERPARAMS.tensorboardDir,
+    hfToken: "",
   };
 }
 
