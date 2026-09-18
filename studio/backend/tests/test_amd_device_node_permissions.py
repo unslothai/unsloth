@@ -2146,12 +2146,12 @@ def test_an_untagged_label_is_settled_by_the_live_runtime(
 
 
 _NO_BACKEND = "no GPU backend can use the AMD card"
-_THREE_NODES = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"]
+_THREE_NODE_PATHS = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"]
 
 
 # fmt: off
 @pytest.mark.parametrize("present, openable, contains, absent", _cases(
-    ("an_open_sibling_stops_it_speaking_for_the_card", _THREE_NODES,
+    ("an_open_sibling_stops_it_speaking_for_the_card", _THREE_NODE_PATHS,
      {"/dev/kfd", "/dev/dri/renderD129"},
      ["/dev/dri/renderD128", "the card behind them", "another AMD render node"], [_NO_BACKEND]),
     ("no_open_sibling_still_speaks_for_the_card", _AMD_NODES, {"/dev/kfd"}, [_NO_BACKEND], []),
@@ -2685,7 +2685,7 @@ def test_what_the_installer_makes_of_a_render_node_vendor(tmp_path, vendor, verd
 
 
 _HIP = "HIP_VISIBLE_DEVICES"
-_SHUT = dict(present = _THREE_NODES, openable = {"/dev/kfd", "/dev/dri/renderD129"})
+_SHUT = dict(present = _THREE_NODE_PATHS, openable = {"/dev/kfd", "/dev/dri/renderD129"})
 _SHUT_NO_KFD = dict(present = [_RENDER, "/dev/dri/renderD129"], openable = {"/dev/dri/renderD129"})
 
 
