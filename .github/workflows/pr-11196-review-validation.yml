@@ -1,0 +1,27 @@
+name: PR 11196 review validation
+
+on:
+  push:
+    branches:
+      - studio/pr-11196-review-fixes-20260918
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: d35ef45e131acb47bb787ca6dff30a9d269fea02
+          persist-credentials: false
+      - name: Package source for review
+        run: |
+          git archive --format=tar.gz -o /tmp/pr-11196-source.tar.gz HEAD studio/frontend studio/backend/core/inference/provider_model_capabilities.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr-11196-source
+          path: /tmp/pr-11196-source.tar.gz
+          retention-days: 1
