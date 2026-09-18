@@ -5,6 +5,7 @@
  *  CSV. JSON records stream individually so large exports never become one JS string. */
 
 import {
+  ChatThreadWriteError,
   listChatProjects,
   notifyChatHistoryUpdated,
   saveChatProject,
@@ -378,8 +379,13 @@ async function writeConversation(
     // A settings snapshot is the one field a backup can carry that this build may not accept:
     // the thread endpoint validates it strictly, so one knob added by a newer Studio fails the
     // whole write. The chat matters more than its settings, so drop them and try once more.
+    // Only for a rejection, though: a timeout or a 5xx is not the snapshot's fault and dropping
+    // it would lose the user's temperature and seed to an unrelated failure, silently, while
+    // reporting the chat imported.
     const { settings, ...withoutSettings } = thread;
-    if (settings === undefined || settings === null) throw error;
+    const rejected =
+      error instanceof ChatThreadWriteError && error.status === 422;
+    if (!rejected || settings === undefined || settings === null) throw error;
     await saveStoredChatThread(withoutSettings);
   }
   try {

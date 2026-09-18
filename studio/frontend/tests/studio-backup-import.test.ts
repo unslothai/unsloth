@@ -18,6 +18,17 @@ type ImportSource = {
   chunks(): AsyncIterable<{ text: string; bytes: number }>;
 };
 
+/** Stands in for the api module's ChatThreadWriteError: chat-import receives this very class
+ *  through the stub, so its instanceof check sees what a real rejection would look like. */
+class ChatThreadWriteError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ChatThreadWriteError";
+    this.status = status;
+  }
+}
+
 type Module = {
   importConversationsFromSource: (
     source: ImportSource,
@@ -39,6 +50,7 @@ function harness(existingProjects: ProjectRecord[] = []) {
           projects.push(project);
           return project;
         },
+        ChatThreadWriteError,
       },
       "./chat-history-storage": {
         saveStoredChatThread: async (thread: ThreadRecord) => {
@@ -394,6 +406,7 @@ test("a settings snapshot this build rejects costs the settings, not the chat", 
         notifyChatHistoryUpdated: () => {},
         listChatProjects: async () => [],
         saveChatProject: async (project: ProjectRecord) => project,
+        ChatThreadWriteError,
       },
       "./chat-history-storage": {
         saveStoredChatThread: async (thread: ThreadRecord) => {
@@ -401,7 +414,7 @@ test("a settings snapshot this build rejects costs the settings, not the chat", 
           const temperature = (thread.settings as { temperature?: number } | undefined)
             ?.temperature;
           if (temperature !== undefined && temperature > 2) {
-            throw new Error("422 less_than_equal: settings.temperature");
+            throw new ChatThreadWriteError("less_than_equal: settings.temperature", 422);
           }
           saved.push(thread);
           return thread;
@@ -501,6 +514,53 @@ test("a restored project cannot carry instructions into the system prompt", asyn
     threads.find(({ title }) => title === "Trip plan")?.projectId,
     "p1",
   );
+});
+
+test("a backend that is merely down keeps the settings instead of quietly dropping them", async () => {
+  // The retry exists for a snapshot this build rejects. A 500 or a timeout says nothing about
+  // the snapshot, so retrying without it would trade the user's temperature and seed for an
+  // unrelated blip and still report the chat imported.
+  const attempts: (ThreadRecord["settings"] | undefined)[] = [];
+  let failures = 1;
+  const module = loadWithStubs<Module>(
+    new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
+    {
+      "../api/chat-api": {
+        notifyChatHistoryUpdated: () => {},
+        listChatProjects: async () => [],
+        saveChatProject: async (project: ProjectRecord) => project,
+        ChatThreadWriteError,
+      },
+      "./chat-history-storage": {
+        saveStoredChatThread: async (thread: ThreadRecord) => {
+          attempts.push(thread.settings);
+          if (thread.settings !== undefined && failures-- > 0) {
+            throw new ChatThreadWriteError("Request failed (500)", 500);
+          }
+          return thread;
+        },
+        syncStoredChatMessages: async (
+          _threadId: string,
+          records: MessageRecord[],
+        ) => records,
+        deleteStoredChatThreads: async () => [],
+      },
+    },
+    { relativePassthrough: true },
+  );
+
+  const data = backup();
+  data.threads[0].settings = {
+    temperature: 0.7,
+  } as unknown as ThreadRecord["settings"];
+
+  const result = await module.importConversationsFromSource(
+    sourceOf("backup.json", data),
+  );
+
+  // One write for the chat that failed, one for the other. No second, settings-less attempt.
+  assert.deepEqual(attempts, [{ temperature: 0.7 }, undefined]);
+  assert.deepEqual(result, { imported: 1, failed: 1 });
 });
 
 test("choosing Recents as the destination puts the chats in Recents, backup or not", async () => {
