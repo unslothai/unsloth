@@ -175,6 +175,7 @@ def _nodes(
     amd_owned: bool = True,
     vendor_readable: bool = True,
     topology: "bool | None | str" = "as-owned",
+    gpu_count: "int | None | str" = "as-present",
 ):
     """A host whose ``present`` nodes exist and whose ``openable`` subset can be opened.
 
@@ -182,6 +183,16 @@ def _nodes(
     exercised for real in the two tests below it. ``vendor_readable`` is whether sysfs will
     say so: a container can map the node and hide the entry that names its vendor, and the
     two are different answers.
+
+    ``gpu_count`` is how many AMD GPU agents KFD enumerates, and it defaults to the AMD
+    render nodes this host was given, since that is what the described host would report.
+    It is stubbed here rather than left live for the reason this whole helper exists: it
+    reads /sys/class/kfd, so a case that merely sets a visibility mask was asking the
+    RUNNER how many GPUs it has. On a machine with no AMD card that read is None, which
+    means "no bound", so every selector looks like a narrowing; on a real gfx1151 it is 1,
+    so a selector naming device 0 looks like the whole host. Those are opposite verdicts,
+    and that is precisely how this file passed here and failed on the hardware it is
+    written for. Pass None explicitly for the unreadable-topology case.
     """
     # Only the device-node enumeration. The module's other caller of the same helper walks
     # the Vulkan icd.d directories, and answering that one with a list of render nodes made
@@ -213,6 +224,12 @@ def _nodes(
     _topology = amd_owned if topology == "as-owned" else topology
     monkeypatch.setattr(amd, "_kfd_topology_has_an_amd_gpu", lambda: _topology is True)
     monkeypatch.setattr(amd, "_kfd_topology_amd_state", lambda: _topology)
+    if gpu_count == "as-present":
+        _renders = [p for p in present if p.startswith("/dev/dri/renderD")]
+        # Zero is not a bound, and the production reader says so too: a topology naming no
+        # GPU bounds nothing, so it answers None rather than 0.
+        gpu_count = len(_renders) if (_renders and amd_owned) else None
+    monkeypatch.setattr(amd, "amd_kfd_gpu_node_count", lambda: gpu_count)
     # These paths are patched rather than created, so stat cannot name their groups; say
     # so explicitly instead of leaving it to whether the runner happens to have a node at
     # the same path. The derivation itself is exercised in its own tests below.
@@ -678,6 +695,7 @@ def test_no_mask_leaves_the_hint_alone(monkeypatch, linux):
 
 
 def _kernel_stack_hint_runs(
+    tmp_path,
     closed_nodes: str,
     *,
     route: bool = True,
@@ -711,11 +729,24 @@ def _kernel_stack_hint_runs(
             # The route gate, true by default: this harness asks about the closed-node
             # reasoning, and the route has its own tests below.
             f"_amd_node_diag_route={'true' if route else 'false'}",
+            # The guard prints through substep on the way to the arm under test, and the
+            # chain asks the topology before it. Neither was defined, so on a host with no
+            # /dev/kfd the script fell through to `echo FIRED` and looked like it worked,
+            # and on a host WITH one it exited 127 from an undefined substep.
+            'substep() { echo "$1"; }',
+            'C_WARN=""',
+            # False, because the arm under test is the third of three and the first
+            # requires a topology. Stubbed rather than read: on a real gfx1151 the
+            # topology names an AMD GPU and the first arm would answer instead.
+            "_kfd_topology_has_an_amd_gpu() { return 1; }",
             guard,
             "    echo FIRED",
             "fi",
         ]
     )
+    # The arm under test requires the node to be ABSENT. Owned by the case, so a runner
+    # that has one does not answer for it.
+    script = _kfd_node_the_case_owns(script, tmp_path, present = False)
     # The set arrives as an exported variable rather than a generated assignment: a repr()
     # inside shell single quotes turns the newline separating two nodes into a literal
     # backslash-n, which reads as one unmatched line and looks like the suppression failing.
@@ -743,10 +774,10 @@ def _kernel_stack_hint_runs(
     # And that the route variable is consulted rather than merely computed.
     pytest.param(("", False, False), id = "the_route_gate_actually_suppresses_it"),
 ])
-def test_when_the_installers_kernel_stack_hint_fires(case):
+def test_when_the_installers_kernel_stack_hint_fires(tmp_path, case):
     """Which hosts install.sh tells to install a ROCm kernel stack."""
     closed_nodes, route, fires = case
-    assert _kernel_stack_hint_runs(closed_nodes, route = route) is fires
+    assert _kernel_stack_hint_runs(tmp_path, closed_nodes, route = route) is fires
 
 
 def _stat_nodes(monkeypatch, modes: dict, names: dict):
@@ -848,6 +879,33 @@ def _install_sh_lines() -> "list[str]":
     """install.sh, split into lines. Every harness below lifts what it needs out of this."""
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     return install_sh.read_text(encoding = "utf-8").splitlines()
+
+
+# The one thing a lifted guard reads that no stub can reach: `[ -e /dev/kfd ]`. A test
+# operator is not a command, so it cannot be shadowed by a function, and on a host that
+# really has an AMD GPU the node really is there -- so the branch taken was decided by the
+# runner rather than by the case. That is why this file passed on a box with no AMD card
+# and failed on the gfx1151 the feature exists for.
+#
+# Only the PATH is redirected, and only inside the existence tests. The condition, its
+# ordering and its `&&` chain are still lifted verbatim, exactly as _has_amd_rocm_gpu and
+# _amd_gpu_present_via_pci are stubbed rather than restated. The node name inside the
+# printed sentences is untouched, because the arms below assert on that text.
+_KFD_EXISTENCE_TEST = re.compile(r"(\[ +!? ?-e +)/dev/kfd\b")
+
+
+def _kfd_node_the_case_owns(script: str, tmp_path, *, present: bool) -> str:
+    """Point install.sh's `-e /dev/kfd` tests at a node this case creates or withholds."""
+    node = tmp_path / "kfd"
+    if present:
+        node.write_bytes(b"")
+    elif node.exists():
+        node.unlink()
+    redirected, n = _KFD_EXISTENCE_TEST.subn(rf"\g<1>{node}", script)
+    # A guard that stopped containing the test would silently go back to reading the host,
+    # and every arm here would agree for the wrong reason.
+    assert n, "install.sh no longer tests `-e /dev/kfd` where this harness expects it"
+    return redirected
 
 
 def _install_sh_if_above(lines: "list[str]", i: int) -> int:
@@ -1172,6 +1230,7 @@ def test_which_lone_masks_are_reported(monkeypatch, linux, case):
 def _installer_index_summary(
     index_url: str,
     closed_nodes: str,
+    tmp_path,
     *,
     nvidia: bool = False,
 ) -> str:
@@ -1180,6 +1239,12 @@ def _installer_index_summary(
     The whole span is lifted rather than the guard alone, because the thing under test is
     WHERE the diagnosis sits relative to the case: a copy of the condition would answer the
     same whichever arm it had been left in.
+
+    The three arms of that case are told apart by ``-e /dev/kfd`` and the KFD topology, and
+    both of those are the HOST's until this harness takes them: the case here is a machine
+    with no runtime, so the node is withheld and the topology stubbed empty. Left to the
+    host these cases passed on a box with no AMD GPU and failed on the hardware the feature
+    is for, which is the wrong way round for every one of them.
     """
     lines = _install_sh_lines()
     start = max(i for i, line in enumerate(lines) if line == 'case "$TORCH_INDEX_URL" in')
@@ -1199,6 +1264,7 @@ def _installer_index_summary(
             "SKIP_TORCH=false",
             "OS=linux",
             "_amd_render_node_present() { return 0; }",
+            "_kfd_topology_has_an_amd_gpu() { return 1; }",
             # The route gate classifies the index by its canonical leaf, so the classifiers
             # are lifted rather than stubbed, or the per-URL cases below would assert about
             # the stub. They are defined above the case in install.sh, so the span lifted
@@ -1208,6 +1274,7 @@ def _installer_index_summary(
             *lines[start : end + 1],
         ]
     )
+    script = _kfd_node_the_case_owns(script, tmp_path, present = False)
     out = subprocess.run(
         ["bash", "-c", script],
         capture_output = True,
@@ -1242,10 +1309,10 @@ _GFX_INDEX = "https://repo.radeon.com/rocm/manylinux/gfx1151"
                   ("ROCm cannot see it",)),
                  id = "a_closed_kfd_node_still_suppresses_it_after_the_case"),
 ])
-def test_which_index_summary_carries_the_kernel_stack_diagnosis(case):
+def test_which_index_summary_carries_the_kernel_stack_diagnosis(tmp_path, case):
     """Which wheel index the diagnosis prints for, now that it sits after the case."""
     index_url, closed_nodes, says, does_not_say = case
-    out = _installer_index_summary(index_url, closed_nodes)
+    out = _installer_index_summary(index_url, closed_nodes, tmp_path)
     _asserts(out, says, does_not_say)
 
 
@@ -1743,7 +1810,13 @@ _SEEING = dict(topology = False, amd_smi_sees_it = True)
 _STACK = "Install the ROCm kernel stack"
 
 
-def _kernel_stack_hint_text(*, topology: bool, nvidia: bool = False) -> str:
+def _kernel_stack_hint_text(
+    tmp_path,
+    *,
+    topology: bool,
+    kfd_present: bool = False,
+    nvidia: bool = False,
+) -> str:
     """What install.sh actually PRINTS in the missing-/dev/kfd branch, with ROCm blind.
 
     `_kernel_stack_hint_runs` above lifts only the guard, so it answers whether the branch
@@ -1752,7 +1825,13 @@ def _kernel_stack_hint_text(*, topology: bool, nvidia: bool = False) -> str:
     `fi`, so a revert changes the text this returns; this name is the ROCm-sees-nothing
     corner of it, which is the shape the kernel-stack advice is written for.
     """
-    return _install_sh_missing_kfd(topology = topology, amd_smi_sees_it = False, nvidia = nvidia)
+    return _install_sh_missing_kfd(
+        tmp_path,
+        topology = topology,
+        kfd_present = kfd_present,
+        amd_smi_sees_it = False,
+        nvidia = nvidia,
+    )
 
 
 # fmt: off
@@ -1762,14 +1841,14 @@ def _kernel_stack_hint_text(*, topology: bool, nvidia: bool = False) -> str:
     ("no_topology_keeps_the_kernel_stack_advice", False, [_STACK], ["--device /dev/kfd"]),
 ))
 # fmt: on
-def test_the_installers_missing_kfd_repair_follows_the_topology(topology, contains, absent):
+def test_the_installers_missing_kfd_repair_follows_the_topology(tmp_path, topology, contains, absent):
     """A container created with --device /dev/dri and no --device /dev/kfd sees the host's
     /sys and not its /dev, so the KFD topology names an AMD GPU while the node is absent: the
     driver is loaded, and "install the ROCm kernel stack" leaves HIP as unavailable as before.
     No topology is the case the branch was written for, the driver really is missing, and
     without that arm the fix could be "never mention the kernel stack", which removes a
     correct diagnosis."""
-    _says(_kernel_stack_hint_text(topology = topology), contains, absent)
+    _says(_kernel_stack_hint_text(tmp_path, topology = topology), contains, absent)
 
 
 def test_a_container_missing_kfd_is_told_to_map_it_rather_than_reinstall(monkeypatch, linux):
@@ -1785,8 +1864,10 @@ def test_a_container_missing_kfd_is_told_to_map_it_rather_than_reinstall(monkeyp
 
 
 def _install_sh_missing_kfd(
+    tmp_path,
     *,
     topology: bool,
+    kfd_present: bool = False,
     amd_smi_sees_it: "bool | None" = None,
     rocm_visible: "bool | None" = None,
     skip_torch: bool = False,
@@ -1796,12 +1877,15 @@ def _install_sh_missing_kfd(
     """What the installer says when /dev/kfd is absent, for a given pair of probes.
 
     Lifts the two branches together, through the closing `fi`, because which of them runs
-    is the thing under test. The `[ ! -e /dev/kfd ]` test is left live rather than stubbed
-    -- a test operator cannot be stubbed, and rewriting it would be editing the code under
-    test -- so the case needs a host without the node.
+    is the thing under test. A test operator cannot be stubbed, so `[ -e /dev/kfd ]` is
+    kept as an `-e` test on a path this case owns: the operator still runs, and what it
+    runs against is `kfd_present` rather than whatever the machine happens to have.
+
+    This used to skip on a host that has /dev/kfd, which meant the whole family ran on dev
+    boxes with no AMD GPU and vanished on the hardware it is about -- and its mirror at
+    `test_the_installer_names_the_userspace_when_the_node_is_already_there` skipped
+    everywhere else, so no single host ever ran both arms.
     """
-    if os.path.exists(amd._KFD_NODE):
-        pytest.skip("this arm needs a host with no /dev/kfd, and cannot remove a device node")
     lines = _install_sh_lines()
     # Anchored on the kernel-stack SENTENCE, then walked back to the `if` above it, since
     # neither branch's condition is stable enough to anchor on: the mapping one is what an
@@ -1841,6 +1925,7 @@ def _install_sh_missing_kfd(
             "\n".join(lines[start : close + 1]),
         ]
     )
+    script = _kfd_node_the_case_owns(script, tmp_path, present = kfd_present)
     env = {**os.environ, "_closed_amd_nodes": ""}
     env.pop("UNSLOTH_LLAMA_CPP_BACKEND", None)
     if backend is not None:
@@ -1865,7 +1950,7 @@ _ABSENT_KFD = "/dev/kfd is not present"
     ("a_no_torch_cuda_run_is_not_told_about_it_either", {**_NO_TORCH, "backend": "cuda"}, None, []),
 ))
 # fmt: on
-def test_what_the_installer_says_when_the_kfd_node_is_absent(kwargs, contains, absent):
+def test_what_the_installer_says_when_the_kfd_node_is_absent(tmp_path, kwargs, contains, absent):
     """amd-smi reads the driver over sysfs and libdrm, so it lists the card in a container
     given only --device /dev/dri, where HIP has no /dev/kfd to open; llama_cpp.py's
     _rocm_hip_is_reachable documents that disagreement. Behind _has_amd_rocm_gpu the mapping
@@ -1881,7 +1966,7 @@ def test_what_the_installer_says_when_the_kfd_node_is_absent(kwargs, contains, a
     account of why the backend cannot initialise. A Vulkan or CUDA bundle opens no /dev/kfd,
     so its absence explains nothing about them and the run stays silent, and the ordinary
     torch install is unchanged by the gate swap."""
-    _says(_install_sh_missing_kfd(**kwargs), contains, absent)
+    _says(_install_sh_missing_kfd(tmp_path, **kwargs), contains, absent)
 
 
 # fmt: off
@@ -3476,7 +3561,7 @@ def test_whether_an_explicit_bundle_routes_the_node_diagnoses(case):
     pytest.param((False, True), id = "a_hybrid_host_rocm_cannot_see"),
 ])
 # fmt: on
-def test_the_kernel_stack_hint_on_a_hybrid_rocm_host(case):
+def test_the_kernel_stack_hint_on_a_hybrid_rocm_host(tmp_path, case):
     """_has_amd_rocm_gpu opens with `if _has_usable_nvidia_gpu; then return 1`, right where it
     is choosing a torch index and wrong here: this branch has already established the run
     opens AMD nodes, so the veto made rocminfo's answer unreachable and a healthy hybrid ROCm
@@ -3487,7 +3572,7 @@ def test_the_kernel_stack_hint_on_a_hybrid_rocm_host(case):
     Fails before the fix, which read the wrapped probe."""
     rocm_visible, says_rocm_cannot_see_it = case
     out = _install_sh_missing_kfd(
-        topology = False, nvidia = True, backend = "rocm", rocm_visible = rocm_visible
+        tmp_path, topology = False, nvidia = True, backend = "rocm", rocm_visible = rocm_visible
     )
     assert ("ROCm cannot see it" in out) is says_rocm_cannot_see_it
 
@@ -4367,13 +4452,12 @@ def test_the_kernel_stack_advice_is_gated_on_the_node_being_absent():
     assert absent < block.index("Install the ROCm kernel stack")
 
 
-def test_the_installer_names_the_userspace_when_the_node_is_already_there():
-    """The executed half, on a host that has the node. Skipped rather than dropped: a device
-    node cannot be created by a test, and the assertion is about what a real AMD host is
-    told."""
-    if not os.path.exists(amd._KFD_NODE):
-        pytest.skip("this arm needs a host WITH /dev/kfd, and cannot create a device node")
-    out = _kernel_stack_hint_text(topology = False)
+def test_the_installer_names_the_userspace_when_the_node_is_already_there(tmp_path):
+    """The executed half, for a host that has the node. It used to skip unless the RUNNER
+    had /dev/kfd, which is the one machine shape a dev box never is; the arm it pairs with
+    skipped on exactly the complement, so the pair was never both run anywhere. The `-e`
+    operator is still executed -- only the path it is given belongs to this case."""
+    out = _kernel_stack_hint_text(tmp_path, topology = False, kfd_present = True)
     assert "Install the ROCm kernel stack" not in out
     assert "kernel stack is already loaded" in out
     assert "rocminfo" in out
