@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Contract for turning an HF search/info result into the panel's input (issue #11017).
-// The adapter is where field names from the API meet the panel's own shape, so these
-// cases pin the mappings that a rename upstream would otherwise silently break.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -40,8 +36,6 @@ test("core fields map across", () => {
   assert.equal(meta.lastModified, "2025-01-02T00:00:00.000Z");
 });
 
-// HF carries the licence as a `license:` tag rather than a field, so the panel would show
-// "not stated" for every model if this mapping were dropped.
 test("licence is read out of the tag list", () => {
   const meta = metaFromHfResult({
     id: "x/y",
@@ -75,9 +69,6 @@ test("languages are read out of the tag list", () => {
   assert.deepEqual(meta.languages, ["en", "de"]);
 });
 
-// HF flattens a model card's `language:` frontmatter into bare codes, so most model repos
-// carry `en`, not `language:en`. Reading only the prefixed form dropped the Languages row for
-// exactly the repos most likely to have one (issue #11033 review).
 test("bare Hugging Face language codes are accepted too", () => {
   const meta = metaFromHfResult({
     id: "x/y",
@@ -100,13 +91,6 @@ test("prefixed and bare codes mix without duplicating", () => {
   assert.deepEqual(meta.languages, ["en", "fr"]);
 });
 
-// A bare code cannot be recognised by shape alone, so matching is against the ISO 639-1 set
-// rather than tag length: "rl", "4-bit" and "gguf" are not languages and must not appear.
-//
-// The set cannot disambiguate every case — a bare "ml" is Malayalam's ISO code and also how a
-// repo might tag "machine learning". It resolves to the language, which is what the tag means
-// in HF's language vocabulary; the cost of being wrong is one stray chip, against dropping the
-// Languages row entirely for the many repos that tag bare codes.
 test("short non-language tags are not mistaken for languages", () => {
   const meta = metaFromHfResult({
     id: "x/y",
@@ -118,8 +102,6 @@ test("short non-language tags are not mistaken for languages", () => {
   assert.equal(meta.languages, undefined);
 });
 
-// The region is information the reader wants, so the tag keeps its own spelling even though
-// only the base code decides whether it counts as a language at all.
 test("region-qualified codes keep their full spelling", () => {
   const meta = metaFromHfResult({
     id: "x/y",
@@ -131,9 +113,6 @@ test("region-qualified codes keep their full spelling", () => {
   assert.deepEqual(meta.languages, ["pt-br", "zh-CN"]);
 });
 
-// `gated` is `false | "auto" | "manual"` upstream. Only `false` means ungated, so a
-// truthiness check would be right by accident; an equality check against "manual" would
-// miss "auto" and tell the user an auto-gated repo downloads freely.
 test("both gating modes count as gated", () => {
   for (const gated of ["auto", "manual"] as const) {
     const meta = metaFromHfResult({
@@ -142,7 +121,7 @@ test("both gating modes count as gated", () => {
       likes: 0,
       gated,
     });
-  assert.ok(meta);
+    assert.ok(meta);
     assert.equal(meta.gated, true, gated);
   }
   const open = metaFromHfResult({
@@ -166,8 +145,6 @@ test("private maps to isPrivate", () => {
   assert.equal(meta.isPrivate, true);
 });
 
-// downloadsAllTime is the more meaningful number when present: `downloads` is a 30-day
-// window, so a long-lived repo otherwise looks quieter than it is.
 test("all-time downloads win over the 30-day count", () => {
   const meta = metaFromHfResult({
     id: "x/y",
@@ -184,9 +161,6 @@ test("a null result yields no facts rather than throwing", () => {
   assert.equal(metaFromHfResult(null), null);
 });
 
-// A tag whose text before the first hyphen happens to spell an ISO 639-1 code is not a
-// language. `ml-agents` is the Unity toolkit and rides on thousands of Hub repos; matching only
-// the base segment put "ML-AGENTS" in the Languages row of every one of them.
 test("hyphenated tags that merely start with a language code are not languages", () => {
   for (const tag of ["ml-agents", "mt-bench", "no-code", "or-else"]) {
     const meta = metaFromHfResult({ id: "a/b", tags: [tag] });
@@ -195,7 +169,6 @@ test("hyphenated tags that merely start with a language code are not languages",
   }
 });
 
-// Region and script subtags are still languages and still keep their own spelling.
 test("region- and script-qualified codes are kept", () => {
   const meta = metaFromHfResult({
     id: "a/b",
@@ -205,17 +178,12 @@ test("region- and script-qualified codes are kept", () => {
   assert.deepEqual(meta.languages, ["zh-CN", "pt-br", "sr-Latn"]);
 });
 
-// HF flattens a card's `language:` frontmatter into `tags` while often keeping the prefixed
-// form too, so the same language arrives twice in two spellings. Listing it as "EN, EN" is the
-// panel contradicting itself inside one row.
 test("the same language in two spellings is listed once", () => {
   const meta = metaFromHfResult({ id: "a/b", tags: ["language:EN", "en"] });
   assert.ok(meta);
   assert.deepEqual(meta.languages, ["EN"]);
 });
 
-// A prefix states intent, not validity: HF cards carry `language:multilingual`, which is not a
-// language and has no place among the chips.
 test("a prefixed value that is not a language code is rejected", () => {
   const meta = metaFromHfResult({
     id: "a/b",
@@ -225,10 +193,6 @@ test("a prefixed value that is not a language code is rejected", () => {
   assert.deepEqual(meta.languages, ["en"]);
 });
 
-// `recommended-fit.ts` states the rule and the reason: the curated size outranks the estimate,
-// because `estimatedSizeBytes` is the full-precision checkpoint. Reading it the other way made
-// this panel quote a number up to four times the download while the size badge on the same row
-// quoted the quantized load.
 test("the curated size outranks the full-precision estimate", () => {
   const meta = metaFromHfResult({
     id: "unsloth/Llama-3.1-8B-Instruct",

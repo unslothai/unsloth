@@ -69,7 +69,6 @@ function renderInfo(props: DialogProps, online = true): Probe[] {
       "@hugeicons/react": {},
       "../chat-template-editor-dialog": {},
       "./local-model-facts": {},
-      "./model-guides": { modelGuide: () => null },
       "./model-info-facts": { metaFromHfResult: () => null },
       "./use-local-model-meta": localHook,
     },
@@ -149,9 +148,12 @@ test("turning the probe off drops the previous file's facts", () => {
     useState: (initial: unknown) => {
       if (stored === undefined)
         stored = typeof initial === "function" ? initial() : initial;
-      return [stored, (next: unknown) => {
-        stored = next;
-      }];
+      return [
+        stored,
+        (next: unknown) => {
+          stored = next;
+        },
+      ];
     },
     useEffect: (effect: () => unknown) => effect(),
   };
@@ -189,7 +191,10 @@ test("turning the probe off drops the previous file's facts", () => {
       "the same repo and quant with the probe off must claim nothing",
     );
     assert.equal(
-      useLocalModelMeta("unsloth/Qwen3-8B-GGUF", { ...args, hfToken: "hf_new" }),
+      useLocalModelMeta("unsloth/Qwen3-8B-GGUF", {
+        ...args,
+        hfToken: "hf_new",
+      }),
       null,
       "a changed token must not serve the pre-token result",
     );

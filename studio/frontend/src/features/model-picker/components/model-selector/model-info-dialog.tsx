@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "Model info" for a picker row (issue #11017): what a model is, and whether its licence
-// actually lets you use it, without leaving the chat for the Hub catalog.
-//
-// Rendering only. Which rows are worth showing is decided by `modelInfoFacts`, which is pure
-// and covered by tests/picker-model-info-facts.test.ts.
-
 import {
   Dialog,
   DialogContent,
@@ -26,13 +20,11 @@ import { confirmExternalLink } from "@/features/hub/stores/external-link-confirm
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { useHfEndpoint } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
-import { BookOpen01Icon, LinkSquare02Icon } from "@hugeicons/core-free-icons";
+import { LinkSquare02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type MouseEvent, useRef, useState } from "react";
 import { ChatTemplateEditorDialog } from "../chat-template-editor-dialog";
-import type { LicenseOpenness } from "./license-openness";
 import { localModelInfoFacts } from "./local-model-facts";
-import { modelGuide } from "./model-guides";
 import {
   type ModelInfoFact,
   metaFromHfResult,
@@ -40,27 +32,8 @@ import {
 } from "./model-info-facts";
 import { useLocalModelMeta } from "./use-local-model-meta";
 
-// Green for "you may use this", amber for "there is a condition", red for "you may not".
-// Amber rather than green for the community licences is the whole point of the panel.
-const OPENNESS_TONE: Record<LicenseOpenness, string> = {
-  open: "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
-  restricted:
-    "border-amber-500/30 bg-amber-500/8 text-amber-700 dark:text-amber-300",
-  proprietary: "border-red-500/30 bg-red-500/8 text-red-700 dark:text-red-300",
-  unknown: "border-border/60 bg-muted/40 text-muted-foreground",
-};
-
-const OPENNESS_LABEL: Record<LicenseOpenness, string> = {
-  open: "Open source",
-  restricted: "Open weights, with conditions",
-  proprietary: "Not redistributable",
-  unknown: "Licence unclear",
-};
-
-/** The shape both fact builders share, so one row renderer serves the Hub and local sections. */
 type InfoRow = Pick<ModelInfoFact, "label" | "value" | "detail"> & {
   key: string;
-  openness?: LicenseOpenness;
 };
 
 function FactRow({
@@ -71,26 +44,18 @@ function FactRow({
   /** Makes the row a button. Used by the chat-template row, which opens the template. */
   onActivate?: (event: MouseEvent<HTMLButtonElement>) => void;
 }) {
-  const value =
-    fact.key === "license" && fact.openness ? (
-      <span
-        className={cn(
-          "inline-flex h-6 shrink-0 items-center rounded-full border px-2 text-ui-11 font-medium leading-none",
-          OPENNESS_TONE[fact.openness],
-        )}
-      >
-        {fact.value}
-      </span>
-    ) : (
-      <span
-        className={cn(
-          "text-ui-12 text-foreground",
-          onActivate && "underline decoration-dotted underline-offset-2",
-        )}
-      >
-        {fact.value}
-      </span>
-    );
+  const value = (
+    <span
+      className={cn(
+        fact.key === "license"
+          ? "inline-flex min-h-6 items-center rounded-full border border-border/60 bg-muted/40 px-2 text-ui-11 font-medium text-foreground break-all"
+          : "text-ui-12 text-foreground",
+        onActivate && "underline decoration-dotted underline-offset-2",
+      )}
+    >
+      {fact.value}
+    </span>
+  );
 
   const inner = (
     <div className="flex items-baseline justify-between gap-3 py-1.5">
@@ -170,9 +135,7 @@ export function ModelInfoDialog({
 
   const meta = metaFromHfResult(result);
   const facts = meta ? modelInfoFacts(meta) : [];
-  const license = facts.find((f) => f.key === "license");
   const localFacts = localMeta ? localModelInfoFacts(localMeta) : [];
-  const guide = modelGuide(repoId);
   const template = localMeta?.chatTemplate?.trim()
     ? localMeta.chatTemplate
     : null;
@@ -185,11 +148,8 @@ export function ModelInfoDialog({
       >
         <DialogHeader>
           <DialogTitle className="truncate">{repoId}</DialogTitle>
-          {/* The chip and its tooltip already carry the verdict. Kept for screen readers. */}
           <DialogDescription className="sr-only">
-            {license?.openness
-              ? OPENNESS_LABEL[license.openness]
-              : "Model details."}
+            Model details.
           </DialogDescription>
         </DialogHeader>
 
@@ -271,29 +231,6 @@ export function ModelInfoDialog({
               ? "Licence and dates need a connection."
               : "Connect to the internet to look up model details."}
           </p>
-        )}
-
-        {/* Outside the online branch: worth naming even with no connection. */}
-        {guide && (
-          <a
-            href={guide.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(event) => {
-              event.stopPropagation();
-              if (confirmExternalLink(guide.url)) {
-                event.preventDefault();
-              }
-            }}
-            className="inline-flex items-center gap-1.5 text-ui-12 text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <HugeiconsIcon
-              icon={BookOpen01Icon}
-              strokeWidth={1.75}
-              className="size-3.5"
-            />
-            {guide.title} Guide on Unsloth docs
-          </a>
         )}
       </DialogContent>
 

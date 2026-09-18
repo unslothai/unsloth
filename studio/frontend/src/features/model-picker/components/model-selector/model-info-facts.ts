@@ -7,7 +7,6 @@
 
 import { formatBytes } from "@/features/hub/lib/format";
 import { detectLicense } from "@/features/hub/lib/model-capabilities";
-import { type LicenseOpenness, classifyLicense } from "./license-openness";
 
 // Not imported from @/features/hub/lib/view-models: that barrel reaches as far as the auth
 // pages, and ten lines of arithmetic are not worth the coupling. Same output as its
@@ -51,8 +50,6 @@ export interface ModelInfoFact {
   key: ModelInfoField;
   label: string;
   value: string;
-  /** Set on the licence row only, so the panel can tone the chip by verdict. */
-  openness?: LicenseOpenness;
   /** Longer explanation for a tooltip, when the bare value understates the row. */
   detail?: string;
 }
@@ -105,25 +102,14 @@ function formatLanguages(languages: string[]): string {
   return `${named.slice(0, 4).join(", ")} +${named.length - 4}`;
 }
 
-/**
- * The rows worth showing for `meta`, in `MODEL_INFO_FIELDS` order.
- *
- * A field HF did not return is omitted, never placeheld: an invented row is worse than a
- * shorter panel. The licence is the exception, since "not stated" is itself the answer to
- * "is this open source?".
- */
+/** Omit unavailable metadata, except for the explicit missing-licence row. */
 export function modelInfoFacts(meta: ModelInfoMeta): ModelInfoFact[] {
   const facts: ModelInfoFact[] = [];
 
-  // Always present: silence here would read as "no restrictions", which is the opposite
-  // of what an unlicensed repo means.
-  const license = classifyLicense(meta.license);
   facts.push({
     key: "license",
     label: "License",
-    value: license.label,
-    openness: license.openness,
-    detail: license.summary,
+    value: meta.license?.trim() || "Not specified",
   });
 
   if (meta.totalParams && meta.totalParams > 0) {
@@ -226,221 +212,21 @@ export interface HfResultLike {
 
 const LANGUAGE_TAG_PREFIX = "language:";
 
-// HF emits both `language:en` and, far more commonly for models, the bare `en`: a card's
-// `language:` frontmatter is flattened into `tags`. Reading only the prefixed form drops the
-// languages of most model repos.
-//
-// A bare code cannot be recognised by shape: a length test would sweep in `rl`, `ai` and any
-// two-letter library name alongside the real codes. So bare codes are matched against this
-// explicit ISO 639-1 set; anything outside it stays a plain tag. Prefixed codes need no such
-// guard, as the prefix already states the intent.
-//
-// The set cannot resolve every collision: a bare `ml` is Malayalam's code and also how a repo
-// might tag "machine learning". It reads as the language, since that is what the tag means in
-// HF's language vocabulary, and the cost of being wrong is one stray chip against losing the
-// Languages row for every repo that tags bare codes.
-const ISO_639_1_CODES: ReadonlySet<string> = new Set([
-  "aa",
-  "ab",
-  "ae",
-  "af",
-  "ak",
-  "am",
-  "an",
-  "ar",
-  "as",
-  "av",
-  "ay",
-  "az",
-  "ba",
-  "be",
-  "bg",
-  "bi",
-  "bm",
-  "bn",
-  "bo",
-  "br",
-  "bs",
-  "ca",
-  "ce",
-  "ch",
-  "co",
-  "cr",
-  "cs",
-  "cu",
-  "cv",
-  "cy",
-  "da",
-  "de",
-  "dv",
-  "dz",
-  "ee",
-  "el",
-  "en",
-  "eo",
-  "es",
-  "et",
-  "eu",
-  "fa",
-  "ff",
-  "fi",
-  "fj",
-  "fo",
-  "fr",
-  "fy",
-  "ga",
-  "gd",
-  "gl",
-  "gn",
-  "gu",
-  "gv",
-  "ha",
-  "he",
-  "hi",
-  "ho",
-  "hr",
-  "ht",
-  "hu",
-  "hy",
-  "hz",
-  "ia",
-  "id",
-  "ie",
-  "ig",
-  "ii",
-  "ik",
-  "io",
-  "is",
-  "it",
-  "iu",
-  "ja",
-  "jv",
-  "ka",
-  "kg",
-  "ki",
-  "kj",
-  "kk",
-  "kl",
-  "km",
-  "kn",
-  "ko",
-  "kr",
-  "ks",
-  "ku",
-  "kv",
-  "kw",
-  "ky",
-  "la",
-  "lb",
-  "lg",
-  "li",
-  "ln",
-  "lo",
-  "lt",
-  "lu",
-  "lv",
-  "mg",
-  "mh",
-  "mi",
-  "mk",
-  "ml",
-  "mn",
-  "mr",
-  "ms",
-  "mt",
-  "my",
-  "na",
-  "nb",
-  "nd",
-  "ne",
-  "ng",
-  "nl",
-  "nn",
-  "no",
-  "nr",
-  "nv",
-  "ny",
-  "oc",
-  "oj",
-  "om",
-  "or",
-  "os",
-  "pa",
-  "pi",
-  "pl",
-  "ps",
-  "pt",
-  "qu",
-  "rm",
-  "rn",
-  "ro",
-  "ru",
-  "rw",
-  "sa",
-  "sc",
-  "sd",
-  "se",
-  "sg",
-  "si",
-  "sk",
-  "sl",
-  "sm",
-  "sn",
-  "so",
-  "sq",
-  "sr",
-  "ss",
-  "st",
-  "su",
-  "sv",
-  "sw",
-  "ta",
-  "te",
-  "tg",
-  "th",
-  "ti",
-  "tk",
-  "tl",
-  "tn",
-  "to",
-  "tr",
-  "ts",
-  "tt",
-  "tw",
-  "ty",
-  "ug",
-  "uk",
-  "ur",
-  "uz",
-  "ve",
-  "vi",
-  "vo",
-  "wa",
-  "wo",
-  "xh",
-  "yi",
-  "yo",
-  "za",
-  "zh",
-  "zu",
-]);
+// HF flattens card languages into tags; recognize bare ISO codes as well as language: tags.
+const ISO_639_1_CODES: ReadonlySet<string> = new Set(
+  (
+    "aa ab ae af ak am an ar as av ay az ba be bg bi bm bn bo br bs ca ce ch " +
+    "co cr cs cu cv cy da de dv dz ee el en eo es et eu fa ff fi fj fo fr fy " +
+    "ga gd gl gn gu gv ha he hi ho hr ht hu hy hz ia id ie ig ii ik io is it " +
+    "iu ja jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo " +
+    "lt lu lv mg mh mi mk ml mn mr ms mt my na nb nd ne ng nl nn no nr nv ny " +
+    "oc oj om or os pa pi pl ps pt qu rm rn ro ru rw sa sc sd se sg si sk sl " +
+    "sm sn so sq sr ss st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty " +
+    "ug uk ur uz ve vi vo wa wo xh yi yo za zh zu"
+  ).split(" "),
+);
 
-// A language tag is a 2-letter ISO 639-1 code, optionally followed by ONE region or script
-// subtag: `en`, `zh-CN`, `pt-br`, `sr-Latn`. Testing only the segment before the first hyphen is
-// not enough — that accepts the WHOLE of any tag merely beginning with two letters that happen
-// to spell a code, and the Hub carries those: `ml-agents` (the Unity toolkit, thousands of
-// repos) read as Malayalam, and `mt-bench` as Maltese. The tag has to match end to end for the
-// ISO set to mean anything.
-//
-// The region alternative is two letters in either case, since HF cards write both `zh-CN` and
-// `pt-br`. The script alternative is four letters in BCP-47's title case (`Latn`, `Hans`), which
-// is what keeps an English compound like `no-code` or `or-else` out: lowercase four-letter
-// suffixes are not script codes.
-//
-// One residual, stated rather than papered over: a two-letter suffix cannot be told from a real
-// region, so `as-is` (Assamese + Iceland) and `to-do` (Tongan + Dominican Republic) are
-// structurally valid language tags and would still be accepted. Neither exists on the Hub — I
-// checked — and no structural rule can reject them, since they are well-formed BCP-47.
+// Accept a language code with an optional region or title-case script, not arbitrary compound tags.
 const LANGUAGE_TAG_SHAPE = /^[A-Za-z]{2}(-([A-Za-z]{2}|[A-Z][a-z]{3}))?$/;
 
 /** `en`, `zh-CN` and `pt-br` all carry a base code; the region suffix is not a language. */
@@ -451,10 +237,7 @@ function baseLanguageCode(tag: string): string {
 
 function languagesFromTags(tags: string[] | undefined): string[] {
   const langs: string[] = [];
-  // Dedup on the lowercased spelling, because HF emits a model's languages both ways and the
-  // two spellings differ in case as often as not: `["language:EN", "en"]` is one language, and
-  // listing it as "EN, EN" is the panel contradicting itself in a single row. The first
-  // spelling seen wins, so a repo that only says `zh-CN` still keeps its region.
+  // Deduplicate prefixed and bare tags without losing region or script information.
   const seen = new Set<string>();
   const add = (code: string) => {
     const key = code.toLowerCase();
@@ -467,13 +250,19 @@ function languagesFromTags(tags: string[] | undefined): string[] {
       // The prefix states the intent, but it does not make the value a language: HF cards
       // carry `language:multilingual` and similar. Hold it to the same shape and the same set.
       const value = tag.slice(LANGUAGE_TAG_PREFIX.length);
-      if (LANGUAGE_TAG_SHAPE.test(value) && ISO_639_1_CODES.has(baseLanguageCode(value)))
+      if (
+        LANGUAGE_TAG_SHAPE.test(value) &&
+        ISO_639_1_CODES.has(baseLanguageCode(value))
+      )
         add(value);
       continue;
     }
     // Keep the tag's own spelling (`pt-br`, not `pt`): the region is information the reader
     // wants, even though only the base code decides whether this is a language at all.
-    if (LANGUAGE_TAG_SHAPE.test(tag) && ISO_639_1_CODES.has(baseLanguageCode(tag)))
+    if (
+      LANGUAGE_TAG_SHAPE.test(tag) &&
+      ISO_639_1_CODES.has(baseLanguageCode(tag))
+    )
       add(tag);
   }
   return langs;
@@ -498,18 +287,7 @@ export function metaFromHfResult(
     downloads: result.downloadsAllTime ?? result.downloads,
     likes: result.likes,
     totalParams: result.totalParams,
-    // `curatedSizeBytes` first, matching `recommended-fit.ts`, whose comment states the rule and
-    // the reason: "Safetensors / MLX always use the params-based estimate ... since their
-    // estimatedSizeBytes is the full-precision checkpoint. `curatedSizeBytes` outranks both."
-    // Reading it the other way round made this panel quote the BF16 checkpoint — often four
-    // times the download — while the size badge on the very same row quoted the quantized load.
-    //
-    // When only the estimate is available the row still shows it, but `sizeIsFullPrecision`
-    // marks where it came from so the panel can say so rather than let the reader take a
-    // checkpoint size for a download size. No params-based guess is substituted: the one
-    // constant the codebase has, `MIN_QUANT_BYTES_PER_PARAM`, is the SMALLEST practical quant
-    // for a can-it-run check, and printing that as a download size would be a new wrong number
-    // in the opposite direction.
+    // Prefer the curated size; label a fallback checkpoint estimate as full precision.
     sizeBytes: result.curatedSizeBytes ?? result.estimatedSizeBytes,
     sizeIsFullPrecision:
       result.curatedSizeBytes === undefined &&

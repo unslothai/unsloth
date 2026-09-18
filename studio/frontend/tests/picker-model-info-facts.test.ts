@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Contract for the rows the picker's model-info panel renders (issue #11017).
-// The panel reports facts about a repo the user is about to load, so what these cases
-// guard is a confident-looking row built from data HF never returned.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -39,9 +35,6 @@ function factFor(meta: Meta, key: string) {
   return modelInfoFacts(meta).find((f) => f.key === key);
 }
 
-// `access` is excluded on purpose: it is the one field that reports a condition rather than
-// a property, so an ordinary public repo like FULL should not carry the row at all. The
-// gated/private case below covers it.
 test("a fully populated repo yields every unconditional field", () => {
   const keys = modelInfoFacts(FULL).map((f) => f.key);
   for (const field of MODEL_INFO_FIELDS) {
@@ -50,9 +43,6 @@ test("a fully populated repo yields every unconditional field", () => {
   }
 });
 
-// The panel's whole purpose is answering "what is this model?" before a load. A row
-// invented from absent data is worse than no row, so missing input must drop the row
-// rather than render "undefined", "NaN" or a plausible zero.
 test("absent values drop their row instead of rendering a placeholder", () => {
   const facts = modelInfoFacts({ id: "acme/mystery" });
   for (const fact of facts) {
@@ -65,9 +55,6 @@ test("absent values drop their row instead of rendering a placeholder", () => {
   assert.equal(factFor({ id: "acme/mystery" }, "params"), undefined);
 });
 
-// Zero downloads is a fact HF actually returned; dropping it would misreport a real
-// new repo as "unknown". This is the case a plain `if (!value)` guard gets wrong.
-// Popularity is not a property of the model, and the Hub page one click away shows it.
 test("downloads and likes are not rendered", () => {
   const keys = modelInfoFacts(FULL).map((f) => f.key);
   assert.ok(!keys.includes("downloads" as never), "downloads row is gone");
@@ -80,27 +67,23 @@ test("parameter count reads in billions", () => {
   assert.match(params.value, /8(\.0)?B/i);
 });
 
-// The licence row is the issue's "is it open source?" question, so it carries the
-// verdict, not just the slug.
-test("the licence row carries an openness verdict", () => {
-  const license = factFor(FULL, "license");
-  assert.ok(license);
-  assert.equal(license.openness, "restricted");
-  assert.match(license.value, /Llama 3\.1/);
+test("licences are displayed as reported without classification", () => {
+  for (const license of ["apache-2.0", "llama3.1", "custom-license"]) {
+    assert.deepEqual(factFor({ id: "x/y", license }, "license"), {
+      key: "license",
+      label: "License",
+      value: license,
+    });
+  }
 });
 
-test("an OSI licence reads as open", () => {
-  const license = factFor({ id: "x/y", license: "apache-2.0" }, "license");
-  assert.ok(license);
-  assert.equal(license.openness, "open");
-});
-
-// A repo with no stated licence still gets the row: "not stated" is the answer a user
-// checking openness needs, and silence would read as "fine".
-test("a missing licence still renders a row", () => {
-  const license = factFor({ id: "x/y" }, "license");
-  assert.ok(license, "licence row dropped when unstated");
-  assert.equal(license.openness, "unknown");
+test("an absent or blank licence is explicitly unspecified", () => {
+  for (const license of [undefined, null, "", "  "]) {
+    assert.equal(
+      factFor({ id: "x/y", license }, "license")?.value,
+      "Not specified",
+    );
+  }
 });
 
 test("gated and private repos are flagged; ordinary ones are not", () => {
@@ -119,7 +102,6 @@ test("languages are listed, and an empty list drops the row", () => {
   assert.equal(factFor({ id: "x/y", languages: [] }, "languages"), undefined);
 });
 
-// An unparseable date from the API must not surface as "Invalid Date".
 test("an unparseable date drops its row", () => {
   const fact = factFor({ id: "x/y", createdAt: "not-a-date" }, "created");
   assert.equal(fact, undefined);
@@ -132,15 +114,12 @@ test("every emitted fact has a non-empty label and value", () => {
   }
 });
 
-// Row order is the reading order of the panel; a set would make it incidental.
 test("facts come back in the declared field order", () => {
   const keys = modelInfoFacts(FULL).map((f) => f.key);
   const expected = MODEL_INFO_FIELDS.filter((f) => keys.includes(f));
   assert.deepEqual(keys, expected);
 });
 
-// Rounding straight to whole millions printed "0M" for anything under 500K, i.e. a tokenizer or
-// a small embedding model reported as having no parameters at all.
 test("small parameter counts do not round to zero", () => {
   const paramsValue = (totalParams: number) =>
     modelInfoFacts({ id: "a/b", totalParams }).find((f) => f.key === "params")
@@ -154,8 +133,6 @@ test("small parameter counts do not round to zero", () => {
   }
 });
 
-// The number is right either way; what the reader needs is which number it is, since a
-// quantized download is a fraction of the checkpoint.
 test("a full-precision size says so, a curated one does not", () => {
   const estimate = modelInfoFacts({
     id: "a/b",
