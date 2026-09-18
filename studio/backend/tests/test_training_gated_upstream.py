@@ -100,6 +100,38 @@ def test_mirror_is_the_repo_the_loader_substitutes(mapper, name, load_in_4bit, m
     assert unsloth_mirror.unsloth_public_mirror(name, load_in_4bit) == mirror
 
 
+@pytest.mark.parametrize(
+    "name,mirror",
+    [
+        # get_model_name corrects these after the table lookup. The uncorrected name
+        # unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit does not exist on the Hub at all.
+        ("Qwen/Qwen3-30B-A3B", "unsloth/Qwen3-30B-A3B"),
+        ("Qwen/Qwen3-30B-A3B-Base", "unsloth/Qwen3-30B-A3B-Base"),
+        ("Qwen/Qwen3-32B", "unsloth/Qwen3-32B-bnb-4bit"),
+    ],
+)
+def test_the_loader_corrections_are_applied_to_the_mirror(name, mirror):
+    assert unsloth_mirror.unsloth_public_mirror(name, True).lower() == mirror.lower()
+
+
+def test_corrections_are_read_from_the_real_loader_source():
+    # Parsed out of loader_utils.py, so the table cannot drift from the loader.
+    corrections = unsloth_mirror._bad_mappings()
+    assert corrections
+    assert all(key == key.lower() for key in corrections)
+    assert "unsloth/qwen3-30b-a3b-unsloth-bnb-4bit" in corrections
+
+
+def test_an_unreadable_correction_table_corrects_nothing(monkeypatch, tmp_path):
+    (tmp_path / "loader_utils.py").write_text("BAD_MAPPINGS = {compute(): 'x'}\n")
+    monkeypatch.setattr(unsloth_mirror, "_unsloth_models_dir", lambda: tmp_path)
+    unsloth_mirror._bad_mappings.cache_clear()
+    try:
+        assert unsloth_mirror._bad_mappings() == {}
+    finally:
+        unsloth_mirror._bad_mappings.cache_clear()
+
+
 def test_mapper_is_read_from_the_file_without_importing_unsloth(monkeypatch, tmp_path):
     package = tmp_path / "unsloth"
     (package / "models").mkdir(parents = True)
