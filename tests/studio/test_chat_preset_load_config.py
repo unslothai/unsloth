@@ -615,17 +615,35 @@ def _normalised(expression: str) -> str:
     return "".join(pieces).rstrip(",;")
 
 
+def _bindings(block: str, name: str) -> int:
+    """How many places in `block` bind `name`: declarations (destructuring too), arrow, function
+    and `catch` parameters. Scopes are not modelled, so any count past the expected one means a
+    use cannot be resolved and the caller has to refuse rather than guess."""
+    reference = rf"(?<![\w$.]){re.escape(name)}(?![\w$])"
+    patterns = (
+        rf"\b(?:const|let|var|function|class)\s+{reference}",
+        rf"\b(?:const|let|var)\s*[{{\[][^=;]*{reference}",
+        rf"{reference}\s*=>",
+        rf"\([^()]*{reference}[^()]*\)\s*=>",
+        rf"\b(?:function\b[^(]*|catch\s*)\([^()]*{reference}",
+    )
+    return sum(len(re.findall(pattern, block)) for pattern in patterns)
+
+
 def _selector_signature(selector: str, field: str):
     """Where the selector's body starts, and the pattern that finds `field` being read in it.
 
     A destructured parameter is the other way to write the same subscription, so
     `({ reasoningBudget }) => reasoningBudget` and `({ reasoningBudget: budget }) => budget`
-    are read through their local name. Returns (0, None, None) when the field cannot be found.
+    are read through their local name. Returns (0, None, None) when the field cannot be found,
+    or when the body binds the parameter's name again: a shadowing local is not the store.
     """
     plain = re.match(r"\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?::[^=]*)?=>", selector)
     if plain is not None:
+        if _bindings(selector[plain.end() :], plain.group(1)):
+            return 0, None, None
         access = rf"{re.escape(plain.group(1))}\.{field}"
-        return plain.end(), re.compile(rf"\b{access}\b"), access
+        return plain.end(), re.compile(rf"(?<![\w$.]){access}\b"), access
 
     destructured = re.match(r"\s*\(?\s*\{([^}]*)\}\s*\)?\s*(?::[^=]*)?=>", selector)
     if destructured is None:
@@ -634,8 +652,11 @@ def _selector_signature(selector: str, field: str):
         name, _, alias = entry.partition(":")
         if name.strip() == field:
             local = alias.strip() or field
+            if _bindings(selector[destructured.end() :], local):
+                return 0, None, None
             access = re.escape(local)
-            return destructured.end(), re.compile(rf"\b{access}\b"), access
+            # Not preceded by `.`: `s.other.reasoningBudget` is some other object's property.
+            return destructured.end(), re.compile(rf"(?<![\w$.]){access}(?![\w$])"), access
     return 0, None, None
 
 
@@ -869,14 +890,7 @@ def _selector_reads(selector: str, field: str) -> bool:
             # A name bound anywhere else (again, as a parameter, in a `catch`) or used as an
             # object key is left uninlined, since which binding a use resolves to is not read.
             reference = rf"(?<![\w$.]){re.escape(name)}(?![\w$])"
-            rebound = (
-                len(re.findall(rf"\b(?:const|let|var|function|class)\s+{reference}", block)) > 1
-                or re.search(rf"{reference}\s*=>|\([^()]*{reference}[^()]*\)\s*=>", block)
-                or re.search(rf"\b(?:function\b[^(]*|catch\s*)\([^()]*{reference}", block)
-                or re.search(rf"\b(?:const|let|var)\s*[{{\[][^=;]*{reference}", block)
-                or re.search(rf"[{{,]\s*{reference}\s*:", block)
-            )
-            if rebound:
+            if _bindings(block, name) > 1 or re.search(rf"[{{,]\s*{reference}\s*:", block):
                 continue
             block = re.sub(reference, f"({expression})", block)
         results = [
@@ -1224,6 +1238,14 @@ SELECTOR_CASES = [
         False,
     ),
     ("(s) => { const v = s.reasoningBudget; const f = (v) => v; return f(s.other); }", False),
+    # A local that shadows the parameter is not the store.
+    (
+        "({ reasoningBudget, enabled }) => { if (enabled) { const reasoningBudget = 1; "
+        "return reasoningBudget; } else { const reasoningBudget = 2; return reasoningBudget; } }",
+        False,
+    ),
+    ("(s) => { { const s = { reasoningBudget: 1 }; return s.reasoningBudget; } }", False),
+    ("({ reasoningBudget }) => s.other.reasoningBudget", False),
     ('(s) => s.enabled ? "s.reasoningBudget" : s.reasoningBudget', False),
     # Inside a literal a bracket is part of the value, not an access to rewrite.
     ('(s) => s.reasoningBudget === \'s["x"]\' ? "s.x" : s.reasoningBudget', False),
