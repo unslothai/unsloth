@@ -113,3 +113,27 @@ test("a pin that could not be written survives the next toggle", () => {
   pins.getState().togglePinnedConnected(D);
   assert.deepEqual(storedOrder(), [D, C, B, A]);
 });
+
+test("a drag after a failed write keeps both sides' pins", () => {
+  // The record stays FRESH for other windows while our own writes fail, so it is merged, not
+  // dropped: an early return that ignored it let the drop overwrite another window's additions
+  // once storage recovered.
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B); // session-only, never persisted
+    assert.deepEqual(pins.getState().pinned, [B, A]);
+  } finally {
+    storage.set = realSet;
+  }
+  pins.getState().beginPinnedConnectedDrag();
+  pins.getState().movePinnedConnected(B, A); // reorder locally
+  externalWrite([D, A]); // another window pins D mid-drag
+  pins.getState().endPinnedConnectedDrag(true);
+  const after = pins.getState().pinned;
+  assert.ok(after.includes(B), `this session's unpersisted pin was lost: ${JSON.stringify(after)}`);
+  assert.ok(after.includes(D), `the other window's pin was overwritten: ${JSON.stringify(after)}`);
+});

@@ -140,10 +140,9 @@ test("connected pins are a separate list from the On Device ones", () => {
     connectedPins,
     /const next = rebaseOnStored\(state\.pinned\);\s*writePinned\(next\);/,
   );
-  assert.match(
-    connectedPins,
-    /const kept = order\.filter\(\(id\) => stored\.includes\(id\)\);\s*const added = stored\.filter\(\(id\) => !order\.includes\(id\)\);\s*return \[\.\.\.added, \.\.\.kept\];/,
-  );
+  // The rebase itself is asserted as behaviour in pinned-connected-models-reorder.test.ts,
+  // including the failed-write case where the record is fresh for other windows and stale only
+  // for this one. A regex over the expression broke on a rename that moved nothing.
 });
 
 test("a pin moves the row out of its provider group", () => {

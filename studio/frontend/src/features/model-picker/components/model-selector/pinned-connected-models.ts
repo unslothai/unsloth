@@ -49,10 +49,16 @@ function writePinned(pinned: string[]): void {
   }
 }
 
-/** The record to apply an edit to, or `fallback` while writes are failing. */
+/** The record to apply an edit to. While writes are failing the record is still FRESH for other
+ *  windows and only stale for this one's own unpersisted pins, so it is merged rather than
+ *  dropped: another window's additions come in, and nothing this session pinned is lost. Its
+ *  removals cannot be honoured until a write succeeds, which re-adds rather than deletes. */
 function persistedBase(fallback: readonly string[]): string[] {
-  if (!storageWritable) return [...fallback];
-  return storedPinned() ?? [...fallback];
+  const stored = storedPinned();
+  if (stored === null) return [...fallback];
+  if (storageWritable) return stored;
+  const added = stored.filter((id) => !fallback.includes(id));
+  return [...added, ...fallback];
 }
 
 // movePinnedConnected runs on every dragenter: writing each would make a cancelled drag permanent.
@@ -70,11 +76,13 @@ function sameOrder(a: readonly string[], b: readonly string[]): boolean {
  *  ids are pinned, since another window's storage event may still be in flight at the drop.
  *  Its additions arrive at the front; null storage leaves the order alone. */
 function rebaseOnStored(order: readonly string[]): string[] {
-  if (!storageWritable) return [...order];
   const stored = storedPinned();
   if (stored === null) return [...order];
-  const kept = order.filter((id) => stored.includes(id));
   const added = stored.filter((id) => !order.includes(id));
+  // Writes failing: keep the whole dragged order, since the record is missing this session's own
+  // pins and filtering against it would delete them, and still take the other window's additions.
+  if (!storageWritable) return [...added, ...order];
+  const kept = order.filter((id) => stored.includes(id));
   return [...added, ...kept];
 }
 
@@ -135,11 +143,9 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
         dragSnapshot = null;
         dragExternalOrder = null;
         if (snapshot === null) return state;
-        // Read storage too, since its event may still be pending.
-        // `external ?? snapshot` while writes are failing, for the reason persistedBase gives.
-        const base = storageWritable
-          ? (storedPinned() ?? external ?? snapshot)
-          : (external ?? snapshot);
+        // Read storage too, since its event may still be pending. persistedBase keeps this
+        // session's unpersisted pins while writes are failing without dropping the other window's.
+        const base = persistedBase(external ?? snapshot);
         if (commit && !sameOrder(snapshot, state.pinned)) {
           if (sameOrder(base, state.pinned)) return state;
           // The write replaces the whole list and nothing echoes it back to this window, so a
