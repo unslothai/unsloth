@@ -35,7 +35,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / ".github" / "scripts" / "Watch-ForCompiler.ps1"
 
 PWSH = shutil.which("pwsh")
-pytestmark = pytest.mark.skipif(PWSH is None, reason="needs PowerShell")
+pytestmark = pytest.mark.skipif(PWSH is None, reason = "needs PowerShell")
 
 
 def _walk(root: pathlib.Path, patterns: str = "'*.dll','*.cmdline'") -> list[str]:
@@ -48,7 +48,9 @@ def _walk(root: pathlib.Path, patterns: str = "'*.dll','*.cmdline'") -> list[str
     )
     proc = subprocess.run(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True, text = True, timeout = 300,
+        capture_output = True,
+        text = True,
+        timeout = 300,
     )
     assert proc.returncode == 0, f"the walk itself failed:\n{proc.stdout}\n{proc.stderr}"
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
@@ -80,13 +82,13 @@ def test_an_unreadable_directory_costs_only_itself(tmp_path: pathlib.Path) -> No
     # The bites control first: if the tree were readable throughout, this row would pass on a
     # walk that stopped at the first directory and never proved anything.
     assert any(name.endswith("probe.dll") for name in found), found
-    assert any(name.endswith("after.cmdline") for name in found), (
-        "the walk stopped at the unreadable directory instead of stepping over it"
-    )
+    assert any(
+        name.endswith("after.cmdline") for name in found
+    ), "the walk stopped at the unreadable directory instead of stepping over it"
     assert not any(name.endswith("hidden.dll") for name in found), found
 
 
-@pytest.mark.skipif(os.name != "nt", reason="the error this reproduces is a Windows one")
+@pytest.mark.skipif(os.name != "nt", reason = "the error this reproduces is a Windows one")
 def test_the_walk_really_would_have_died_without_the_handling(tmp_path: pathlib.Path) -> None:
     """The control for the row above: the shape it replaced does end the run.
 
@@ -102,23 +104,32 @@ def test_the_walk_really_would_have_died_without_the_handling(tmp_path: pathlib.
     # presents to this process.
     subprocess.run(
         ["icacls", str(tmp_path / "locked"), "/deny", "*S-1-1-0:(OI)(CI)(RX)"],
-        capture_output = True, text = True, timeout = 300,
+        capture_output = True,
+        text = True,
+        timeout = 300,
     )
     try:
         proc = subprocess.run(
             [
-                PWSH, "-NoProfile", "-NonInteractive", "-Command",
+                PWSH,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
                 "$ErrorActionPreference = 'Stop'\n"
                 f"Get-ChildItem -LiteralPath '{tmp_path}' -Filter '*.dll' -File -Recurse "
                 "-Force -ErrorAction SilentlyContinue | Out-Null\n"
                 "Write-Output 'SURVIVED'\n",
             ],
-            capture_output = True, text = True, timeout = 300,
+            capture_output = True,
+            text = True,
+            timeout = 300,
         )
     finally:
         subprocess.run(
             ["icacls", str(tmp_path / "locked"), "/remove:d", "*S-1-1-0"],
-            capture_output = True, text = True, timeout = 300,
+            capture_output = True,
+            text = True,
+            timeout = 300,
         )
     assert "SURVIVED" not in proc.stdout, (
         "-ErrorAction SilentlyContinue suppressed the error on this host, so the reason for the "
@@ -138,10 +149,14 @@ def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path)
     # the behaviour is driven at a scale that fits: the function is re-defined with the same body
     # and a smaller limit, taken from the shipped source rather than retyped.
     text = SCRIPT.read_text(encoding = "utf-8")
-    assert "throw (" in text and "$visited -gt 200000" in text, (
-        "the ceiling no longer raises, so a truncated scan would be read as a complete one"
-    )
-    small = text[text.index("function Get-StudioTempSubtree"):text.index("function Get-StudioTempArtifacts")]
+    assert (
+        "throw (" in text and "$visited -gt 200000" in text
+    ), "the ceiling no longer raises, so a truncated scan would be read as a complete one"
+    small = text[
+        text.index("function Get-StudioTempSubtree") : text.index(
+            "function Get-StudioTempArtifacts"
+        )
+    ]
     small = small.replace("$visited -gt 200000", "$visited -gt 3")
     assert "$visited -gt 3" in small
     for i in range(12):
@@ -150,17 +165,22 @@ def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path)
     holder.write_text(small, encoding = "utf-8")
     proc = subprocess.run(
         [
-            PWSH, "-NoProfile", "-NonInteractive", "-Command",
+            PWSH,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
             "$ErrorActionPreference = 'Stop'\n"
             f". '{holder}'\n"
             f"Get-StudioTempSubtree -Root '{tmp_path}' -Patterns '*.dll' | Out-Null\n"
             "Write-Output 'NO-THROW'\n",
         ],
-        capture_output = True, text = True, timeout = 300,
+        capture_output = True,
+        text = True,
+        timeout = 300,
     )
-    assert "NO-THROW" not in proc.stdout, (
-        "the walk returned a partial snapshot instead of declaring the measurement void"
-    )
+    assert (
+        "NO-THROW" not in proc.stdout
+    ), "the walk returned a partial snapshot instead of declaring the measurement void"
     assert "cannot say whether a compiler ran" in (proc.stdout + proc.stderr)
 
 
@@ -178,7 +198,9 @@ def test_the_artifact_filter_still_selects_by_extension(tmp_path: pathlib.Path) 
     )
     proc = subprocess.run(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True, text = True, timeout = 300,
+        capture_output = True,
+        text = True,
+        timeout = 300,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     got = {line.strip() for line in proc.stdout.splitlines() if line.strip()}
@@ -207,9 +229,5 @@ def test_no_recursive_listing_is_left_in_the_script() -> None:
         if stripped.startswith("#"):
             continue
         body.append(line)
-    offenders = [
-        line.strip()
-        for line in body
-        if "Get-ChildItem" in line and "-Recurse" in line
-    ]
+    offenders = [line.strip() for line in body if "Get-ChildItem" in line and "-Recurse" in line]
     assert not offenders, offenders
