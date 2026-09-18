@@ -686,12 +686,15 @@ class TestRocmEntrypoint:
     def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
         """docker/Dockerfile.studio-rocm is built by the same run as the base, on the
         base by digest (a tag can already be a newer run's) with the refs the base
-        baked, and takes the base's tags with a -studio leaf under the same gates."""
+        baked, and takes the base's tags with a -studio leaf under the same gates.
+        Neither tag set moves until both digests exist: a :latest that moved while the
+        Studio build then failed would leave :studio on the previous base."""
         import yaml
 
         wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
         build = wf["jobs"]["build-studio"]
-        assert "build" in build["needs"] and "tag" in build["needs"]
+        assert "build" in build["needs"] and "tag" not in build["needs"], build["needs"]
+        assert "build-studio" in wf["jobs"]["tag"]["needs"], wf["jobs"]["tag"]["needs"]
         step = next(s for s in build["steps"] if s.get("id") == "build")
         assert step["with"]["file"] == "./docker/Dockerfile.studio-rocm"
         args = dict(ln.split("=", 1) for ln in step["with"]["build-args"].splitlines() if ln)
@@ -711,7 +714,7 @@ class TestRocmEntrypoint:
             return [ln for ln in meta["with"]["tags"].splitlines() if ln.strip()]
 
         tag = wf["jobs"]["tag-studio"]
-        assert "build-studio" in tag["needs"]
+        assert "build-studio" in tag["needs"] and "tag" in tag["needs"], tag["needs"]
         studio, base = tag_lines("tag-studio"), tag_lines("tag")
         assert len(studio) == len(base) == 5
         for s_ln, b_ln in zip(studio, base):

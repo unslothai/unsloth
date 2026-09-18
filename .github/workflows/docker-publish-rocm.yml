@@ -298,10 +298,14 @@ jobs:
             UNSLOTH_REF=${{ needs.prepare.outputs.unsloth_ref }}
             UNSLOTH_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
 
-  # Attach human-readable tags to the digest pushed above.
+  # Attach human-readable tags to the digest pushed above. Only once the Studio
+  # build has its digest too: the Hub page promises every base tag a -studio twin
+  # on the same base, and a :latest that moved while the Studio build then failed
+  # would leave :studio on the previous base. Both digests exist before either tag
+  # moves, and the two tag jobs then run back to back in the same run.
   tag:
     runs-on: ubuntu-latest
-    needs: [prepare, build]
+    needs: [prepare, build, build-studio]
     timeout-minutes: 15
     outputs:
       tags: ${{ steps.meta.outputs.tags }}
@@ -349,9 +353,9 @@ jobs:
   # half of docker-publish.yml's build-studio. The base by DIGEST, not by tag:
   # :latest can already be a newer run's by the time this job starts. The Studio
   # refs are the ones the base baked, so both venvs run the same commit even if
-  # upstream moved mid-run. After tag, so a :studio never exists without its base.
+  # upstream moved mid-run. Before tag, which waits on this job's digest (see there).
   build-studio:
-    needs: [prepare, build, tag]
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     timeout-minutes: 150
     outputs:
@@ -420,9 +424,10 @@ jobs:
 
   # The base's tag rules, each with a -studio leaf and the same gates: :studio
   # beside :latest, v1.2.3-studio, nightly-studio, gfx1151-studio, sha-<commit>-studio.
+  # After tag, so a :studio never points past its :latest.
   tag-studio:
     runs-on: ubuntu-latest
-    needs: [prepare, build-studio]
+    needs: [prepare, build-studio, tag]
     timeout-minutes: 15
     steps:
       - uses: docker/setup-buildx-action@v3
