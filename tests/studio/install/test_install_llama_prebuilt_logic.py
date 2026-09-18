@@ -4267,10 +4267,11 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     asset_url = "https://github.com/unslothai/llama.cpp/releases/download/b9334/" + asset_name
     calls: list[tuple[str, Path, str | None, str | None]] = []
 
+    # The asset URL is a function of repo, tag and manifest name; listing spends quota.
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_release_assets",
-        lambda repo, tag: {asset_name: asset_url},
+        lambda repo, tag: (_ for _ in ()).throw(AssertionError("listed the release over the API")),
     )
 
     def fake_download_file(url, destination):
@@ -4305,15 +4306,16 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     assert target.stat().st_mode & 0o777 == 0o755
 
 
-def test_diffusion_visual_server_refuses_unapproved_release_asset(monkeypatch, tmp_path: Path):
-    asset_name = "llama-diffusion-gemma-visual-server-attacker-linux"
+def test_diffusion_visual_server_skips_when_the_manifest_names_no_visual_server(
+    monkeypatch, tmp_path: Path
+):
     verified_calls: list[str] = []
     raw_calls: list[str] = []
 
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_release_assets",
-        lambda repo, tag: {asset_name: "https://example.test/" + asset_name},
+        lambda repo, tag: (_ for _ in ()).throw(AssertionError("listed the release over the API")),
     )
 
     def fake_download_file(url, destination):
@@ -5980,6 +5982,30 @@ def test_a_fresh_windows_install_is_payload_checked_not_just_vulkan():
         'choice.install_kind.startswith("windows-")' in gate
     ), "fresh Windows installs are not payload checked"
     assert "VULKAN_INSTALL_KINDS" in gate, "the Vulkan check must not be dropped"
+
+
+def test_latest_upstream_release_tag_prefers_the_release_page_redirect(monkeypatch):
+    # The releases/latest redirect names the same tag as the API, without spending quota.
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT._core,
+        "download_host_latest_release_tag",
+        lambda ops, repo: "b7180" if repo == INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO else None,
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "fetch_json",
+        lambda url: (_ for _ in ()).throw(AssertionError("listed the release over the API")),
+    )
+    assert INSTALL_LLAMA_PREBUILT.latest_upstream_release_tag() == "b7180"
+
+
+def test_latest_upstream_release_tag_falls_back_to_the_api(monkeypatch):
+    def refused(ops, repo):
+        raise RuntimeError("HTTP Error 503")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT._core, "download_host_latest_release_tag", refused)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "fetch_json", lambda url: {"tag_name": "b7181"})
+    assert INSTALL_LLAMA_PREBUILT.latest_upstream_release_tag() == "b7181"
 
 
 # The no-network re-check. An update of a current install used to list, fetch and re-validate by

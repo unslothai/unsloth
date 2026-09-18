@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import http.client
 import json
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +23,137 @@ logger = structlog.get_logger(__name__)
 RELEASE_CACHE_TTL_SECONDS = 24 * 60 * 60
 # Briefly memoize failed lookups so recurring status reads do not retry an unreachable GitHub endpoint on every request.
 RELEASE_FAILURE_CACHE_TTL_SECONDS = 60
+GITHUB_RATE_LIMITED_DEFAULT_SECONDS = 15 * 60
+# The primary window is an hour; a skewed reset header is held to that ceiling.
+GITHUB_RATE_LIMIT_MAX_SECONDS = 60 * 60
+GITHUB_RATE_LIMIT_STATUS = (403, 429)
+
+# One lockout for the whole process: the quota is per token or per IP, not per repo.
+_api_rate_limited_lock = threading.Lock()
+_api_rate_limited_until: float = 0.0
+
+
+def header_value(headers: Any, name: str) -> str:
+    if headers is None:
+        return ""
+    try:
+        return str(headers.get(name) or "").strip()
+    except (AttributeError, TypeError):
+        return ""
+
+
+def rate_limit_wait_seconds(headers: Any, *, now: Optional[float] = None) -> Optional[float]:
+    now = time.time() if now is None else now
+
+    def _number(value: str) -> Optional[float]:
+        try:
+            return float(value)
+        except ValueError:
+            return None
+
+    retry_after = header_value(headers, "Retry-After")
+    after = _number(retry_after)
+    if after is None and retry_after:
+        try:
+            import email.utils
+            after = email.utils.parsedate_to_datetime(retry_after).timestamp() - now
+        except (TypeError, ValueError, OverflowError):
+            after = None
+    if after is not None:
+        return max(after, 0.0)
+    if header_value(headers, "X-RateLimit-Remaining") == "0":
+        reset = _number(header_value(headers, "X-RateLimit-Reset"))
+        if reset is not None:
+            return max(reset - now, 0.0)
+    return None
+
+
+# A secondary limit can answer 403 with the quota untouched and no Retry-After, and only the body names it. Same markers as gh_client.
+_RATE_LIMIT_BODY_MARKERS = (
+    "api rate limit exceeded",
+    "rate limit exceeded",
+    "secondary rate limit",
+    "secondary limit",
+    "abuse detection mechanism",
+    "abuse detection",
+)
+
+
+def names_a_rate_limit(body: object) -> bool:
+    if not body:
+        return False
+    if isinstance(body, (bytes, bytearray)):
+        body = bytes(body).decode("utf-8", errors = "replace")
+    text = str(body).lower()
+    return any(marker in text for marker in _RATE_LIMIT_BODY_MARKERS)
+
+
+def error_body(exc: BaseException, *, limit: int = 2048) -> str:
+    """The refusal's body, cached on the exception since reading an HTTPError consumes it."""
+    cached = getattr(exc, "_unsloth_body", None)
+    if cached is not None:
+        return cached
+    try:
+        raw = exc.read(limit)  # type: ignore[attr-defined]
+        text = raw.decode("utf-8", errors = "replace") if isinstance(raw, bytes) else str(raw)
+    except Exception:  # noqa: BLE001 - a body we cannot read simply names nothing
+        text = ""
+    try:
+        exc._unsloth_body = text  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - exotic exception types
+        pass
+    return text
+
+
+def is_rate_limited(
+    headers: Any = None,
+    *,
+    status: Optional[int] = None,
+    body: object = None,
+) -> bool:
+    """Whether throttling explains this refusal, by gh_client._is_rate_limit_response's rule. A secondary limit leaves X-RateLimit-* untouched, so a 429 or a naming body counts; a 403 without those headers is a permission or policy refusal."""
+    if status == 429:
+        return True
+    if header_value(headers, "Retry-After"):
+        return True
+    if header_value(headers, "X-RateLimit-Remaining") == "0":
+        return True
+    return names_a_rate_limit(body)
+
+
+def rate_limit_verdict(
+    headers: Any = None,
+    *,
+    status: Optional[int] = None,
+    body: object = None,
+) -> Optional[float]:
+    """How long a refusal says to wait, bounded to one window, or None if it was not a rate limit."""
+    if not is_rate_limited(headers, status = status, body = body):
+        return None
+    wait = rate_limit_wait_seconds(headers)
+    if wait is None:
+        wait = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
+    return min(max(wait, 0.0), GITHUB_RATE_LIMIT_MAX_SECONDS)
+
+
+def note_github_rate_limited(
+    headers: Any = None,
+    *,
+    status: Optional[int] = None,
+    body: object = None,
+) -> float:
+    """Record the lockout and return its length; 0 if this was not a rate limit. Never shortens one already in place, or a secondary limit's brief Retry-After would release every caller early."""
+    global _api_rate_limited_until
+    wait = rate_limit_verdict(headers, status = status, body = body)
+    if wait is None:
+        return 0.0
+    with _api_rate_limited_lock:
+        _api_rate_limited_until = max(_api_rate_limited_until, time.monotonic() + wait)
+    return wait
+
+
+def github_rate_limit_remaining() -> float:
+    return max(_api_rate_limited_until - time.monotonic(), 0.0)
 
 
 def read_install_marker(
@@ -115,11 +248,17 @@ def _fetch_newest_published_release(
 def _fetch_newest_published_release_blocking(
     repo: str, timeout: float, *, log_message: str
 ) -> Optional[dict]:
-    """Newest published (non-draft, non-prerelease) release object for `repo`, by ``published_at``. Resolves "latest" the way the installers do, NOT via GitHub's ``/releases/latest`` pointer, which sorts by commit date and can lag the build the installer installs, making detection and apply disagree (the downgrade / sticky-banner bug). None on any failure (offline, rate-limited)."""
+    """Newest published (non-draft, non-prerelease) release for `repo`, by ``published_at``, the way the installers resolve "latest": ``/releases/latest`` sorts by commit date and can lag the installed build. None on failure or while the lockout holds."""
     import os
     import urllib.error
     import urllib.request
 
+    remaining = github_rate_limit_remaining()
+    if remaining > 0:
+        logger.debug(
+            log_message, repo = repo, error = f"GitHub API rate limited for {int(remaining)}s more"
+        )
+        return None
     url = f"https://api.github.com/repos/{repo}/releases?per_page=30"
     headers = {
         "Accept": "application/vnd.github+json",
@@ -132,10 +271,23 @@ def _fetch_newest_published_release_blocking(
     try:
         with urllib.request.urlopen(req, timeout = timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        wait = 0.0
+        if exc.code in GITHUB_RATE_LIMIT_STATUS:
+            wait = note_github_rate_limited(exc.headers, status = exc.code, body = error_body(exc))
+        if wait:
+            logger.debug(
+                log_message,
+                repo = repo,
+                error = f"HTTP {exc.code}: rate limited, backing off {int(wait)}s",
+            )
+        else:
+            logger.debug(log_message, repo = repo, error = str(exc))
+        return None
     except (
         urllib.error.URLError,
-        urllib.error.HTTPError,
         OSError,
+        http.client.HTTPException,
         json.JSONDecodeError,
     ) as exc:
         logger.debug(log_message, repo = repo, error = str(exc))

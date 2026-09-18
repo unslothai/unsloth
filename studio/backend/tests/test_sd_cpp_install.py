@@ -145,6 +145,7 @@ import time  # noqa: E402
 import io  # noqa: E402
 import re  # noqa: E402
 import json  # noqa: E402
+import http.client  # noqa: E402
 import urllib.error  # noqa: E402
 import zipfile  # noqa: E402
 
@@ -3294,3 +3295,322 @@ def test_safe_extractall_rejects_symlink_escaping_target(tmp_path):
         with pytest.raises(RuntimeError, match = "unsafe symlink"):
             _safe_extractall(zf, target)
     assert not (tmp_path / "escape.txt").exists()
+
+
+@pytest.mark.parametrize(
+    ("status", "remaining", "body"),
+    [
+        (403, "0", b""),
+        (429, "4998", b""),
+        (403, "4998", b'{"message": "secondary rate limit"}'),
+    ],
+)
+def test_a_rate_limited_api_stops_the_fallback_ladder(monkeypatch, capsys, status, remaining, body):
+    """Every rung spends the same quota, so the rest would only push the reset out."""
+    import email.message
+    import io
+
+    seen = []
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = remaining
+
+    def fake_fetch(
+        tag,
+        *,
+        repo,
+        token,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
+        seen.append((repo, tag))
+        raise urllib.error.HTTPError(
+            f"https://api/{repo}", status, "rate limited", headers, io.BytesIO(body)
+        )
+
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    with pytest.raises(sdmod.GitHubRateLimited, match = "rate limiting.*GH_TOKEN"):
+        sdmod._resolve_with_fallback("auto", None)
+    assert len(seen) == 1
+    assert sdmod.main(["--print-asset"]) == 2
+    assert "rate limiting" in capsys.readouterr().err
+
+
+def _retry_after_headers():
+    import email.message
+
+    headers = email.message.Message()
+    headers["Retry-After"] = "60"
+    return headers
+
+
+class _EmptyResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, n = -1):
+        return b""
+
+
+@pytest.mark.parametrize(
+    ("first", "expected_attempts"),
+    [
+        (urllib.error.HTTPError("u", 404, "not found", None, None), 1),
+        (urllib.error.HTTPError("u", 403, "forbidden", None, None), 1),
+        (urllib.error.HTTPError("u", 429, "slow down", None, None), 1),
+        (urllib.error.HTTPError("u", 408, "request timeout", None, None), 2),
+        (urllib.error.HTTPError("u", 503, "unavailable", None, None), 2),
+        (urllib.error.URLError("connection reset"), 2),
+        (http.client.BadStatusLine("HTTP/1.1 \\x00garbage"), 2),
+        # read() can raise a reset straight through, unwrapped.
+        (ConnectionResetError("peer reset"), 2),
+        (urllib.error.HTTPError("u", 503, "unavailable", _retry_after_headers(), None), 1),
+    ],
+)
+def test_which_asset_download_failures_are_retried(monkeypatch, tmp_path, first, expected_attempts):
+    import time
+
+    attempts = []
+
+    def responder(req, timeout = 300.0):
+        attempts.append(req.full_url)
+        if len(attempts) == 1:
+            raise first
+        return _EmptyResponse()
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", responder)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    dest = tmp_path / "a.zip"
+    if expected_attempts == 1:
+        with pytest.raises(type(first)):
+            sdmod._download("https://github.com/x/y/releases/download/t/a.zip", dest)
+    else:
+        sdmod._download("https://github.com/x/y/releases/download/t/a.zip", dest)
+    assert len(attempts) == expected_attempts
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "body", "throttled"),
+    [
+        (429, {"X-RateLimit-Remaining": "4998"}, b"", True),
+        (403, {"X-RateLimit-Remaining": "0"}, b"", True),
+        (403, {"X-RateLimit-Remaining": "4998", "Retry-After": "60"}, b"", True),
+        (403, {"X-RateLimit-Remaining": "4998"}, b'{"message": "secondary rate limit"}', True),
+        (403, {"X-RateLimit-Remaining": "4998"}, b'{"message": "Resource not accessible"}', False),
+        (403, None, b"", False),
+    ],
+)
+def test_what_the_installer_calls_a_rate_limit(status, headers, body, throttled):
+    """Only an exhausted quota may stop the ladder. Same verdicts as the backend's table."""
+    import email.message
+    import io
+    import urllib.error
+
+    message = None
+    if headers is not None:
+        message = email.message.Message()
+        for key, value in headers.items():
+            message[key] = value
+    exc = urllib.error.HTTPError(
+        "https://api.github.com/x", status, "no", message, io.BytesIO(body)
+    )
+    assert sdmod._is_rate_limited(exc) is throttled
+
+
+def test_a_non_http_failure_is_never_a_rate_limit():
+    assert sdmod._is_rate_limited(ValueError("not http")) is False
+
+
+def test_a_stalled_download_is_not_retried_into_a_tripled_deadline(tmp_path, monkeypatch):
+    """Three attempts at the full timeout block an install for 15 minutes, not 5."""
+    import urllib.error
+
+    attempts = []
+
+    def stalls(req, timeout = None):
+        attempts.append(timeout)
+        raise urllib.error.URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", stalls)
+    with pytest.raises(urllib.error.URLError):
+        sdmod._download("https://example.test/a.zip", tmp_path / "a.zip", timeout = 7.0)
+    assert attempts == [7.0]
+
+
+def test_an_unwritable_destination_is_not_retried(tmp_path, monkeypatch):
+    """An unwritable directory stays unwritable, and a retry re-pulls the whole archive."""
+    import io
+
+    opened = []
+
+    def served(req, timeout = None):
+        opened.append(req.full_url)
+        return io.BytesIO(b"archive-bytes")
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", served)
+    missing_parent = tmp_path / "no-such-dir" / "a.zip"
+    with pytest.raises(FileNotFoundError):
+        sdmod._download("https://example.test/a.zip", missing_parent)
+    assert len(opened) == 1
+
+
+def test_a_failed_connect_leaves_no_empty_archive_behind(tmp_path, monkeypatch):
+    """The socket opens before the file, so a refused connection never creates dest."""
+    import urllib.error
+
+    def refused(req, timeout = None):
+        raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", refused)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    dest = tmp_path / "a.zip"
+    with pytest.raises(urllib.error.URLError):
+        sdmod._download("https://example.test/a.zip", dest, attempts = 2)
+    assert not dest.exists()
+
+
+def test_a_malformed_response_is_retried_like_a_dropped_connection(tmp_path, monkeypatch):
+    import http.client
+    import io
+
+    calls = []
+
+    def flaky(req, timeout = None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise http.client.RemoteDisconnected("closed")
+        return io.BytesIO(b"archive-bytes")
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    dest = tmp_path / "a.zip"
+    sdmod._download("https://example.test/a.zip", dest)
+    assert dest.read_bytes() == b"archive-bytes"
+    assert len(calls) == 2
+
+
+def test_the_installer_and_the_backend_agree_on_what_names_a_rate_limit():
+    """The installer is stdlib-only, so this copy cannot drift from the backend's."""
+    from utils.prebuilt import freshness_flow
+    assert sdmod._RATE_LIMIT_BODY_MARKERS == freshness_flow._RATE_LIMIT_BODY_MARKERS
+
+
+@pytest.mark.parametrize("fails_on_close", [False, True])
+def test_a_destination_that_cannot_take_the_bytes_is_not_re_downloaded(
+    monkeypatch, tmp_path, fails_on_close
+):
+    """A full disk raises an OSError naming no file, and buffered writes can surface it only on close."""
+    import errno
+
+    attempts = []
+
+    class _Full:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n = -1):
+            self.left -= 1
+            return b"x" * 1024 if self.left > 0 else b""
+
+        left = 3
+
+    def responder(req, timeout = 300.0):
+        attempts.append(req.full_url)
+        return _Full()
+
+    class _FullDisk:
+        def write(self, data):
+            if fails_on_close:
+                return len(data)
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def close(self):
+            if fails_on_close:
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", responder)
+    monkeypatch.setattr(sdmod, "open", lambda *a, **k: _FullDisk(), raising = False)
+    with pytest.raises(OSError):
+        sdmod._download("https://github.com/x/y/releases/download/t/a.zip", tmp_path / "a.zip")
+    assert len(attempts) == 1
+
+
+def test_a_full_disk_still_stops_the_retries_when_the_transfer_also_failed(monkeypatch, tmp_path):
+    """Closing while a reset is in flight must not lose the disk error, which is terminal."""
+    import errno
+
+    attempts = []
+
+    class _Reset:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n = -1):
+            raise ConnectionResetError(errno.ECONNRESET, "peer reset")
+
+    class _FullOnClose:
+        def write(self, data):
+            return len(data)
+
+        def close(self):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    def responder(req, timeout = 300.0):
+        attempts.append(req.full_url)
+        return _Reset()
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", responder)
+    monkeypatch.setattr(sdmod, "open", lambda *a, **k: _FullOnClose(), raising = False)
+    with pytest.raises(OSError) as caught:
+        sdmod._download("https://github.com/x/y/releases/download/t/a.zip", tmp_path / "a.zip")
+    assert len(attempts) == 1
+    assert caught.value.errno == errno.ENOSPC
+    assert isinstance(caught.value.__context__, ConnectionResetError)
+
+
+def test_a_truncated_length_delimited_body_is_retried_not_kept(monkeypatch, tmp_path):
+    """A body that stops early reads empty rather than raising, so only the declared length catches it."""
+    import time
+
+    attempts = []
+
+    class _Short:
+        def __init__(self, chunks):
+            self.chunks = list(chunks)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def getheader(
+            self,
+            name,
+            default = None,
+        ):
+            return "10" if name == "Content-Length" else default
+
+        def read(self, n = -1):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    def responder(req, timeout = 300.0):
+        attempts.append(req.full_url)
+        return _Short([b"abc"] if len(attempts) == 1 else [b"abcdefghij"])
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", responder)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    dest = tmp_path / "a.zip"
+    sdmod._download("https://github.com/x/y/releases/download/t/a.zip", dest)
+    assert len(attempts) == 2
+    assert dest.read_bytes() == b"abcdefghij"

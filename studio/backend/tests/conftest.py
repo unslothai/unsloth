@@ -1108,3 +1108,13 @@ def _process_shutdown_latch_is_clear():
         yield
     finally:
         _reopen()
+
+
+@pytest.fixture(autouse = True)
+def _clear_github_rate_limit_lockout():
+    # The lockout is process-wide: a 403 answered here would silence later fetches.
+    from utils.prebuilt import freshness_flow
+
+    freshness_flow._api_rate_limited_until = 0.0
+    yield
+    freshness_flow._api_rate_limited_until = 0.0

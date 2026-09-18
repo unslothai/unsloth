@@ -757,3 +757,149 @@ def test_release_fetch_cannot_outlive_its_deadline(monkeypatch, fetch):
     assert getattr(fr, fetch)("unslothai/llama.cpp", timeout = 0.25) is None
     # Pins the implemented timeout + 1, not merely "faster than the 30s stall".
     assert time.monotonic() - started < 2.0
+
+
+def _rate_limited(seconds_out: float):
+    import email.message
+    import urllib.error
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = str(int(time.time() + seconds_out))
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/x/y/releases", 403, "rate limited", headers, None
+    )
+
+
+def test_a_rate_limited_api_is_not_asked_again_until_the_window_resets(monkeypatch):
+    """One refusal is enough, and a guard that never lifts would silence the session."""
+    import urllib.request
+
+    mono = [1000.0]
+    monkeypatch.setattr(fr._flow.time, "monotonic", lambda: mono[0])
+    hosts = []
+
+    def fake_urlopen(req, timeout = 5.0):
+        hosts.append(req.full_url.split("/")[2])
+        raise _rate_limited(1800)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+    assert hosts == ["api.github.com"]
+    assert 1700 < fr._flow.github_rate_limit_remaining() <= 1801
+
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+    assert fr._fetch_latest_release_assets("unslothai/llama.cpp") is None
+    assert hosts == ["api.github.com"]
+
+    mono[0] += 1801
+    assert fr._flow.github_rate_limit_remaining() == 0
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+    assert hosts == ["api.github.com", "api.github.com"]
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "body", "throttled"),
+    [
+        (429, {"X-RateLimit-Remaining": "4998"}, b"", True),
+        (403, {"X-RateLimit-Remaining": "0"}, b"", True),
+        (403, {"X-RateLimit-Remaining": "4998", "Retry-After": "60"}, b"", True),
+        (403, {"X-RateLimit-Remaining": "4998"}, b'{"message": "secondary rate limit"}', True),
+        (403, {"X-RateLimit-Remaining": "4998"}, b'{"message": "Resource not accessible"}', False),
+        # The rate limiter always sends X-RateLimit-*, so a 403 without them is not one.
+        (403, None, b"", False),
+    ],
+)
+def test_what_counts_as_a_rate_limit(status, headers, body, throttled):
+    import email.message
+
+    message = None
+    if headers is not None:
+        message = email.message.Message()
+        for key, value in headers.items():
+            message[key] = value
+    verdict = fr._flow.is_rate_limited(message, status = status, body = body)
+    assert verdict is throttled
+
+
+def test_rate_limit_wait_prefers_retry_after_then_a_spent_reset():
+    import email.message
+
+    wait = fr._flow.rate_limit_wait_seconds
+    now = 1_000.0
+    h = email.message.Message()
+    assert wait(h, now = now) is None
+    h["X-RateLimit-Reset"] = "1300"
+
+    assert wait(h, now = now) is None
+    h["X-RateLimit-Remaining"] = "0"
+    assert wait(h, now = now) == 300.0
+    h["Retry-After"] = "42"
+    assert wait(h, now = now) == 42.0
+    assert wait(None) is None
+
+
+def test_a_skewed_reset_is_held_to_one_window(monkeypatch):
+    import urllib.request
+
+    def fake_urlopen(req, timeout = 5.0):
+        raise _rate_limited(365 * 24 * 60 * 60)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    fr._fetch_latest_release_assets("unslothai/llama.cpp")
+    remaining = fr._flow.github_rate_limit_remaining()
+    assert fr._flow.GITHUB_RATE_LIMIT_MAX_SECONDS - 5 < remaining
+    assert remaining <= fr._flow.GITHUB_RATE_LIMIT_MAX_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "body", "locked_out"),
+    [
+        (403, {"X-RateLimit-Remaining": "0"}, b"", True),
+        (429, {"X-RateLimit-Remaining": "4998"}, b"", True),
+        (403, {"X-RateLimit-Remaining": "4998"}, b'{"message": "secondary rate limit"}', True),
+        (403, {"X-RateLimit-Remaining": "4998"}, b'{"message": "Resource not accessible"}', False),
+    ],
+)
+def test_what_the_fetch_itself_treats_as_a_rate_limit(
+    monkeypatch, status, headers, body, locked_out
+):
+    import email.message
+    import io
+    import urllib.error
+    import urllib.request
+
+    message = email.message.Message()
+    for key, value in headers.items():
+        message[key] = value
+
+    def fake_urlopen(req, timeout = 5.0):
+        raise urllib.error.HTTPError(req.full_url, status, "refused", message, io.BytesIO(body))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+    remaining = fr._flow.github_rate_limit_remaining()
+    if locked_out:
+        # The floor is written out, not taken from the constant, which would move with it.
+        assert 10 * 60 < remaining <= fr._flow.GITHUB_RATE_LIMITED_DEFAULT_SECONDS
+    else:
+        assert remaining == 0
+
+
+def test_a_later_shorter_refusal_cannot_shorten_the_lockout():
+    """One deadline for the process: a short Retry-After must not release callers early."""
+    fr._flow._api_rate_limited_until = 0.0
+    fr._flow.note_github_rate_limited({"Retry-After": "1800"}, status = 429)
+    fr._flow.note_github_rate_limited({"Retry-After": "5"}, status = 429)
+    assert fr._flow.github_rate_limit_remaining() > 1700
+
+
+def test_a_malformed_api_response_fails_open(monkeypatch):
+    import http.client
+    import urllib.request
+
+    def fake_urlopen(req, timeout = 5.0):
+        raise http.client.IncompleteRead(b"{")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
