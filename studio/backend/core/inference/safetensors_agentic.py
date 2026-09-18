@@ -1612,7 +1612,17 @@ def run_safetensors_tool_loop(
         )
         if over_cap:
             deferred_noop_msgs.append(
-                tool_call_limit_nudge(over_cap, _MAX_TOOL_CALLS_PER_TURN, final = over_cap_final)
+                tool_call_limit_nudge(
+                    over_cap,
+                    _MAX_TOOL_CALLS_PER_TURN,
+                    final = over_cap_final,
+                    unavailable_tools = {
+                        _limit_decision.tool_name
+                        for call in over_cap
+                        if (_limit_decision := tool_controller.prepare_call(call)).action
+                        in ("disabled", "render_html_repeat")
+                    },
+                )
             )
         append_deferred_nudges(conversation, deferred_noop_msgs)
 

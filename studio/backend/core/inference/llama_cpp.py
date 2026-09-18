@@ -37214,7 +37214,16 @@ class LlamaCppBackend:
                     _over_cap = []
                 if _over_cap:
                     deferred_noop_msgs.append(
-                        tool_call_limit_nudge(_over_cap, _MAX_TOOL_CALLS_PER_TURN)
+                        tool_call_limit_nudge(
+                            _over_cap,
+                            _MAX_TOOL_CALLS_PER_TURN,
+                            unavailable_tools = {
+                                _limit_decision.tool_name
+                                for _call in _over_cap
+                                if (_limit_decision := tool_controller.prepare_call(_call)).action
+                                in ("disabled", "render_html_repeat")
+                            },
+                        )
                     )
                 # A mixed execute/no-op batch already has a real tool result, so keeping the
                 # feedback with that result beats appending a newer user turn, which makes

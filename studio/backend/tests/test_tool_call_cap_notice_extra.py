@@ -12,6 +12,8 @@ per-turn reset, the retry actually executing, the dedup boundary, and
 import copy
 import json
 
+import pytest
+
 from core.inference.safetensors_agentic import (
     _MAX_TOOL_CALLS_PER_TURN,
     run_safetensors_tool_loop,
@@ -208,3 +210,68 @@ class TestSkippedCallsLeaveNoOrphanUi:
         # Every card that opened also closed: a skipped call never leaves a running tool
         # in the UI.
         assert {e.get("tool_call_id") for e in starts} == {e.get("tool_call_id") for e in ends}
+
+
+@pytest.mark.parametrize("backend", ["gguf", "safetensors", "safetensors_unrestricted"])
+@pytest.mark.parametrize("mixed_skipped", [False, True])
+@pytest.mark.parametrize("render_result", ["Rendered HTML", "Error: render failed"])
+def test_cap_notice_does_not_invite_a_spent_one_shot_retry(
+    monkeypatch, backend, mixed_skipped, render_result
+):
+    calls = [("render_html", {"code": "<p>first</p>"})]
+    calls += [("web_search", {"query": f"q{i}"}) for i in range(7)]
+    calls.append(("render_html", {"code": "<p>second</p>"}))
+    if mixed_skipped:
+        calls.append(("web_search", {"query": "later"}))
+    text = "".join(
+        "<tool_call>" + json.dumps({"name": name, "arguments": args}) + "</tool_call>"
+        for name, args in calls
+    )
+    tools = [
+        {"type": "function", "function": {"name": name}} for name in ["render_html", "web_search"]
+    ]
+    if backend == "gguf":
+        streams = [[_sse({"content": text}), _done()], [_sse({"content": "done"}), _done()]]
+        engine, payloads = _backend_and_payloads(monkeypatch, streams)
+        executed = _record_tool_calls(
+            monkeypatch, lambda name: render_result if name == "render_html" else "OK"
+        )
+        list(
+            engine.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "go"}],
+                tools = tools,
+                max_tool_iterations = 3,
+            )
+        )
+        messages = payloads[1]["messages"]
+    else:
+        payloads = []
+        turns = iter([text, "done"])
+
+        def generate(messages):
+            payloads.append(copy.deepcopy(messages))
+            yield next(turns)
+
+        executor = FakeExecuteTool([render_result] + ["OK"] * 7)
+        list(
+            run_safetensors_tool_loop(
+                single_turn = generate,
+                messages = [{"role": "user", "content": "go"}],
+                tools = None if backend == "safetensors_unrestricted" else tools,
+                execute_tool = executor,
+                max_tool_iterations = 3,
+            )
+        )
+        executed = executor.calls
+        messages = payloads[1]
+    assert len(executed) == 8
+    (notice,) = _notices(messages)
+    content = notice["content"]
+    assert "<p>second</p>" in content
+    if render_result.startswith("Error:"):
+        assert "Call them again" in content
+    else:
+        assert "Call them again" not in content
+        assert "Do not retry render_html" in content
+        if mixed_skipped:
+            assert "retry the skipped calls for web_search" in content

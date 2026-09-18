@@ -1024,6 +1024,7 @@ def tool_call_limit_nudge(
     limit: int,
     *,
     final: bool = False,
+    unavailable_tools: Collection[str] = (),
 ) -> dict:
     described = []
     for tool_call in tool_calls:
@@ -1038,6 +1039,21 @@ def tool_call_limit_nudge(
         else "Call them again if you still need their results, and do not describe results "
         "you did not receive."
     )
+    if not final and unavailable_tools:
+        retryable_names = sorted(
+            {(call.get("function") or {}).get("name", "") for call in tool_calls}
+            - set(unavailable_tools)
+        )
+        follow_up = (
+            f"Do not retry {', '.join(sorted(unavailable_tools))}; "
+            "these tools are no longer available."
+        )
+        if retryable_names:
+            follow_up += (
+                f" You may retry the skipped calls for {', '.join(retryable_names)} "
+                "if you still need their results."
+            )
+        follow_up += " Do not describe results you did not receive."
     return {
         "role": "user",
         "content": (
