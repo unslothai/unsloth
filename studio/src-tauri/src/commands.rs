@@ -37,33 +37,18 @@ const HEALTH_WATCHDOG_MAX_FAILURES_BUSY: u32 = 12;
 /// than retrying, and `backend/tests/test_health_answers_within_probe_budget.py` derives
 /// `_HEALTH_DETECT_BUDGET_S` from that number.
 const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long one loopback connect gets to be REFUSED before the answer stops being "nothing
-/// is listening". Past this point silence is a filtered or stalled handshake, which is
-/// #10520, and the full retry ladder is kept.
+/// How long one loopback connect gets to be REFUSED before silence starts meaning a filtered
+/// handshake (#10520) rather than an empty port, in which case the full ladder is kept.
 ///
-/// The budget is per platform because the wait before a refusal is per platform, measured on
-/// CI runners over 12 reps each against a genuinely closed loopback port:
+/// Per platform because the wait before a refusal is: 0.1ms worst on linux and 0.2ms on
+/// macOS, but 2030.2ms on Windows, which retransmits the SYN first (as libuv documents when
+/// it disables that per socket via SIO_TCP_INITIAL_RTO). The legal window is therefore
+/// (2030, 2500] on Windows, since `the_refusal_probe_cannot_eat_the_ladder_it_short_circuits`
+/// caps it at a quarter of HEALTH_PROBE_TIMEOUT, and this takes the end with the headroom.
+/// Measurements per platform are in the PR description.
 ///
-///   linux     errno 111, min 0.0ms  median 0.0ms  max 0.1ms
-///   macos     errno 61,  min 0.0ms  median 0.1ms  max 0.2ms
-///   windows   WinError 10061, min 2002.3ms median 2010.9ms max 2030.2ms
-///
-/// Windows retransmits the SYN before reporting the refusal, so the answer is late rather
-/// than absent, and a 250ms budget classified every dead port there as Unsettled: correct
-/// and fail-safe, but the fast path never fired. A live listener was accepted in 0.2ms on
-/// all three, which is what rules out a filtered loopback as the explanation.
-///
-/// The Windows value is squeezed from both sides, and 2.5s is the top of the window rather
-/// than a round number. It has to clear 2030.2ms to see a refusal at all, and
-/// `the_refusal_probe_cannot_eat_the_ladder_it_short_circuits` caps it at a quarter of
-/// HEALTH_PROBE_TIMEOUT, so anything above 2.5s trades the ladder it is meant to shorten.
-/// That leaves (2030, 2500] and this takes the end with the most headroom, 470ms over the
-/// worst observed wait against a 28ms spread.
-///
-/// This is spent BEFORE the ladder's first rung, so it is also the whole cost the fast path
-/// can add. It is only ever paid by a port nobody here manages that neither answers nor
-/// refuses: an alive backend of ours returns before any connect, and one that accepts
-/// answers in microseconds.
+/// Spent BEFORE the first rung, so it is also the whole cost the fast path can add, and only
+/// a port nobody here manages that neither answers nor refuses ever pays it.
 #[cfg(windows)]
 const REFUSAL_PROBE_TIMEOUT: Duration = Duration::from_millis(2_500);
 #[cfg(not(windows))]
@@ -525,10 +510,9 @@ async fn backend_presence(
 
 /// Whether the webview can stop retrying and tell the user the backend is gone.
 ///
-/// `check_backend_present` cannot answer this. It reports a backend of ours that has not
-/// bound its port yet exactly as it reports one that was never there, and the first case is
-/// the slow start the frontend's retry ladder exists to survive. So ownership is asked
-/// FIRST, and only for a port nobody here is bringing up does a refused connect settle it.
+/// Not `check_backend_present`: presence reports a backend of ours that has not bound its
+/// port yet exactly as it reports one that was never there, and that first case is the slow
+/// start the ladder exists to survive. Ownership is asked FIRST for the same reason.
 #[tauri::command]
 pub async fn check_backend_is_gone(
     state: tauri::State<'_, BackendState>,
@@ -567,8 +551,7 @@ enum ConnectOutcome {
     Refused,
     /// Something accepted, so an empty port is not what the webview ran into.
     Accepted,
-    /// No answer inside the budget, or an error that does not name a closed port. A
-    /// filtered loopback handshake lands here, which is #10520 itself.
+    /// No answer inside the budget, or an error not naming a closed port: #10520 lands here.
     Unsettled,
 }
 
@@ -581,8 +564,8 @@ async fn connect_outcome(port: u16, budget: Duration) -> ConnectOutcome {
     classify_connect(settled)
 }
 
-/// `None` is a budget that ran out. Split from the connect itself so the rule can be tested
-/// without a port that behaves the way each branch needs.
+/// `None` is a spent budget. Split from the connect so the rule is testable without a port
+/// that behaves the way each branch needs.
 fn classify_connect(settled: Option<std::io::Result<()>>) -> ConnectOutcome {
     match settled {
         Some(Ok(())) => ConnectOutcome::Accepted,
@@ -600,9 +583,8 @@ fn we_manage_a_backend_on(state: &BackendState, port: u16) -> bool {
     process::owned_backend_on_port_is_running(state, port)
 }
 
-/// The absence question's version of the above, and deliberately wider: a live backend of
-/// ours that has not reported a port yet may be about to bind THIS one, and calling that
-/// "not ours" would hand the fast path a refusal it must not act on.
+/// Deliberately wider than presence: a live backend of ours that has not reported a port yet
+/// may be about to bind THIS one, and a refusal about it is not proof of anything.
 fn we_could_be_bringing_up(state: &BackendState, port: u16) -> bool {
     process::owned_backend_could_bind_port(state, port)
 }
@@ -1938,11 +1920,8 @@ mod tests {
         );
     }
 
-    /// A port that is free and, unlike a dropped port-0 binding, cannot be handed to a
-    /// sibling test in this binary before the probe runs: the range is below the ephemeral
-    /// one on every platform here (32768 on Linux, 49152 on macOS and Windows). Its own
-    /// window, so it cannot collide with the one `a_port_with_nothing_on_it_reads_as_death_
-    /// not_a_stall` walks either.
+    /// Below the ephemeral range (32768 on Linux, 49152 elsewhere) and in its own window, so
+    /// no sibling test can be handed this port back the way a dropped port-0 binding can be.
     async fn a_closed_port_below_the_ephemeral_range() -> u16 {
         for candidate in 20_064..20_128u16 {
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)).await {
@@ -1953,11 +1932,8 @@ mod tests {
         panic!("every port in the probe window was already bound")
     }
 
-    /// What the kernel actually said, and how long it took to say it.
-    ///
-    /// Carried into the assertion message because the two ways this can fail need opposite
-    /// fixes: an answer that is not `ConnectionRefused` means the classifier is wrong for
-    /// this platform, while a refusal that arrives late means only the budget is.
+    /// Carried into the assertion message because the two failures need opposite fixes: an
+    /// answer that is not `ConnectionRefused` indicts the classifier, a late one the budget.
     async fn describe_connect(port: u16, budget: Duration) -> String {
         let target =
             std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
@@ -1975,18 +1951,13 @@ mod tests {
         }
     }
 
-    /// The budget has to clear the platform's own wait before a refusal, or the fast path
-    /// classifies every dead port as Unsettled and silently stops existing.
-    ///
-    /// Worst observed over 12 reps per runner: 0.1ms on linux, 0.2ms on macOS, 2030.2ms on
-    /// Windows, where the SYN is retransmitted first. These floors are deliberately well
-    /// under `REFUSAL_PROBE_TIMEOUT` rather than equal to it, so ordinary variance does not
-    /// fail the suite while a change that drops the budget back below the real wait does.
+    /// A budget under the platform's own wait before a refusal classifies every dead port as
+    /// Unsettled, and the fast path silently stops existing. The floors are well under
+    /// `REFUSAL_PROBE_TIMEOUT`, not equal to it, so only a real drop fails this.
     #[test]
     fn the_refusal_budget_clears_the_wait_this_platform_actually_takes() {
-        // Above the worst observed wait, not equal to the budget: the budget also has a
-        // ceiling from the ladder invariant below, so pinning this to it would leave one
-        // legal value and fail on any re-measurement.
+        // Not the budget itself: the ladder invariant below also caps it, and pinning both
+        // ends would leave exactly one legal value.
         let floor = if cfg!(windows) {
             Duration::from_millis(2_100)
         } else {
@@ -2003,8 +1974,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_closed_port_nobody_here_owns_is_gone() {
-        // The whole point of the command: this is the answer that lets the webview stop
-        // sleeping out a 10.5s ladder against a backend that is not coming back.
         let port = a_closed_port_below_the_ephemeral_range().await;
         let observed = describe_connect(port, super::REFUSAL_PROBE_TIMEOUT).await;
         assert!(
@@ -2017,11 +1986,8 @@ mod tests {
     #[tokio::test]
     async fn a_closed_port_we_are_bringing_up_is_not_gone() {
         // #10520: our own backend has not bound its port yet, so the connect is refused
-        // exactly as it would be for a dead one. Cutting the ladder short here is the
-        // regression this guard exists to catch.
-        //
-        // Port 0 is safe here where it is not above: ownership is read before anything
-        // connects, so a sibling taking this port back cannot change the answer.
+        // exactly as for a dead one. Port 0 is safe here where it is not above, because
+        // ownership is read before anything connects.
         let port = {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -2036,9 +2002,8 @@ mod tests {
 
     #[tokio::test]
     async fn ownership_taken_while_the_probe_ran_still_keeps_the_ladder() {
-        // The ownership read happens before the connect, and a refusal is not instant on
-        // Windows, so a backend that starts during the probe would otherwise be reported gone
-        // on the strength of a read taken up to a whole budget earlier.
+        // A refusal is not instant on Windows, so without the second read a backend that
+        // starts during the probe is reported gone on a look taken a whole budget earlier.
         let port = a_closed_port_below_the_ephemeral_range().await;
         let asked = std::sync::atomic::AtomicUsize::new(0);
         let gone = super::backend_is_gone(port, super::REFUSAL_PROBE_TIMEOUT, || {

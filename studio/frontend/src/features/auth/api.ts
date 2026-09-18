@@ -94,13 +94,9 @@ async function fetchWithTauriNetworkRetry(
       ) {
         throw error;
       }
-      // Everything below this line is Tauri only, so the browser build reaches none of it.
-      //
-      // #10520 stretched the ladder past the launcher's 10s probe budget so a slow backend
-      // stops being called dead, and a stopped one then pays 10.5s of sleeping to be told
-      // what a refused connect already proved. The native side can tell a refused port apart
-      // from a silent one, which `fetch` cannot, so ask it once on the FIRST failure: a port
-      // that refuses with nothing of ours coming up on it is an answer, not a wait.
+      // Tauri only, below the guard above. `fetch` cannot tell a refused port from a silent
+      // one and the native side can, so ask it once on the FIRST failure rather than sleeping
+      // out #10520's 10.5s ladder to be told what the refusal already proved.
       if (attempt === 0 && (await nativeBackendIsGone())) throw error;
       await wait(delays[attempt]);
       beforeRetry?.();

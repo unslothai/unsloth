@@ -1194,14 +1194,11 @@ pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) 
     }
 }
 
-/// Whether anything of ours COULD be on *port*, which is a wider question than whether
-/// something of ours is known to be there, and the one the webview's fast path needs.
+/// Whether anything of ours COULD be on *port*, which is the question ABSENCE needs.
 ///
-/// A handle we spawned carries no port until a probe validates one, so between the spawn and
-/// that report it names no port at all while being exactly the slow start #10520 exists to
-/// survive. `owned_backend_on_port_is_running` reports that as "not ours", which is right for
-/// presence and wrong for absence: a refused connect on a port our own starting backend is
-/// about to bind is not proof that nothing will answer.
+/// A handle we spawned names no port until a probe validates one, and for that whole window
+/// `owned_backend_on_port_is_running` calls our own starting backend somebody else's: right
+/// for presence, wrong here, since a refusal about a port we are about to bind proves nothing.
 pub(crate) fn owned_backend_could_bind_port(state: &BackendState, port: u16) -> bool {
     let mut proc = match state.lock() {
         Ok(guard) => guard,
@@ -6397,9 +6394,8 @@ mod owned_backend_liveness_tests {
         assert!(!owned_backend_could_bind_port(&state, 8765));
     }
 
-    /// A handle carries no port until a probe validates one, and for the whole of that window
-    /// every port reads as "not ours" to the presence predicate. The absence predicate must
-    /// not agree, or a refused connect during our own start is taken as proof of death.
+    /// While a handle has no port yet, presence reads every port as "not ours". Absence must
+    /// not agree, or a refusal during our own start becomes proof of death.
     #[test]
     fn a_child_that_has_not_reported_a_port_could_still_bind_the_one_asked_about() {
         let state = new_backend_state();

@@ -481,10 +481,8 @@ def install_worker_stderr_mirror(
 
 
 _PREFIX_FORMATTER_CLASS = None
-# "already marked" as a property of the formatter rather than of the class object that built
-# it. Building the class lazily means two threads racing the first call can produce two of
-# them, and `isinstance` is false across a pair, so identity would wrap one handler twice and
-# emit every continuation line with a doubled prefix.
+# On the formatter, not the class: built lazily, so two threads racing the first call make two
+# classes, `isinstance` is false across the pair, and the handler gets wrapped twice.
 _MARKS_CONTINUATIONS = "_unsloth_marks_continuations"
 
 
@@ -495,10 +493,8 @@ def _formatter_marks_continuations(formatter) -> bool:
 def _prefix_formatter_class():
     """Built on first use, so importing this module does not import ``logging``.
 
-    Every spawned inference worker imports this module before its entrypoint runs, and a
-    fresh spawn child has no ``logging`` yet: pulling it in here was 4.2ms of the 5.3ms this
-    file added to each worker spawn. Nothing on that path needs it -- the marking below runs
-    later in the worker, after logging is configured, where the import is already paid for.
+    Every spawned worker imports this module before its entrypoint runs and a fresh spawn
+    child has no ``logging`` yet, which was 4.2ms of the 5.3ms this file cost each spawn.
     """
     global _PREFIX_FORMATTER_CLASS
     if _PREFIX_FORMATTER_CLASS is not None:
