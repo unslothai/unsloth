@@ -218,12 +218,12 @@ if (typeof window !== "undefined") {
       // A drag owns the rendered order until it ends; the record it is rebased onto is read
       // live at that point, so there is nothing to stash here.
       if (dragSnapshot !== null) return;
-      // The same merge the toggle and the drag commit use, over the RENDERED list. Regrouping the
-      // record's ids and this window's unpersisted ones into two blocks instead moved every
-      // unpersisted pin above every peer pin already on screen, so interleaved pins came out in
-      // an order neither window had produced, and the next write that landed made it durable.
+      // The same rule the toggle uses, which is the whole point of it living in one function: the
+      // record wins outright unless this window is carrying pins the record lacks, and only then
+      // is it merged into the rendered order. Merging unconditionally cost a peer's pure REORDER,
+      // which adds no ids and so changed nothing on a window with nothing unwritten.
       usePinnedConnectedModelsStore.setState({
-        pinned: rebaseOnStored(usePinnedConnectedModelsStore.getState().pinned),
+        pinned: persistedBase(usePinnedConnectedModelsStore.getState().pinned),
       });
     }
   });

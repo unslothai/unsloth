@@ -408,3 +408,11 @@ test("an unchanged drag keeps a peer pin above an older failed one", () => {
   pins.getState().endPinnedConnectedDrag(false);
   assert.deepEqual(pins.getState().pinned, [C, B, A]);
 });
+
+test("a peer reordering the same pins reorders this window too", () => {
+  // Nothing added and nothing removed, so a merge that only carries this window's unwritten pins
+  // has no work to do and silently left the old order on screen.
+  reset([A, B]);
+  externalWrite([B, A]);
+  assert.deepEqual(pins.getState().pinned, [B, A]);
+});
