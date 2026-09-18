@@ -894,8 +894,22 @@ def test_the_scan_covers_the_repo_left_after_the_4bit_suffix_is_stripped(mapper,
     ],
 )
 def test_the_suffix_strip_matches_the_loader(name, stripped):
+    import ast
+    from pathlib import Path
+
     import core.training.worker as worker_mod
-    from unsloth.models.loader import _strip_unsloth_bnb_4bit_suffix as loader_strip
+
+    # load the pure helper without importing the gpu stack into backend-only tests.
+    loader_path = Path(__file__).resolve().parents[3] / "unsloth" / "models" / "loader.py"
+    loader_tree = ast.parse(loader_path.read_text(encoding = "utf-8"))
+    helper = next(
+        node
+        for node in loader_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_strip_unsloth_bnb_4bit_suffix"
+    )
+    namespace = {}
+    exec(compile(ast.Module(body = [helper], type_ignores = []), str(loader_path), "exec"), namespace)
+    loader_strip = namespace["_strip_unsloth_bnb_4bit_suffix"]
 
     assert worker_mod._strip_unsloth_bnb_4bit_suffix(name) == stripped
     assert loader_strip(name) == stripped
