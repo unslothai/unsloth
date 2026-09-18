@@ -2309,7 +2309,11 @@ def iter_resolved_published_releases(
                     f"{resolved.bundle.upstream_tag}, but requested {normalized_requested}"
                 )
             yield resolved
-            if not continue_after_fast_path:
+            # A pin names exactly one release, so there is nothing to walk back to and
+            # continue_after_fast_path has nothing to add. Falling through would re-resolve
+            # the same tag below -- the same release twice, and an api.github.com call to
+            # do it -- so a pin returns here whatever the walk-back flag says.
+            if not continue_after_fast_path or published_release_tag:
                 return
             fast_path_release_tag = resolved.bundle.release_tag
 
@@ -5760,9 +5764,17 @@ def macos_binary_minos_issues(
 
 
 def macos_dyld_load_issues(
-    binaries: Iterable[Path], install_dir: Path, host: HostInfo
+    binaries: Iterable[Path],
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    loaded: "set[str] | None" = None,
 ) -> list[str]:
     """Issue strings for every installed executable dyld refuses to load.
+
+    *loaded*, when given, collects the binaries dyld actually resolved: this probe
+    fails OPEN, so "no issues" alone cannot tell a clean load from one that never
+    ran. Only a name in here is evidence of a load.
 
     `--version` costs a process spawn and still makes dyld resolve the whole link
     graph, so it catches a missing dylib, a missing symbol or a too-new slice --
@@ -5792,6 +5804,8 @@ def macos_dyld_load_issues(
             log(f"macos load probe could not run {binary_path.name}: {exc}")
             continue
         if result.returncode == 0:
+            if loaded is not None:
+                loaded.add(binary_path.name)
             continue
         output = (result.stdout + result.stderr).strip()
         # A non-zero exit is not evidence of a bad link: llama-quantize answers
@@ -5801,6 +5815,10 @@ def macos_dyld_load_issues(
         # that asked, which otool -L cannot, since an absolute install name absent
         # from disk is the normal case for /usr/lib's shared-cache members.
         if not looks_like_macos_loader_failure(output):
+            # llama-quantize answers --version by printing its table and exiting 1;
+            # dyld still resolved the image to let it print anything at all.
+            if loaded is not None:
+                loaded.add(binary_path.name)
             continue
         detail = " | ".join(output.splitlines()[-5:]) or f"exit {result.returncode}"
         issues.append(f"{binary_path.name}: {detail}")
@@ -5813,11 +5831,17 @@ def preflight_macos_installed_binaries(
     host: HostInfo,
     *,
     load_probe: bool = True,
-) -> None:
+) -> bool:
     """Reject a macos prebuilt whose minimum-OS is newer than the host, or (with
     *load_probe*) that dyld will not load at all. The upstream selector pins a loadable release up
     front, so here this is the post-download backstop; the published/fork path
     also uses it to advance the walk-back.
+
+    Returns True only when the load probe actually ran and dyld resolved every
+    binary. False means "no evidence", not "bad": the probe is skipped, or it
+    timed out or could not spawn. Callers record the skip only on True, so an
+    inconclusive probe costs another probe next time instead of being cached as
+    a pass.
 
     The load probe is the macOS counterpart of preflight_linux_installed_binaries'
     ldd sweep, which this side went without: a bundle whose libggml-rpc.0.dylib
@@ -5830,7 +5854,8 @@ def preflight_macos_installed_binaries(
     both on an unparseable ``platform.mac_ver()`` left that host with no check at
     all, since the runtime validation it deferred to is off by default (#5854)."""
     if not host.is_macos:
-        return
+        return False
+    binaries = list(binaries)
     if host.macos_version is not None:
         issues = macos_binary_minos_issues(binaries, install_dir, host)
         if issues:
@@ -5839,12 +5864,20 @@ def preflight_macos_installed_binaries(
             )
     if not load_probe:
         log("installed binaries match their recorded digests; skipping the dyld load probe")
-        return
-    load_issues = macos_dyld_load_issues(binaries, install_dir, host)
+        return False
+    loaded: set[str] = set()
+    load_issues = macos_dyld_load_issues(binaries, install_dir, host, loaded = loaded)
     if load_issues:
         raise PrebuiltFallback(
             "macos prebuilt does not load on this host:\n" + "\n".join(load_issues)
         )
+    expected = {path.name for path in binaries if path.is_file()}
+    if not expected or not expected.issubset(loaded):
+        # The probe fails open so a loaded machine cannot reject a healthy bundle;
+        # that is right for INSTALLING, and wrong to remember as a load.
+        log("macos load probe did not run for every binary; not recording it as a pass")
+        return False
+    return True
 
 
 def preflight_linux_installed_binaries(
@@ -6897,9 +6930,15 @@ class LazyReleasePlans(Sequence):
     def __init__(self, plans: "Iterable[InstallReleasePlan]") -> None:
         self._source: "Iterator[InstallReleasePlan] | None" = iter(plans)
         self._resolved: list[InstallReleasePlan] = []
+        self._failure: "BaseException | None" = None
 
     def _resolve_through(self, index: int) -> bool:
         while len(self._resolved) <= index:
+            # A generator that raised is closed, so without remembering why, a second
+            # traversal would report a short-but-clean sequence and len() would answer
+            # differently than the call that raised. Same inputs, same answer, every time.
+            if self._failure is not None:
+                raise self._failure
             if self._source is None:
                 return False
             try:
@@ -6907,6 +6946,10 @@ class LazyReleasePlans(Sequence):
             except StopIteration:
                 self._source = None
                 return False
+            except BaseException as exc:
+                self._source = None
+                self._failure = exc
+                raise
         return True
 
     def __getitem__(self, index):
@@ -7142,6 +7185,7 @@ def write_prebuilt_metadata(
     backend_request: str | None = None,
     rocm_gfx: str | None = None,
     walk_back: "_core.WalkBack | None" = None,
+    macos_load_probe_passed: bool = False,
 ) -> None:
     source_asset_name, source_sha256 = selected_source_archive_metadata(
         approved_checksums,
@@ -7161,6 +7205,11 @@ def write_prebuilt_metadata(
     if fingerprint is None:
         raise PrebuiltFallback(f"cannot compute install fingerprint for {choice.name}")
     _persisted_backend = persisted_llama_backend(llama_backend, choice)
+    _load_probe = (
+        macos_load_probe_record(host)
+        if macos_load_probe_passed and host is not None
+        else None
+    )
     # An install kind with no allowlist raises; the binary tier alone is still honest evidence.
     try:
         _runtime_patterns: list[str] | None = runtime_patterns_for_choice(choice)
@@ -7231,6 +7280,10 @@ def write_prebuilt_metadata(
         "runtime_files": runtime_file_records(install_dir, host, _runtime_patterns),
         # The box this bundle was chosen for. Absent reads as "cannot say": full path.
         **({"host_profile": host_profile(host)} if host is not None else {}),
+        # Evidence that dyld really loaded these bytes on this macOS build, which is what
+        # lets a later update skip the probe. Absent reads as "cannot say": probe again.
+        # Not fingerprinted, so it never invalidates an install.
+        **({MACOS_LOAD_PROBE_KEY: _load_probe} if _load_probe is not None else {}),
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -7849,10 +7902,43 @@ def runtime_file_records(
     return records
 
 
+MACOS_LOAD_PROBE_KEY = "macos_load_probe"
+
+
+def macos_product_version() -> str:
+    """The full macOS product version, patch included: "15.5.1", not (15, 5).
+
+    host_profile records parse_macos_version, which is (major, minor) by design --
+    that is the right granularity for the minos comparison. It is the wrong
+    granularity for "can this image still load": since Big Sur the system libraries
+    are a dyld shared cache blob, and Apple replaces that blob in point releases and
+    in Rapid Security Responses. Both leave (major, minor) untouched, so the probe
+    skip has to compare something finer or it will outlive the loader it was taken on.
+    """
+    try:
+        return str(platform.mac_ver()[0] or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def macos_load_probe_record(host: HostInfo) -> "dict[str, Any] | None":
+    """The evidence a completed dyld probe leaves for later runs, or None when the
+    host cannot describe itself finely enough to be worth recording."""
+    version = macos_product_version()
+    if not host.is_macos or not version:
+        return None
+    return {"passed": True, "macos_product_version": version}
+
+
 def _macos_load_record_is_current(marker: "dict[str, Any] | None", host: HostInfo) -> bool:
     """Whether the dyld probe these recorded bytes passed still holds; callers must also
     check _runtime_files_match. A size-only entry misses a same-size rewrite, and an
     unknown macOS version skips the minos check, leaving the probe as the only load check.
+
+    Requires POSITIVE evidence that a probe ran and passed (MACOS_LOAD_PROBE_KEY), on
+    this exact macOS product version. A marker without it -- every one written before
+    this existed, and every install whose probe timed out or could not spawn -- takes
+    the probe, which is what happened on every update before the skip existed.
     """
     if not host.is_macos or host.macos_version is None or prebuilt_full_check_requested():
         return False
@@ -7861,6 +7947,12 @@ def _macos_load_record_is_current(marker: "dict[str, Any] | None", host: HostInf
     if not isinstance(recorded, dict) or not recorded:
         return False
     if not all(isinstance(entry, dict) and entry.get("sha256") for entry in recorded.values()):
+        return False
+    probe = marker.get(MACOS_LOAD_PROBE_KEY)
+    if not isinstance(probe, dict) or probe.get("passed") is not True:
+        return False
+    version = macos_product_version()
+    if not version or probe.get("macos_product_version") != version:
         return False
     return marker.get("host_profile") == host_profile(host)
 
@@ -8825,7 +8917,9 @@ def validate_prebuilt_choice(
             f"{choice.install_kind} bundle {choice.name} omitted a required runtime component"
         )
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
-    preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
+    macos_load_probe_passed = preflight_macos_installed_binaries(
+        (server_path, quantize_path), install_dir, host
+    )
     ensure_repo_shape(install_dir)
     write_prebuilt_metadata(
         install_dir,
@@ -8841,6 +8935,7 @@ def validate_prebuilt_choice(
         backend_request = backend_request,
         rocm_gfx = rocm_gfx,
         walk_back = walk_back,
+        macos_load_probe_passed = macos_load_probe_passed,
     )
     # Hashless external prebuilts are not in the approved-sha256
     # manifest and rely on the functional smoke test as their only integrity gate,

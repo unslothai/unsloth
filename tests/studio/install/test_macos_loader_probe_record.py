@@ -9,7 +9,9 @@ The probe may be skipped only when the runtime digests and host profile still ma
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -31,9 +33,15 @@ PUBLISHED_REPO = "unslothai/llama.cpp"
 INSTALL_KIND = "macos-arm64"
 
 
+PRODUCT_VERSION = "15.5.1"
+
+
 @pytest.fixture(autouse = True)
 def _clear_full_check(monkeypatch):
     monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising = False)
+    # platform.mac_ver() is empty off macOS, so the probe record would never be written
+    # and every test here would read as "no evidence". Pin the host's own answer instead.
+    monkeypatch.setattr(ILP, "macos_product_version", lambda: PRODUCT_VERSION)
 
 
 def macos_host(**overrides):
@@ -82,8 +90,14 @@ def checksums_for(choice) -> "ILP.ApprovedReleaseChecksums":
     )
 
 
-def build_install(tmp_path: Path, host) -> Path:
-    """Build an install whose marker passes the real fingerprint checks."""
+def build_install(tmp_path: Path, host, *, load_probe_passed: bool = True) -> Path:
+    """Build an install whose marker passes the real fingerprint checks.
+
+    *load_probe_passed* mirrors what the installer learned from its own preflight:
+    True is the normal install, where dyld resolved every binary. False is the
+    install whose probe timed out or could not spawn, which must not be remembered
+    as a pass.
+    """
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = install_dir / "build" / "bin"
     runtime_dir.mkdir(parents = True)
@@ -108,6 +122,7 @@ def build_install(tmp_path: Path, host) -> Path:
         approved_checksums = checksums_for(choice),
         prebuilt_fallback_used = False,
         backend_request = "auto",
+        macos_load_probe_passed = load_probe_passed,
     )
     return install_dir
 
@@ -308,3 +323,68 @@ def test_a_bundle_that_cannot_load_is_rejected_when_it_is_probed(tmp_path: Path,
     )
 
     assert matches_choice(install_dir, host) is False
+
+
+def test_an_install_whose_probe_never_ran_is_not_recorded_as_a_pass(tmp_path: Path, monkeypatch):
+    """The probe fails open, so "no issues" is not the same as "it loaded"."""
+    host = macos_host()
+    install_dir = build_install(tmp_path, host, load_probe_passed = False)
+
+    assert ILP.MACOS_LOAD_PROBE_KEY not in marker_of(install_dir)
+    calls = count_spawns(monkeypatch)
+    # Every byte still matches; the missing evidence alone is what costs a probe.
+    assert ILP._existing_install_runs(install_dir, host) is True
+    assert calls[0] == 1
+
+
+def test_a_timed_out_probe_reports_no_pass(tmp_path: Path, monkeypatch):
+    host = macos_host()
+    install_dir = build_install(tmp_path, host)
+    runtime_dir = install_dir / "build" / "bin"
+    binaries = [runtime_dir / "llama-server", runtime_dir / "llama-quantize"]
+
+    def _timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd = "llama-server", timeout = 60)
+
+    monkeypatch.setattr(ILP, "run_capture", _timeout)
+    monkeypatch.setattr(ILP, "macos_binary_minos_issues", lambda *a, **k: [])
+
+    # Still not a rejection: a loaded machine must not lose a healthy bundle.
+    assert ILP.preflight_macos_installed_binaries(binaries, install_dir, host) is False
+
+
+def test_a_probe_that_ran_reports_a_pass(tmp_path: Path, monkeypatch):
+    host = macos_host()
+    install_dir = build_install(tmp_path, host)
+    runtime_dir = install_dir / "build" / "bin"
+    binaries = [runtime_dir / "llama-server", runtime_dir / "llama-quantize"]
+
+    monkeypatch.setattr(
+        ILP,
+        "run_capture",
+        lambda *a, **k: types.SimpleNamespace(returncode = 0, stdout = "", stderr = ""),
+    )
+    monkeypatch.setattr(ILP, "macos_binary_minos_issues", lambda *a, **k: [])
+
+    assert ILP.preflight_macos_installed_binaries(binaries, install_dir, host) is True
+
+
+def test_a_macos_patch_update_probes_again(tmp_path: Path, monkeypatch):
+    """host_profile is (major, minor), so only the recorded product version sees this."""
+    host = macos_host()
+    install_dir = build_install(tmp_path, host)
+    calls = count_spawns(monkeypatch)
+    # 15.5.1 -> 15.5.2 leaves host_profile identical, but replaces the dyld shared cache.
+    monkeypatch.setattr(ILP, "macos_product_version", lambda: "15.5.2")
+
+    assert ILP._existing_install_runs(install_dir, host) is True
+    assert calls[0] == 1
+
+
+def test_the_same_macos_patch_level_still_skips(tmp_path: Path, monkeypatch):
+    host = macos_host()
+    install_dir = build_install(tmp_path, host)
+    calls = count_spawns(monkeypatch)
+
+    assert ILP._existing_install_runs(install_dir, host) is True
+    assert calls[0] == 0

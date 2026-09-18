@@ -221,6 +221,76 @@ def test_a_403_on_the_deferred_lookup_reaches_the_installer_as_a_fallback(monkey
     assert releases.api_listing_reads == 1
 
 
+def test_a_pinned_release_resolves_once_even_when_the_walk_back_is_on(monkeypatch):
+    """macOS sets continue_after_fast_path by host, not by whether a tag is pinned.
+
+    A pin names exactly one release, so the download host's answer is the whole
+    answer; falling through would yield it a second time and spend an API call.
+    """
+    releases = FakeReleases(monkeypatch, cdn_tag = RELEASE_TAGS[0])
+    pinned_lookups = []
+    monkeypatch.setattr(
+        ILP,
+        "pinned_published_release_bundle",
+        lambda repo, tag: pinned_lookups.append(tag) or releases._bundle(tag),
+    )
+
+    resolved = list(
+        ILP.iter_resolved_published_releases(
+            "latest",
+            PUBLISHED_REPO,
+            RELEASE_TAGS[0],
+            continue_after_fast_path = True,
+        )
+    )
+
+    assert [item.bundle.release_tag for item in resolved] == [RELEASE_TAGS[0]]
+    assert pinned_lookups == []
+    assert releases.api_listing_reads == 0
+
+
+def test_a_pin_without_the_cdn_still_reaches_the_api(monkeypatch):
+    """The guard must not cost the pinned lookup when the fast path produced nothing."""
+    releases = FakeReleases(monkeypatch)
+    pinned_lookups = []
+    monkeypatch.setattr(
+        ILP,
+        "pinned_published_release_bundle",
+        lambda repo, tag: pinned_lookups.append(tag) or releases._bundle(tag),
+    )
+
+    resolved = list(
+        ILP.iter_resolved_published_releases(
+            "latest",
+            PUBLISHED_REPO,
+            RELEASE_TAGS[0],
+            continue_after_fast_path = True,
+        )
+    )
+
+    assert [item.bundle.release_tag for item in resolved] == [RELEASE_TAGS[0]]
+    assert pinned_lookups == [RELEASE_TAGS[0]]
+
+
+def test_a_failed_walk_reports_the_same_failure_every_time(monkeypatch):
+    """A closed generator must not read as a short, clean sequence on the second pass."""
+
+    def _plans():
+        yield "p0"
+        raise ApiRateLimited("GitHub API returned 403")
+
+    plans = ILP.LazyReleasePlans(_plans())
+    assert plans[0] == "p0"
+
+    with pytest.raises(ApiRateLimited):
+        list(plans)
+    # Same question, same answer: without this the second pass returns ["p0"] quietly.
+    with pytest.raises(ApiRateLimited):
+        list(plans)
+    with pytest.raises(ApiRateLimited):
+        len(plans)
+
+
 def test_the_resolver_itself_still_fails_hard_on_a_403(monkeypatch):
     FakeReleases(
         monkeypatch,
