@@ -310,6 +310,14 @@ export function useTauriBackend() {
     }
     if (preflightInFlightRef.current) return;
     preflightInFlightRef.current = true;
+    // Whether THIS call still owns the flag. Released once below and once in the finally, and by
+    // then a later call may hold it: clearing it unowned would let a third preflight through.
+    let ownsPreflight = true;
+    const releasePreflight = () => {
+      if (!ownsPreflight) return;
+      ownsPreflight = false;
+      preflightInFlightRef.current = false;
+    };
     try {
       const { invoke } = await import("@tauri-apps/api/core");
 
@@ -317,7 +325,7 @@ export function useTauriBackend() {
       // The probe is what this guards; the arms below are re-entrant already (startingRef,
       // repairInFlightRef). Held any longer, a Retry offered by server-start-timeout from inside
       // startManagedServer's 500 ms port poll clears the error and then returns on the flag.
-      preflightInFlightRef.current = false;
+      releasePreflight();
       switch (preflight.disposition) {
         case "attached_ready": {
           if (!preflight.port) {
@@ -381,7 +389,7 @@ export function useTauriBackend() {
     } catch (e) {
       setBackendError(String(e));
     } finally {
-      preflightInFlightRef.current = false;
+      releasePreflight();
     }
   }
 

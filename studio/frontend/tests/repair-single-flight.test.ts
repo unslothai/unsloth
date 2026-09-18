@@ -42,12 +42,12 @@ test("a preflight already in flight is not run again", () => {
   );
   assert.match(
     body,
-    /finally \{\s*preflightInFlightRef\.current = false;\s*\}/,
+    /finally \{\s*releasePreflight\(\);\s*\}/,
     "a failed preflight must release the flag or Retry is dead for the session",
   );
   // Held past the probe, a Retry that server-start-timeout offers from inside startManagedServer's
   // 500 ms port poll is swallowed after clearing the error: error screen, nothing running.
-  const release = body.indexOf("preflightInFlightRef.current = false;");
+  const release = body.indexOf("releasePreflight();");
   const dispatch = body.indexOf("switch (preflight.disposition)");
   assert.ok(
     release > preflight && release < dispatch,
@@ -58,6 +58,17 @@ test("a preflight already in flight is not run again", () => {
     "no long await may run while the flag is held",
   );
   assert.ok(body.indexOf("await startRepair()") > release);
+  // Released twice, and by then a later call may hold the flag: an unowned clear would let a
+  // third preflight through, which is the fan-out this guard exists to stop.
+  assert.match(
+    body,
+    /const releasePreflight = \(\) => \{\s*if \(!ownsPreflight\) return;\s*ownsPreflight = false;\s*preflightInFlightRef\.current = false;\s*\};/,
+    "the release must be a no-op once this call has handed the flag on",
+  );
+  assert.ok(
+    !/preflightInFlightRef\.current = false;[\s\S]*preflightInFlightRef\.current = false;/.test(body),
+    "only releasePreflight may clear the flag",
+  );
 });
 
 test("a repair already in flight is not started again", () => {
