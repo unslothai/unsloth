@@ -7957,7 +7957,9 @@ def persist_macos_load_probe(install_dir: Path, host: HostInfo) -> bool:
             # Both macOS kinds share one pattern list, so the host answers this without
             # a plan; an unreadable file yields {} and no evidence rather than a half record.
             kind = "macos-arm64" if str(host.machine or "").lower() == "arm64" else "macos-x64"
-            records = runtime_file_records(install_dir, host, runtime_patterns_for_install_kind(kind))
+            records = runtime_file_records(
+                install_dir, host, runtime_patterns_for_install_kind(kind)
+            )
             if not records:
                 return False
             patch["runtime_files"] = records

@@ -151,7 +151,14 @@ def count_spawns(monkeypatch) -> list[int]:
     """
     calls = [0]
 
-    def _probe(binaries, install_dir, host, *, loaded = None, **_kwargs):
+    def _probe(
+        binaries,
+        install_dir,
+        host,
+        *,
+        loaded = None,
+        **_kwargs,
+    ):
         calls[0] += 1
         if loaded is not None:
             loaded.update(path.name for path in binaries)
@@ -402,14 +409,14 @@ def test_a_reuse_probe_that_passed_is_remembered(tmp_path: Path, monkeypatch):
 
     calls = count_spawns(monkeypatch)
     assert ILP._existing_install_runs(install_dir, host) is True
-    assert calls[0] == 1                       # this update pays for the probe
+    assert calls[0] == 1  # this update pays for the probe
     assert marker_of(install_dir)[ILP.MACOS_LOAD_PROBE_KEY] == {
         "passed": True,
         "macos_product_version": PRODUCT_VERSION,
     }
 
     assert ILP._existing_install_runs(install_dir, host) is True
-    assert calls[0] == 1                       # the next one does not
+    assert calls[0] == 1  # the next one does not
 
 
 def test_a_legacy_size_only_marker_is_upgraded_by_a_passing_probe(tmp_path: Path, monkeypatch):
