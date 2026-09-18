@@ -1004,15 +1004,20 @@ def get_attachment_file(
     attachment_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Serve one attachment's stored content: image or audio bytes, or
-    extracted text."""
+    """One attachment's content: the original file when kept, image or audio bytes, or text."""
     import urllib.parse
 
-    from fastapi.responses import Response
+    from fastapi.responses import FileResponse, Response
+
+    from storage.chat_attachment_store import attachment_path
 
     attachment = get_chat_attachment(message_id, attachment_id)
     if attachment is None:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
+    stored = attachment.get("storedFile")
+    original = attachment_path(stored.get("id")) if isinstance(stored, dict) else None
+    if original is not None:
+        return FileResponse(original, media_type = "application/octet-stream")
 
     attachment_content_type = attachment.get("contentType")
     texts: list[str] = []

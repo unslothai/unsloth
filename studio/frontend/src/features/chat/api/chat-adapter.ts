@@ -14,6 +14,7 @@ import {
   serverTuningLoadPayload,
 } from "../lib/server-tuning-fields";
 import { authFetch, getAuthToken } from "@/features/auth";
+import { withSandboxAttachmentPaths } from "../stored-attachment";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
 import {
@@ -4925,9 +4926,14 @@ export function createOpenAIStreamAdapter(
         messages,
         !isExternalRequest,
       );
+      const { messages: renderedMessages, sandboxAttachments } =
+        supportsStudioToolsForThisTurn &&
+        studioLocalCodeTools.includes("python")
+          ? withSandboxAttachmentPaths(survivingMessages)
+          : { messages: survivingMessages, sandboxAttachments: [] };
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
-      let outboundMessages = survivingMessages
+      let outboundMessages = renderedMessages
         .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
@@ -6204,6 +6210,9 @@ export function createOpenAIStreamAdapter(
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }
                       : {}),
+                    ...(sandboxAttachments.length > 0
+                      ? { sandbox_attachments: sandboxAttachments }
+                      : {}),
                     ...(resolvedThreadId
                       ? { thread_id: resolvedThreadId }
                       : {}),
@@ -6359,6 +6368,9 @@ export function createOpenAIStreamAdapter(
             video_base64: videoBase64,
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+            ...(sandboxAttachments.length > 0
+              ? { sandbox_attachments: sandboxAttachments }
+              : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning

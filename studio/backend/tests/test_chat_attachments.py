@@ -501,6 +501,27 @@ def test_attachment_sweep_keeps_referenced_and_recent_files(tmp_path, monkeypatc
     assert sorted(store._swept_at) == sorted([root, tmp_path / "other"])
 
 
+def test_attachment_file_serves_the_stored_original(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    stored = _upload(b"PK original workbook")
+    attachment = {
+        "id": "att-xlsx",
+        "type": "document",
+        "name": "book.xlsx",
+        "content": [{"type": "text", "text": "[XLSX: book.xlsx]"}],
+        "storedFile": stored,
+    }
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
+    response = chat_history.get_attachment_file("msg-1", "att-xlsx", current_subject = "unsloth")
+    assert open(response.path, "rb").read() == b"PK original workbook"
+    assert response.media_type == "application/octet-stream"
+
+    os.remove(response.path)
+    response = chat_history.get_attachment_file("msg-1", "att-xlsx", current_subject = "unsloth")
+    assert response.body.decode("utf-8") == "[XLSX: book.xlsx]"
+
+
 # ---------------------------------------------------------------------------
 # Audio attachments (adapter {data, format} and compare-chat bare base64)
 # ---------------------------------------------------------------------------

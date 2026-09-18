@@ -64,6 +64,7 @@ import {
   getDocxAttachmentError,
 } from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
+import { uploadAttachmentFile } from "./stored-attachment";
 import {
   isBinaryPropertyList,
   isBinaryTrackerModule,
@@ -281,6 +282,38 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
       }
       throw error;
     }
+  }
+}
+
+/** Documents only: images, audio and video are never copied to the sandbox. */
+class StoredFileAttachmentAdapter implements AttachmentAdapter {
+  private readonly delegate: AttachmentAdapter;
+
+  constructor(delegate: AttachmentAdapter) {
+    this.delegate = delegate;
+  }
+
+  get accept(): string {
+    return this.delegate.accept;
+  }
+
+  add(state: { file: File }) {
+    return this.delegate.add(state);
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    return this.delegate.remove(attachment);
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const [complete, storedFile] = await Promise.all([
+      this.delegate.send(attachment),
+      uploadAttachmentFile(attachment.file),
+    ]);
+    // Persisted with the message, so later turns can hand the file to the tool again.
+    return storedFile
+      ? ({ ...complete, storedFile } as CompleteAttachment)
+      : complete;
   }
 }
 
@@ -2358,14 +2391,16 @@ function useStudioRuntimeAdapters(
           // Before the document adapters: a composite takes the first match, and .mkv/.mov must not fall
           // through to them.
           new VideoAttachmentAdapter(),
-          new TextAttachmentAdapter(),
-          new HtmlAttachmentAdapter(),
-          new PDFAttachmentAdapter(),
-          new DocxAttachmentAdapter(),
-          new OpenDocumentAttachmentAdapter(),
-          new OfficeOpenXmlAttachmentAdapter(),
-          new RtfAttachmentAdapter(),
-          new IworkAttachmentAdapter(),
+          ...[
+            new TextAttachmentAdapter(),
+            new HtmlAttachmentAdapter(),
+            new PDFAttachmentAdapter(),
+            new DocxAttachmentAdapter(),
+            new OpenDocumentAttachmentAdapter(),
+            new OfficeOpenXmlAttachmentAdapter(),
+            new RtfAttachmentAdapter(),
+            new IworkAttachmentAdapter(),
+          ].map((adapter) => new StoredFileAttachmentAdapter(adapter)),
         ]),
         () => {
           const state = aui.threadListItem().getState();
