@@ -302,8 +302,6 @@ export const ptBR = {
     },
     keyboardShortcuts: {
       title: "Atalhos de teclado",
-      description:
-        "Altere qualquer atalho, ou apague um para liberar a combinação para o navegador ou o sistema.",
       searchPlaceholder: "Pesquisar atalhos…",
       noResults: "Nenhum atalho corresponde a essa pesquisa.",
       unassigned: "Não atribuído",

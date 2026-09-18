@@ -305,8 +305,6 @@ export const en = {
     },
     keyboardShortcuts: {
       title: "Keyboard shortcuts",
-      description:
-        "Change any shortcut, or clear one to free the chord for your browser or OS.",
       searchPlaceholder: "Search shortcuts…",
       noResults: "No shortcuts match that search.",
       unassigned: "Unassigned",

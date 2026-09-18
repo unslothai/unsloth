@@ -298,8 +298,6 @@ export const zhCN = {
     },
     keyboardShortcuts: {
       title: "键盘快捷键",
-      description:
-        "可以更改任意快捷键，或将其清除，把该组合让给浏览器或操作系统。",
       searchPlaceholder: "搜索快捷键…",
       noResults: "没有匹配的快捷键。",
       unassigned: "未分配",
