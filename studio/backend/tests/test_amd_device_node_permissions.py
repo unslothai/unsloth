@@ -1956,6 +1956,7 @@ def _kernel_stack_hint_text(
     *,
     topology: bool,
     kfd_present: bool = False,
+    topology_readable: bool = True,
     nvidia: bool = False,
 ) -> str:
     """What install.sh actually PRINTS in the missing-/dev/kfd branch, with ROCm blind.
@@ -1970,6 +1971,7 @@ def _kernel_stack_hint_text(
         tmp_path,
         topology = topology,
         kfd_present = kfd_present,
+        topology_readable = topology_readable,
         amd_smi_sees_it = False,
         nvidia = nvidia,
     )
@@ -2054,6 +2056,7 @@ def _install_sh_missing_kfd(
             f"_kfd_topology_amd_state() {{ return {0 if topology else (1 if topology_readable else 2)}; }}",
             f"_a_confirmed_amd_render_node_exists() {{ return {0 if confirmed_drm else 1}; }}",
             _shell_fn(lines, "_amd_silicon_behind_a_missing_kfd"),
+            _shell_fn(lines, "_kfd_node_is_amds"),
             # Stubbed when the arm is about something else and only needs a verdict; run
             # for real over stubbed command lookups when the arm IS about which probe the
             # branch consults, since a stub of the probe under test would answer for it.
@@ -4631,8 +4634,10 @@ def test_the_kernel_stack_advice_is_gated_on_the_node_being_absent():
     one. A revert removes the `[ -e /dev/kfd ]` arm and this raises rather than passing
     quietly."""
     block = _kernel_stack_hint_block()
-    present = block.index("[ -e /dev/kfd ]; then")
-    absent = block.index("[ ! -e /dev/kfd ]; then")
+    # Both arms now carry the topology gate as well, since a node that merely EXISTS does
+    # not establish that the AMD driver is what created it.
+    present = block.index("[ -e /dev/kfd ] && _kfd_node_is_amds")
+    absent = block.index("[ ! -e /dev/kfd ] || ! _kfd_node_is_amds")
     assert present < block.index("kernel stack is already loaded") < absent
     assert absent < block.index("Install the ROCm kernel stack")
 
@@ -4642,10 +4647,23 @@ def test_the_installer_names_the_userspace_when_the_node_is_already_there(tmp_pa
     had /dev/kfd, which is the one machine shape a dev box never is; the arm it pairs with
     skipped on exactly the complement, so the pair was never both run anywhere. The `-e`
     operator is still executed -- only the path it is given belongs to this case."""
-    out = _kernel_stack_hint_text(tmp_path, topology = False, kfd_present = True)
+    out = _kernel_stack_hint_text(tmp_path, topology = True, kfd_present = True)
     assert "Install the ROCm kernel stack" not in out
     assert "kernel stack is already loaded" in out
     assert "rocminfo" in out
+    # Codex 4050704658, and the reason the arm above now needs a topology naming AMD: a
+    # /dev/kfd that exists proves a node exists, not that the AMD driver created it. Where
+    # the topology is READ and holds no AMD agent, the kernel stack is not loaded and the
+    # userspace-only advice is the wrong repair.
+    out = _kernel_stack_hint_text(tmp_path, topology = False, kfd_present = True)
+    assert "kernel stack is already loaded" not in out
+    assert "Install the ROCm kernel stack" in out
+    # ...but a topology that cannot be READ is unproven rather than contradicted, so the
+    # container masking /sys/class/kfd keeps the advice it has today.
+    out = _kernel_stack_hint_text(
+        tmp_path, topology = False, topology_readable = False, kfd_present = True
+    )
+    assert "kernel stack is already loaded" in out
 
 
 def _backend_env(**env: str) -> dict:

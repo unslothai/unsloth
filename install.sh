@@ -3862,6 +3862,23 @@ _kfd_topology_amd_state() {
     esac
 }
 
+# Whether the /dev/kfd that EXISTS here is one the AMD driver put there. The branch below
+# claims the AMD kernel stack is already loaded and that only ROCm userspace is missing, and
+# a node that merely exists does not establish that: what does is an AMD agent in the KFD
+# topology.
+#
+# A tri-state, read the same way the missing-node branch reads it, and deliberately not the
+# stricter "require vendor 4098" it would be easy to write instead. State 1 is the topology
+# READ with no AMD agent in it, which is the only reading that contradicts the claim. State
+# 2 is a topology that cannot be read at all -- the container that maps /dev/kfd and masks
+# /sys/class/kfd -- where the claim is unproven rather than false, so the diagnosis it has
+# today is kept rather than lost to a gate that cannot see.
+_kfd_node_is_amds() {
+    _kina_state=0
+    _kfd_topology_amd_state || _kina_state=$?
+    [ "$_kina_state" -ne 1 ]
+}
+
 # Whether this host has AMD silicon behind a /dev/kfd that is not there. Mirrors
 # utils/hardware/amd.py::_amd_nodes_the_runtime_lacks, which asks the same two questions in
 # the same order, and the two halves have to agree or one of them stays silent on a host the
@@ -6152,7 +6169,7 @@ elif [ "$_amd_node_diag_route" = true ] && \
    _run_may_open_kfd && [ "$OS" != "macos" ] && \
    ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
    ! _has_amd_rocm_gpu ignore-nvidia && _amd_gpu_present_via_pci && \
-   [ -e /dev/kfd ]; then
+   [ -e /dev/kfd ] && _kfd_node_is_amds; then
         substep "An AMD GPU is on the PCI bus and /dev/kfd is present and openable, so" "$C_WARN"
         substep "  the kernel stack is already loaded and reinstalling it changes nothing."
         substep "  What is missing is the ROCm userspace that reads the card: install"
@@ -6162,7 +6179,7 @@ elif [ "$_amd_node_diag_route" = true ] && \
    _run_may_open_kfd && [ "$OS" != "macos" ] && \
    ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
    ! _has_amd_rocm_gpu ignore-nvidia && _amd_gpu_present_via_pci && \
-   [ ! -e /dev/kfd ]; then
+   { [ ! -e /dev/kfd ] || ! _kfd_node_is_amds; }; then
         substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
         substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
         substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
