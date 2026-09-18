@@ -4551,6 +4551,31 @@ _VK_MASK = "GGML_VK_VISIBLE_DEVICES"
                  id = "an_unboundable_mask_on_a_vulkan_build"),
     pytest.param(({_VK_MASK: ""}, {"hip"}, (), (_VK_MASK,)), id = "the_same_mask_on_a_hip_build"),
     pytest.param(({}, {"vulkan"}, (), (_VK_MASK,)), id = "no_such_mask_at_all"),
+    # A negative ordinal is the one out-of-range value decidable WITHOUT the raw device
+    # count: ggml extracts with `size_t tmp; while (ss >> tmp)`, unsigned extraction runs
+    # strtoull, and "-1" wraps to 2**64-1, which is >= any possible num_available_devices.
+    # So it always throws "Invalid Vulkan device index" and no group membership repairs it.
+    # Reported as a blocker, never as a mask merely worth checking after the group repair.
+    pytest.param(({_VK_MASK: "-1"}, {"vulkan"},
+                  ("visibility mask is also in force", f"{_VK_MASK}='-1'"),
+                  ("names a device this cannot resolve",)),
+                 id = "a_negative_ordinal_always_throws_so_it_blocks"),
+    # Extraction WALKS the list, so a negative one throws wherever it sits, as long as
+    # every token ahead of it still extracts.
+    pytest.param(({_VK_MASK: "0,-1"}, {"vulkan"},
+                  ("visibility mask is also in force",),
+                  ("names a device this cannot resolve",)),
+                 id = "a_negative_ordinal_behind_a_valid_one_still_blocks"),
+    # ... but only as far as the first token that does NOT extract: ggml stops reading
+    # there, so the negative one is never reached and cannot be what throws.
+    pytest.param(({_VK_MASK: "abc,-1"}, {"vulkan"},
+                  ("visibility mask is also in force",), ()),
+                 id = "a_negative_ordinal_after_a_dead_token_is_never_read"),
+    # "-0" wraps to 0, which is in range on any host with a device, so it is not a throw
+    # and must not be promoted to a blocker: that would invent the fault this guards.
+    pytest.param(({_VK_MASK: "-0"}, {"vulkan"},
+                  ("names a device this cannot resolve", f"{_VK_MASK}='-0'"), ()),
+                 id = "a_negative_zero_is_in_range_and_stays_unresolved"),
 ])
 # fmt: on
 def test_when_the_vulkan_selector_is_named_beside_the_node(monkeypatch, linux, case):
@@ -4559,9 +4584,11 @@ def test_when_the_vulkan_selector_is_named_beside_the_node(monkeypatch, linux, c
     GGML_VK_VISIBLE_DEVICES itself and _run_vulkan_probe passes it through, and an empty value
     extracts no ordinal at all, so the probe stays empty however the node is owned. Its
     ordinals index the RAW vkEnumeratePhysicalDevices list, before CPU devices are dropped and
-    ICDs deduplicated, so this process does not have the bound and an ordinal past the raw end
-    throws rather than hiding: reported to check rather than called a blocker, since naming it
-    one would invent a fault. A build reads its own selectors and no others, so naming this
+    ICDs deduplicated, so this process does not have the bound and a merely large positive
+    ordinal throws rather than hiding: reported to check rather than called a blocker, since
+    naming it one would invent a fault. A NEGATIVE one is the exception, decidable without the
+    bound because it wraps past every possible one. A build reads its own selectors and no
+    others, so naming this
     one to a HIP install sends the user after a variable its runtime never reads; and unset is
     not empty, so the rule cannot be "always mention it"."""
     env, backends, present, absent = case

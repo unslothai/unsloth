@@ -12568,6 +12568,30 @@ class LlamaCppBackend:
                 _digits = _token[1:] if _token[:1] in ("+", "-") else _token
                 return not _digits[:1].isdigit()
 
+            def _vk_ordinal_always_throws(value: str) -> bool:
+                # A NEGATIVE ordinal is decidable without the raw device count, which is why
+                # it is judged here while a positive out-of-range one is only unresolved.
+                # ggml reads with `size_t tmp; while (ss >> tmp)` (ggml-vulkan.cpp,
+                # ggml_vk_instance_init), and unsigned extraction applies strtoull, which
+                # accepts a sign and wraps: "-1" becomes 2**64-1, which is >= any possible
+                # num_available_devices, so `tmp >= num_available_devices` always holds and
+                # it throws "Invalid Vulkan device index". _run_vulkan_probe turns that
+                # nonzero exit into the empty result being diagnosed, and no group
+                # membership changes it -- so it is a blocker, exactly as an Illegal ROCr
+                # token is, rather than something to try after the group repair.
+                #
+                # Not just the FIRST token: extraction walks the list, so a negative one
+                # throws wherever it sits, provided every token before it still extracts.
+                # "-0" wraps to 0 and is in range, so it is not a throw.
+                for _token in value.replace(",", " ").split():
+                    _signed = _token[:1] in ("+", "-")
+                    _digits = _token[1:] if _signed else _token
+                    if not _digits[:1].isdigit():
+                        return False  # extraction stops here, so nothing after it is read
+                    if _token[:1] == "-" and _digits.lstrip("0"):
+                        return True
+                return False
+
             def _is_an_illegal_rocr_selector(value: str) -> bool:
                 # ROCr's filter (ROCR-Runtime, core/inc/amd_filter_device.h) calls a token
                 # Illegal when it "can't be evaluated into an instance of Device UUID or
@@ -12647,8 +12671,9 @@ class LlamaCppBackend:
             # ordinals with `ss >> tmp` against the RAW vkEnumeratePhysicalDevices list,
             # before CPU devices are dropped and ICDs deduplicated, so this process does not
             # have the bound. A first token with no integer prefix (the empty string
-            # included) selects nothing, while an ordinal past the raw end throws "Invalid
-            # device index" rather than hiding. Anything else is reported as unresolved.
+            # included) selects nothing, and a NEGATIVE ordinal wraps past every possible
+            # bound and always throws; a merely large positive one needs the bound to judge,
+            # so it stays unresolved. Anything else is reported as unresolved.
             if _is_vulkan:
                 _vk_raw = os.environ.get("GGML_VK_VISIBLE_DEVICES")
                 if _vk_raw is not None:
@@ -12658,7 +12683,7 @@ class LlamaCppBackend:
                         else "GGML_VK_VISIBLE_DEVICES is empty"
                     )
                     masks.append(_vk_phrase)
-                    if _vk_selects_no_device(_vk_raw):
+                    if _vk_selects_no_device(_vk_raw) or _vk_ordinal_always_throws(_vk_raw):
                         blocking.append(_vk_phrase)
                     else:
                         unresolved.append(_vk_phrase)
