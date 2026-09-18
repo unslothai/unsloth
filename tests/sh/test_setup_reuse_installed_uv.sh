@@ -16,6 +16,9 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
 HELPER=$(awk '
+    /^_setup_uv_signal_target\(\) \{/ { grab = 1 }
+    /^_setup_uv_probe_restore_trap\(\) \{/ { grab = 1 }
+    /^_setup_uv_probe_on_signal\(\) \{/ { grab = 1 }
     /^_setup_uv_probe_exec\(\) \{/ { grab = 1 }
     /^_setup_uv_version_at_least\(\) \{/ { grab = 1 }
     /^_setup_find_installed_uv\(\) \{/ { grab = 1 }
@@ -25,7 +28,8 @@ HELPER=$(awk '
 # The floor the finder compares against lives beside the function, not inside it.
 HELPER="$(grep '^_SETUP_UV_MIN_VERSION=' "$SETUP_SH")
 $HELPER"
-for _fn in _setup_uv_probe_exec _setup_uv_version_at_least _setup_find_installed_uv; do
+for _fn in _setup_uv_signal_target _setup_uv_probe_restore_trap _setup_uv_probe_on_signal _setup_uv_probe_exec \
+           _setup_uv_version_at_least _setup_find_installed_uv; do
     printf '%s\n' "$HELPER" | grep -q "^$_fn() {" || {
         echo "FATAL: could not extract $_fn from setup.sh" >&2; exit 1; }
 done
@@ -175,6 +179,9 @@ BODY
         mkdir -p "$NOTO"
         ln -s "$(command -v sleep)" "$NOTO/sleep"
         ln -s "$(command -v "$shell")" "$NOTO/$shell"
+        # Stock macOS ships no GNU timeout and DOES ship ps, which is how the probe learns whether
+        # its child got a process group. Leaving ps out made the fixture prove the weaker path.
+        [ -n "$(command -v ps)" ] && ln -s "$(command -v ps)" "$NOTO/ps"
         _hang_started=$(date +%s)
         assert_eq "$shell: without GNU timeout a uv that never answers is still not reused" \
             "none" "$(env -i PATH="$NOTO" HOME="$HOME_DIR" UV_INSTALL_DIR="$HANG" "$shell" "$HANG_PROBE")"
@@ -183,6 +190,30 @@ BODY
         else
             bad "$shell: ...and the fallback bound held"
         fi
+        # Cancelling setup mid-probe must take the candidate with it. Only the watchdog branch
+        # needs this: `timeout` is its own process and enforces the ceiling whatever happens to
+        # the shell, while the watchdog's ceiling IS the shell being cancelled.
+        CANCEL="$WORK/$shell cancel probe.sh"
+        {
+            printf '%s\n' "$HELPER"
+            printf '_setup_uv_probe_exec "%s/uv"\n' "$HANG"
+        } > "$CANCEL"
+        env -i PATH="$NOTO" HOME="$HOME_DIR" _SETUP_UV_PROBE_SECONDS=30 \
+            "$shell" "$CANCEL" >/dev/null 2>&1 &
+        _cancel_sup=$!
+        sleep 3
+        kill -TERM "$_cancel_sup" 2>/dev/null || :
+        # The supervisor dies of the signal, so `wait` reports 143: not a test failure.
+        wait "$_cancel_sup" 2>/dev/null || :
+        sleep 2
+        # Snapshot first and match in the shell: piping into grep puts the pattern on grep's own
+        # command line, so `ps | grep` matches itself and the check can never go green.
+        _cancel_snap=$(ps -A -o args= 2>/dev/null) || _cancel_snap=""
+        case "$_cancel_snap" in
+            *"$HANG/uv"*) bad "$shell: cancelling setup kills the probe with it" ;;
+            *) ok "$shell: cancelling setup kills the probe with it" ;;
+        esac
+
         # A uv that ignores TERM: both branches must end in KILL.
         DEAF="$CASE/ignores term"
         mkdir -p "$DEAF"

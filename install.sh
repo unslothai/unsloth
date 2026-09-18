@@ -1213,6 +1213,9 @@ _cleanup_install_temporaries() {
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
     [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
     [ -n "${_ROCM_TAG_MEMO_DIR:-}" ] && rm -rf "$_ROCM_TAG_MEMO_DIR" 2>/dev/null || true
+    # The probe's ceiling is held by this shell, so a cancel during one would otherwise leave the
+    # candidate (and, under monitor mode, its whole group) running with nobody left to stop it.
+    [ -n "${_UV_PROBE_TARGET:-}" ] && _uv_signal_target TERM "$_UV_PROBE_TARGET" || true
 }
 
 _on_install_exit() {
@@ -1246,6 +1249,7 @@ _UIP_STAGE=""
 _UIP_STAGE2=""
 _ROCM_TAG_MEMO_DIR=""
 _ROCM_TAG_MEMO=""
+_UV_PROBE_TARGET=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
@@ -3235,6 +3239,15 @@ _uv_sha256() {
 
 # Liveness probe for a fresh binary, hang-proof: no stdin (a prompting build reads EOF) and a
 # ceiling, held by `timeout -k` where it exists and by a watchdog on stock macOS, which has none.
+_uv_signal_target() {
+    # bash reads a bare negative pid as a signal spec, dash refuses the `--` that fixes bash, and
+    # only a shell that made a process group produces a negative target: the sign picks the form.
+    case "$2" in
+        -*) kill "-$1" -- "$2" 2>/dev/null || : ;;
+        *)  kill "-$1" "$2" 2>/dev/null || : ;;
+    esac
+}
+
 _uv_probe_exec() {
     _upe_secs="${_UV_PROBE_SECONDS:-20}"
     # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
@@ -3263,10 +3276,13 @@ _uv_probe_exec() {
             *) [ "$_upe_pgid" = "$_upe_self" ] || _upe_target="-$_upe_pgid" ;;
         esac
     fi
+    # Published for _cleanup_install_temporaries: the installer's HUP/INT/TERM handlers run it,
+    # so a cancel during the wait kills the probe instead of orphaning it.
+    _UV_PROBE_TARGET="$_upe_target"
     _upe_waited=0
     while kill -0 "$_upe_pid" 2>/dev/null; do
         if [ "$_upe_waited" -ge "$_upe_secs" ]; then
-            kill "$_upe_target" 2>/dev/null
+            _uv_signal_target TERM "$_upe_target"
             _upe_grace=0
             while [ "$_upe_grace" -lt 5 ] && kill -0 "$_upe_pid" 2>/dev/null; do
                 sleep 1
@@ -3274,8 +3290,9 @@ _uv_probe_exec() {
             done
             # Only if it is still there: the loop also ends when TERM worked, and the KILL went
             # out anyway, to a number this shell no longer owns.
-            if kill -0 "$_upe_pid" 2>/dev/null; then kill -9 "$_upe_target" 2>/dev/null || :; fi
+            if kill -0 "$_upe_pid" 2>/dev/null; then _uv_signal_target KILL "$_upe_target"; fi
             wait "$_upe_pid" 2>/dev/null
+            _UV_PROBE_TARGET=""
             unset _upe_pid _upe_waited _upe_grace _upe_target _upe_pgid _upe_self
             return 124
         fi
@@ -3284,6 +3301,7 @@ _uv_probe_exec() {
     done
     wait "$_upe_pid"
     _upe_rc=$?
+    _UV_PROBE_TARGET=""
     unset _upe_pid _upe_waited _upe_target _upe_pgid _upe_self
     return $_upe_rc
 }
