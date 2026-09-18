@@ -7,6 +7,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { readText } from "./helpers/kit.ts";
+
 import {
   LOCAL_MODEL_INFO_FIELDS,
   localModelInfoFacts,
@@ -38,7 +40,9 @@ test("context length is reported from the header", () => {
 });
 
 test("unread header values drop their rows rather than showing zero", () => {
-  const keys = [...factsByKey({ contextLength: null, layerCount: null }).keys()];
+  const keys = [
+    ...factsByKey({ contextLength: null, layerCount: null }).keys(),
+  ];
   assert.deepEqual(keys, []);
   assert.deepEqual([...factsByKey({}).keys()], []);
 });
@@ -79,7 +83,10 @@ test("a dense model reports no expert layers, and is not dropped", () => {
 
 test("layer count is reported when the header carries one", () => {
   assert.equal(factsByKey({ layerCount: 36 }).get("layers"), "36");
-  assert.equal(factsByKey({ contextLength: 4096, layerCount: 0 }).has("layers"), false);
+  assert.equal(
+    factsByKey({ contextLength: 4096, layerCount: 0 }).has("layers"),
+    false,
+  );
 });
 
 // Qwen3.8-27B branches on enable_thinking, so thinking can be switched off: hybrid.
@@ -93,15 +100,31 @@ test("a template with a thinking toggle is hybrid", () => {
   assert.equal(reasoningSupport("{{ '/no_think' }}"), "hybrid");
 });
 
-// gpt-oss-20b carries reasoning_effort and an analysis channel, but no toggle.
-test("reasoning with no way out is always on, not hybrid", () => {
+test("reasoning markers do not establish an always-on capability", () => {
   assert.equal(
     reasoningSupport(
       `{%- set reasoning_effort = reasoning_effort|default("medium") %}<|channel|>analysis`,
     ),
-    "always",
+    "detected",
   );
-  assert.equal(reasoningSupport("<think>\n</think>"), "always");
+  assert.equal(reasoningSupport("<think>\n</think>"), "detected");
+});
+
+test("a system-prompt thinking switch is not reported as always on", () => {
+  // Source: nvidia/Llama-3_3-Nemotron-Super-49B-v1 tokenizer_config.json.
+  // Its system prompt controls thinking; the template only removes past thoughts.
+  const template = readText("fixtures/nemotron-super-chat-template.jinja");
+  assert.equal(reasoningSupport(template), "detected");
+  const reasoning = localModelInfoFacts({
+    contextLength: 131072,
+    chatTemplate: template,
+  }).find((fact) => fact.key === "reasoning");
+  assert.ok(reasoning);
+  assert.equal(reasoning.value, "Detected");
+  assert.doesNotMatch(
+    reasoning.detail ?? "",
+    /always|no way to turn thinking off/i,
+  );
 });
 
 // The markers recognise reasoning; they cannot prove its absence, so no match is unknown.
@@ -119,7 +142,7 @@ test("no template means reasoning is unknown, not unsupported", () => {
   assert.equal(reasoningSupport("  "), "unknown");
 });
 
-test("the reasoning row is labelled hybrid or always on", () => {
+test("the reasoning row distinguishes a toggle from detected markers", () => {
   assert.equal(
     factsByKey({
       contextLength: 4096,
@@ -132,7 +155,7 @@ test("the reasoning row is labelled hybrid or always on", () => {
       contextLength: 4096,
       chatTemplate: '{%- set reasoning_effort = "high" %}',
     }).get("reasoning"),
-    "Always on",
+    "Detected",
   );
   // No template read, so no reasoning claim either.
   assert.equal(
