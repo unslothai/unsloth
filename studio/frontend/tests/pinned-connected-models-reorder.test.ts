@@ -18,9 +18,8 @@ const RESET_PROBE = "external::connection::__reset__";
 function reset(order = [A, B]) {
   pins.getState().endPinnedConnectedDrag(false);
   storage.clear();
-  // Two toggles that WRITE, to clear the module-private failure state a previous test may have
-  // left behind. Resetting only storage and the zustand state left `storageWritable` false with
-  // ids still in `unpersisted`, which made the test after it pass without testing anything.
+  // Two toggles that WRITE, to clear module-private failure state: resetting only storage and the
+  // zustand state left a leaked `unpersisted` making the next test pass without testing anything.
   pins.getState().togglePinnedConnected(RESET_PROBE);
   pins.getState().togglePinnedConnected(RESET_PROBE);
   storage.set(KEY, JSON.stringify(order));
@@ -101,9 +100,8 @@ test("storage events outside a drag apply immediately", () => {
 });
 
 test("a pin that could not be written survives the next toggle", () => {
-  // Quota exhausted with the key already present: reads keep working and return the OLDER list,
-  // so basing the next edit on the record drops the pin that never persisted. The store already
-  // intends "pins stay session-only" here; this is that intent holding across a second edit.
+  // Quota exhausted with the key present: reads still return the OLDER list, so basing the next
+  // edit on the record dropped the pin that never persisted.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -123,9 +121,8 @@ test("a pin that could not be written survives the next toggle", () => {
 });
 
 test("a drag after a failed write keeps both sides' pins", () => {
-  // The record stays FRESH for other windows while our own writes fail, so it is merged, not
-  // dropped: an early return that ignored it let the drop overwrite another window's additions
-  // once storage recovered.
+  // The record stays FRESH for other windows, so it is merged: ignoring it let the drop overwrite
+  // another window's additions once storage recovered.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -147,8 +144,7 @@ test("a drag after a failed write keeps both sides' pins", () => {
 });
 
 test("a peer removal survives a failed write", () => {
-  // Only the ids this window failed to persist are its own. Treating everything the record lacks
-  // as local re-added what a peer had just unpinned.
+  // Treating everything the record lacks as local re-added what a peer had just unpinned.
   reset([A, C]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -187,8 +183,7 @@ test("undoing a failed pin does not resurrect it", () => {
 });
 
 test("a failed pin stays on screen when a peer writes", () => {
-  // The rendered list decides which way the row's own action toggles, so it has to agree with
-  // what every merge below it holds.
+  // The rendered list decides which way the row toggles, so it must agree with the merge.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -226,8 +221,8 @@ test("a peer persisting our failed pin hands it back to the record", () => {
 });
 
 test("a record read outside the storage handler retires a pin too", () => {
-  // The peer's write is observed synchronously by an unchanged drag, before its event is
-  // delivered, so retiring only in the handler left the id classified as ours.
+  // An unchanged drag sees the peer's write before its event, so retiring only in the handler
+  // left the id classified as ours.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -249,12 +244,9 @@ test("a record read outside the storage handler retires a pin too", () => {
 });
 
 test("a queued payload does not retire a pin the record never carried", () => {
-  // The mirror image of the test above, and the two are INDISTINGUISHABLE from here: "we failed
-  // to pin B, then a peer pinned and unpinned it" and "a peer pinned and unpinned B, then we
-  // failed to pin it" deliver the same two payloads over the same final record. An earlier round
-  // retired on the payload, which is right for the first ordering and silently drops the user's
-  // own pin in the second. Only the record retires, so the pin the user made survives as what it
-  // is: session-only, on screen, and not in the record.
+  // The mirror of the test above and INDISTINGUISHABLE from it: the same two payloads over the
+  // same final record. Retiring on the payload is right there and drops the user's own pin here,
+  // so only the record retires and this pin survives session-only.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -310,11 +302,8 @@ test("a later successful toggle persists the rendered order", () => {
 });
 
 test("a peer reorder wins once nothing of ours is unwritten", () => {
-  // Retiring the last unpersisted id leaves `storageWritable` false, which is a statement about
-  // OUR writes, not about the record. With nothing of ours left to carry, the record is as
-  // authoritative as it is in the writable case, and a peer that persisted our pin may have
-  // reordered since. Keeping the rendered order here let the next toggle that landed overwrite
-  // that reorder.
+  // `storageWritable` is about OUR writes, not the record: with nothing of ours left to carry,
+  // holding the rendered order let the next toggle that landed overwrite a peer's reorder.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -333,9 +322,8 @@ test("a peer reorder wins once nothing of ours is unwritten", () => {
 });
 
 test("interleaved local and peer pins keep one newest-first order", () => {
-  // Two blocks, ours and theirs, is not an order either window produced: it lifts every pin this
-  // window could not write above every peer pin already on screen, and the next write that lands
-  // freezes that.
+  // Two blocks is an order neither window produced: it lifts every pin we could not write above
+  // every peer pin on screen, and the next write that lands freezes that.
   reset([A]);
   const realSet = storage.set.bind(storage);
   const failing = () => {
@@ -391,8 +379,8 @@ test("a peer clearing the record keeps a pin that was never written", () => {
 });
 
 test("an unchanged drag keeps a peer pin above an older failed one", () => {
-  // The drag ends on the pre-drag rendered order, which is where the unpersisted pin actually
-  // sits. Ending on the list the event carried re-added it at the front, above a newer peer pin.
+  // Ending on the list the event carried re-added the unpersisted pin at the front, above a
+  // newer peer pin.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -410,16 +398,15 @@ test("an unchanged drag keeps a peer pin above an older failed one", () => {
 });
 
 test("a peer reordering the same pins reorders this window too", () => {
-  // Nothing added and nothing removed, so a merge that only carries this window's unwritten pins
-  // has no work to do and silently left the old order on screen.
+  // Nothing added or removed, so a merge carrying only our unwritten pins left the old order.
   reset([A, B]);
   externalWrite([B, A]);
   assert.deepEqual(pins.getState().pinned, [B, A]);
 });
 
 test("a record this window cannot read changes nothing on screen", () => {
-  // Storage access revoked mid-session reads like a deleted key and means the opposite. Treating
-  // it as a reset unpinned everything the record held, on a window whose writes still land.
+  // Revoked access reads like a deleted key and means the opposite: as a reset it unpinned
+  // everything, on a window whose writes still land.
   reset([A]);
   const realGet = storage.get.bind(storage);
   storage.get = () => {
@@ -449,8 +436,7 @@ test("an event arriving while the record is unreadable leaves the list alone", (
 });
 
 test("an unpin stays an unpin when a peer cleared the record first", () => {
-  // The row still draws itself pinned, so the click means unpin. Reading the direction off a base
-  // the clear had already emptied wrote the model straight back in.
+  // The row draws itself pinned, so the click means unpin; the emptied base wrote it back in.
   reset([A, B]);
   storage.delete(KEY); // a peer clears, its event not yet delivered
   pins.getState().togglePinnedConnected(A);
@@ -471,10 +457,8 @@ test("an unpin stays an unpin when a peer unpinned it first", () => {
 });
 
 test("a record we cannot read does not make older pins ours", () => {
-  // Blind in both directions, the only id this window knows is unpublished is the one it just
-  // added. Claiming the whole screen made pins that WERE stored ours, so a peer unpinning one of
-  // them was undone by the next write that landed.
-  // The readable case is the test below: same misclassification, narrower window.
+  // Blind both ways, the only id known unpublished is the one just added: claiming the screen
+  // made stored pins ours, so a peer unpinning one was undone by the next write that landed.
   reset([A, B]);
   const realSet = storage.set.bind(storage);
   const realGet = storage.get.bind(storage);
@@ -498,8 +482,7 @@ test("a record we cannot read does not make older pins ours", () => {
 
 test("a peer removing a pin as the write fails does not make it ours", () => {
   // The peer's write lands between the read this edit was built on and the setItem that failed,
-  // so the record no longer holds B while the attempted list still does. Reading ownership off
-  // that difference claimed B, and the next write that landed put the peer's removal back.
+  // so reading ownership off the difference claimed B and undid the removal.
   reset([A, B]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {

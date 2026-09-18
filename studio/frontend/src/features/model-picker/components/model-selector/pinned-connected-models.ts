@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Pinned `external::<connectionId>::<modelId>` ids for the Connected list, in localStorage.
-// NOT the On Device store in pinned-models.ts: an external id contains "::", which that store
-// reads as its repoId/quant separator and surfaces as a phantom pinned quant on the On Device tab.
+// NOT pinned-models.ts: "::" is that store's repoId/quant separator, so an external id lands on the
+// On Device tab as a phantom pinned quant.
 
 import { create } from "zustand";
 
@@ -20,10 +20,9 @@ function readPinned(): string[] {
   }
 }
 
-/** What the record says, with the three answers kept apart. A single null conflated them, and the
- *  two that are not a list mean opposite things: `absent` is a peer's reset and unpins what it
- *  held, while `unreadable` (storage access revoked mid-session, or a value no one can parse) is
- *  this window losing its eyes and must change nothing on screen. */
+/** `absent` is a peer's reset and unpins what the record held; `unreadable` (access revoked, or an
+ *  unparseable value) is this window losing its eyes and must change nothing. A single null for
+ *  both made a revoked read unpin everything. */
 type StoredRecord =
   | { readonly kind: "list"; readonly ids: string[] }
   | { readonly kind: "absent" }
@@ -50,16 +49,12 @@ function storedRecord(): StoredRecord {
   }
 }
 
-// A write that failed (quota exhausted with the key already present) leaves the RECORD without the
-// pins it rejected, so re-reading it as a base drops them. Only those ids are ours: the record
-// stays authoritative for everything else, including a peer's removals, so the delta is tracked
-// rather than inferred from "everything the record does not have", which re-added what a peer
-// deleted. Cleared as soon as a write lands, which is when the record carries them again.
+// Ids this window pinned and could not persist. The record stays authoritative for everything
+// else, peer removals included, so these are tracked rather than inferred from what it lacks.
 let storageWritable = true;
 let unpersisted = new Set<string>();
 
-/** `added` is the id this edit introduced, or null for a reorder, an unpin, or a drag commit.
- *  It is the only thing a window that can neither write NOR read the record still knows. */
+/** `added` is the id this edit introduced, or null for a reorder, an unpin or a drag commit. */
 function writePinned(pinned: string[], added: string | null = null): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(pinned));
@@ -69,24 +64,18 @@ function writePinned(pinned: string[], added: string | null = null): void {
   } catch {
     storageWritable = false;
   }
-  // Only the id this edit introduced is certainly unpublished. Inferring ownership from the whole
-  // list instead, by re-reading the record and keeping everything it lacks, claimed ids a PEER had
-  // just removed: its write can land between the read this edit was built on and the setItem that
-  // failed, and it claimed every pin on screen outright when the record could not be read at all.
-  // Either way the storage merge then kept the id and the next write that landed undid the peer.
-  // Intersecting with the attempted list is the undo rule: unpinning while writes fail has to take
-  // the id back out, else the next merge resurrects a model the user just removed.
+  // Only `added` is certainly unpublished: re-reading the record here instead claimed ids a peer
+  // removed between that read and this failed write, and the next write that landed undid them.
+  // The intersection is the undo rule, so unpinning while writes fail takes the id back out.
   const carried = new Set([...unpersisted].filter((id) => pinned.includes(id)));
   if (added !== null) carried.add(added);
   unpersisted = carried;
 }
 
-/** Ids this window pinned and could not persist, which the record cannot be asked about. Read from
- *  the set rather than from the caller's list: a peer's storage event replaces this window's array
+/** Read from the set, not the caller's list: a peer's storage event replaces this window's array
  *  wholesale, so by the next edit the list no longer carries them. */
 function ourPins(stored: readonly string[], present: readonly string[]): string[] {
   if (storageWritable) return [];
-  // Already newest first: the set is rebuilt from the list the failed write attempted.
   return [...unpersisted].filter(
     (id) => !stored.includes(id) && !present.includes(id),
   );
@@ -96,19 +85,16 @@ function isOurs(id: string): boolean {
   return !storageWritable && unpersisted.has(id);
 }
 
-/** An id the record now carries is no longer ours to re-add, whoever wrote it. Without this a peer
- *  persisting the same model and later unpinning it would see the pin resurrected. Called from
- *  every read of the record, not only the storage handler: a drag that ends unchanged observes a
- *  peer's write synchronously, before its event is delivered. */
+/** An id the record carries is no longer ours to re-add, whoever wrote it, else a peer pinning then
+ *  unpinning it resurrects the pin. From every read, not just the handler: an unchanged drag sees a
+ *  peer's write before its event arrives. */
 function retirePersisted(stored: readonly string[]): void {
   if (unpersisted.size === 0) return;
   for (const id of stored) unpersisted.delete(id);
 }
 
-/** The record to apply an edit to. While writes are failing the record is still FRESH for other
- *  windows and only stale for this one's own unpersisted pins, so it is merged rather than
- *  dropped: another window's additions and removals both land, and only the ids this session
- *  pinned and could not persist are carried over. */
+/** The record to apply an edit to. It is FRESH for other windows and stale only for our own
+ *  unpersisted pins, so it is merged rather than dropped. */
 function persistedBase(fallback: readonly string[]): string[] {
   const record = storedRecord();
   if (record.kind !== "list") {
@@ -116,35 +102,23 @@ function persistedBase(fallback: readonly string[]): string[] {
   }
   const stored = record.ids;
   retirePersisted(stored);
-  // Nothing of ours is unwritten, so the record is authoritative exactly as it is while writes
-  // land: a peer that persisted our failed pin may also have REORDERED since, and holding on to
-  // this window's rendered order merely because an older write failed would overwrite that
-  // reorder on the next toggle that does land.
+  // With nothing of ours unwritten the record wins outright: storageWritable describes OUR writes,
+  // and holding the rendered order past a peer's reorder would overwrite it on the next toggle.
   if (storageWritable || unpersisted.size === 0) return stored;
-  // The SAME merge the drag commit uses, applied to the rendered list, so the two paths cannot
-  // disagree about order: prepending every unpersisted pin to the record instead put an older
-  // failed pin back above a peer addition the handler had just placed correctly, and the next
-  // successful write made that durable.
   return rebaseOnStored(fallback);
 }
 
 // movePinnedConnected runs on every dragenter: writing each would make a cancelled drag permanent.
-// Snapshot, move in memory, commit on drop. Mirrors pinned-models.ts.
 let dragSnapshot: string[] | null = null;
 
 function sameOrder(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((key, index) => key === b[index]);
 }
 
-/** A dragged order over the stored membership: this window owns row ORDER, the record owns which
- *  ids are pinned, since another window's storage event may still be in flight at the drop.
- *  Its additions arrive at the front; null storage leaves the order alone. */
+/** A rendered order over the stored membership: this window owns row ORDER, the record owns which
+ *  ids are pinned. Its additions arrive at the front. */
 function rebaseOnStored(order: readonly string[]): string[] {
-  // A record that is GONE is a peer's reset (removeItem, or a clear() of the whole origin), not
-  // "nothing to read": everything it held is unpinned now. Only the pins this window is carrying
-  // unwritten survive it, because nothing else ever recorded them. Keeping the rendered list here
-  // let the next write that landed put a peer's cleared pins straight back. A record we could not
-  // READ is the opposite case and leaves the order alone.
+  // A reset unpins what the record held, and only pins nothing else ever recorded survive it.
   const record = storedRecord();
   if (record.kind !== "list") {
     return record.kind === "absent" ? order.filter(isOurs) : [...order];
@@ -152,26 +126,20 @@ function rebaseOnStored(order: readonly string[]): string[] {
   const stored = record.ids;
   retirePersisted(stored);
   const added = stored.filter((id) => !order.includes(id));
-  // An id survives if the record still carries it, or if it is one of ours the record never
-  // received. A peer's removal is honoured either way.
+  // Survives if the record carries it or it is ours; a peer's removal is honoured either way.
   const kept = order.filter((id) => stored.includes(id) || isOurs(id));
   return [...ourPins(stored, [...added, ...kept]), ...added, ...kept];
 }
 
 interface PinnedConnectedModelsState {
   pinned: string[];
-  /** Pin or unpin one external model id. */
   togglePinnedConnected: (modelId: string) => void;
-  /**
-   * Move `fromId` into `toId`'s slot. Both must already be pinned; anything else is a no-op.
-   * Outside a drag session the new order persists immediately, inside one it is held until
-   * `endPinnedConnectedDrag`.
-   */
+  /** Move `fromId` into `toId`'s slot; anything not already pinned is a no-op. Inside a drag the
+   *  new order is held until `endPinnedConnectedDrag`. */
   movePinnedConnected: (fromId: string, toId: string) => void;
-  /** Snapshot the current order so a cancelled drag can be undone. */
   beginPinnedConnectedDrag: () => void;
-  /** End a drag session. `commit` persists the reordered list; otherwise the snapshot is
-   *  restored. Idempotent, because drop is followed by dragend and only the first may decide. */
+  /** `commit` persists the reordered list, else the snapshot is restored. Idempotent: drop is
+   *  followed by dragend and only the first may decide. */
   endPinnedConnectedDrag: (commit: boolean) => void;
 }
 
@@ -180,18 +148,14 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
     pinned: readPinned(),
     togglePinnedConnected: (modelId) =>
       set((state) => {
-        // Applied to the stored list, not to this window's copy of it, since a write replaces the
-        // whole list: another window's pin can be newer than the storage event this one has
-        // processed, and rewriting our own array would drop it for good.
+        // A write replaces the whole list, so the edit applies to the record: rewriting this
+        // window's array would drop a peer's pin newer than the event we have processed.
         const base = persistedBase(state.pinned);
-        // The DIRECTION comes from the row the user clicked, not from the base: the row draws
-        // state.pinned, so a base that no longer holds the model turns an unpin into a pin and
-        // writes back something the user was trying to remove. A peer clearing the record is the
-        // loud case, a peer unpinning one model the quiet one.
+        // Direction from the ROW, which draws state.pinned. A base that no longer holds the model
+        // turns an unpin into a pin and writes back what the user was removing.
         const unpinning = state.pinned.includes(modelId);
         const without = base.filter((id) => id !== modelId);
-        // Newest pin first, as On Device does, so "Pin to top" literally lands on top of the
-        // pinned group rather than under earlier pins.
+        // Newest first, as On Device does, so "Pin to top" lands on top of the pinned group.
         const next = unpinning ? without : [modelId, ...without];
         writePinned(next, unpinning ? null : modelId);
         return { pinned: next };
@@ -216,22 +180,17 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
         const snapshot = dragSnapshot;
         dragSnapshot = null;
         if (snapshot === null) return state;
-        // The PRE-DRAG rendered order, not the order the event carried. Both reach the same
-        // record, since persistedBase reads storage live rather than waiting on an event, but only
-        // the rendered one holds this window's unpersisted pins where they are actually drawn: the
-        // event's list lacks them entirely, so they were re-added at the front, above peer pins
-        // that are newer than they are.
+        // The PRE-DRAG rendered order: only it holds this window's unpersisted pins where they are
+        // drawn, and the record is read live below rather than stashed from an event.
         const base = persistedBase(snapshot);
         if (commit && !sameOrder(snapshot, state.pinned)) {
           if (sameOrder(base, state.pinned)) return state;
-          // The write replaces the whole list and nothing echoes it back to this window, so a
-          // plain write of the dragged order would erase a pin another window added mid-drag
-          // with no event left to restore it.
+          // Nothing echoes the write back here, so a plain write of the dragged order would erase
+          // a pin another window added mid-drag with no event left to restore it.
           const next = rebaseOnStored(state.pinned);
           writePinned(next);
           return sameOrder(next, state.pinned) ? state : { pinned: next };
         }
-        // Cancellation and unchanged drags use the latest persisted order.
         if (sameOrder(base, state.pinned)) return state;
         return { pinned: base };
       }),
@@ -241,22 +200,15 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === KEY || event.key === null) {
-      // Only the RECORD retires a pin, never a queued payload. A payload carrying an id says
-      // nothing about whether that write happened before or after this window's failed attempt:
-      // "we failed to pin B, then a peer pinned and unpinned it" and "a peer pinned and unpinned
-      // B, then we failed to pin it" deliver the same two events over the same final record, so
-      // no rule can tell them apart. Retiring on the payload silently drops the pin the user just
-      // made in the second ordering; keeping it leaves a session-only pin this window's user did
-      // ask for. The pin the user made is the one worth being wrong about.
+      // The RECORD retires a pin, never event.newValue: a peer pinning and unpinning B before our
+      // failed attempt and after it deliver the same payloads, and on that tie the pin the user
+      // just made is the one worth keeping.
       const next = readPinned();
       retirePersisted(next);
-      // A drag owns the rendered order until it ends; the record it is rebased onto is read
-      // live at that point, so there is nothing to stash here.
+      // A drag owns the rendered order until it ends, and reads the record live then.
       if (dragSnapshot !== null) return;
-      // The same rule the toggle uses, which is the whole point of it living in one function: the
-      // record wins outright unless this window is carrying pins the record lacks, and only then
-      // is it merged into the rendered order. Merging unconditionally cost a peer's pure REORDER,
-      // which adds no ids and so changed nothing on a window with nothing unwritten.
+      // The toggle's rule: merging unconditionally instead lost a peer's pure REORDER, which adds
+      // no ids and so changed nothing on a window with nothing unwritten.
       usePinnedConnectedModelsStore.setState({
         pinned: persistedBase(usePinnedConnectedModelsStore.getState().pinned),
       });
