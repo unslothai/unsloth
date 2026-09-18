@@ -214,14 +214,14 @@ huggingfacenotorch = [
     # release to export `grpo_vision_chunks`, which both vision GRPO logprob paths in
     # unsloth/models/rl_replacements.py refuse to run without.
     #
-    # 2026.9.5 does NOT make the wider transformers window this file declares below
+    # 2026.9.6 does NOT make the wider transformers window this file declares below
     # resolvable. It still says `transformers<=5.5.0` in its own metadata, and pip intersects
     # the two requirements, so users keep resolving 5.5.0 whatever this file says: the lift is
     # advertised and not delivered until unslothai/unsloth-zoo#1227 merges and ships. Raise
     # this floor to the release carrying it and re-enable the deferred gate in
     # tests/test_transformers_cap_sites.py in the same commit. A floor no published release
     # satisfies makes unsloth uninstallable, so the floor never leads the release.
-    "unsloth_zoo>=2026.9.5",
+    "unsloth_zoo>=2026.9.6",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -294,7 +294,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.5",
+    "unsloth_zoo>=2026.9.6",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -913,7 +913,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.5",
+    "unsloth_zoo>=2026.9.6",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",

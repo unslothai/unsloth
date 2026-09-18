@@ -157,6 +157,16 @@ def _coerce_optional_bool(value, default: bool) -> bool:
     return bool(value)
 
 
+def apply_save_strategy(config, save_steps_val):
+    # Save Steps 0 means "no checkpoints"; without an explicit strategy HF defaults to every 500 steps.
+    if save_steps_val and save_steps_val > 0:
+        config["save_steps"] = save_steps_val
+        config["save_strategy"] = "steps"
+    else:
+        config["save_strategy"] = "no"
+    return config
+
+
 def _coerce_optional_nonneg_float(name: str, value):
     """Reject negatives and non-finite; `ge=0` misses raw callers, and inf never binds."""
     if value is None:
