@@ -15787,62 +15787,26 @@ def _check_signal_escape_patterns(code: str):
     network_calls: list[dict] = []
     unresolved_network_calls: list[dict] = []
     sensitive_file_reads: list[dict] = []
+    # Network calls whose target argument we do not locate: constructors, session factories,
+    # request objects and whole modules. Everything whose target IS located lives in
+    # _NETWORK_TARGET_ARGS and is recognized from there, so it must not be repeated here.
     _NETWORK_FQ_PREFIXES = (
         "socket.socket",
-        "socket.create_connection",
-        "socket.getaddrinfo",
-        "urllib.request.urlopen",
-        "urllib.request.urlretrieve",
-        # The request objects themselves, so their payload is checked wherever they are built.
+        "requests.Session",
+        "requests.sessions.Session",
+        # requests also exposes the session factory under a lowercase name.
+        "requests.session",
+        "requests.sessions.session",
+        "requests.api.session",
         "requests.Request",
         "requests.models.Request",
         "httpx.Request",
-        # urllib3's connecting surface only: `urllib3.util` is string and retry helpers, and
-        # matching the whole package refused `urllib3.util.parse_url`, which opens nothing.
-        "urllib3.request",
-        "urllib3.connection_from_url",
-        "urllib3.proxy_from_url",
         "urllib3.PoolManager",
-        "urllib3.ProxyManager",
-        "urllib3.HTTPConnectionPool",
-        "urllib3.HTTPSConnectionPool",
         "urllib3.connection.",
         "urllib3.connectionpool.",
         "urllib3.poolmanager.",
         "urllib3.contrib.",
         "urllib3.util.connection.",
-        "requests.get",
-        "requests.post",
-        "requests.put",
-        "requests.delete",
-        "requests.patch",
-        "requests.head",
-        "requests.request",
-        "requests.Session",
-        "requests.sessions.Session",
-        # The lowercase factory needs to be an entry point in its own right, so that a session
-        # held in a name resolves the same way an inline one does.
-        "requests.session",
-        "requests.sessions.session",
-        "requests.api.session",
-        "aiohttp.request",
-        "aiohttp.client.request",
-        "http.client.HTTPConnection",
-        "http.client.HTTPSConnection",
-        "httpx.get",
-        "httpx.post",
-        "httpx.put",
-        "httpx.patch",
-        "httpx.delete",
-        "httpx.request",
-        "httpx.Client",
-        "httpx.AsyncClient",
-        "aiohttp.ClientSession",
-        "paramiko.Transport",
-        "paramiko.transport.Transport",
-        "fabric.Connection",
-        "fabric.connection.Connection",
-        "asyncssh.connect",
     )
     # Network target location: (positional index, keyword, target kind).
     _HTTP_VERBS = ("get", "post", "put", "delete", "patch", "head", "options")
@@ -15883,17 +15847,15 @@ def _check_signal_escape_patterns(code: str):
         "fabric.Connection": (0, "host", "host"),
         "fabric.connection.Connection": (0, "host", "host"),
         "asyncssh.connect": (0, "host", "host"),
+        "urllib3.util.connection.create_connection": (0, "address", "host"),
+        "urllib3.contrib.socks.SOCKSProxyManager": (0, "proxy_url", "url"),
     }
-    # Session and pool objects send through their own methods, so an instance resolves to its
-    # constructor and the method rides on top: `requests.Session().get(url)` reads as
-    # `requests.Session.get`.
-    # Per client, the methods that take the URL first, then the ones that take it after the
-    # method string. Read off the real signatures: `Client.stream(method, url)` is not
-    # `Client.get(url)`, and urllib3's pools have no `get`.
+    # An instance resolves to its constructor and the method rides on top, so
+    # `requests.Session().get(url)` reads as `requests.Session.get`. Methods come from the real
+    # signatures: `Client.stream(method, url)` is not `Client.get(url)`, and pools have no verbs.
     _VERB_CLIENTS = (
         "requests.Session",
         "requests.sessions.Session",
-        # requests exposes the session factory under a lowercase name as well.
         "requests.session",
         "requests.sessions.session",
         "requests.api.session",
@@ -15956,13 +15918,19 @@ def _check_signal_escape_patterns(code: str):
     _CONNECTING_CLIENT_FQ = frozenset(
         {"socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient"}
     )
-    # Modules and classes that own a listed call, so `getattr(<owner>, name)` is dynamic
-    # dispatch into the network surface rather than an unrelated attribute lookup.
+    # Everything that owns a listed call. Used to tell `getattr(<owner>, name)` apart from an
+    # unrelated attribute lookup, and to decide whether modelling scopes is worth it at all.
     _NETWORK_OWNERS = frozenset(
         fq.rsplit(".", 1)[0]
-        for fq in (*_NETWORK_TARGET_ARGS, *_NETWORK_FQ_PREFIXES, *_CONNECTING_CLIENT_FQ)
+        for fq in (
+            *_NETWORK_TARGET_ARGS,
+            *_NETWORK_FQ_PREFIXES,
+            *_CONNECTING_CLIENT_FQ,
+            *_REQUEST_BUILDERS,
+        )
         if "." in fq
     )
+    _NETWORK_MODULE_ROOTS = frozenset(owner.split(".")[0] for owner in _NETWORK_OWNERS)
     _UPLOAD_VERBS = ("post", "put", "patch", "delete", "request")
     _UPLOAD_HTTP_METHODS = (
         # Uploading through a session is the same upload as through the module function.
@@ -16420,10 +16388,6 @@ def _check_signal_escape_patterns(code: str):
     )
     _FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
     _COMPREHENSION_NODES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-    _NETWORK_MODULE_ROOTS = frozenset(
-        p.split(".")[0]
-        for p in (*_NETWORK_FQ_PREFIXES, *_NETWORK_TARGET_ARGS, *_CONNECTING_CLIENT_FQ)
-    )
     _ALIAS_DEPTH_CAP = 256
     _BLOCK_FIELDS = ("body", "orelse", "finalbody")
     _ROOT_BLOCK = (0, "root")
@@ -16432,8 +16396,6 @@ def _check_signal_escape_patterns(code: str):
     _UNRESOLVED_FQ = "<unresolved>"
     _fq_cache: dict[int, list] = {}
     _fq_active: set = set()
-    _client_cache: dict[int, str] = {}
-    _client_active: set = set()
     _scope_parent: dict[int, ast.AST | None] = {id(tree): None}
     _node_scope: dict[int, ast.AST] = {}
     _declared: dict[tuple[int, str], str] = {}
@@ -16837,16 +16799,11 @@ def _check_signal_escape_patterns(code: str):
             return [alt for value in expr.values for alt in _alternatives(value)]
         return [expr]
 
-    def _names_a_network_call(fq: str) -> bool:
-        """Whether the fq is itself a listed entry point, not a method hanging off one."""
-        return fq in _NETWORK_FQ_PREFIXES or any(
-            p.endswith(".") and fq.startswith(p) for p in _NETWORK_FQ_PREFIXES
-        )
-
     def _is_network_fq(fq: str) -> bool:
         return bool(fq) and (
             fq in _NETWORK_TARGET_ARGS
             or fq in _CONNECTING_CLIENT_FQ
+            or fq in _REQUEST_BUILDERS
             or any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
         )
 
@@ -17067,7 +17024,6 @@ def _check_signal_escape_patterns(code: str):
                     return [(False, None)]
                 return _target_hosts(inner, "url", depth + 1)
         if isinstance(expr, ast.Dict) and depth <= 8:
-            # A proxy mapping sends to its values.
             if not expr.values:
                 return [(True, None)]
             return [r for v in expr.values for r in _target_hosts(v, kind, depth + 1)]
@@ -17105,50 +17061,6 @@ def _check_signal_escape_patterns(code: str):
         if any(kw.arg is None for kw in node.keywords or []):
             return True, None
         return False, None
-
-    def _holds_client(expr: ast.AST, depth: int = 0) -> str:
-        """Return whether expr is always, sometimes, or never a tracked client."""
-        # Memoized for the same reason as _resolved_fqs. Both the cycle and the depth answer are
-        # "maybe": running out of analysis says nothing about the receiver, so ask.
-        key = id(expr)
-        if key in _client_cache:
-            return _client_cache[key]
-        if key in _client_active or depth > _ALIAS_DEPTH_CAP:
-            return "maybe"
-        _client_active.add(key)
-        try:
-            state = _client_state(expr, depth)
-        finally:
-            _client_active.discard(key)
-        _client_cache[key] = state
-        return state
-
-    def _client_state(expr: ast.AST, depth: int) -> str:
-        if isinstance(expr, ast.NamedExpr):
-            return _holds_client(expr.value, depth + 1)
-        if isinstance(expr, ast.Call):
-            fqs = _resolved_fqs(expr.func)
-            return "yes" if any(fq in _CONNECTING_CLIENT_FQ for fq in fqs) else "no"
-        if isinstance(expr, (ast.IfExp, ast.BoolOp)):
-            values = _alternatives(expr)
-        elif isinstance(expr, ast.Name):
-            values = _name_values(expr)
-        elif (
-            isinstance(expr, ast.Attribute)
-            and isinstance(expr.value, ast.Name)
-            and _scope_model_ready()
-        ):
-            values = _attr_values(expr)
-        else:
-            return "no"
-        states = [
-            _holds_client(value, depth + 1) if isinstance(value, ast.AST) else "no"
-            for value in values or []
-            if not (isinstance(value, ast.Constant) and value.value is None)
-        ]
-        if states and all(state == "yes" for state in states):
-            return "yes"
-        return "maybe" if any(state != "no" for state in states) else "no"
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def _check_host(self, node, host: str) -> None:
@@ -17239,7 +17151,7 @@ def _check_signal_escape_patterns(code: str):
                 and node.func.attr == "connect"
                 and not any(fq in _NETWORK_TARGET_ARGS for fq in net_fqs)
             ):
-                if _holds_client(node.func.value) != "no":
+                if any(fq in _CONNECTING_CLIENT_FQ for fq in _resolved_fqs(node.func.value)):
                     host_kw = next(
                         (kw.arg for kw in node.keywords or [] if kw.arg in ("hostname", "host")),
                         None,
@@ -17276,10 +17188,6 @@ def _check_signal_escape_patterns(code: str):
                         if kw.arg in _PROXY_KEYWORDS
                     ]
                     self._check_target(node, targets, connects = True)
-                elif node.args and any(_names_a_network_call(fq) for fq in net_fqs):
-                    # Only for a listed entry point itself. A method with no target spec, like
-                    # `Session.mount`, configures routing and opens nothing.
-                    self._check_target(node, [(True, node.args[0], "url")], connects = False)
 
             is_open_call = (
                 (isinstance(node.func, ast.Name) and node.func.id == "open")
