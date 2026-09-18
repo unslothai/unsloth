@@ -129,7 +129,9 @@ import {
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
 import { estimateMessagesTokenCount } from "./utils/estimate-chat-tokens";
+import { VideoAttachmentAdapter } from "./video-attachment-adapter";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 // Resolves to the thread id assigned when this message's chat was first persisted.
