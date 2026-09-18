@@ -18,7 +18,8 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
-    "Get-StudioEarlyPython", "Invoke-StudioEarlyPython", "Get-StudioPythonFinalPath",
+    "Get-StudioEarlyPython", "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython",
+    "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo"
 )) {
@@ -191,12 +192,12 @@ try {
     Check "-S is what turns site off" ("$isoPlus".Trim() -eq "1")
 
     # Read from the source: a planted sitecustomize is shadowed by the host's own.
-    $resolverFn = @($ast.FindAll({ param($n)
+    $launcherFn = @($ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-        $n.Name -eq "Invoke-StudioEarlyPython"
+        $n.Name -eq "Invoke-StudioEarlyPythonScript"
     }, $true))[0].Extent.Text
-    Check "the resolver runs the probe with -S as well as -I" (
-        $resolverFn -match '@\("-I",\s*"-S",\s*"-c"')
+    Check "the launcher runs every probe with -S as well as -I" (
+        $launcherFn -match '@\("-I",\s*"-S",\s*"-c"')
     # A miss recorded before $VenvDir existed (the --tauri path) is probed again once it does.
     $venvHome = Join-Path $tmp "venvhome"
     $venvBin = if ($IsWindows -or $env:OS -eq "Windows_NT") { "Scripts" } else { "bin" }

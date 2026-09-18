@@ -109,6 +109,7 @@ LOCK_CHAIN = (
     "Resolve-StudioLinkTarget",
     "Get-StudioSubstTarget",
     "Get-StudioEarlyPython",
+    "Invoke-StudioEarlyPythonScript",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
     "Get-StudioLexicalPath",
