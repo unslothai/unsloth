@@ -46,7 +46,37 @@ jobs:
           pathlib.Path('results/changes.patch').write_bytes(patch)
           subprocess.run(['git', '-C', 'source', 'apply', '--check', '../results/changes.patch'], check=True)
           subprocess.run(['git', '-C', 'source', 'apply', '../results/changes.patch'], check=True)
+          root = pathlib.Path('source/studio/frontend')
+          def replace(path, before, after):
+              file = root / path
+              text = file.read_text()
+              assert text.count(before) == 1, path
+              file.write_text(text.replace(before, after))
+          replace('tests/helpers/kit.ts',
+                  '  readonly length: number;\n  key: (index: number) => string | null;\n', '')
+          replace('tests/helpers/kit.ts', '  storage: StorageFake;\n',
+                  '  storage: StorageFake & Pick<Storage, "length" | "key">;\n')
+          replace('tests/helpers/kit.ts', '  const storage: StorageFake = {',
+                  '  const storage: StorageFake & Pick<Storage, "length" | "key"> = {')
+          replace('src/features/chat/stores/chat-runtime-store.ts',
+                  '  const writeGlobal = () => {\n    scalarSettingMutationVersions[key] += 1;\n    saveSettingsPatch({ [key]: value });\n  };',
+                  '  const writeGlobal = () => {\n    if (key === "reasoningEffort" && globalThreadScopedDefaults !== null) {\n      globalThreadScopedDefaults = {\n        ...globalThreadScopedDefaults,\n        reasoningEffort: value as ReasoningEffort,\n      };\n    }\n    scalarSettingMutationVersions[key] += 1;\n    saveSettingsPatch({ [key]: value });\n  };')
+          file = root / 'tests/model-reasoning-preferences.test.ts'
+          file.write_text(file.read_text() + '''
+          test("a global effort edit survives pinning after leaving a saved chat", async () => {
+            const runtime = await boot("global-after-thread");
+            const store = runtime.useChatRuntimeStore;
+            store.getState().setActiveThreadId(null);
+            store.getState().applyThreadScopedSettings(null, null);
+            store.getState().setReasoningEffort("low");
+            remotePin(runtime, "high");
+            remotePin(runtime, null);
+            assert.equal(store.getState().reasoningEffort, "low");
+          });
+          ''')
+          subprocess.run(['git', '-C', 'source', 'add', '-N', 'studio/frontend/tests/model-reasoning-preferences.test.ts'], check=True)
           subprocess.run(['git', '-C', 'source', 'diff', '--check'], check=True)
+          pathlib.Path('results/changes.patch').write_bytes(subprocess.check_output(['git', '-C', 'source', 'diff']))
           PY
       - name: Install frontend dependencies
         working-directory: source/studio/frontend
