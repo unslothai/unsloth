@@ -456,9 +456,7 @@ def test_an_unreadable_root_with_a_watcher_on_it_does_not_void_the_run() -> None
         r"$unread = @('C:\t')" + "\n"
         r"$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' ([string[]]@('C:\t'), [StringComparer]::OrdinalIgnoreCase)"
         + "\n"
-        "$watchFailedRoots = @()\n"
-        + _shipped_coverage_check()
-        + "Write-Output 'SURVIVED'\n"
+        "$watchFailedRoots = @()\n" + _shipped_coverage_check() + "Write-Output 'SURVIVED'\n"
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "SURVIVED" in proc.stdout, (
@@ -477,9 +475,7 @@ def test_an_unreadable_root_with_no_watcher_still_voids_the_run() -> None:
         r"$unread = @('C:\t')" + "\n"
         "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
         "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
-        "$watchFailedRoots = @()\n"
-        + _shipped_coverage_check()
-        + "Write-Output 'SURVIVED'\n"
+        "$watchFailedRoots = @()\n" + _shipped_coverage_check() + "Write-Output 'SURVIVED'\n"
     )
     assert "SURVIVED" not in proc.stdout, (
         "an unread directory with no watcher on its root was treated as a complete "
@@ -691,7 +687,8 @@ def test_an_overflowed_watcher_voids_the_measurement_on_its_own() -> None:
         "$unread = @()\n"
         "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
         "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
-        r"$watchFailedRoots = @('C:\t')" + "\n"
+        r"$watchFailedRoots = @('C:\t')"
+        + "\n"
         + _shipped_coverage_check()
         + "Write-Output 'SURVIVED'\n"
     )
@@ -699,9 +696,9 @@ def test_an_overflowed_watcher_voids_the_measurement_on_its_own() -> None:
         "a watcher that raised was accepted as a complete measurement because no directory "
         f"happened to be unreadable:\n{proc.stdout}"
     )
-    assert _says(proc, "may have been dropped"), (
-        f"the run was voided without naming the dropped events:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert _says(
+        proc, "may have been dropped"
+    ), f"the run was voided without naming the dropped events:\n{proc.stdout}\n{proc.stderr}"
 
 
 def test_a_healthy_watcher_and_a_readable_sweep_still_pass() -> None:
@@ -710,14 +707,12 @@ def test_a_healthy_watcher_and_a_readable_sweep_still_pass() -> None:
         "$unread = @()\n"
         "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
         r"([string[]]@('C:\t'), [StringComparer]::OrdinalIgnoreCase)" + "\n"
-        "$watchFailedRoots = @()\n"
-        + _shipped_coverage_check()
-        + "Write-Output 'SURVIVED'\n"
+        "$watchFailedRoots = @()\n" + _shipped_coverage_check() + "Write-Output 'SURVIVED'\n"
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "SURVIVED" in proc.stdout, (
-        f"a clean measurement was voided, which would fail every run:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert (
+        "SURVIVED" in proc.stdout
+    ), f"a clean measurement was voided, which would fail every run:\n{proc.stdout}\n{proc.stderr}"
 
 
 def test_both_incompleteness_reasons_are_reported_together() -> None:
@@ -726,7 +721,8 @@ def test_both_incompleteness_reasons_are_reported_together() -> None:
         r"$unread = @('C:\gap')" + "\n"
         "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
         "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
-        r"$watchFailedRoots = @('C:\t')" + "\n"
+        r"$watchFailedRoots = @('C:\t')"
+        + "\n"
         + _shipped_coverage_check()
         + "Write-Output 'SURVIVED'\n"
     )
