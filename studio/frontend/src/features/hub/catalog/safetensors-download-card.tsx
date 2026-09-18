@@ -14,6 +14,7 @@ import { deleteCachedModel } from "../inventory";
 import type { ModelInventoryFormat } from "../inventory";
 import { fetchModelSize } from "../lib/dataset-size";
 import { formatBytes } from "../lib/format";
+import { companionPrefetchDownloadHint } from "../lib/pipeline-components.ts";
 import { fingerprintToken } from "../lib/token-fingerprint";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
@@ -48,6 +49,8 @@ export function SafetensorsDownloadCard({
   isPartial = false,
   partialTransport = null,
   partialResumable = false,
+  companionPrefetch = false,
+  cachedComponents,
   modelFormat,
   isActive,
   isLoadingThisModel,
@@ -62,6 +65,8 @@ export function SafetensorsDownloadCard({
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
+  companionPrefetch?: boolean;
+  cachedComponents?: string[];
   modelFormat?: ModelInventoryFormat | null;
   isActive: boolean;
   isLoadingThisModel: boolean;
@@ -162,7 +167,7 @@ export function SafetensorsDownloadCard({
     !downloadAction.starting &&
     !isLoadingThisModel;
   const canDelete =
-    (isDownloaded || isPartial) &&
+    (isDownloaded || isPartial || companionPrefetch) &&
     !downloading &&
     !repoPeerActive &&
     !isActive &&
@@ -210,6 +215,18 @@ export function SafetensorsDownloadCard({
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
           <span className="flex items-center gap-1.5 text-ui-12 text-muted-foreground">
             {isDownloaded && <DotTag tone="success" label="On device" />}
+            {companionPrefetch && !downloading && (
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <span className="inline-flex">
+                    <DotTag tone="info" label="Cached assets" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={4}>
+                  {companionPrefetchDownloadHint(cachedComponents)}
+                </TooltipContent>
+              </Tooltip>
+            )}
             {!isDownloaded && isPartial && !downloading && (
               <Tooltip>
                 <TooltipTrigger asChild={true}>
@@ -236,7 +253,7 @@ export function SafetensorsDownloadCard({
           <div className="ml-auto flex items-center gap-0.5">
             {/* Same 3-dots menu as GGUF, at repo level (no quant); pinning is
                 omitted here. Managed HF-cache repos only. */}
-            {(isDownloaded || (isPartial && !downloading)) &&
+            {(isDownloaded || (isPartial && !downloading) || companionPrefetch) &&
               !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
               <QuantOptionsMenu
                 repoId={repoId}

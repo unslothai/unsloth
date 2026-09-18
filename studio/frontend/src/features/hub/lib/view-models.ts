@@ -202,16 +202,19 @@ export function buildDiscoverRows(
       localRows,
       formatHint: result.isGguf ? "gguf" : "non-gguf",
     });
-    const partial = Boolean(
-      resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
-    );
+    const cachedRow = resource.cachedRow;
+    const localRow = resource.localRow;
+    const companionPrefetch = cachedRow?.companionPrefetch === true;
+    const partial = Boolean(cachedRow?.partial ?? localRow?.partial ?? false);
     return {
       id: result.id,
       owner: ownerOf(result.id),
       repo: repoOf(result.id),
       result,
-      isAvailableOnDevice: Boolean(resource.cachedRow || resource.localRow),
-      isPartialOnDevice: partial,
+      isAvailableOnDevice: Boolean(cachedRow || localRow),
+      isPartialOnDevice: partial || companionPrefetch,
+      companionPrefetch,
+      cachedComponents: cachedRow?.cachedComponents,
       summary: buildSummary(result),
       capabilities: detectCapabilities(
         result.tags,

@@ -107,11 +107,15 @@ function preferCachedRow(
   if (!existing) {
     return true;
   }
-  if (Boolean(candidate.partial) !== Boolean(existing.partial)) {
-    return !candidate.partial;
-  }
   if (Boolean(candidate.liveDownload) !== Boolean(existing.liveDownload)) {
     return Boolean(candidate.liveDownload);
+  }
+  const candidateIncomplete =
+    Boolean(candidate.partial) || candidate.companionPrefetch === true;
+  const existingIncomplete =
+    Boolean(existing.partial) || existing.companionPrefetch === true;
+  if (candidateIncomplete !== existingIncomplete) {
+    return !candidateIncomplete;
   }
   return candidate.bytes > existing.bytes;
 }

@@ -21,6 +21,7 @@ import {
   ggufVariantDisplayLabel,
   useHfTokenStore,
 } from "@/features/hub";
+import { formatCachedComponentsSummary } from "../lib/pipeline-components.ts";
 import {
   ModelRowMenu,
   pinKey,
@@ -305,7 +306,7 @@ function StatusDot({
   tone,
   label,
 }: {
-  tone: "warning" | "danger" | "success";
+  tone: "warning" | "danger" | "success" | "info";
   label: string;
 }) {
   const toneClass =
@@ -313,7 +314,9 @@ function StatusDot({
       ? "bg-status-warning"
       : tone === "danger"
         ? "bg-status-danger"
-        : "bg-status-success";
+        : tone === "info"
+          ? "bg-status-info"
+          : "bg-status-success";
   return (
     <span
       role="img"
@@ -349,6 +352,8 @@ export function buildRowStatusTooltip({
   isAdapter,
   isAvailableOnDevice,
   partialRepoId,
+  companionPrefetchRepoId,
+  cachedComponentsSummary,
   unsupported,
   unsupportedReason,
   resourceLabel = "model",
@@ -357,6 +362,8 @@ export function buildRowStatusTooltip({
   isAdapter?: boolean;
   isAvailableOnDevice?: boolean;
   partialRepoId?: string;
+  companionPrefetchRepoId?: string;
+  cachedComponentsSummary?: string | null;
   unsupported?: boolean;
   unsupportedReason?: string | null;
   resourceLabel?: "model" | "dataset";
@@ -383,6 +390,15 @@ export function buildRowStatusTooltip({
       <TooltipLegendRow key="partial" toneClass="bg-status-warning">
         Partial download of <span className="font-medium">{partialRepoId}</span>
         . Open it to finish the download.
+      </TooltipLegendRow>,
+    );
+  } else if (companionPrefetchRepoId) {
+    lines.push(
+      <TooltipLegendRow key="companion-prefetch" toneClass="bg-status-info">
+        Cached assets for{" "}
+        <span className="font-medium">{companionPrefetchRepoId}</span>
+        {cachedComponentsSummary ? `: ${cachedComponentsSummary}.` : "."} Full
+        pipeline weights are not installed.
       </TooltipLegendRow>,
     );
   } else if (isAvailableOnDevice) {
@@ -444,15 +460,20 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
+  const companionPrefetchRepoId = row.companionPrefetch
+    ? row.result.id
+    : undefined;
   const partialRepoId =
-    row.isAvailableOnDevice && row.isPartialOnDevice
+    row.isAvailableOnDevice && row.isPartialOnDevice && !row.companionPrefetch
       ? row.result.id
       : undefined;
   const tooltip = buildRowStatusTooltip({
     isGguf: row.result.isGguf,
     isAdapter: false,
-    isAvailableOnDevice: row.isAvailableOnDevice,
+    isAvailableOnDevice: row.isAvailableOnDevice && !row.companionPrefetch,
     partialRepoId,
+    companionPrefetchRepoId,
+    cachedComponentsSummary: formatCachedComponentsSummary(row.cachedComponents),
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -492,8 +513,11 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               {unsupported && (
                 <StatusDot tone="danger" label="May not be supported yet" />
               )}
-              {row.isAvailableOnDevice && row.isPartialOnDevice && (
+              {partialRepoId && (
                 <StatusDot tone="warning" label="Partial download" />
+              )}
+              {companionPrefetchRepoId && (
+                <StatusDot tone="info" label="Cached assets" />
               )}
               {row.isAvailableOnDevice && !row.isPartialOnDevice && (
                 <StatusDot tone="success" label="On device" />
@@ -596,11 +620,20 @@ export const InventoryRow = memo(function InventoryRow({
       ? row.repoId
       : (row.repoId ?? row.loadId)
     : undefined;
+  const companionPrefetchRepoId =
+    row.kind === "cache" && row.companionPrefetch
+      ? row.repoId
+      : undefined;
+  const cachedComponentsSummary = formatCachedComponentsSummary(
+    row.kind === "cache" ? row.cachedComponents : undefined,
+  );
   const tooltip = buildRowStatusTooltip({
     isGguf: row.isGguf,
     isAdapter: row.modelFormat === "adapter",
-    isAvailableOnDevice: !partialRepoId,
+    isAvailableOnDevice: !partialRepoId && !companionPrefetchRepoId,
     partialRepoId,
+    companionPrefetchRepoId,
+    cachedComponentsSummary,
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
   });
@@ -654,6 +687,8 @@ export const InventoryRow = memo(function InventoryRow({
       )}
       {partialRepoId ? (
         <StatusDot tone="warning" label="Partial download" />
+      ) : companionPrefetchRepoId ? (
+        <StatusDot tone="info" label="Cached assets" />
       ) : (
         <StatusDot tone="success" label="On device" />
       )}
@@ -666,9 +701,12 @@ export const InventoryRow = memo(function InventoryRow({
   // Compact rows are all on-device, so the format dots are noise: surface only
   // exceptional states; format + params move to the meta line.
   const compactMarkers =
-    partialRepoId || unsupported ? (
+    partialRepoId || companionPrefetchRepoId || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
         {partialRepoId && <StatusDot tone="warning" label="Partial download" />}
+        {companionPrefetchRepoId && (
+          <StatusDot tone="info" label="Cached assets" />
+        )}
         {unsupported && (
           <StatusDot tone="danger" label="May not be supported yet" />
         )}

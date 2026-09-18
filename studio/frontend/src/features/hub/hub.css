@@ -17,6 +17,7 @@
   --format-mlx: #f59e0b;
   --status-warning: #eab308;
   --status-danger: #ef4444;
+  --status-info: #60a5fa;
   --status-success: #11b686;
   /* Fixed ink for text on --status-success. It cannot borrow
      --primary-foreground: a custom accent recolors that, while the success
@@ -32,6 +33,7 @@
   --format-mlx: #fbbf24;
   --status-warning: #fbbf24;
   --status-danger: #ef4444;
+  --status-info: #60a5fa;
   --status-success: #11b686;
   --status-success-foreground: #0d0d0d;
 }
@@ -43,6 +45,7 @@
   --color-format-mlx: var(--format-mlx);
   --color-status-warning: var(--status-warning);
   --color-status-danger: var(--status-danger);
+  --color-status-info: var(--status-info);
   --color-status-success: var(--status-success);
   --color-status-success-foreground: var(--status-success-foreground);
 }
