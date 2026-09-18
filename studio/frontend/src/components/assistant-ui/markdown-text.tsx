@@ -79,6 +79,7 @@ import {
 } from "./markdown-block-boundary";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
+import { splitAudioReply } from "./audio-reply-text";
 import {
   decodeSegment,
   markdownSandboxImageSrc,
@@ -747,7 +748,6 @@ const StreamdownBlock = memo((props: BlockProps) => (
   </MarkdownBlockBoundary>
 ));
 StreamdownBlock.displayName = "StreamdownBlock";
-const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
 // textgen does. There is no time or length throttle. Incremental block parsing
@@ -858,6 +858,10 @@ function MarkdownTextRenderer({
     [messageTextKey],
   );
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
+  // An audio model's reply is the player tag followed by the text it spoke. The
+  // tag comes out here so the Markdown pipeline below only ever sees the text;
+  // the player is rendered above it. A clip-only reply renders exactly as before.
+  const { audioSrc, text: markdownText } = splitAudioReply(displayText);
   const processedText = useMemo(
     () =>
       stabilizeStreamingMarkdown(
@@ -867,7 +871,7 @@ function MarkdownTextRenderer({
               placeSubjectImages(
                 // no images means nothing to hold back, including a trailing bracket.
                 holdBackPartialSearchImageToken(
-                  displayText,
+                  markdownText,
                   isStreaming && searchImages.size > 0,
                 ),
                 searchImages,
@@ -881,7 +885,7 @@ function MarkdownTextRenderer({
         ),
         isStreaming,
       ),
-    [displayText, isStreaming, messageTexts, precedingText, searchImages],
+    [markdownText, isStreaming, messageTexts, precedingText, searchImages],
   );
   const incrementalCacheRef = useRef({
     messageId,
@@ -899,9 +903,8 @@ function MarkdownTextRenderer({
     : null;
   const renderKey = markdownRenderKey(processedText);
 
-  const audioMatch = displayText.match(AUDIO_PLAYER_RE);
-  if (audioMatch) {
-    return <AudioPlayer src={audioMatch[1]} />;
+  if (audioSrc !== null && markdownText === "") {
+    return <AudioPlayer src={audioSrc} />;
   }
 
   return (
@@ -910,6 +913,11 @@ function MarkdownTextRenderer({
     >
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={statusType} className="min-w-0 max-w-full">
+          {audioSrc !== null ? (
+            <div className="mb-2">
+              <AudioPlayer src={audioSrc} />
+            </div>
+          ) : null}
           <Streamdown
             key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
             mode="streaming"

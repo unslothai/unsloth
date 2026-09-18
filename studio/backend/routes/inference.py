@@ -19049,7 +19049,10 @@ async def generate_audio(
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": f'[Generated audio from: "{text[:100]}"]',
+                        # The text the clip speaks, whole: the chat renders it under the
+                        # player, keeps it in history, and reads it to a screen reader. A
+                        # status label truncated to 100 characters was none of those.
+                        "content": text,
                     },
                     "finish_reason": "stop",
                 }
