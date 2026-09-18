@@ -2618,6 +2618,44 @@ class TestSelectedCardIndexSpaces:
 
         assert sd_cpp_backend.selected_card_identity(0) == sd_cpp_backend._card_identity(devices[0])
 
+    def test_a_cold_inventory_still_names_the_selected_card_off_the_event_loop(self, monkeypatch):
+        """On a host whose torch works nothing reads the inventory at startup, so the first load met
+        the non-blocking "unknown" answer and recorded its failure against every card. A worker
+        thread reads it blocking; the event loop still never does."""
+        import asyncio
+
+        from core.inference import sd_cpp_backend
+        from utils.hardware import amd as amd_module
+        from utils.hardware import hardware as hardware_module
+
+        devices = [
+            {"index": 0, "name": "Card A", "gfx_candidates": ["gfx1201"], "vendor": "amd"},
+            {"index": 1, "name": "Card B", "gfx_candidates": ["gfx1100"], "vendor": "amd"},
+        ]
+        calls: list[bool] = []
+
+        def _inventory(*, block = True):
+            calls.append(block)
+            if block:
+                return {"unknown": False, "devices": devices}
+            return {"unknown": True, "devices": []}
+
+        monkeypatch.setattr(hardware_module, "get_physical_gpu_inventory", _inventory)
+        monkeypatch.setattr(amd_module, "get_hip_id_by_gpu_index", lambda: {0: 0, 1: 1})
+        for variable in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(variable, raising = False)
+
+        assert sd_cpp_backend.selected_card_identity(1) == sd_cpp_backend._card_identity(devices[1])
+        assert calls == [False, True]
+
+        calls.clear()
+
+        async def _on_loop():
+            return sd_cpp_backend.selected_card_identity(1)
+
+        assert asyncio.run(_on_loop()) is None
+        assert calls == [False]
+
     def test_windows_ignores_a_stale_rocr_mask(self, monkeypatch):
         """Windows HIP has no ROCr layer, so ROCR_VISIBLE_DEVICES masks nothing there. Reading it
         would turn a leftover ``ROCR_VISIBLE_DEVICES=1`` into "ordinal 0 is card 1"."""
@@ -2904,6 +2942,16 @@ def test_constructing_the_backend_does_not_claim_a_card_for_its_thread():
     run_load = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
     finally_block = run_load[run_load.rindex("finally:") :]
     assert "_clear_loading_card()" in finally_block
+
+
+def test_the_loading_card_store_exists_before_any_load():
+    """Created lazily, two overlapping first loads could each build a store, and the one that lost
+    the assignment dropped the card it wrote. Built with the backend, every worker shares it."""
+    from core.inference import sd_cpp_backend
+
+    backend = sd_cpp_backend.SdCppDiffusionBackend()
+    assert isinstance(backend.__dict__.get("_loading_cards"), threading.local)
+    assert not hasattr(backend._loading_cards, "card")
 
 
 def test_a_damaged_cli_beside_a_healthy_server_is_not_a_strike(fake_settings, monkeypatch):

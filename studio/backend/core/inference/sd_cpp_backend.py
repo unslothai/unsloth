@@ -485,13 +485,29 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
     return visible[ordinal], True
 
 
+def _card_lookup_inventory() -> dict:
+    """The physical inventory for naming a selected card. Off the event loop a cold cache is read
+    blocking: the non-blocking read answers "unknown" until its refresh lands, which on a host whose
+    torch works is the first load, so that load's failure was recorded against every card."""
+    from utils.hardware.hardware import get_physical_gpu_inventory
+
+    inventory = get_physical_gpu_inventory(block = False)
+    if not (inventory or {}).get("unknown"):
+        return inventory
+    try:
+        import asyncio
+        asyncio.get_running_loop()
+        return inventory
+    except RuntimeError:
+        return get_physical_gpu_inventory(block = True)
+
+
 def _physical_position_of(hip_index: int) -> "tuple[Optional[str], Optional[int]]":
     """``(name, position)`` for a HIP device id; a HIP id is NOT the inventory's `index`."""
     try:
         from utils.hardware.amd import get_hip_id_by_gpu_index
-        from utils.hardware.hardware import get_physical_gpu_inventory
 
-        inventory = get_physical_gpu_inventory(block = False)
+        inventory = _card_lookup_inventory()
         if (inventory or {}).get("unknown"):
             return None, None
         devices = [
@@ -983,12 +999,11 @@ def selected_card_identity(ordinal: "Optional[int]") -> "Optional[str]":
         return None
     try:
         from utils.hardware.amd import get_hip_id_by_gpu_index
-        from utils.hardware.hardware import get_physical_gpu_inventory
 
         physical_index, masked = _physical_index_of(ordinal)
         if physical_index is None:
             return None
-        inventory = get_physical_gpu_inventory(block = False)
+        inventory = _card_lookup_inventory()
         if (inventory or {}).get("unknown"):
             return None
         devices = [
@@ -2014,9 +2029,11 @@ class SdCppDiffusionBackend:
         # use; the load retries it once the tree is free.
         self._deferred_accelerator_install = False
         # Every accelerator resolution in the load asks about it, so a heterogeneous host is not moved over a failure
-        # on a different card. NOT initialised here: the store is thread-local and __init__ runs on whatever thread
-        # built the backend, so an explicit None would be that thread's own answer forever, and a later generate
-        # scheduled onto the same executor worker would read it instead of falling back to the committed card.
+        # on a different card. The store is created here so overlapping first loads share it, but no card is set:
+        # __init__ runs on whatever thread built the backend, so an explicit None would be that thread's own answer
+        # forever, and a later generate scheduled onto the same executor worker would read it instead of falling
+        # back to the committed card.
+        self._loading_cards = threading.local()
         # Servers taken out of _state/_pending_server whose stop() has not returned yet. unload() deliberately stops
         # outside the lock (terminate can take seconds), so between the clear and the stop the fields say idle while
         # the process is still running its own executable.
