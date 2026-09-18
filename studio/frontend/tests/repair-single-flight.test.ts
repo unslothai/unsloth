@@ -79,8 +79,13 @@ test("a repair already in flight is not started again", () => {
   );
   assert.match(
     body,
-    /repairInFlightRef\.current = true;\s*try \{\s*await runRepair\(options\);\s*\} finally \{\s*repairInFlightRef\.current = false;\s*\}/,
-    "the flag must cover the whole repair and be released on every exit",
+    /const releaseRepair = \(\) => \{\s*if \(!ownsRepair\) return;\s*ownsRepair = false;\s*repairInFlightRef\.current = false;\s*\};/,
+    "the release must be a no-op once this call has handed the flag on",
+  );
+  assert.match(
+    body,
+    /try \{\s*await runRepair\(options, releaseRepair\);\s*\} finally \{\s*releaseRepair\(\);\s*\}/,
+    "the flag must be released on every exit, including an early return",
   );
   // The refused call returns without touching state: the running repair owns the screen.
   assert.ok(
@@ -93,4 +98,10 @@ test("the repair body itself is unchanged in what it invokes", () => {
   const body = section("async function runRepair(", "async function startServer()");
   assert.match(body, /invoke\("start_managed_repair", \{ forceInstaller \}\)/);
   assert.match(body, /forcedRepairRef\.current = forceInstaller;/);
+  // The repair ends with the native call; what follows is an ordinary start, and holding the flag
+  // across it swallows the Retry that server-start-timeout offers from inside the port poll.
+  const native = body.indexOf('invoke("start_managed_repair"');
+  const release = body.indexOf("releaseRepair();");
+  const start = body.indexOf("await startManagedServer();");
+  assert.ok(native < release && release < start, "release once the native repair returns");
 });

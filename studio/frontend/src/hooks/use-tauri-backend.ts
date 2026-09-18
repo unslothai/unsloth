@@ -450,14 +450,25 @@ export function useTauriBackend() {
   async function startRepair(options?: { forceInstaller?: boolean }) {
     if (repairInFlightRef.current) return;
     repairInFlightRef.current = true;
-    try {
-      await runRepair(options);
-    } finally {
+    // Same ownership rule as the preflight flag: handed to runRepair so it can release the moment
+    // the native repair returns, and a no-op afterwards so this call cannot clear a later one's.
+    let ownsRepair = true;
+    const releaseRepair = () => {
+      if (!ownsRepair) return;
+      ownsRepair = false;
       repairInFlightRef.current = false;
+    };
+    try {
+      await runRepair(options, releaseRepair);
+    } finally {
+      releaseRepair();
     }
   }
 
-  async function runRepair(options?: { forceInstaller?: boolean }) {
+  async function runRepair(
+    options?: { forceInstaller?: boolean },
+    releaseRepair: () => void = () => {},
+  ) {
     const forceInstaller = options?.forceInstaller ?? false;
     // Survives the elevation round trip: approveElevation resumes by calling this again.
     forcedRepairRef.current = forceInstaller;
@@ -476,6 +487,9 @@ export function useTauriBackend() {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_managed_repair", { forceInstaller });
+      // The repair itself is done here; what follows is an ordinary start. Held across that,
+      // a Retry offered by server-start-timeout would be swallowed after clearing the error.
+      releaseRepair();
 
       setBackendStatus("starting");
       elevationResumeRef.current = null;
