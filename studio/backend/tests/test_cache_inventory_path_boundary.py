@@ -1841,3 +1841,80 @@ def test_a_referenced_companion_base_can_still_be_loaded_with(kind):
 
     request_cls = {"diffusion": DiffusionLoadRequest, "video": VideoLoadRequest}[kind]
     assert request_cls(model_path = "unsloth/x", base_repo = handle).base_repo == BASE_DIR
+
+
+def test_a_path_component_with_an_equals_sign_is_redacted_whole():
+    """`_PATH_COMPONENT` ends the run at `=`, so the tail rule has to treat `=` as a continuation
+    the same way it treats `:`, `;` and `,` -- otherwise the remainder of the path is published."""
+    from hub.utils.host_paths import redact_paths_in_text
+
+    assert (
+        redact_paths_in_text(f"Error at {HOST_ROOT}/foo=bar/model/config.json") == "Error at <path>"
+    )
+    assert (
+        redact_paths_in_text(f"failed: {HOST_ROOT}/models--a--b=v2/snapshots/dead/config.json")
+        == "failed: <path>"
+    )
+    # BOUNDARY: `=` outside a path is ordinary prose and a URL is not a host path.
+    assert (
+        redact_paths_in_text("ratio 3/4 and rate=0.5 are fine") == "ratio 3/4 and rate=0.5 are fine"
+    )
+    assert (
+        redact_paths_in_text("see https://huggingface.co/acme/model for details")
+        == "see https://huggingface.co/acme/model for details"
+    )
+
+
+@pytest.mark.parametrize("kind", ["diffusion", "video"])
+def test_a_media_load_that_raises_redacts_the_path_it_resolved(kind):
+    """A load that RAISES skips the route's restore+redact wrappers entirely, and the inner
+    loader only redacted NATIVE paths, which do not know inventory handles."""
+    from hub.utils.host_paths import raised_inventory_detail
+
+    detail = f"[Errno 2] No such file or directory: '{REPO_DIR}/model.safetensors'"
+
+    assert (
+        response_leaks_host_path(
+            {"detail": raised_inventory_detail(detail, via_api_key = True)},
+            [HOST_ROOT, HOST_ROOT_NATIVE],
+        )
+        is None
+    )
+    # BOUNDARY: the operator's own session still gets the real message.
+    assert raised_inventory_detail(detail, via_api_key = False) == detail
+
+
+@pytest.mark.parametrize("kind", ["diffusion", "video"])
+def test_a_media_load_progress_error_does_not_publish_the_resolved_path(kind):
+    """The worker stores `str(exc)`, and the progress routes answer with it on a LATER request,
+    where the load's handle map is gone: the path has to be removed, not referenced."""
+    from hub.utils.host_paths import redact_load_progress
+
+    progress = {"phase": "error", "error": f"could not read {REPO_DIR}/model.safetensors"}
+
+    redacted = redact_load_progress(progress, via_api_key = True)
+    assert response_leaks_host_path(redacted, [HOST_ROOT, HOST_ROOT_NATIVE]) is None
+    assert redacted["phase"] == "error", "the phase the client polls for was dropped"
+    # BOUNDARY: the operator sees it, and a reading with no error is untouched.
+    assert redact_load_progress(progress, via_api_key = False) == progress
+    assert redact_load_progress({"phase": "ready"}, via_api_key = True) == {"phase": "ready"}
+
+
+def test_every_media_route_that_can_answer_a_resolved_path_redacts_it():
+    """Wiring, not behaviour: the two leaks were a load whose wrappers never ran because it
+    raised, and two progress routes that took no caller class at all. Both are invisible in a
+    payload test, since the payload is never built."""
+    import inspect
+
+    from routes import inference as inference_routes
+    from routes import video as video_routes
+
+    for load in (inference_routes.load_diffusion_model, video_routes.load_video_model):
+        source = inspect.getsource(load)
+        assert "except HTTPException" in source, load.__name__
+        assert "raised_inventory_detail" in source, load.__name__
+
+    for progress in (inference_routes.diffusion_load_progress, video_routes.video_load_progress):
+        source = inspect.getsource(progress)
+        assert "authenticated_via_api_key" in source, progress.__name__
+        assert "redact_load_progress" in source, progress.__name__

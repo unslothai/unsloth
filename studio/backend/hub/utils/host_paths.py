@@ -510,10 +510,12 @@ _REDACTED_PATH = "<path>"
 # So a tail that continues the path -- a terminator then text carrying at least one more
 # separator -- is replaced too, and that last condition is what keeps the terminators
 # terminating. The cost is over-removing prose, the safe direction for text that leaves the host.
-_REDACTED_TAIL_TEXT = r"[^\s\\/\":;,][^\\/\":;,]*"
+# The terminator set must match `_PATH_COMPONENT`'s, `=` included: `/srv/cache/foo=bar/config.json`
+# ends the run at the `=`, so leaving `=` out here published `<path>=bar/config.json`.
+_REDACTED_TAIL_TEXT = r"[^\s\\/\":;,=][^\\/\":;,=]*"
 _REDACTED_TAIL_RE = re.compile(
     re.escape(_REDACTED_PATH)
-    + r"(?:(?:[:;,][ ]?"
+    + r"(?:(?:[:;,=][ ]?"
     + _REDACTED_TAIL_TEXT
     + r")+"
     + r"(?:[\\/]"
@@ -551,6 +553,32 @@ def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:
         ]
         return type(detail)(redacted) if isinstance(detail, tuple) else redacted
     return detail
+
+
+def redact_load_progress(progress: Any, *, via_api_key: bool) -> Any:
+    """Remove the host path from a media load-progress reading.
+
+    A load that fails on the worker thread stores ``str(exc)``, which for a ``ref:`` load names the
+    path the handle resolved to, and the progress routes answer with it on a LATER request. The
+    handle map is per-request and that request is over, so the path is removed rather than turned
+    back into the handle the caller would recognise.
+    """
+    if not isinstance(progress, Mapping):
+        return progress
+    if host_paths_visible(via_api_key) or not progress.get("error"):
+        return dict(progress)
+    return {**progress, "error": redact_paths_in_text(progress["error"])}
+
+
+def raised_inventory_detail(detail: Any, *, via_api_key: bool) -> Any:
+    """The same treatment a RETURNED payload gets, for one that was raised instead.
+
+    A route wraps its body in ``redact_host_paths(restore_inventory_handles(...))``, and neither
+    runs when the body raises: the detail then carries whatever the loader saw, which for a
+    ``ref:`` load is the path the handle resolved to. Restore first so a path the caller does own
+    comes back as its handle, then redact whatever is left.
+    """
+    return redact_inventory_error_detail(restore_inventory_handles(detail), via_api_key = via_api_key)
 
 
 def _dump_model(payload: Any) -> Optional[dict]:

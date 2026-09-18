@@ -37745,11 +37745,20 @@ async def load_diffusion_model(
     # The status this answers with describes whatever is resident, which on a second load is the
     # PREVIOUS model, whose path an earlier request resolved and this context has no handle for.
     # In the route rather than the gated body, whose internal callers serve no API-key request.
-    from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
+    from hub.utils.host_paths import (
+        raised_inventory_detail,
+        redact_host_paths,
+        restore_inventory_handles,
+    )
+    try:
+        loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
+    except HTTPException as exc:
+        # A load that RAISES skips both wrappers below, and the inner loader redacted only native
+        # paths, which do not know inventory handles.
+        exc.detail = raised_inventory_detail(exc.detail, via_api_key = via_api_key)
+        raise
     return redact_host_paths(
-        restore_inventory_handles(
-            await load_diffusion_model_gated(request, current_subject, user_initiated = True)
-        ),
+        restore_inventory_handles(loaded),
         via_api_key = via_api_key,
     )
 
@@ -38620,7 +38629,10 @@ async def diffusion_inference_info(current_subject: str = Depends(get_current_su
 
 
 @studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
-async def diffusion_load_progress(current_subject: str = Depends(get_current_subject)):
+async def diffusion_load_progress(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -38631,7 +38643,9 @@ async def diffusion_load_progress(current_subject: str = Depends(get_current_sub
         return account_access.hidden_resident_response()
     progress = get_active_diffusion_engine().load_progress()
     log_media_load_progress("image", progress.get("phase"), progress.get("fraction"))
-    return DiffusionLoadProgressResponse(**progress)
+    from hub.utils.host_paths import redact_load_progress
+
+    return DiffusionLoadProgressResponse(**redact_load_progress(progress, via_api_key = via_api_key))
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)

@@ -240,11 +240,20 @@ async def load_video_model(
     # PREVIOUS model, whose path an earlier request resolved and which this context has no handle
     # for. Restore first, then redact. Done in the route rather than the gated body below,
     # because that body's internal callers are not serving an API-key request.
-    from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
+    from hub.utils.host_paths import (
+        raised_inventory_detail,
+        redact_host_paths,
+        restore_inventory_handles,
+    )
+    try:
+        loaded = await load_video_model_gated(request, current_subject, user_initiated = True)
+    except HTTPException as exc:
+        # A load that RAISES skips both wrappers below, and the inner loader redacted only native
+        # paths, which do not know inventory handles.
+        exc.detail = raised_inventory_detail(exc.detail, via_api_key = via_api_key)
+        raise
     return redact_host_paths(
-        restore_inventory_handles(
-            await load_video_model_gated(request, current_subject, user_initiated = True)
-        ),
+        restore_inventory_handles(loaded),
         via_api_key = via_api_key,
     )
 
@@ -431,7 +440,10 @@ async def load_video_model_gated(
 
 
 @router.get("/video/load-progress", response_model = VideoLoadProgressResponse)
-async def video_load_progress(current_subject: str = Depends(get_current_subject)):
+async def video_load_progress(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     if account_access.resident_hidden("video"):
         return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
@@ -443,7 +455,9 @@ async def video_load_progress(current_subject: str = Depends(get_current_subject
     progress = get_video_backend().load_progress()
     fraction = byte_fraction(progress.get("downloaded_bytes"), progress.get("expected_bytes"))
     log_media_load_progress("video", progress.get("phase"), fraction)
-    return VideoLoadProgressResponse(**progress)
+    from hub.utils.host_paths import redact_load_progress
+
+    return VideoLoadProgressResponse(**redact_load_progress(progress, via_api_key = via_api_key))
 
 
 _generation_account: Optional[str] = None
