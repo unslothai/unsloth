@@ -1044,7 +1044,6 @@ function ModelRow({
   partialResumable,
   showVision,
   reserveLeadingSlot,
-  leadingSlot,
   quantChip,
   tags,
   alignMeta,
@@ -1084,8 +1083,6 @@ function ModelRow({
   /** Hold open the slot ahead of the name, where local rows draw their format dot, on a row with
    *  no format for it. Without it the name starts 18px left of every other list's. */
   reserveLeadingSlot?: boolean;
-  /** What to draw in that slot on a row that has no format dot. */
-  leadingSlot?: ReactNode;
   /** Grey chip beside the name, for rows that load one specific quant. */
   quantChip?: string | null;
   /** Chips for what used to sit in brackets after the name: the artifact format, and a
@@ -1145,7 +1142,7 @@ function ModelRow({
         label: parsed.formats.map((f) => f.label).join(" · "),
       }
     : null;
-  const leading = formatDot ? <FormatTag {...formatDot} /> : (leadingSlot ?? null);
+  const leading = formatDot ? <FormatTag {...formatDot} /> : null;
 
   // Only the selected row charts itself: a meter under every row turns a list you scan into a wall of charts.
   const memorySegments = useModelMemory(selected ? memory : undefined, gpuGb);
@@ -1383,9 +1380,13 @@ function ModelRow({
     return (
       <Tooltip delayDuration={700}>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
+        {/* Right, not left: this panel is docked to the model button at the window's left edge,
+            so a row's own left edge is ~30px in and a tooltip opening that way ran off screen.
+            Narrower with it, and breaking on words rather than anywhere: max-w-xs let a long
+            connection name stretch the box to 320px, most of it slack beside the model id. */}
         <TooltipContent
-          side="left"
-          className="tooltip-compact max-w-xs break-all"
+          side="right"
+          className="tooltip-compact max-w-[15rem] break-words"
         >
           {tooltipBody}
         </TooltipContent>
@@ -5392,7 +5393,10 @@ export function HubModelPicker({
         key={model.id}
         // ml-2.5 matches the heading's own px-2.5, so the pill starts where the heading does
         // instead of 10px left of it, and the name lands level with the heading's text.
-        className={cn(downloadedRowShellClassName(isSelected), "ml-2.5")}
+        // 8.5 + the row's own pl-[5.5px] is 14, so the name starts at 14 + 14 (the leading slot)
+        // + 4 (its margin) = 32px, exactly where a heading's label does: px-2.5 + a size-3.5
+        // icon + gap-2. At ml-2.5 it landed 1.5px right of every section title above it.
+        className={cn(downloadedRowShellClassName(isSelected), "ml-[8.5px]")}
         style={
           draggingPinnedConnectedId === model.id ? { opacity: 0.4 } : undefined
         }
@@ -5470,18 +5474,11 @@ export function HubModelPicker({
             capabilities={marks.capabilities}
             showVision={marks.vision}
             // Empty but held open: the slot a local row gives its format dot is what starts
-            // every list's names on one line. The connection's logo goes in it only where no
-            // heading is carrying it, so a pinned row still says where it came from.
+            // every list's names on one line, and what puts them under the section labels.
+            // Nothing goes in it. A pinned row carried its connection's logo here, which read as
+            // a second glyph column down the pinned group; the name is what a row is for, and
+            // the connection is still named on the row's own tooltip.
             reserveLeadingSlot={true}
-            leadingSlot={
-              headless ? (
-                <ApiProviderLogo
-                  providerType={model.providerType}
-                  className="size-3.5"
-                  title={model.providerName}
-                />
-              ) : undefined
-            }
             selected={isSelected}
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() =>

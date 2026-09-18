@@ -521,21 +521,23 @@ test("live effort edits use the shared runtime action", () => {
 
 test("a row with no heading over it still names its connection", () => {
   // Pinned rows and the name-sorted flat list have no provider heading, and two connections can
-  // serve one model id, so those rows carry the logo the heading would have carried.
+  // serve one model id, so the tooltip carries the connection name those rows have nowhere else.
   assert.match(pickers, /renderConnectedModelRow\(model, true, true\)/);
   assert.match(pickers, /renderConnectedModelRow\(model, false, !headed\)/);
-  assert.match(
-    pickers,
-    /leadingSlot=\{\s*headless \? \(\s*<ApiProviderLogo/,
-  );
-  // In the slot the format dot would have used, so the names stay on one line.
-  assert.match(
-    pickers,
-    /const leading = formatDot \? <FormatTag \{\.\.\.formatDot\} \/> : \(leadingSlot \?\? null\);/,
-  );
-  // And the connection's name on hover, which is the only thing that tells two of one provider
-  // type apart.
   assert.match(pickers, /<span className="block text-ui-10 mt-1">\s*\{model\.providerName\}/);
+  // No logo in the leading slot: down the pinned group it read as a second glyph column, and a
+  // row is there to carry its name. So nothing goes in the slot at all now.
+  assert.doesNotMatch(pickers, /leadingSlot/);
+  assert.match(
+    pickers,
+    /const leading = formatDot \? <FormatTag \{\.\.\.formatDot\} \/> : null;/,
+  );
+  // The tooltip opens to the right. This panel is docked at the window's left edge, so a row's
+  // own left edge is ~30px in and a tooltip opening that way ran off screen.
+  assert.match(
+    pickers,
+    /<TooltipContent\s*side="right"\s*className="tooltip-compact max-w-\[15rem\] break-words"/,
+  );
 });
 
 test("the store write merges per key and reaches the live params", () => {
@@ -652,12 +654,19 @@ test("the info box is a dialog, so it is wide enough and closable", () => {
   assert.match(infoDialog, /className="break-all font-mono"/);
 });
 
-test("the row pill starts where its heading does", () => {
-  // The heading is px-2.5; without the same inset the pill began 10px to its left.
+test("a row's name starts where its heading's label does", () => {
+  // 8.5 plus the row's own pl-[5.5px] is 14, so the name lands at 14 + 14 (the leading slot) + 4
+  // (its margin) = 32px, which is px-2.5 + a size-3.5 icon + gap-2: where a heading's label
+  // starts. At ml-2.5 the names sat 1.5px right of every section title above them.
   assert.match(
     pickers,
-    /cn\(downloadedRowShellClassName\(isSelected\), "ml-2\.5"\)/,
+    /cn\(downloadedRowShellClassName\(isSelected\), "ml-\[8\.5px\]"\)/,
   );
+  assert.match(
+    pickers,
+    /<div className="group\/heading flex items-center justify-between gap-1 px-2\.5/,
+  );
+  assert.match(pickers, /font-semibold uppercase tracking-wider text-muted-foreground">/);
 });
 
 test("reasoning is read through the resolver the composer uses", () => {
