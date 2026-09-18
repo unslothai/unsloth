@@ -2707,17 +2707,21 @@ def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch
     )
     entered = threading.Event()
     release = threading.Event()
+    scan_thread: dict[str, int] = {}
 
     def _slow_companion_scan(_load_path, *, repo_level = False):
         assert repo_level is True
+        scan_thread["ident"] = threading.get_ident()
         entered.set()
-        release.wait(1.0)
+        release.wait(5.0)
         return ()
 
     monkeypatch.setattr(resolver, "local_gguf_companion_roots", _slow_companion_scan)
 
     async def _drive():
-        started = time.monotonic()
+        # The thread the loop runs on, captured from inside the coroutine so it is the loop's
+        # own thread and not whatever asyncio.run was called from.
+        loop_thread = threading.get_ident()
         task = asyncio.create_task(
             inference_route._maybe_auto_switch_model(
                 "org/Vision-GGUF",
@@ -2725,14 +2729,32 @@ def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch
                 "tester",
             )
         )
-        assert await asyncio.to_thread(entered.wait, 2.0)
-        loop_was_responsive = time.monotonic() - started < 0.5
+        assert await asyncio.to_thread(entered.wait, 10.0), "the companion scan never started"
         release.set()
         await task
-        assert loop_was_responsive
+        return loop_thread
 
-    asyncio.run(_drive())
+    loop_thread = asyncio.run(_drive())
     assert len(recorder.calls) == 1
+
+    # The question is whether the scan ran OFF the event loop, and that is a fact about which
+    # thread executed it, not about how long anything took.
+    #
+    # This row used to assert `time.monotonic() - started < 0.5` as a proxy for the loop staying
+    # responsive. That is only a proxy: the elapsed time it measures includes dispatching
+    # `asyncio.to_thread(entered.wait, ...)` through the default executor, so a runner that is
+    # merely busy blows the 0.5s budget while the loop is behaving perfectly. It failed that way
+    # on main in Backend CI (Python 3.13, l-r), `assert loop_was_responsive`, on a shard that
+    # took 565s against a 371s baseline.
+    #
+    # routes.inference awaits this through `asyncio.to_thread(local_gguf_companion_roots, ...)`,
+    # so running on another thread IS the mechanism the wall clock was standing in for, and
+    # asserting it directly cannot be defeated by a slow machine.
+    assert scan_thread.get("ident") is not None, "the companion scan never ran"
+    assert scan_thread["ident"] != loop_thread, (
+        "the companion scan ran on the event loop thread, so it blocks every other request "
+        "for as long as it takes to walk the cache"
+    )
 
 
 def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
