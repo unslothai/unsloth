@@ -269,6 +269,9 @@ export const it = {
     keyboardShortcuts: {
       title: "Scorciatoie da tastiera",
       searchPlaceholder: "Cerca scorciatoie…",
+      keystrokePlaceholder: "Premi una scorciatoia per cercare",
+      searchByKeystrokes: "Cerca per combinazione",
+      searchByName: "Cerca per nome",
       noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
       unassigned: "Non assegnata",
       recording: "Premi i tasti…",

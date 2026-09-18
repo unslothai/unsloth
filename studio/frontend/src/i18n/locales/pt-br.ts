@@ -303,6 +303,9 @@ export const ptBR = {
     keyboardShortcuts: {
       title: "Atalhos de teclado",
       searchPlaceholder: "Pesquisar atalhos…",
+      keystrokePlaceholder: "Pressione um atalho para pesquisar",
+      searchByKeystrokes: "Pesquisar por tecla",
+      searchByName: "Pesquisar por nome",
       noResults: "Nenhum atalho corresponde a essa pesquisa.",
       unassigned: "Não atribuído",
       recording: "Pressione as teclas…",

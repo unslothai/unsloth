@@ -305,6 +305,9 @@ export const de = {
     keyboardShortcuts: {
       title: "Tastenkürzel",
       searchPlaceholder: "Kürzel suchen…",
+      keystrokePlaceholder: "Kürzel drücken, um zu suchen",
+      searchByKeystrokes: "Nach Tastendruck suchen",
+      searchByName: "Nach Name suchen",
       noResults: "Keine Kürzel passen zu dieser Suche.",
       unassigned: "Nicht zugewiesen",
       recording: "Tasten drücken…",

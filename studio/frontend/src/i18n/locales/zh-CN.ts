@@ -299,6 +299,9 @@ export const zhCN = {
     keyboardShortcuts: {
       title: "键盘快捷键",
       searchPlaceholder: "搜索快捷键…",
+      keystrokePlaceholder: "按下快捷键进行搜索",
+      searchByKeystrokes: "按键搜索",
+      searchByName: "按名称搜索",
       noResults: "没有匹配的快捷键。",
       unassigned: "未分配",
       recording: "请按下按键…",

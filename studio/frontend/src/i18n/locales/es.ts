@@ -304,6 +304,9 @@ export const es = {
     keyboardShortcuts: {
       title: "Atajos de teclado",
       searchPlaceholder: "Buscar atajos…",
+      keystrokePlaceholder: "Pulsa un atajo para buscar",
+      searchByKeystrokes: "Buscar por pulsación",
+      searchByName: "Buscar por nombre",
       noResults: "Ningún atajo coincide con esa búsqueda.",
       unassigned: "Sin asignar",
       recording: "Pulsa las teclas…",

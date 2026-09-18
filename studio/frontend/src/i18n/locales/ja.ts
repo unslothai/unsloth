@@ -303,6 +303,9 @@ export const ja = {
     keyboardShortcuts: {
       title: "キーボードショートカット",
       searchPlaceholder: "ショートカットを検索…",
+      keystrokePlaceholder: "ショートカットを押して検索",
+      searchByKeystrokes: "キー入力で検索",
+      searchByName: "名前で検索",
       noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",
       recording: "キーを押してください…",

@@ -306,6 +306,9 @@ export const en = {
     keyboardShortcuts: {
       title: "Keyboard shortcuts",
       searchPlaceholder: "Search shortcuts…",
+      keystrokePlaceholder: "Press shortcut to search",
+      searchByKeystrokes: "Search by keystrokes",
+      searchByName: "Search by name",
       noResults: "No shortcuts match that search.",
       unassigned: "Unassigned",
       recording: "Press keys…",

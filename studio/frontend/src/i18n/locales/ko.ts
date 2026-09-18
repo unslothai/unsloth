@@ -301,6 +301,9 @@ export const ko = {
     keyboardShortcuts: {
       title: "키보드 단축키",
       searchPlaceholder: "단축키 검색…",
+      keystrokePlaceholder: "단축키를 눌러 검색",
+      searchByKeystrokes: "키 입력으로 검색",
+      searchByName: "이름으로 검색",
       noResults: "검색과 일치하는 단축키가 없습니다.",
       unassigned: "지정 안 됨",
       recording: "키를 누르세요…",

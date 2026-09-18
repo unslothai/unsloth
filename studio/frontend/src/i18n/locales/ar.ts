@@ -301,6 +301,9 @@ export const ar = {
     keyboardShortcuts: {
       title: "اختصارات لوحة المفاتيح",
       searchPlaceholder: "بحث في الاختصارات…",
+      keystrokePlaceholder: "اضغط اختصارًا للبحث",
+      searchByKeystrokes: "البحث بضغط المفاتيح",
+      searchByName: "البحث بالاسم",
       noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
       unassigned: "غير معيّن",
       recording: "اضغط المفاتيح…",
