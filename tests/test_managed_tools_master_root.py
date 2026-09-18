@@ -50,10 +50,21 @@ def _resolve(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
         "USERPROFILE": str(home),
         "_BACKEND": str(BACKEND),
     }
+    # A hand-built environment has to carry what the interpreter itself needs, or the child dies
+    # before the probe runs. Windows python exits 1 with no usable message when SYSTEMROOT is
+    # absent, and check = True then raised CalledProcessError with the stderr discarded, so the
+    # failure read as "the resolver answered wrongly" on every Windows runner.
+    for name in ("SYSTEMROOT", "SystemRoot", "COMSPEC", "PATHEXT", "TEMP", "TMP", "WINDIR"):
+        value = os.environ.get(name)
+        if value:
+            env.setdefault(name, value)
     env.update(env_overrides)
     out = subprocess.run(
-        [sys.executable, "-c", PROBE], env = env, capture_output = True, text = True, check = True
+        [sys.executable, "-c", PROBE], env = env, capture_output = True, text = True
     )
+    # Not check = True: the child's stderr is the only thing that says why, and swallowing it is
+    # how a dead interpreter passes for a wrong answer.
+    assert out.returncode == 0, f"probe failed ({out.returncode}): {out.stderr.strip()}"
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
@@ -168,14 +179,19 @@ def _discover(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
         "USERPROFILE": str(home),
         "_BACKEND": str(BACKEND),
     }
+    # Same reason as _resolve: the interpreter's own requirements travel with it.
+    for name in ("SYSTEMROOT", "SystemRoot", "COMSPEC", "PATHEXT", "TEMP", "TMP", "WINDIR"):
+        value = os.environ.get(name)
+        if value:
+            env.setdefault(name, value)
     env.update(env_overrides)
     out = subprocess.run(
         [sys.executable, "-c", _DISCOVERY_PROBE],
         env = env,
         capture_output = True,
         text = True,
-        check = True,
     )
+    assert out.returncode == 0, f"discovery probe failed ({out.returncode}): {out.stderr.strip()}"
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
