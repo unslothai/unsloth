@@ -527,9 +527,8 @@ def _block_always_returns(block: str) -> bool:
         loop = re.match(r"\b(?:for|while|do)\b", stripped)
         if loop is not None and _loop_always_enters(stripped):
             repeated, _ = _consume_statement(stripped, _loop_body_start(stripped, loop))
-            if _arm_always_returns(repeated) and not _jumps_out(
-                repeated, "break", absorbed_by_switch = True
-            ):
+            # A `continue` reaches the test too, and `do ... while (false)` then falls out.
+            if _arm_always_returns(repeated) and not _breaks_out(repeated):
                 return True
         branch = re.match(r"\bif\b\s*", stripped)
         if branch is None:
@@ -572,11 +571,12 @@ def _own_scope_returns(block: str) -> list:
     return out
 
 
-_QUOTED = r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\""
+# `\\[\s\S]`, not `\\.`: an escaped line break is a line continuation, still inside the literal.
+_QUOTED = r"'(?:[^'\\]|\\[\s\S])*'|\"(?:[^\"\\]|\\[\s\S])*\""
 # Blanking must pair every template, substitutions included, or it spans two of them.
-_TEMPLATE = r"`(?:[^`\\]|\\.)*`"
+_TEMPLATE = r"`(?:[^`\\]|\\[\s\S])*`"
 # Only a template without `${}` is a constant a guard can pin to.
-_TEMPLATE_CONSTANT = r"`(?:[^`\\$]|\\.|\$(?!\{))*`"
+_TEMPLATE_CONSTANT = r"`(?:[^`\\$]|\\[\s\S]|\$(?!\{))*`"
 _STRING_BODY = rf"{_QUOTED}|{_TEMPLATE_CONSTANT}"
 _STRING_LITERAL = re.compile(rf"{_QUOTED}|{_TEMPLATE}")
 
@@ -707,6 +707,9 @@ def _decoded(text: str) -> str:
         elif marker == "u" and re.fullmatch(r"[0-9a-fA-F]{4}", text[index + 2 : index + 6]):
             out.append(chr(int(text[index + 2 : index + 6], 16)))
             index += 6
+        elif marker in "\r\n\u2028\u2029":
+            # A line continuation contributes no character.
+            index += 3 if text[index + 1 : index + 3] == "\r\n" else 2
         else:
             out.append(_STRING_ESCAPES.get(marker, marker))
             index += 2
@@ -901,6 +904,10 @@ SELECTOR_CASES = [
     # A surrogate pair is one character, written the way JavaScript stores it.
     ('(s) => s.reasoningBudget === "😀" ? "\\uD83D\\uDE00" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "😀" ? "\\uD83D" : s.reasoningBudget', False),
+    # A line continuation adds no character, and the literal it sits in still ends the arm.
+    ('(s) => s.reasoningBudget === "a\\\nb" ? "a\\nb" : s.reasoningBudget', False),
+    ('(s) => s.reasoningBudget === "a\\\nb" ? "zz" : s.reasoningBudget', False),
+    ('(s) => s.reasoningBudget === "a\\\nb" ? "ab" : s.reasoningBudget', True),
     # An escaped quote is a character in the message, not the end of the literal.
     ('(s) => s.reasoningBudget === "a\\"b" ? "a\\"b" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "a\\"b" ? "ab" : s.reasoningBudget', False),
@@ -1021,6 +1028,7 @@ SELECTOR_CASES = [
     ("(s) => { while (true) return s.reasoningBudget; }", True),
     # Unless it can break out of itself first.
     ("(s) => { for (;;) { if (s.stop) break; return s.reasoningBudget; } }", False),
+    ("(s) => { do { if (s.stop) continue; return s.reasoningBudget; } while (false); }", False),
     # A test read off the store is a condition, not a certainty.
     ("(s) => { while (s.on) return s.reasoningBudget; }", False),
     ("(s) => { for (const x of s.l) return s.reasoningBudget; }", False),
