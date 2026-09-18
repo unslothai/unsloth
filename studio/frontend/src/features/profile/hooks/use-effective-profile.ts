@@ -5,10 +5,8 @@ import { getAuthToken, OWNER_USERNAME } from "@/features/auth";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { useUserProfileStore } from "../stores/user-profile-store";
 
-// The owner's login id is the reserved literal "unsloth", so showing the JWT
-// subject verbatim spells the product name in lower case on every default
-// install. Only that one id is mapped: a managed account keeps the username its
-// owner chose, which is the point of showing the subject at all.
+// The owner's id is the reserved literal "unsloth", so a verbatim subject spells
+// the brand lower case. Only that id maps; a chosen username stays as chosen.
 function loginDisplayName(sessionSub: string | null): string {
   return sessionSub === OWNER_USERNAME ? "Unsloth" : (sessionSub ?? "");
 }

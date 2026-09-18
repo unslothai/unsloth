@@ -15,9 +15,8 @@ import {
 } from "./session";
 
 /** Display policy only; the server validates the token and enforces owner access. */
-// The installation owner's login id. Reserved rather than chosen:
-// validate_account_username rejects it, so no managed account can take it and the
-// owner cannot rename away from it.
+// The owner's login id, reserved rather than chosen: validate_account_username
+// rejects it, so no managed account can take it and the owner cannot rename off it.
 export const OWNER_USERNAME = "unsloth";
 
 export function sessionAccount(
