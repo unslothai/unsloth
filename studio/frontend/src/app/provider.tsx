@@ -89,8 +89,14 @@ type TauriMonitor = NonNullable<
 const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 
 // Room the corner rail keeps around its cards so its overflow clip does not cut their shadows off (#9246).
+// Sized off the deepest card shadow, the dark-mode one: 0 8px 28px -6px reaches 22px to a card's left
+// and 14px above it, and a shorter gutter ends the halo on a hard line. Only those two edges show it:
+// the rail is flush with the bottom-right corner, so the clip there lands on the screen edge.
 const STACK_SHADOW_GUTTER_BOTTOM = 16;
-const STACK_SHADOW_GUTTER_TOP = 8;
+const STACK_SHADOW_GUTTER_TOP = 20;
+const STACK_SHADOW_GUTTER_LEFT = 28;
+// The cards' own inset from the right edge, not a gutter: the rail is flush there.
+const STACK_CARD_INSET_RIGHT = 16;
 
 // macos page zoom does not change dpr; windows already includes zoom in its dpr.
 function logicalPerCssPx(monitorScale: number): number {
@@ -447,13 +453,15 @@ function TauriUpdateLayer({
   ) : (
     <div
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
-      className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh_+_4px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
       data-testid="overlay-rail"
-      // Block gutter in px, never a spacing utility: those are rem, and the cards would drift off the corner.
+      // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
       style={{
         paddingTop: STACK_SHADOW_GUTTER_TOP,
         paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+        paddingLeft: STACK_SHADOW_GUTTER_LEFT,
+        paddingRight: STACK_CARD_INSET_RIGHT,
         zIndex: Z_LAYER.OVERLAY_STACK,
       }}
     >
@@ -798,13 +806,15 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             push the top of the stack off screen. */}
         <div
           // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
-          className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+          className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh_+_4px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
           // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
           data-testid="overlay-rail"
-          // Block gutter in px, never a spacing utility: those are rem, and the cards would drift off the corner.
+          // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
           style={{
             paddingTop: STACK_SHADOW_GUTTER_TOP,
             paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+            paddingLeft: STACK_SHADOW_GUTTER_LEFT,
+            paddingRight: STACK_CARD_INSET_RIGHT,
             zIndex: Z_LAYER.OVERLAY_STACK,
           }}
         >
