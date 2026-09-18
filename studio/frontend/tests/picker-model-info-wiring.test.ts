@@ -29,10 +29,13 @@ test("the row menu offers Model info", () => {
 // The menu renders nothing at all when it has no sections; forgetting `info` in that guard
 // would hide the whole menu on a row whose only action is this one.
 test("an info-only row still renders its menu", () => {
-  assert.match(
-    ROW_MENU,
-    /if\s*\(!pin\s*&&\s*!update\s*&&\s*!del\s*&&\s*!cachePath\s*&&\s*!info\)\s*return null;/,
-  );
+  // Conjuncts, not the whole line: #11196 added `!items?.length` to the same guard, and
+  // pinning the exact spelling turns every later section into a false failure here.
+  const guard = ROW_MENU.match(/if\s*\(([^)]*!info[^)]*)\)\s*\n?\s*return null;/)?.[1];
+  assert.ok(guard, "row-menu empty guard not found");
+  for (const section of ["!pin", "!update", "!del", "!cachePath", "!info"]) {
+    assert.ok(guard.includes(section), `${section} missing from the empty guard`);
+  }
 });
 
 // Mounting the dialog unconditionally would fetch metadata for every row with a menu, on
@@ -60,15 +63,23 @@ test("rows that name a quant pass it to the info panel", () => {
   );
 });
 
-test("every row menu in the picker passes a repo to look up", () => {
-  const menus = PICKERS.match(/<ModelRowMenu\b/g) ?? [];
+// Every menu over a Hub-backed row offers info. The exception is real, not a gap: a
+// Connected/provider row (#11196) has no Hub repo to look up, so it supplies its own
+// "Model info" entry through `items` against connected-model-info-dialog instead. Counting
+// those as missing would demand a repoId that does not exist.
+test("every Hub-backed row menu in the picker passes a repo to look up", () => {
+  const menus = PICKERS.split(/<ModelRowMenu\b/).slice(1);
   const infos = PICKERS.match(/\n\s*info=\{/g) ?? [];
   assert.ok(menus.length > 0, "no ModelRowMenu call sites found");
-  assert.equal(
-    infos.length,
-    menus.length,
-    `${menus.length} row menus but ${infos.length} info props`,
-  );
+  const withoutInfo = menus.filter((m) => !/\n\s*info=\{/.test(m.split("/>")[0]));
+  for (const m of withoutInfo) {
+    assert.match(
+      m.split("/>")[0],
+      /label: "Model info"/,
+      "a row menu offers neither a Hub info prop nor its own Model info entry",
+    );
+  }
+  assert.equal(infos.length, menus.length - withoutInfo.length);
 });
 
 // The fetch is gated on `open` so a closed dialog costs nothing, and on `online` so an
