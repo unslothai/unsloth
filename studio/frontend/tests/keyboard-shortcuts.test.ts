@@ -1515,6 +1515,20 @@ test("every action has a useShortcut call site", async () => {
   }
 });
 
+// The call-site test above accepts the numbered slots on the template alone, so a
+// shorter RECENT_SLOT_NUMBERS would leave the trailing rows showing a chord with
+// nothing behind it. Tie the loop to what the registry declares.
+test("the Recents loop registers every numbered slot the registry declares", () => {
+  const slots = /const RECENT_SLOT_NUMBERS = \[([\d, ]+)\] as const;/.exec(APP_SIDEBAR);
+  assert.ok(slots, "RECENT_SLOT_NUMBERS is no longer a literal list");
+  assert.deepEqual(
+    slots[1].split(",").map((n) => `goToRecentChat${n.trim()}`),
+    SHORTCUT_DEFS.map((def) => def.id).filter((id) =>
+      id.startsWith("goToRecentChat"),
+    ),
+  );
+});
+
 // Holding a chord past the OS repeat delay resends it. A toggle would land
 // wherever the user let go, and an archive would run once per repeat.
 test("auto-repeat only reaches the actions that walk a list", async () => {
