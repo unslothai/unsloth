@@ -43,7 +43,7 @@ import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
-import { setBackendDownForDesktopUpdate } from "@/lib/desktop-update-activity";
+import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { getToastOffsets } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
@@ -438,15 +438,14 @@ function TauriUpdateLayer({
 
   const wasUpdatingRef = useRef(false);
   useEffect(() => {
-    setBackendDownForDesktopUpdate(isUpdating);
-    // Skip & Restart and the shell-failure recovery both start a FRESH backend with nothing
-    // resident, and the chat page never unmounted: without a re-read the picker still names
-    // the old model and the next send comes back a bare 400.
-    if (wasUpdatingRef.current && !isUpdating) {
-      void resyncInferenceStatusAfterServerModelChange();
-    }
+    const wasUpdating = wasUpdatingRef.current;
     wasUpdatingRef.current = isUpdating;
-    return () => setBackendDownForDesktopUpdate(false);
+    // The backend restarted empty under a mounted chat page, whose picker still names the old model.
+    return followDesktopUpdateScreen(
+      isUpdating,
+      wasUpdating,
+      resyncInferenceStatusAfterServerModelChange,
+    );
   }, [isUpdating]);
 
   const content = isUpdating ? (

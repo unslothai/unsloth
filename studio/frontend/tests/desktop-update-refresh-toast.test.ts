@@ -1,127 +1,137 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The desktop update stops the backend on purpose and emits no server-crashed, so the app stays
-// mounted under the update screen. Chat re-reads its status on every window focus, and the
-// documents bar polls every 4s while anything is indexing; those reads failing raised
-// "Failed to refresh models / Unsloth isn't running" over a healthy update.
+// The desktop update stops the backend while chat stays mounted under the update screen, so its
+// focus refresh and the documents poll raised "Failed to refresh models" over a healthy update.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  followDesktopUpdateScreen,
   isBackendDownForDesktopUpdate,
   isSilencedDesktopUpdateFailure,
-  setBackendDownForDesktopUpdate,
 } from "../src/lib/desktop-update-activity.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const RUNTIME = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
-const PROVIDER = readSrc("app/provider.tsx");
 const RAG = readSrc("features/rag/components/use-rag-documents.ts");
 
 function region(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
-  const end = source.indexOf(to);
-  // A reworded sentinel must fail here, not silently widen the slice to the rest of the file
-  // and leave every assertion below passing against code it was never meant to read.
+  const end = source.indexOf(to, start);
   assert.ok(start !== -1, `region start not found: ${from}`);
   assert.ok(end > start, `region end not found after start: ${to}`);
   return source.slice(start, end);
 }
-
-const SYNC = region(
-  RUNTIME,
-  "async function syncInferenceStatusToStore(",
-  "/**\n * Reconcile the UI after the SERVER unloaded",
-);
-const CATCH = SYNC.slice(SYNC.indexOf("} catch (error) {"));
 
 const transport = () =>
   Object.assign(new Error("Unsloth isn't running -- please relaunch it."), {
     unslothTransportFailure: true,
   });
 
-test("the flag is off until the update screen raises it", () => {
-  assert.equal(isBackendDownForDesktopUpdate(), false);
-  setBackendDownForDesktopUpdate(true);
-  assert.equal(isBackendDownForDesktopUpdate(), true);
-  setBackendDownForDesktopUpdate(false);
-  assert.equal(isBackendDownForDesktopUpdate(), false);
-});
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
+}
 
-test("a transport failure under the update screen is silenced", () => {
-  setBackendDownForDesktopUpdate(true);
+const noResync = () => Promise.resolve();
+const settle = () => new Promise((r) => setImmediate(r));
+
+test("only a transport failure under the update screen is silenced", () => {
+  assert.equal(isSilencedDesktopUpdateFailure(transport(), false), false);
+  const cleanup = followDesktopUpdateScreen(true, false, noResync);
   assert.equal(isSilencedDesktopUpdateFailure(transport(), false), true);
-  setBackendDownForDesktopUpdate(false);
-});
-
-test("only a request that never reached the backend is silenced", () => {
-  // A 500 from a backend that is up is a real failure even mid-update.
-  setBackendDownForDesktopUpdate(true);
   assert.equal(
     isSilencedDesktopUpdateFailure(new Error("Internal Server Error"), true),
     false,
   );
-  setBackendDownForDesktopUpdate(false);
+  cleanup();
+  assert.equal(isBackendDownForDesktopUpdate(), false);
 });
 
-test("nothing is silenced when no update is running", () => {
-  assert.equal(isSilencedDesktopUpdateFailure(transport(), false), false);
-});
-
-// Skip & Restart drops the update screen while a read issued under it is still working through
-// the Tauri retry ladder (10.5s) plus the check_backend_present budget (10s). Reading the flag
-// at catch time would let that rejection toast at the moment the backend is coming back.
-test("a read issued under the update screen stays silent after the screen drops", () => {
-  setBackendDownForDesktopUpdate(true);
+test("a read issued under the update screen stays silent after the flag drops", () => {
+  const cleanup = followDesktopUpdateScreen(true, false, noResync);
   const downWhenIssued = isBackendDownForDesktopUpdate();
-  setBackendDownForDesktopUpdate(false);
+  cleanup();
   assert.equal(isSilencedDesktopUpdateFailure(transport(), downWhenIssued), true);
 });
 
-test("the chat status refresh latches the flag at issue, not in the catch", () => {
-  const latch = SYNC.indexOf("const downWhenIssued = isBackendDownForDesktopUpdate();");
-  assert.ok(latch !== -1, "the flag must be latched when the request is issued");
-  assert.ok(latch < SYNC.indexOf("} catch (error) {"), "the latch must precede the catch");
-  const guard = CATCH.indexOf("isSilencedDesktopUpdateFailure(error, downWhenIssued)");
-  assert.ok(guard !== -1);
-  assert.ok(guard < CATCH.indexOf("setModelsError("), "the guard must precede the error state");
-  assert.ok(guard < CATCH.indexOf("toast.error"), "the guard must precede the error toast");
+// start_server returns once the backend is spawned, before it answers.
+test("leaving the update screen holds the flag until the resync settles", async () => {
+  followDesktopUpdateScreen(true, false, noResync)();
+  const resync = deferred();
+  let resyncs = 0;
+  followDesktopUpdateScreen(false, true, () => {
+    resyncs += 1;
+    return resync.promise;
+  });
+  assert.equal(resyncs, 1);
+  assert.equal(isBackendDownForDesktopUpdate(), true);
+  resync.resolve();
+  await settle();
+  assert.equal(isBackendDownForDesktopUpdate(), false);
 });
 
-// The documents bar renders inside the chat composer, so it is mounted under the update screen
-// too, and its 4s indexing poll toasted the same sentence on every tick.
-test("the documents poll is silenced by the same predicate", () => {
-  const refresh = region(RAG, "const refresh = useCallback(", "const hasIndexing =");
-  assert.match(refresh, /const downWhenIssued = isBackendDownForDesktopUpdate\(\);/);
-  const guard = refresh.indexOf("isSilencedDesktopUpdateFailure(err, downWhenIssued)");
-  assert.ok(guard !== -1, "the documents catch must use the shared predicate");
-  assert.ok(guard < refresh.indexOf("toast.error"), "the guard must precede the error toast");
+test("a retry during the resync keeps the flag when the resync settles", async () => {
+  const resync = deferred();
+  const leave = followDesktopUpdateScreen(false, true, () => resync.promise);
+  leave();
+  const retry = followDesktopUpdateScreen(true, false, noResync);
+  resync.resolve();
+  await settle();
+  assert.equal(isBackendDownForDesktopUpdate(), true);
+  retry();
 });
 
-test("the flag follows the update screen and drops with it", () => {
-  const layer = region(
-    PROVIDER,
-    "function TauriUpdateLayer(",
-    "const HIDDEN_TITLEBAR_SIDEBAR_ROUTES",
+test("no resync without a transition off the update screen", () => {
+  let resyncs = 0;
+  const count = () => {
+    resyncs += 1;
+    return Promise.resolve();
+  };
+  followDesktopUpdateScreen(false, false, count)();
+  followDesktopUpdateScreen(true, false, count)();
+  followDesktopUpdateScreen(true, true, count)();
+  assert.equal(resyncs, 0);
+});
+
+test("the chat status refresh latches the flag at issue and checks it before reporting", () => {
+  const sync = region(
+    RUNTIME,
+    "async function syncInferenceStatusToStore(",
+    "async function refreshAndWaitForServerModel(",
   );
-  assert.match(layer, /setBackendDownForDesktopUpdate\(isUpdating\);/);
-  assert.match(layer, /return \(\) => setBackendDownForDesktopUpdate\(false\);/);
-  assert.match(layer, /\}, \[isUpdating\]\);/);
+  const catchAt = sync.indexOf("} catch (error) {");
+  const latch = sync.indexOf("const downWhenIssued = isBackendDownForDesktopUpdate();");
+  assert.ok(latch !== -1 && latch < catchAt);
+  const guard = sync.indexOf(
+    "if (isSilencedDesktopUpdateFailure(error, downWhenIssued)) return;",
+  );
+  assert.ok(guard > catchAt);
+  assert.ok(guard < sync.indexOf("setModelsError(message)"));
+  assert.ok(guard < sync.indexOf("toast.error"));
 });
 
-// Skip & Restart and the shell-failure recovery both start a fresh backend with nothing resident
-// while the chat page is still mounted holding the old selection.
-test("leaving the update screen re-reads the server's model", () => {
+test("the documents refresh latches the flag at issue and checks it before reporting", () => {
+  const refresh = region(RAG, "const refresh = useCallback(", "const loadProjectSources");
+  const latch = refresh.indexOf("const downWhenIssued = isBackendDownForDesktopUpdate();");
+  const guard = refresh.indexOf(
+    "if (isSilencedDesktopUpdateFailure(err, downWhenIssued)) return false;",
+  );
+  assert.ok(latch !== -1 && latch < refresh.indexOf("} catch (err) {"));
+  assert.ok(guard !== -1 && guard < refresh.indexOf("toast.error"));
+});
+
+test("the update layer drives the flag and resyncs chat when the screen drops", () => {
   const layer = region(
-    PROVIDER,
+    readSrc("app/provider.tsx"),
     "function TauriUpdateLayer(",
     "const HIDDEN_TITLEBAR_SIDEBAR_ROUTES",
   );
   assert.match(
     layer,
-    /if \(wasUpdatingRef\.current && !isUpdating\) \{\s*void resyncInferenceStatusAfterServerModelChange\(\);/,
+    /const wasUpdating = wasUpdatingRef\.current;\s*wasUpdatingRef\.current = isUpdating;[\s\S]*?return followDesktopUpdateScreen\(\s*isUpdating,\s*wasUpdating,\s*resyncInferenceStatusAfterServerModelChange,\s*\);\s*\}, \[isUpdating\]\);/,
   );
-  assert.match(layer, /wasUpdatingRef\.current = isUpdating;/);
 });

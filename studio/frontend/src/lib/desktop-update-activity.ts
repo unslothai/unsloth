@@ -4,19 +4,37 @@
 // The desktop update stops the backend on purpose while the app stays mounted under the update screen.
 let backendDownForUpdate = false;
 
-export function setBackendDownForDesktopUpdate(down: boolean): void {
-  backendDownForUpdate = down;
-}
-
 export function isBackendDownForDesktopUpdate(): boolean {
   return backendDownForUpdate;
 }
 
 /**
- * Whether a failed background read should stay quiet: the request never reached the backend, and
- * the update stopped it. Latch the flag when the request is ISSUED and pass it here, because the
- * rejection lands up to ~20s later (the Tauri GET ladder is 10.5s and check_backend_present adds a
- * 10s budget) and Skip & Restart can drop the update screen inside that window.
+ * Tracks the update screen and returns the effect cleanup. Leaving it holds the flag until `resync`
+ * settles: Skip & Restart and the shell-failure recovery spawn a fresh backend without waiting for it
+ * to answer.
+ */
+export function followDesktopUpdateScreen(
+  isUpdating: boolean,
+  wasUpdating: boolean,
+  resync: () => Promise<void>,
+): () => void {
+  const leaving = wasUpdating && !isUpdating;
+  backendDownForUpdate = isUpdating || leaving;
+  let active = true;
+  if (leaving) {
+    void resync().finally(() => {
+      if (active) backendDownForUpdate = false;
+    });
+  }
+  return () => {
+    active = false;
+    backendDownForUpdate = false;
+  };
+}
+
+/**
+ * Whether a failed read never reached a backend the update stopped. `downWhenIssued` is latched when
+ * the request is issued: its rejection can land ~20s later, after the update screen has gone.
  */
 export function isSilencedDesktopUpdateFailure(
   error: unknown,
