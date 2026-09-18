@@ -10559,14 +10559,19 @@ class LlamaCppBackend:
     def _integrated_cuda_probe_is_free() -> bool:
         """True when ``_integrated_cuda_gpu_ids()`` costs no NEW CUDA context.
 
-        That probe pins a ~700 MiB primary context per visible card for the life of
-        this process, and the launch preflight runs AFTER the VRAM budget was taken, so
-        probing there can OOM a tightly fitted child against a stale budget. So the
-        preflight never probes: it reads an answer only if one is cached for this mask.
-        ``_get_gpu_memory`` fills that cache on its torch arm before reading any
-        free/total figure, which puts the cost inside the snapshot. That is the arm an
-        integrated SoC takes anyway (nvidia-smi answers ``[N/A]`` on a Spark, so the CLI
-        probe parses nothing); a host whose nvidia-smi answers never pays for it.
+        The launch preflight runs AFTER the VRAM budget was taken, so a probe there
+        would price a tightly fitted child against a stale budget. So the preflight
+        never probes: it reads an answer only if one is cached for this mask.
+        ``_get_gpu_memory`` fills that cache before reading any free/total figure, which
+        puts the cost inside the snapshot.
+
+        BOTH its arms fill it now. The torch arm always did, and that was assumed to be
+        the arm an integrated SoC takes, because nvidia-smi answers ``[N/A]`` on a DGX
+        Spark and the CLI probe parses nothing. A Windows RTX Spark N1X answers 8128 MiB
+        instead -- a real number, scoped to the dedicated carve-out -- so the CLI arm
+        wins there and an integrated host reached the preflight with nothing cached.
+        The probe reads ``get_device_properties`` only, which creates no primary context
+        (measured at 0 MiB on an N1X, against 116 MiB for ``mem_get_info``).
         """
         return LlamaCppBackend._integrated_cuda_mask_key() in LlamaCppBackend._INTEGRATED_CUDA_IDS
 
@@ -10627,6 +10632,147 @@ class LlamaCppBackend:
             return integrated
         except Exception:
             return set()
+
+    # {physical id: pool total MiB} per visibility mask, filled beside _INTEGRATED_CUDA_IDS.
+    _INTEGRATED_CUDA_POOL_MIB: dict[tuple, dict[int, int]] = {}
+
+    @staticmethod
+    def _integrated_cuda_pool_total_mib() -> dict[int, int]:
+        """Pool size in MiB for each visible integrated CUDA device.
+
+        ``props.total_memory`` is what an integrated part can actually allocate, and it
+        is the figure nvidia-smi contradicts on a Windows RTX Spark N1X: 46477 MiB here
+        against the 8128 MiB carve-out the CLI reports. Read from the device list, so
+        it costs no primary context (measured at 0 MiB, against 116 MiB for
+        mem_get_info on the same part) and is cached per mask like the flag itself.
+
+        Empty off CUDA, on ROCm and on any error, so callers keep the CLI's total.
+        """
+        key = LlamaCppBackend._integrated_cuda_mask_key()
+        cached = LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB.get(key)
+        if cached is not None:
+            return dict(cached)
+        integrated = LlamaCppBackend._integrated_cuda_gpu_ids()
+        if not integrated:
+            return {}
+        try:
+            import torch
+
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            totals: dict[int, int] = {}
+            complete = True
+            for ordinal in range(torch.cuda.device_count()):
+                idx = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                if idx not in integrated:
+                    continue
+                try:
+                    props = torch.cuda.get_device_properties(ordinal)
+                    totals[idx] = int(props.total_memory) // (1024 * 1024)
+                except Exception:
+                    complete = False
+            if complete:
+                LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB[key] = totals
+            return totals
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _widen_integrated_cuda_rows(gpus: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
+        """Re-price nvidia-smi rows for an integrated CUDA SoC against its shared pool.
+
+        The torch arm of ``_get_gpu_memory`` already sizes an integrated part this way,
+        but it is only reached when the CLI answers nothing, which is the DGX Spark
+        shape (memory.total reads ``[N/A]`` there) and not the Windows RTX Spark N1X
+        shape, where the CLI answers 8128 MiB of a 46477 MiB budget and the nvidia-smi
+        arm returns first. A model was told it needed "7.9 GB of a 6.9 GB budget" on a
+        machine with 45 GiB. So the same policy is applied to a CLI answer that came
+        back scoped to the carve-out.
+
+        Widening only: a total is replaced solely by a LARGER one, and the free half is
+        floored at the reading it replaces, so no device is offered less than the CLI
+        already vouched for. A discrete host gets its rows back unchanged, having paid
+        one classification that is cached for the life of the process.
+        """
+        try:
+            integrated = LlamaCppBackend._integrated_cuda_gpu_ids()
+            if not integrated or not gpus:
+                return gpus
+            # These rows are nvidia-smi indices; `_integrated_cuda_gpu_ids` answers in
+            # CUDA's, which CUDA_DEVICE_ORDER defaults to FASTEST_FIRST, pinning only
+            # device 0 (docs.nvidia.com/cuda/cuda-programming-guide, environment
+            # variables). An unmappable mask is worse: no physical ids AND, since
+            # `_visible_devices_mask` cannot parse it either, unfiltered CLI rows. Join
+            # only when both halves are mappable, as `_cuda_join_is_unsafe` does.
+            order = (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper()
+            raw_mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+            mask_unset = raw_mask is None or not raw_mask.strip()
+            mappable = mask_unset or LlamaCppBackend._resolve_visible_physical_ids() is not None
+            # No single-row exemption: `gpus` is what SURVIVED parsing (the N1X's own
+            # NPU row does not), so it is not a device count. main.py:19 sets PCI_BUS_ID,
+            # so every Spark, Jetson and N1X still qualifies below.
+            if not (mappable and order == "PCI_BUS_ID"):
+                logger.debug(
+                    "Not widening integrated CUDA rows: CUDA_DEVICE_ORDER is %r and "
+                    "the mask %s, so a CUDA id cannot be joined to an nvidia-smi index "
+                    "here.",
+                    order or "unset (FASTEST_FIRST)",
+                    "resolves to no physical ids" if not mappable else "is mappable",
+                )
+                return gpus
+            totals = LlamaCppBackend._integrated_cuda_pool_total_mib()
+            avail = LlamaCppBackend._available_system_memory_mib()
+            cgroup_mib = LlamaCppBackend._cgroup_available_memory_mib()
+            # One pool, however many integrated devices draw on it: the same reason the
+            # torch arm divides. No shipping product pairs two integrated SoCs, so this
+            # is a division by 1 everywhere it currently runs.
+            shared_count = max(1, sum(1 for idx, _f, _t in gpus if idx in integrated))
+            out: list[tuple[int, int, int]] = []
+            for idx, free_mib, total_mib in gpus:
+                if idx not in integrated:
+                    out.append((idx, free_mib, total_mib))
+                    continue
+                cli_total_mib = total_mib
+                pool_mib = totals.get(idx) or 0
+                if pool_mib > total_mib:
+                    total_mib = pool_mib
+                raw_mib = free_mib
+                # MemAvailable, as the torch arm uses: both free readings undercount here
+                # (#9889). A zero total means unsized, so it never becomes a cap.
+                if avail is not None and total_mib > 0:
+                    raw_mib = min(total_mib, max(raw_mib, avail))
+                cgroup_bound = False
+                if cgroup_mib is not None and cgroup_mib <= raw_mib:
+                    # Charged to the cgroup, so publish no total and let the fit price
+                    # off the free reading, which IS the container's ceiling.
+                    raw_mib = cgroup_mib
+                    cgroup_bound = True
+                if shared_count > 1:
+                    raw_mib //= shared_count
+                    total_mib //= shared_count
+                capped = _apply_igpu_host_reserve_mib(raw_mib, True)
+                # Never below what the driver already vouched for. NOT under a cgroup:
+                # allocations are charged to memory.max, so the floor would hand the fit
+                # planner a budget the kernel kills.
+                if not cgroup_bound:
+                    capped = max(capped, free_mib // shared_count)
+                # Only when something moved: _get_gpu_memory is uncached and
+                # _wait_for_vram_settle polls it every 0.25 s.
+                if capped != free_mib or total_mib != cli_total_mib:
+                    logger.info(
+                        f"CUDA device {idx} is a unified-memory SoC sharing system RAM; "
+                        f"sizing it against the shared pool "
+                        f"({free_mib}->{capped}MiB free, "
+                        f"{pool_mib or total_mib}MiB pool)"
+                    )
+                out.append((idx, capped, 0 if cgroup_bound else total_mib))
+            return sorted(out, key = lambda g: g[0])
+        except Exception as e:
+            logger.debug(f"integrated CUDA pool sizing failed: {e}")
+            return gpus
 
     @staticmethod
     def _integrated_cuda_unified_memory(gpu_indices = None) -> bool:
@@ -12689,7 +12835,8 @@ class LlamaCppBackend:
                 gpus.sort(key = lambda g: g[0])
                 if gpus:
                     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
-                    return gpus
+                    # The CLI row is the carve-out, not the pool. Discrete rows unchanged.
+                    return LlamaCppBackend._widen_integrated_cuda_rows(gpus)
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
 
@@ -12697,7 +12844,8 @@ class LlamaCppBackend:
         nvml_gpus = LlamaCppBackend._get_gpu_memory_nvml()
         if nvml_gpus:
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
-            return nvml_gpus
+            # nvidia-smi IS NVML: same carve-out, same PCI indexing, same correction.
+            return LlamaCppBackend._widen_integrated_cuda_rows(nvml_gpus)
 
         # ── AMD ROCm via amd-smi ─────────────────────────────────────
         rocm_gpus = LlamaCppBackend._get_gpu_memory_amd_smi(
