@@ -432,6 +432,77 @@ def test_a_backend_executed_seed_resolves_the_endpoint_on_the_backend(monkeypatc
     _resolve_seed_endpoint({"seed_config": "nope"})
 
 
+_GSM8K_FILES = [
+    "main/test-00000-of-00001.parquet",
+    "main/train-00000-of-00001.parquet",
+    "socratic/test-00000-of-00001.parquet",
+    "socratic/train-00000-of-00001.parquet",
+]
+
+
+@pytest.mark.parametrize(
+    ("files", "split", "subset", "expected"),
+    [
+        (_GSM8K_FILES, "train", None, "datasets/org/repo/main/train-*.parquet"),
+        (_GSM8K_FILES, "test", "main", "datasets/org/repo/main/test-*.parquet"),
+        (_GSM8K_FILES, "train", "socratic", "datasets/org/repo/socratic/train-*.parquet"),
+        (_GSM8K_FILES, "train", "default", "datasets/org/repo/main/train-*.parquet"),
+        (
+            ["data/test-00000-of-00001.parquet", "data/train-00000-of-00002.parquet"],
+            "train",
+            "default",
+            "datasets/org/repo/data/train-*.parquet",
+        ),
+        (["test.csv", "train.csv"], "train", None, "datasets/org/repo/train.csv"),
+        (["Train_0.jsonl", "Test_0.jsonl"], "train", None, "datasets/org/repo/Train_*.jsonl"),
+        (
+            ["raw/gsm_test.jsonl", "raw/gsm_train.jsonl"],
+            "train",
+            None,
+            "datasets/org/repo/raw/gsm_train.jsonl",
+        ),
+        (
+            ["en/test/0000.parquet", "en/train/0000.parquet", "fr/train/0000.parquet"],
+            "train",
+            "fr",
+            "datasets/org/repo/fr/train/**/*.parquet",
+        ),
+        (["data/part-0.parquet"], "train", "main", "datasets/org/repo/data/**/*.parquet"),
+    ],
+)
+def test_seed_hf_path_keeps_the_split_and_subset(
+    monkeypatch, tmp_path, files, split, subset, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    assert seed_route._resolve_seed_hf_path("org/repo", files, split, subset) == expected
+
+
+def test_seed_preview_file_comes_from_the_chosen_subset(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    assert (
+        seed_route._select_best_file(_GSM8K_FILES, "train", "socratic")
+        == "socratic/train-00000-of-00001.parquet"
+    )
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        (["part-0.parquet"], "datasets/org/repo/**/*.parquet"),
+        (["data/part-0.parquet", "data/part-1.parquet"], "datasets/org/repo/data/**/*.parquet"),
+        (
+            ["data/test/0.parquet", "data/train/0.parquet"],
+            "datasets/org/repo/data/train/**/*.parquet",
+        ),
+    ],
+)
+def test_seed_hf_path_still_globs_the_directory_without_a_split_in_the_name(
+    monkeypatch, tmp_path, files, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train") == expected
+
+
 def test_validate_resolves_the_hf_seed_endpoint_like_jobs(monkeypatch):
     pytest.importorskip("fastapi")
     backend_root = Path(__file__).resolve().parent.parent
