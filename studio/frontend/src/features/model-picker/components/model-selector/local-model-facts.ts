@@ -132,13 +132,16 @@ export function localModelInfoFacts(
     });
   }
 
+  // A null template is not evidence of absence. The probe drops one over 64KB, a read failure
+  // after the dims succeeded leaves the same shape, and read_gguf_chat_template returns null
+  // for absent, unreadable and not-a-GGUF alike. So only presence is ever stated.
   facts.push({
     key: "chatTemplate",
     label: "Chat template",
-    value: hasTemplate ? "Embedded" : "None embedded",
+    value: hasTemplate ? "Embedded" : "Not available",
     detail: hasTemplate
       ? "The file carries its own chat template, so it formats conversations without one being supplied. Click to read it."
-      : "No template in the file, so Unsloth supplies one at load time.",
+      : "No template was returned for this file. It may carry none, or one too large to read here.",
   });
 
   return facts;

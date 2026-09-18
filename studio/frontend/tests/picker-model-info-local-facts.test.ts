@@ -148,9 +148,37 @@ test("the template row states whether one is embedded", () => {
   });
   assert.equal(embedded.get("chatTemplate"), "Embedded");
 
-  // Header read, template genuinely absent: the panel says so rather than hiding the row.
+  // Null is not absence, so the row stays neutral rather than claiming the file carries none.
   const none = factsByKey({ contextLength: 4096, chatTemplate: null });
-  assert.equal(none.get("chatTemplate"), "None embedded");
+  assert.equal(none.get("chatTemplate"), "Not available");
+});
+
+// The probe drops a template over MAX_CHAT_TEMPLATE_BYTES (65536) while still returning the
+// dims it read first, so this shape belongs to a file that does carry one.
+test("a withheld template is not reported as absent", () => {
+  const overCap = factsByKey({
+    contextLength: 8192,
+    layerCount: 32,
+    moeLayerCount: 0,
+    chatTemplate: null,
+  });
+  assert.equal(overCap.get("chatTemplate"), "Not available");
+  assert.notEqual(overCap.get("chatTemplate"), "None embedded");
+  // Nothing to read the markers out of, so no reasoning claim either.
+  assert.equal(overCap.has("reasoning"), false);
+});
+
+// Same shape when the template read throws after the dims were read: the route's probe catches
+// it and returns what it already had.
+test("a template read failure leaves the dims and claims nothing", () => {
+  const failed = factsByKey({
+    contextLength: 131072,
+    layerCount: 64,
+    chatTemplate: null,
+  });
+  assert.equal(failed.get("contextLength"), "128K tokens");
+  assert.equal(failed.get("layers"), "64");
+  assert.equal(failed.get("chatTemplate"), "Not available");
 });
 
 test("rows come back in the declared field order", () => {
