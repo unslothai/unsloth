@@ -2724,14 +2724,8 @@ exit 1
         }
         foreach ($name in @("python3", "python")) {
             try {
-                # Select-Object, not $cmd.Source. Constrained Language Mode permits property
-                # reads only on its allowed type list, and CommandInfo is not on it, so the
-                # direct spelling throws on exactly the hosts this ladder exists for. Reading it
-                # through a cmdlet keeps the access inside compiled code, where CLM does not
-                # reach. Same reason for every other Select-Object -ExpandProperty below.
-                foreach ($source in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue |
-                    Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)) {
-                    if ($source) { $candidates += $source }
+                foreach ($cmd in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                    if ($cmd -and $cmd.Source) { $candidates += $cmd.Source }
                 }
             } catch {}
         }
@@ -2744,9 +2738,7 @@ exit 1
             # The interpreter's own directory: it exists, since the executable inside it just
             # passed Test-Path. Not $PSScriptRoot, which is empty under `irm | iex` (no script
             # file), and not the temp directory, which this installer relocates.
-            # Split-Path, not [System.IO.Path]::GetDirectoryName: System.IO.Path is not an
-            # allowed type under Constrained Language Mode, and a static call on it throws.
-            $probeDir = Split-Path -Parent $candidate
+            $probeDir = [System.IO.Path]::GetDirectoryName($candidate)
             if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
             $probe = Invoke-StudioEarlyPython -Exe $candidate -Path $probeDir
             if (-not [string]::IsNullOrWhiteSpace($probe)) {
@@ -2799,6 +2791,24 @@ exit 1
         $script = "import pathlib,sys" + [char]10 +
                   "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
+        $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)".Trim()
+        if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+        # A relative answer is not an identity, and a path that does not exist cannot be the
+        # resolution of one that does.
+        if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+        if (-not (Test-Path -LiteralPath $answer)) { return $null }
+        return $answer
+    }
+
+    # Run a script in a bounded child and return its stdout, or $null on anything other than a
+    # clean exit. Shared by the path resolver above and the process-image table rung.
+    function Invoke-StudioEarlyPythonScript {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Script,
+            [string[]]$ScriptArgs = @(),
+            [int]$TimeoutMs = 10000
+        )
         $proc = $null
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -2814,12 +2824,12 @@ exit 1
             # one line this rung reads back, it can hang, which burns the timeout and rejects a
             # perfectly good interpreter, and it can patch pathlib, which would let this mark an
             # influenced answer as exact. Measured, not assumed: under -I alone sys.flags.no_site
-            # is 0. Nothing here needs site-packages; the probe is three stdlib imports.
-            $argv = @("-I", "-S", "-c", $script, $Path)
+            # is 0. Nothing routed through here needs site-packages.
+            $argv = @("-I", "-S", "-c", $Script) + $ScriptArgs
             if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
                 foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
             } else {
-                # Quote for CommandLineToArgvW. The script carries no double quote by
+                # Quote for CommandLineToArgvW. The scripts carry no double quote by
                 # construction and a Windows path cannot contain one, so only two things matter:
                 # wrap each argument, and double any run of trailing backslashes, since
                 # "C:\dir\" would otherwise escape its own closing quote.
@@ -2843,13 +2853,7 @@ exit 1
                 return $null
             }
             if ($proc.ExitCode -ne 0) { return $null }
-            $answer = "$($stdout.Result)".Trim()
-            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
-            # A relative answer is not an identity, and a path that does not exist cannot be the
-            # resolution of one that does.
-            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
-            if (-not (Test-Path -LiteralPath $answer)) { return $null }
-            return $answer
+            return "$($stdout.Result)"
         } catch {
             return $null
         } finally {
@@ -5806,15 +5810,8 @@ exit 0
             if ($split -lt 1) { continue }
             $pidText = $line.Substring(0, $split)
             $path = $line.Substring($split + 1)
-            # A -match and a cast, not [int]::TryParse. Constrained Language Mode does not
-            # permit casting to [ref] at all, so the TryParse spelling throws on the hosts this
-            # rung exists for, and the whole table comes back empty. The regex is anchored, so
-            # it rejects everything the parse would have: PowerShell's [int] cast on a
-            # non-numeric string throws rather than returning zero, and on an out-of-range one
-            # it throws too, which the -match cannot let through unnoticed.
-            if ($pidText -notmatch '^\s*\d+\s*$') { continue }
             $parsed = 0
-            try { $parsed = [int]$pidText } catch { continue }
+            if (-not [int]::TryParse($pidText, [ref]$parsed)) { continue }
             if ($parsed -le 0) { continue }
             if (-not [string]::IsNullOrWhiteSpace($path)) { $table[$parsed] = $path }
         }

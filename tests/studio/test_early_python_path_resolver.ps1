@@ -29,7 +29,8 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
-    "Get-StudioEarlyPython", "Invoke-StudioEarlyPython", "Get-StudioPythonFinalPath",
+    "Get-StudioEarlyPython", "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython",
+    "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo"
 )) {
@@ -232,15 +233,15 @@ try {
     Check "-I alone leaves site imported on this interpreter" ("$isoOnly".Trim() -eq "0")
     Check "-S is what turns site off" ("$isoPlus".Trim() -eq "1")
 
-    # And the resolver passes it. Read out of the launcher, because the end-to-end drive is not
+    # And the launcher passes it. Read out of the source, because the end-to-end drive is not
     # available here: sitecustomize is resolved on sys.path and the stdlib directory precedes
     # site-packages, so a planted copy is shadowed by the host's own on any machine that has one.
-    $resolverFn = @($ast.FindAll({ param($n)
+    $launcherFn = @($ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-        $n.Name -eq "Invoke-StudioEarlyPython"
+        $n.Name -eq "Invoke-StudioEarlyPythonScript"
     }, $true))[0].Extent.Text
-    Check "the resolver runs the probe with -S as well as -I" (
-        $resolverFn -match '@\("-I",\s*"-S",\s*"-c"')
+    Check "the launcher runs every probe with -S as well as -I" (
+        $launcherFn -match '@\("-I",\s*"-S",\s*"-c"')
     # ---- a miss recorded before $VenvDir existed is not final ----
     #
     # The --tauri path resolves the Studio-home override well before $VenvDir is assigned. On a

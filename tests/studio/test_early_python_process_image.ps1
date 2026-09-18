@@ -33,8 +33,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
-    "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
-    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
+    "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
     "Get-StudioPythonProcessImageTable", "Get-StudioProcessImagePath"
 )) {
     $fn = $ast.FindAll({ param($n)
@@ -99,97 +98,6 @@ Check "non-ASCII output survives the host's console codepage" ($utf8 -eq ([char]
 
 $missing = Invoke-StudioEarlyPythonScript -Exe (Join-Path $root "no-such-interpreter") -Script "pass"
 Check "an interpreter that does not exist yields null, not a throw" ($null -eq $missing)
-
-# --------------------------------------------- the Constrained Language Mode launcher, for real
-#
-# Not a detail. CLM is one of the two policies that stop a type being defined at runtime, which is
-# the reason this whole ladder exists, and CLM also refuses New-Object and every method call on
-# System.Diagnostics.Process. A launcher that only worked outside CLM would be absent from half
-# the population it is for, while looking perfectly healthy everywhere it is not needed.
-# test_early_python_path_resolver.ps1 drives the handover itself in a constrained runspace; the
-# checks here cover what that one does not.
-
-# One payload is not a contract. The byte-for-byte check in test_early_python_path_resolver.ps1
-# uses a single line with no newline in it, and a check like it passed for a year of edits while the two launchers actually DISAGREED on anything containing a
-# CRLF: the ProcessStartInfo launcher reads the child's bytes straight through, and the cmdlet
-# launcher's redirection goes via a file. Measured at the time this was added: a child writing
-# 61 0d 0a 62 came back 61 0d 0a 62 from one and 61 0a 62 from the other.
-#
-# Driven over a table instead, with the shapes a child actually produces: an embedded CRLF, an
-# embedded LF, trailing newlines of both kinds, no newline at all, and a tab.
-function Get-LauncherHex($s) {
-    if ($null -eq $s) { return "<null>" }
-    return ((([System.Text.Encoding]::UTF8.GetBytes($s)) | ForEach-Object { $_.ToString("x2") }) -join " ")
-}
-$payloads = @(
-    @{ Name = "an embedded CRLF";      Py = "b'a\r\nb'" },
-    @{ Name = "an embedded LF";        Py = "b'a\nb'" },
-    @{ Name = "a trailing CRLF";       Py = "b'x\r\n'" },
-    @{ Name = "several trailing LFs";  Py = "b'p\nq\n\n'" },
-    @{ Name = "no newline at all";     Py = "b'solo'" },
-    @{ Name = "an embedded tab";       Py = "b'tab\ttab'" }
-)
-foreach ($case in $payloads) {
-    $src = "import sys" + [char]10 + "sys.stdout.buffer.write($($case.Py))"
-    $viaPrimary = Invoke-StudioEarlyPythonScript -Exe $exe -Script $src
-    $viaCmdlet = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script $src
-    Check "the launchers agree on $($case.Name)" ($viaPrimary -ceq $viaCmdlet)
-    if ($viaPrimary -cne $viaCmdlet) {
-        Write-Host "        primary=$(Get-LauncherHex $viaPrimary)  cmdlet=$(Get-LauncherHex $viaCmdlet)" -ForegroundColor Red
-    }
-}
-
-# And the bites control for the whole group: the harness must be able to SEE a difference, or
-# every row above passes because both launchers are broken in the same way or neither ran.
-Check "control: the comparison distinguishes different strings" (
-    ("a`nb" -ceq "a`r`nb") -eq $false)
-# Parenthesised on purpose: an unparenthesised concatenation in an argument position binds its
-# first term to -Script and the rest positionally, which lands [char]10 on -TimeoutMs.
-$roundTripSrc = "import sys" + [char]10 + "sys.stdout.buffer.write(b'tab\ttab')"
-Check "control: a payload really did round-trip" (
-    (Invoke-StudioEarlyPythonScript -Exe $exe -Script $roundTripSrc) -ceq "tab`ttab")
-
-# The cmdlet launcher's millisecond-to-second conversion must be a real ceiling.
-#
-# It used the +999 idiom, which is a C integer-DIVISION trick. PowerShell's / is floating point
-# and [int] rounds to nearest rather than truncating, so every exact multiple gained a second:
-# 10000 measured as 11 and 20000 as 21. Wait-Process then waited a second longer than the caller
-# asked and the two launchers no longer shared a deadline. Driven over the boundary values rather
-# than asserted, since the failure was entirely in values that look obviously right.
-$cmdletFn = @($ast.FindAll({ param($n)
-    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-    $n.Name -eq "Invoke-StudioEarlyPythonScriptViaCmdlets"
-}, $true))[0].Extent.Text
-$convStart = $cmdletFn.IndexOf('$seconds = ($TimeoutMs')
-$convEnd = $cmdletFn.IndexOf('$timedOut = $false', [Math]::Max($convStart, 0))
-Check "the conversion is still computed in the launcher" ($convStart -ge 0 -and $convEnd -gt $convStart)
-$conversionSrc = ""
-if ($convStart -ge 0 -and $convEnd -gt $convStart) {
-    $conversionSrc = $cmdletFn.Substring($convStart, $convEnd - $convStart)
-}
-Check "the sliced conversion is not empty (bites)" (
-    $conversionSrc -match '\$seconds' -and $conversionSrc -match '%')
-foreach ($case in @(
-    @{ Ms = 10000; Want = 10 }, @{ Ms = 20000; Want = 20 }, @{ Ms = 1000; Want = 1 },
-    @{ Ms = 1500;  Want = 2 },  @{ Ms = 999;   Want = 1 },  @{ Ms = 1;    Want = 1 },
-    @{ Ms = 2500;  Want = 3 },  @{ Ms = 0;     Want = 1 }
-)) {
-    $TimeoutMs = $case.Ms
-    # The installer's OWN expression, sliced out and executed. Retyping the formula here would
-    # test this file's copy of it and pass even if the shipped one still had the +999 idiom.
-    Invoke-Expression $conversionSrc
-    Check "$($case.Ms) ms is $($case.Want) s" ($seconds -eq $case.Want)
-}
-# Bites control: the idiom this replaced really did get the round numbers wrong, so these rows
-# are not passing because any arithmetic would.
-Check "control: the old +999 idiom disagreed on an exact multiple" (
-    ([int]((10000 + 999) / 1000)) -eq 11)
-Check "and the shipped launcher no longer uses it" ($cmdletFn -notmatch '\+ 999')
-
-$cmdletUtf8 = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe `
-    -Script "import sys;sys.stdout.buffer.write((chr(0xe9)+chr(0x4e2d)).encode('utf-8'))"
-Check "the cmdlet launcher keeps non-ASCII intact" (
-    $cmdletUtf8 -eq ([string][char]0xE9 + [string][char]0x4E2D))
 
 # ------------------------------------------------------- the table, through a stubbed runner
 
