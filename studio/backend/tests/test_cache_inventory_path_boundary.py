@@ -41,6 +41,11 @@ LOAD_HANDLE: "tuple[str, ...]" = ()
 
 # A root that cannot exist by accident, so finding it in a body is proof and not a coincidence.
 HOST_ROOT = "/home/operator-7f3c/.cache/huggingface/hub"
+# The same root as this PLATFORM spells it. A row built by joining `Path(HOST_ROOT)` comes back
+# from the route with backslashes on Windows, so a POSIX literal is both a false red (an
+# assertion that can never hold) and a false green (a leak check that can never fire). Every
+# comparison against a path the test itself constructed goes through this one.
+HOST_ROOT_NATIVE = str(Path(HOST_ROOT))
 REPO_DIR = f"{HOST_ROOT}/models--unsloth--Llama-3.2-1B-Instruct"
 
 
@@ -795,11 +800,13 @@ def test_a_filesystem_backed_row_is_not_named_by_its_path(monkeypatch):
     assert row["load_id"].startswith("ref:"), row["load_id"]
     assert row["inventory_id"].startswith("models_dir:safetensors:"), row["inventory_id"]
     assert HOST_ROOT not in json.dumps(payload), payload
+    # Both spellings, or the leak check is vacuous wherever the row carries the other one.
+    assert HOST_ROOT_NATIVE not in json.dumps(payload), payload
     assert "my%20models" not in json.dumps(payload), payload
-    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
+    assert response_leaks_host_path(payload, [HOST_ROOT, HOST_ROOT_NATIVE]) is None
 
     ui = _hub(via_api_key = False).get("/api/hub/local").json()
-    assert ui["models"][0]["load_id"].startswith(HOST_ROOT)
+    assert ui["models"][0]["load_id"].startswith(HOST_ROOT_NATIVE)
 
 
 def test_a_cached_row_keeps_the_repo_id_it_is_named_by(_cached_inventory):

@@ -2650,8 +2650,15 @@ def test_a_slow_denial_is_still_a_denial(monkeypatch):
     assert allowed is False
     assert expiry - time.monotonic() > hf_tokens._REPO_ACCESS_UNREACHABLE_TTL_S
 
-    # And the remembered denial outlives an unaskable probe afterwards, which is the path the
-    # disclosure went through.
+    # And the refusal outlives an unaskable probe afterwards, which is the path the disclosure
+    # went through. Asked of the AUTHORIZATION rather than of the probe's tri-state: a denial is
+    # now remembered only where the disk fallback could otherwise overturn it, which needs a
+    # credential this host HOLDS and the repo on this disk -- otherwise a caller naming absent
+    # repositories fills the table and costs everyone the offline fallback. `hf_revoked` is
+    # neither, so the probe honestly reports "could not ask" and `_resolve_unaskable` is what
+    # refuses. The caller-visible answer is the same no it always was. The remembering itself is
+    # pinned, for the case where it is load-bearing, by
+    # test_offline_local_cache_discovery.py::test_a_denial_that_could_be_overturned_is_still_remembered.
     hf_tokens._repo_access_cache.clear()
     _counting_probe(monkeypatch, None, offline = False)
-    assert hf_tokens._explicit_token_reaches_repo("org/private", "hf_revoked", "model") is False
+    assert hf_tokens.cache_reads_authorized("hf_revoked", repo_id = "org/private") is False

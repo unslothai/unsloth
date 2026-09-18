@@ -338,6 +338,39 @@ def cached_read_refused(
     )
 
 
+def hub_answered_no(
+    hf_token: HfTokenArg,
+    *,
+    repo_id: str,
+    repo_type: str = "model",
+    offline: bool = False,
+) -> bool:
+    """Whether the Hub ANSWERED that this caller may not reach *repo_id*.
+
+    ``cached_read_refused`` deliberately collapses "answered no" and "could not be asked" into
+    one refusal, because for most readers the two are the same disappointment. A reader that
+    served the cached copy before this gate existed needs them apart: refusing on an answer is
+    the hole being closed, refusing on silence is a regression for a caller whose Hub merely
+    blinked. Only ``False`` -- an answer -- is reported here; ``None`` is not.
+
+    A remembered denial still counts as an answer, which is the point of remembering it. The
+    probe is the memoized one, so asking this after ``cached_read_refused`` costs no second
+    round trip.
+    """
+    repo = (repo_id or "").strip()
+    if not repo or _is_local_path(repo):
+        return False
+    if is_anonymous(hf_token):
+        # The sentinel asks the public question, exactly as public_cache_read_authorized does.
+        token: Optional[str] = None
+    elif not isinstance(hf_token, str) or not hf_token:
+        # The ambient caller is never behind the probe, so the Hub never answered about it.
+        return False
+    else:
+        token = hf_token
+    return _explicit_token_reaches_repo(repo, token, repo_type, offline = offline) is False
+
+
 def _is_local_path(repo_id: str) -> bool:
     """Lazy: hub.utils.paths pulls in the path stack, this module is imported beneath it."""
     try:
@@ -552,7 +585,15 @@ def _caller_populated_the_cache(
         return False
     matched = False
     for held in host_tokens:
-        if hmac.compare_digest(token, held):
+        # Encoded, because ``compare_digest`` raises TypeError on a str holding any non-ASCII
+        # character, and BOTH operands are attacker-or-operator text: ``token`` arrives in the
+        # caller's own ``X-Unsloth-HF-Token``, which Starlette latin-1 decodes, so a single raw
+        # 0xE9 byte in that header turned this gate into a 500 that quoted the exception; and a
+        # held credential containing one would have crashed every explicit-token caller instead.
+        # Bytes are also what constant-time comparison is defined over.
+        if hmac.compare_digest(
+            token.encode("utf-8", "surrogatepass"), held.encode("utf-8", "surrogatepass")
+        ):
             matched = True
     return matched
 
@@ -564,6 +605,37 @@ def _resolve_unaskable(repo_id: str, repo_type: str, *, token: Optional[str]) ->
     if not _caller_populated_the_cache(token, repo_id = repo_id, repo_type = repo_type):
         return False
     return _repo_present_on_disk(repo_id, repo_type)
+
+
+def _denial_can_be_overturned(repo_id: str, repo_type: str, token: Optional[str]) -> bool:
+    """Whether remembering this denial protects anything.
+
+    The memory exists for one reason: an unaskable Hub must not hand a caller the cached copy
+    of a repo the Hub already refused them. That can only happen where ``_resolve_unaskable``
+    would otherwise say yes, which needs BOTH the caller's credential to be one that filled
+    this host's cache AND the repo to be on the disk. A denial failing either test is
+    unoverturnable on its own key, so storing it buys no safety and costs a slot.
+
+    Slots are the whole point: the key carries the CALLER-SUPPLIED repo id, so without this a
+    caller naming 8192 repositories that do not exist -- huggingface.co answers a bare 401 for
+    those, which this module classifies as a denial -- fills the memory, forces an eviction,
+    and ``_denial_memory_is_complete`` then turns every "could not be asked" into "refused"
+    for every repo and every caller until the process restarts. Both flood shapes are closed
+    here: a foreign token fails the credential test without touching the disk, and an
+    unknown repo id fails the presence test.
+
+    Conservative on either question being unanswerable, since a denial not remembered is the
+    direction that loses safety.
+    """
+    try:
+        if not _caller_populated_the_cache(token, repo_id = repo_id, repo_type = repo_type):
+            return False
+    except Exception:  # noqa: BLE001 -- could not establish it; remember, do not discard
+        return True
+    try:
+        return _repo_present_on_disk(repo_id, repo_type)
+    except Exception:  # noqa: BLE001 -- same direction
+        return True
 
 
 def _repo_present_on_disk(repo_id: str, repo_type: str) -> bool:
@@ -674,9 +746,10 @@ def _explicit_token_reaches_repo(
             if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
                 _evict_repo_access_locked()
             _repo_access_cache[key] = (expiry, allowed)
-        # Only an answer moves the memory.
+        # Only an answer moves the memory, and only one the disk fallback could overturn.
         if allowed is False:
-            _remember_denial(key, finished)
+            if _denial_can_be_overturned(repo_id, repo_type, token):
+                _remember_denial(key, finished)
         elif allowed is True:
             _forget_denial(key)
     return _with_remembered_denial(key, allowed)

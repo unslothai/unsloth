@@ -443,9 +443,16 @@ def test_a_refusal_the_table_had_to_forget_closes_the_outage_path(monkeypatch, t
     assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
     assert not hf_tokens._denial_memory_lost_an_entry()
 
+    # The filler has to be repos that EARN a slot, which now means on this disk and refused to
+    # a credential this host holds: a denial the disk fallback could never overturn no longer
+    # occupies one, precisely so a caller naming absent repositories cannot force this
+    # eviction. The claim under test is unchanged -- once the table HAS forgotten, an outage
+    # must not read a forgotten refusal as "never refused".
     for index in range(8):
+        filler = f"acme/filler-{index}"
+        _materialize_repo(root, filler)
         hf_tokens._repo_access_cache.clear()
-        assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = f"acme/filler-{index}") is False
+        assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = filler) is False
     assert hf_tokens._denial_memory_lost_an_entry(), "the table dropped nothing"
 
     hf_tokens._repo_access_cache.clear()
@@ -1223,3 +1230,169 @@ def test_a_media_load_records_at_entry_because_its_fetch_is_on_a_worker_thread()
             f"{begin.__qualname__} no longer hands off; the media routes could compare "
             "before and after like the text load does"
         )
+
+
+# ---------------------------------------------------------------------------------------
+# The denial memory is a fixed number of slots keyed partly on caller-supplied input, so what
+# is allowed to occupy one decides whether a caller can exhaust it. These pin that only a
+# denial the disk fallback could actually overturn is stored.
+# ---------------------------------------------------------------------------------------
+
+
+def test_a_denial_for_a_repo_not_on_disk_does_not_occupy_a_slot(monkeypatch, tmp_path):
+    """The flood shape: 401s for repositories that do not exist. Nothing on disk can overturn
+    them, so remembering them protects nothing and only spends the memory."""
+    _cache_root(monkeypatch, tmp_path)
+    _counting_probe(monkeypatch, False)
+
+    for i in range(64):
+        assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = f"attacker/absent-{i}") is False
+
+    assert len(hf_tokens._denied_repo_access) == 0
+    assert hf_tokens._denial_memory_lost_an_entry() is False
+
+
+def test_a_denial_for_a_credential_this_host_never_held_does_not_occupy_a_slot(
+    monkeypatch, tmp_path
+):
+    """The other flood shape: one real on-disk repo, many caller-supplied tokens. A token the
+    host does not hold can never be authorized by the fallback, whatever the disk says."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, False)
+
+    for i in range(64):
+        assert cache_reads_authorized(f"hf_stranger_{i}", repo_id = ON_DISK) is False
+
+    assert len(hf_tokens._denied_repo_access) == 0
+    assert hf_tokens._denial_memory_lost_an_entry() is False
+
+
+def test_a_flood_does_not_take_the_offline_fallback_away_from_everyone_else(monkeypatch, tmp_path):
+    """The defect this closes: one evicted entry set `_denial_memory_is_complete` False for the
+    life of the process, after which every unaskable probe read as a refusal, for every repo
+    and every caller."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, False)
+
+    for i in range(hf_tokens._DENIAL_MEMORY_MAX + 16):
+        cache_reads_authorized(f"hf_stranger_{i}", repo_id = f"attacker/absent-{i}")
+
+    assert hf_tokens._denial_memory_lost_an_entry() is False
+    reset_repo_access_cache()
+    _counting_probe(monkeypatch, _ProbeUnreachable(), offline = False)
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+
+
+def test_a_denial_that_could_be_overturned_is_still_remembered(monkeypatch, tmp_path):
+    """The boundary the three above must not move: the Hub refused the operator's OWN
+    credential for a repo that IS on this disk, so an outage must not hand it over."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, False)
+
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    assert len(hf_tokens._denied_repo_access) == 1
+
+    _counting_probe(monkeypatch, _ProbeUnreachable(), offline = False)
+    # The verdict cache is what expires; the denial is what does not.
+    hf_tokens._repo_access_cache.clear()
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+
+
+class _ProbeUnreachable(Exception):
+    """Stands in for a refused connection: not an answer, so the fallback applies."""
+
+
+# ---------------------------------------------------------------------------------------
+# `load_model_config`'s anonymous branch. The hole it closes is an ONLINE read the Hub
+# answered no to. Silence is not that answer, and reading it as one refused a PUBLIC repo
+# already on the disk on every host that holds a credential.
+# ---------------------------------------------------------------------------------------
+
+
+def _anonymous_config_read(monkeypatch, tmp_path, *, probe, env_offline: bool):
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, probe, offline = False)
+    monkeypatch.setattr(model_config_module, "_env_offline", lambda: env_offline)
+    monkeypatch.setattr(model_config_module, "_config_json_already_cached", lambda *_a, **_k: True)
+    served = {"n": 0}
+
+    class _AutoConfig:
+        @staticmethod
+        def from_pretrained(*_a, **_k):
+            served["n"] += 1
+            return SimpleNamespace(model_type = "llama")
+
+    # Imported inside the function under test, so the stand-in goes on the package.
+    import transformers
+
+    monkeypatch.setattr(transformers, "AutoConfig", _AutoConfig)
+    return served
+
+
+def test_an_unaskable_hub_still_serves_a_cached_config_to_the_anonymous_caller(
+    monkeypatch, tmp_path
+):
+    """The host holds a credential, so the provenance rule cannot vouch for a tokenless
+    caller; but the Hub never said no, and the merge base served this. A DNS blip must not
+    take a downloaded PUBLIC model away."""
+    served = _anonymous_config_read(
+        monkeypatch, tmp_path, probe = _ProbeUnreachable(), env_offline = False
+    )
+
+    model_config_module.load_model_config(ON_DISK, use_auth = False, token = False)
+    assert served["n"] == 1
+
+
+def test_an_answered_no_still_refuses_the_cached_config(monkeypatch, tmp_path):
+    """BOUNDARY. The reverse hole #10264 left open: online, the Hub refuses this caller, and
+    the cached config.json was handed over anyway. That must stay closed."""
+    served = _anonymous_config_read(monkeypatch, tmp_path, probe = False, env_offline = False)
+
+    with pytest.raises(OSError, match = "not available to an unauthorized caller"):
+        model_config_module.load_model_config(ON_DISK, use_auth = False, token = False)
+    assert served["n"] == 0
+
+
+def test_offline_the_narrow_provenance_rule_still_decides(monkeypatch, tmp_path):
+    """BOUNDARY. Declared offline is the path the PR narrows on purpose: a tokenless caller on
+    a host that HOLDS a credential is refused, because either could have filled the cache."""
+    served = _anonymous_config_read(
+        monkeypatch, tmp_path, probe = _ProbeUnreachable(), env_offline = True
+    )
+
+    with pytest.raises(OSError, match = "not available to an unauthorized caller"):
+        model_config_module.load_model_config(ON_DISK, use_auth = False, token = False)
+    assert served["n"] == 0
+
+
+def test_offline_a_credential_less_host_still_reads_its_own_cache(monkeypatch, tmp_path):
+    """BOUNDARY. The case the whole PR exists for keeps working through the added clause."""
+    _no_host_credential(monkeypatch)
+    served = _anonymous_config_read(
+        monkeypatch, tmp_path, probe = _ProbeUnreachable(), env_offline = True
+    )
+
+    model_config_module.load_model_config(ON_DISK, use_auth = False, token = False)
+    assert served["n"] == 1
+
+
+def test_a_non_ascii_credential_is_compared_not_crashed_on(monkeypatch, tmp_path):
+    """`hmac.compare_digest` refuses a str with any non-ASCII character. Both operands here are
+    text somebody else chose: the caller's own X-Unsloth-HF-Token header, and the credential the
+    host happens to hold. Either one carrying a single high byte turned an authorization
+    question into a 500 that quoted the exception."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, _ProbeUnreachable(), offline = False)
+
+    # A caller-supplied header byte. Starlette latin-1 decodes 0xE9 to U+00E9.
+    assert cache_reads_authorized("hf_é_not_the_hosts", repo_id = ON_DISK) is False
+
+    # And the mirror image: the HOST's credential is the non-ASCII one, and the caller presents
+    # it correctly, so the answer is a real match rather than a crash.
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, "hf_opérateur"))
+    assert cache_reads_authorized("hf_opérateur", repo_id = ON_DISK) is True
