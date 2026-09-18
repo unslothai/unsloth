@@ -16764,6 +16764,14 @@ def _check_signal_escape_patterns(code: str):
             return [node.generators[0].iter]
         return []
 
+    def _header_end(node: ast.AST) -> tuple:
+        # A definition binds its name only after its decorators, bases, defaults and
+        # annotations have been evaluated.
+        return max(
+            (_end_position(part) for part in _evaluated_outside(node)),
+            default = _position(node),
+        )
+
     def _build_scope_model() -> None:
         outer_scope_of: dict[int, ast.AST] = {}
         pending: list = [(tree, tree, _ROOT_BLOCK)]
@@ -16842,9 +16850,9 @@ def _check_signal_escape_patterns(code: str):
                     _add_name_store(scope, alias.asname or alias.name, value, node)
             elif isinstance(node, ast.ClassDef):
                 # The node itself, so `class Sub(Base)` can find Base's attribute stores.
-                _add_name_store(scope, node.name, node, node)
+                _add_name_store(scope, node.name, node, node, position = _header_end(node))
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                _add_name_store(scope, node.name, None, node)
+                _add_name_store(scope, node.name, None, node, position = _header_end(node))
             elif isinstance(node, ast.ExceptHandler) and node.name:
                 _add_name_store(scope, node.name, None, node, certain = False)
             elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:

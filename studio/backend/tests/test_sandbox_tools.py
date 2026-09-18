@@ -420,6 +420,15 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # A definition binds its name only after its header has been evaluated.
+            pytest.param(
+                f"import requests as fetch\ndef fetch(arg=fetch.get('http://{_H}/')):\n    pass",
+                id = "definition_shadowing_its_own_default",
+            ),
+            pytest.param(
+                f"import requests as fetch\nclass fetch(fetch.get('http://{_H}/')):\n    pass",
+                id = "class_shadowing_its_own_base",
+            ),
             # A constant getattr on a tracked module names the call it selects.
             pytest.param(
                 f"import requests\ngetattr(requests, 'get')('http://{_H}/')",
