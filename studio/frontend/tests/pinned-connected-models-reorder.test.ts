@@ -474,6 +474,7 @@ test("a record we cannot read does not make older pins ours", () => {
   // Blind in both directions, the only id this window knows is unpublished is the one it just
   // added. Claiming the whole screen made pins that WERE stored ours, so a peer unpinning one of
   // them was undone by the next write that landed.
+  // The readable case is the test below: same misclassification, narrower window.
   reset([A, B]);
   const realSet = storage.set.bind(storage);
   const realGet = storage.get.bind(storage);
@@ -491,6 +492,27 @@ test("a record we cannot read does not make older pins ours", () => {
     storage.get = realGet;
   }
   externalWrite([A]); // a peer unpinned B while this window was blind
+  pins.getState().togglePinnedConnected(D); // this one lands
+  assert.deepEqual(storedOrder(), [D, C, A]);
+});
+
+test("a peer removing a pin as the write fails does not make it ours", () => {
+  // The peer's write lands between the read this edit was built on and the setItem that failed,
+  // so the record no longer holds B while the attempted list still does. Reading ownership off
+  // that difference claimed B, and the next write that landed put the peer's removal back.
+  reset([A, B]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    realSet(KEY, JSON.stringify([A])); // the peer unpins B, and then our write throws
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(C);
+  } finally {
+    storage.set = realSet;
+  }
+  assert.equal(fireWindowEvent("storage", { key: KEY }), 1);
+  assert.deepEqual(pins.getState().pinned, [C, A]);
   pins.getState().togglePinnedConnected(D); // this one lands
   assert.deepEqual(storedOrder(), [D, C, A]);
 });

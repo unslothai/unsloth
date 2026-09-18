@@ -69,22 +69,16 @@ function writePinned(pinned: string[], added: string | null = null): void {
   } catch {
     storageWritable = false;
   }
-  const record = storedRecord();
-  if (record.kind === "unreadable") {
-    // Blind in both directions: we cannot tell a pin the record already holds from one it does
-    // not, so claiming the whole screen made pins that WERE stored ours, and a peer unpinning one
-    // of them was then undone by the next write that landed. Carry what was already ours, minus
-    // whatever this edit removed, plus the id it added.
-    const carried = new Set([...unpersisted].filter((id) => pinned.includes(id)));
-    if (added !== null) carried.add(added);
-    unpersisted = carried;
-    return;
-  }
-  // REPLACED, not added to: undoing a failed pin while writes are still failing has to take the
-  // id back out, else the next merge resurrects a model the user just unpinned. An ABSENT record
-  // holds nothing, so on that path every pin on screen really is one this window is carrying.
-  const stored = record.kind === "list" ? record.ids : [];
-  unpersisted = new Set(pinned.filter((id) => !stored.includes(id)));
+  // Only the id this edit introduced is certainly unpublished. Inferring ownership from the whole
+  // list instead, by re-reading the record and keeping everything it lacks, claimed ids a PEER had
+  // just removed: its write can land between the read this edit was built on and the setItem that
+  // failed, and it claimed every pin on screen outright when the record could not be read at all.
+  // Either way the storage merge then kept the id and the next write that landed undid the peer.
+  // Intersecting with the attempted list is the undo rule: unpinning while writes fail has to take
+  // the id back out, else the next merge resurrects a model the user just removed.
+  const carried = new Set([...unpersisted].filter((id) => pinned.includes(id)));
+  if (added !== null) carried.add(added);
+  unpersisted = carried;
 }
 
 /** Ids this window pinned and could not persist, which the record cannot be asked about. Read from
