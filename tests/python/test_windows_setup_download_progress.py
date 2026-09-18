@@ -144,7 +144,9 @@ def test_windows_download_output(tmp_path, shell, component, mode, exit_code):
 
 @pytest.mark.parametrize("shell", SHELLS or [None])
 @pytest.mark.parametrize("component", ["node", "llama", "whisper"])
-def test_windows_real_download_reports_progress_while_active(tmp_path, shell, component, monkeypatch):
+def test_windows_real_download_reports_progress_while_active(
+    tmp_path, shell, component, monkeypatch
+):
     if shell is None:
         pytest.skip("PowerShell is unavailable")
     monkeypatch.setenv("UNSLOTH_PROGRESS_PERCENT_STEP", "5")
