@@ -706,7 +706,11 @@ def test_the_security_scan_imports_nothing_heavy():
     import ast
     import pathlib as _pathlib
 
-    src = _pathlib.Path("core/training/worker.py").read_text()
+    import core.training.worker as worker_mod
+
+    # From the module, not a relative path: pytest is run from the repo root in CI and from
+    # studio/backend locally, and a relative path only resolves in the second.
+    src = _pathlib.Path(worker_mod.__file__).read_text()
     fn = next(
         node
         for node in ast.walk(ast.parse(src))
