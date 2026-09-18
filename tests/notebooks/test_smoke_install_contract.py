@@ -223,11 +223,24 @@ def test_the_cuda_only_wheels_are_skipped():
     """
     skip = set(_mapping()["skip"])
     cuda_only = {
-        "libcudf-cu12", "libcuml-cu12", "cudf-cu12", "cuml-cu12", "rmm-cu12",
-        "pylibcudf-cu12", "pylibraft-cu12", "raft-dask-cu12", "ucxx-cu12",
-        "dask-cuda", "numba-cuda", "cuda-bindings", "cupy-cuda12x",
-        "jax-cuda12-pjrt", "jax-cuda12-plugin", "nvidia-nvshmem-cu12",
-        "nvidia-cuda-nvcc-cu12", "nvidia-nccl-cu13",
+        "libcudf-cu12",
+        "libcuml-cu12",
+        "cudf-cu12",
+        "cuml-cu12",
+        "rmm-cu12",
+        "pylibcudf-cu12",
+        "pylibraft-cu12",
+        "raft-dask-cu12",
+        "ucxx-cu12",
+        "dask-cuda",
+        "numba-cuda",
+        "cuda-bindings",
+        "cupy-cuda12x",
+        "jax-cuda12-pjrt",
+        "jax-cuda12-plugin",
+        "nvidia-nvshmem-cu12",
+        "nvidia-cuda-nvcc-cu12",
+        "nvidia-nccl-cu13",
     }
     missing = sorted((cuda_only & _freeze_names()) - skip)
     assert not missing, (
