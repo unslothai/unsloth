@@ -102,8 +102,12 @@ export function studioBackupProjects(backup: Dict): ProjectRecord[] {
     projects.push({
       id,
       name,
-      instructions:
-        typeof project.instructions === "string" ? project.instructions : "",
+      // Dropped for the same reason as systemPrompt above: chat-adapter.ts wraps a
+      // project's instructions in <project_instructions> and unshifts them as a
+      // system message on the next send, so restoring them lets whoever wrote the
+      // backup put text in the system prompt of the importer's chats. The name and
+      // the grouping are what a restore is for; the instructions are not.
+      instructions: "",
       archived: project.archived === true,
       createdAt,
       updatedAt: num(project.updatedAt) ?? createdAt,
