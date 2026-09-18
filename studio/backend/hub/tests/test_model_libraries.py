@@ -25,7 +25,11 @@ def _env_free_cache(monkeypatch):
     yield
 
 
-def _register_library(tmp_path, name, label = None):
+def _register_library(
+    tmp_path,
+    name,
+    label = None,
+):
     home = tmp_path / name
     home.mkdir(parents = True)
     return ml_storage.add_model_library(str(home), label = label)
@@ -97,9 +101,13 @@ def test_remove_refuses_to_delete_a_registered_duplicate_of_default(tmp_path):
 
 def test_set_default_promotes_library(tmp_path):
     row = _register_library(tmp_path, "libE")
-    assert str(hf_cache_settings.get_hf_cache_paths().cache_home) != str(_resolved(tmp_path, "libE"))
+    assert str(hf_cache_settings.get_hf_cache_paths().cache_home) != str(
+        _resolved(tmp_path, "libE")
+    )
     libraries.set_default_library_response(row["id"])
-    assert str(hf_cache_settings.get_hf_cache_paths().cache_home) == str(_resolved(tmp_path, "libE"))
+    assert str(hf_cache_settings.get_hf_cache_paths().cache_home) == str(
+        _resolved(tmp_path, "libE")
+    )
 
 
 def test_list_response_derives_default_and_dedupes(tmp_path):

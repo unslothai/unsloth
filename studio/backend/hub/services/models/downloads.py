@@ -272,8 +272,12 @@ async def download_model_response(
                 download_registry.scrub_secrets(str(e), hf_token = hf_token),
             )
         has_variant_resume_state = (
-            download_manifest.has_cancel_marker("model", repo_id, variant, hub_cache = cache_paths.hub_cache)
-            or download_manifest.read_manifest("model", repo_id, variant, hub_cache = cache_paths.hub_cache)
+            download_manifest.has_cancel_marker(
+                "model", repo_id, variant, hub_cache = cache_paths.hub_cache
+            )
+            or download_manifest.read_manifest(
+                "model", repo_id, variant, hub_cache = cache_paths.hub_cache
+            )
             is not None
         )
         if variant_progress_blob_hashes and not has_variant_resume_state:

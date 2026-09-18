@@ -93,7 +93,6 @@ def list_libraries_response() -> dict:
 
 def _row_is_default(row: dict) -> bool:
     from utils.hf_cache_settings import get_hf_cache_paths
-
     return _path_key(row["path"]) == _path_key(get_hf_cache_paths().cache_home)
 
 
@@ -121,7 +120,6 @@ def remove_library_response(library_id: int) -> dict:
         raise HTTPException(status_code = 400, detail = str(exc))
     if removed:
         from hub.utils.inventory_scan import invalidate_hf_cache_scans
-
         invalidate_hf_cache_scans()
     return {"ok": removed}
 
@@ -132,7 +130,6 @@ def set_default_library_response(library_id: int) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code = 404, detail = str(exc))
     from utils.hf_cache_settings import get_hf_cache_paths
-
     return {"ok": True, "path": str(get_hf_cache_paths().cache_home)}
 
 
@@ -157,7 +154,11 @@ def library_cache_paths(library_id: Optional[str]):
 
 def move_model_response(repo_id: str, variant: Optional[str], target_library_id: str) -> dict:
     from hub.utils import download_manifest
-    from hub.utils.hf_cache_state import iter_repo_cache_dirs, repo_cache_dir_name, same_existing_path
+    from hub.utils.hf_cache_state import (
+        iter_repo_cache_dirs,
+        repo_cache_dir_name,
+        same_existing_path,
+    )
     from hub.utils.inventory_scan import invalidate_hf_cache_scans
 
     target_paths = library_cache_paths(target_library_id)
@@ -172,7 +173,6 @@ def move_model_response(repo_id: str, variant: Optional[str], target_library_id:
         )
     try:
         from hub.services.models.downloads import _load_in_flight
-
         if _load_in_flight(repo_id):
             raise HTTPException(
                 status_code = 409,

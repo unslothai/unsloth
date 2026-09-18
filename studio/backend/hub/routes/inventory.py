@@ -106,23 +106,17 @@ def add_model_library(
 
 
 @router.delete("/libraries/{library_id}", response_model = RemoveModelLibraryResponse)
-def remove_model_library(
-    library_id: int, current_subject: str = Depends(get_current_subject)
-):
+def remove_model_library(library_id: int, current_subject: str = Depends(get_current_subject)):
     return libraries.remove_library_response(library_id)
 
 
 @router.post("/libraries/{library_id}/default", response_model = SetDefaultLibraryResponse)
-def set_default_model_library(
-    library_id: int, current_subject: str = Depends(get_current_subject)
-):
+def set_default_model_library(library_id: int, current_subject: str = Depends(get_current_subject)):
     return libraries.set_default_library_response(library_id)
 
 
 @router.post("/libraries/move", response_model = MoveModelResponse)
-def move_model(
-    body: MoveModelRequest, current_subject: str = Depends(get_current_subject)
-):
+def move_model(body: MoveModelRequest, current_subject: str = Depends(get_current_subject)):
     return libraries.move_model_response(body.repo_id, body.variant, body.target_library_id)
 
 

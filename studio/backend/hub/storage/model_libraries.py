@@ -32,7 +32,10 @@ _LIBRARY_COLLATION = "COLLATE NOCASE" if platform.system() == "Windows" else ""
 
 _CACHE_WORDINGS = (
     ("Choose a cache folder.", "Choose a library folder."),
-    ("The Hugging Face cache folder must be an absolute path.", "The library folder must be an absolute path."),
+    (
+        "The Hugging Face cache folder must be an absolute path.",
+        "The library folder must be an absolute path.",
+    ),
     ("The Hugging Face cache folder is invalid.", "The library folder is invalid."),
     ("Unsloth cannot use this cache folder:", "Unsloth cannot use this library folder:"),
 )
@@ -110,7 +113,11 @@ def add_model_library(path_value: str, label: Optional[str] = None) -> dict:
             try:
                 conn.execute(
                     "INSERT INTO model_libraries (path, label, created_at) VALUES (?, ?, ?)",
-                    (normalized, (label or "").strip() or None, datetime.now(timezone.utc).isoformat()),
+                    (
+                        normalized,
+                        (label or "").strip() or None,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
                 )
                 conn.commit()
             except sqlite3.IntegrityError:
@@ -144,7 +151,9 @@ def remove_model_library(library_id: int) -> bool:
             if os.path.normcase(os.path.realpath(row["path"])) == os.path.normcase(
                 os.path.realpath(active)
             ):
-                raise ValueError("The default library cannot be removed. Set another library as default first.")
+                raise ValueError(
+                    "The default library cannot be removed. Set another library as default first."
+                )
             cursor = conn.execute("DELETE FROM model_libraries WHERE id = ?", (library_id,))
             conn.commit()
             return cursor.rowcount > 0
