@@ -31,7 +31,7 @@ import {
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
-  UserIcon,
+  UserCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
@@ -186,7 +186,7 @@ const TABS: TabDef[] = [
   {
     id: "profile",
     labelKey: "settings.tabs.profile",
-    icon: UserIcon,
+    icon: UserCircleIcon,
   },
   {
     id: "appearance",
@@ -221,7 +221,7 @@ const TABS: TabDef[] = [
   {
     id: "accounts",
     labelKey: "settings.tabs.accounts",
-    icon: UserIcon,
+    icon: UserCircleIcon,
     badgeKey: "common.new",
   },
   {

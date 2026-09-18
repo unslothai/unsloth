@@ -14,7 +14,7 @@ import {
   PaintBrush02Icon,
   PowerIcon,
   Settings02Icon,
-  UserIcon,
+  UserCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
@@ -32,7 +32,7 @@ const ITEM_META: Record<
   api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
   darkMode: { icon: Moon02Icon, labelKey: "settings.appearance.sidebarMenu.darkModeToggle" },
   guidedTour: { icon: CursorInfo02Icon, labelKey: "shell.navigation.guidedTour" },
-  profile: { icon: UserIcon, labelKey: "settings.tabs.profile" },
+  profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: Message01Icon, labelKey: "settings.tabs.chat" },

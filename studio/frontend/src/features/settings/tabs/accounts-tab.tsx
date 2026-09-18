@@ -9,7 +9,8 @@ import {
   Delete02Icon,
   Key01Icon,
   MoreHorizontalIcon,
-  UserIcon,
+  UserBlock01Icon,
+  UserCheck01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -353,7 +354,7 @@ function OwnerAccountsTab() {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent
                           align="end"
-                          className="w-60"
+                          className="w-max max-w-[calc(100vw-2rem)]"
                           onCloseAutoFocus={(event) => {
                             if (confirming) event.preventDefault();
                           }}
@@ -386,7 +387,7 @@ function OwnerAccountsTab() {
                             }
                           >
                             <HugeiconsIcon
-                              icon={UserIcon}
+                              icon={account.is_active ? UserBlock01Icon : UserCheck01Icon}
                               className="size-4"
                               aria-hidden="true"
                             />
