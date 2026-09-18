@@ -69,13 +69,6 @@ fn unasked_reason(error: &str) -> String {
     working_directory_reason().unwrap_or_else(|| WORKING_DIRECTORY_UNAVAILABLE.to_string())
 }
 
-fn spawn_probe(cmd: &mut tokio::process::Command) -> Result<tokio::process::Child, String> {
-    crate::process::with_studio_runtime_launch_guard(|| {
-        cmd.spawn().map_err(|error| error.to_string())
-    })
-    .map_err(probe_spawn_error)
-}
-
 fn probe_spawn_error(error: String) -> String {
     if error == crate::process::STUDIO_RUNTIME_GATE_BUSY {
         MANAGED_ENVIRONMENT_BUSY.to_string()
@@ -438,7 +431,11 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> Result<bool, String> {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let mut child = match spawn_probe(&mut cmd) {
+    let spawned = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    })
+    .map_err(probe_spawn_error);
+    let mut child = match spawned {
         Ok(child) => child,
         Err(error) if error == MANAGED_ENVIRONMENT_BUSY => {
             info!(
@@ -509,7 +506,11 @@ async fn probe_cli_capability(bin: &Path) -> Result<Option<DesktopCapability>, S
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let mut child = match spawn_probe(&mut cmd) {
+    let spawned = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    })
+    .map_err(probe_spawn_error);
+    let mut child = match spawned {
         Ok(child) => child,
         Err(error) if error == MANAGED_ENVIRONMENT_BUSY => {
             info!("Managed desktop-capabilities probe skipped: managed environment is busy");
