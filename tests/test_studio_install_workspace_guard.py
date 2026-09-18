@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -246,10 +248,10 @@ def test_install_ps1_sentinel_uses_pathtype_leaf():
 
 
 def test_setup_ps1_stale_venv_has_env_mode_guard():
-    """setup.ps1 stale-venv branch must gate Remove-Item $VenvDir on a custom-root Unsloth sentinel."""
+    """setup.ps1 stale-venv branch must gate the venv replacement on a custom-root Unsloth sentinel."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
     idx = src.index("Stale venv detected")
-    block = src[idx : idx + 1500]
+    block = src[idx : idx + 2500]
     assert (
         "$StudioHomeIsCustom" in block
     ), "setup.ps1 stale-venv branch must gate on $StudioHomeIsCustom"
@@ -261,8 +263,119 @@ def test_setup_ps1_stale_venv_has_env_mode_guard():
     ), "setup.ps1 stale-venv guard must check bin\\unsloth.exe with -PathType Leaf"
     # The guard must fire BEFORE the destructive call.
     guard_idx = block.index("$StudioHomeIsCustom")
-    rm_idx = block.index("Remove-Item -LiteralPath $VenvDir")
-    assert guard_idx < rm_idx, "custom-root guard must precede Remove-Item -LiteralPath $VenvDir"
+    rm_idx = block.index("Rename-Item -LiteralPath $VenvDir")
+    assert guard_idx < rm_idx, "custom-root guard must precede Rename-Item -LiteralPath $VenvDir"
+
+
+def test_setup_ps1_stale_venv_is_moved_aside_not_deleted_in_place():
+    """A rename takes the whole tree or fails and leaves it intact. Remove-Item -Recurse deletes up
+    to the first locked file, and a venv locked by its own running python.exe came out of it with
+    Lib\\ emptied, no unsloth_cli, and Scripts\\python.exe still there: nothing could start or
+    update it afterwards."""
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    idx = src.index("Stale venv detected")
+    block = src[idx : src.index("if (-not (Test-Path -LiteralPath $VenvDir))", idx)]
+    assert (
+        "Remove-Item -LiteralPath $VenvDir" not in block
+    ), "the stale venv must not be deleted in place"
+    rename = block.index("Rename-Item -LiteralPath $VenvDir")
+    remove = block.index("Remove-Item -LiteralPath $_staleDir")
+    assert rename < remove, "the moved copy is what gets deleted"
+    # Same message as before, so the desktop's update/repair reporting keys on nothing new.
+    assert "Could not remove the stale environment at $VenvDir" in block
+
+
+def test_setup_ps1_direct_update_from_inside_the_venv_repairs_in_place():
+    """`unsloth studio update` runs setup.ps1 from the venv's own python.exe, which Windows will
+    not delete while it runs, so that run takes the installer's in-place reinstall route rather
+    than the wipe. A setup.ps1 run by hand from a checkout keeps the full rebuild."""
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    start = src.index(
+        "if ($shouldRebuild -and -not $InstallerManagedSetup) {\n"
+        "        $_hostPy = Get-SetupHostInterpreterInVenv -VenvDir $VenvDir"
+    )
+    block = src[start : src.index("\n    }\n", start)]
+    assert "$script:PinChangedForceReinstall = $true" in block
+    assert "$shouldRebuild = $false" in block
+    assert start < src.index(
+        "Stale venv detected ($reason) -- rebuilding"
+    ), "the in-place route must be chosen before the rebuild branch runs"
+
+
+def _extract_setup_ps1_function(name: str) -> str:
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    m = re.search(rf"^function {re.escape(name)} \{{.*?\n\}}\n", src, re.DOTALL | re.MULTILINE)
+    assert m, f"setup.ps1 function {name} not found"
+    return m.group(0)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs pwsh")
+class TestSetupHostInterpreterInVenv:
+    """The shipped helper, run for real: the CLI's hint, a foreign interpreter, and (on Windows)
+    the process walk that finds a venv python.exe above setup when no hint was passed."""
+
+    @pytest.fixture
+    def probe(self, tmp_path):
+        venv = tmp_path / "unsloth_studio"
+        subprocess.run(
+            [sys.executable, "-m", "venv", "--without-pip", str(venv)],
+            check = True,
+            capture_output = True,
+        )
+        script = tmp_path / "probe.ps1"
+        script.write_text(
+            _extract_setup_ps1_function("Get-SetupHostInterpreterInVenv")
+            + "$r = Get-SetupHostInterpreterInVenv -VenvDir $args[0]\n"
+            + "if ($r) { Write-Output \"RESULT=$r\" } else { Write-Output 'RESULT=<null>' }\n",
+            encoding = "utf-8",
+        )
+
+        def run(hint: str | None = None, launcher: str | None = None) -> str:
+            env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_SETUP_HOST_PYTHON"}
+            if hint is not None:
+                env["UNSLOTH_SETUP_HOST_PYTHON"] = hint
+            cmd = [
+                "pwsh",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+                str(venv),
+            ]
+            if launcher is not None:
+                # setup.ps1's real parent: a python that subprocess-runs PowerShell, as the CLI does.
+                cmd = [
+                    launcher,
+                    "-c",
+                    "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))",
+                    *cmd,
+                ]
+            out = subprocess.run(cmd, env = env, text = True, capture_output = True, timeout = 120)
+            assert out.returncode == 0, out.stdout + out.stderr
+            return out.stdout.strip().splitlines()[-1]
+
+        return venv, run
+
+    @staticmethod
+    def _venv_python(venv: Path) -> Path:
+        return venv / "Scripts" / "python.exe" if os.name == "nt" else venv / "bin" / "python"
+
+    def test_the_cli_hint_names_the_venv_interpreter(self, probe):
+        venv, run = probe
+        inside = str(self._venv_python(venv))
+        assert run(hint = inside) == f"RESULT={inside}"
+
+    def test_an_interpreter_outside_the_venv_is_not_reported(self, probe):
+        _venv, run = probe
+        assert run(hint = sys.executable) == "RESULT=<null>"
+        assert run() == "RESULT=<null>"
+
+    @pytest.mark.skipif(os.name != "nt", reason = "the process walk reads Win32_Process")
+    def test_a_venv_python_parent_is_found_without_the_hint(self, probe):
+        venv, run = probe
+        inside = self._venv_python(venv)
+        assert run(launcher = str(inside)) == f"RESULT={inside}"
 
 
 def test_setup_sh_prebuilt_llama_cpp_has_ownership_guard():

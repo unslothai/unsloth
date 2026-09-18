@@ -3561,6 +3561,10 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
+    # Named outright, so setup.ps1 need not walk the process tree: this interpreter is the
+    # venv's own python.exe, and a stale-venv rebuild that tried to delete it emptied Lib\ and
+    # stopped at the locked exe. setup repairs such an environment in place instead.
+    env = {**(env or os.environ), "UNSLOTH_SETUP_HOST_PYTHON": sys.executable}
 
     if platform.system() == "Windows":
         # Resolved, not bare: PATH is not trusted here (#9440) and the Popen below has no OSError handler.

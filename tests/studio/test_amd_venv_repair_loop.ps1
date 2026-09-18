@@ -289,7 +289,7 @@ Check "XPU is judged before ROCm"          (
 
 Write-Host "the stale-venv decision has no dead end left in it"
 # Starts on `\$null\n`, so a CRLF checkout fails the match instead of returning an empty region.
-$_repairPat = '(?s)(\$reason = \$null\n.*?Remove-Item -LiteralPath \$VenvDir -Recurse)'
+$_repairPat = '(?s)(\$reason = \$null\n.*?Rename-Item -LiteralPath \$VenvDir)'
 $_repair = if ($setupText -match $_repairPat) { $Matches[1] } else { "" }
 Check "the stale-venv decision was found"  ($_repair -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_repairPat))
@@ -314,6 +314,14 @@ Check "it does not try to wipe the venv it runs from" (-not ($_managed -match 'R
 # A direct `unsloth studio update` keeps its own self-repair, and the custom-home guard stays in
 # front of the delete.
 Check "a direct update still rebuilds"     ($_repair -match 'Stale venv detected \(\$reason\) -- rebuilding')
+# ...unless it is running from the venv's own python.exe, which `unsloth studio update` always is
+# on Windows: a running image cannot be deleted, so that run repairs in place like install.ps1.
+Check "a direct update from inside the venv repairs in place" (
+    $_repair -match '(?s)\$_hostPy = Get-SetupHostInterpreterInVenv -VenvDir \$VenvDir.*?\$script:PinChangedForceReinstall = \$true.*?\$shouldRebuild = \$false')
+# And when it does rebuild, the old tree is moved aside first: a rename fails whole where a
+# recursive delete stops at the first locked file and leaves a venv nothing can start.
+Check "the rebuild moves the venv aside before deleting" (
+    $_repair -match 'Rename-Item -LiteralPath \$VenvDir' -and -not ($_repair -match 'Remove-Item -LiteralPath \$VenvDir'))
 Check "the custom-home guard still gates the wipe" ($_repair -match '\$StudioHomeIsCustom')
 # Why it failed, not just that it failed: this line separates a faulted GPU driver from a missing
 # wheel, and the user is about to be told what happened to their environment.

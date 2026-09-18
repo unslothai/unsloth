@@ -67,10 +67,10 @@ class TestSetupPs1NoWipeEscape:
 
     def test_the_escape_sits_ahead_of_the_wipe(self):
         escape = _line_of(_SETUP_SRC, "nvidia-smi did not answer, but this venv holds a")
-        wipe = _line_of(_SETUP_SRC, "Remove-Item -LiteralPath $VenvDir -Recurse -Force")
+        wipe = _line_of(_SETUP_SRC, "Rename-Item -LiteralPath $VenvDir")
         stale = _line_of(_SETUP_SRC, "Stale venv detected ($reason) -- rebuilding...")
         assert escape < stale < wipe, (
-            "the no-wipe escape must be evaluated before the stale-venv branch that deletes "
+            "the no-wipe escape must be evaluated before the stale-venv branch that replaces "
             f"the venv (escape={escape}, stale={stale}, wipe={wipe})"
         )
 
