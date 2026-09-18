@@ -17,12 +17,12 @@ import {
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
-  OFFICE_OPEN_XML_SPREADSHEET_MIMES,
+  OFFICE_OPEN_XML_MIMES,
   isOfficeOpenXmlAttachmentName,
 } from "./open-document-accept";
 
 export type AttachmentTextLabel =
-  "PDF" | "DOCX" | "HTML" | "ODS" | "ODT" | "XLSX";
+  "PDF" | "DOCX" | "HTML" | "ODS" | "ODT" | "XLSX" | "PPTX";
 
 export { TEXT_ATTACHMENT_ACCEPT };
 
@@ -42,7 +42,7 @@ const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
 const LABELLED_ATTACHMENT_TEXT_RE =
-  /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX): [^\n]*\]\n/;
+  /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n/;
 const ATTACHMENT_TAG_OPEN_RE = /^<attachment name=[^\n]*>\n/;
 const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 // Both wrappers start on the first line, so only a prefix is matched against.
@@ -482,9 +482,8 @@ export function isOfficeOpenXmlAttachment(
 ): boolean {
   const mime = contentType?.toLowerCase() ?? "";
   return (
-    OFFICE_OPEN_XML_SPREADSHEET_MIMES.some(
-      (accepted) => accepted.toLowerCase() === mime,
-    ) || isOfficeOpenXmlAttachmentName(name ?? "")
+    OFFICE_OPEN_XML_MIMES.some((accepted) => accepted.toLowerCase() === mime) ||
+    isOfficeOpenXmlAttachmentName(name ?? "")
   );
 }
 

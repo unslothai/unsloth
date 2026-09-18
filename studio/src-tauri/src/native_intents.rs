@@ -664,6 +664,9 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "xlsm" => Some("application/vnd.ms-excel.sheet.macroEnabled.12"),
         "xltx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.template"),
         "xltm" => Some("application/vnd.ms-excel.template.macroEnabled.12"),
+        "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        "pptm" => Some("application/vnd.ms-powerpoint.presentation.macroEnabled.12"),
+        "ppsx" => Some("application/vnd.openxmlformats-officedocument.presentationml.slideshow"),
         // Stamped like native_clipboard.rs.
         "json" | "jsonl" | "ndjson" | "jsonc" | "json5" | "geojson" | "har" | "avsc"
         | "tfstate" => Some("application/json"),
@@ -1048,6 +1051,18 @@ mod tests {
                 "xltx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
             ),
+            (
+                "pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ),
+            (
+                "pptm",
+                "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+            ),
+            (
+                "PPSX",
+                "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+            ),
         ] {
             let path = temp_path("open-document").with_extension(ext);
             fs::write(&path, b"open-document").unwrap();
@@ -1156,7 +1171,7 @@ mod tests {
 
     #[test]
     fn document_archive_read_allows_more_than_the_generic_cap() {
-        for ext in ["ods", "xlsx"] {
+        for ext in ["ods", "xlsx", "pptx"] {
             let path = temp_path("spreadsheet").with_extension(ext);
             fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
             let (_state, entry) = attachment_entry(&path);

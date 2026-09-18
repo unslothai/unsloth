@@ -51,7 +51,8 @@ pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "
 /// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
 /// Office Open XML files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
-pub const OFFICE_OPEN_XML_ATTACHMENT_EXTS: &[&str] = &["xlsx", "xlsm", "xltx", "xltm"];
+pub const OFFICE_OPEN_XML_ATTACHMENT_EXTS: &[&str] =
+    &["xlsx", "xlsm", "xltx", "xltm", "pptx", "pptm", "ppsx"];
 pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
 
 /// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so a

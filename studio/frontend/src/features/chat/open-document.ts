@@ -711,7 +711,7 @@ const BUILTIN_DATE_FORMAT_IDS = new Set([
 const MAX_DATE_SERIAL = 2_958_465;
 
 export type OfficeOpenXmlAttachmentContent = {
-  label: "XLSX";
+  label: "XLSX" | "PPTX";
   text: string;
 };
 
@@ -734,13 +734,19 @@ export async function readOfficeOpenXmlAttachmentContent(
     throw new Error(`Office file has no main document: ${filename}`);
   }
   const root = parseXml(mainXml, filename).documentElement;
-  if (root.localName !== "workbook") {
-    throw new Error(`Unsupported Office document: ${filename}`);
+  if (root.localName === "workbook") {
+    return {
+      label: "XLSX",
+      text: extractWorkbookText(parts, main.target, root, filename),
+    };
   }
-  return {
-    label: "XLSX",
-    text: extractWorkbookText(parts, main.target, root, filename),
-  };
+  if (root.localName === "presentation") {
+    return {
+      label: "PPTX",
+      text: extractPresentationText(parts, main.target, root, filename),
+    };
+  }
+  throw new Error(`Unsupported Office document: ${filename}`);
 }
 
 async function readPackageParts(file: File): Promise<Map<string, string>> {
@@ -868,7 +874,7 @@ function extractWorkbookText(
   const sheets: string[] = [];
   for (const sheet of descendants(workbook, ["sheet"])) {
     const state = attribute(sheet, "state");
-    const target = relationships.get(attribute(sheet, "id") ?? "")?.target;
+    const target = relationships.get(relationshipId(sheet))?.target;
     const xml = target && parts.get(target);
     if (state === "hidden" || state === "veryHidden" || !xml) {
       continue;
@@ -891,6 +897,102 @@ function extractWorkbookText(
     }
   }
   return sheets.join("\n\n");
+}
+
+function extractPresentationText(
+  parts: Map<string, string>,
+  presentationPath: string,
+  presentation: Element,
+  filename: string,
+): string {
+  const relationships = packageRelationships(parts, presentationPath);
+  const budget = { remaining: MAX_TEXT_LENGTH };
+  const slides: string[] = [];
+  // Numbered by position in the deck, hidden slides included, so [Slide N] matches what PowerPoint shows.
+  for (const [index, slide] of descendants(presentation, ["sldId"]).entries()) {
+    const target = relationships.get(relationshipId(slide))?.target;
+    const xml = target && parts.get(target);
+    if (!xml) {
+      continue;
+    }
+    const root = parseXml(xml, filename).documentElement;
+    const show = attribute(root, "show");
+    if (show !== null && !isTrue(show)) {
+      continue;
+    }
+    const lines = shapeTreeLines(root, budget);
+    if (lines.length > 0) {
+      slides.push(`[Slide ${index + 1}]\n${lines.join("\n")}`);
+    }
+    if (budget.remaining <= 0) {
+      slides.push(
+        "[Truncated: the presentation has more text than one attachment carries]",
+      );
+      break;
+    }
+  }
+  return slides.join("\n\n");
+}
+
+/** Text frames and tables in document order, skipping hidden shapes and the Fallback copy of mc:AlternateContent. */
+function shapeTreeLines(
+  root: Element,
+  budget: { remaining: number },
+): string[] {
+  const lines: string[] = [];
+  const push = (line: string) => {
+    if (line.trim() && budget.remaining > 0) {
+      lines.push(line.slice(0, budget.remaining));
+      budget.remaining -= line.length + 1;
+    }
+  };
+  const stack = [root];
+  while (stack.length > 0) {
+    const element = stack.pop() as Element;
+    if (element.localName === "txBody") {
+      children(element, "p").forEach((paragraph) =>
+        push(paragraphText(paragraph)),
+      );
+    } else if (element.localName === "tbl") {
+      for (const row of children(element, "tr")) {
+        push(
+          children(row, "tc")
+            .map((cell) =>
+              descendants(cell, ["p"]).map(paragraphText).join(" ").trim(),
+            )
+            .join("\t"),
+        );
+      }
+    } else if (element.localName !== "Fallback" && !isHiddenShape(element)) {
+      const nested = elementChildren(element);
+      for (let index = nested.length - 1; index >= 0; index--) {
+        stack.push(nested[index]);
+      }
+    }
+  }
+  return lines;
+}
+
+function isHiddenShape(element: Element): boolean {
+  const properties = elementChildren(element).find((child) =>
+    child.localName.startsWith("nv"),
+  );
+  const shape = properties && children(properties, "cNvPr")[0];
+  return Boolean(shape && isTrue(attribute(shape, "hidden")));
+}
+
+function paragraphText(paragraph: Element): string {
+  let text = "";
+  for (const child of elementChildren(paragraph)) {
+    if (child.localName === "t") {
+      text += child.textContent ?? "";
+    } else if (child.localName === "br") {
+      text += "\n";
+    } else if (child.localName !== "Fallback") {
+      text += paragraphText(child);
+    }
+  }
+  return text;
 }
 
 type CellContext = {
@@ -1131,6 +1233,19 @@ function descendants(element: Element, localNames: string[]): Element[] {
     }
   }
   return matches;
+}
+
+// Matched by namespace: <p:sldId> also carries a plain numeric id.
+function relationshipId(element: Element): string {
+  for (const attr of Array.from(element.attributes)) {
+    if (
+      attr.localName === "id" &&
+      attr.namespaceURI?.endsWith("/relationships")
+    ) {
+      return attr.value;
+    }
+  }
+  return "";
 }
 
 function attribute(element: Element, localName: string): string | null {

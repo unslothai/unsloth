@@ -1164,3 +1164,64 @@ test("the preview reads a picked workbook as labelled text", async () => {
   assert.equal(preview.label, "XLSX");
   assert.match(preview.text, /^\[Sheet: Second\]\nformula text/);
 });
+
+const PML = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const DML = "http://schemas.openxmlformats.org/drawingml/2006/main";
+
+function slide(body: string, show = ""): string {
+  return `<p:sld xmlns:p="${PML}" xmlns:a="${DML}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"${show}><p:cSld><p:spTree>${body}</p:spTree></p:cSld></p:sld>`;
+}
+
+function shape(text: string, hidden = ""): string {
+  return `<p:sp><p:nvSpPr><p:cNvPr id="2" name="s"${hidden}/></p:nvSpPr><p:txBody>${text}</p:txBody></p:sp>`;
+}
+
+const DECK_PARTS = {
+  "_rels/.rels": rels([["rId1", "officeDocument", "ppt/presentation.xml"]]),
+  "ppt/_rels/presentation.xml.rels": rels([
+    ["rId7", "slide", "slides/slide1.xml"],
+    ["rId8", "slide", "slides/slide2.xml"],
+    ["rId9", "slide", "slides/slide3.xml"],
+  ]),
+  // The plain id comes first, as PowerPoint writes it.
+  "ppt/presentation.xml": `<p:presentation xmlns:p="${PML}" xmlns:r="${REL}"><p:sldIdLst><p:sldId id="256" r:id="rId9"/><p:sldId id="257" r:id="rId8"/><p:sldId id="258" r:id="rId7"/></p:sldIdLst></p:presentation>`,
+  // Archived out of deck order.
+  "ppt/slides/slide1.xml": slide(
+    `${shape(`<a:p><a:r><a:t>before</a:t></a:r></a:p>`)}<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="3" name="t"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>Region</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>Sales</a:t></a:r></a:p><a:p><a:r><a:t>(k)</a:t></a:r></a:p></a:txBody></a:tc></a:tr><a:tr><a:tc><a:txBody><a:p><a:r><a:t>North</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>42</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>${shape(`<a:p><a:r><a:t>after</a:t></a:r></a:p>`)}`,
+  ),
+  "ppt/slides/slide3.xml": slide(
+    shape(
+      `<a:p><a:r><a:t>Tit</a:t></a:r><a:r><a:t>le</a:t></a:r></a:p><a:p/><a:p><a:r><a:t>one</a:t></a:r><a:br/><a:r><a:t>two</a:t></a:r><mc:AlternateContent><mc:Choice Requires="a14"><a:r><a:t>!</a:t></a:r></mc:Choice><mc:Fallback><a:r><a:t>?</a:t></a:r></mc:Fallback></mc:AlternateContent></a:p>`,
+    ) +
+      shape(`<a:p><a:r><a:t>secret</a:t></a:r></a:p>`, ' hidden="1"') +
+      `<mc:AlternateContent><mc:Choice Requires="a14">${shape(`<a:p><a:r><a:t>choice</a:t></a:r></a:p>`)}</mc:Choice><mc:Fallback>${shape(`<a:p><a:r><a:t>fallback</a:t></a:r></a:p>`)}</mc:Fallback></mc:AlternateContent>`,
+    ' show="1"',
+  ),
+  "ppt/slides/slide2.xml": slide(
+    shape(`<a:p><a:r><a:t>skipped slide</a:t></a:r></a:p>`),
+    ' show="false"',
+  ),
+};
+
+test("a presentation reads its visible slides in deck order", async () => {
+  const content = await readOfficeOpenXmlAttachmentContent(
+    workbookFile(DECK_PARTS, "deck.pptx"),
+    "deck.pptx",
+  );
+  assert.equal(content.label, "PPTX");
+  assert.equal(
+    content.text,
+    [
+      "[Slide 1]",
+      "Title",
+      "one\ntwo!",
+      "choice",
+      "",
+      "[Slide 3]",
+      "before",
+      "Region\tSales (k)",
+      "North\t42",
+      "after",
+    ].join("\n"),
+  );
+});

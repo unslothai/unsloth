@@ -19,16 +19,20 @@ export function isOpenDocumentAttachmentName(filename: string): boolean {
   );
 }
 
-export const OFFICE_OPEN_XML_SPREADSHEET_MIMES = [
+export const OFFICE_OPEN_XML_MIMES = [
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.ms-excel.sheet.macroEnabled.12",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
   "application/vnd.ms-excel.template.macroEnabled.12",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+  "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
 ];
-export const OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS = ".xlsx,.xlsm,.xltx,.xltm";
+export const OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS =
+  ".xlsx,.xlsm,.xltx,.xltm,.pptx,.pptm,.ppsx";
 export const OFFICE_OPEN_XML_ATTACHMENT_ACCEPT = [
   OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
-  ...OFFICE_OPEN_XML_SPREADSHEET_MIMES,
+  ...OFFICE_OPEN_XML_MIMES,
 ].join(",");
 
 export function isOfficeOpenXmlAttachmentName(filename: string): boolean {
