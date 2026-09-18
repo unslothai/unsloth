@@ -7,6 +7,8 @@ import {
   isOfficeOpenXmlAttachmentName,
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
   isOpenDocumentAttachmentName,
+  IWORK_ATTACHMENT_EXTENSIONS,
+  isIworkAttachmentName,
   RTF_ATTACHMENT_EXTENSIONS,
   isRtfAttachmentName,
 } from "../chat/open-document-accept.ts";
@@ -31,6 +33,7 @@ export function isComposerAttachmentName(path: string): boolean {
     isOpenDocumentAttachmentName(path) ||
     isOfficeOpenXmlAttachmentName(path) ||
     isRtfAttachmentName(path) ||
+    isIworkAttachmentName(path) ||
     isTextDropName(path)
   );
 }
@@ -70,7 +73,7 @@ const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
 );
 
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, source and text files, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, ${IWORK_ATTACHMENT_EXTENSIONS}, source and text files, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
 
 /** Last path segment of a native path, for display and extension checks. */
 export function nativeFileName(path: string): string {

@@ -52,3 +52,20 @@ export const RTF_ATTACHMENT_ACCEPT = [
 export function isRtfAttachmentName(filename: string): boolean {
   return filename.toLowerCase().endsWith(RTF_ATTACHMENT_EXTENSIONS);
 }
+
+export const IWORK_MIMES = [
+  "application/vnd.apple.pages",
+  "application/x-iwork-pages-sffpages",
+];
+export const IWORK_ATTACHMENT_EXTENSIONS = ".pages";
+export const IWORK_ATTACHMENT_ACCEPT = [
+  IWORK_ATTACHMENT_EXTENSIONS,
+  ...IWORK_MIMES,
+].join(",");
+
+export function isIworkAttachmentName(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  return IWORK_ATTACHMENT_EXTENSIONS.split(",").some((extension) =>
+    lower.endsWith(extension),
+  );
+}

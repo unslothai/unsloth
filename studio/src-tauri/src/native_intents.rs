@@ -675,6 +675,7 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "pptm" => Some("application/vnd.ms-powerpoint.presentation.macroEnabled.12"),
         "ppsx" => Some("application/vnd.openxmlformats-officedocument.presentationml.slideshow"),
         "rtf" => Some("application/rtf"),
+        "pages" => Some("application/vnd.apple.pages"),
         // Stamped like native_clipboard.rs.
         "json" | "jsonl" | "ndjson" | "jsonc" | "json5" | "geojson" | "har" | "avsc"
         | "tfstate" => Some("application/json"),
@@ -778,8 +779,11 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
             .extension()
             .and_then(|value| value.to_str())
             .is_some_and(|ext| {
+                let ext = ext.to_ascii_lowercase();
                 crate::native_path_policy::OFFICE_OPEN_XML_ATTACHMENT_EXTS
-                    .contains(&ext.to_ascii_lowercase().as_str())
+                    .iter()
+                    .chain(crate::native_path_policy::IWORK_ATTACHMENT_EXTS)
+                    .any(|allowed| *allowed == ext)
             })
     {
         MAX_NATIVE_OPEN_DOCUMENT_BYTES
@@ -1106,6 +1110,7 @@ mod tests {
                 "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
             ),
             ("rtf", "application/rtf"),
+            ("PAGES", "application/vnd.apple.pages"),
         ] {
             let path = temp_path("open-document").with_extension(ext);
             fs::write(&path, b"open-document").unwrap();

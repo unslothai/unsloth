@@ -19,13 +19,16 @@ import {
   OPEN_DOCUMENT_TEXT_MIME,
   OFFICE_OPEN_XML_MIMES,
   isOfficeOpenXmlAttachmentName,
+  IWORK_MIMES,
+  isIworkAttachmentName,
   RTF_MIMES,
   isRtfAttachmentName,
 } from "./open-document-accept";
+import { readIworkAttachmentContent } from "./iwork";
 import { readRtfAttachmentContent } from "./rtf";
 
 export type AttachmentTextLabel =
-  "PDF" | "DOCX" | "HTML" | "ODS" | "ODT" | "XLSX" | "PPTX" | "RTF";
+  "PDF" | "DOCX" | "HTML" | "ODS" | "ODT" | "XLSX" | "PPTX" | "RTF" | "PAGES";
 
 export { TEXT_ATTACHMENT_ACCEPT };
 
@@ -45,7 +48,7 @@ const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
 const LABELLED_ATTACHMENT_TEXT_RE =
-  /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n/;
+  /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF|PAGES): [^\n]*\]\n/;
 const ATTACHMENT_TAG_OPEN_RE = /^<attachment name=[^\n]*>\n/;
 const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 // Both wrappers start on the first line, so only a prefix is matched against.
@@ -498,6 +501,14 @@ export function isRtfAttachment(
   return RTF_MIMES.includes(mime) || isRtfAttachmentName(name ?? "");
 }
 
+export function isIworkAttachment(
+  name: string | undefined,
+  contentType: string | undefined,
+): boolean {
+  const mime = contentType?.toLowerCase() ?? "";
+  return IWORK_MIMES.includes(mime) || isIworkAttachmentName(name ?? "");
+}
+
 // CompositeAttachmentAdapter selects the first matching accept string. Text comes before the
 // document-specific adapters, so previews must apply the same MIME-or-extension match
 // before looking at PDF/DOCX/HTML names.
@@ -858,6 +869,10 @@ export async function readAttachmentText(
   }
   if (isRtfAttachment(name, contentType)) {
     const { label, text } = await readRtfAttachmentContent(file, name);
+    return { label, text, truncated: false };
+  }
+  if (isIworkAttachment(name, contentType)) {
+    const { label, text } = await readIworkAttachmentContent(file, name);
     return { label, text, truncated: false };
   }
   return { label: null, ...(await readBoundedText(file)) };

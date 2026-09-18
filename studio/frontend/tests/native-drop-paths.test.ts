@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
   RTF_ATTACHMENT_EXTENSIONS,
+  IWORK_ATTACHMENT_EXTENSIONS,
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
 } from "../src/features/chat/open-document-accept.ts";
@@ -110,6 +111,8 @@ const OFFICE_OPEN_XML_ADAPTER_RE =
   /class OfficeOpenXmlAttachmentAdapter[^{]*\{[\s\S]*?accept = OFFICE_OPEN_XML_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readOfficeOpenXmlAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new OfficeOpenXmlAttachmentAdapter\(\),/;
 const RTF_ADAPTER_RE =
   /class RtfAttachmentAdapter[^{]*\{[\s\S]*?accept = RTF_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readRtfAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new RtfAttachmentAdapter\(\),/;
+const IWORK_ADAPTER_RE =
+  /class IworkAttachmentAdapter[^{]*\{[\s\S]*?accept = IWORK_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readIworkAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new IworkAttachmentAdapter\(\),/;
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
@@ -201,6 +204,12 @@ for (const [format, extensions, adapter, rustList] of [
     "OFFICE_OPEN_XML_ATTACHMENT_EXTS",
   ],
   ["RTF", RTF_ATTACHMENT_EXTENSIONS, RTF_ADAPTER_RE, "RTF_ATTACHMENT_EXTS"],
+  [
+    "iWork",
+    IWORK_ATTACHMENT_EXTENSIONS,
+    IWORK_ADAPTER_RE,
+    "IWORK_ATTACHMENT_EXTS",
+  ],
 ] as const) {
   test(`${format} drops route to the composer and match the native allowlist`, () => {
     for (const extension of extensions.split(",")) {

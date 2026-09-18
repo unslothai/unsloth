@@ -87,9 +87,11 @@ import {
 } from "./open-document";
 import {
   OFFICE_OPEN_XML_ATTACHMENT_ACCEPT,
+  IWORK_ATTACHMENT_ACCEPT,
   RTF_ATTACHMENT_ACCEPT,
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
 } from "./open-document-accept";
+import { readIworkAttachmentContent } from "./iwork";
 import { readRtfAttachmentContent } from "./rtf";
 import {
   CHAT_IMAGE_ACCEPT,
@@ -750,6 +752,14 @@ class RtfAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
 
   protected read(file: File, filename: string) {
     return readRtfAttachmentContent(file, filename);
+  }
+}
+
+class IworkAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
+  accept = IWORK_ATTACHMENT_ACCEPT;
+
+  protected read(file: File, filename: string) {
+    return readIworkAttachmentContent(file, filename);
   }
 }
 
@@ -2355,6 +2365,7 @@ function useStudioRuntimeAdapters(
           new OpenDocumentAttachmentAdapter(),
           new OfficeOpenXmlAttachmentAdapter(),
           new RtfAttachmentAdapter(),
+          new IworkAttachmentAdapter(),
         ]),
         () => {
           const state = aui.threadListItem().getState();

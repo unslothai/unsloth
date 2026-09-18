@@ -36,6 +36,8 @@ const { readOfficeOpenXmlAttachmentContent } =
   await import("../src/features/chat/open-document.ts");
 const { readRtfAttachmentContent } =
   await import("../src/features/chat/rtf.ts");
+const { readIworkAttachmentContent } =
+  await import("../src/features/chat/iwork.ts");
 
 type StubNode = {
   nodeType: number;
@@ -1296,4 +1298,114 @@ test("an RTF reader stays bounded", async () => {
   assert.match(long, /^x+\n\n\[Truncated: [^\n]*\]$/);
   await assert.rejects(readRtf(`{\\rtf1 ${"{".repeat(2000)}`), /nest too deeply/);
   await assert.rejects(readRtf("plain text"), /Not an RTF file/);
+});
+
+type Bytes = number[];
+
+function varint(value: number): Bytes {
+  const out: Bytes = [];
+  for (; value >= 0x80; value = Math.floor(value / 0x80)) {
+    out.push((value % 0x80) | 0x80);
+  }
+  return [...out, value];
+}
+
+const int = (field: number, value: number): Bytes => [
+  ...varint(field * 8),
+  ...varint(value),
+];
+const bytes = (field: number, value: Bytes | string): Bytes => {
+  const data = typeof value === "string" ? [...strToU8(value)] : value;
+  return [...varint(field * 8 + 2), ...varint(data.length), ...data];
+};
+const ref = (field: number, id: number): Bytes => bytes(field, int(1, id));
+
+/** Records as iWork writes them, over two Snappy chunks, optionally ending on one- and two-byte
+ *  copies that repeat the two bytes before them three more times. */
+function iwa(
+  objects: [number, number, Bytes][],
+  overlapTail = false,
+): Uint8Array {
+  const data = objects.flatMap(([id, type, payload]) => {
+    const info = [
+      ...int(1, id),
+      ...bytes(2, [...int(1, type), ...int(3, payload.length)]),
+    ];
+    return [...varint(info.length), ...info, ...payload];
+  });
+  const half = data.length >> 1;
+  return new Uint8Array([
+    ...chunk(data.slice(0, half), []),
+    ...chunk(data.slice(half), overlapTail ? [1, 2, 2 | (1 << 2), 2, 0] : []),
+  ]);
+}
+
+/** A Snappy block of `data`, whose last six bytes come from `copies` when there are any. */
+function chunk(data: Bytes, copies: Bytes): Bytes {
+  const literal = copies.length > 0 ? data.slice(0, -6) : data;
+  const block = [...varint(data.length)];
+  for (let at = 0; at < literal.length; at += 256) {
+    const run = literal.slice(at, at + 256);
+    block.push(60 << 2, run.length - 1, ...run);
+  }
+  block.push(...copies);
+  const size = block.length;
+  return [0, size & 0xff, (size >> 8) & 0xff, size >> 16, ...block];
+}
+
+function iworkFile(name: string, index: Uint8Array): File {
+  const zipped = zipSync({
+    "Index/Document.iwa": index,
+    "preview.jpg": strToU8("x"),
+  });
+  return new File([zipped], name);
+}
+
+const readIwork = (name: string, index: Uint8Array) =>
+  readIworkAttachmentContent(iworkFile(name, index), name);
+
+test("a Pages body reads as text, with inline objects dropped", async () => {
+  const file = iworkFile(
+    "notes.pages",
+    iwa(
+      [
+        [3, 2001, bytes(3, "A header, not the body")],
+        [1, 10000, ref(4, 2)],
+        [2, 2001, bytes(3, "Title\uFFFC\u2028Body\u0004 hahahaha")],
+      ],
+      true,
+    ),
+  );
+  assert.deepEqual(await readIworkAttachmentContent(file, file.name), {
+    label: "PAGES",
+    text: "Title\nBody hahahaha",
+  });
+  const viaMime = await readAttachmentText(
+    file,
+    "notes",
+    "application/x-iwork-pages-sffpages",
+  );
+  assert.equal(viaMime.label, "PAGES");
+});
+
+test("an iWork reader refuses old and oversized files", async () => {
+  await assert.rejects(
+    readIworkAttachmentContent(
+      new File([zipSync({ "index.xml.gz": strToU8("x") })], "old.pages"),
+      "old.pages",
+    ),
+    /iWork 2013 or later/,
+  );
+  const huge = [...varint(200 * 1024 * 1024), 0, 0];
+  await assert.rejects(
+    readIwork("huge.pages", new Uint8Array([0, huge.length, 0, 0, ...huge])),
+    /unpacks too large/,
+  );
+  // Empty records hold no bytes but still cost memory to keep.
+  const records = Array.from({ length: 450_000 }, (_, index) => [
+    index + 1,
+    1,
+    [],
+  ]) as [number, number, Bytes][];
+  await assert.rejects(readIwork("flood.pages", iwa(records)), /unpacks too large/);
 });
