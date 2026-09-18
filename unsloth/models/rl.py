@@ -1964,6 +1964,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += warnings_issued_check
 
     if "model" in call_args:
+        model_length_default = "model.max_seq_length"
+        if trainer_file == "sft_trainer":
+            # A model limit must not widen an existing SFT truncation limit.
+            model_length_default = (
+                "min(model.max_seq_length, args.max_length) "
+                "if (getattr(args, 'max_length', None) or 0) > 0 else model.max_seq_length"
+            )
         length_check = (
             "if 'max_seq_length' not in locals() and not hasattr(args, 'max_seq_length'):\n"
             "    pass\n"
@@ -1971,7 +1978,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    model_max_seq_length = getattr(model, 'max_seq_length', None)\n"
             "    args_max_seq_length  = getattr(args,  'max_seq_length', None)\n"
             "    if args_max_seq_length is None and model_max_seq_length is not None:\n"
-            "        max_seq_length = model.max_seq_length\n"
+            f"        max_seq_length = {model_length_default}\n"
             "        if hasattr(args, 'max_seq_length'): args.max_seq_length = max_seq_length\n"
             "    elif args_max_seq_length is not None and model_max_seq_length is not None:\n"
             "        if args_max_seq_length > model_max_seq_length:\n"
@@ -1994,7 +2001,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "        model_max_length = getattr(model, 'max_seq_length', None)\n"
                 "        if model_max_length is None: model_max_length = getattr(model, 'max_length', None)\n"
                 "        if model_max_length is not None:\n"
-                "            args.max_length = model_max_length\n"
+                "            args.max_length = min(args.max_length, model_max_length) if (getattr(args, 'max_length', None) or 0) > 0 else model_max_length\n"
                 "            max_length = args.max_length\n"
                 "        elif hasattr(args, 'max_length') and args.max_length is not None:\n"
                 "            max_length = args.max_length\n"
