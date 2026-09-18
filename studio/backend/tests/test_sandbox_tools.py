@@ -424,6 +424,11 @@ class TestNetworkTargetResolution:
                 f"s.proxies = {{'https': 'http://{_H}:8080'}}\ns.get('https://pypi.org/')",
                 id = "proxy_configured_on_the_session",
             ),
+            pytest.param(
+                "import requests\ns = requests.Session()\ns = requests.Session()\n"
+                f"s.proxies = {{'https': 'http://{_H}'}}\ns.get('https://pypi.org/')",
+                id = "proxy_set_after_the_receiver_rebinding",
+            ),
             # A URL factory reached through the module that defines it.
             pytest.param(
                 f"import urllib3\nurllib3.connectionpool.connection_from_url('http://{_H}/')",
@@ -794,6 +799,9 @@ class TestNetworkTargetResolution:
             "s.proxies = {}\ns.get('https://pypi.org/')",
             "import requests\ns = requests.Session()\ns.get('https://pypi.org/')\n"
             "s.proxies = {'https': 'http://203.0.113.5'}",
+            # Rebinding the receiver throws away what was set on the previous object.
+            "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5'}\n"
+            "s = requests.Session()\ns.get('https://pypi.org/')",
             # A receiver that is not the instance keeps its own identity.
             "import requests\nclass A:\n    def __init__(self):\n        self.s = requests.Session()\n"
             "    def go(self, other):\n        other.s.get('https://pypi.org/')",

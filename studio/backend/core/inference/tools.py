@@ -16818,6 +16818,18 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(value, ast.ClassDef)
         ]
 
+    def _latest_binding(name: str, scope: ast.AST, read: ast.AST):
+        """Position of the certain binding of `name` in effect at this read, if there is one."""
+        read_at = _position(read)
+        current: ast.AST | None = scope
+        while current is not None:
+            stores = _name_stores.get((id(current), name))
+            if stores is not None:
+                positions = [p for _v, p, _b, certain in stores if certain and p < read_at]
+                return max(positions, default = None)
+            current = _scope_parent.get(id(current))
+        return None
+
     def _attr_values(expr: ast.Attribute) -> "list | None":
         return _attr_values_for(_node_scope.get(id(expr), tree), expr.value.id, expr.attr, expr)
 
@@ -16844,6 +16856,10 @@ def _check_signal_escape_patterns(code: str):
         while current is not None:
             stores = _attr_stores.get((id(current), receiver_id, attr))
             if stores is not None:
+                # Rebinding the receiver throws away what was set on the previous object.
+                bound_at = _latest_binding(receiver_id, scope, read)
+                if bound_at is not None:
+                    stores = [store for store in stores if store[1] >= bound_at]
                 return _reaching(stores, read, current)
             current = _scope_parent.get(id(current))
         return None
