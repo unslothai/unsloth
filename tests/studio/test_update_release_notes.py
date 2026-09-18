@@ -1897,12 +1897,14 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
     # px style above, and ANY Tailwind padding class is either rem-scaled (walking the rail
     # off its corner with the user's type size, #8082) or, with !important, an outright
     # override of the inline declaration. Enumerating the spellings is how this went wrong
-    # twice: the first form missed `!px-3`, the second missed `px-2.5` and `!pr-[0px]`.
-    # Matching the property instead of its value has no such tail.
+    # three times: the first form missed `!px-3`, the second `px-2.5` and `!pr-[0px]`, the
+    # third the logical `ps-`/`pe-` pair this repo also uses. Matching the property rather
+    # than its value ends that; `pointer-events-none` and `peer-*` do not match, since the
+    # side letter is optional and a `-` has to follow it either way.
     for rail in _corner_rails(provider):
         for token in rail.split():
             utility = _split_variants(token)[1]
-            assert not re.match(r"p[xytblr]?-", utility), (
+            assert not re.match(r"p[xytblrse]?-", utility), (
                 f"the rail carries the padding utility {token!r}; its padding is the inline "
                 f"px style, and a class here is rem-scaled or !important-overrides it (#8082)"
             )
