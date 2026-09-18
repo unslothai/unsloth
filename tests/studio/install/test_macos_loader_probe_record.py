@@ -143,10 +143,18 @@ def write_marker(install_dir: Path, marker: dict) -> None:
 
 
 def count_spawns(monkeypatch) -> list[int]:
+    """Stand in for a probe that RAN and loaded every binary.
+
+    Reporting the load matters: the real probe fails open, so preflight treats an
+    empty *loaded* as "could not run" and refuses to record a pass. A stub that only
+    returned [] would silently test the no-evidence path instead.
+    """
     calls = [0]
 
-    def _probe(*_args, **_kwargs):
+    def _probe(binaries, install_dir, host, *, loaded = None, **_kwargs):
         calls[0] += 1
+        if loaded is not None:
+            loaded.update(path.name for path in binaries)
         return []
 
     monkeypatch.setattr(ILP, "macos_dyld_load_issues", _probe)
@@ -384,6 +392,61 @@ def test_a_macos_patch_update_probes_again(tmp_path: Path, monkeypatch):
 
     assert ILP._existing_install_runs(install_dir, host) is True
     assert calls[0] == 1
+
+
+def test_a_reuse_probe_that_passed_is_remembered(tmp_path: Path, monkeypatch):
+    """Otherwise the skip is unreachable for every install not born with the record."""
+    host = macos_host()
+    install_dir = build_install(tmp_path, host, load_probe_passed = False)
+    assert ILP.MACOS_LOAD_PROBE_KEY not in marker_of(install_dir)
+
+    calls = count_spawns(monkeypatch)
+    assert ILP._existing_install_runs(install_dir, host) is True
+    assert calls[0] == 1                       # this update pays for the probe
+    assert marker_of(install_dir)[ILP.MACOS_LOAD_PROBE_KEY] == {
+        "passed": True,
+        "macos_product_version": PRODUCT_VERSION,
+    }
+
+    assert ILP._existing_install_runs(install_dir, host) is True
+    assert calls[0] == 1                       # the next one does not
+
+
+def test_a_legacy_size_only_marker_is_upgraded_by_a_passing_probe(tmp_path: Path, monkeypatch):
+    """The shape every install written before this PR has: payload recorded, not hashed."""
+    host = macos_host()
+    install_dir = build_install(tmp_path, host, load_probe_passed = False)
+    marker = marker_of(install_dir)
+    for key, entry in marker["runtime_files"].items():
+        if not key.endswith(("llama-server", "llama-quantize")):
+            entry.pop("sha256", None)
+    marker.pop(ILP.MACOS_LOAD_PROBE_KEY, None)
+    write_marker(install_dir, marker)
+
+    calls = count_spawns(monkeypatch)
+    assert ILP._existing_install_runs(install_dir, host) is True
+    assert calls[0] == 1
+    upgraded = marker_of(install_dir)["runtime_files"]
+    assert all(entry.get("sha256") for entry in upgraded.values())
+
+    assert ILP._existing_install_runs(install_dir, host) is True
+    assert calls[0] == 1
+
+
+def test_a_probe_that_could_not_run_is_not_remembered(tmp_path: Path, monkeypatch):
+    """Only a real load is evidence, so a fail-open probe must not persist one."""
+    host = macos_host()
+    install_dir = build_install(tmp_path, host, load_probe_passed = False)
+    monkeypatch.setattr(ILP, "macos_binary_minos_issues", lambda *a, **k: [])
+
+    def _timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd = "llama-server", timeout = 60)
+
+    monkeypatch.setattr(ILP, "run_capture", _timeout)
+    monkeypatch.setattr(ILP, "_binary_image_runs", lambda *a, **k: True)
+
+    assert ILP._existing_install_runs(install_dir, host) is True
+    assert ILP.MACOS_LOAD_PROBE_KEY not in marker_of(install_dir)
 
 
 def test_the_same_macos_patch_level_still_skips(tmp_path: Path, monkeypatch):
