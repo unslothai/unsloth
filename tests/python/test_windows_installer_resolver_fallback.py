@@ -1756,9 +1756,7 @@ def test_the_lock_chain_defines_everything_it_reaches() -> None:
     )
     # Whole-line comments dropped first: a helper NAMED in prose is not a call, and treating it
     # as one grows the list to satisfy a mention rather than a dependency.
-    code = "\n".join(
-        line for line in extracted.splitlines() if not line.lstrip().startswith("#")
-    )
+    code = "\n".join(line for line in extracted.splitlines() if not line.lstrip().startswith("#"))
     called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", code))
     missing = sorted((called & installer_functions) - provided)
     assert not missing, (
