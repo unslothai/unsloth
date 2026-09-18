@@ -1787,7 +1787,8 @@ _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 def _is_mtp_drafter(path: str) -> bool:
     """True for a separate-file drafter, a companion to the main model rather
     than a selectable quant: the repo-root ``mtp-*.gguf``, the ``MTP/`` subdir
-    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash) or the
+    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the
+    ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai) or the
     ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss).
 
     Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub). Must be
@@ -1796,18 +1797,20 @@ def _is_mtp_drafter(path: str) -> bool:
     resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight,
     or to ``dspark/dspark-...-Q8_0.gguf``.
 
-    Prefix, or an exact directory for ``_DRAFTER_DIR_KINDS``; never a substring,
-    since the kind names double as family names
-    (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model, as is anything in a
-    user's ``dflash/`` folder).
+    Prefix, an exact directory for ``_DRAFTER_DIR_KINDS``, or
+    ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names
+    double as family names (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model,
+    as is anything in a user's ``dflash/`` folder).
     """
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
     parts = [segment for segment in p.split("/") if segment]
     name, parents = parts[-1], parts[:-1]
-    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
-        kind in parents for kind in _DRAFTER_DIR_KINDS
+    return (
+        any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
+        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
+        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
     )
 
 
@@ -2724,6 +2727,11 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"|Q[0-9]+_[0-9]+"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_mtp_drafter.
+_DSPARK_BEFORE_QUANT_RE = re.compile(
+    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
     re.IGNORECASE,
 )
 

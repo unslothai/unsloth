@@ -112,16 +112,24 @@ _DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 # Directories only: mtp/ and dspark/ are always a publisher's companion folder, while dflash/ is a family name a user picks for real weights.
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
+# A DSpark drafter named after its model, <model>-dspark-<quant>.gguf (prism-ml Bonsai, and third-party DSpark GGUFs). Only the quant and a shard suffix may follow the kind: a family name carrying the word goes on past it (DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16.gguf) and is the model.
+_DSPARK_BEFORE_QUANT_RE = re.compile(
+    rf"-dspark-(?:{_GGUF_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
+    re.IGNORECASE,
+)
+
 
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash) and the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, or by an exact parent dir for ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
+    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai) and the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, by an exact parent dir for ``_DRAFTER_DIR_KINDS``, or by ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
     parts = [segment for segment in p.split("/") if segment]
     name, parents = parts[-1], parts[:-1]
-    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
-        kind in parents for kind in _DRAFTER_DIR_KINDS
+    return (
+        any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
+        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
+        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
     )
 
 
