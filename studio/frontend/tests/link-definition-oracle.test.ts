@@ -203,6 +203,23 @@ test("a definition lookalike that no parser registers keeps block rendering", ()
   }
 });
 
+test("a live reference pair inside a list or quote still resolves", () => {
+  // #9540 / #9633: Streamdown's own block split is the hold-set. Container
+  // definitions Marked actually registers must still resolve as one document,
+  // including nested lists and quote-in-list. The split, not a fence walk.
+  for (const definition of [
+    "- [g]: /guide",
+    "> [g]: /guide",
+    "- - [g]: /guide",
+    "- > [g]: /guide",
+    "> - [g]: /guide",
+  ]) {
+    const reply = `See [guide][g].\n\n${definition}\n`;
+    assert.ok(asOneDocument(reply) > asBlocks(reply), definition);
+    assert.equal(markdownRenderScope(reply), "document", definition);
+  }
+});
+
 test("ordinary code is still rendered per block", () => {
   // The regression this path exists for: nothing here is a definition, so each of these must
   // keep its per-block Copy code / Download file controls.
@@ -211,6 +228,11 @@ test("ordinary code is still rendered per block", () => {
     "Compare [one][two].\n\n```css\na[href]:hover { color: red; }\n```\n",
     "Compare [one][two].\n\n    [two]: not-a-definition\n",
     "How:\n\n```md\n[two]: https://example.com/two\n```\n\nText [one][two].\n",
+    "See [a][ref].\n\n1. item\n   ```python\n   def f() -> list[str]:\n       return []\n   ```\n",
+    "See [a][ref].\n\n- item\n  ```python\n  def f() -> list[str]:\n      return []\n  ```\n",
+    "See [a][ref].\n\n```python\nlist[\n str\n]:\n```\n",
+    'See [a][ref].\n\nd[\n "key"\n]: int\n',
+    'See [a][ref].\n\nd["key"]: int\n',
   ]) {
     assert.equal(markdownRenderScope(reply), "blocks", reply);
     assert.equal(
