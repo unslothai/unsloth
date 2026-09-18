@@ -158,3 +158,42 @@ test("a peer removal survives a failed write", () => {
   assert.ok(after.includes(B), `this session's unpersisted pin was lost: ${JSON.stringify(after)}`);
   assert.deepEqual(storedOrder(), after);
 });
+
+test("undoing a failed pin does not resurrect it", () => {
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+    assert.deepEqual(pins.getState().pinned, [B, A]);
+    pins.getState().togglePinnedConnected(B); // undo, still failing
+    assert.deepEqual(pins.getState().pinned, [A]);
+  } finally {
+    storage.set = realSet;
+  }
+  pins.getState().togglePinnedConnected(D);
+  const after = pins.getState().pinned;
+  assert.ok(!after.includes(B), `an undone pin came back: ${JSON.stringify(after)}`);
+});
+
+test("a failed pin stays on screen when a peer writes", () => {
+  // The rendered list decides which way the row's own action toggles, so it has to agree with
+  // what every merge below it holds.
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+  } finally {
+    storage.set = realSet;
+  }
+  externalWrite([C, A]);
+  assert.ok(
+    pins.getState().pinned.includes(B),
+    `the row would render unpinned while the merge still holds it: ${JSON.stringify(pins.getState().pinned)}`,
+  );
+});

@@ -50,10 +50,10 @@ function writePinned(pinned: string[]): void {
     unpersisted.clear();
   } catch {
     storageWritable = false;
+    // REPLACED, not added to: undoing a failed pin while writes are still failing has to take the
+    // id back out, else the next merge resurrects a model the user just unpinned.
     const stored = storedPinned() ?? [];
-    for (const id of pinned) {
-      if (!stored.includes(id)) unpersisted.add(id);
-    }
+    unpersisted = new Set(pinned.filter((id) => !stored.includes(id)));
   }
 }
 
@@ -62,10 +62,10 @@ function writePinned(pinned: string[]): void {
  *  wholesale, so by the next edit the list no longer carries them. */
 function ourPins(stored: readonly string[], present: readonly string[]): string[] {
   if (storageWritable) return [];
-  // Reversed: the set records them oldest first, and a pin goes to the TOP of the list.
-  return [...unpersisted]
-    .reverse()
-    .filter((id) => !stored.includes(id) && !present.includes(id));
+  // Already newest first: the set is rebuilt from the list the failed write attempted.
+  return [...unpersisted].filter(
+    (id) => !stored.includes(id) && !present.includes(id),
+  );
 }
 
 function isOurs(id: string): boolean {
@@ -191,7 +191,12 @@ if (typeof window !== "undefined") {
         dragExternalOrder = next;
         return;
       }
-      usePinnedConnectedModelsStore.setState({ pinned: next });
+      // Carry this window's unpersisted pins into the rendered list. Without them the row shows as
+      // unpinned while every merge still holds it, so "Pin to top" takes the removal branch and
+      // persists it unpinned once writes recover.
+      usePinnedConnectedModelsStore.setState({
+        pinned: [...ourPins(next, next), ...next],
+      });
     }
   });
 }
