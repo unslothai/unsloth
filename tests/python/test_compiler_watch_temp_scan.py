@@ -38,22 +38,41 @@ PWSH = shutil.which("pwsh")
 pytestmark = pytest.mark.skipif(PWSH is None, reason = "needs PowerShell")
 
 
-def _walk(root: pathlib.Path, patterns: str = "'*.dll','*.cmdline'") -> list[str]:
-    """Run Get-StudioTempSubtree over `root` under the same preference CI uses."""
-    script = (
-        "$ErrorActionPreference = 'Stop'\n"
-        f". '{SCRIPT}'\n"
-        f"Get-StudioTempSubtree -Root '{root}' -Patterns {patterns} | "
-        "ForEach-Object { Write-Output $_ }\n"
-    )
-    proc = subprocess.run(
+def _run_pwsh(body: str) -> subprocess.CompletedProcess:
+    script = f"$ErrorActionPreference = 'Stop'\n. '{SCRIPT}'\n{body}"
+    return subprocess.run(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
         timeout = 300,
     )
+
+
+def _scan(root: pathlib.Path, patterns: str = "'*.dll','*.cmdline'") -> dict[str, list[str]]:
+    """Run Get-StudioTempSubtree over `root` under the same preference CI uses.
+
+    Both halves are returned. Which directories went unread is not a diagnostic here: it is
+    what stops a directory read in one snapshot and not the other from being scored as a
+    compile, so it is asserted on directly.
+    """
+    proc = _run_pwsh(
+        f"$scan = Get-StudioTempSubtree -Root '{root}' -Patterns {patterns}\n"
+        "foreach ($f in $scan.Files)  { Write-Output \"FILE $f\" }\n"
+        "foreach ($d in $scan.Unread) { Write-Output \"UNREAD $d\" }\n"
+    )
     assert proc.returncode == 0, f"the walk itself failed:\n{proc.stdout}\n{proc.stderr}"
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    out: dict[str, list[str]] = {"files": [], "unread": []}
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("FILE "):
+            out["files"].append(line[len("FILE "):])
+        elif line.startswith("UNREAD "):
+            out["unread"].append(line[len("UNREAD "):])
+    return out
+
+
+def _walk(root: pathlib.Path, patterns: str = "'*.dll','*.cmdline'") -> list[str]:
+    return _scan(root, patterns)["files"]
 
 
 @pytest.mark.skipif(
@@ -161,7 +180,7 @@ def test_the_artifact_filter_still_selects_by_extension(tmp_path: pathlib.Path) 
         f". '{SCRIPT}'\n"
         f"$env:TEMP = '{tmp_path}'\n"
         f"$env:TMP = '{tmp_path}'\n"
-        "Get-StudioTempArtifacts | ForEach-Object { Write-Output (Split-Path -Leaf $_) }\n"
+        "(Get-StudioTempArtifacts).Files | ForEach-Object { Write-Output (Split-Path -Leaf $_) }\n"
     )
     proc = subprocess.run(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
@@ -198,3 +217,149 @@ def test_no_recursive_listing_is_left_in_the_script() -> None:
         body.append(line)
     offenders = [line.strip() for line in body if "Get-ChildItem" in line and "-Recurse" in line]
     assert not offenders, offenders
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = (
+        "POSIX permissions only, for the same reason as the walk control above: chmod on "
+        "Windows sets the read-only attribute rather than making a directory unopenable."
+    ),
+)
+def test_an_unreadable_directory_is_reported_and_not_just_skipped(tmp_path: pathlib.Path) -> None:
+    """The gap has to reach the caller, because the caller subtracts two of these listings.
+
+    Skipping quietly is what makes the comparison lie: a directory unread at baseline and
+    readable afterwards hands every file already sitting in it to the "new since the action"
+    set, and an installer that compiled nothing is reported as having compiled. This asserts
+    the walk says which directory it could not read, which is what the caller needs to
+    withhold those paths.
+    """
+    (tmp_path / "locked").mkdir()
+    (tmp_path / "locked" / "hidden.dll").write_text("x")
+    (tmp_path / "open").mkdir()
+    (tmp_path / "open" / "seen.dll").write_text("x")
+    os.chmod(tmp_path / "locked", 0o000)
+    try:
+        if os.geteuid() == 0:
+            pytest.skip("root reads every directory, so nothing here can be made unreadable")
+        scan = _scan(tmp_path)
+    finally:
+        os.chmod(tmp_path / "locked", 0o700)
+
+    assert any(name.endswith("seen.dll") for name in scan["files"]), scan
+    assert not any(name.endswith("hidden.dll") for name in scan["files"]), scan
+    assert [d for d in scan["unread"] if d.endswith("locked")], (
+        "the walk stepped over the unreadable directory without recording it. The caller "
+        f"cannot then tell an empty directory from an unread one: {scan}"
+    )
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX permissions only; see the walk control above.",
+)
+def test_a_directory_that_vanished_is_not_reported_as_unread(tmp_path: pathlib.Path) -> None:
+    """A path that is gone is not a hole in the measurement, and must not void a run.
+
+    This is the transient case the whole change exists for. A directory that no longer
+    exists cannot contribute a file to a later listing of itself, so there is nothing for
+    the caller to withhold and nothing to declare void. Only a directory that is still
+    there and still unreadable is a real gap.
+    """
+    scan = _scan(tmp_path / "never-existed")
+    assert scan["files"] == [], scan
+    assert scan["unread"] == [], (
+        "a missing directory was recorded as an unread one. That would void a measurement "
+        f"for the ordinary temp race this change was written to survive: {scan}"
+    )
+
+
+def _shipped_left_expression() -> str:
+    """The `$left = @(...)` assignment as it appears in Invoke-WithCompilerWatch.
+
+    Lifted from the shipped source rather than retyped. A copy of the expression in this file
+    would keep passing after the withholding was deleted from the script, which is precisely
+    the regression worth catching: the comparison is the only place the unread directories
+    are allowed to change the answer.
+    """
+    text = SCRIPT.read_text(encoding = "utf-8")
+    start = text.index("    $left = @(")
+    end = text.index("\n    )\n", start) + len("\n    )\n")
+    expression = text[start:end]
+    assert "$unread" in expression, (
+        "the $left comparison no longer consults the unread directories, so a directory that "
+        "could not be read in one snapshot and could in the other is scored as a compile:\n"
+        f"{expression}"
+    )
+    return expression
+
+
+def test_the_unread_directories_are_withheld_from_the_new_artifact_set() -> None:
+    """The defect this guards: a baseline hole turning pre-existing files into evidence.
+
+    `old.dll` was in the gap directory all along. The baseline sweep could not read that
+    directory, the final sweep could, so a plain "in after, not in before" difference hands it
+    back as new and an installer that compiled nothing is reported as having compiled.
+
+    The expression under test is the one the script actually runs, read out of the file, so
+    deleting or bypassing the withholding fails this rather than leaving a copy passing here.
+    """
+    proc = _run_pwsh(
+        "$before = New-Object 'System.Collections.Generic.HashSet[string]' "
+        "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
+        r"$after = @('C:\t\gap\old.dll', 'C:\t\seen\new.dll')" + "\n"
+        r"$unread = @('C:\t\gap')" + "\n"
+        + _shipped_left_expression()
+        + "foreach ($p in $left) { Write-Output $p }\n"
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    left = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    assert left == [r"C:\t\seen\new.dll"], (
+        "a file under a directory the baseline sweep could not read was scored as new. "
+        f"That reports an innocent action as having compiled: {left}"
+    )
+
+
+def test_the_same_comparison_still_reports_a_genuinely_new_file() -> None:
+    """The control for the row above: withholding must not swallow everything.
+
+    A test that only checks something was removed passes just as well against an expression
+    that returns nothing at all, which would hide every real compile instead. With no unread
+    directories, both files are new and both come back.
+    """
+    proc = _run_pwsh(
+        "$before = New-Object 'System.Collections.Generic.HashSet[string]' "
+        "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
+        r"$after = @('C:\t\gap\old.dll', 'C:\t\seen\new.dll')" + "\n"
+        "$unread = @()\n"
+        + _shipped_left_expression()
+        + "foreach ($p in $left) { Write-Output $p }\n"
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    left = sorted(line.strip() for line in proc.stdout.splitlines() if line.strip())
+    assert left == [r"C:\t\gap\old.dll", r"C:\t\seen\new.dll"], (
+        f"a clean sweep stopped reporting new artifacts, which hides every real compile: {left}"
+    )
+
+
+def test_the_prefix_test_does_not_match_a_sibling_by_name() -> None:
+    """`C:\\t\\ab` is not under `C:\\t\\a`, and withholding it would hide a real artifact."""
+    proc = _run_pwsh(
+        r"Write-Output ('under=' + (Test-StudioPathUnder -Path 'C:\t\a\x.dll' -Directory 'C:\t\a'))"
+        + "\n"
+        r"Write-Output ('sibling=' + (Test-StudioPathUnder -Path 'C:\t\ab\x.dll' -Directory 'C:\t\a'))"
+        + "\n"
+        r"Write-Output ('case=' + (Test-StudioPathUnder -Path 'C:\T\A\x.dll' -Directory 'c:\t\a'))"
+        + "\n"
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = dict(
+        line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line
+    )
+    assert out["under"] == "True", out
+    assert out["sibling"] == "False", (
+        "a sibling directory sharing a name prefix was treated as being inside the unread "
+        f"one, which would withhold real evidence: {out}"
+    )
+    assert out["case"] == "True", out
