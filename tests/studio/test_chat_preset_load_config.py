@@ -223,7 +223,7 @@ def _split_ternary(expression: str, guards: tuple = ()) -> list:
             operands = _top_level_operands(expression, operator)
             if len(operands) > 1:
                 head, tail = operands[0], f" {operator} ".join(operands[1:])
-                return [(head, guards + ((head, head_taken),))] + _split_ternary(
+                return _split_ternary(head, guards + ((head, head_taken),)) + _split_ternary(
                     tail, guards + ((head, not head_taken),)
                 )
         return [(expression.strip(), guards)]
@@ -1105,6 +1105,8 @@ SELECTOR_CASES = [
     ("(s) => s.enabled && s.reasoningBudget", False),
     ("(s) => s.reasoningBudget || -1", False),
     ("(s) => s.reasoningBudget && s.reasoningBudget.toString()", True),
+    ("(s) => (s.reasoningBudget && s.other) || s.reasoningBudget", False),
+    ("(s) => (s.enabled ? s.reasoningBudget : s.other) || s.reasoningBudget", False),
     # A `let` can be reassigned, so it is not inlined as its initializer.
     ("(s) => { let value = s.reasoningBudget; value = s.other; return value; }", False),
     # A `continue` inside a nested loop belongs to that loop, not to the switch.
