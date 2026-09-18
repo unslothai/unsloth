@@ -385,6 +385,48 @@ def test_legacy_bundle_is_read_but_the_new_root_takes_the_writes(
     assert ctx.manifest_path.exists()
 
 
+def test_an_interrupted_migration_leaves_no_partial_pair(
+    monkeypatch, tmp_path, fake_megacache
+):
+    """The migration copies through a temp file and renames, as every other write here does.
+
+    A plain copyfile onto the live name is visible while it is still partial. The manifest is the
+    commit point, so a torn one is read as a miss and costs the cold compile the migration exists
+    to avoid; a second backend migrating the same key would interleave its writes into the same
+    destination. Interruption is injected at the manifest copy, the later of the two.
+    """
+    legacy, studio_home, legacy_bundle = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+
+    import shutil as _shutil
+
+    real_copyfile = _shutil.copyfile
+    calls = {"n": 0}
+
+    def exploding_copyfile(src, dst, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # Half a manifest on disk, then death, exactly as interpreter exit kills the thread.
+            Path(dst).write_bytes(Path(src).read_bytes()[:3])
+            raise OSError("interrupted")
+        return real_copyfile(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(cc.shutil, "copyfile", exploding_copyfile)
+
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+
+    # The read still served this run from the legacy pair.
+    assert ctx.hit is True
+    # Nothing partial is published under a name a later run reads: the temp file the copy died
+    # inside is not the live manifest.
+    if ctx.manifest_path.exists():
+        assert ctx.manifest_path.read_bytes() == (legacy / ctx.key / cc._MANIFEST_NAME).read_bytes()
+    leftovers = [
+        q.name for q in ctx.dir.iterdir()
+        if q.name.endswith(cc._TEMP_SUFFIX)
+    ]
+    assert leftovers == [], leftovers
+
+
 def test_migrated_bundle_serves_the_next_run_without_the_legacy_root(
     monkeypatch, tmp_path, fake_megacache
 ):

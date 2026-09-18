@@ -441,9 +441,9 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
             # pair predates content addressing. Published like begin() does, so the context goes
             # on naming the live bundle in the write root.
             migrated = _manifest_bundle(ctx.dir, published)
-            shutil.copyfile(bundle, migrated)
+            _atomic_copy(bundle, migrated)
             # Bundle first: a manifest without one reads as a miss, not an unservable hit.
-            shutil.copyfile(manifest_path, ctx.manifest_path)
+            _atomic_copy(manifest_path, ctx.manifest_path)
             ctx.bundle = migrated
             _info(logger, f"compile-cache: migrated legacy bundle for key {ctx.key}")
         except OSError as exc:
@@ -552,6 +552,32 @@ def _atomic_write(path: Path, data: bytes) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _atomic_copy(src: Path, dst: Path) -> None:
+    """``shutil.copyfile`` into a temp file in *dst*'s directory, then ``os.replace``.
+
+    Same rule and same reason as _atomic_write: a plain copyfile onto the live name is visible
+    while it is still partial, and the migration below runs on the same interruptible path as a
+    save. A torn manifest costs only a miss, but a miss here means the cold compile the migration
+    exists to avoid, and two backends migrating one key would otherwise interleave their writes
+    into a single destination file.
+    """
+    tmp: Optional[str] = None
+    try:
+        fd, tmp = tempfile.mkstemp(
+            dir = str(dst.parent), prefix = f".{dst.name}.", suffix = _TEMP_SUFFIX
+        )
+        os.close(fd)
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
         tmp = None
     finally:
         if tmp is not None:
