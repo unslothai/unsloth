@@ -1215,7 +1215,13 @@ _cleanup_install_temporaries() {
     [ -n "${_ROCM_TAG_MEMO_DIR:-}" ] && rm -rf "$_ROCM_TAG_MEMO_DIR" 2>/dev/null || true
     # The probe's ceiling is held by this shell, so a cancel during one would otherwise leave the
     # candidate (and, under monitor mode, its whole group) running with nobody left to stop it.
-    [ -n "${_UV_PROBE_TARGET:-}" ] && _uv_signal_target TERM "$_UV_PROBE_TARGET" || true
+    if [ -n "${_UV_PROBE_TARGET:-}" ] && [ -n "${_UV_PROBE_PID:-}" ]; then
+        # Two seconds, not the ceiling's five: a cancel that waited that long on a binary
+        # ignoring TERM would read as an installer ignoring the cancel.
+        _uv_probe_terminate "$_UV_PROBE_TARGET" "$_UV_PROBE_PID" 2
+        _UV_PROBE_TARGET=""
+        _UV_PROBE_PID=""
+    fi
 }
 
 _on_install_exit() {
@@ -1250,6 +1256,7 @@ _UIP_STAGE2=""
 _ROCM_TAG_MEMO_DIR=""
 _ROCM_TAG_MEMO=""
 _UV_PROBE_TARGET=""
+_UV_PROBE_PID=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
@@ -3248,6 +3255,21 @@ _uv_signal_target() {
     esac
 }
 
+# TERM, then KILL what ignored it, as `timeout -k` does where it exists.
+# $1 target (a group when one was made, else the pid), $2 pid to watch, $3 seconds of grace.
+_uv_probe_terminate() {
+    _upt_grace=0
+    _uv_signal_target TERM "$1"
+    while [ "$_upt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
+        sleep 1
+        _upt_grace=$((_upt_grace + 1))
+    done
+    # Only if it is still there: the loop also ends when TERM worked, and the KILL would go out
+    # anyway, to a number this shell no longer owns.
+    if kill -0 "$2" 2>/dev/null; then _uv_signal_target KILL "$1"; fi
+    unset _upt_grace
+}
+
 _uv_probe_exec() {
     _upe_secs="${_UV_PROBE_SECONDS:-20}"
     # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
@@ -3279,21 +3301,15 @@ _uv_probe_exec() {
     # Published for _cleanup_install_temporaries: the installer's HUP/INT/TERM handlers run it,
     # so a cancel during the wait kills the probe instead of orphaning it.
     _UV_PROBE_TARGET="$_upe_target"
+    _UV_PROBE_PID="$_upe_pid"
     _upe_waited=0
     while kill -0 "$_upe_pid" 2>/dev/null; do
         if [ "$_upe_waited" -ge "$_upe_secs" ]; then
-            _uv_signal_target TERM "$_upe_target"
-            _upe_grace=0
-            while [ "$_upe_grace" -lt 5 ] && kill -0 "$_upe_pid" 2>/dev/null; do
-                sleep 1
-                _upe_grace=$((_upe_grace + 1))
-            done
-            # Only if it is still there: the loop also ends when TERM worked, and the KILL went
-            # out anyway, to a number this shell no longer owns.
-            if kill -0 "$_upe_pid" 2>/dev/null; then _uv_signal_target KILL "$_upe_target"; fi
+            _uv_probe_terminate "$_upe_target" "$_upe_pid" 5
             wait "$_upe_pid" 2>/dev/null
             _UV_PROBE_TARGET=""
-            unset _upe_pid _upe_waited _upe_grace _upe_target _upe_pgid _upe_self
+            _UV_PROBE_PID=""
+            unset _upe_pid _upe_waited _upe_target _upe_pgid _upe_self
             return 124
         fi
         sleep 1
@@ -3302,6 +3318,7 @@ _uv_probe_exec() {
     wait "$_upe_pid"
     _upe_rc=$?
     _UV_PROBE_TARGET=""
+    _UV_PROBE_PID=""
     unset _upe_pid _upe_waited _upe_target _upe_pgid _upe_self
     return $_upe_rc
 }

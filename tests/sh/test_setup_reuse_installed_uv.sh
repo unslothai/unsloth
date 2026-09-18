@@ -17,6 +17,7 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 
 HELPER=$(awk '
     /^_setup_uv_signal_target\(\) \{/ { grab = 1 }
+    /^_setup_uv_probe_terminate\(\) \{/ { grab = 1 }
     /^_setup_uv_probe_restore_trap\(\) \{/ { grab = 1 }
     /^_setup_uv_probe_on_signal\(\) \{/ { grab = 1 }
     /^_setup_uv_probe_exec\(\) \{/ { grab = 1 }
@@ -28,7 +29,7 @@ HELPER=$(awk '
 # The floor the finder compares against lives beside the function, not inside it.
 HELPER="$(grep '^_SETUP_UV_MIN_VERSION=' "$SETUP_SH")
 $HELPER"
-for _fn in _setup_uv_signal_target _setup_uv_probe_restore_trap _setup_uv_probe_on_signal _setup_uv_probe_exec \
+for _fn in _setup_uv_signal_target _setup_uv_probe_terminate _setup_uv_probe_restore_trap _setup_uv_probe_on_signal _setup_uv_probe_exec \
            _setup_uv_version_at_least _setup_find_installed_uv; do
     printf '%s\n' "$HELPER" | grep -q "^$_fn() {" || {
         echo "FATAL: could not extract $_fn from setup.sh" >&2; exit 1; }
@@ -217,8 +218,45 @@ BODY
         # A uv that ignores TERM: both branches must end in KILL.
         DEAF="$CASE/ignores term"
         mkdir -p "$DEAF"
-        printf '#!/bin/sh\ntrap "" TERM\nsleep 60\n' > "$DEAF/uv"
+        # A loop, not one long sleep: `sleep` does not ignore TERM, so a group TERM would end the
+        # sleep, the script would fall off the end, and a stand-in meant to survive TERM would not.
+        printf '#!/bin/sh\ntrap "" TERM\n_i=0\nwhile [ "$_i" -lt 60 ]; do sleep 1; _i=$((_i + 1)); done\n' > "$DEAF/uv"
         chmod +x "$DEAF/uv"
+        # The cancel path shares one routine with the ceiling, so what a cancel does to a binary
+        # that ignores TERM is decided here: TERM, a bounded grace, then KILL. Tested on the
+        # routine rather than by cancelling a setup, because the lifetime of an orphan after its
+        # shell dies is the host's business, not this code's, and the assertion would be measuring
+        # the host.
+        TERMINATE="$WORK/$shell terminate.sh"
+        DEAF_READY="$CASE/deaf is deaf"
+        # It announces itself only once TERM is ignored: signalling before that line runs would
+        # kill it by default action and the case would pass without the escalation existing.
+        printf '#!/bin/sh\ntrap "" TERM\n: > "%s"\n_i=0\nwhile [ "$_i" -lt 20 ]; do sleep 1; _i=$((_i + 1)); done\n' \
+            "$DEAF_READY" > "$DEAF/ready uv"
+        chmod +x "$DEAF/ready uv"
+        rm -f "$DEAF_READY"
+        {
+            printf '%s\n' "$HELPER"
+            printf '"%s/ready uv" --version >/dev/null 2>&1 </dev/null &\n' "$DEAF"
+            printf '_t_ready="%s"\n' "$DEAF_READY"
+            cat <<'BODY'
+_t_pid=$!
+_t_waited=0
+while [ ! -f "$_t_ready" ] && [ "$_t_waited" -lt 10 ]; do
+    sleep 1
+    _t_waited=$((_t_waited + 1))
+done
+[ -f "$_t_ready" ] || { printf 'never armed'; exit 0; }
+_setup_uv_probe_terminate "$_t_pid" "$_t_pid" 1
+# How it ended, not whether it is still listed: a killed child sits as a zombie until it is
+# waited for, and `kill -0` answers yes for one of those.
+wait "$_t_pid" 2>/dev/null
+printf '%s' "$?"
+BODY
+        } > "$TERMINATE"
+        # 137 is 128 + SIGKILL: TERM alone leaves this stand-in running to its own end, rc 0.
+        assert_eq "$shell: a probe that ignores TERM is escalated to KILL" \
+            "137" "$(env -i PATH="$NOTO" HOME="$HOME_DIR" "$shell" "$TERMINATE")"
         for _deaf_path in "$BARE_PATH" "$NOTO"; do
             _hang_started=$(date +%s)
             assert_eq "$shell: a uv that ignores TERM is not reused (PATH=$_deaf_path)" \

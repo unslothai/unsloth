@@ -2036,6 +2036,7 @@ _setup_uv_sha256() {
 }
 
 _SETUP_UV_PROBE_TARGET=""
+_SETUP_UV_PROBE_PID=""
 _SETUP_UV_PROBE_PREV_TRAP=""
 
 # A process group is signalled as a negative pid, and the two shells that get here disagree about
@@ -2050,11 +2051,27 @@ _setup_uv_signal_target() {
     esac
 }
 
+# TERM, then KILL what ignored it, exactly as `timeout -k` does on the hosts that have it.
+# $1 target (a group when one was made, else the pid), $2 pid to watch, $3 seconds of grace.
+_setup_uv_probe_terminate() {
+    _supt_grace=0
+    _setup_uv_signal_target TERM "$1"
+    while [ "$_supt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
+        sleep 1
+        _supt_grace=$((_supt_grace + 1))
+    done
+    # Only if it is still there: the loop also ends when TERM worked, and an unconditional KILL
+    # then goes to a number this shell no longer owns. Narrows the window, not closes it.
+    if kill -0 "$2" 2>/dev/null; then _setup_uv_signal_target KILL "$1"; fi
+    unset _supt_grace
+}
+
 # The watchdog's ceiling lives in the calling shell, so a cancel during the wait would leave the
 # candidate, and under monitor mode its whole group, running with nobody left to stop it. These
 # two chain rather than replace: the pinned installer's own handlers still have to run.
 _setup_uv_probe_restore_trap() {
     _SETUP_UV_PROBE_TARGET=""
+    _SETUP_UV_PROBE_PID=""
     if [ -n "${_SETUP_UV_PROBE_PREV_TRAP:-}" ]; then
         eval "$_SETUP_UV_PROBE_PREV_TRAP"
     else
@@ -2064,7 +2081,12 @@ _setup_uv_probe_restore_trap() {
 }
 
 _setup_uv_probe_on_signal() {
-    if [ -n "${_SETUP_UV_PROBE_TARGET:-}" ]; then _setup_uv_signal_target TERM "$_SETUP_UV_PROBE_TARGET"; fi
+    # The same TERM/KILL the ceiling uses, on a shorter leash: a cancel that waited the full five
+    # seconds for a binary ignoring TERM would read as a setup that ignored the cancel.
+    if [ -n "${_SETUP_UV_PROBE_TARGET:-}" ] && [ -n "${_SETUP_UV_PROBE_PID:-}" ]; then
+        _setup_uv_probe_terminate "$_SETUP_UV_PROBE_TARGET" "$_SETUP_UV_PROBE_PID" 2
+        wait "$_SETUP_UV_PROBE_PID" 2>/dev/null || :
+    fi
     _setup_uv_probe_restore_trap
     # Hand the signal back to whoever had it: the installer's handler, or the default action.
     kill -s "$1" "$$" 2>/dev/null || :
@@ -2105,6 +2127,7 @@ _setup_uv_probe_exec() {
         esac
     fi
     _SETUP_UV_PROBE_TARGET="$_supe_target"
+    _SETUP_UV_PROBE_PID="$_supe_pid"
     _SETUP_UV_PROBE_PREV_TRAP=$(trap -p HUP INT TERM 2>/dev/null) || _SETUP_UV_PROBE_PREV_TRAP=""
     trap '_setup_uv_probe_on_signal HUP' HUP
     trap '_setup_uv_probe_on_signal INT' INT
@@ -2112,19 +2135,11 @@ _setup_uv_probe_exec() {
     _supe_waited=0
     while kill -0 "$_supe_pid" 2>/dev/null; do
         if [ "$_supe_waited" -ge "$_supe_secs" ]; then
-            _setup_uv_signal_target TERM "$_supe_target"
             # Escalate as timeout -k does: a binary ignoring TERM would hold the wait.
-            _supe_grace=0
-            while [ "$_supe_grace" -lt 5 ] && kill -0 "$_supe_pid" 2>/dev/null; do
-                sleep 1
-                _supe_grace=$((_supe_grace + 1))
-            done
-            # Only if it is still there: the loop also ends when TERM worked, and an unconditional
-            # KILL then goes to a number this shell no longer owns. Narrows the window, not closes it.
-            if kill -0 "$_supe_pid" 2>/dev/null; then _setup_uv_signal_target KILL "$_supe_target"; fi
+            _setup_uv_probe_terminate "$_supe_target" "$_supe_pid" 5
             wait "$_supe_pid" 2>/dev/null
             _setup_uv_probe_restore_trap
-            unset _supe_pid _supe_waited _supe_grace _supe_target _supe_pgid _supe_self
+            unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
             return 124
         fi
         sleep 1
