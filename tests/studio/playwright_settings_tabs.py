@@ -472,11 +472,18 @@ def run_keystroke_search(page) -> None:
     toggle = page.locator(f"{PANEL} button[aria-pressed]")
     click_forced(toggle, timeout = 15000)
     page.wait_for_timeout(SETTLE_MS)
-    state: dict = {"armed": toggle.get_attribute("aria-pressed")}
+    # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
+    # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
+    # runner. Same read as isMacPlatform(), which is what the app itself goes by.
+    mac = page.evaluate(
+        "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
+    )
+    mod = "Meta" if mac else "Control"
+    state: dict = {"armed": toggle.get_attribute("aria-pressed"), "mod": mod}
 
     # A chord narrows to what answers to it: ⇧⌘O is New chat's, and New standalone
     # chat sits on ⌥⌘O, which does not carry the Shift.
-    page.keyboard.press("Meta+Shift+KeyO")
+    page.keyboard.press(f"{mod}+Shift+KeyO")
     page.wait_for_timeout(SETTLE_MS)
     state["chord"] = box.input_value()
     state["chord_rows"] = page.evaluate(rows_js)
