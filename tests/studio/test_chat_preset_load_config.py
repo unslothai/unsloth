@@ -662,14 +662,27 @@ def _bindings(block: str, name: str) -> int:
     and `catch` parameters. Scopes are not modelled, so any count past the expected one means a
     use cannot be resolved and the caller has to refuse rather than guess."""
     reference = rf"(?<![\w$.]){re.escape(name)}(?![\w$])"
-    patterns = (
-        rf"\b(?:const|let|var|function|class)\s+{reference}",
-        rf"\b(?:const|let|var)\s*[{{\[][^=;]*{reference}",
-        rf"{reference}\s*=>",
-        rf"\([^()]*{reference}[^()]*\)\s*=>",
-        rf"\b(?:function\b[^(]*|catch\s*)\([^()]*{reference}",
-    )
-    return sum(len(re.findall(pattern, block)) for pattern in patterns)
+    count = len(re.findall(rf"\b(?:const|let|var|function|class)\s+{reference}", block))
+    count += len(re.findall(rf"{reference}\s*=>", block))
+    # Patterns and parameter lists are read whole, as balanced spans: a default such as
+    # `x = get()` carries brackets of its own, and a flat pattern stops at them.
+    spans = []
+    for match in re.finditer(r"\b(?:const|let|var)\s*([{\[])", block):
+        closer = "}" if match.group(1) == "{" else "]"
+        spans.append(_balanced(block, match.start(1), match.group(1), closer))
+    for match in re.finditer(r"\b(?:function\b[^(]*|catch\s*)\(", block):
+        spans.append(_balanced(block, match.end() - 1))
+    for match in re.finditer(r"\)\s*(?::[^=;]*)?=>", block):
+        depth = 0
+        for index in range(match.start(), -1, -1):
+            if block[index] == ")":
+                depth += 1
+            elif block[index] == "(":
+                depth -= 1
+                if depth == 0:
+                    spans.append(block[index + 1 : match.start()])
+                    break
+    return count + sum(1 for span in spans if re.search(reference, span))
 
 
 def _assigned(block: str, name: str) -> bool:
@@ -1337,6 +1350,8 @@ SELECTOR_CASES = [
     ("({ reasoningBudget }) => { reasoningBudget ??= 1; return reasoningBudget; }", False),
     ("(s) => { [s] = [other]; return s.reasoningBudget; }", False),
     ("(s) => { (s) = other; return s.reasoningBudget; }", False),
+    ("(s) => (({ x = get(), s }) => s.reasoningBudget)({ x: 1, s: other })", False),
+    ("(s) => { const { x = get(), s } = holder; return s.reasoningBudget; }", False),
     ("(s) => { for ((s) of others) break; return s.reasoningBudget; }", False),
     ("(s) => { ({ s } = holder); return s.reasoningBudget; }", False),
     ("(s) => { for (s of others) break; return s.reasoningBudget; }", False),
