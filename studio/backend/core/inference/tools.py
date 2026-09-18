@@ -15176,9 +15176,8 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web and return formatted results. ddgs fans the query out across its search
-    engines, so a single engine refusing is already covered. If ``url`` is provided, fetches that
-    page directly instead of searching. ``include_images`` adds image results registered
+    """Search the web with DuckDuckGo and return formatted results. If ``url`` is provided,
+    fetches that page directly instead of searching. ``include_images`` adds image results registered
     server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
     envelope appended: one picture per ``image_queries`` subject when the model named them, else
     a handful for the query. ``image_queries`` alone (no query) is a pure image lookup."""
@@ -15211,8 +15210,15 @@ def _web_search(
         return "Search cancelled."
     try:
         from ddgs import DDGS
+        from ddgs.engines import ENGINES
 
         from .web_access_policy import check_url_access, scope_search_query
+
+        # DDGS defaults to multiple providers (including Yandex), and even an explicit
+        # backend falls back to auto if it is absent from the enabled engine registry.
+        engine = ENGINES.get("text", {}).get("duckduckgo")
+        if engine is None or engine.disabled:
+            return "Search failed: DuckDuckGo search is unavailable."
 
         effective_query = scope_search_query(query, website_policy)
         # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
@@ -15223,7 +15229,7 @@ def _web_search(
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
         client = DDGS(timeout = timeout)
-        results = client.text(effective_query, max_results = wanted)
+        results = client.text(effective_query, max_results = wanted, backend = "duckduckgo")
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
