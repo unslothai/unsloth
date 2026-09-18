@@ -231,6 +231,20 @@ def test_forcing_the_env_var_outranks_flash_attention(monkeypatch, env, expected
     assert resolved == expected
 
 
+@pytest.mark.parametrize(
+    "mapping, expected",
+    [(False, "flash_attention_2"), (True, {"": "sdpa", "text_config": "flex_attention"})],
+)
+def test_forcing_flex_that_cannot_be_scoped_keeps_flash_attention(monkeypatch, mapping, expected):
+    import transformers as T
+
+    monkeypatch.setattr(u, "HAS_FLASH_ATTENTION", True)
+    monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, "1")
+    u._ATTN_IMPL_MAPPING_SUPPORTED.append(mapping)
+    resolved = u.resolve_attention_implementation(T.LlamaForCausalLM, _multimodal())
+    assert resolved == expected
+
+
 def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch):
     # a deliberate _supports_flex_attn = False still wins over the env var
     monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, "1")

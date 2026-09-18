@@ -1227,8 +1227,12 @@ def resolve_attention_implementation(
         if _enable_flex_attention_support(model_class, model_type):
             supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     # The automatic routing only replaces the sdpa fallback, but an explicit "1" forces flex
-    # over flash_attention_2 as well.
-    flex_forced_for_head_dim = _flex_large_head_dim_override() is True and supports_flex_attention
+    # over flash_attention_2 as well, when flex can be scoped to the decoder.
+    flex_forced_for_head_dim = (
+        _flex_large_head_dim_override() is True
+        and supports_flex_attention
+        and _flex_attn_impl_for(config, "sdpa") is not None
+    )
     disable_reason = _get_flash_attention_disable_reason(config)
     float32_is_only_disable_reason = disable_reason is None and dtype is torch.float32
     if float32_is_only_disable_reason:
