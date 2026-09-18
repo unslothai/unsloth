@@ -342,8 +342,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_early_python_path_resolver.ps1
-      # Both legs again: the generic child-process runner takes a different branch on 5.1,
-      # which has no ProcessStartInfo.ArgumentList and so builds the command line by hand.
+      # 5.1 too: the runner builds the command line by hand there (no ArgumentList).
       - name: Early Python process image tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_early_python_process_image.ps1
