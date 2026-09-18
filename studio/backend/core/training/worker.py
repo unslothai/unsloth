@@ -947,7 +947,14 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
             and not _model_local_files_only(config)
             and not config.get("model_revision")
         ):
-            for _mode in (True, False):
+            # The fallbacks only ever run DOWNWARDS: an unusable bitsandbytes or an active
+            # latest-transformers sidecar turns a 4-bit request into a 16-bit load, and
+            # effective_training_load_in_4bit returns False outright for a config that is
+            # already False (full finetunes among them). So a configured 16-bit load can never
+            # become 4-bit, and scanning the 4-bit mirror there would let an unused repo's
+            # findings block a run whose real repo is clean.
+            _modes = (True, False) if config.get("load_in_4bit", True) else (False,)
+            for _mode in _modes:
                 mirrored = unsloth_public_mirror(load_target, _mode)
                 if mirrored and mirrored != load_target:
                     requested_targets.append(mirrored)

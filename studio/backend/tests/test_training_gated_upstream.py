@@ -783,3 +783,41 @@ def test_the_scan_does_not_expand_mirrors_off_the_torch_path(mapper, monkeypatch
 
     assert worker_mod._model_load_security_error(config, "google/gemma-3-270m-it", None) is None
     assert scanned == ["google/gemma-3-270m-it"]
+
+
+def test_a_configured_16bit_load_does_not_scan_the_4bit_mirror(mapper, monkeypatch):
+    # The mode fallbacks only run downwards, so a configured 16-bit load cannot become 4-bit
+    # and the 4-bit mirror is a repo it will never fetch.
+    import core.training.worker as worker_mod
+    import utils.security as security_mod
+
+    scanned: list[str] = []
+
+    class _Decision:
+        blocked = False
+
+        def response_payload(self):
+            return {}
+
+    monkeypatch.setattr(worker_mod, "_model_local_files_only", lambda config: False, raising = False)
+    monkeypatch.setattr(security_mod, "security_load_subdirs", lambda *a, **kw: ())
+    monkeypatch.setattr(security_mod, "load_scan_target", lambda t, s: (t, s))
+    monkeypatch.setattr(
+        security_mod,
+        "evaluate_file_security",
+        lambda target, **kw: (scanned.append(target), _Decision())[1],
+    )
+
+    assert (
+        worker_mod._model_load_security_error(
+            {
+                "model_name": "google/gemma-3-270m-it",
+                "load_in_4bit": False,
+                "trust_remote_code": False,
+            },
+            "google/gemma-3-270m-it",
+            None,
+        )
+        is None
+    )
+    assert scanned == ["google/gemma-3-270m-it", "unsloth/gemma-3-270m-it"]
