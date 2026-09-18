@@ -389,9 +389,11 @@ def test_a_4bit_public_copy_admits_a_gated_upstream(mapper, monkeypatch):
 @pytest.mark.parametrize(
     "model,load_in_4bit",
     [
-        # Mapped for 4-bit only, loaded 16-bit; and mapped for 16-bit only, loaded 4-bit.
+        # Mapped for 4-bit only, loaded 16-bit. The 16-bit-only-mapped-but-loaded-4-bit case
+        # used to be here and asserted a refusal; it is admitted now, because a 4-bit request
+        # falls back to the 16-bit mapping wherever bitsandbytes is unusable. See
+        # test_a_16bit_only_mirror_is_enough_to_admit_a_4bit_request.
         ("meta-llama/Meta-Llama-3-70B-Instruct", False),
-        ("google/gemma-4-26B-A4B", True),
     ],
 )
 def test_a_mirror_for_the_other_load_mode_does_not_skip_the_check(
@@ -478,6 +480,44 @@ def test_pre_detect_follows_the_sidecar_flip_like_the_load_does(
     from core.training.provenance import effective_training_load_in_4bit
 
     assert effective_training_load_in_4bit(config, "google/gemma-3-270m-it", None) is expected
+
+
+@pytest.mark.parametrize(
+    "bnb_ok,expected",
+    [(True, "unsloth/gemma-3-270m-it-unsloth-bnb-4bit"), (False, "unsloth/gemma-3-270m-it")],
+)
+def test_pre_detect_follows_the_bitsandbytes_fallback(mapper, monkeypatch, bnb_ok, expected):
+    # from_pretrained clears load_in_4bit when bitsandbytes is unusable, BEFORE it calls
+    # get_model_name, so a 4-bit request resolves the 16-bit mapping on a Mac or CPU install.
+    monkeypatch.setattr(trainer_mod, "_bitsandbytes_allows_4bit", lambda: bnb_ok)
+    assert (
+        trainer_mod._metadata_lookup_name(
+            "google/gemma-3-270m-it", "google/gemma-3-270m-it", False, None, True
+        )
+        == expected
+    )
+
+
+def test_a_16bit_only_mirror_is_enough_to_admit_a_4bit_request(mapper, monkeypatch):
+    # gemma-4-26B-A4B maps for 16-bit only. A 4-bit request on a host without bitsandbytes
+    # loads it 16-bit from that public copy, so refusing the start would refuse a model the
+    # worker can train.
+    session = _Session(_http_error(401))
+    _route(monkeypatch, gated = "manual", session = session)
+
+    assert tr._remote_untrainable_model_format("google/gemma-4-26B-A4B", None, True) is None
+    assert session.urls == []
+
+
+def test_a_4bit_only_mirror_does_not_admit_a_16bit_request(mapper, monkeypatch):
+    # The reverse does not hold: a 16-bit request never becomes 4-bit, so the check still runs.
+    session = _Session(_http_error(401))
+    _route(monkeypatch, gated = "manual", session = session)
+
+    with pytest.raises(HTTPException) as error:
+        tr._remote_untrainable_model_format("meta-llama/Meta-Llama-3-70B-Instruct", None, False)
+    assert error.value.detail["code"] == "hf_model_access_denied"
+    assert session.urls
 
 
 def test_load_model_gate_checks_the_repo_the_loader_fetches(mapper, monkeypatch):

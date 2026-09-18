@@ -562,8 +562,19 @@ def _remote_untrainable_model_format(
         if latest_tier_active_for(repo_id, account_hf_token(hf_token)):
             load_in_4bit = False
 
+    # A 4-bit request can still resolve the SIXTEEN-bit mapping: from_pretrained clears
+    # load_in_4bit when bitsandbytes is absent or its kernels are unusable, which is normal on
+    # a Mac, Intel or CPU install. The parent cannot ask, because importing unsloth to read
+    # ALLOW_BITSANDBYTES starts the GPU stack here. So a public copy for EITHER mode is enough
+    # to not refuse: this check exists to fail fast, and admitting a run the worker may well
+    # complete is the safe direction. The reverse is not true, since a 16-bit request never
+    # becomes 4-bit.
+    has_public_copy = unsloth_public_mirror(repo_id, load_in_4bit) is not None or (
+        load_in_4bit and unsloth_public_mirror(repo_id, False) is not None
+    )
+
     # Gated model metadata is public, so verify access to its files separately.
-    if getattr(info, "gated", False) and unsloth_public_mirror(repo_id, load_in_4bit) is None:
+    if getattr(info, "gated", False) and not has_public_copy:
         from urllib.parse import quote
         from huggingface_hub import constants
         from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status

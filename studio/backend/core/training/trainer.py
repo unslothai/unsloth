@@ -171,6 +171,20 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
             pass
 
 
+def _bitsandbytes_allows_4bit() -> bool:
+    """``loader.ALLOW_BITSANDBYTES``: False when bitsandbytes is absent or its native kernels
+    are unusable, which is the normal state on Studio's Mac, Intel and CPU installs and on
+    some AMD stacks. from_pretrained clears load_in_4bit on that path BEFORE it calls
+    get_model_name (unsloth/models/loader.py, the `if not ALLOW_BITSANDBYTES` block), so a
+    4-bit request resolves the SIXTEEN-bit mapping there. Read it rather than assume it, or
+    the metadata read names a repo the loader never fetches."""
+    try:
+        from unsloth.device_type import ALLOW_BITSANDBYTES
+        return bool(ALLOW_BITSANDBYTES)
+    except Exception:  # noqa: BLE001 -- unreadable means "cannot narrow", so keep the request
+        return True
+
+
 def _metadata_lookup_name(
     model_name: str,
     lookup_name: str,
@@ -181,7 +195,7 @@ def _metadata_lookup_name(
     """Return the repo whose config and tokenizer the loader will read."""
     if local_files_only or model_revision is not None or lookup_name != model_name:
         return lookup_name
-    mirror = unsloth_public_mirror(model_name, load_in_4bit)
+    mirror = unsloth_public_mirror(model_name, load_in_4bit and _bitsandbytes_allows_4bit())
     if mirror is None:
         return lookup_name
     logger.info(
