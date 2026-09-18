@@ -2800,8 +2800,7 @@ exit 1
         return $answer
     }
 
-    # Run a script in a bounded child and return its stdout, or $null on anything other than a
-    # clean exit. Shared by the path resolver above and the process-image table rung.
+    # A script's stdout from a bounded child, or $null on anything but a clean exit.
     function Invoke-StudioEarlyPythonScript {
         param(
             [Parameter(Mandatory = $true)][string]$Exe,
@@ -5760,21 +5759,14 @@ exit 0
 
     $script:StudioProcessImageTable = $null
     $script:StudioProcessImageWarned = $false
-    # PID to image path for every process this session can see, read once through ctypes in a
-    # bounded child. $null when there is no usable interpreter or the child cannot answer, which
-    # leaves the WMI rung below exactly as it was.
-    #
-    # ctypes rather than defining the type in PowerShell: the Windows call is identical, but the
-    # work happens in a child interpreter, outside the script text that is classified in full
-    # before it runs.
+    # PID -> image path for every visible process, via ctypes in one child, so no type is defined
+    # in this script. $null leaves the WMI rung exactly as it was.
     $script:StudioPythonProcessImageTable = $null
     $script:StudioPythonProcessImageProbed = $false
 
     function Get-StudioPythonProcessImageTable {
         $exe = Get-StudioEarlyPython
         if (-not $exe) { return $null }
-        # Only Windows has QueryFullProcessImageNameW. Elsewhere this rung has nothing to add over
-        # Get-Process, so it declines rather than pretending.
         if (-not ($env:OS -eq "Windows_NT")) { return $null }
         $probe = "import ctypes,sys" + [char]10 +
             "from ctypes import wintypes" + [char]10 +
@@ -5839,16 +5831,8 @@ exit 0
                 if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
             } catch {}
         }
-        # Python, before WMI, and for the reason the native rung exists at all: ctypes can call
-        # QueryFullProcessImageNameW with PROCESS_QUERY_LIMITED_INFORMATION, which is granted
-        # where the PROCESS_VM_READ that MainModule needs is refused, and it does not need WMI.
-        # Without something in this slot a host with a broken WMI repository finds NO running
-        # processes and overwrites a venv Unsloth has open, which is the failure the comment above
-        # this ladder describes.
-        #
-        # Batched, one child for the whole run, because Get-RunningStudioVenvProcesses calls this
-        # once per process on the machine and a child process each time would be far slower than
-        # the WMI rung it sits in front of.
+        # PROCESS_QUERY_LIMITED_INFORMATION is granted where MainModule's PROCESS_VM_READ is not,
+        # and needs no WMI. One child per run: this is called once per process on the machine.
         if (-not $script:StudioPythonProcessImageProbed) {
             $script:StudioPythonProcessImageProbed = $true
             $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable
@@ -5857,16 +5841,8 @@ exit 0
             $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
             return $script:StudioPythonProcessImageTable[$ProcessId]
         }
-        # Freshness, which both table rungs share and neither used to state.
-        #
-        # Each is a snapshot taken once per run and keyed only by PID, so if a process exits and
-        # Windows reuses its PID, the answer describes the process that is gone. It is recorded
-        # here rather than fixed because the fix is the thing these rungs exist to avoid: asking
-        # per process instead of once. The consumer is Get-RunningStudioVenvProcesses, which asks
-        # about PIDs it enumerated moments earlier in the same run, so the window is short.
-        #
-        # This rung deliberately matches the WMI rung below rather than inventing a second
-        # contract; an audit read the ctypes snapshot as a new staleness, and it is not one.
+        # Both table rungs are per-run PID snapshots, so a reused PID reads stale; accepted, since
+        # the caller asks about PIDs it enumerated moments earlier.
         # Queried once per run, not once per process: this is the slow rung.
         if ($null -eq $script:StudioProcessImageTable) {
             $script:StudioProcessImageTable = @{}

@@ -1,22 +1,8 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Ask Python for the process image table when the native helper cannot be built.
-#
-# Get-StudioProcessImagePath decides whether a venv is in use by a running Unsloth, and every
-# rung that fails makes the installer likelier to conclude "nothing is running" and overwrite an
-# environment that is open. The native rung needs a type defined at runtime; Get-Process needs
-# PROCESS_VM_READ, which is refused across a security boundary; the last rung needs a healthy WMI
-# repository. This adds a rung that needs none of those: ctypes calling
-# QueryFullProcessImageNameW with PROCESS_QUERY_LIMITED_INFORMATION, in one child for the whole
-# run rather than one per process.
-#
-# Strictly additive. It runs only after Get-Process has already declined, and returning $null
-# leaves the WMI rung reached exactly as before.
-#
-# The table itself is Windows-only, so on any other host the rung declines and the checks below
-# drive the parsing and the caching through a stubbed runner. The generic child-process runner is
-# cross-platform and is exercised for real.
+# The ctypes process-image rung between Get-Process and WMI. The runner is exercised for real;
+# the table is Windows-only, so its parsing and caching go through a stubbed runner.
 # Run: pwsh -NoProfile -File tests/studio/test_early_python_process_image.ps1
 
 $ErrorActionPreference = "Stop"
@@ -43,7 +29,7 @@ foreach ($name in @(
     Invoke-Expression $fn[0].Extent.Text
 }
 
-# The two rungs above the new one, forced off. This is the state it exists to improve.
+# The rungs above this one, forced off.
 function Initialize-StudioProcessImageNativeType { return $false }
 function Get-StudioNativeProcessImagePath { param([int]$ProcessId) return $null }
 function Get-Process { param($Id, $ErrorAction) throw "no such process" }
@@ -71,9 +57,7 @@ Write-Host "  interpreter: $exe"
 $out = Invoke-StudioEarlyPythonScript -Exe $exe -Script "import sys;sys.stdout.write('ok')"
 Check "the runner returns the child's stdout" ($out -eq "ok")
 
-# Arguments have to survive the 5.1 branch that builds a command line by hand, so the awkward
-# shapes are the point: a space, and a trailing backslash that would otherwise escape its own
-# closing quote.
+# The 5.1 branch quotes by hand: a space, and a trailing backslash that could escape its quote.
 $probeArgs = @("a b", "c\")
 $echo = Invoke-StudioEarlyPythonScript -Exe $exe `
     -Script "import sys;sys.stdout.write('|'.join(sys.argv[1:]))" -ScriptArgs $probeArgs
@@ -82,8 +66,6 @@ Check "arguments survive quoting, including a space and a trailing backslash" ($
 $nonZero = Invoke-StudioEarlyPythonScript -Exe $exe -Script "import sys;sys.stdout.write('x');sys.exit(4)"
 Check "a non-zero exit is refused even though the child printed" ($null -eq $nonZero)
 
-# Bites control: the same script exiting 0 does return its output, so the check above is about the
-# exit code and not about the runner simply never answering.
 $zero = Invoke-StudioEarlyPythonScript -Exe $exe -Script "import sys;sys.stdout.write('x')"
 Check "control: the identical script exiting 0 does answer" ($zero -eq "x")
 
@@ -129,11 +111,7 @@ try {
     Check "a child that answers nothing yields null, so the WMI rung is still reached" (
         $null -eq (Get-StudioPythonProcessImageTable))
 
-    # The caching contract. Get-RunningStudioVenvProcesses calls Get-StudioProcessImagePath once
-    # per process on the machine, so a rung that re-probes on every miss would spawn a child per
-    # process: slower than the WMI rung it is meant to sit in front of. A $null table is the case
-    # that matters, since "no table yet" and "asked, got nothing" look identical without a
-    # separate probed flag.
+    # A $null table must not re-probe: "not asked" and "asked, got nothing" need the probed flag.
     Reset-RungState
     $script:RunnerCalls = 0
     $script:RunnerOutput = ""
@@ -151,8 +129,6 @@ try {
         $first -eq "C:\d\python.exe" -and $second -eq "C:\d\python.exe")
     Check "an answering probe is also cached" ($script:RunnerCalls -eq 1)
 
-    # Bites control: a pid the table does not carry must fall through rather than be invented.
-    # Here the rung below throws, so falling through has to end at null.
     Reset-RungState
     $script:RunnerOutput = "77|C:\d\python.exe"
     Check "control: an unknown pid falls through to the rung below" (
@@ -175,18 +151,14 @@ $probeFn = $ast.FindAll({ param($n)
 }, $true)[0]
 $probeText = $probeFn.Extent.Text
 
-# ctypes defaults every return value to a C int. A HANDLE truncated to a signed 32-bit int is
-# sign-extended back on the way into CloseHandle, so the handle closed is not the handle opened
-# and the child leaks one per process it inspects. Declaring the signature is what prevents it.
+# ctypes defaults restype to int, which truncates a HANDLE and closes the wrong one.
 Check "the probe declares OpenProcess's return type" (
     $probeText -match "OpenProcess\.restype\s*=\s*wintypes\.HANDLE")
 Check "the probe declares CloseHandle's argument type" (
     $probeText -match "CloseHandle\.argtypes")
-# PROCESS_QUERY_LIMITED_INFORMATION. PROCESS_QUERY_INFORMATION (0x400) is the right that a
-# protected or cross-session process refuses, which is the whole reason for this rung.
+# 0x400 is refused by protected and cross-session processes; 0x1000 is not.
 Check "the probe asks for the limited-information right only" ($probeText -match "OpenProcess\(0x1000,")
-# EnumProcesses reports the bytes it used. Equal to the buffer size means it may have run out, so
-# only a strictly smaller figure proves the enumeration was complete.
+# EnumProcesses filling the buffer exactly may mean truncation; only a smaller count is complete.
 Check "the probe grows its buffer until the enumeration is provably complete" (
     $probeText -match "b\.value\s*<\s*ctypes\.sizeof\(a\)")
 
