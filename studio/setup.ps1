@@ -195,10 +195,8 @@ function Exit-SetupFailure {
 function Get-SetupHostInterpreterInVenv {
     param([Parameter(Mandatory = $true)][string]$VenvDir)
     $root = $null
-    # DirectorySeparatorChar, not a literal '\': .NET on Linux and macOS returns '/'-separated
-    # paths from GetFullPath and treats '\' as an ordinary filename character, so a hardcoded
-    # backslash builds a prefix no candidate can match and the helper answers $null for every
-    # input. Only Windows runs this script for real, but the shipped pwsh tests run everywhere.
+    # Not a literal '\': off Windows GetFullPath returns '/' and '\' is an ordinary filename
+    # character, so a hardcoded one builds a prefix nothing matches. The pwsh tests run there.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     try { $root = [System.IO.Path]::GetFullPath($VenvDir).TrimEnd('\', '/') + $sep } catch { return $null }
     $inside = {
@@ -6173,13 +6171,10 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # both start from that interpreter (#11247).
     # Detected rather than assumed: setup.ps1 run by hand from a checkout has no interpreter inside
     # the venv and keeps the full rebuild.
-    # LAST of the direct-update escapes, and that placement is load-bearing. This block's condition
-    # is true for every stale direct update -- the desktop always runs setup from inside the venv --
-    # so ahead of the narrower escapes it would consume $shouldRebuild before they were tested and
-    # they could never fire. The nvidia-smi guard above is the one that matters: it ALSO publishes
-    # $script:PreservedInstallerTorchTag, and without it the index selection rescans, sees no
-    # NVIDIA, and pairs the $PinChangedForceReinstall set here with the /cpu arm -- force-installing
-    # a CPU wheel over the working cu* venv that guard exists to protect (#9857).
+    # LAST of the direct-update escapes: this condition holds for EVERY stale direct update, so
+    # ahead of the narrower ones it consumes $shouldRebuild and they never fire. Ahead of the
+    # nvidia-smi guard specifically, $script:PreservedInstallerTorchTag goes unset and pairs with
+    # the $PinChangedForceReinstall below to force a CPU wheel over a working cu* venv (#9857).
     if ($shouldRebuild -and -not $InstallerManagedSetup) {
         $_hostPy = Get-SetupHostInterpreterInVenv -VenvDir $VenvDir
         if ($_hostPy) {
@@ -6190,24 +6185,17 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         }
     }
 
-    # Sweep leftovers from an earlier move-aside whose delete a lock cut short. Outside the rebuild
-    # branch on purpose: an install that renames a venv aside, fails to delete the copy, and
-    # thereafter always takes an in-place route would never reach a sweep that lived inside the
-    # branch, and a multi-GB venv would sit there for good.
-    #
-    # Validated the way install.ps1 validates its own rollback sweep
-    # (Test-StudioVenvRollbackMustBePreserved), and for the same reasons. "$_venvLeaf.stale-*" is a
-    # wildcard, not a proof of ownership: a user's own unsloth_studio.stale-backup would match it,
-    # and this sweep runs ahead of the custom-root guard below, so that guard cannot cover it.
-    # Three refusals: anything outside the exact generated timestamp-PID shape, a reparse point,
-    # and a copy whose owning process is still alive -- that last one is a concurrent setup's
-    # rescue copy, not our litter.
+    # Outside the rebuild branch: an install that moved a venv aside, failed to delete the copy and
+    # thereafter only repairs in place would never reach a sweep that lived inside it.
+    # Validated like install.ps1's rollback sweep (Test-StudioVenvRollbackMustBePreserved) and for
+    # its reasons: "stale-*" is a wildcard, not proof of ownership, a user's own
+    # unsloth_studio.stale-backup matches it, and the custom-root guard below runs too late to
+    # help. A live owner means a concurrent setup's rescue copy, not our litter.
     $_venvParent = Split-Path -Parent $VenvDir
     $_venvLeaf = Split-Path -Leaf $VenvDir
     $_staleShape = '^' + [regex]::Escape($_venvLeaf) + '\.stale-[0-9]{14}-([0-9]+)$'
-    # [regex]::Match rather than -notmatch plus $Matches: which of -match and -notmatch fills
-    # $Matches, and on which result, is exactly the kind of thing that differs between Windows
-    # PowerShell 5.1 and 7.x, and this reads a capture group to decide what to delete.
+    # [regex]::Match, not $Matches: which operator fills it, and on which result, moves between
+    # Windows PowerShell 5.1 and 7.x, and a capture group decides what gets deleted here.
     foreach ($_old in @(Get-ChildItem -LiteralPath $_venvParent -Directory -Force -ErrorAction SilentlyContinue)) {
         $_staleMatch = [regex]::Match($_old.Name, $_staleShape)
         if (-not $_staleMatch.Success) { continue }
@@ -6240,9 +6228,8 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # Moved aside, then deleted: a rename takes the whole tree or fails and leaves it intact,
         # where Remove-Item -Recurse deletes up to the first locked file and leaves an environment
         # that can neither start nor update itself. The moved copy goes best-effort; whatever a
-        # lock keeps behind is swept at the top of the next run.
-        # The pid joins the timestamp so two rebuilds inside the same second cannot collide on the
-        # destination and fail the rename on a name that is merely already taken.
+        # lock keeps behind is swept at the top of the next run. The pid joins the timestamp so two
+        # rebuilds in one second cannot collide on a destination and fail the rename over a name.
         $_staleLeaf = "$_venvLeaf.stale-$(Get-Date -Format 'yyyyMMddHHmmss')-$PID"
         try {
             Rename-Item -LiteralPath $VenvDir -NewName $_staleLeaf -ErrorAction Stop

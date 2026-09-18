@@ -303,15 +303,10 @@ def test_setup_ps1_direct_update_from_inside_the_venv_repairs_in_place():
 
 
 def test_setup_ps1_direct_update_in_place_route_is_the_last_escape():
-    """The in-place route's condition is true for EVERY stale direct update -- the desktop always
-    runs setup from inside the venv -- so it has to be the last escape tested or it consumes
-    $shouldRebuild before the narrower ones are reached and they can never fire.
-
-    The nvidia-smi guard is the one that makes this load-bearing rather than tidy. It also
-    publishes $script:PreservedInstallerTorchTag, which is what keeps the index selection on the
-    cu* arm. Ordered ahead of it, the in-place route leaves that tag unset while setting
-    $script:PinChangedForceReinstall, and the pair force-installs a CPU wheel over the working
-    cu* venv the guard exists to protect (#9857)."""
+    """The in-place route holds for EVERY stale direct update, so it must be tested last or it
+    consumes $shouldRebuild before the narrower escapes run. Ahead of the nvidia-smi guard it also
+    leaves $script:PreservedInstallerTorchTag unset, which force-installs a CPU wheel over the
+    working cu* venv that guard protects (#9857)."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
     in_place = src.index(
         "if ($shouldRebuild -and -not $InstallerManagedSetup) {\n"
@@ -341,8 +336,7 @@ def test_setup_ps1_stale_sweep_runs_outside_the_rebuild_branch():
     sweep = src.index("$_staleShape = ")
     rebuild = src.index("Stale venv detected ($reason) -- rebuilding")
     assert sweep < rebuild, "the stale-venv sweep must run whether or not this run rebuilds"
-    # Running ahead of the custom-root guard, the sweep cannot lean on it: it has to establish on
-    # its own that a directory is our litter, the way install.ps1's rollback sweep does.
+    # Ahead of the custom-root guard, so it must establish ownership itself.
     block = src[sweep : src.index("if ($shouldRebuild) {", sweep)]
     assert "ReparsePoint" in block, "the sweep must refuse reparse points"
     assert "Get-Process -Id $_ownerPid" in block, "the sweep must spare a live owner's rescue copy"

@@ -3561,15 +3561,10 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
-    # Named outright, so setup.ps1 need not walk the process tree. On the path that matters this
-    # is the managed venv's own python.exe -- the desktop spawns the managed CLI -- and a
-    # stale-venv rebuild that tried to delete it emptied Lib\ and stopped at the locked exe, so
-    # setup repairs such an environment in place instead.
-    # It is a HINT, not a promise: a pip-installed CLI, a repo checkout or a staged run puts an
-    # interpreter here that lives nowhere near $VenvDir. setup.ps1 decides what it means by
-    # testing containment itself (Get-SetupHostInterpreterInVenv), and a value outside the venv
-    # reads as "not inside", which keeps the pre-existing rebuild. Nothing downstream should treat
-    # the presence of this variable as proof that setup is running from the venv.
+    # Saves setup.ps1 the process walk. A HINT, not a promise: only the desktop spawn guarantees
+    # the managed venv's python, while a pip install, a checkout or a staged run puts an
+    # interpreter here that is nowhere near $VenvDir. Get-SetupHostInterpreterInVenv tests
+    # containment itself, so presence of this name is never proof setup runs from the venv.
     env = {**(env or os.environ), "UNSLOTH_SETUP_HOST_PYTHON": sys.executable}
 
     if platform.system() == "Windows":
