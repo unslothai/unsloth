@@ -1606,25 +1606,36 @@ IMAGE_BUTTON_DIAGNOSTIC = """() => {
 }"""
 
 
-#: The composer's attachment container, and the per-attachment element inside it. Both are rendered
-#: by `studio/frontend/src/components/assistant-ui/attachment.tsx`: `ComposerAttachments` is the
-#: container, and every attachment, image tile or pasted-text chip, goes through
-#: `AttachmentPrimitive.Root` as `.aui-attachment-root`. The container scopes the count so the
-#: attachments already sent on earlier messages are not counted as composer state.
-#: `selftest/test_studiobench_composer_attachment_selector.py` pins both names against that file,
-#: because a selector that matches nothing counts zero and reads exactly like an upload that never
-#: happened.
-_COMPOSER_ATTACHMENTS_CONTAINER = ".aui-composer-attachments"
-_COMPOSER_ATTACHMENT_TILE = ".aui-attachment-root"
+#: THERE ARE TWO COMPOSERS AND THEY SHARE NO MARKUP, so counting one of them is counting none on
+#: the screen that uses the other. The chat thread renders assistant-ui's composer, where every
+#: attachment goes through `AttachmentPrimitive.Root` as `.aui-attachment-root` inside
+#: `.aui-composer-attachments` (studio/frontend/src/components/assistant-ui/attachment.tsx). The
+#: compare screen renders `SharedComposer`, which keeps its own pending-image and pending-audio
+#: markup (studio/frontend/src/features/chat/shared-composer.tsx) and carries the assistant-ui
+#: classes nowhere; its elements are tagged `data-composer-attachment` inside
+#: `[data-composer-attachments]` so they have a handle that is not a utility class.
+#:
+#: Both containers are mounted whenever their composer is, and hidden while empty, so a missing
+#: container means the markup moved rather than that nothing is attached.
+#: `selftest/test_studiobench_composer_attachment_selector.py` pins every name below against the
+#: file that renders it, because a selector that matches nothing counts zero and reads exactly like
+#: an upload that never happened.
+_COMPOSER_ATTACHMENT_CONTAINERS = (".aui-composer-attachments", "[data-composer-attachments]")
+_COMPOSER_ATTACHMENT_TILES = (".aui-attachment-root", "[data-composer-attachment]")
+
+_COMPOSER_ATTACHMENT_SELECTOR = ", ".join(
+    f"{container} {tile}"
+    for container, tile in zip(_COMPOSER_ATTACHMENT_CONTAINERS, _COMPOSER_ATTACHMENT_TILES)
+)
+
+_COMPOSER_ATTACHMENT_CONTAINER_SELECTOR = ", ".join(_COMPOSER_ATTACHMENT_CONTAINERS)
 
 _COUNT_COMPOSER_ATTACHMENTS_JS = (
-    "() => document.querySelectorAll('"
-    f"{_COMPOSER_ATTACHMENTS_CONTAINER} {_COMPOSER_ATTACHMENT_TILE}"
-    "').length"
+    f"() => document.querySelectorAll('{_COMPOSER_ATTACHMENT_SELECTOR}').length"
 )
 
 _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS = (
-    f"() => document.querySelectorAll('{_COMPOSER_ATTACHMENTS_CONTAINER}').length"
+    f"() => document.querySelectorAll('{_COMPOSER_ATTACHMENT_CONTAINER_SELECTOR}').length"
 )
 
 
@@ -1697,8 +1708,8 @@ def image_upload(ctx: ActionContext) -> ActionResult:
         containers = _ev(ctx, _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS)
         if not containers:
             reason = (
-                "no attachment appeared, and the composer's attachment container "
-                f"({_COMPOSER_ATTACHMENTS_CONTAINER}) is not in the page either, so this run "
+                "no attachment appeared, and neither composer's attachment container "
+                f"({_COMPOSER_ATTACHMENT_CONTAINER_SELECTOR}) is in the page either, so this run "
                 "cannot tell a failed upload from a selector that no longer matches the frontend"
             )
         else:
