@@ -95,10 +95,7 @@ def _valid_state_file(path: Path, require_tensor: bool = True) -> bool:
 
 
 def session_eta_seconds(
-    elapsed_seconds: Optional[float],
-    step: int,
-    start_step: int,
-    total_steps: int,
+    elapsed_seconds: Optional[float], step: int, start_step: int, total_steps: int
 ) -> Optional[float]:
     steps_done = step - start_step
     steps_remaining = total_steps - step

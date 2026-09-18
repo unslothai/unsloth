@@ -158,7 +158,9 @@ def test_stream_carries_the_session_start_step(monkeypatch):
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
     response = asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester"))
-    assert {p["session_start_step"] for p in _progress_payloads(_collect_events(response))} == {None}
+    assert {p["session_start_step"] for p in _progress_payloads(_collect_events(response))} == {
+        None
+    }
 
     backend = _FakeBackend(active_polls = 2)
     backend.trainer.training_progress.session_start_step = 3
