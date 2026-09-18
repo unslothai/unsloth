@@ -23,13 +23,11 @@ from __future__ import annotations
 
 import builtins
 import getpass
-import grp
 import inspect
 import io
 import json
 import os
 import platform
-import pwd
 import re
 import shlex
 import subprocess
@@ -37,10 +35,46 @@ import sys
 import types
 from pathlib import Path
 
+
+# grp and pwd are POSIX-only and absent on Windows, and importing them at module level took
+# the ENTIRE file down at collection there: ModuleNotFoundError before a single test ran,
+# so the file reported one collection error instead of its own verdict. The production
+# module imports both INSIDE the functions that need them for the same reason.
+try:
+    import grp
+    import pwd
+except ModuleNotFoundError:  # Windows
+    grp = None
+    pwd = None
+
+
+def _running_as_root() -> bool:
+    """Whether this account is root, answered on a platform that has no such idea.
+
+    os.geteuid does not exist on Windows, and these two calls sit in skipif DECORATORS,
+    which are evaluated at import: an AttributeError there is another whole-file collection
+    error rather than a skip.
+    """
+    return getattr(os, "geteuid", lambda: -1)() == 0
+
+
 import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
 from utils.hardware import amd
+
+# Windows has no /dev, no POSIX groups and no device-node modes, so every subject in this
+# file is absent there rather than merely untestable: amd_nodes_closed_to_this_user answers
+# [] and amd_node_permission_hint answers None on any non-Linux host, which the AMD CI run
+# on a real Windows box confirmed against this very change. macOS is NOT skipped: it has
+# both modules, and the cases that fake a Linux host still exercise the real logic there.
+pytestmark = pytest.mark.skipif(
+    platform.system() == "Windows",
+    reason = (
+        "POSIX-only subject: no /dev device nodes, no grp/pwd, and the probe under test "
+        "returns [] on Windows by construction"
+    ),
+)
 from utils.hardware import hardware
 
 
@@ -4174,7 +4208,7 @@ def _install_sh_closed_nodes(nodes, *, vendors, topology: bool) -> "list[str]":
 
 
 # fmt: off
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root can open a mode 000 node, nothing is shut")
+@pytest.mark.skipif(_running_as_root(), reason = "root can open a mode 000 node, nothing is shut")
 @pytest.mark.parametrize("case", [
     pytest.param((None, True, True), id = "a_hidden_vendor_over_an_amd_topology"),
     pytest.param((None, False, False), id = "a_hidden_vendor_over_no_amd_topology"),
@@ -4945,7 +4979,7 @@ def _topology_state(monkeypatch, tmp_path, entries: "dict[str, str | None]"):
 
 
 # fmt: off
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root opens a 0000 file, so nothing is unreadable")
+@pytest.mark.skipif(_running_as_root(), reason = "root opens a 0000 file, so nothing is unreadable")
 @pytest.mark.parametrize("case", [
     pytest.param(({"0": "cpu_cores_count 16\nsimd_count 0\nvendor_id 0\n", "1": None}, None),
                  id = "a_gpu_node_that_will_not_open"),
