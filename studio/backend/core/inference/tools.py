@@ -16429,9 +16429,20 @@ def _check_signal_escape_patterns(code: str):
     _attr_stores: dict[tuple[int, str, str], list] = {}
     _model_state: dict[str, bool] = {}
 
-    def _receiver_key(name: str, scope: ast.AST | None) -> str:
+    def _dotted(expr: ast.AST) -> "str | None":
+        """`self.session` for a plain name or attribute chain, else None."""
+        parts: list[str] = []
+        while isinstance(expr, ast.Attribute):
+            parts.insert(0, expr.attr)
+            expr = expr.value
+        if not isinstance(expr, ast.Name):
+            return None
+        return ".".join([expr.id, *parts])
+
+    def _receiver_key(path: str, scope: ast.AST | None) -> str:
         """`self` is a convention, so a method's first parameter is the instance, whatever it
-        is called."""
+        is called. Only the leading name is normalized; the rest of the path is literal."""
+        name, _, rest = path.partition(".")
         current = scope
         while current is not None and not isinstance(current, _FUNCTION_NODES):
             current = _scope_parent.get(id(current))
@@ -16440,8 +16451,8 @@ def _check_signal_escape_patterns(code: str):
         ):
             positional = [*current.args.posonlyargs, *current.args.args]
             if positional and positional[0].arg == name:
-                return ""
-        return name
+                return f".{rest}" if rest else ""
+        return path
 
     def _enclosing_class(scope: ast.AST | None) -> ast.AST | None:
         while scope is not None and not isinstance(scope, ast.ClassDef):
@@ -16543,15 +16554,12 @@ def _check_signal_escape_patterns(code: str):
             _record_store(target.value, value, scope, handled, certain = False, position = position)
         elif isinstance(target, ast.Attribute):
             handled.add(id(target))
-            if isinstance(target.value, ast.Name):
+            path = _dotted(target.value)
+            if path is not None:
                 # Key on the class so sibling methods share `self.x`, else on the scope so two
                 # functions with a same-named local receiver stay apart.
                 owner = _enclosing_class(scope) or scope
-                receiver = (
-                    _receiver_key(target.value.id, scope)
-                    if isinstance(owner, ast.ClassDef)
-                    else target.value.id
-                )
+                receiver = _receiver_key(path, scope) if isinstance(owner, ast.ClassDef) else path
                 _attr_stores.setdefault((id(owner), receiver, target.attr), []).append(
                     (
                         value,
@@ -16649,17 +16657,18 @@ def _check_signal_escape_patterns(code: str):
                 and node.func.attr in ("update", "setdefault")
                 and isinstance(node.func.value, ast.Attribute)
                 and node.func.value.attr in _PROXY_KEYWORDS
-                and node.args
+                and (node.args or node.keywords)
             ):
                 # `s.proxies.update({...})` likewise adds to the mapping.
-                _record_store(
-                    node.func.value,
-                    node.args[-1],
-                    scope,
-                    handled,
-                    certain = False,
-                    position = _end_position(node),
-                )
+                for value in [*node.args[-1:], *(kw.value for kw in node.keywords or [])]:
+                    _record_store(
+                        node.func.value,
+                        value,
+                        scope,
+                        handled,
+                        certain = False,
+                        position = _end_position(node),
+                    )
             elif isinstance(node, (ast.With, ast.AsyncWith)):
                 for item in node.items:
                     if item.optional_vars is not None:
@@ -16853,7 +16862,10 @@ def _check_signal_escape_patterns(code: str):
         return None
 
     def _attr_values(expr: ast.Attribute) -> "list | None":
-        return _attr_values_for(_node_scope.get(id(expr), tree), expr.value.id, expr.attr, expr)
+        path = _dotted(expr.value)
+        if path is None:
+            return None
+        return _attr_values_for(_node_scope.get(id(expr), tree), path, expr.attr, expr)
 
     def _attr_values_for(
         scope: ast.AST, receiver_id: str, attr: str, read: ast.AST
@@ -16879,7 +16891,8 @@ def _check_signal_escape_patterns(code: str):
             stores = _attr_stores.get((id(current), receiver_id, attr))
             if stores is not None:
                 # Rebinding the receiver throws away what was set on the previous object.
-                bound_at = _latest_binding(receiver_id, scope, read)
+                # Only a bare name can be rebound out from under its attributes.
+                bound_at = None if "." in receiver_id else _latest_binding(receiver_id, scope, read)
                 if bound_at is not None:
                     stores = [store for store in stores if store[1] >= bound_at]
                 return _reaching(stores, read, current)
@@ -17282,15 +17295,20 @@ def _check_signal_escape_patterns(code: str):
                         if kw.arg in _PROXY_KEYWORDS
                     ]
                     # `s.proxies = {...}` before the call sends there just the same.
-                    if isinstance(node.func, ast.Attribute) and isinstance(
-                        node.func.value, ast.Name
-                    ):
+                    receiver = (
+                        _dotted(node.func.value) if isinstance(node.func, ast.Attribute) else None
+                    )
+                    if receiver is not None:
                         scope = _node_scope.get(id(node), tree)
+                        path = (
+                            _receiver_key(receiver, scope)
+                            if _enclosing_class(scope) is not None
+                            else receiver
+                        )
                         targets += [
                             (True, value, "url")
                             for attr in _PROXY_KEYWORDS
-                            for value in _attr_values_for(scope, node.func.value.id, attr, node)
-                            or []
+                            for value in _attr_values_for(scope, path, attr, node) or []
                             if isinstance(value, ast.AST)
                         ]
                     self._check_target(node, targets, connects = True)

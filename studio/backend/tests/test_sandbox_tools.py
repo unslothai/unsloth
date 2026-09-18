@@ -449,6 +449,19 @@ class TestNetworkTargetResolution:
                 f's.proxies["https"] = "http://{_H}:8080"\ns.get("https://pypi.org/")',
                 id = "proxy_mapping_subscript",
             ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f's.proxies.update(http="http://{_H}:8080")\ns.get("http://pypi.org/")',
+                id = "proxy_mapping_updated_by_keyword",
+            ),
+            # A session held on an instance carries its proxy the same way.
+            pytest.param(
+                "import requests\nclass A:\n    def __init__(self):\n"
+                "        self.session = requests.Session()\n"
+                f'        self.session.proxies = {{"https": "http://{_H}:8080"}}\n'
+                '    def go(self):\n        self.session.get("https://pypi.org/")',
+                id = "proxy_on_a_session_held_on_self",
+            ),
             # A URL factory reached through the module that defines it.
             pytest.param(
                 f"import urllib3\nurllib3.connectionpool.connection_from_url('http://{_H}/')",
