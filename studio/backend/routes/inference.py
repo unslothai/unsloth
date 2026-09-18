@@ -37453,13 +37453,8 @@ async def diffusion_download_plan(
         training = fam is not None and await asyncio.to_thread(_training_is_active)
         if fam is not None:
             gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
-        # Plan for the engine /images/load will pick, not diffusers unconditionally: a GGUF on a
-        # GPU-less host routes to native sd.cpp, which reads different files. predict_engine applies
-        # the policy without activating anything. Given the ordinal resolved above, because the
-        # accelerator failure records are card-scoped and a host-wide answer here stages diffusers
-        # files for a load that goes native on a card that works. Resolving a SECOND time instead
-        # would rank free VRAM ahead of the training check and could name a different card than the
-        # plan and the load then use.
+        # Plan for the engine /images/load will pick: a GGUF on a GPU-less host routes to native
+        # sd.cpp, which reads different files. Card-scoped, since the failure records are per card.
         if (
             fam is not None
             and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
@@ -37671,10 +37666,7 @@ async def load_diffusion_model_gated(
         # afterwards destroys the model this preserves. Fails open on offline/transient, and runs
         # only where something is at stake -- a GPU handoff, or an engine switch.
         try:
-            # The ordinal resolved above, for the same reason the activation below takes it: the
-            # records are per CARD, so a host-wide prediction reads one card's failure as every
-            # card's. It would then run the wrong engine's preflight, and could discover that only
-            # after _activate had already unloaded the resident model.
+            # Card-scoped like the activation below, or the wrong engine's preflight runs.
             pending_name = (
                 predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal)
                 if fam is not None
@@ -37738,10 +37730,7 @@ async def load_diffusion_model_gated(
                 fam,
                 hf_token = request.hf_token,
                 model_kind = kind,
-                # A recorded failure is about one CARD; without this, one bad card diverts them
-                # all. The ordinal ALREADY resolved above, not request.gpu_ids: resolving twice
-                # re-ranks a multi-card pick by free VRAM, which the staging below moves, so
-                # selection could answer for a different card from the one this load runs on.
+                # The ordinal resolved above: re-resolving re-ranks by free VRAM and can pick another card.
                 gpu_ordinal = gpu_ordinal,
             )
         )

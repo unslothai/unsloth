@@ -195,12 +195,8 @@ def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
 
 
 def _selected_card(gpu_ordinal) -> Optional[str]:
-    """The card this request picked, or ``None``, meaning every record applies. A recorded failure
-    is about a CARD: one ROCm bundle can carry one host card's gfx target and not another's.
-
-    Takes the ordinal the caller already RESOLVED, never the id list. Ranking by free VRAM is what
-    turns several ids into one ordinal, and free VRAM moves the moment a checkpoint lands, so
-    re-deriving it here could name a different card from the one the load then runs on."""
+    """The card at an already RESOLVED ordinal, or ``None``, meaning every record applies. Never
+    re-derived from the id list: free-VRAM ranking can name a different card the second time."""
     if gpu_ordinal is None:
         return None
     try:
@@ -244,7 +240,7 @@ def select_and_activate_engine(
     binary = None
     server_binary = None
     if policy_eligible and fam_ok:
-        # Once, per card, so server and CLI cannot disagree: a card whose ROCm build will not start (#9278, #8814) must not divert the others.
+        # Once, so server and CLI cannot disagree.
         selected_card = _selected_card(gpu_ordinal)
         install_accelerator = preferred_accelerator(
             _install_accelerator_for(backend), selected_card
@@ -252,10 +248,8 @@ def select_and_activate_engine(
         # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
         # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
         # load gets the GPU server.
-        # An ensure does not promise the accelerator it was given: offline it hands back the
-        # condemned ROCm build, which passes the probes below and dies mid-render. Only a SUBSTITUTE
-        # is refused -- with the fallback off, ROCm is the request again. A merely DEFERRED upgrade
-        # keeps the native selection for the teardown to land, else the reload goes to diffusers.
+        # Offline an ensure hands back the condemned ROCm build, so a substitute is refused; a
+        # DEFERRED upgrade keeps native for the teardown to land.
         upgrade_is_deferred = _managed_tree_in_use() and _install_allowed()
 
         def _accept(candidate):
@@ -274,7 +268,7 @@ def select_and_activate_engine(
             logger.warning(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
-            # HELD, not recorded. See the single recorder below.
+            # Held for the single recorder below.
             unlaunchable_server = server_binary
             server_binary = None
         # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
@@ -292,16 +286,9 @@ def select_and_activate_engine(
             unlaunchable_cli = binary
             binary = None
         if binary is None and server_binary is None and (unlaunchable_cli or unlaunchable_server):
-            # ONE recorder, and only once NEITHER executable can run. sd-server and sd-cli are two
-            # files out of a single install, so either one failing alone says nothing about the
-            # accelerator: the other may run it perfectly, the load succeeds, and a strike for it is
-            # a strike on a working host. Two of those reach the diversion bar and replace a healthy
-            # ROCm bundle with Vulkan for good. Recording each separately had the same effect from
-            # the other direction, spending both strikes on one install event.
-            #
-            # Counted here rather than in the load because the router runs first, so a build it
-            # rejects never reaches the recorders there. Against the CARD being selected, since a
-            # card-less note is read as host-wide and would move every other card to Vulkan too.
+            # One strike per bundle, only when NEITHER executable runs: one failing alone says
+            # nothing about the accelerator, and two strikes from one install event would divert.
+            # Here, not in the load, because a build the router rejects never reaches the load.
             note_unlaunchable_accelerator_build(
                 unlaunchable_cli or unlaunchable_server, card = selected_card
             )
@@ -332,12 +319,7 @@ def native_binary_installed(*, gpu_ordinal: Optional[int] = None) -> bool:
     counts an absent binary as available whenever installing one is allowed, and a caller that
     must know whether selection could still fall back to diffusers needs the unassumed answer.
 
-    Must filter exactly as selection does: this prediction picks which planner stages the download,
-    so disagreeing leaves an offline load on diffusers with none of its assets staged. That includes
-    the CARD, because the failure records are card-scoped: with no ordinal a per-card record reads as
-    host-wide here while selection, which is given the ordinal, correctly clears the working card, and
-    the plan then stages the diffusers files the load never opens. ``gpu_ordinal`` None keeps the
-    host-wide reading, which is right for a caller that has no card in hand.
+    Filters exactly as selection does, card included, or the plan stages the wrong engine's files.
     """
     selected_card = _selected_card(gpu_ordinal)
     install_accelerator = preferred_accelerator(

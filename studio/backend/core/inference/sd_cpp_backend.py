@@ -459,10 +459,7 @@ def _mask_entries(value: Optional[str]) -> "Optional[list[int]]":
 def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optional[int], bool]":
     """``(HIP device id, a mask was set)``; ``None`` where the masks cannot be composed, so the caller declines the tie-break rather than guessing."""
     source = os.environ if env is None else env
-    # ROCR_VISIBLE_DEVICES is Linux-only: Windows HIP has no ROCr layer, so a stray value there masks
-    # nothing and must not be read as the ordinal->physical mapping. Reading it would turn a leftover
-    # ROCR_VISIBLE_DEVICES=1 into "torch ordinal 0 is card 1" and pin the failure, and the Vulkan
-    # fallback with it, to a card that never failed. Mirrors LlamaCppBackend._active_gpu_visibility_mask.
+    # Windows HIP has no ROCr layer, so a leftover ROCR_VISIBLE_DEVICES masks nothing there.
     rocr = None if sys.platform == "win32" else source.get(_ROCR_MASK_VAR)
     hip = next((source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None), None)
     opaque = source.get(_OPAQUE_MASK_VAR)
@@ -579,10 +576,7 @@ def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional
     if not masked:
         if not name:
             return None, None
-        # Unmasked does NOT mean the ordinal is the inventory position. It is still a HIP device id,
-        # and HIP orders by node id while amd-smi (and, by assumption, RADV) walks the inventory rows,
-        # so counting same-name cards in torch order names the other card of a matched pair. Ask the
-        # same mapping the masked branch does, and only count here when it cannot answer.
+        # Still a HIP id, not an inventory row: map it, and count in torch order only without a mapping.
         physical_name, position = _physical_position_of(physical_index)
         if position is not None:
             return name or physical_name, position
@@ -636,7 +630,6 @@ def sd_cpp_device_named(
         matches, same_model = exact, True
     else:
         matches = [name for name, _described in loose]
-        # `position` counted the SELECTED name only, so a list mixing a 7600 with a 7600 XT would be pinned by a count missing the other model.
         same_model = len({described for _name, described in loose}) == 1
     if matches and position is not None and not (same_model and 0 <= position < len(matches)):
         # UNRESOLVED even for a single answer: nothing says that singleton is the card at that position.
@@ -815,32 +808,15 @@ def _note_failed_upgrade(accelerator: str) -> None:
         pass
 
 
-# The rung between "the ROCm build does not work here" and "give up on the GPU".
-#
-# NOT because the build lacks kernels for the card. That was the original reading and it is wrong:
-# the upstream archive's libggml-hip.so carries 27 gfx targets (gfx900-gfx950, gfx1010-gfx1036,
-# gfx1100-gfx1103, gfx1150-gfx1153, gfx1200/1201) as real offload-bundle code objects, so both
-# reported cards, gfx1201 (#9278) and gfx1100 (#8814), ARE covered. Verified twice: by reading the
-# shipped archive, and on the gfx1151 CI which re-derived 3591 bundle entries from its own download.
-#
-# The real dependency is PACKAGING. The archive bundles NO HIP or BLAS runtime at all; libggml-hip.so
-# declares NEEDED libhipblas.so.3, librocblas.so.5, libamdhip64.so.7 with RUNPATH $ORIGIN, and takes
-# every one of them from the HOST. rocBLAS's per-arch Tensile kernels come from the host too. So the
-# population that cannot run this build is not two exotic cards, it is any AMD machine whose ROCm
-# userspace is absent or a different major version, and the asset name says so: rocm-7.14.0.
-#
-# The two hosts fail in shapes that share no text, which is why detection cannot be markers alone:
-#   Linux, no ROCm     sd-cli exits 0 and enumerates CPU ONLY. ggml dlopens its backends, the HIP one
-#                      fails with "libhipblas.so.3: cannot open shared object file", and sd.cpp
-#                      degrades silently. Caught by the device probe, never by output text.
-#   Windows, no DLLs   exit 0xC0000135 STATUS_DLL_NOT_FOUND, zero bytes written. Caught by exit
-#                      status, never by output text, because there is no output.
-# One-way and one-deep; CUDA needs no rung.
+# The rung between "the ROCm build does not run here" and CPU. The upstream ROCm archive carries
+# kernels for 27 gfx targets but bundles no HIP/BLAS runtime (NEEDED libhipblas.so.3,
+# librocblas.so.5, libamdhip64.so.7 from the HOST), so any host without a matching ROCm userspace
+# fails it. Linux: exits 0 listing CPU only (caught by the device probe). Windows: exits 0xC0000135
+# with no output (caught by exit status). One-way and one-deep; CUDA needs no rung.
 _ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan"}
 
 
-# The sonames the upstream ROCm archive imports and does not ship. Checked on the HOST, so a machine
-# that can never run that build is diverted BEFORE paying 244 MB to download and probe it.
+# The sonames the upstream ROCm archive imports and does not ship.
 _ROCM_RUNTIME_SONAMES: tuple[str, ...] = (
     "libamdhip64.so.7",
     "libhipblas.so.3",
@@ -851,16 +827,9 @@ _ROCM_RUNTIME_SONAMES: tuple[str, ...] = (
 def rocm_runtime_resolvable() -> Optional[bool]:
     """Whether this host can load the ROCm runtime the prebuilt needs. None when it cannot be asked.
 
-    ``ctypes`` runs the real loader, so this answers the question the sd-cli process will actually
-    face, including RUNPATH and ldconfig. An ldconfig CACHE lookup is NOT equivalent and must not be
-    substituted: on the gfx1151 runner ``ldconfig -p`` omitted hipblas and rocblas while the loader
-    resolved all three from /opt/rocm-7.2.1/lib, so a cache-based check would have diverted a host
-    whose ROCm works perfectly.
-
-    Windows is excluded deliberately. There the same condition is already decisive through the exit
-    status (0xC0000135), which is evidence from the real binary rather than a guess about DLL search
-    order, and there is no soname to dlopen in the POSIX sense.
-    """
+    Uses the real loader (``ctypes``), NOT ``ldconfig -p``: on a gfx1151 runner the cache omitted
+    hipblas and rocblas that the loader resolved from /opt/rocm. Not Windows, where the exit status
+    (0xC0000135) already decides."""
     if os.name != "posix" or sys.platform == "darwin":
         return None
     try:
@@ -880,17 +849,8 @@ def rocm_runtime_resolvable() -> Optional[bool]:
 def accelerator_probe_failure_is_decisive(accelerator: Optional[str]) -> bool:
     """Whether a NEGATIVE device probe for ``accelerator`` is explained, so one occurrence is enough.
 
-    The Linux shape has no error text to match and no failing exit code: ggml dlopens its backends,
-    the HIP one fails on a missing ``libhipblas.so.3``, and sd-cli loads the CPU backend, exits 0 and
-    lists CPU only. Measured on the shipped archive. So "the probe saw no accelerator" is the ONLY
-    signal, and on its own it is ambiguous, since a busy or masked GPU looks the same.
-
-    Asking the loader separates the two. If the runtime the archive needs is provably absent, the
-    silent CPU fallback is explained and no second strike adds information: no amount of retrying
-    installs a ROCm userspace. If it resolves, or cannot be asked, this returns False and the
-    existing two-strike rule stands, which is what keeps a transient fault from evicting a working
-    ROCm host.
-    """
+    A CPU-only answer alone is ambiguous (a busy or masked GPU looks the same); it is decisive only
+    when the loader proves the ROCm runtime absent. Otherwise the two-strike rule stands."""
     klass = _accelerator_class_of(accelerator)
     if klass != "rocm" or not fallback_accelerator_for(klass):
         return False
@@ -941,11 +901,10 @@ def _accelerator_fingerprint(binary: Optional[str] = None) -> dict:
     """What the note is a fact ABOUT: bundle, GPU runtime, cards. Best-effort; an unreadable component is None, which keeps the record applying."""
     fp: dict = {"bundle": None}
     try:
-        # Never the current default: the finder also serves a legacy tree, whose tag compared against the default root's made the record stale at once.
+        # The binary's own root: the finder also serves a legacy tree.
         root = owning_managed_root(binary) if binary else _discovered_managed_root()
         record = _installer_module().read_install_record(root or managed_install_root())
         if isinstance(record, dict):
-            # Read LIVE: an install can land mid-process, and a new build is exactly what may start working.
             tag = record.get("tag")
             fp["bundle"] = str(tag) if tag else None
     except Exception:  # noqa: BLE001
@@ -1020,13 +979,7 @@ def selected_card_identity(ordinal: "Optional[int]") -> "Optional[str]":
         if (inventory or {}).get("unknown"):
             return None
         devices = _amd_inventory_rows(inventory)
-        # ``physical_index`` is a HIP device id in every branch: unmasked it IS the torch ordinal,
-        # masked it is what the composed mask resolved to. The inventory is keyed by amd-smi's own
-        # discovery order, a DIFFERENT index space (amd.py's get_hip_id_by_gpu_index: "They coincide
-        # on most hosts and not on all of them"), so the number needs translating either way. Gating
-        # this on ``masked`` was wrong: an unmasked multi-GPU host where the spaces disagree would
-        # attach the failure to the wrong card and keep retrying the one that actually fails while
-        # diverting a working card to Vulkan.
+        # A HIP id, masked or not; the inventory is in amd-smi's order, so translate it either way.
         hip_by_row = get_hip_id_by_gpu_index()
         if hip_by_row:
             physical_index = next(
@@ -1035,10 +988,7 @@ def selected_card_identity(ordinal: "Optional[int]") -> "Optional[str]":
             if physical_index is None:
                 return None
         elif len(devices) != 1:
-            # No mapping: amd-smi is missing, or older than the ROCm 6.4 that added ``list -e``. With
-            # one card in the inventory the identity mapping is the only one there is, so the single
-            # GPU case (every APU, and the gfx1151 this fallback targets) keeps working. With more
-            # than one, guessing picks a card, so decline and let the caller skip the tie-break.
+            # No mapping (amd-smi missing or pre-6.4): one card is unambiguous, several are a guess.
             return None
         selected = next((d for d in devices if d.get("index") == physical_index), None)
         if selected is None:
@@ -1105,12 +1055,9 @@ def _normalise_failure_record(key: str, value: object) -> Optional[dict]:
         "proven": bool(value.get("proven", False)),
         "fingerprint": fingerprint if isinstance(fingerprint, dict) else {},
     }
-    # Dropping these would read a card-scoped note back as a host-wide one in the next process.
     cards = [str(card).strip() for card in (value.get("cards") or []) if str(card).strip()]
     if cards:
         record["cards"] = sorted(set(cards))
-    # And the per-card tallies, for the same reason: read back as one accelerator-wide verdict, a
-    # decisive failure on one card would convict every other card the record also names.
     per_card: dict[str, dict] = {}
     stored_per_card = value.get("per_card")
     for name, entry in (stored_per_card if isinstance(stored_per_card, dict) else {}).items():
@@ -1222,16 +1169,13 @@ def note_accelerator_runtime_failure(
     ):
         previous = None
     if previous is not None:
-        # Overwriting a known value with an unreadable None loses the only thing that could invalidate this record.
+        # Keep known fields: an unreadable None must not erase what could invalidate this record.
         fingerprint = _fingerprint_with_known_fields_kept(previous.get("fingerprint"), fingerprint)
     strikes = (previous or {}).get("strikes", 0) + 1
-    # One ROCm bundle serves several gfx targets: keyed on the accelerator alone, one card moved every later load off ROCm.
     cards = [c for c in ((previous or {}).get("cards") or []) if c]
     if card and card not in cards:
         cards = sorted([*cards, card])
-    # The tallies are kept PER CARD as well. Unioned into the accelerator-wide pair alone, one
-    # decisive failure on card A made A's proof apply to card B the moment B was appended, and two
-    # ambiguous failures on two different cards satisfied the two-strike threshold for both.
+    # Per-card tallies: one card's proof or strikes must not convict another.
     previous_per_card = (previous or {}).get("per_card")
     per_card = {
         name: dict(entry)
@@ -1254,8 +1198,7 @@ def note_accelerator_runtime_failure(
         }
     record = {
         "strikes": strikes,
-        # The accelerator-wide pair stays the union: it is what a caller that cannot name its card
-        # is answered with, and what the settings report shows for the host.
+        # The union, for a caller that names no card and for the settings report.
         "proven": bool(proven) or bool((previous or {}).get("proven", False)),
         "fingerprint": fingerprint,
     }
@@ -1302,8 +1245,6 @@ def _record_diverts(
     known_cards = [c for c in (record.get("cards") or []) if c]
     own = (record.get("per_card") or {}).get(card) if card else None
     if card and (isinstance(own, dict) or (known_cards and card not in known_cards)):
-        # This card's own tally plus the unscoped part: a decisive failure on another card is not
-        # proof about this one, and the strikes that convict it must have been struck here or unscoped.
         own = own if isinstance(own, dict) else {}
         unscoped = _unscoped_evidence(record)
         if own.get("proven") or unscoped["proven"]:
@@ -1411,8 +1352,7 @@ _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS: tuple[str, ...] = (
     "memory access fault by gpu node",
 )
 
-# The failure that prints NOTHING, so no marker above can fire: the Windows ROCm sd.cpp asset ships
-# no hipBLAS, and a box with only `amdhip64_6.dll` exits 0xC0000135 on every invocation. DECISIVE.
+# Windows loader deaths print nothing, so only the exit status shows them. DECISIVE.
 _WINDOWS_IMAGE_LOAD_FAILURE_STATUSES: tuple[int, ...] = (
     0xC0000135,  # STATUS_DLL_NOT_FOUND: a DLL the image imports is missing
     0xC0000139,  # STATUS_ENTRYPOINT_NOT_FOUND: it is present but the wrong build
@@ -1443,8 +1383,7 @@ _ACCELERATOR_RUNTIME_FAILURE_MARKERS: tuple[str, ...] = (
     _ACCELERATOR_DECISIVE_FAILURE_MARKERS + _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS
 )
 
-# CAPACITY, and why the markers above cannot be read alone: "ROCm error: out of memory" contains
-# "rocm error", so two large requests moved a working host. Checked BEFORE either predicate.
+# Checked BEFORE either predicate: "ROCm error: out of memory" contains "rocm error".
 _ACCELERATOR_CAPACITY_FAILURE_MARKERS: tuple[str, ...] = (
     "out of memory",
     "outofmemory",
@@ -1497,13 +1436,8 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
 def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None) -> str:
     """``accelerator``, or its fallback once shown unrunnable here. Applied at the TOP of an ensure ladder, so a crashed build is not installed and probed again.
 
-    Deliberately a function of the RECORD alone, never of the live host. ``rocm_runtime_resolvable``
-    is not consulted here: it reads the real loader, and threading a host property through this
-    funnel made every hermetic test that asks for ``rocm`` on a machine without ROCm divert to
-    Vulkan, which is 63 suites answering a question about the test runner rather than about the code.
-    The preflight is applied where the runtime verdict is INTERPRETED instead, so the decision stays
-    reproducible from stored state.
-    """
+    A function of the stored record only, never of the live host: the loader preflight is applied
+    where the runtime verdict is interpreted, so this stays reproducible."""
     klass = _accelerator_class_of(accelerator) or (accelerator or "auto")
     nxt = fallback_accelerator_for(klass)
     if nxt and accelerator_runtime_failed(klass, card):
@@ -1866,7 +1800,7 @@ class _SdState:
     # Physical card behind the server's single resolved CUDA/ROCm backend. None for CPU/Metal/Vulkan, an unresolved
     # pin, automatic multi-GPU, and one-shot mode; those shapes cannot safely consume the startup VRAM floor.
     physical_gpu_id: Optional[int] = None
-    # The card this load selected, named as the failure record names cards: generate is far from the ordinal that chose it.
+    # This load's card, as the failure record names cards.
     selected_card: Optional[str] = None
 
 
@@ -1879,7 +1813,7 @@ def _offload_with_device_pin_impl(
         return flags
     device_name = sd_cpp_device_name_for_ordinal(binary, ordinal)
     if device_name is None:
-        # `Vulkan0` is not the physical index, so the lookup answers None; pin by name, what the two namespaces share.
+        # `Vulkan0` is not a physical index; pin by card name instead.
         selected_name, selected_position = physical_card_name(ordinal)
         device_name = sd_cpp_device_named(binary, selected_name, position = selected_position)
     return [*flags, *device_backend_flags(device_name, flags)]
@@ -2075,11 +2009,8 @@ class SdCppDiffusionBackend:
         # Set by _resolve_backend when it had to skip an accelerator install because the managed tree was still in
         # use; the load retries it once the tree is free.
         self._deferred_accelerator_install = False
-        # Every accelerator resolution in the load asks about it, so a heterogeneous host is not moved over a failure
-        # on a different card. The store is created here so overlapping first loads share it, but no card is set:
-        # __init__ runs on whatever thread built the backend, so an explicit None would be that thread's own answer
-        # forever, and a later generate scheduled onto the same executor worker would read it instead of falling
-        # back to the committed card.
+        # Per-thread card for the load. Created here so overlapping first loads share it, but no card is set: an
+        # explicit None would be this constructing thread's answer forever, hiding the committed card.
         self._loading_cards = threading.local()
         # Servers taken out of _state/_pending_server whose stop() has not returned yet. unload() deliberately stops
         # outside the lock (terminate can take seconds), so between the clear and the stop the fields say idle while
@@ -2103,29 +2034,19 @@ class SdCppDiffusionBackend:
 
     @property
     def _loading_card(self) -> Optional[str]:
-        """The card THIS worker's load selected. Per worker, not per backend: ``unload`` clears
-        ``_loading`` before the cancelled worker exits, so a replacement load's thread can be
-        running while the old one is still in ``_run_load``, and one shared field let whichever
-        wrote last decide the accelerator for both. Off a load thread -- a generation re-resolving
-        sd-cli -- there is no own answer, so the last committed load's card stands, as before."""
+        """The card THIS worker's load selected (a cancelled load's worker can overlap its
+        replacement). Off a load thread, the last committed load's card."""
         own = getattr(self._loading_card_store(), "card", _UNREAD_LOADING_CARD)
         return self._committed_loading_card if own is _UNREAD_LOADING_CARD else own
 
     @_loading_card.setter
     def _loading_card(self, value: Optional[str]) -> None:
-        # Thread-local ONLY. `_committed_loading_card` is what off-load-thread callers read, and it is
-        # published where `_state` is, not here: a load that starts is not a load that commits. Writing
-        # it here made a replacement load on card B the answer for one-shot generation the moment the
-        # worker started, so a failure before teardown, or a superseded worker arriving late, left the
-        # committed card naming a load that never took while `_state` still held card A's. On a
-        # heterogeneous host that resolves the other card's build and then fails the identity check.
+        # Thread-local only: `_committed_loading_card` is published with `_state`, since a load that
+        # starts is not a load that commits.
         self._loading_card_store().card = value
 
     def _clear_loading_card(self) -> None:
-        """Put this thread back to having no own answer, which is not the same as answering None.
-        Load threads are pooled: without this the worker that ran a load keeps naming that card for
-        every later off-load resolution on the same worker, including one-shot generation, long
-        after the load is over and possibly after a different load committed."""
+        """Back to no own answer (not None): load threads are pooled."""
         try:
             del self._loading_card_store().card
         except AttributeError:
@@ -2159,9 +2080,8 @@ class SdCppDiffusionBackend:
         """The installer accelerator this host's device target resolves to (cpu / cuda / rocm /
         vulkan). Lazy import avoids an import cycle with the engine router.
 
-        ``preferred_accelerator`` is applied HERE, not at the four call sites, which have to agree:
-        ``_accelerator_changed`` compares the tree against this answer, so a site that skipped it
-        would reinstall over what the others chose."""
+        ``preferred_accelerator`` is applied here so all four call sites agree, or
+        ``_accelerator_changed`` would reinstall over what the others chose."""
         from core.inference.diffusion_engine_router import _install_accelerator_for
         return preferred_accelerator(
             _install_accelerator_for(getattr(resolve_diffusion_device_target(), "backend", "cpu")),
@@ -2435,7 +2355,6 @@ class SdCppDiffusionBackend:
                     except Exception:  # noqa: BLE001
                         usable = False
                     if not usable or fallback is None:
-                        # Neither the server nor the one-shot CLI will launch, and a loader death prints nothing to classify.
                         note_unlaunchable_accelerator_build(server_binary, card = self._loading_card)
                         raise RuntimeError("sd-server binary is present but not runnable.")
                     mode, server_binary, engine = "oneshot", None, fallback
@@ -2664,7 +2583,7 @@ class SdCppDiffusionBackend:
                             "sd-server failed to start (%s); falling back to one-shot sd-cli.",
                             start_exc,
                         )
-                        # This error carries the build's own output ("sd-server exited N. Last output: ..."), which nothing else here read.
+                        # The error carries the build's own output.
                         note_accelerator_failure_from_output(
                             server_binary,
                             str(start_exc),
@@ -2767,8 +2686,7 @@ class SdCppDiffusionBackend:
                             orphan = server
                     else:
                         self._state = state
-                        # Same block as _state, under the same lock and past the supersession check:
-                        # this is the point at which the card becomes the fact off-thread readers want.
+                        # With _state, past the supersession check.
                         self._committed_loading_card = self._loading_card
                         self._loading = None
                     # The exchange the started server stayed published for: it is _state's now, or reserved for the
@@ -2806,7 +2724,7 @@ class SdCppDiffusionBackend:
                 with self._lock:
                     if self._pending_server is started:
                         self._pending_server = None
-            # The card was this LOAD's, not this worker's. Past here the committed card is the answer again.
+            # The card was this load's, not this worker's.
             self._clear_loading_card()
 
     def download_plan(
@@ -3339,9 +3257,9 @@ class SdCppDiffusionBackend:
                             cancel = cancel,
                         )
                 except RuntimeError as exc:
-                    # The same mid-render hipBLAS death the video path records, from the same sd-cli; a cancellation is not one.
+                    # The mid-render hipBLAS death the video path records too; not a cancellation.
                     if not cancel.is_set() and DIFFUSION_CANCELLED_MSG not in str(exc):
-                        # The binary that RAN it: on the server path `self._engine` is None, the very case the rung exists for.
+                        # The binary that ran it: on the server path `self._engine` is None.
                         _failed_binary = getattr(
                             getattr(state, "server", None), "binary", None
                         ) or getattr(getattr(self, "_engine", None), "binary", None)
