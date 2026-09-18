@@ -972,8 +972,11 @@ function ConnectedGroupHeading({
   configureLabel?: string;
 }) {
   return (
-    <div className="group/heading flex items-center justify-between gap-1 px-2.5 pb-1 pt-5">
-      <span className="flex min-w-0 items-center gap-2 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
+    // pt-3 and gap-1.5, the values ListLabel uses for the On Device sections, so the first
+    // heading sits at the same height on both tabs and its label at the same offset from its
+    // icon. pt-5 started this list 8px lower than that one.
+    <div className="group/heading flex items-center justify-between gap-1 px-2.5 pb-1 pt-3">
+      <span className="flex min-w-0 items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
         {icon}
         <span className="min-w-0 truncate">{label}</span>
       </span>
@@ -1043,7 +1046,6 @@ function ModelRow({
   partial,
   partialResumable,
   showVision,
-  reserveLeadingSlot,
   quantChip,
   tags,
   alignMeta,
@@ -1080,9 +1082,6 @@ function ModelRow({
   partialResumable?: boolean;
   /** Show a Vision badge on the name (On Device, read from GGUF metadata). */
   showVision?: boolean;
-  /** Hold open the slot ahead of the name, where local rows draw their format dot, on a row with
-   *  no format for it. Without it the name starts 18px left of every other list's. */
-  reserveLeadingSlot?: boolean;
   /** Grey chip beside the name, for rows that load one specific quant. */
   quantChip?: string | null;
   /** Chips for what used to sit in brackets after the name: the artifact format, and a
@@ -1184,7 +1183,7 @@ function ModelRow({
           {/* Fixed slot, so names start on one line with or without a dot. */}
           {/* Aligned lists hold the slot open either way, so names start on one line; an
               unaligned row only takes the space when it has something for it. */}
-          {aligned || leading || reserveLeadingSlot ? (
+          {aligned || leading ? (
             <span
               className={cn(
                 "mr-1 flex shrink-0 items-center self-center",
@@ -5393,10 +5392,10 @@ export function HubModelPicker({
         key={model.id}
         // ml-2.5 matches the heading's own px-2.5, so the pill starts where the heading does
         // instead of 10px left of it, and the name lands level with the heading's text.
-        // 8.5 + the row's own pl-[5.5px] is 14, so the name starts at 14 + 14 (the leading slot)
-        // + 4 (its margin) = 32px, exactly where a heading's label does: px-2.5 + a size-3.5
-        // icon + gap-2. At ml-2.5 it landed 1.5px right of every section title above it.
-        className={cn(downloadedRowShellClassName(isSelected), "ml-[8.5px]")}
+        // ml-5 plus the pl-2.5 below is 30px, where a heading's label starts: px-2.5 + a
+        // size-3.5 icon + gap-1.5. The 10px of that inside the pill is the panel's own px-2.5
+        // rhythm; the reserved leading slot put 23.5px of empty pill in front of every name.
+        className={cn(downloadedRowShellClassName(isSelected), "ml-5")}
         style={
           draggingPinnedConnectedId === model.id ? { opacity: 0.4 } : undefined
         }
@@ -5473,19 +5472,15 @@ export function HubModelPicker({
             }
             capabilities={marks.capabilities}
             showVision={marks.vision}
-            // Empty but held open: the slot a local row gives its format dot is what starts
-            // every list's names on one line, and what puts them under the section labels.
-            // Nothing goes in it. A pinned row carried its connection's logo here, which read as
-            // a second glyph column down the pinned group; the name is what a row is for, and
-            // the connection is still named on the row's own tooltip.
-            reserveLeadingSlot={true}
             selected={isSelected}
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() =>
               onSelect(model.id, { source: "external", isLora: false })
             }
             vramStatus={null}
-            className={downloadedRowButtonClassName}
+            // The name's own inset, since nothing precedes it in the row now: the leading slot a
+            // local row gives its format dot is gone with the logo that briefly filled it.
+            className={cn(downloadedRowButtonClassName, "pl-2.5")}
           />
         </div>
         <span className={ROW_ACTIONS_CLASS}>

@@ -39,9 +39,9 @@ test("a connected row draws its badges through ModelRow", () => {
     pickers,
     /capabilities=\{marks\.capabilities\}\s*\n\s*showVision=\{marks\.vision\}/,
   );
-  // The format-dot slot stays reserved though nothing goes in it: that is what starts the names
-  // on the same line as every other list's.
-  assert.match(pickers, /reserveLeadingSlot=\{true\}/);
+  // No format-dot slot: nothing precedes a connected name, and an empty one left the hover pill
+  // starting 23.5px in front of it. The row's own pl-2.5 is the name's inset instead.
+  assert.doesNotMatch(pickers, /reserveLeadingSlot/);
   // The connection is named by the group heading, so it is not repeated on each of its rows.
   assert.doesNotMatch(pickers, /leadingBadge=\{\s*<ApiProviderLogo/);
   // Both groups render through it. Only the pinned one drags: the groups below are sorted, so a
@@ -655,18 +655,36 @@ test("the info box is a dialog, so it is wide enough and closable", () => {
 });
 
 test("a row's name starts where its heading's label does", () => {
-  // 8.5 plus the row's own pl-[5.5px] is 14, so the name lands at 14 + 14 (the leading slot) + 4
-  // (its margin) = 32px, which is px-2.5 + a size-3.5 icon + gap-2: where a heading's label
-  // starts. At ml-2.5 the names sat 1.5px right of every section title above them.
+  // ml-5 plus pl-2.5 is 30px, which is the heading's px-2.5 + a size-3.5 icon + gap-1.5: where
+  // its label starts. Only 10px of that is pill in front of the name, the panel's own px-2.5
+  // rhythm, where the reserved leading slot had left 23.5px of empty pill before every one.
   assert.match(
     pickers,
-    /cn\(downloadedRowShellClassName\(isSelected\), "ml-\[8\.5px\]"\)/,
+    /cn\(downloadedRowShellClassName\(isSelected\), "ml-5"\)/,
   );
   assert.match(
     pickers,
-    /<div className="group\/heading flex items-center justify-between gap-1 px-2\.5/,
+    /className=\{cn\(downloadedRowButtonClassName, "pl-2\.5"\)\}/,
   );
-  assert.match(pickers, /font-semibold uppercase tracking-wider text-muted-foreground">/);
+  // Nothing precedes the name in the row, so the slot itself goes: an empty one is what put the
+  // pill's left edge that far from the name.
+  assert.doesNotMatch(pickers, /reserveLeadingSlot=\{true\}/);
+  // And the heading matches ListLabel, which is what the On Device sections use, so the first
+  // one sits at the same height on both tabs with its label the same distance from its icon.
+  assert.match(
+    pickers,
+    /group\/heading flex items-center justify-between gap-1 px-2\.5 pb-1 pt-3/,
+  );
+  assert.match(
+    pickers,
+    /<span className="flex min-w-0 items-center gap-1\.5 text-ui-10 font-semibold/,
+  );
+  const listLabel = /className=\{cn\(\s*"flex items-center justify-between gap-1 px-2\.5 pb-1",\s*divider \? "mt-3 border-t border-border\/50 pt-3" : "pt-3",/;
+  assert.match(pickers, listLabel);
+  assert.match(
+    pickers,
+    /<span className="flex items-center gap-1\.5 text-ui-10 font-semibold/,
+  );
 });
 
 test("reasoning is read through the resolver the composer uses", () => {
