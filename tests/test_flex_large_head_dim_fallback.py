@@ -223,6 +223,28 @@ def test_empty_env_var_falls_back_to_the_config(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("env, expected", [("1", "flex_attention"), (None, "flash_attention_2")])
+def test_forcing_the_env_var_outranks_flash_attention(monkeypatch, env, expected):
+    import transformers as T
+
+    monkeypatch.setattr(u, "HAS_FLASH_ATTENTION", True)
+    if env is None:
+        monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising = False)
+    else:
+        monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, env)
+    cfg = T.LlamaConfig(
+        hidden_size = 512,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        head_dim = 128,
+        num_hidden_layers = 1,
+        intermediate_size = 64,
+        vocab_size = 128,
+    )
+    resolved = u.resolve_attention_implementation(T.LlamaForCausalLM, cfg)
+    assert resolved == expected
+
+
 def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch):
     # the env var decides head-dim preference only; a deliberate _supports_flex_attn = False
     # on the architecture's own class still wins.

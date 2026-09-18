@@ -549,6 +549,14 @@ def _sdpa_reaches_cudnn_at_head_dim_256():
         return False
 
 
+def _flex_large_head_dim_override():
+    """True / False when UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM forces flex on / off, else None."""
+    override = os.environ.get(_FLEX_LARGE_HEAD_DIM_ENV_VAR)
+    if override is None or override.strip() == "":
+        return None
+    return override.strip() != "0"
+
+
 def _prefers_flex_for_head_dim(config):
     """True when the decoder's head dim puts every flash kernel out of reach.
 
@@ -606,9 +614,9 @@ def _prefers_flex_for_head_dim(config):
         and the alternative stays fmha_cutlass. This band also REQUIRES kernel_options; see
         patch_flex_attention_kernel_options, without which the run faults outright.
     """
-    _override = os.environ.get(_FLEX_LARGE_HEAD_DIM_ENV_VAR)
-    if _override is not None and _override.strip() != "":
-        return _override.strip() != "0"
+    _override = _flex_large_head_dim_override()
+    if _override is not None:
+        return _override
     for attention_config in _text_attention_configs(config):
         if (
             _config_get(attention_config, "model_type", "").lower()
@@ -1363,6 +1371,9 @@ def resolve_attention_implementation(
     if prefers_flex_for_head_dim and not supports_flex_attention:
         if _enable_flex_attention_support(model_class, model_type):
             supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+    # The automatic routing only replaces the sdpa fallback, but an explicit "1" forces flex
+    # over flash_attention_2 as well.
+    flex_forced_for_head_dim = _flex_large_head_dim_override() is True and supports_flex_attention
     disable_reason = _get_flash_attention_disable_reason(config)
     float32_is_only_disable_reason = disable_reason is None and dtype is torch.float32
     if float32_is_only_disable_reason:
@@ -1379,7 +1390,12 @@ def resolve_attention_implementation(
         elif prefers_flex_attention and supports_flex_attention:
             # _FLEX_PREFERRED_MODELS (the gemma3 family) prefer flex_attention over flash; a caller can still override with requested_attn_implementation="sdpa".
             attn_impl = _set_attn_impl(config, "flex_attention")
-        elif not flash_attention_disabled and HAS_FLASH_ATTENTION and supports_flash_attention:
+        elif (
+            not flash_attention_disabled
+            and HAS_FLASH_ATTENTION
+            and supports_flash_attention
+            and not flex_forced_for_head_dim
+        ):
             attn_impl = _set_attn_impl(config, "flash_attention_2")
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
