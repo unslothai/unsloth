@@ -1555,6 +1555,77 @@ def test_how_a_node_this_account_owns_is_classified(monkeypatch, tmp_path, mode,
     assert amd._groups_that_own([str(node)]) == _buckets(**{bucket: [str(node)]})
 
 
+# fmt: off
+@pytest.mark.parametrize("mode, in_the_group, bucket", [
+    # Codex 4049299005. Neither the owner nor in the owning group puts this account in the
+    # OTHER class, which POSIX resolves exclusively just as it does the owner one: bits that
+    # already grant rw mean the mode is not what denies a node os.access() called shut, so
+    # neither a chmod nor a usermod repairs it. It was classified from the group bits and
+    # answered with a group to join.
+    pytest.param(0o666, False, "external",
+                 id = "other_bits_that_already_grant_it_are_external"),
+    # The control, or the branch would be "never name a group", which removes a correct
+    # repair: with the other bits denying, joining the group really would open the node.
+    pytest.param(0o660, False, "joinable",
+                 id = "other_bits_that_deny_still_leave_a_group_worth_joining"),
+    # And membership outranks the other class, because a member is in the GROUP class and
+    # the other bits are never consulted there. `already` names the group rather than
+    # filing the node under a bucket that names nothing.
+    pytest.param(0o666, True, "already",
+                 id = "a_member_is_still_told_the_group_it_already_holds"),
+])
+# fmt: on
+def test_how_a_node_this_account_neither_owns_nor_shares_a_group_with_is_classified(
+    monkeypatch, tmp_path, mode, in_the_group, bucket
+):
+    """Which bucket the third permission class lands in. The two halves of this rule were
+    already written for the owner class and for a group this account holds; this is the same
+    question for the one class that was left reading its neighbour's bits."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    node.chmod(mode)
+    _gid = node.stat().st_gid
+    monkeypatch.setattr(amd, "_has_an_access_acl", lambda _path: False)
+    # Not the owner, so the owner class cannot claim the node first. Read BEFORE the patch
+    # lands: amd.os is the os module itself, so a lambda calling os.getuid() would call the
+    # replacement and recurse until the stack ends.
+    _not_the_owner = os.getuid() + 1
+    monkeypatch.setattr(amd.os, "getuid", lambda: _not_the_owner)
+    _held = {_gid} if in_the_group else {_gid + 10_000}
+    monkeypatch.setattr(amd.os, "getgid", lambda: sorted(_held)[0])
+    monkeypatch.setattr(amd.os, "getgroups", lambda: sorted(_held))
+
+    joinable, unnamed, no_group, acl, owned, privileged, already, external = (
+        amd._groups_that_own([str(node)])
+    )
+    _by_name = dict(
+        joinable = joinable, unnamed = unnamed, no_group = no_group, acl = acl,
+        owned = owned, privileged = privileged, already = already, external = external,
+    )
+    assert _by_name[bucket], f"{bucket} is empty: {_by_name}"
+    for _name, _got in _by_name.items():
+        if _name != bucket:
+            assert not _got, f"{_name} must stay empty, got {_got}"
+
+
+def test_the_installer_makes_the_same_other_class_distinction(tmp_path):
+    """The shell half of the rule above, read off install.sh so the two cannot drift: the awk
+    classifier reached its group digit for a node in the other class too, so mode 0666 printed
+    a group to join. A revert fails here as well as in the Python case."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    _not_us = str(os.getuid() + 1)
+
+    node.chmod(0o666)  # other rw: no membership and no mode change opens this
+    out = _install_sh_hint(str(node), self_uid = _not_us, repairs = None)
+    assert "device cgroup or an LSM" in out
+    assert "usermod" not in out
+
+    node.chmod(0o660)  # other denies: the group really is the repair
+    out = _install_sh_hint(str(node), self_uid = _not_us, repairs = None)
+    assert "device cgroup or an LSM" not in out
+
+
 def test_a_node_carrying_an_acl_is_not_answered_with_usermod(monkeypatch, tmp_path):
     """acl(5): once an access ACL is present, the group-class bits in st_mode are the ACL MASK
     rather than the owning group's grant, so a node whose mask reads rw can still deny its

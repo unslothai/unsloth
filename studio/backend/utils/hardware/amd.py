@@ -1450,6 +1450,19 @@ def _groups_that_own(paths: list) -> tuple:
             else:
                 owned.append(path)
             continue
+        # Neither the owner nor in the owning group puts this account in the OTHER class,
+        # and POSIX resolves that one exclusively too: if its bits already grant rw then the
+        # mode is not what denies a node os.access() just called shut, so no chmod and no
+        # usermod moves it. The same reasoning as the owner branch above and the
+        # already-a-member branch below, for the third class.
+        #
+        # Guarded on membership rather than placed after it, because a member is in the
+        # GROUP class, where the other bits are never consulted and `already` names the
+        # group it is pointless to re-join. It has to sit above the group-bits test, which
+        # would otherwise prescribe a chmod for a node the mode is not blocking.
+        if _st.st_gid not in _mine and (_st.st_mode & stat.S_IROTH and _st.st_mode & stat.S_IWOTH):
+            external.append(path)
+            continue
         # Group read AND write: HIP and the Vulkan loader both open the node read-write,
         # which is the same bar amd_nodes_closed_to_this_user() applied to this account.
         if (_st.st_mode & stat.S_IRGRP) == 0 or (_st.st_mode & stat.S_IWGRP) == 0:

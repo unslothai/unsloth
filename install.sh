@@ -3983,6 +3983,16 @@ _amd_node_repairs() {
             # branched on. Unreachable while stat answers, and the direction that cannot
             # invent a repair if it ever stops.
             if ($2 !~ /^[0-9]+$/) { print "mode:" $4; next }
+            # Neither the owner nor in the owning group leaves this account in the OTHER
+            # class, which POSIX resolves exclusively too: if its digit already grants rw
+            # the mode is not what denies a node already known shut, and no chmod or
+            # usermod moves it. Mirrors the other-class branch in amd.py. Guarded on
+            # membership, since a member is in the group class and the already branch
+            # names the group; above the group-digit test, which would otherwise print a
+            # mode repair for a node the mode is not blocking. The other digit is the
+            # LAST, so unlike the owner one it needs no padding to be read.
+            o = substr($1, length($1), 1) + 0
+            if ((o == 6 || o == 7) && mygids !~ (" " $2 " ")) { print "external:" $4; next }
             # Group digit of the octal mode; read AND write, since HIP and the Vulkan
             # loader both open the node read-write.
             g = substr($1, length($1) - 1, 1) + 0
