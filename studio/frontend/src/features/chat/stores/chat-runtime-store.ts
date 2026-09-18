@@ -5319,7 +5319,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...(codeToolsEnabled
           ? { codeToolsEnabled, deepResearchEnabled: false }
           : { codeToolsEnabled }),
-        // An explicit choice replaces the Full access override.
         codeToolsFromFullAccess: false,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
