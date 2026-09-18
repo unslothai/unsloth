@@ -219,6 +219,9 @@ def _split_ternary(expression: str, guards: tuple = ()) -> list:
     if question == -1:
         # `a && b` returns `a` whenever `a` is falsy, and `a || b` whenever it is truthy, so the
         # left operand is a path of its own. `||` binds looser, so it is split first.
+        # `??` is deliberately not split. The sheet's own selector returns
+        # `s.loadedReasoningBudgetRequested ?? s.reasoningBudget` while the budget equals the
+        # loaded one, which source alone cannot prove distinct (see the sheet test's docstring).
         for operator, head_taken in (("||", True), ("&&", False)):
             operands = _top_level_operands(expression, operator)
             if len(operands) > 1:
@@ -955,6 +958,12 @@ SELECTOR_CASES = [
     ("(s: RuntimeState) => s.reasoningBudget", True),
     ("(s) => (s.reasoningBudget)", True),
     ("(s) => s.reasoningBudget ?? s.fallback", True),
+    # The sheet's own shape, accepted by the contract rather than proved.
+    (
+        "(s) => s.reasoningBudget === s.loadedReasoningBudget "
+        "? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget) : s.reasoningBudget",
+        True,
+    ),
     ("(s) => formatBudget(s.reasoningBudget)", True),
     # Loose comparison pins nothing: `!= null` is false for both null and undefined.
     ("(s) => s.reasoningBudget != null ? s.reasoningBudget : null", False),
