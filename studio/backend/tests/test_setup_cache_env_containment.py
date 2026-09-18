@@ -671,8 +671,24 @@ def test_the_macos_matplotlib_config_dir_matches_matplotlibs_own(monkeypatch, tm
 
 
 def _matplotlib_config_dir(home: Path) -> Path:
-    # _get_config_or_cache_dir, Linux branch. The other branches are covered above.
-    return home / ".config" / "matplotlib"
+    """Where matplotlib on THIS platform would look for a user matplotlibrc.
+
+    _get_config_or_cache_dir: XDG on Linux and FreeBSD, a non-empty ~/.matplotlib ahead of
+    %LOCALAPPDATA% on Windows, ~/.matplotlib everywhere else. The Linux branch alone was hardcoded
+    here, so on a mac runner these tests wrote the rc into a directory matplotlib never reads: the
+    guard correctly found nothing to strand, pinned MPLCONFIGDIR, and nine tests failed for a
+    reason that was in them rather than in the code they cover. The two tests above hold this
+    derivation against real matplotlib on each spoofed platform, so it cannot quietly drift into
+    agreeing with storage_roots.py and nothing else.
+
+    Windows resolves to ~/.matplotlib rather than %LOCALAPPDATA%: the callers write a file into
+    whatever this returns, LOCALAPPDATA on a runner is outside tmp_path, and a non-empty
+    ~/.matplotlib is the branch matplotlib itself prefers.
+    """
+    if sys.platform.startswith(("linux", "freebsd")):
+        base = (os.environ.get("XDG_CONFIG_HOME") or "").strip()
+        return (Path(base) if base else home / ".config") / "matplotlib"
+    return home / ".matplotlib"
 
 
 def test_a_user_matplotlibrc_keeps_matplotlibs_own_config_dir(tmp_path):
