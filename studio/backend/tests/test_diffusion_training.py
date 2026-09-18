@@ -192,7 +192,11 @@ def _wait_status(
     return svc.status()
 
 
-def _wait_record(runs_dir, job_id, timeout = 5.0):
+def _wait_record(
+    runs_dir,
+    job_id,
+    timeout = 5.0,
+):
     """Block until the pump thread has written this run's record, and return it.
 
     The status going terminal is not the record being on disk. _pump_loop calls _apply_event,
