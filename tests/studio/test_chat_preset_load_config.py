@@ -734,7 +734,7 @@ def _top_level_operands(guard: str, operator: str = "&&") -> list:
             depth -= 1
         elif depth == 0 and scan.startswith(operator, index):
             parts.append(guard[start:index])
-            index += 2
+            index += len(operator)
             start = index
             continue
         index += 1
@@ -1291,6 +1291,7 @@ SELECTOR_CASES = [
     # A comma expression returns its last operand, and a declarator list declares two names.
     ("(s) => (s.reasoningBudget, s.other)", False),
     ("(s) => (s.other, s.reasoningBudget)", True),
+    ("(s) => (s.other,xs.reasoningBudget)", False),
     ("(s) => { return s.reasoningBudget, s.other; }", False),
     ("(s) => { const value = s.other, ignored = s.reasoningBudget; return value; }", False),
     ("(s) => `${/* s.reasoningBudget */ 1}`", False),
