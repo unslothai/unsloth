@@ -30,6 +30,8 @@
 # wrapper and the entrypoint only learn in #11212. Until that lands, pass
 # /dev/dxg, the host's librocdxg and HSA_ENABLE_DXG_DETECTION=1 by hand, with
 # UNSLOTH_SKIP_GPU_CHECK=1 to get past the entrypoint's /dev/kfd gate.
+# UNSLOTH_STUDIO_PASSWORD sets the initial admin password, first boot only;
+# unset, Studio generates one.
 
 ARG BASE_IMAGE=unsloth/unsloth-rocm:latest
 
@@ -77,6 +79,11 @@ RUN set -eux \
  && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" \
     UNSLOTH_TORCH_INDEX_URL="${TORCH_INDEX_URL}" \
     UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
+    # ROCM_GFX from the base's record too: install.sh leaves bitsandbytes out of a
+    # gfx906 install (no wheel carries its kernels) only when told the arch, since
+    # the GPU-less builder cannot probe it. Empty on a generic build, which
+    # install.sh reads as unset.
+    UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}" \
     UNSLOTH_LLAMA_CPP_BACKEND=cpu \
     UNSLOTH_SKIP_WHISPER_INSTALL=1 \
     UNSLOTH_PYTHON=3.12 \
@@ -90,6 +97,8 @@ RUN set -eux \
     # ROCm. The cost is two torch copies in one image; deduping them is a follow-up.
  && BASE_ROCM="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch').split('+')[1])")" \
  && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; v = version('torch'); assert '+rocm' in v, 'Studio venv torch ' + v + ' is not a ROCm build'; assert v.split('+')[1] == '${BASE_ROCM}', 'Studio venv torch ' + v + ' is not the base venv ROCm leaf ${BASE_ROCM}'; print('Studio venv python %d.%d torch' % sys.version_info[:2], v, 'on base ROCm leaf ${BASE_ROCM}')" \
+    # A gfx906 Studio venv must not expose the 4-bit backend the base removed.
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import importlib.util as u; has = u.find_spec('bitsandbytes') is not None; assert not (has and '${ROCM_GFX}' == 'gfx906'), 'Studio venv has bitsandbytes on a gfx906 base'; print('Studio venv bitsandbytes:', has, 'ROCM_GFX:', '${ROCM_GFX}' or '(generic)')" \
     # The UI is the point of this image, so a missing frontend build is fatal here
     # rather than a 404 at runtime.
  && test -f "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/dist/index.html" \
@@ -102,11 +111,16 @@ RUN set -eux \
  && bash /usr/local/bin/unsloth-studio-home \
  && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import os, sys, studio; print('Studio venv', sys.prefix, 'imports studio from', studio.__file__); assert os.path.realpath(studio.__file__).startswith(os.path.realpath('${UNSLOTH_STUDIO_HOME}/src') + '/'), studio.__file__"
 
-COPY studio_password.sh /usr/local/bin/unsloth-studio-password
-RUN chmod +x /usr/local/bin/unsloth-studio-home /usr/local/bin/unsloth-studio-password
+# unsloth-studio-run is the CUDA image's Studio program: it hands Studio the
+# initial password only while none is stored. The launcher is this image's own,
+# since the CUDA one starts supervisord.
+COPY studio_run.sh /usr/local/bin/unsloth-studio-run
+COPY studio_launch_rocm.sh /usr/local/bin/unsloth-studio-launch
+RUN chmod +x /usr/local/bin/unsloth-studio-home /usr/local/bin/unsloth-studio-run \
+             /usr/local/bin/unsloth-studio-launch
 
 EXPOSE 8000
 
 # The base ENTRYPOINT (unsloth-entrypoint-rocm) runs its GPU pre-flight first,
 # then execs this.
-CMD ["/bin/bash", "-lc", "unsloth-studio-home && exec ${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/unsloth studio -H 0.0.0.0 -p ${UNSLOTH_STUDIO_PORT}"]
+CMD ["/usr/local/bin/unsloth-studio-launch"]

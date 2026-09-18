@@ -110,6 +110,7 @@ docker run --rm $GPU_FLAGS --ipc=host -p 127.0.0.1:8000:8000 \
 | `UNSLOTH_SKIP_GPU_CHECK=1` | skip the startup diagnostics |
 | `HSA_OVERRIDE_GFX_VERSION` | present an unsupported card as a supported one. Ignored on images with native kernels for the card |
 | `HF_TOKEN` | forwarded for gated models |
+| `UNSLOTH_STUDIO_PASSWORD` | `studio` tag: the initial admin password, first boot only; ignored once one is stored. Unset, Studio generates one and names the file it wrote in the log |
 
 Model downloads land in `/workspace/.cache/huggingface`, which is in the container's writable layer unless you mount it. Mount it to keep them, and to reuse what the host has already downloaded.
 

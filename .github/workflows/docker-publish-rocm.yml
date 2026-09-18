@@ -269,60 +269,15 @@ jobs:
             UNSLOTH_REF=${{ needs.prepare.outputs.unsloth_ref }}
             UNSLOTH_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
 
-  # Attach human-readable tags to the digest pushed above.
-  tag:
-    runs-on: ubuntu-latest
-    needs: [prepare, build]
-    timeout-minutes: 15
-    outputs:
-      tags: ${{ steps.meta.outputs.tags }}
-    steps:
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ env.REGISTRY_USERNAME }}
-          password: ${{ secrets.DOCKER_API_KEY }}
-
-      - name: Resolve tags
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # latest: a default-input build of the default branch (schedule or dispatch).
-          # A per-arch build gets its gfx in the tag so it is findable, never latest.
-          # An override build's sha tag carries the run id: two experiments at the same
-          # commit would otherwise overwrite each other's only name.
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
-            type=ref,event=tag,enable=${{ needs.prepare.outputs.stable == 'true' }}
-            type=schedule,pattern=nightly,enable=${{ needs.prepare.outputs.stable == 'true' }}
-            type=raw,value=${{ needs.prepare.outputs.rocm_gfx }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-            type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}${{ needs.prepare.outputs.stable != 'true' && format('-r{0}', github.run_id) || '' }}
-
-      - name: Create manifest
-        env:
-          DIGEST: ${{ needs.build.outputs.digest }}
-        run: |
-          TAG_FLAGS=()
-          while IFS= read -r t; do TAG_FLAGS+=(-t "$t"); done < <(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
-          docker buildx imagetools create "${TAG_FLAGS[@]}" "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
-
-      - name: Inspect the result
-        run: |
-          for tag in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
-              echo "=== $tag ==="
-              docker buildx imagetools inspect "$tag"
-          done
-
   # Studio on the base this run pushed (docker/Dockerfile.studio-rocm), the ROCm
   # half of docker-publish.yml's build-studio. The base by DIGEST, not by tag:
   # :latest can already be a newer run's by the time this job starts. The Studio
   # refs are the ones the base baked, so both venvs run the same commit even if
-  # upstream moved mid-run. After tag, so a :studio never exists without its base.
+  # upstream moved mid-run. Before tag: no stable tag moves until both digests
+  # exist, so :latest and :studio always come from one run (unlike the CUDA
+  # workflow, where :core moves before its Studio build starts).
   build-studio:
-    needs: [prepare, build, tag]
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     timeout-minutes: 150
     outputs:
@@ -388,12 +343,13 @@ jobs:
           echo "$ENV_JSON" | jq -e 'map(select(startswith("UNSLOTH_ALLOW_CPU="))) | length == 0' >/dev/null \
             || { echo "::error::Studio image env carries UNSLOTH_ALLOW_CPU, which disables Unsloth's TRL patches on GPU hosts"; exit 1; }
 
-  # The base's tag rules, each with a -studio leaf and the same gates: :studio
-  # beside :latest, v1.2.3-studio, nightly-studio, gfx1151-studio, sha-<commit>-studio.
-  tag-studio:
+  # Attach human-readable tags to the digest pushed above.
+  tag:
     runs-on: ubuntu-latest
-    needs: [prepare, build-studio]
+    needs: [prepare, build, build-studio]
     timeout-minutes: 15
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: docker/setup-buildx-action@v3
 
@@ -408,18 +364,20 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # format(), not a bare ${{ }}-studio: the raw gfx line is matched by name
-          # in tests/python/test_docker_rocm.py and must stay unique to the base.
+          # latest: a default-input build of the default branch (schedule or dispatch).
+          # A per-arch build gets its gfx in the tag so it is findable, never latest.
+          # An override build's sha tag carries the run id: two experiments at the same
+          # commit would otherwise overwrite each other's only name.
           tags: |
-            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
-            type=ref,event=tag,suffix=-studio,enable=${{ needs.prepare.outputs.stable == 'true' }}
-            type=schedule,pattern=nightly-studio,enable=${{ needs.prepare.outputs.stable == 'true' }}
-            type=raw,value=${{ format('{0}-studio', needs.prepare.outputs.rocm_gfx) }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-            type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}${{ needs.prepare.outputs.stable != 'true' && format('-r{0}', github.run_id) || '' }}-studio
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
+            type=ref,event=tag,enable=${{ needs.prepare.outputs.stable == 'true' }}
+            type=schedule,pattern=nightly,enable=${{ needs.prepare.outputs.stable == 'true' }}
+            type=raw,value=${{ needs.prepare.outputs.rocm_gfx }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}${{ needs.prepare.outputs.stable != 'true' && format('-r{0}', github.run_id) || '' }}
 
       - name: Create manifest
         env:
-          DIGEST: ${{ needs.build-studio.outputs.digest }}
+          DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           TAG_FLAGS=()
           while IFS= read -r t; do TAG_FLAGS+=(-t "$t"); done < <(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
@@ -428,6 +386,41 @@ jobs:
       - name: Inspect the result
         run: |
           for tag in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+              echo "=== $tag ==="
+              docker buildx imagetools inspect "$tag"
+          done
+
+      # The same rules with a -studio leaf, in this job and right after the base's:
+      # a second job could be scheduled with another run's tag job in between, and
+      # the twins would then come from different builds. format(), not a bare
+      # ${{ }}-studio: the raw gfx line above is matched by name in
+      # tests/python/test_docker_rocm.py and must stay unique.
+      - name: Resolve Studio tags
+        id: meta_studio
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
+            type=ref,event=tag,suffix=-studio,enable=${{ needs.prepare.outputs.stable == 'true' }}
+            type=schedule,pattern=nightly-studio,enable=${{ needs.prepare.outputs.stable == 'true' }}
+            type=raw,value=${{ format('{0}-studio', needs.prepare.outputs.rocm_gfx) }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}${{ needs.prepare.outputs.stable != 'true' && format('-r{0}', github.run_id) || '' }}-studio
+
+      - name: Create Studio manifest
+        env:
+          DIGEST: ${{ needs.build-studio.outputs.digest }}
+          TAGS_JSON: ${{ steps.meta_studio.outputs.json }}
+        run: |
+          TAG_FLAGS=()
+          while IFS= read -r t; do TAG_FLAGS+=(-t "$t"); done < <(jq -r '.tags[]' <<<"$TAGS_JSON")
+          docker buildx imagetools create "${TAG_FLAGS[@]}" "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+      - name: Inspect the Studio result
+        env:
+          TAGS_JSON: ${{ steps.meta_studio.outputs.json }}
+        run: |
+          for tag in $(jq -r '.tags[]' <<<"$TAGS_JSON"); do
               echo "=== $tag ==="
               docker buildx imagetools inspect "$tag"
           done
@@ -445,8 +438,7 @@ jobs:
     # prepare as well as tag: the `if` reads needs.prepare.outputs.stable, and a
     # job not listed in needs is simply absent from the context, which would make
     # the condition silently false and the page never update.
-    # tag-studio too: the page describes both images, so it moves once both did.
-    needs: [prepare, tag, tag-studio]
+    needs: [prepare, tag]
     if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
