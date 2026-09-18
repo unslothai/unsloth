@@ -3974,6 +3974,10 @@ _amd_node_repairs() {
         # the owning group's grant, so the group digit below is an upper bound and
         # prescribing membership from it is a promise this cannot keep. ls marks such a
         # node with a trailing "+"; getfacl is not installed everywhere this runs.
+        #
+        # shellcheck disable=SC2012  # not parsing a file LIST: this reads column 11 of the
+        # mode string for one explicitly named node, and the ACL "+" marker is precisely
+        # what find -printf cannot report. The rule is about globbing ls output for names.
         case "$(ls -ld "$_anr_node" 2>/dev/null | cut -c11)" in
             +) printf 'acl:%s\n' "$_anr_node"; continue ;;
         esac
