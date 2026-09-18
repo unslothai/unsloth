@@ -247,7 +247,7 @@ export const ptBR = {
   settings: {
     accounts: {
       title: "Contas",
-      description: "Crie contas privadas do Unsloth Studio. Novos usuários entram com um código de configuração de uso único e escolhem uma senha.",
+      description: "Crie contas privadas do Unsloth. Novos usuários entram com um código de configuração de uso único e escolhem uma senha.",
       username: "Nome de usuário",
       create: "Criar conta",
       createDescription: "Compartilhe um código de configuração para que a pessoa escolha a própria senha.",
@@ -586,7 +586,7 @@ export const ptBR = {
       openLogsFolderFailed: "Não foi possível abrir a pasta de logs.",
       exportFailed: "Não foi possível baixar os logs.",
       exportTooOld: "O backend do Unsloth em execução é antigo demais para exportar os logs. Atualize esse backend e reinicie.",
-      exportForbidden: "Para baixar todos os logs é preciso uma sessão do Unsloth Studio conectada. Uma chave de API não basta.",
+      exportForbidden: "Para baixar todos os logs é preciso uma sessão do Unsloth conectada. Uma chave de API não basta.",
       keywords: "depuracao depurar registro registros log logs erro erros falha rastreamento diagnostico solucao de problemas debug",
     },
     voice: {

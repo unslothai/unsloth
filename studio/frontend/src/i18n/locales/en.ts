@@ -250,7 +250,7 @@ export const en = {
   settings: {
     accounts: {
       title: "Accounts",
-      description: "Create private Unsloth Studio accounts. New users sign in with a one-time setup code and choose a password.",
+      description: "Create private Unsloth accounts. New users sign in with a one-time setup code and choose a password.",
       username: "Username",
       create: "Create account",
       createDescription: "Share a setup code so they can choose their own password.",
@@ -589,7 +589,7 @@ export const en = {
       openLogsFolderFailed: "Could not open the logs folder.",
       exportFailed: "Could not download the logs.",
       exportTooOld: "Running Unsloth backend is too old to export logs. Update that backend and restart.",
-      exportForbidden: "Downloading all logs needs a signed-in Unsloth Studio session. An API key is not enough.",
+      exportForbidden: "Downloading all logs needs a signed-in Unsloth session. An API key is not enough.",
       // Not rendered: extra terms the settings search matches this tab on.
       keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },

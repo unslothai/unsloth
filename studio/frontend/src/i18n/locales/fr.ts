@@ -249,7 +249,7 @@ export const fr = {
   settings: {
     accounts: {
       title: "Comptes",
-      description: "Créez des comptes Unsloth Studio privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
+      description: "Créez des comptes Unsloth privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
       username: "Nom d'utilisateur",
       create: "Créer un compte",
       createDescription: "Partagez un code de configuration pour que la personne choisisse son propre mot de passe.",
@@ -588,7 +588,7 @@ export const fr = {
       openLogsFolderFailed: "Le dossier des journaux n'a pas pu être ouvert.",
       exportFailed: "Les journaux n'ont pas pu être téléchargés.",
       exportTooOld: "Le backend Unsloth en cours d'exécution est trop ancien pour exporter les journaux. Mettez-le à jour et redémarrez-le.",
-      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Unsloth Studio connectée. Une clé d'API ne suffit pas.",
+      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Unsloth connectée. Une clé d'API ne suffit pas.",
       keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {

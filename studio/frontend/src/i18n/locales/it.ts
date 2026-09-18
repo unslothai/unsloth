@@ -213,7 +213,7 @@ export const it = {
   settings: {
     accounts: {
       title: "Account",
-      description: "Crea account Unsloth Studio privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
+      description: "Crea account Unsloth privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
       username: "Nome utente",
       create: "Crea account",
       createDescription: "Condividi un codice di configurazione perché possa scegliere la propria password.",
@@ -552,7 +552,7 @@ export const it = {
       openLogsFolderFailed: "Non è stato possibile aprire la cartella dei log.",
       exportFailed: "Non è stato possibile scaricare i log.",
       exportTooOld: "Il backend Unsloth in esecuzione è troppo vecchio per esportare i log. Aggiornalo e riavvialo.",
-      exportForbidden: "Per scaricare tutti i log serve una sessione di Unsloth Studio con accesso eseguito. Una chiave API non basta.",
+      exportForbidden: "Per scaricare tutti i log serve una sessione di Unsloth con accesso eseguito. Una chiave API non basta.",
       keywords: "debug log logs registro registri errore errori crash traccia diagnostica risoluzione dei problemi",
     },
     voice: {
