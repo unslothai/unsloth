@@ -63,14 +63,18 @@ def _string_literal(node) -> Optional[str]:
 
 
 @lru_cache(maxsize = 1)
-def _bad_mappings() -> dict:
+def _bad_mappings() -> Optional[dict]:
     """``loader_utils.BAD_MAPPINGS``, the corrections the loader applies AFTER a table lookup
     (a 4-bit dynamic quant that is too big, or a MoE that HF loads too slowly). Parsed out of
-    the source, because importing loader_utils imports torch."""
+    the source, because importing loader_utils imports torch.
+
+    ``None`` means the corrections could not be read, which is NOT the same as an empty table:
+    an uncorrected lookup can name a repo that does not exist, so the caller redirects nothing
+    rather than redirect somewhere the loader will never go."""
     try:
         models_dir = _unsloth_models_dir()
         if models_dir is None:
-            return {}
+            return None
         tree = ast.parse((models_dir / "loader_utils.py").read_text(encoding = "utf-8"))
         for node in tree.body:
             if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
@@ -84,13 +88,14 @@ def _bad_mappings() -> dict:
             for key, value in zip(node.value.keys, node.value.values):
                 name, replacement = _string_literal(key), _string_literal(value)
                 if name is None or replacement is None:
-                    # An entry we cannot read as data: correct nothing rather than guess.
-                    return {}
+                    # An entry we cannot read as data. Reading the rest would silently drop
+                    # whichever correction that entry was.
+                    return None
                 table[name.lower()] = replacement
             return table
     except Exception as error:
         logger.debug("Could not read the Unsloth loader corrections: %s", error)
-    return {}
+    return None
 
 
 def unsloth_public_mirror(model_name: Optional[str], load_in_4bit: bool = True) -> Optional[str]:
@@ -118,6 +123,8 @@ def unsloth_public_mirror(model_name: Optional[str], load_in_4bit: bool = True) 
     # resolved nothing. Without this, a 4-bit Qwen/Qwen3-30B-A3B resolves to
     # unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit, which does not exist: the loader never fetches it.
     corrections = _bad_mappings()
+    if corrections is None:
+        return None
     if isinstance(mirror, str):
         mirror = corrections.get(mirror.lower(), mirror)
     else:

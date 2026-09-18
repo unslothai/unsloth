@@ -71,6 +71,20 @@ _TABLES = (
 )
 
 
+@pytest.fixture(autouse = True)
+def _clear_mirror_caches():
+    # Both lookups are lru_cached and several tests point them at a tmp_path package, so a
+    # stale entry would otherwise decide the next test's answer. getattr, because the mapper
+    # fixture swaps _mapper_tables for a plain lambda that has no cache to clear.
+    def clear():
+        for lookup in (unsloth_mirror._mapper_tables, unsloth_mirror._bad_mappings):
+            getattr(lookup, "cache_clear", lambda: None)()
+
+    clear()
+    yield
+    clear()
+
+
 @pytest.fixture
 def mapper(monkeypatch):
     monkeypatch.setattr(unsloth_mirror, "_mapper_tables", lambda: _TABLES)
@@ -122,12 +136,23 @@ def test_corrections_are_read_from_the_real_loader_source():
     assert "unsloth/qwen3-30b-a3b-unsloth-bnb-4bit" in corrections
 
 
-def test_an_unreadable_correction_table_corrects_nothing(monkeypatch, tmp_path):
-    (tmp_path / "loader_utils.py").write_text("BAD_MAPPINGS = {compute(): 'x'}\n")
+@pytest.mark.parametrize(
+    "source",
+    [
+        "BAD_MAPPINGS = {compute(): 'x'}\n",  # an entry that is not readable as data
+        "BAD_MAPPINGS = build()\n",  # not a dict literal at all
+        "",  # no BAD_MAPPINGS in the file
+    ],
+)
+def test_unreadable_corrections_redirect_nothing(mapper, monkeypatch, tmp_path, source):
+    # None, not {}: an uncorrected lookup can name a repo that does not exist, so the mirror
+    # has to fall back to the name the caller picked rather than to a repo Unsloth never loads.
+    (tmp_path / "loader_utils.py").write_text(source)
     monkeypatch.setattr(unsloth_mirror, "_unsloth_models_dir", lambda: tmp_path)
     unsloth_mirror._bad_mappings.cache_clear()
     try:
-        assert unsloth_mirror._bad_mappings() == {}
+        assert unsloth_mirror._bad_mappings() is None
+        assert unsloth_mirror.unsloth_public_mirror("google/gemma-3-270m-it", False) is None
     finally:
         unsloth_mirror._bad_mappings.cache_clear()
 
@@ -141,6 +166,8 @@ def test_mapper_is_read_from_the_file_without_importing_unsloth(monkeypatch, tmp
         "FLOAT_TO_INT_MAPPER = {}\n"
         "MAP_TO_UNSLOTH_16bit = {'google/gemma-3-270m-it': 'unsloth/gemma-3-270m-it'}\n"
     )
+    # Ships beside mapper.py in every real install, and the corrections are read from it.
+    (package / "models" / "loader_utils.py").write_text("BAD_MAPPINGS = {}\n")
     spec = importlib.util.spec_from_file_location(
         "unsloth", package / "__init__.py", submodule_search_locations = [str(package)]
     )
