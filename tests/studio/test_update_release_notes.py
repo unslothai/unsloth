@@ -1773,22 +1773,45 @@ def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
     ), f"min-h-0 lets the rail squeeze the {card} card past its floor"
 
 
+RAIL_TESTID = "overlay-rail"
+
+
 def _corner_rails(provider: str) -> list[str]:
     """The class strings of the bottom-right overlay rails.
 
-    Matched on the corner they are pinned to, which is the thing under test.
-    The rail is anchored in CSS, so that corner is spelled in its classes.
+    Anchored on ``data-testid`` rather than on a run of the rail's own classes. The old
+    matcher spelled the corner INTO the pattern - `bottom-0 right-4` - so #11260 moving the
+    rail flush to the edge (`right-0`, with the inset paid as inline px padding) made it
+    match nothing, and four tests across two files failed at once while reporting a missing
+    rail rather than a changed one. The corner is a CLAIM these tests make, so it belongs in
+    an assertion, not in the thing that finds the element to assert about. Same reasoning as
+    _class_on_testid, which this file already grew for exactly this failure.
     """
-    return re.findall(r'"pointer-events-none fixed bottom-0 right-4 ([^"]*)"', provider)
+    clean = _without_comments(provider)
+    rails = []
+    at = clean.find(f'data-testid="{RAIL_TESTID}"')
+    while at != -1:
+        start, end = _opening_tag(clean, at)
+        rails.append(_class_value(clean[start:end], RAIL_TESTID))
+        at = clean.find(f'data-testid="{RAIL_TESTID}"', end)
+    return rails
+
+
+def _rail_style_px(provider: str, name: str) -> int:
+    """The px value of one of the rail's spacing constants, read from its definition."""
+    found = re.search(rf"^const {name} = (\d+);", provider, re.MULTILINE)
+    assert found, f"{name} is gone from provider.tsx, so the rail's spacing is unreadable"
+    return int(found.group(1))
 
 
 def _capped_rails(provider: str) -> int:
-    """How many of those rails cap themselves to the viewport, in CSS.
+    """How many of those rails cap themselves to the viewport.
 
-    2rem for the cards' band, less the 24px shadow gutter the rail adds around
-    them, so the gutter is not spent on the cards. See overlay-shadow-gutter.
+    The cap is the full viewport and the gutters are paid out of it, as inline px padding,
+    so the cards keep the band they had. Reading the class alone stopped being enough when
+    #11260 moved the gutters out of the class and into the style, so this reads both.
     """
-    return sum(1 for rail in _corner_rails(provider) if "max-h-[calc(100dvh_-_8px)]" in rail)
+    return sum(1 for rail in _corner_rails(provider) if "max-h-[100dvh]" in rail)
 
 
 def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():
@@ -1892,6 +1915,54 @@ def test_the_overlay_stack_fits_the_viewport():
     # rail scrolls. Without this the overflow lands below the bottom of the
     # screen with no way to reach it.
     assert provider.count("overflow-y-auto") >= stacks, "a capped stack spills its cards"
+
+
+def test_both_rails_are_still_pinned_to_the_bottom_right_corner():
+    """The corner, asserted rather than assumed by the matcher.
+
+    _corner_rails finds rails by testid now, so it would happily return a rail that had
+    wandered to the top left. This is the claim the old regex used to make implicitly, kept
+    explicit and kept failing for the right reason: it names the rail that moved.
+    """
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    rails = _corner_rails(provider)
+    assert len(rails) == 2, f"expected the browser and desktop rails, found {len(rails)}"
+    for rail in rails:
+        assert _applies(rail, "fixed"), f"the rail is no longer viewport-fixed: {rail!r}"
+        assert _applies(rail, "bottom-0"), f"the rail left the bottom edge: {rail!r}"
+        assert _applies(rail, "right-0"), f"the rail left the right edge: {rail!r}"
+
+
+def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
+    """#11260's actual claim, which no class can carry any more.
+
+    The rail caps at the whole viewport and pays its shadow gutters as inline px padding, so
+    the band left for the cards is 100dvh less the two block gutters - the same band they had
+    when the cap was written as calc(100dvh - 8px) and the gutter was 4px a side. px and not a
+    spacing utility because those are rem and would scale the rail off its corner with the
+    user's type size, which is the bug the comment above them is about.
+    """
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    top = _rail_style_px(provider, "STACK_SHADOW_GUTTER_TOP")
+    bottom = _rail_style_px(provider, "STACK_SHADOW_GUTTER_BOTTOM")
+    left = _rail_style_px(provider, "STACK_SHADOW_GUTTER_LEFT")
+    inset = _rail_style_px(provider, "STACK_CARD_INSET_RIGHT")
+
+    assert top and bottom and left and inset, "a rail gutter went to zero, so shadows clip"
+    # The deepest card shadow is 0 8px 28px -6px: 22px left of the card and 14px above it.
+    assert left >= 22, f"the left gutter {left}px is inside the card shadow's 22px reach"
+    assert top >= 14, f"the top gutter {top}px is inside the card shadow's 14px reach"
+    for name in ("paddingTop", "paddingBottom", "paddingLeft", "paddingRight"):
+        assert provider.count(f"{name}: STACK_") == 2, (
+            f"{name} is not set from a named constant on both rails, so one rail's spacing "
+            f"can drift from the other's"
+        )
+    # A rem-valued utility would scale with the type size and walk the rail off the corner.
+    for rail in _corner_rails(provider):
+        for utility in rail.split():
+            assert not re.fullmatch(r"p[xytblr]?-\d+", utility), (
+                f"the rail pads with the rem-valued {utility!r}; #8082 is about exactly that"
+            )
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():

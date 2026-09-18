@@ -99,10 +99,25 @@ def test_both_floating_panels_stack_on_the_shared_layer(path: Path):
     ), f"{path.name}: the panel no longer reads the shared floating panel layer"
 
 
+_RAIL_TESTID = 'data-testid="overlay-rail"'
+
+
 def test_the_notification_stack_uses_the_named_layer():
-    """Both copies, browser and desktop. They drifted apart once already."""
+    """Both copies, browser and desktop. They drifted apart once already.
+
+    Found by `data-testid`, not by a run of the rail's classes. The class-anchored version
+    spelled the corner into the pattern, so #11260 moving the rail flush to the edge made it
+    match nothing and report the stacks as missing rather than as moved. Where the rail sits
+    is asserted in tests/studio/test_update_release_notes.py, which is the file about its
+    layout; this one is only about the layer it draws on.
+    """
     src = PROVIDER.read_text(encoding = "utf-8")
-    stacks = re.findall(r'"pointer-events-none fixed bottom-0 right-4 ([^"]*)"', src)
+    stacks = []
+    at = src.find(_RAIL_TESTID)
+    while at != -1:
+        end = src.find(">", at)
+        stacks.append(src[src.rfind("<", 0, at) : end])
+        at = src.find(_RAIL_TESTID, end)
     assert len(stacks) == 2, f"expected the two bottom-right stacks, found {len(stacks)}"
     for stack in stacks:
         assert not _Z.search(stack), f"the stack still carries a hard-coded z-index: {stack!r}"
