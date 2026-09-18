@@ -46,10 +46,21 @@ test("the dialog mounts only once opened", () => {
 
 // A local GGUF file has no Hub repo, so looking one up would 404 against whatever the path's
 // basename happens to collide with.
-test("local-path rows do not offer Hub info", () => {
+// The guard must be `checkpointIsLocal`, not the path-prefix regex. `isLocalPath` only sees a
+// spelled path (leading /, ~, drive letter, ./ or UNC); a marker-less relative directory such as
+// `models/my-model` matches none of those, yet the variant listing reports resolved_locally, and
+// the surrounding code already keeps `checkpointIsLocal = isLocalPath || resolvedLocally` for
+// exactly that reason. Using the weaker test sent the panel to fetch Hub metadata for a
+// filesystem path: a misleading error, or worse, a real but unrelated repo of the same name.
+test("local checkpoints do not offer Hub info, including marker-less relative dirs", () => {
   assert.match(
     PICKERS,
-    /info=\{\s*isLocalPath\s*\? undefined\s*: \{\s*repoId,\s*variant: v\.quant,\s*hasLocalGguf: v\.downloaded,?\s*\}\s*\}/,
+    /info=\{\s*checkpointIsLocal\s*\? undefined\s*: \{\s*repoId,\s*variant: v\.quant,\s*hasLocalGguf: v\.downloaded,?\s*\}\s*\}/,
+  );
+  // The row-render guard has to agree, or the menu renders and its only entry is missing.
+  assert.doesNotMatch(
+    PICKERS.slice(PICKERS.indexOf("carrying info alone"), PICKERS.indexOf("ariaLabel={`More options for ${repoId} ${v.quant}`}")),
+    /!isLocalPath/,
   );
 });
 
@@ -138,7 +149,7 @@ test("the dialog renders facts rather than deriving them", () => {
 test("an undownloaded variant still offers Model info", () => {
   assert.match(
     PICKERS,
-    /v\.downloaded \|\| v\.partial === true\s*\n?\s*\?[\s\S]{0,200}?:\s*!isLocalPath\)\s*&&\s*\(/,
+    /v\.downloaded \|\| v\.partial === true\s*\n?\s*\?[\s\S]{0,200}?:\s*!checkpointIsLocal\)\s*&&\s*\(/,
     "the variant row menu should fall back to an info-only menu when not downloaded",
   );
 });

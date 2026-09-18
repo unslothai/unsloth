@@ -2260,14 +2260,17 @@ function GgufVariantExpander({
             {/* The cache/pin/update/delete actions only mean something once a variant exists on
                 disk, but Model info is exactly what a user wants *before* downloading: it is
                 where the licence verdict lives. So an undownloaded variant still gets a menu,
-                carrying info alone. Local paths are excluded — they have no Hub entry to read
-                (issue #11033 review). */}
+                carrying info alone. Local checkpoints are excluded — they have no Hub entry to
+                read (issue #11033 review). The test is `checkpointIsLocal`, not the path-prefix
+                regex: a marker-less relative directory like "models/my-model" has no prefix to
+                match, so the spelling says "hub" while the listing says it resolved on disk, and
+                the panel would query Hugging Face for a filesystem path. */}
             {(v.downloaded || v.partial === true
               ? allowPin ||
                 (v.update_available && onUpdateVariant) ||
                 onDeleteVariant ||
-                !isLocalPath
-              : !isLocalPath) && (
+                !checkpointIsLocal
+              : !checkpointIsLocal) && (
                 <ModelRowMenu
                   ariaLabel={`More options for ${repoId} ${v.quant}`}
                   iconClassName="size-3"
@@ -2277,7 +2280,7 @@ function GgufVariantExpander({
                       : { repoId, variant: v.quant }
                   }
                   info={
-                    isLocalPath
+                    checkpointIsLocal
                       ? undefined
                       : { repoId, variant: v.quant, hasLocalGguf: v.downloaded }
                   }
