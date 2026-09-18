@@ -429,6 +429,74 @@ def test_delete_attachment_route_then_404(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Stored original files
+# ---------------------------------------------------------------------------
+
+
+def _upload(data: bytes) -> dict:
+    import io
+
+    from fastapi import UploadFile
+    return chat_history.upload_attachment_file(
+        UploadFile(io.BytesIO(data), filename = "book.xlsx"), current_subject = "unsloth"
+    )
+
+
+def test_attachment_upload_dedupes_and_renews(tmp_path, monkeypatch):
+    import hashlib
+
+    from storage import chat_attachment_store as store
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    first = _upload(b"sheet bytes")
+    assert first == {"id": hashlib.sha256(b"sheet bytes").hexdigest(), "sizeBytes": 11}
+    path = store.attachment_path(first["id"])
+    assert path.read_bytes() == b"sheet bytes"
+    os.utime(path, (1, 1))
+    assert _upload(b"sheet bytes") == first
+    assert path.stat().st_mtime > 1
+    assert [p.name for p in path.parent.iterdir()] == [first["id"]]
+
+    monkeypatch.setattr(store, "MAX_ATTACHMENT_BYTES", 4)
+    for data, status in ((b"", 400), (b"too big", 413)):
+        with pytest.raises(HTTPException) as excinfo:
+            _upload(data)
+        assert excinfo.value.status_code == status
+    assert [p.name for p in path.parent.iterdir()] == [first["id"]]
+
+
+def test_attachment_sweep_keeps_referenced_and_recent_files(tmp_path, monkeypatch):
+    from storage import chat_attachment_store as store
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    kept, orphan, recent = (_upload(data)["id"] for data in (b"kept", b"orphan", b"recent"))
+    attachment = {**_image_attachment(), "storedFileId": kept}
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
+    root = store.attachment_path(kept).parent
+    (root / ".upload-abandoned").write_bytes(b"partial")
+    for name in (kept, orphan, ".upload-abandoned"):
+        os.utime(root / name, (1, 1))
+
+    assert store.sweep_attachments() == 2
+    assert sorted(p.name for p in root.iterdir()) == sorted([kept, recent])
+
+    chat_history.delete_attachment("msg-1", "att-1", current_subject = "unsloth")
+    assert sorted(p.name for p in root.iterdir()) == [recent]
+    # A server that deletes nothing still reclaims, on an upload, at most once an interval.
+    os.utime(root / recent, (1, 1))
+    _upload(b"fresh")
+    assert recent in [p.name for p in root.iterdir()]
+    monkeypatch.setattr(store, "_swept_at", {})
+    _upload(b"newer")
+    assert recent not in [p.name for p in root.iterdir()]
+    # Keyed per store, so a busy account's uploads cannot hold off the sweep of a quiet one.
+    monkeypatch.setattr(store, "_root", lambda: tmp_path / "other")
+    store.sweep_attachments_if_due()
+    assert sorted(store._swept_at) == sorted([root, tmp_path / "other"])
+
+
+# ---------------------------------------------------------------------------
 # Audio attachments (adapter {data, format} and compare-chat bare base64)
 # ---------------------------------------------------------------------------
 

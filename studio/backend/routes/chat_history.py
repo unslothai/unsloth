@@ -11,7 +11,7 @@ import asyncio
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import (
     BaseModel,
     BeforeValidator,
@@ -826,6 +826,7 @@ async def delete_threads(
     # Archived turns and uploaded documents are keyed by thread id and unreferenced once the thread
     # is gone, so drop them rather than leaking scopes per deleted chat.
     await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
+    await run_in_threadpool(_sweep_attachment_files)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
@@ -914,6 +915,36 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
 
     await run_in_threadpool(collect_orphaned_project_workspaces)
     return result
+
+
+def _sweep_attachment_files() -> None:
+    from storage.chat_attachment_store import sweep_attachments
+    try:
+        sweep_attachments()
+    except Exception:  # noqa: BLE001 - the deletion itself already succeeded
+        logger.warning("chat_history.attachment_sweep_failed", exc_info = True)
+
+
+@router.post("/attachment-files")
+def upload_attachment_file(
+    file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
+) -> dict:
+    """Keep an attachment's original bytes so tools can read the file itself."""
+    from storage.chat_attachment_store import (
+        AttachmentTooLarge,
+        EmptyAttachment,
+        store_attachment,
+        sweep_attachments_if_due,
+    )
+
+    try:
+        attachment_id, size = store_attachment(file.file)
+    except AttachmentTooLarge as exc:
+        raise HTTPException(status_code = 413, detail = str(exc)) from exc
+    except EmptyAttachment as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    sweep_attachments_if_due()
+    return {"id": attachment_id, "sizeBytes": size}
 
 
 @router.get("/attachments")
@@ -1043,6 +1074,7 @@ def delete_attachment(
         ) from exc
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
+    _sweep_attachment_files()
     return {"ok": True}
 
 
@@ -1288,6 +1320,7 @@ async def delete_project(
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)
+    await run_in_threadpool(_sweep_attachment_files)
     # Those folders are reachable from nothing now, so the caller is told which
     # ones survived and can offer the delete once.
     return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
@@ -1526,6 +1559,7 @@ async def clear_history(
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
+    await run_in_threadpool(_sweep_attachment_files)
     # Search thumbnails are keyed by id, not thread. reapable_image_ids is the original clear's own
     # snapshot off the ledger, so a replay's reap cannot reach a newer chat's images.
     if not replayed or reapable_image_ids:

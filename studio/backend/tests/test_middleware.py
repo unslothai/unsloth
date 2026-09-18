@@ -178,6 +178,14 @@ class TestMaxBodyMiddleware:
                 4 * ((VIDEO_INPUT_REFERENCE_MAX_BYTES + 2) // 3)
             )
         assert "/v1/videos/video_abc" not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        from storage.chat_attachment_store import MAX_ATTACHMENT_BYTES
+
+        path = "/api/chat/attachment-files"
+        assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+            upload_request_limit_bytes(MAX_ATTACHMENT_BYTES)
+        )
+        assert "/api/chat/attachments" not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
         assert main_module._get_request_body_max_bytes("/v1/videos/video_abc") == (
             main_module.default_request_body_limit_bytes()
         )
