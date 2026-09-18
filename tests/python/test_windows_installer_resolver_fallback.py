@@ -162,11 +162,25 @@ def _run_powershell(script: str, env: dict[str, str] | None = None) -> subproces
             pass
 
 
+# An ordinary, unelevated run, stated rather than inherited from whoever is running the test.
+#
+# An elevated install refuses to launch an interpreter a standard user could replace, since it
+# would be launching it with the administrator token, and every interpreter on a hosted Windows
+# runner is under C:\hostedtoolcache rather than a protected root. The runner account is an
+# administrator, so without this the rung declines, every EXACT below reads False, and the
+# failure looks like the ladder being broken rather than like the gate doing its job.
+#
+# The gate itself is driven directly in test_an_elevated_run_declines_a_user_writable_interpreter
+# and in tests/studio/test_early_python_path_resolver.ps1.
+NOT_ELEVATED = "function Test-StudioChildScriptDirectoryElevated { return $false }"
+
+
 def _script(
     body: str,
     *,
     sabotage: bool = True,
     names: tuple[str, ...] = LOCK_CHAIN,
+    elevated: bool = False,
 ) -> str:
     return "\n".join(
         [
@@ -176,6 +190,9 @@ def _script(
             "$script:StudioStdoutRedirected = $true",
             _helpers(*names),
             SABOTAGE if sabotage else "",
+            "function Test-StudioChildScriptDirectoryElevated { return $true }"
+            if elevated
+            else NOT_ELEVATED,
             body,
         ]
     )
@@ -1763,3 +1780,33 @@ def test_the_lock_chain_defines_everything_it_reaches() -> None:
         f"LOCK_CHAIN extracts functions that call {missing}, which nothing here defines. "
         "Add them to LOCK_CHAIN, or the scripts in this file die on the first call."
     )
+
+
+@requires_pwsh
+def test_an_elevated_run_declines_a_user_writable_interpreter(tmp_path: Path):
+    """The other side of the stub above, so neither half is an assumption.
+
+    Whatever this ladder settles on is launched WITH THE ADMINISTRATOR TOKEN when the install is
+    elevated, so an interpreter in a directory the same user's medium-integrity token can write
+    is a way to have arbitrary code run elevated. This host's own interpreter is exactly that, so
+    the rung has to decline, the answer stops being exact, and the reason is printed rather than
+    the degradation being silent.
+    """
+    studio_home = tmp_path / "studio"
+    studio_home.mkdir()
+    result = _run_powershell(
+        _script(
+            f"""
+# The gate is Windows-only, and the point of this case is the gate. Named here so the row
+# means the same thing on the Linux parity runner as on the Windows one.
+$env:OS = "Windows_NT"
+Write-Output "EXACT:$((Resolve-StudioFinalPathInfo -Path '{studio_home}').Exact)"
+""",
+            elevated = True,
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "EXACT:") == ["EXACT:False"]
+    assert [
+        line for line in result.stdout.splitlines() if "Could not resolve a path exactly" in line
+    ], result.stdout
