@@ -43,6 +43,8 @@ import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
+import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { getToastOffsets } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
@@ -440,6 +442,18 @@ function TauriUpdateLayer({
     update.status === "downloading" ||
     update.status === "installing" ||
     (update.status === "error" && !update.dismissed);
+
+  const wasUpdatingRef = useRef(false);
+  useEffect(() => {
+    const wasUpdating = wasUpdatingRef.current;
+    wasUpdatingRef.current = isUpdating;
+    // The backend restarted empty under a mounted chat page, whose picker still names the old model.
+    return followDesktopUpdateScreen(
+      isUpdating,
+      wasUpdating,
+      resyncInferenceStatusAfterServerModelChange,
+    );
+  }, [isUpdating]);
 
   const content = isUpdating ? (
     <UpdateScreen
