@@ -248,23 +248,36 @@ def test_install_ps1_sentinel_uses_pathtype_leaf():
 
 
 def test_setup_ps1_stale_venv_has_env_mode_guard():
-    """setup.ps1 stale-venv branch must gate the venv replacement on a custom-root Unsloth sentinel."""
+    """setup.ps1 stale-venv branch must gate the venv replacement on a custom-root Unsloth sentinel.
+
+    The predicate is computed once, above the sweep, because both destructive operations in this
+    region ask the same question: the rebuild before it renames the venv, and the sweep before it
+    deletes anything beside it."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
+    guard = src[src.index("$_studioRootIsOurs = (") : src.index("Stale venv detected")]
+    assert (
+        "$StudioHomeIsCustom" in guard
+    ), "setup.ps1 stale-venv branch must gate on $StudioHomeIsCustom"
+    assert (
+        'share\\studio.conf") -PathType Leaf' in guard
+    ), "setup.ps1 stale-venv guard must check share\\studio.conf with -PathType Leaf"
+    assert (
+        'bin\\unsloth.exe") -PathType Leaf' in guard
+    ), "setup.ps1 stale-venv guard must check bin\\unsloth.exe with -PathType Leaf"
+    assert (
+        "Test-UnslothCmdShimFile" in guard
+    ), "setup.ps1 stale-venv guard must still accept a quarantined .exe's .cmd shim"
+    # The guard must fire BEFORE either destructive call.
     idx = src.index("Stale venv detected")
     block = src[idx : idx + 2500]
     assert (
-        "$StudioHomeIsCustom" in block
-    ), "setup.ps1 stale-venv branch must gate on $StudioHomeIsCustom"
-    assert (
-        'share\\studio.conf") -PathType Leaf' in block
-    ), "setup.ps1 stale-venv guard must check share\\studio.conf with -PathType Leaf"
-    assert (
-        'bin\\unsloth.exe") -PathType Leaf' in block
-    ), "setup.ps1 stale-venv guard must check bin\\unsloth.exe with -PathType Leaf"
-    # The guard must fire BEFORE the destructive call.
-    guard_idx = block.index("$StudioHomeIsCustom")
+        "if (-not $_studioRootIsOurs) {" in block
+    ), "the rebuild branch must refuse a root it cannot claim"
+    guard_idx = block.index("if (-not $_studioRootIsOurs) {")
     rm_idx = block.index("Rename-Item -LiteralPath $VenvDir")
     assert guard_idx < rm_idx, "custom-root guard must precede Rename-Item -LiteralPath $VenvDir"
+    sweep_idx = src.index("$_staleMatch = [regex]::Match($_old.Name, $_staleShape)")
+    assert src.index("$_studioRootIsOurs = (") < sweep_idx, "the sweep must be able to read the guard"
 
 
 def test_setup_ps1_stale_venv_is_moved_aside_not_deleted_in_place():
@@ -340,10 +353,23 @@ def test_setup_ps1_stale_sweep_runs_outside_the_rebuild_branch():
     block = src[sweep : src.index("if ($shouldRebuild) {", sweep)]
     assert "ReparsePoint" in block, "the sweep must refuse reparse points"
     assert "Get-Process -Id $_ownerPid" in block, "the sweep must spare a live owner's rescue copy"
-    assert "[0-9]{14}-([0-9]+)$" in block, "the sweep must only match the generated name shape"
+    assert (
+        "[0-9]{14}-([0-9]+)(?:-[0-9]+)?$" in block
+    ), "the sweep must only match the generated name shape, including a collision suffix"
+    assert (
+        "$_studioRootIsOurs" in block
+    ), "the sweep must refuse a custom root that shows no sign of being ours"
+    # A name is not authority for a recursive delete: the directory has to look like an
+    # environment this script moved aside.
+    assert 'foreach ($_sign in @("pyvenv.cfg", $StudioOwnedMarker, $StudioStaleMarker))' in block
     # A second rebuild inside the same second must not collide on the destination name.
     stale_leaf = src[src.index("$_staleLeaf = ") : src.index("\n", src.index("$_staleLeaf = "))]
     assert "$PID" in stale_leaf, f"stale destination needs a per-process suffix, got {stale_leaf!r}"
+    retry = src[src.index("$_staleTry = 0") : src.index("Rename-Item -LiteralPath $VenvDir")]
+    assert (
+        "Test-Path -LiteralPath (Join-Path $_venvParent $_staleLeaf)" in retry
+    ), "a destination that is already taken must take a suffix rather than fail the rename"
+    assert "$_staleTry -lt 64" in retry, "the collision retry must be bounded"
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs pwsh")
@@ -360,14 +386,34 @@ def test_setup_ps1_stale_sweep_only_removes_its_own_litter(tmp_path):
     (venv / "Lib").mkdir(parents = True)
     dead_pid = 999999  # no such process; this copy is ours and abandoned
     ours = home / f"unsloth_studio.stale-20260101000000-{dead_pid}"
+    suffixed = home / f"unsloth_studio.stale-20260101000000-{dead_pid}-1"
+    stamped = home / f"unsloth_studio.stale-20260101000001-{dead_pid}"
+    shaped = home / f"unsloth_studio.stale-20260101000002-{dead_pid}"
     theirs = home / "unsloth_studio.stale-backup"
     live = home / f"unsloth_studio.stale-20260101000000-{os.getpid()+0}"
-    for d in (ours, theirs, live):
+    for d in (ours, suffixed, stamped, shaped, theirs, live):
         d.mkdir()
+    # What makes a directory ours: an environment's own pyvenv.cfg, or the marker the rename
+    # drops into the copy it moved. `shaped` wears the name and holds neither, which is what a
+    # user's directory would look like, and it is what this sweep must not delete.
+    (ours / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
+    (suffixed / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
+    (stamped / ".unsloth-studio-stale").write_text("", encoding = "utf-8")
+    (shaped / "holiday-photos.txt").write_text("not unsloth", encoding = "utf-8")
+    (live / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
     # `live` names this pytest process, which is alive, so it stands in for a concurrent setup's
     # rescue copy. Our own $PID inside pwsh differs, so the sweep sees a live foreign owner.
+    preamble = (
+        f'$VenvDir = "{venv.as_posix()}"\n'
+        f'$StudioHome = "{home.as_posix()}"\n'
+        "$StudioHomeIsCustom = $false\n"
+        '$StudioOwnedMarker = ".unsloth-studio-owned"\n'
+        '$StudioStaleMarker = ".unsloth-studio-stale"\n'
+        "function Test-UnslothCmdShimFile { param($Path) return $false }\n"
+        "function substep { param([string]$Message, [string]$Color = 'DarkGray') }\n"
+    )
     script = tmp_path / "sweep.ps1"
-    script.write_text(f'$VenvDir = "{venv.as_posix()}"\n' + sweep + "\n", encoding = "utf-8")
+    script.write_text(preamble + sweep + "\n", encoding = "utf-8")
     subprocess.run(
         ["pwsh", "-NoProfile", "-File", str(script)],
         check = True,
@@ -375,9 +421,49 @@ def test_setup_ps1_stale_sweep_only_removes_its_own_litter(tmp_path):
     )
 
     assert not ours.exists(), "an abandoned copy in the generated name shape must be swept"
+    assert not suffixed.exists(), "a copy whose name took a collision suffix must be swept too"
+    assert not stamped.exists(), "a copy identified only by the stale marker must be swept"
+    assert shaped.exists(), "a directory wearing the name but holding no environment must be spared"
     assert theirs.exists(), "a directory outside the generated name shape must be left alone"
     assert live.exists(), "a copy whose owning process is still alive must be left alone"
     assert venv.exists(), "the sweep must never touch the live venv"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs pwsh")
+def test_setup_ps1_stale_sweep_refuses_a_custom_root_it_cannot_claim(tmp_path):
+    """The sweep deletes directories the rebuild guard never sees, because it runs ahead of it and
+    on runs that never rebuild. Under a custom UNSLOTH_STUDIO_HOME with no Unsloth sentinel, the
+    rebuild refuses the venv -- so the sweep must refuse its siblings for the same reason."""
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    start = src.index("    $_venvParent = Split-Path -Parent $VenvDir")
+    sweep = src[start : src.index("\n\n", start)]
+
+    home = tmp_path / "elsewhere"
+    venv = home / "unsloth_studio"
+    (venv / "Lib").mkdir(parents = True)
+    litter = home / "unsloth_studio.stale-20260101000000-999999"
+    litter.mkdir()
+    (litter / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
+
+    preamble = (
+        f'$VenvDir = "{venv.as_posix()}"\n'
+        f'$StudioHome = "{home.as_posix()}"\n'
+        "$StudioHomeIsCustom = $true\n"
+        '$StudioOwnedMarker = ".unsloth-studio-owned"\n'
+        '$StudioStaleMarker = ".unsloth-studio-stale"\n'
+        "function Test-UnslothCmdShimFile { param($Path) return $false }\n"
+        "function substep { param([string]$Message, [string]$Color = 'DarkGray') }\n"
+    )
+    script = tmp_path / "sweep_custom.ps1"
+    script.write_text(preamble + sweep + "\n", encoding = "utf-8")
+    subprocess.run(["pwsh", "-NoProfile", "-File", str(script)], check = True, capture_output = True)
+    assert litter.exists(), "an unclaimable custom root must be left entirely alone"
+
+    # Negative control: the same tree with the ownership marker present is swept, so the assertion
+    # above is about ownership and not about some other reason nothing was deleted.
+    (venv / ".unsloth-studio-owned").write_text("", encoding = "utf-8")
+    subprocess.run(["pwsh", "-NoProfile", "-File", str(script)], check = True, capture_output = True)
+    assert not litter.exists(), "a custom root carrying the owned marker is ours to tidy"
 
 
 def _extract_setup_ps1_function(name: str) -> str:
@@ -448,6 +534,20 @@ class TestSetupHostInterpreterInVenv:
         _venv, run = probe
         assert run(hint = sys.executable) == "RESULT=<null>"
         assert run() == "RESULT=<null>"
+
+    def test_a_hint_naming_a_path_that_is_not_there_is_not_an_interpreter(self, probe):
+        """The hint is an inherited environment variable and can outlive what it names. Answering
+        with a path that does not exist would route a venv that genuinely needs rebuilding into an
+        in-place repair with no interpreter to perform it."""
+        venv, run = probe
+        gone = venv / "Scripts" / "python-that-was-deleted.exe"
+        assert run(hint = str(gone)) == "RESULT=<null>"
+        # A directory inside the venv is not an interpreter either.
+        assert run(hint = str(venv)) == "RESULT=<null>"
+        assert run(hint = str(self._venv_python(venv).parent)) == "RESULT=<null>"
+        # Negative control: the same probe answers when the file is really there, so the three
+        # refusals above are about the file and not about the harness.
+        assert run(hint = str(self._venv_python(venv))) == f"RESULT={self._venv_python(venv)}"
 
     @pytest.mark.skipif(os.name != "nt", reason = "the process walk reads Win32_Process")
     def test_a_venv_python_parent_is_found_without_the_hint(self, probe):

@@ -203,7 +203,14 @@ function Get-SetupHostInterpreterInVenv {
         param([string]$Candidate)
         if ([string]::IsNullOrWhiteSpace($Candidate)) { return $false }
         try { $full = [System.IO.Path]::GetFullPath($Candidate) } catch { return $false }
-        return $full.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)
+        if (-not $full.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        # A path, not a file, is not an interpreter that can be holding anything open. The hint
+        # below is an inherited environment variable and can outlive what it names -- a stale one
+        # pointing inside the venv would otherwise route a venv that genuinely needs rebuilding
+        # into an in-place repair it has no interpreter to perform. A live process's own
+        # ExecutablePath passes this trivially; an unreadable one reads as "not inside", which is
+        # the pre-existing rebuild.
+        return (Test-Path -LiteralPath $full -PathType Leaf)
     }
     if (& $inside $env:UNSLOTH_SETUP_HOST_PYTHON) { return $env:UNSLOTH_SETUP_HOST_PYTHON }
     try {
@@ -218,6 +225,13 @@ function Get-SetupHostInterpreterInVenv {
             if (& $inside $row.ExecutablePath) { return $row.ExecutablePath }
             $parent = [int]$row.ParentProcessId
             if ($parent -le 0 -or $parent -eq $cur) { break }
+            # A parent that started AFTER its child is not the parent: Windows reuses process ids
+            # once the real one has exited, and Microsoft's own Win32_Process guidance is to
+            # compare creation dates before trusting ParentProcessId. Unreadable dates on either
+            # side leave the hop alone rather than ending the walk, since the bound already caps it.
+            $parentRow = $byPid[$parent]
+            if ($parentRow -and $row.CreationDate -and $parentRow.CreationDate -and
+                $parentRow.CreationDate -gt $row.CreationDate) { break }
             $cur = $parent
         }
     } catch { }
@@ -2769,6 +2783,11 @@ $StageRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_STAGE_ROO
 $RuntimeRoot = if ($StageRoot) { $StageRoot } else { $StudioHome }
 $VenvDir = Join-Path $RuntimeRoot "unsloth_studio"
 $StudioOwnedMarker = ".unsloth-studio-owned"
+# Dropped into an environment this script has moved aside, so the sweep that removes such copies
+# can tell one it made from a directory that merely wears the same name. Written after the rename
+# and rewritten if the delete that follows fails, because a half-deleted copy can lose everything
+# else that identified it.
+$StudioStaleMarker = ".unsloth-studio-stale"
 # Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
 $NoTorchMarker = ".unsloth-no-torch"
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
@@ -6184,21 +6203,47 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
 
     # Outside the rebuild branch: an install that moved a venv aside, failed to delete the copy and
     # thereafter only repairs in place would never reach a sweep that lived inside it.
-    # Validated like install.ps1's rollback sweep (Test-StudioVenvRollbackMustBePreserved): a
-    # user's own unsloth_studio.stale-backup matches "stale-*" too, and the custom-root guard
-    # below runs too late to help. A live owner is a concurrent setup's rescue copy, not litter.
+    # Validated like install.ps1's rollback sweep (Test-StudioVenvRollbackMustBePreserved), and then
+    # some, because this one deletes on runs that rebuild nothing and runs ahead of the custom-root
+    # guard: a NAME cannot be its whole authority, or the cost of a false positive is paid by a user
+    # who never had a stale venv. Five refusals: a root that does not show it is ours, anything
+    # outside the generated shape, a reparse point, a live owner (a concurrent setup's rescue copy,
+    # not litter), and a directory carrying no sign of an environment we moved aside.
     $_venvParent = Split-Path -Parent $VenvDir
     $_venvLeaf = Split-Path -Leaf $VenvDir
-    $_staleShape = '^' + [regex]::Escape($_venvLeaf) + '\.stale-[0-9]{14}-([0-9]+)$'
+    # Trailing -<n>: the rename below adds one when the destination is taken, as install.sh's
+    # _start_studio_venv_replacement does, so the sweep must recognise it or that copy is permanent.
+    $_staleShape = '^' + [regex]::Escape($_venvLeaf) + '\.stale-[0-9]{14}-([0-9]+)(?:-[0-9]+)?$'
+    # Hoisted out of the rebuild branch below, which asks the same question before its own delete.
+    $_studioRootIsOurs = (
+        -not $StudioHomeIsCustom -or
+        (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -or
+        (Test-UnslothCmdShimFile (Join-Path $StudioHome "bin\unsloth.cmd"))
+    )
     # [regex]::Match, not $Matches: which operator fills it, and on which result, moves between
     # Windows PowerShell 5.1 and 7.x, and a capture group decides what gets deleted here.
-    foreach ($_old in @(Get-ChildItem -LiteralPath $_venvParent -Directory -Force -ErrorAction SilentlyContinue)) {
+    foreach ($_old in @(
+        if ($_studioRootIsOurs) { Get-ChildItem -LiteralPath $_venvParent -Directory -Force -ErrorAction SilentlyContinue }
+    )) {
         $_staleMatch = [regex]::Match($_old.Name, $_staleShape)
         if (-not $_staleMatch.Success) { continue }
         if (($_old.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
         $_ownerPid = 0
         if (-not [int]::TryParse($_staleMatch.Groups[1].Value, [ref]$_ownerPid)) { continue }
         if ($_ownerPid -ne $PID -and $null -ne (Get-Process -Id $_ownerPid -ErrorAction SilentlyContinue)) { continue }
+        # pyvenv.cfg is in every environment `python -m venv` and `uv venv` create, the owned
+        # marker is what install.ps1 and this script write into a root they adopt, and the stale
+        # marker is dropped by the rename below and rewritten whenever the delete after it fails.
+        $_looksMoved = $false
+        foreach ($_sign in @("pyvenv.cfg", $StudioOwnedMarker, $StudioStaleMarker)) {
+            if (Test-Path -LiteralPath (Join-Path $_old.FullName $_sign) -PathType Leaf) { $_looksMoved = $true; break }
+        }
+        if (-not $_looksMoved) {
+            substep "left $($_old.FullName) alone: it matches the stale-copy name but holds no environment." "DarkGray"
+            continue
+        }
         Remove-Item -LiteralPath $_old.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
 
@@ -6210,13 +6255,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # The .cmd counts too, and for the same reason the uninstaller accepts it: a
         # policy's quarantine can take the unsigned .exe and leave a root that is still
         # ours. Content-checked, never by name -- this guard gates a recursive delete.
-        if (
-            $StudioHomeIsCustom -and
-            -not (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -and
-            -not (Test-UnslothCmdShimFile (Join-Path $StudioHome "bin\unsloth.cmd"))
-        ) {
+        if (-not $_studioRootIsOurs) {
             Write-StudioLine "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
             Exit-SetupFailure "$VenvDir is not an Unsloth Studio environment"
@@ -6224,8 +6263,17 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # Moved aside, then deleted: a rename takes the whole tree or fails and leaves it intact,
         # where Remove-Item -Recurse stops at the first locked file and leaves an environment that
         # can neither start nor update itself. Deleting the copy is best-effort, swept next run.
-        # The pid joins the timestamp so two rebuilds in one second cannot collide on a name.
-        $_staleLeaf = "$_venvLeaf.stale-$(Get-Date -Format 'yyyyMMddHHmmss')-$PID"
+        # The pid joins the timestamp so two rebuilds in one second cannot collide on a name, and a
+        # taken name still takes a numeric suffix: one process can reach this twice inside a second,
+        # and a copy it left earlier may be on disk because its delete failed. Same shape, and the
+        # same reason, as install.sh's _start_studio_venv_replacement.
+        $_staleStamp = Get-Date -Format 'yyyyMMddHHmmss'
+        $_staleLeaf = "$_venvLeaf.stale-$_staleStamp-$PID"
+        $_staleTry = 0
+        while ((Test-Path -LiteralPath (Join-Path $_venvParent $_staleLeaf)) -and $_staleTry -lt 64) {
+            $_staleTry++
+            $_staleLeaf = "$_venvLeaf.stale-$_staleStamp-$PID-$_staleTry"
+        }
         try {
             Rename-Item -LiteralPath $VenvDir -NewName $_staleLeaf -ErrorAction Stop
         } catch {
@@ -6234,9 +6282,15 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             Exit-SetupFailure "Could not remove the stale environment at $VenvDir"
         }
         $_staleDir = Join-Path $_venvParent $_staleLeaf
+        # Stamped before the delete and again after one fails: the sweep above refuses a copy that
+        # carries no sign of being an environment we moved, and a half-deleted one can have lost
+        # its pyvenv.cfg. Without the rewrite the litter this branch announces would be exactly the
+        # litter the next run declines to touch.
+        try { [System.IO.File]::WriteAllText((Join-Path $_staleDir $StudioStaleMarker), "") } catch {}
         try {
             Remove-Item -LiteralPath $_staleDir -Recurse -Force -ErrorAction Stop
         } catch {
+            try { [System.IO.File]::WriteAllText((Join-Path $_staleDir $StudioStaleMarker), "") } catch {}
             substep "Could not fully remove the old environment ($($_.Exception.Message)); left at $_staleDir for the next run to sweep." "Yellow"
         }
     }

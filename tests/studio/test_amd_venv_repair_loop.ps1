@@ -323,6 +323,15 @@ Check "a direct update from inside the venv repairs in place" (
 Check "the rebuild moves the venv aside before deleting" (
     $_repair -match 'Rename-Item -LiteralPath \$VenvDir' -and -not ($_repair -match 'Remove-Item -LiteralPath \$VenvDir'))
 Check "the custom-home guard still gates the wipe" ($_repair -match '\$StudioHomeIsCustom')
+# The sweep next to the venv deletes on every qualifying run, including one that rebuilds nothing,
+# and it runs ahead of that guard. So it asks the same ownership question the guard asks, and it
+# requires the directory to look like an environment this script moved rather than trusting a name.
+Check "the sweep reads the same ownership guard" ($_repair -match '\$_studioRootIsOurs')
+Check "the sweep wants more than a matching name" (
+    $_repair -match 'foreach \(\$_sign in @\("pyvenv\.cfg", \$StudioOwnedMarker, \$StudioStaleMarker\)\)')
+# A taken destination takes a suffix instead of failing the rename, as install.sh already does.
+Check "a taken stale name takes a suffix"        ($_repair -match '\$_staleTry -lt 64')
+Check "the sweep recognises that suffix"         ($_repair -match '\(\?:-\[0-9\]\+\)\?\$')
 # Why it failed, not just that it failed: this line separates a faulted GPU driver from a missing
 # wheel, and the user is about to be told what happened to their environment.
 Check "the swallowed probe error is surfaced" ($_repair -match '\$_verProbe\.Error')
