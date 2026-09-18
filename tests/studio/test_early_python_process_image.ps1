@@ -307,6 +307,33 @@ try {
     $left = @(Get-ChildItem -LiteralPath $tempProbe -Force -ErrorAction SilentlyContinue)
     Check "the cmdlet launcher leaves no temporary files behind, on any exit path" ($left.Count -eq 0)
     if ($left.Count -gt 0) { $left | ForEach-Object { Write-Host "        left behind: $($_.Name)" } }
+    # The two halves of what makes that true on Windows, read out of the launcher, because the
+    # row above cannot see the difference from here.
+    #
+    # It is a Windows sharing violation. Stop-Process returns when the kill has been REQUESTED,
+    # and Windows keeps the redirected stdout and stderr handles open until the process is
+    # actually gone, so the finally deletes a file that is still held and silently fails. This
+    # host's POSIX filesystem unlinks an open file happily, which is why the same run passed
+    # under pwsh 7 and failed under Windows PowerShell 5.1 in parity CI, on the .out of the
+    # timeout case.
+    $cmdletSrc = @($ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $n.Name -eq "Invoke-StudioEarlyPythonScriptViaCmdlets"
+    }, $true))[0].Extent.Text
+    $killAt = $cmdletSrc.IndexOf("Stop-Process")
+    $returnAt = $cmdletSrc.IndexOf("return `$null", [Math]::Max($killAt, 0))
+    Check "the timeout path still kills the child (bites)" ($killAt -ge 0 -and $returnAt -gt $killAt)
+    Check "and waits for it to be gone before the files are deleted" (
+        $killAt -ge 0 -and
+        $cmdletSrc.Substring($killAt, [Math]::Max($returnAt - $killAt, 0)) -match 'Wait-Process')
+    # And the deletion is retried rather than attempted once, since a file that has just stopped
+    # being written can also be held for a moment by an on-access scanner.
+    $finallyAt = $cmdletSrc.LastIndexOf("} finally {")
+    Check "the cleanup block is still where this expects it (bites)" ($finallyAt -ge 0)
+    $finallySrc = ""
+    if ($finallyAt -ge 0) { $finallySrc = $cmdletSrc.Substring($finallyAt) }
+    Check "the cleanup retries instead of giving up on the first refusal" (
+        $finallySrc -match 'for \(\$attempt' -and $finallySrc -match 'Test-Path -LiteralPath \$f')
 } finally {
     foreach ($k in $savedTmp.Keys) {
         if ($null -eq $savedTmp[$k]) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }

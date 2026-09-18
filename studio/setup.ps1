@@ -1014,6 +1014,20 @@ function Get-CudaFamilyCappedForPreTuring {
     return $Family
 }
 
+# Interpreter for the shared inventory's Python rung, deliberately NOT part of the shared
+# region: the two files find Python in different places. setup.ps1 runs after the installer,
+# so the venv a previous run built is the interpreter, and $VenvDir is set well before the
+# first Get-NvidiaLibraryInventory call. No interpreter simply means the rung declines.
+function Get-NvidiaProbePythonExe {
+    if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return "" }
+    if (-not $VenvDir) { return "" }
+    foreach ($leaf in @("Scripts\python.exe", "bin/python3", "bin/python")) {
+        $candidate = Join-Path $VenvDir $leaf
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return ""
+}
+
 # ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
 # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
 # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
@@ -1061,69 +1075,282 @@ function Get-NvidiaLibraryProbeType {
     return ($name -as [type])
 }
 
+# The same inventory with nothing emitted: CPython's ctypes makes the identical NVML and CUDA
+# driver calls, and the interop leaves the scanned surface rather than moving within it.
+# A second source BENEATH the emitted one, never ahead of it: "" whenever no interpreter is
+# available or the probe itself says nothing.
+# Get-NvidiaProbePythonExe is deliberately per-file. The installer has its early read-only
+# interpreter ladder; setup.ps1 has the venv a previous run already built.
+function Read-NvidiaLibraryRawViaPython {
+    param([int]$TimeoutMs = 10000)
+    if ("$($env:UNSLOTH_NVIDIA_PYTHON_PROBE)".Trim() -eq "0") { return "" }
+    $exe = ""
+    try { $exe = "$(Get-NvidiaProbePythonExe)" } catch { return "" }
+    if (-not $exe) { return "" }
+    $windows = ($env:OS -eq "Windows_NT")
+    $nvmlHint = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
+    $cudaHint = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
+    # Kept byte-identical with studio/nvidia_probe.py's readers by
+    # tests/studio/test_nvidia_python_probe_parity.ps1. Column 0 on purpose: this is Python.
+    $probeSource = @'
+import ctypes, os, sys
+
+
+def _names(kind, hint):
+    if os.name == "nt":
+        if kind == "nvml":
+            return [hint, "nvml.dll"]
+        return [hint, "nvcuda.dll"]
+    if kind == "nvml":
+        return ["libnvidia-ml.so.1", "libnvidia-ml.so"]
+    return ["libcuda.so.1", "libcuda.so"]
+
+
+def _load(kind, hint):
+    for name in _names(kind, hint):
+        if not name:
+            continue
+        try:
+            return ctypes.CDLL(name)
+        except Exception:
+            continue
+    return None
+
+
+def _unpack(packed):
+    return "%d;%d" % (packed // 1000, (packed % 1000) // 10)
+
+
+def read_nvml(hint):
+    lib = _load("nvml", hint)
+    if lib is None:
+        return ""
+    try:
+        if lib.nvmlInit_v2() != 0:
+            return ""
+    except Exception:
+        return ""
+    try:
+        count = ctypes.c_uint(0)
+        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0 or count.value == 0:
+            return ""
+        packed = ctypes.c_int(0)
+        if lib.nvmlSystemGetCudaDriverVersion_v2(ctypes.byref(packed)) != 0 or packed.value < 1000:
+            return ""
+        # ctypes defaults every return and every pointer argument to a C int, which truncates a
+        # 64-bit nvmlDevice_t handle. Declare both before the first call, not after.
+        handle_of = lib.nvmlDeviceGetHandleByIndex_v2
+        handle_of.restype = ctypes.c_int
+        handle_of.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)]
+        cap_of = lib.nvmlDeviceGetCudaComputeCapability
+        cap_of.restype = ctypes.c_int
+        cap_of.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+        caps = []
+        for index in range(count.value):
+            device = ctypes.c_void_p()
+            # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
+            if handle_of(index, ctypes.byref(device)) != 0:
+                return ""
+            major = ctypes.c_int(0)
+            minor = ctypes.c_int(0)
+            if cap_of(device, ctypes.byref(major), ctypes.byref(minor)) != 0:
+                return ""
+            caps.append("%d.%d" % (major.value, minor.value))
+        return "nvml;%s;%s" % (_unpack(packed.value), ",".join(caps))
+    finally:
+        try:
+            lib.nvmlShutdown()
+        except Exception:
+            pass
+
+
+def read_cuda(hint):
+    lib = _load("cuda", hint)
+    if lib is None:
+        return ""
+    # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one, so a
+    # hidden pre-Turing card still caps the family. cuInit reads the mask once.
+    saved = os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    try:
+        init = lib.cuInit(0)
+    except Exception:
+        return ""
+    finally:
+        if saved is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = saved
+    if init != 0:
+        return ""
+    count = ctypes.c_int(0)
+    if lib.cuDeviceGetCount(ctypes.byref(count)) != 0 or count.value == 0:
+        return ""
+    packed = ctypes.c_int(0)
+    if lib.cuDriverGetVersion(ctypes.byref(packed)) != 0 or packed.value < 1000:
+        return ""
+    caps = []
+    for index in range(count.value):
+        device = ctypes.c_int(0)
+        if lib.cuDeviceGet(ctypes.byref(device), index) != 0:
+            return ""
+        major = ctypes.c_int(0)
+        minor = ctypes.c_int(0)
+        # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+        if lib.cuDeviceGetAttribute(ctypes.byref(major), 75, device) != 0:
+            return ""
+        if lib.cuDeviceGetAttribute(ctypes.byref(minor), 76, device) != 0:
+            return ""
+        caps.append("%d.%d" % (major.value, minor.value))
+    return "cuda;%s;%s" % (_unpack(packed.value), ",".join(caps))
+
+
+def main():
+    nvml_hint = os.environ.get("UNSLOTH_NVML_HINT", "")
+    cuda_hint = os.environ.get("UNSLOTH_CUDA_HINT", "")
+    answer = ""
+    try:
+        answer = read_nvml(nvml_hint)
+    except Exception:
+        answer = ""
+    if not answer:
+        try:
+            answer = read_cuda(cuda_hint)
+        except Exception:
+            answer = ""
+    sys.stdout.write(answer)
+
+
+main()
+'@
+    # Cmdlets only. Constrained Language Mode refuses New-Object ProcessStartInfo and
+    # [Process]::Start, and CLM is one of the two policies that make the emitted rung decline,
+    # so this launcher has to work on exactly the hosts that need it most.
+    $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+    $stem = Join-Path $tempRoot ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N"))
+    $scriptFile = "$stem.py"
+    $outFile = "$stem.out"
+    $errFile = "$stem.err"
+    $raw = ""
+    try {
+        Set-Content -LiteralPath $scriptFile -Value $probeSource -Encoding UTF8 -ErrorAction Stop
+        # Whole seconds, rounded up, without [math]::Ceiling: CLM blocks it. PowerShell's / is
+        # floating point and [int] rounds to nearest, so 10000ms must not become 11s.
+        $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
+        if (($TimeoutMs % 1000) -ne 0) { $seconds = $seconds + 1 }
+        $seconds = [int]$seconds
+        if ($seconds -lt 1) { $seconds = 1 }
+        # Nothing with a space in it reaches the command line. Windows PowerShell 5.1 appends
+        # each native argument verbatim, so a script under "C:\Users\First Last\AppData\Local\
+        # Temp" or a hint under "C:\Program Files\NVIDIA Corporation\NVSMI" would split on its
+        # spaces and the child would run something else. The script arrives on stdin and the two
+        # library hints in the environment; the only arguments left are -I -S and a bare dash.
+        $savedNvml = $env:UNSLOTH_NVML_HINT
+        $savedCuda = $env:UNSLOTH_CUDA_HINT
+        $env:UNSLOTH_NVML_HINT = $nvmlHint
+        $env:UNSLOTH_CUDA_HINT = $cudaHint
+        try {
+            $proc = Start-Process -FilePath $exe -ArgumentList @("-I", "-S", "-") -NoNewWindow -PassThru `
+                -RedirectStandardInput $scriptFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+        } finally {
+            if ($null -eq $savedNvml) { Remove-Item Env:UNSLOTH_NVML_HINT -ErrorAction SilentlyContinue }
+            else { $env:UNSLOTH_NVML_HINT = $savedNvml }
+            if ($null -eq $savedCuda) { Remove-Item Env:UNSLOTH_CUDA_HINT -ErrorAction SilentlyContinue }
+            else { $env:UNSLOTH_CUDA_HINT = $savedCuda }
+        }
+        if (-not $proc) { return "" }
+        # -InputObject and an error variable, never $proc.Id or $proc.HasExited. Constrained
+        # Language Mode permits property reads only on its allowed type list and
+        # System.Diagnostics.Process is not on it, so reading either one throws on exactly the
+        # hosts this rung exists for. Handing the object to a cmdlet keeps the access inside
+        # compiled code, where the language mode does not reach.
+        $waitError = $null
+        Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
+        if ($waitError) {
+            try { Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue } catch { }
+            return ""
+        }
+        $raw = "$(Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)"
+    } catch { return "" }
+    finally {
+        foreach ($stale in @($scriptFile, $outFile, $errFile)) {
+            Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return "$raw".Trim()
+}
+
 # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
 # answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
 # a wedged driver can block inside the library, and the deadline leaves that runspace behind.
+# The Python rung below spends what the emitted rung left of ONE budget, so the worst-case wall
+# clock is unchanged: a driver that wedges the full $TimeoutMs leaves nothing and is not retried.
 function Read-NvidiaLibraryRaw {
     param([int]$TimeoutMs = 10000)
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+    $native = ""
     $type = Get-NvidiaLibraryProbeType
-    if (-not $type) { return "" }
-    $reader = {
-        param($T)
-        function Read-Nvml {
-            if ($T::nvmlInit_v2() -ne 0) { return "" }
-            try {
-                [uint32]$count = 0
-                if ($T::nvmlDeviceGetCount_v2([ref]$count) -ne 0 -or $count -eq 0) { return "" }
+    if ($type) {
+        $reader = {
+            param($T)
+            function Read-Nvml {
+                if ($T::nvmlInit_v2() -ne 0) { return "" }
+                try {
+                    [uint32]$count = 0
+                    if ($T::nvmlDeviceGetCount_v2([ref]$count) -ne 0 -or $count -eq 0) { return "" }
+                    [int]$ver = 0
+                    if ($T::nvmlSystemGetCudaDriverVersion_v2([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
+                    $caps = @()
+                    for ([uint32]$i = 0; $i -lt $count; $i++) {
+                        [IntPtr]$dev = [IntPtr]::Zero; [int]$major = 0; [int]$minor = 0
+                        # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
+                        if ($T::nvmlDeviceGetHandleByIndex_v2($i, [ref]$dev) -ne 0) { return "" }
+                        if ($T::nvmlDeviceGetCudaComputeCapability($dev, [ref]$major, [ref]$minor) -ne 0) { return "" }
+                        $caps += "$major.$minor"
+                    }
+                    return "nvml;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
+                } finally { $null = $T::nvmlShutdown() }
+            }
+            function Read-Cuda {
+                # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one,
+                # so a hidden pre-Turing card still caps the family. cuInit reads the mask once.
+                $saved = $env:CUDA_VISIBLE_DEVICES
+                Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
+                try { $init = $T::cuInit([uint32]0) } finally { if ($null -ne $saved) { $env:CUDA_VISIBLE_DEVICES = $saved } }
+                if ($init -ne 0) { return "" }
+                [int]$count = 0
+                if ($T::cuDeviceGetCount([ref]$count) -ne 0 -or $count -eq 0) { return "" }
                 [int]$ver = 0
-                if ($T::nvmlSystemGetCudaDriverVersion_v2([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
+                if ($T::cuDriverGetVersion([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
                 $caps = @()
-                for ([uint32]$i = 0; $i -lt $count; $i++) {
-                    [IntPtr]$dev = [IntPtr]::Zero; [int]$major = 0; [int]$minor = 0
-                    # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
-                    if ($T::nvmlDeviceGetHandleByIndex_v2($i, [ref]$dev) -ne 0) { return "" }
-                    if ($T::nvmlDeviceGetCudaComputeCapability($dev, [ref]$major, [ref]$minor) -ne 0) { return "" }
+                for ($i = 0; $i -lt $count; $i++) {
+                    [int]$dev = 0; [int]$major = 0; [int]$minor = 0
+                    if ($T::cuDeviceGet([ref]$dev, $i) -ne 0) { return "" }
+                    # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+                    if ($T::cuDeviceGetAttribute([ref]$major, 75, $dev) -ne 0) { return "" }
+                    if ($T::cuDeviceGetAttribute([ref]$minor, 76, $dev) -ne 0) { return "" }
                     $caps += "$major.$minor"
                 }
-                return "nvml;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
-            } finally { $null = $T::nvmlShutdown() }
-        }
-        function Read-Cuda {
-            # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one,
-            # so a hidden pre-Turing card still caps the family. cuInit reads the mask once.
-            $saved = $env:CUDA_VISIBLE_DEVICES
-            Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
-            try { $init = $T::cuInit([uint32]0) } finally { if ($null -ne $saved) { $env:CUDA_VISIBLE_DEVICES = $saved } }
-            if ($init -ne 0) { return "" }
-            [int]$count = 0
-            if ($T::cuDeviceGetCount([ref]$count) -ne 0 -or $count -eq 0) { return "" }
-            [int]$ver = 0
-            if ($T::cuDriverGetVersion([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
-            $caps = @()
-            for ($i = 0; $i -lt $count; $i++) {
-                [int]$dev = 0; [int]$major = 0; [int]$minor = 0
-                if ($T::cuDeviceGet([ref]$dev, $i) -ne 0) { return "" }
-                # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
-                if ($T::cuDeviceGetAttribute([ref]$major, 75, $dev) -ne 0) { return "" }
-                if ($T::cuDeviceGetAttribute([ref]$minor, 76, $dev) -ne 0) { return "" }
-                $caps += "$major.$minor"
+                return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
             }
-            return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
+            $r = ""
+            try { $r = Read-Nvml } catch { $r = "" }
+            if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+            return "$r"
         }
-        $r = ""
-        try { $r = Read-Nvml } catch { $r = "" }
-        if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
-        return "$r"
+        $ps = $null; $handle = $null
+        try {
+            $ps = [powershell]::Create()
+            $null = $ps.AddScript($reader.ToString()).AddArgument($type)
+            $handle = $ps.BeginInvoke()
+            if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
+                $native = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+            }
+        } catch { $native = "" }
+        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
     }
-    $ps = $null; $handle = $null
-    try {
-        $ps = [powershell]::Create()
-        $null = $ps.AddScript($reader.ToString()).AddArgument($type)
-        $handle = $ps.BeginInvoke()
-        if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
-        return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-    } catch { return "" }
-    finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+    if ($native) { return $native }
+    $remainingMs = [int]($deadline - (Get-Date)).TotalMilliseconds
+    # Not worth a child process we cannot wait out; the emitted rung already spent the budget.
+    if ($remainingMs -lt 2000) { return "" }
+    try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs $remainingMs) } catch { return "" }
 }
 
 # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a

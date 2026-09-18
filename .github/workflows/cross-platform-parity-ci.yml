@@ -98,6 +98,7 @@ on:
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
+      - 'tests/studio/test_nvidia_python_probe_parity.ps1'
       - 'tests/studio/test_install_lock_excludes_aliases.ps1'
       - 'tests/studio/test_early_python_path_resolver.ps1'
       - 'tests/studio/test_early_python_process_image.ps1'
@@ -182,6 +183,7 @@ on:
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
+      - 'tests/studio/test_nvidia_python_probe_parity.ps1'
       - 'tests/studio/test_install_lock_excludes_aliases.ps1'
       - 'tests/studio/test_early_python_path_resolver.ps1'
       - 'tests/studio/test_early_python_process_image.ps1'
@@ -327,6 +329,17 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_nvidia_smi_discovery.ps1
+      # The inventory's Python rung, which recovers the CUDA version and the per-device compute
+      # capabilities on hosts that cannot emit a P/Invoke type. Pins the embedded probe against
+      # studio/nvidia_probe.py and against the other copy; the 5.1 leg matters because
+      # Constrained Language Mode is one of the policies that make the emitted rung decline.
+      - name: NVIDIA Python probe parity tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_nvidia_python_probe_parity.ps1
+      - name: NVIDIA Python probe parity tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_nvidia_python_probe_parity.ps1
       # Spawns a real holder process and takes the lock through a junction (Windows) or a
       # symbolic link (Linux), so it needs both legs: the alias mechanisms differ per OS and
       # .NET enforces FileShare.None through a different mechanism on each.
