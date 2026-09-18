@@ -2014,6 +2014,20 @@ export function SharedComposer({
       textFieldException: COMPOSER_INPUT_SELECTOR,
     },
   );
+  // Compare has no follow-up behaviour of its own: a send waits for the run to
+  // finish, so there is nothing to queue behind or steer. Both chords still
+  // register here, or they would be dead on the only composer on screen.
+  const sendFollowUp = () => {
+    if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+    sendRef.current?.();
+  };
+  const followUpOptions = {
+    enabled: chatActive && canSend,
+    skipInTextFields: true,
+    textFieldException: COMPOSER_INPUT_SELECTOR,
+  };
+  useShortcut("queueMessage", sendFollowUp, followUpOptions);
+  useShortcut("steerMessage", sendFollowUp, followUpOptions);
   useShortcut(
     "attachFiles",
     () => {

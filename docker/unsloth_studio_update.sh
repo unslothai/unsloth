@@ -65,7 +65,7 @@ if [ -z "$PY" ] && [ -L "$STUDIO_HOME/bin/unsloth" ]; then
     venv_bin="$(dirname "$(readlink -f "$STUDIO_HOME/bin/unsloth")")"
     [ -x "$venv_bin/python" ] && PY="$venv_bin/python"
 fi
-[ -n "$PY" ] || { echo "unsloth-studio-update: could not find the Studio venv under $STUDIO_HOME" >&2; exit 1; }
+[ -n "$PY" ] || { echo "unsloth-studio-update: could not find the Unsloth Studio venv under $STUDIO_HOME" >&2; exit 1; }
 
 # The editable tree may sit behind a symlink from the home into the image's copy: work
 # on the real path, but keep pip pointed at the home path (SRC_INSTALL) so the recorded
@@ -134,7 +134,7 @@ find_supctl() {
     [ -x "$SUPCTL" ] && { "$SUPCTL" status studio >/dev/null 2>&1 || _st=$?; } || _st=4
 }
 
-log "Studio venv: $PY"
+log "Unsloth Studio venv: $PY"
 log "before: unsloth $(version_of)"
 
 # One updater at a time: two would take each other's trees for leftovers. Held on an
@@ -189,7 +189,7 @@ if [ -s "$KEEP_ROLLBACK" ]; then
                 fi
             fi
         else
-            log "--no-restart: Studio may still be running the interrupted update; restart it to load the restored install"
+            log "--no-restart: Unsloth Studio may still be running the interrupted update; restart it to load the restored install"
         fi
     else
         echo "unsloth-studio-update: could not put the previous packages back (see the CRITICAL lines above); fix the cause and run this again. Nothing else was changed." >&2
@@ -428,7 +428,7 @@ if [ -n "$REF" ]; then
         fi
     fi
     if [ ! -d "$SRC" ]; then
-        echo "unsloth-studio-update: no source tree at $SRC (a wheel install has none, and a broken src link points at nothing); --ref needs the image's Studio checkout. Use a plain update instead; nothing was changed." >&2
+        echo "unsloth-studio-update: no source tree at $SRC (a wheel install has none, and a broken src link points at nothing); --ref needs the image's Unsloth Studio checkout. Use a plain update instead; nothing was changed." >&2
         exit 1
     fi
     log "installing from git: unsloth @${REF}, unsloth-zoo @${_zoo_ref}"
@@ -492,9 +492,9 @@ log "after:  unsloth $(version_of)"
 # parks supervisord's program in FATAL, so check first and put the old one back.
 if ! studio_tree_ok; then
     if restore && studio_tree_ok; then
-        log "the update could not start Studio, so the previous install was restored and Studio was not restarted."
+        log "the update could not start Unsloth Studio, so the previous install was restored and Unsloth Studio was not restarted."
     else
-        log "CRITICAL: the previous install could not be restored cleanly; Studio will fail to start until this is fixed."
+        log "CRITICAL: the previous install could not be restored cleanly; Unsloth Studio will fail to start until this is fixed."
     fi
     log "If a new dependency is missing, re-run with --with-deps."
     exit 1
@@ -566,21 +566,21 @@ if [ "$RESTART" = "1" ]; then
             done
             if [ "$_up" = "1" ]; then
                 commit_update
-                log "Studio is answering on port ${_port}"
+                log "Unsloth Studio is answering on port ${_port}"
             else
-                back_out "Studio did not answer on port ${_port} within ${_wait}s (see docker logs)"
+                back_out "Unsloth Studio did not answer on port ${_port} within ${_wait}s (see docker logs)"
             fi
         fi
     else
         # nothing here can start Studio, so the import and frontend checks above are
         # the whole validation
         commit_update
-        log "supervisor not managing 'studio' here; restart Studio yourself"
+        log "supervisor not managing 'studio' here; restart Unsloth Studio yourself"
         log "  (e.g. 'docker restart <container>')"
     fi
 else
     commit_update
-    log "--no-restart: restart Studio to load the update"
+    log "--no-restart: restart Unsloth Studio to load the update"
     log "  docker exec <container> supervisorctl restart studio"
 fi
 
