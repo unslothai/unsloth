@@ -301,3 +301,26 @@ test("a later successful toggle persists the rendered order", () => {
   assert.deepEqual(pins.getState().pinned, [D, C, B, A]);
   assert.deepEqual(storedOrder(), [D, C, B, A]);
 });
+
+test("a peer reorder wins once nothing of ours is unwritten", () => {
+  // Retiring the last unpersisted id leaves `storageWritable` false, which is a statement about
+  // OUR writes, not about the record. With nothing of ours left to carry, the record is as
+  // authoritative as it is in the writable case, and a peer that persisted our pin may have
+  // reordered since. Keeping the rendered order here let the next toggle that landed overwrite
+  // that reorder.
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+  } finally {
+    storage.set = realSet;
+  }
+  externalWrite([B, A]); // a peer persists the same pin, so nothing of ours is unwritten now
+  externalWrite([A, B], false); // and reorders, event not yet delivered
+  pins.getState().togglePinnedConnected(D); // this one lands
+  assert.deepEqual(storedOrder(), [D, A, B]);
+  assert.deepEqual(pins.getState().pinned, [D, A, B]);
+});

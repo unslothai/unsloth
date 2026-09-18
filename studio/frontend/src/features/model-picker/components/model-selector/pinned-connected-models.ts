@@ -89,7 +89,11 @@ function persistedBase(fallback: readonly string[]): string[] {
   const stored = storedPinned();
   if (stored === null) return [...fallback];
   retirePersisted(stored);
-  if (storageWritable) return stored;
+  // Nothing of ours is unwritten, so the record is authoritative exactly as it is while writes
+  // land: a peer that persisted our failed pin may also have REORDERED since, and holding on to
+  // this window's rendered order merely because an older write failed would overwrite that
+  // reorder on the next toggle that does land.
+  if (storageWritable || unpersisted.size === 0) return stored;
   // The SAME merge the drag commit uses, applied to the rendered list, so the two paths cannot
   // disagree about order: prepending every unpersisted pin to the record instead put an older
   // failed pin back above a peer addition the handler had just placed correctly, and the next
