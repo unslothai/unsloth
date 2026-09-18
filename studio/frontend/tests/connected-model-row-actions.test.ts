@@ -82,6 +82,11 @@ test("modality comes from the resolvers the app already has", () => {
   assert.match(marks, /resolveModelCatalogEntry\(providerType, modelId\);/);
   assert.match(marks, /const modalities = entry\?\.inputModalities \?\? null;/);
   assert.match(marks, /providerSupportsBuiltinImageGeneration\(/);
+  // Video generation is never claimed on a connected row: no provider publishes a capability for
+  // it and nothing we connect to serves it through the chat route, so the name would be the only
+  // evidence, and the glyph would promise a row something selecting it cannot do.
+  assert.match(marks, /videoGen: false,/);
+  assert.doesNotMatch(marks, /videoGen: byName\.videoGen/);
   // Unknown is not a promise: only an explicit true draws the eye.
   assert.doesNotMatch(
     marks,

@@ -70,9 +70,11 @@ export function connectedModelMarks(opts: {
           modelId,
           baseUrl,
         ) || byName.imageGen,
-      // No provider-side helper: nothing we connect to serves video generation through the chat
-      // route, so only the name can claim it.
-      videoGen: byName.videoGen,
+      // Never claimed. Nothing we connect to serves video generation through the chat route and
+      // no provider publishes a capability for it, so the name is the only evidence there could
+      // be, and a glyph resting on that promises a row something selecting it cannot do. An On
+      // Device row can say it because that badge describes a repo you may be about to fetch.
+      videoGen: false,
     },
     vision,
     contextLength:
