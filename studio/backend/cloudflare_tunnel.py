@@ -33,19 +33,10 @@ _REGISTERED_MARKER = "Registered tunnel connection"
 _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
 
 _READY_TIMEOUT = 15.0
-# No URL means the trycloudflare.com request itself failed or stalled, which is usually transient.
+# No URL means the trycloudflare.com request failed; cloudflared exits at once or on its own 15s timeout.
 _NO_URL_RETRY_DELAYS = (2.0, 5.0)
-# run.py starts the tunnel inline before the CLI banner, so these retries are startup stall. A refused
-# request fails in milliseconds and still gets all of them; a network that swallows the request instead
-# burns a full _READY_TIMEOUT per attempt, so stop once the sequence has cost this much. This bounds the
-# no-URL retries only: minting a URL leaves this loop for the pre-existing registration and
-# verify_public_url phases, which cost the same with or without a retry and carry their own deadlines.
-_NO_URL_RETRY_BUDGET = 35.0
-# How long stop() waits for cloudflared after SIGTERM, and again after SIGKILL.
-_STOP_TERM_GRACE = 5.0
-# Both of those waits can elapse -- SIGTERM ignored, then a kill the process is slow to die from -- so
-# the budget reserves the pair for the attempt it authorizes rather than guessing which one is paid.
-_STOP_WORST_CASE = 2 * _STOP_TERM_GRACE
+# run.py starts the tunnel before the CLI banner, so no-URL retries only start if they end within this.
+_NO_URL_RETRY_BUDGET = 30.0
 _OUTPUT_TAIL_LINES = 8
 _DOWNLOAD_TIMEOUT = 60
 
@@ -608,11 +599,11 @@ class CloudflareTunnel:
             if proc.poll() is None:
                 proc.terminate()
                 try:
-                    proc.wait(timeout = _STOP_TERM_GRACE)
+                    proc.wait(timeout = 5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     try:
-                        proc.wait(timeout = _STOP_TERM_GRACE)
+                        proc.wait(timeout = 5)
                     except Exception:
                         pass
         except Exception:
@@ -665,8 +656,7 @@ _active_lock = threading.Lock()
 _start_lock = threading.Lock()
 # Latched by stop_studio_tunnel so a shutdown landing between retries cannot start a tunnel nobody will stop.
 _shutdown_requested = False
-# Set alongside it so a retry already waiting out its delay wakes now: the wait holds _start_lock, so a
-# Stop followed by a Start would otherwise queue the Start behind a delay nobody is waiting for.
+# Set alongside it so a pending retry delay, which holds _start_lock, ends at once.
 _cancel_retry = threading.Event()
 _tunnel_generation = 0
 _tunnel_lifecycle = 0
@@ -833,7 +823,7 @@ def _set_online_locked(url: str) -> None:
 
 
 def _wait_before_retry(delay: float) -> bool:
-    """Wait out a no-URL retry delay. True if a stop cancelled it, so the caller gives up at once."""
+    """True if a stop cancelled the delay."""
     return _cancel_retry.wait(delay)
 
 
@@ -1016,19 +1006,8 @@ def start_studio_tunnel(
             if not stopped:
                 return None
             if retry_no_url:
-                # Charged against the budget here, not before tunnel.stop(): terminating a cloudflared
-                # that ignores SIGTERM is itself seconds of the startup stall. The delay and a whole
-                # further attempt have to fit as well, or the budget would bound only where the retry
-                # was authorized and not the sequence it pays for.
                 spent = time.monotonic() - no_url_started
-                reserved = no_url_delays[0] + timeout + _STOP_WORST_CASE
-                if spent + reserved <= _NO_URL_RETRY_BUDGET:
-                    with _active_lock:
-                        # A Stop that landed during the attempt above must not pay out the delay: this
-                        # holds _start_lock, so a following Start would queue behind the wait.
-                        if _shutdown_requested or generation != _tunnel_generation:
-                            return None
-                    # One that lands during the delay ends it early for the same reason.
+                if spent + no_url_delays[0] + timeout <= _NO_URL_RETRY_BUDGET:
                     if _wait_before_retry(no_url_delays.pop(0)):
                         return None
                     continue
