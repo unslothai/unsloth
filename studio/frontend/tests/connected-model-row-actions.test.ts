@@ -115,6 +115,18 @@ test("connected pins are a separate list from the On Device ones", () => {
   assert.doesNotMatch(pickers, /togglePinned\(model\.id\)/);
   assert.doesNotMatch(pickers, /pinKey\(model\.id\)/);
   assert.match(pickers, /onToggle: \(\) => togglePinnedConnected\(model\.id\)/);
+  // A toggle applies its one change to the STORED list. The write replaces the whole list, so two
+  // windows pinning different models before the storage event lands would otherwise keep only the
+  // second pin. Null, not [], when there is nothing to read: a toggle on an install whose writes
+  // all fail has to keep the session's own pins rather than drop them.
+  assert.match(
+    connectedPins,
+    /const base = storedPinned\(\) \?\? state\.pinned;/,
+  );
+  assert.match(
+    connectedPins,
+    /const raw = localStorage\.getItem\(KEY\);\s*if \(raw === null\) return null;/,
+  );
 });
 
 test("a pin moves the row out of its provider group", () => {

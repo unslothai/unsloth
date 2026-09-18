@@ -24,6 +24,22 @@ function readPinned(): string[] {
   }
 }
 
+/** The stored list, or null when there is nothing to read: no key yet, or storage unavailable.
+ *  Distinct from an empty list, since a toggle falling back to [] would drop this window's own
+ *  pins on an install where every write has failed. */
+function storedPinned(): string[] | null {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((v): v is string => typeof v === "string")
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function writePinned(pinned: string[]): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(pinned));
@@ -68,11 +84,15 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
     pinned: readPinned(),
     togglePinnedConnected: (modelId) =>
       set((state) => {
+        // Applied to the stored list, not to this window's copy of it, since a write replaces the
+        // whole list: another window's pin can be newer than the storage event this one has
+        // processed, and rewriting our own array would drop it for good.
+        const base = storedPinned() ?? state.pinned;
         // Newest pin first, as On Device does, so "Pin to top" literally lands on top of the
         // pinned group rather than under earlier pins.
-        const next = state.pinned.includes(modelId)
-          ? state.pinned.filter((id) => id !== modelId)
-          : [modelId, ...state.pinned];
+        const next = base.includes(modelId)
+          ? base.filter((id) => id !== modelId)
+          : [modelId, ...base];
         writePinned(next);
         return { pinned: next };
       }),
