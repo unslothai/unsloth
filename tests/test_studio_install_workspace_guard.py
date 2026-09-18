@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 from unsloth_pwsh_runner import run_pwsh
 
