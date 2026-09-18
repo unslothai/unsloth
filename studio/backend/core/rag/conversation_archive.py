@@ -2564,6 +2564,40 @@ def delete_thread_documents(thread_id: str, *, created_before: Optional[str] = N
     return len(removed)
 
 
+def copy_thread_documents(source_thread_id: str, thread_id: str) -> dict[str, str]:
+    from .ingestion import _copy_upload, _remove_upload
+
+    scope = store.thread_scope(thread_id)
+    copied: list = []
+    document_ids: dict[str, str] = {}
+    conn = rag_db.get_connection()
+    try:
+        documents = conn.execute(
+            "SELECT * FROM documents WHERE scope=? AND status='completed' ORDER BY created_at",
+            (store.thread_scope(source_thread_id),),
+        ).fetchall()
+        for document in documents:
+            stored_path = _copy_upload(document["stored_path"])
+            copied.append(stored_path)
+            document_ids[document["id"]] = store.copy_document(
+                conn,
+                dict(document),
+                scope,
+                thread_id = thread_id,
+                stored_path = stored_path,
+                commit = False,
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        for stored_path in copied:
+            _remove_upload(stored_path)
+        raise
+    finally:
+        conn.close()
+    return document_ids
+
+
 def _delete_scope(
     scope: str,
     thread_id: str,

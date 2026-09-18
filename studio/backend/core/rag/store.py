@@ -514,6 +514,67 @@ def delete_document(
         conn.commit()
 
 
+def copy_document(
+    conn: sqlite3.Connection,
+    source: dict,
+    scope: str,
+    *,
+    thread_id: str | None = None,
+    stored_path: str | None = None,
+    commit: bool = True,
+) -> str:
+    document_id = create_document(
+        conn,
+        scope = scope,
+        filename = source["filename"],
+        sha256 = source["sha256"],
+        thread_id = thread_id,
+        status = source["status"],
+        stored_path = stored_path,
+        embedding_model = source["embedding_model"],
+        created_at = source["created_at"],
+        commit = False,
+    )
+    conn.execute(
+        "UPDATE documents SET num_chunks=? WHERE id=?", (source["num_chunks"], document_id)
+    )
+    chunk_ids = {
+        r["id"]: f"{document_id}:{r['chunk_index']}"
+        for r in conn.execute(
+            "SELECT id, chunk_index FROM chunks WHERE document_id=?", (source["id"],)
+        ).fetchall()
+    }
+    conn.execute(
+        "INSERT INTO chunks("
+        "id, document_id, scope, chunk_index, text, page_number, "
+        "source_page_index, token_count, kind, pdf_regions_json) "
+        "SELECT ? || ':' || chunk_index, ?, ?, chunk_index, text, page_number, "
+        "source_page_index, token_count, kind, pdf_regions_json "
+        "FROM chunks WHERE document_id=?",
+        (document_id, document_id, scope, source["id"]),
+    )
+    conn.execute(
+        "INSERT INTO chunks_fts(text, chunk_id, scope) "
+        "SELECT text, id, scope FROM chunks WHERE document_id=?",
+        (document_id,),
+    )
+    if rag_db.vec_table_exists(conn):
+        vectors = conn.execute(
+            "SELECT chunk_id, embedding FROM chunks_vec WHERE scope=?", (source["scope"],)
+        ).fetchall()
+        conn.executemany(
+            "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
+            [
+                (scope, chunk_ids[r["chunk_id"]], r["embedding"])
+                for r in vectors
+                if r["chunk_id"] in chunk_ids
+            ],
+        )
+    if commit:
+        conn.commit()
+    return document_id
+
+
 def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
     """Whether anything here can be hidden by the linked-folder filters.
 

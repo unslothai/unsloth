@@ -69,6 +69,7 @@ from storage.studio_db import (
     list_chat_messages,
     list_chat_messages_for_threads,
     list_chat_threads,
+    remap_chat_thread_document_ids,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -859,6 +860,25 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
             )
         except Exception:
             logger.warning("Could not remove the uploaded documents for %s", thread_id)
+
+
+def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:
+    try:
+        from core.rag import conversation_archive
+        from storage import rag_db
+
+        if rag_db.rag_available():
+            document_ids = conversation_archive.copy_thread_documents(source_thread_id, thread_id)
+            remap_chat_thread_document_ids(thread_id, document_ids)
+        return True
+    except Exception:
+        logger.warning(
+            "Could not copy the uploaded documents of %s to %s",
+            source_thread_id,
+            thread_id,
+            exc_info = True,
+        )
+        return False
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
@@ -1658,11 +1678,15 @@ def fork_thread(
         # The source can be deleted between the reads above and the fork transaction, which the
         # threadpool lets run concurrently. Report it gone rather than as a server fault.
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    messages = list_chat_messages(payload.newThreadId)
     # Stub: v1 always starts a fresh container and surfaces the same warning for every provider.
     warning: Optional[str] = None
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."
+    if not _copy_thread_rag_documents(thread_id, payload.newThreadId):
+        warning = " ".join(
+            filter(None, [warning, "Documents attached to the parent chat were not copied."])
+        )
+    messages = list_chat_messages(payload.newThreadId)
     return ChatForkResponse(
         thread = thread_from_row(forked),
         messages = [ChatMessage(**m) for m in messages],
