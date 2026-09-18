@@ -7915,23 +7915,34 @@ def macos_product_version() -> str:
     platform.mac_ver() reads: 13.3.1 (a) reports ProductVersion 13.3.1 with the "(a)"
     in ProductVersionExtra and the build at 22E772610a instead of 22E261. Reading
     SystemVersion.plist has the same blind spot and is additionally stale for an RSR
-    (osquery/osquery#8008), so ask sw_vers, which reports all three.
+    (osquery/osquery#8008), so ask sw_vers.
+
+    Bare, not flagged: sw_vers documents single-dash options (-productVersion), so a
+    double-dash spelling is at best undocumented, and a flag that errors would silently
+    cost the very field this exists to read. With no arguments it prints every field as
+    documented tab-aligned "Key:\tValue" lines, ProductVersionExtra among them when an
+    RSR is installed, in one spawn and with nothing to spell wrong.
     """
-    fields: list[str] = []
-    for flag in ("--productVersion", "--productVersionExtra", "--buildVersion"):
-        try:
-            done = subprocess.run(
-                ["/usr/bin/sw_vers", flag],
-                capture_output = True, text = True, timeout = 10, check = False,
-            )
-        except Exception:  # noqa: BLE001
-            fields = []
-            break
-        # --productVersionExtra exits non-zero when no RSR is installed, and did not
-        # exist before macOS 13; absent is a value, not a failure.
-        fields.append(done.stdout.strip() if done.returncode == 0 else "")
-    if fields and fields[0]:
-        return " ".join(f for f in fields if f)
+    try:
+        done = subprocess.run(
+            ["/usr/bin/sw_vers"],
+            capture_output = True, text = True, timeout = 10, check = False,
+        )
+        if done.returncode == 0:
+            values: "dict[str, str]" = {}
+            for line in done.stdout.splitlines():
+                key, sep, value = line.partition(":")
+                if sep:
+                    values[key.strip()] = value.strip()
+            # Absent ProductVersionExtra means no RSR, and predates macOS 13; not a failure.
+            fields = [
+                values.get(key, "")
+                for key in ("ProductVersion", "ProductVersionExtra", "BuildVersion")
+            ]
+            if fields[0]:
+                return " ".join(f for f in fields if f)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         # sw_vers unavailable: the product version alone still catches a point release.
         return str(platform.mac_ver()[0] or "").strip()

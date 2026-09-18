@@ -477,36 +477,50 @@ def test_a_rapid_security_response_probes_again(tmp_path: Path, monkeypatch):
 
 def test_the_recorded_version_carries_the_rsr_and_build_fields(monkeypatch):
     """platform.mac_ver() alone cannot see an RSR, so sw_vers is what gets asked."""
-    answers = {
-        "--productVersion": "13.3.1",
-        "--productVersionExtra": "(a)",
-        "--buildVersion": "22E772610a",
-    }
     seen = []
 
     def _sw_vers(cmd, **_kwargs):
-        seen.append(cmd[1])
-        return types.SimpleNamespace(returncode = 0, stdout = answers[cmd[1]] + "\n", stderr = "")
+        seen.append(cmd)
+        return types.SimpleNamespace(
+            returncode = 0,
+            stdout = (
+                "ProductName:\tmacOS\n"
+                "ProductVersion:\t13.3.1\n"
+                "ProductVersionExtra:\t(a)\n"
+                "BuildVersion:\t22E772610a\n"
+            ),
+            stderr = "",
+        )
 
     monkeypatch.setattr(ILP.subprocess, "run", _sw_vers)
     assert _REAL_MACOS_PRODUCT_VERSION() == "13.3.1 (a) 22E772610a"
-    assert seen == ["--productVersion", "--productVersionExtra", "--buildVersion"]
+    # Bare: sw_vers documents single-dash options, so no flag is spelled at all.
+    assert seen == [["/usr/bin/sw_vers"]]
 
 
 def test_no_rsr_installed_still_yields_a_version(monkeypatch):
-    """--productVersionExtra exits non-zero with no RSR, and predates macOS 13."""
+    """ProductVersionExtra is simply absent with no RSR, and predates macOS 13."""
 
-    def _sw_vers(cmd, **_kwargs):
-        if cmd[1] == "--productVersionExtra":
-            return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "usage")
+    def _sw_vers(_cmd, **_kwargs):
         return types.SimpleNamespace(
             returncode = 0,
-            stdout = {"--productVersion": "15.5.1", "--buildVersion": "24F74"}[cmd[1]] + "\n",
+            stdout = "ProductName:\tmacOS\nProductVersion:\t15.5.1\nBuildVersion:\t24F74\n",
             stderr = "",
         )
 
     monkeypatch.setattr(ILP.subprocess, "run", _sw_vers)
     assert _REAL_MACOS_PRODUCT_VERSION() == "15.5.1 24F74"
+
+
+def test_a_failing_sw_vers_falls_back_to_the_product_version(monkeypatch):
+    """A fallback that still catches a point release beats recording nothing."""
+
+    def _boom(_cmd, **_kwargs):
+        raise OSError("sw_vers not found")
+
+    monkeypatch.setattr(ILP.subprocess, "run", _boom)
+    monkeypatch.setattr(ILP.platform, "mac_ver", lambda: ("15.5.1", ("", "", ""), "arm64"))
+    assert _REAL_MACOS_PRODUCT_VERSION() == "15.5.1"
 
 
 def test_the_same_macos_patch_level_still_skips(tmp_path: Path, monkeypatch):
