@@ -451,7 +451,6 @@ def test_an_unreachable_guard_is_caught(tmp_path, monkeypatch) -> None:
     assert "99.0.0" in str(raised.value)
 
 
-
 def _steps_exposed_to_the_powershell_default(workflows: Path) -> list[tuple[str, str, str]]:
     """Every `run:` step a Windows runner hands to PowerShell, GitHub's default there. A
     step escapes only via `shell:` on itself, its job or the workflow; steps an `if:`
@@ -551,7 +550,6 @@ def test_the_powershell_continuation_check_can_fail(tmp_path, monkeypatch) -> No
         encoding = "utf-8",
     )
     test_no_windows_step_uses_a_bash_line_continuation()
-
 
 
 def _ceiling_lane_trl_pins(workflows: Path) -> list[tuple[str, str, str]]:
