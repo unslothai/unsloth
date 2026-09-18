@@ -15,6 +15,11 @@ import {
 } from "./session";
 
 /** Display policy only; the server validates the token and enforces owner access. */
+// The installation owner's login id. Reserved rather than chosen:
+// validate_account_username rejects it, so no managed account can take it and the
+// owner cannot rename away from it.
+export const OWNER_USERNAME = "unsloth";
+
 export function sessionAccount(
   token: string | null,
 ): { username: string; isOwner: boolean } | null {
@@ -28,7 +33,7 @@ export function sessionAccount(
       username: payload.sub,
       isOwner: payload.role
         ? payload.role === "owner"
-        : payload.sub === "unsloth",
+        : payload.sub === OWNER_USERNAME,
     };
   } catch {
     return null;
