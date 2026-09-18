@@ -3813,11 +3813,9 @@ def _integrated_cuda_inventory(
     return {td["index"]: td for td in inventory}, "index"
 
 
-# Adopting a wider total is a claim that the two sources measured DIFFERENT memory
-# scopes, so the gap has to clear the noise between them: props.total_memory is exact
-# bytes while nvidia-smi rounds to whole MiB, and on a part where they agree the two can
-# still differ by a hair. 1%, floored at 64 MiB, separates that from a carve-out, which
-# is not slightly small but small by a multiple (8128 MiB against 46477 MiB, measured).
+# props.total_memory is exact bytes, nvidia-smi rounds to whole MiB, so agreeing
+# sources still differ by a hair. 1% floored at 64 MiB separates that from a carve-out,
+# which is small by a multiple (8128 against 46477 MiB, measured).
 _INTEGRATED_TOTAL_ADOPT_FRACTION = 0.01
 _INTEGRATED_TOTAL_ADOPT_FLOOR_GB = 0.0625
 
@@ -3951,30 +3949,24 @@ def _reconcile_cuda_integrated_memory(
         )
         dev["vram_total_gb"] = total_gb
 
-        # A pool-scoped total needs a numerator spanning the same ground, the rule the
-        # ROCm path states at _rocm_windows_unified_used_bytes. memory.used is scoped to
-        # the carve-out, so it is a floor on pool occupancy rather than a measure of it,
-        # and the host counter is the figure that spans the pool. Take whichever is
-        # larger: both are real lower bounds and neither dominates the other.
+        # A pool total needs a pool-scoped numerator (_rocm_windows_unified_used_bytes
+        # states the same rule). memory.used is carve-out scoped, so it is a lower bound
+        # like the host counter is: take the larger, neither dominates.
         numerators = [n for n in (host_used_gb, cli_used_gb) if n is not None]
         if not numerators:
             continue
         pool_used_gb = min(max(numerators), total_gb)
         if host_used_gb is None and cli_free_gb is not None:
-            # No pool-scoped occupancy at all: the CLI's used figure is scoped to the
-            # carve-out, so pairing it with the pool total would advertise the whole
-            # difference as free on no evidence (45.39/5.73 reads as 39.66 GiB free
-            # where the CLI vouched for 2.21). Keep the budget it did vouch for. The
-            # total still widens, which is what stops the monitor reading Unknown.
+            # No pool-scoped occupancy left, so pairing the carve-out's used with the
+            # pool total would invent free bytes (45.39/5.73 reads as 39.66 free where
+            # the CLI vouched for 2.21). Widen the total, keep the budget.
             pool_used_gb = max(pool_used_gb, total_gb - cli_free_gb)
         if cli_free_gb is not None:
             # The floor. A host whose RAM is nearly full would otherwise publish a pool
             # emptier of free bytes than the carve-out reading it replaced.
             pool_used_gb = min(pool_used_gb, max(total_gb - cli_free_gb, 0.0))
-        # Last, so it beats the floor: psutil reads host-wide counters inside most
-        # containers, and unified-memory allocations are charged to memory.max, so a
-        # 2 GiB container on a 121 GiB Spark would otherwise publish most of the host
-        # pool as free and _free_vram_by_index would hand it to the training gate.
+        # Last, so it beats the floor: psutil reads host-wide counters in most
+        # containers while the allocations are charged to memory.max.
         cgroup_free_gb = _cgroup_available_memory_gb()
         if cgroup_free_gb is not None:
             pool_used_gb = min(max(pool_used_gb, total_gb - cgroup_free_gb), total_gb)
@@ -5655,10 +5647,8 @@ def _repair_smi_visible_devices(
         td = inventory.get(dev.get(key_field))
         if td is None:
             continue
-        # A BLANK total is filled whatever the part is, which is what this function did
-        # before the widening was added: a discrete card whose memory.total reads [N/A]
-        # (MIG, vGPU) had its capacity filled here too, and dropping that sent the whole
-        # response down get_backend_visible_gpu_info's torch fallback instead.
+        # A BLANK total is filled whatever the part is, as this function always did:
+        # dropping that sent MIG and vGPU rows down the torch fallback instead.
         if dev.get("memory_total_gb") is None:
             dev["memory_total_gb"] = td["total_gb"]
         if not td.get("_cuda_integrated"):

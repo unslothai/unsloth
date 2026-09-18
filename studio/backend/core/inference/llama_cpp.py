@@ -10560,38 +10560,19 @@ class LlamaCppBackend:
             integrated = LlamaCppBackend._integrated_cuda_gpu_ids()
             if not integrated or not gpus:
                 return gpus
-            # The two id spaces have to be the same one, and by default they are not.
-            # These rows are nvidia-smi indices, which NVML orders by the kernel's
-            # enumeration; `_integrated_cuda_gpu_ids` answers in CUDA's space, which
-            # CUDA_DEVICE_ORDER defaults to FASTEST_FIRST, a heuristic that pins only
-            # device 0 and leaves the rest unspecified
-            # (https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/environment-variables.html).
-            # A numeric mask carries CUDA's indices, not PCI ones, and a UUID or MIG mask
-            # resolves to no physical ids at all while `_visible_devices_mask` returns
-            # None on that same mask, leaving the CLI rows unfiltered. Either way the id
-            # can land on another card and advertise a discrete GPU with a system-RAM
-            # sized pool, the one shape here that overcommits real VRAM.
-            #
-            # So widen only where the join is provable: PCI_BUS_ID ordering, or a host
-            # that showed a single unmasked GPU, where there is nothing to confuse. That
-            # is every shipping Spark, Jetson and N1X. hardware.py states the same rule
-            # at `_cuda_join_is_unsafe`.
-            # Ordering alone is not enough: a UUID or MIG mask resolves to no physical
-            # ids whatever CUDA_DEVICE_ORDER says, and since `_visible_devices_mask`
-            # cannot parse that mask either, the CLI rows stay unfiltered. Both halves
-            # have to be mappable, so the mask must be absent or numeric AND the order
-            # PCI_BUS_ID.
+            # These rows are nvidia-smi indices; `_integrated_cuda_gpu_ids` answers in
+            # CUDA's, which CUDA_DEVICE_ORDER defaults to FASTEST_FIRST, pinning only
+            # device 0 (docs.nvidia.com/cuda/cuda-programming-guide, environment
+            # variables). An unmappable mask is worse: no physical ids AND, since
+            # `_visible_devices_mask` cannot parse it either, unfiltered CLI rows. Join
+            # only when both halves are mappable, as `_cuda_join_is_unsafe` does.
             order = (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper()
             raw_mask = os.environ.get("CUDA_VISIBLE_DEVICES")
             mask_unset = raw_mask is None or not raw_mask.strip()
             mappable = mask_unset or LlamaCppBackend._resolve_visible_physical_ids() is not None
-            # No single-row exemption. `gpus` is what SURVIVED parsing, not what the
-            # host has: the N1X's own NPU row is dropped because its memory.free does
-            # not parse, so one surviving row proves nothing about how many cards are
-            # out there, and a host whose discrete row happened to drop could have had
-            # its remaining row widened. main.py:19 sets PCI_BUS_ID on import, so the
-            # condition below already covers every Spark, Jetson and N1X; a host that
-            # overrides the ordering loses the widening rather than risking the join.
+            # No single-row exemption: `gpus` is what SURVIVED parsing (the N1X's own
+            # NPU row does not), so it is not a device count. main.py:19 sets PCI_BUS_ID,
+            # so every Spark, Jetson and N1X still qualifies below.
             if not (mappable and order == "PCI_BUS_ID"):
                 logger.debug(
                     "Not widening integrated CUDA rows: CUDA_DEVICE_ORDER is %r and "
@@ -10618,37 +10599,27 @@ class LlamaCppBackend:
                 if pool_mib > total_mib:
                     total_mib = pool_mib
                 raw_mib = free_mib
-                # MemAvailable, as the torch arm uses: cudaMemGetInfo's free half counts
-                # the page cache as used on these parts (#9889), and the CLI's is scoped
-                # to the carve-out. A zero total is a probe that could not size the pool,
-                # not a pool of zero, so it never becomes a cap.
+                # MemAvailable, as the torch arm uses: both free readings undercount here
+                # (#9889). A zero total means unsized, so it never becomes a cap.
                 if avail is not None and total_mib > 0:
                     raw_mib = min(total_mib, max(raw_mib, avail))
                 cgroup_bound = False
                 if cgroup_mib is not None and cgroup_mib <= raw_mib:
-                    # Allocations here are charged to the cgroup, and a host-wide total
-                    # against a container's free reading reserves memory this process
-                    # cannot reach. Publishing no total prices the fit off the free
-                    # reading, which IS the container's ceiling.
+                    # Charged to the cgroup, so publish no total and let the fit price
+                    # off the free reading, which IS the container's ceiling.
                     raw_mib = cgroup_mib
                     cgroup_bound = True
                 if shared_count > 1:
                     raw_mib //= shared_count
                     total_mib //= shared_count
                 capped = _apply_igpu_host_reserve_mib(raw_mib, True)
-                # The floor promised above. The host reserve could otherwise take a
-                # nearly full machine below the carve-out reading, which is memory the
-                # driver had already vouched for.
-                #
-                # NOT when the cgroup bound it. memory.max is a ceiling this process
-                # cannot allocate past whatever the driver vouched for outside the
-                # container, and allocations on a unified part are charged to it, so a
-                # floor here would hand the fit planner a budget the kernel kills.
+                # Never below what the driver already vouched for. NOT under a cgroup:
+                # allocations are charged to memory.max, so the floor would hand the fit
+                # planner a budget the kernel kills.
                 if not cgroup_bound:
                     capped = max(capped, free_mib // shared_count)
-                # Only when something actually moved: _get_gpu_memory is uncached and
-                # _wait_for_vram_settle polls it every 0.25 s, so an unconditional line
-                # here is one per poll saying nothing. The torch arm logs the same way.
+                # Only when something moved: _get_gpu_memory is uncached and
+                # _wait_for_vram_settle polls it every 0.25 s.
                 if capped != free_mib or total_mib != cli_total_mib:
                     logger.info(
                         f"CUDA device {idx} is a unified-memory SoC sharing system RAM; "
@@ -12723,9 +12694,7 @@ class LlamaCppBackend:
                 gpus.sort(key = lambda g: g[0])
                 if gpus:
                     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
-                    # An integrated SoC's CLI row describes its dedicated carve-out
-                    # rather than the pool it allocates from. Discrete rows return
-                    # unchanged.
+                    # The CLI row is the carve-out, not the pool. Discrete rows unchanged.
                     return LlamaCppBackend._widen_integrated_cuda_rows(gpus)
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
@@ -12734,9 +12703,7 @@ class LlamaCppBackend:
         nvml_gpus = LlamaCppBackend._get_gpu_memory_nvml()
         if nvml_gpus:
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
-            # nvidia-smi IS NVML, so this arm reports the same carve-out and needs the
-            # same correction; its rows are PCI-indexed identically, as the flag above
-            # says, so the join and its guard carry over unchanged.
+            # nvidia-smi IS NVML: same carve-out, same PCI indexing, same correction.
             return LlamaCppBackend._widen_integrated_cuda_rows(nvml_gpus)
 
         # ── AMD ROCm via amd-smi ─────────────────────────────────────
