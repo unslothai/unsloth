@@ -4759,4 +4759,6 @@ def test_oserror_in_one_repo_does_not_hide_healthy_models(tmp_path, monkeypatch,
     assert repos["Org/Model"].repo_path == healthy
     assert (healthy / "refs" / "main").read_text() == SNAPSHOT
     assert bad_file.read_text() == "unreadable"
-    assert all(f.file_path != bad_file for r in repos.values() for rev in r.revisions for f in rev.files)
+    assert all(
+        f.file_path != bad_file for r in repos.values() for rev in r.revisions for f in rev.files
+    )

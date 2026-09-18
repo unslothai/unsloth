@@ -338,7 +338,12 @@ def _recover_repo_dropped_by_scan(
     )
 
 
-def _with_repos_dropped_by_scan(scan, cache_root: Path, *, scan_failed: bool = False):
+def _with_repos_dropped_by_scan(
+    scan,
+    cache_root: Path,
+    *,
+    scan_failed: bool = False,
+):
     """Add back the repos ``scan_cache_dir`` dropped over one bad entry."""
     try:
         repo_dirs = sorted(entry for entry in cache_root.iterdir() if "--" in entry.name)
@@ -364,7 +369,9 @@ def _with_repos_dropped_by_scan(scan, cache_root: Path, *, scan_failed: bool = F
         logger.info(
             "Recovered HF cache repo %s hidden by %s (%d revision(s) on disk)",
             entry.repo_id,
-            "a failed cache scan" if scan_failed else (
+            "a failed cache scan"
+            if scan_failed
+            else (
                 "a dangling ref" if _repo_has_a_dangling_ref(repo_dir) else "an unreadable entry"
             ),
             len(entry.revisions),
