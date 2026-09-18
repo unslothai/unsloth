@@ -29,6 +29,9 @@ if _BACKEND_DIR not in sys.path:
 # loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+# __path__ so `loggers.media_progress` still resolves: a bare ModuleType shadows the whole
+# package, so the submodule import dies with "'loggers' is not a package" (#10995).
+_loggers_stub.__path__ = [str(Path(_BACKEND_DIR) / "loggers")]
 sys.modules.setdefault("loggers", _loggers_stub)
 
 # structlog. Carries get_logger because this stub is process-wide: whichever test

@@ -258,6 +258,7 @@ function step { param([string]`$Label, [string]`$Value, [string]`$Color = "Green
 function substep { param([string]`$Message, [string]`$Color = "DarkGray") Write-Host "    `$Message" }
 function Write-StudioLine { param([string]`$Message, [string]`$ForegroundColor) Write-Host `$Message }
 function Get-PathDenialDetail { param([string]`$Path) return "" }
+function Get-SecuritySoftwareNote { return "" }
 $exitSetupSrc
 $writeDeniedSrc
 $exitDeniedSrc
@@ -306,6 +307,7 @@ if ($mirrorSrc.Count -eq $mirrorFns.Count) {
     $mirrorHarness = @"
 `$ErrorActionPreference = "Stop"
 function Get-PathDenialDetail { param([string]`$Path) return "" }
+function Get-SecuritySoftwareNote { return "" }
 $($mirrorSrc -join "`n")
 `$script:StudioVtOk = `$false
 Add-Content -LiteralPath `$args[0] -Value "REDIRECTED=`$([Console]::IsOutputRedirected)"
@@ -454,7 +456,8 @@ if ($assertSrc -and $markSrc) {
 # return actionable guidance for a real denied tree.
 $installPath = [System.IO.Path]::Combine($repoRoot, "install.ps1")
 $preflightFns = @("Test-AccessDeniedError", "Get-PathState", "Get-LlamaCppInstallReadState",
-                  "Get-PathDenialDetail", "Write-PathAccessDenied", "Get-CanonicalDir",
+                  "Get-PathDenialDetail", "Get-SecuritySoftwareNote",
+                  "Write-PathAccessDenied", "Get-CanonicalDir",
                   "Test-StudioHomeIsCustom", "Get-ManagedLlamaCppDir",
                   "Invoke-ManagedLlamaCppPreflight")
 $preflightSrc = @()
@@ -488,11 +491,47 @@ Write-Host "CAN_DENY: `$oldFormTerminated"
 # Both override forms must switch to user-supplied wording.
 if (`$args[2] -eq "supplied") { `$WithLlamaCppDir = `$dir }
 if (`$args[2] -eq "env") { `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = `$dir }
+# A build supplied from inside the managed tree goes with it when the tree is
+# moved or deleted, so the tree is not ours to touch either.
+if (`$args[2] -eq "nested") { `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = Join-Path `$dir "custom" }
+# On POSIX, renaming needs write and execute on the PARENT, so taking write off the
+# parent is the denial the move cannot recover. On Windows the read deny applied to
+# every mode already refuses the rename, and denying DELETE alone does not (measured),
+# so this mode is the same as the one above there -- which is why the checks that read
+# it are written per platform.
+if (`$args[2] -eq "unmovable") {
+    if (`$onWindows) { icacls `$dir /deny "`$env:USERDOMAIN\`${env:USERNAME}:(DE)" *>`$null }
+    else { chmod 500 (Split-Path -Parent `$dir) }
+}
+# A link is the user's own arrangement, so it must be reported rather than moved.
+`$linkMade = `$false
+if (`$args[2] -eq "link") {
+    `$realDir = Join-Path `$env:USERPROFILE ".unsloth\real-llama.cpp"
+    New-Item -ItemType Directory -Force -Path `$realDir | Out-Null
+    if (`$onWindows) { icacls `$dir /remove:d "`$env:USERDOMAIN\`$env:USERNAME" *>`$null } else { chmod 755 `$dir }
+    Remove-Item -Recurse -Force -LiteralPath `$dir -ErrorAction SilentlyContinue
+    try {
+        New-Item -ItemType SymbolicLink -Path `$dir -Target `$realDir -ErrorAction Stop | Out-Null
+        `$linkMade = `$true
+    } catch { `$linkMade = `$false }
+    if (`$linkMade) {
+        if (`$onWindows) { icacls `$realDir /deny "`$env:USERDOMAIN\`${env:USERNAME}:(OI)(CI)(RX)" *>`$null }
+        else { chmod 000 `$realDir }
+    }
+}
+Write-Host "LINK_MADE: `$linkMade"
 `$denied = Invoke-ManagedLlamaCppPreflight
 Write-Host "DENIED_VERDICT: `$(if (`$null -eq `$denied) { "continue" } else { "stop" })"
 Write-Host "DENIED_REASON: `$denied"
+# Whether the cache was moved out of the way, and whether anything was left at
+# the original path for the next run to trip over again.
+`$aside = @(Get-ChildItem -LiteralPath (Split-Path -Parent `$dir) -Force -ErrorAction SilentlyContinue |
+    Where-Object { `$_.Name -like "llama.cpp.denied-*" })
+Write-Host "ASIDE_COUNT: `$(`$aside.Count)"
+Write-Host "ORIGINAL_EXISTS: `$(Test-Path -LiteralPath `$dir)"
+if (-not `$onWindows) { chmod 755 (Split-Path -Parent `$dir) }
 if (`$onWindows) { icacls `$dir /remove:d "`$env:USERDOMAIN\`$env:USERNAME" *>`$null }
-else { chmod 755 `$dir }
+else { chmod 755 `$dir 2>`$null }
 "@
     $preflightFile = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_pre_" + [guid]::NewGuid().ToString("N") + ".ps1")
     Set-Content -LiteralPath $preflightFile -Value $preflightHarness -Encoding utf8
@@ -501,11 +540,15 @@ else { chmod 755 `$dir }
     # Use one child per mode so command-line counts remain unambiguous.
     $preflightRuns = @{}
     $preflightHome = ""
+    # Each mode gets its own profile, so the folder a reason must name is the one
+    # that mode ran against and not the first mode's.
+    $preflightHomes = @{}
     try {
-        foreach ($mode in @("managed", "supplied", "env")) {
+        foreach ($mode in @("managed", "supplied", "env", "nested", "unmovable", "link")) {
             $runHome = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_home_" + [guid]::NewGuid().ToString("N"))
             New-Item -ItemType Directory -Force -Path $runHome | Out-Null
             if ($mode -eq "managed") { $preflightHome = $runHome }
+            $preflightHomes[$mode] = $runHome
             try {
                 $preflightRuns[$mode] = & $pwshExe2 -NoProfile -File $preflightFile $runHome $(if ($onWindows) { "win" } else { "posix" }) $mode 2>&1 | Out-String
             } finally {
@@ -524,7 +567,38 @@ else { chmod 755 `$dir }
     if ($out -notmatch "CAN_DENY: True") {
         Write-Host "  SKIP  cannot deny access on this host (running as root/admin?) -- preflight denial checks skipped" -ForegroundColor Yellow
     } else {
-        Check "an unreadable llama.cpp cache stops the install" ($out -match "DENIED_VERDICT: stop")
+        # A cache we own and can still rename is recovered rather than reported.
+        # Whether it CAN be renamed is not the same question on both platforms, and
+        # the answer was measured rather than reasoned about (windows-latest, denying
+        # each shape on the folder itself, then renaming it):
+        #
+        #   (OI)(CI)(RX)  refused    (OI)(CI)(R)  refused    (RX)  refused    (DE)  SUCCEEDED
+        #
+        # So on Windows every read denial refuses the rename -- the open asks for
+        # SYNCHRONIZE and any read deny removes it -- and denying DELETE, which sounds
+        # like the blocker, does not stop it. The recovery therefore cannot fire on
+        # Windows for the denial this harness creates, and asserting that it does was
+        # asserting something the platform does not allow. On POSIX the rename needs
+        # only write and execute on the parent, so the recovery is real there.
+        if ($onWindows) {
+            Check "a denied cache that cannot be renamed is reported, not moved aside" (
+                $out -match "DENIED_VERDICT: stop")
+            Check "the refused rename leaves nothing behind beside the original" (
+                $out -match "ASIDE_COUNT: 0" -and $out -match "ORIGINAL_EXISTS: True")
+        } else {
+            Check "a denied cache that can be renamed is moved aside, not reported" (
+                $out -match "DENIED_VERDICT: continue")
+            Check "the moved cache leaves the original path free for the reinstall" (
+                $out -match "ASIDE_COUNT: 1" -and $out -match "ORIGINAL_EXISTS: False")
+        }
+
+        # Everything below is the tree the move cannot rescue, which is what the
+        # guidance was always written for.
+        $out = $preflightRuns["unmovable"]
+        $expectedDir = Join-Path $preflightHomes["unmovable"] ".unsloth\llama.cpp"
+        Check "an unreadable llama.cpp cache that cannot be moved stops the install" (
+            $out -match "DENIED_VERDICT: stop")
+        Check "the unmovable cache is not left half-renamed" ($out -match "ASIDE_COUNT: 0")
         Check "the preflight reason names the folder" (
             $out -match ("DENIED_REASON: .*" + [regex]::Escape($expectedDir)))
         Check "the preflight reason says a reinstall will not help" (
@@ -536,19 +610,36 @@ else { chmod 755 `$dir }
             @($out -split "`r?`n" | Where-Object { $_ -match 'icacls .* /reset /T' }).Count -eq 1)
         Check "the preflight says the download has not happened yet" (
             $out -match "nothing has been downloaded or installed")
+
+        # A link is the user's own arrangement: moving it would change which tree
+        # they run without touching the one they were protecting.
+        $linked = $preflightRuns["link"]
+        if ($linked -notmatch "LINK_MADE: True") {
+            Write-Host "  SKIP  cannot create a symlink on this host -- link checks skipped" -ForegroundColor Yellow
+        } else {
+            Check "a denied cache that is a link is never moved aside" (
+                $linked -match "ASIDE_COUNT: 0" -and $linked -match "ORIGINAL_EXISTS: True")
+            Check "a denied cache that is a link stops the install" (
+                $linked -match "DENIED_VERDICT: stop")
+            Check "a denied cache that is a link is described as one" ($linked -match "it is a link")
+        }
         # Guidance may print ACL repair commands but must never run them.
         Check "the preflight does not run takeown or icacls itself" (
             $out -notmatch "SUCCESS: The file \(or folder\)" -and
             $out -notmatch "processed file:")
 
-        # Overrides may name the managed location itself; never call it disposable.
-        foreach ($mode in @("supplied", "env")) {
+        # Overrides may name the managed location itself, or a build inside it;
+        # never call either disposable, and never move the tree out from under
+        # one, which the later --with-llama-cpp-dir check would then abort on.
+        foreach ($mode in @("supplied", "env", "nested")) {
             $supplied = $preflightRuns[$mode]
             Check "a tree the user named ($mode) still stops the install" (
                 $supplied -match "DENIED_VERDICT: stop")
             Check "a tree the user named ($mode) is not called a cache we own" (
                 $supplied -match "DENIED_REASON: .*point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build" -and
                 $supplied -notmatch "DENIED_REASON: .*Delete or rename")
+            Check "a tree the user named ($mode) is left where it is" (
+                $supplied -match "ASIDE_COUNT: 0" -and $supplied -match "ORIGINAL_EXISTS: True")
         }
         Check "the managed cache is still called one" (
             $out -match "DENIED_REASON: .*Delete or rename that folder")
@@ -636,6 +727,12 @@ try {
         $entryWho = "$env:USERDOMAIN\$env:USERNAME"
         if ($onWindows) { icacls $entryLocked /deny "${entryWho}:(OI)(CI)(RX)" *>$null }
         else { chmod 000 $entryLocked }
+        # Block the rename as well, so these keep exercising the guidance path.
+        # The recovery has its own coverage in the preflight block above, and a
+        # movable tree here would just reinstall and then stop on a trapped
+        # expensive operation instead, testing nothing about the denial.
+        if ($onWindows) { icacls $entryLocked /deny "${entryWho}:(DE)" *>$null }
+        else { chmod 500 (Split-Path -Parent $entryLocked) }
         $canDenyEntrypoint = $false
         try {
             try { $null = Test-Path (Join-Path $entryLocked "UNSLOTH_PREBUILT_INFO.json") }

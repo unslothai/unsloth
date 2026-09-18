@@ -2600,10 +2600,10 @@ const DEFAULT_CHAT_MODEL_LABEL = "Gemma 4 E2B";
 
 function formatDownloadBytes(bytes: number): string {
   if (!(bytes > 0)) return "";
-  const gb = bytes / 1024 ** 3;
+  const gb = bytes / 1000 ** 3;
   return gb >= 1
     ? `${gb.toFixed(1)} GB`
-    : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+    : `${Math.max(1, Math.round(bytes / 1000 ** 2))} MB`;
 }
 
 /** Fetch the default through the Hub download manager rather than inline in /load: that gives
@@ -4246,6 +4246,8 @@ export function createOpenAIStreamAdapter(
                     researchExternalProvider.providerType,
                     researchExternalSelection.modelId,
                   ),
+                  supportsReasoning: runtime.supportsReasoning,
+                  supportsReasoningOff: runtime.supportsReasoningOff,
                 }
               : undefined,
           temperature: params.temperature,

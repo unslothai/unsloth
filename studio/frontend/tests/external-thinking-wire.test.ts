@@ -9,7 +9,6 @@ import { installLocalStorageFake, readSrc, registerBundlerResolver } from "./hel
 registerBundlerResolver();
 installLocalStorageFake();
 
-const { clearProviderModelCatalog, setProviderModelCatalog } = await import("../src/features/chat/model-catalog.ts");
 const { getExternalReasoningCapabilities } = await import(
   "../src/features/chat/provider-capabilities.ts"
 );
@@ -35,15 +34,10 @@ function externalReasoningFields(caps: Caps, reasoningEnabled: boolean): unknown
 }
 
 test("an always-on catalog model sends thinking on even when the chat stored it off", () => {
-  setProviderModelCatalog("openrouter", [{ id: "acme/always-thinking", reasoning: { mandatory: true } }], 1);
-  try {
-    const caps = getExternalReasoningCapabilities("openrouter", "acme/always-thinking");
-    assert.equal(caps.reasoningStyle, "enable_thinking");
-    assert.equal(caps.supportsReasoningOff, false);
-    assert.deepEqual(externalReasoningFields(caps, false), { thinking: { type: "enabled" } });
-  } finally {
-    clearProviderModelCatalog("openrouter");
-  }
+  const magistral = getExternalReasoningCapabilities("mistral", "magistral-small");
+  assert.equal(magistral.reasoningStyle, "enable_thinking");
+  assert.equal(magistral.supportsReasoningOff, false);
+  assert.deepEqual(externalReasoningFields(magistral, false), { thinking: { type: "enabled" } });
 });
 
 test("every Thinking control resolves reasoning for the id the adapter sends, not the router's last pick", () => {
@@ -71,14 +65,9 @@ test("every Thinking control resolves reasoning for the id the adapter sends, no
 });
 
 test("a toggleable catalog model still sends the stored choice", () => {
-  setProviderModelCatalog("openrouter", [{ id: "acme/toggle-thinking", reasoning: { mandatory: false } }], 1);
-  try {
-    const caps = getExternalReasoningCapabilities("openrouter", "acme/toggle-thinking");
-    assert.equal(caps.reasoningStyle, "enable_thinking");
-    assert.equal(caps.supportsReasoningOff, true);
-    assert.deepEqual(externalReasoningFields(caps, false), { thinking: { type: "disabled" } });
-    assert.deepEqual(externalReasoningFields(caps, true), { thinking: { type: "enabled" } });
-  } finally {
-    clearProviderModelCatalog("openrouter");
-  }
+  const qwen = getExternalReasoningCapabilities("qwen", "qwen3.5-plus");
+  assert.equal(qwen.reasoningStyle, "enable_thinking");
+  assert.equal(qwen.supportsReasoningOff, true);
+  assert.deepEqual(externalReasoningFields(qwen, false), { thinking: { type: "disabled" } });
+  assert.deepEqual(externalReasoningFields(qwen, true), { thinking: { type: "enabled" } });
 });
