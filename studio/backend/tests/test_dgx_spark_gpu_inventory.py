@@ -262,8 +262,12 @@ def test_monitor_sizes_the_spark_instead_of_showing_unknown(monkeypatch):
     device = hw.get_gpu_utilization()["devices"][0]
 
     assert device["vram_total_gb"] == SPARK_TOTAL_GB
-    assert device["vram_used_gb"] == 21.0
-    assert device["vram_utilization_pct"] == round(21.0 / SPARK_TOTAL_GB * 100, 1)
+    # Pool occupancy is what the host can no longer give, `pool total - MemAvailable`,
+    # not host usage: this machine's 121 GiB of RAM and its 121.69 GiB pool are not the
+    # same ceiling, and only the pool bounds what CUDA may allocate.
+    spark_used_gb = round(SPARK_TOTAL_GB - 100.0, 2)
+    assert device["vram_used_gb"] == spark_used_gb
+    assert device["vram_utilization_pct"] == round(spark_used_gb / SPARK_TOTAL_GB * 100, 1)
     # Columns nvidia-smi DID answer are the CLI's, untouched.
     assert device["gpu_utilization_pct"] == 0.0
     assert device["temperature_c"] == 46.0
@@ -374,7 +378,7 @@ def test_the_system_poll_function_is_the_one_that_gets_repaired(monkeypatch):
     device = hw.get_visible_gpu_utilization()["devices"][0]
 
     assert device["vram_total_gb"] == SPARK_TOTAL_GB
-    assert device["vram_used_gb"] == 21.0
+    assert device["vram_used_gb"] == round(SPARK_TOTAL_GB - 100.0, 2)
 
 
 def test_a_uuid_mask_still_reaches_the_reconciliation(monkeypatch):

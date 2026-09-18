@@ -185,8 +185,9 @@ def test_the_free_half_grows_with_the_total(monkeypatch):
     """A widened total paired with the carve-out's own used figure is still wrong.
 
     memory.used is scoped to the carve-out, so it is a floor on pool occupancy rather
-    than a measure of it. The host counter spans the same ground the widened total does,
-    which is the rule _rocm_windows_unified_used_bytes states for the AMD twin.
+    than a measure of it, and the pool's own occupancy is what the host can no longer
+    give: `pool total - MemAvailable`. Charging the pool with host USAGE instead would
+    bill it for the 8.82 GiB this machine has beyond the 45.39 GiB CUDA can reach.
     """
     _cuda_host(monkeypatch, _N1XProps())
     _host_memory(monkeypatch)
@@ -195,11 +196,14 @@ def test_the_free_half_grows_with_the_total(monkeypatch):
     device = hw.get_visible_gpu_utilization()["devices"][0]
     free_gb = device["vram_total_gb"] - device["vram_used_gb"]
 
-    # Host used is 54.21 - 42.55 = 11.66, which is larger than the carve-out's 5.73.
-    assert device["vram_used_gb"] == pytest.approx(HOST_TOTAL_GB - HOST_AVAILABLE_GB, abs = 0.02)
+    # 45.39 - 42.55 = 2.84 from the host, under the carve-out's own 5.73, so the CLI's
+    # figure is the binding lower bound here.
+    assert device["vram_used_gb"] == pytest.approx(N1X_USED_GB, abs = 0.02)
     # The number the training gate reads. It was 7.94 - 5.73 = 2.21.
+    assert free_gb == pytest.approx(N1X_POOL_GB - N1X_USED_GB, abs = 0.02)
     assert free_gb > 30
-    assert device["vram_utilization_pct"] == pytest.approx(25.7, abs = 0.5)
+    # And never more than the host can actually still give.
+    assert free_gb <= HOST_AVAILABLE_GB
 
 
 def test_a_270m_model_now_fits(monkeypatch):

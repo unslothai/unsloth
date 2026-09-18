@@ -3880,13 +3880,19 @@ def _cgroup_available_memory_gb() -> Optional[float]:
         return None
 
 
-def _host_memory_used_gb() -> Optional[float]:
-    """Host memory in use, or None. On one shared pool this is not an approximation of
-    the GPU's used half, it is the same measurement."""
+def _host_memory_available_gb() -> Optional[float]:
+    """Host memory still obtainable, or None.
+
+    AVAILABLE, not used: the pool is a ceiling on what CUDA may allocate out of system
+    RAM, and on a part whose machine has more RAM than pool (54.21 GiB against 45.39 on
+    an N1X) charging the pool with host usage bills it for 8.82 GiB CUDA could never
+    reach. The pool's own occupancy is `pool total - what the host can still give`,
+    which is the same figure the llama.cpp arm caps against.
+    """
     try:
         import psutil
         vm = psutil.virtual_memory()
-        return round((int(vm.total) - int(vm.available)) / (1024**3), 2)
+        return round(int(vm.available) / (1024**3), 2)
     except Exception as e:  # noqa: BLE001 - a total alone still beats Unknown / 0.00
         logger.debug("host memory probe failed while sizing an integrated GPU: %s", e)
         return None
@@ -3927,7 +3933,7 @@ def _reconcile_cuda_integrated_memory(
         # Every discrete host leaves here, having paid one memoised classification.
         return
 
-    host_used_gb = _host_memory_used_gb()
+    host_available_gb = _host_memory_available_gb()
 
     for dev in devices:
         td = integrated.get(dev.get(key_field))
@@ -3952,11 +3958,14 @@ def _reconcile_cuda_integrated_memory(
         # A pool total needs a pool-scoped numerator (_rocm_windows_unified_used_bytes
         # states the same rule). memory.used is carve-out scoped, so it is a lower bound
         # like the host counter is: take the larger, neither dominates.
-        numerators = [n for n in (host_used_gb, cli_used_gb) if n is not None]
+        pool_used_from_host_gb = (
+            max(total_gb - host_available_gb, 0.0) if host_available_gb is not None else None
+        )
+        numerators = [n for n in (pool_used_from_host_gb, cli_used_gb) if n is not None]
         if not numerators:
             continue
         pool_used_gb = min(max(numerators), total_gb)
-        if host_used_gb is None and cli_free_gb is not None:
+        if host_available_gb is None and cli_free_gb is not None:
             # No pool-scoped occupancy left, so pairing the carve-out's used with the
             # pool total would invent free bytes (45.39/5.73 reads as 39.66 free where
             # the CLI vouched for 2.21). Widen the total, keep the budget.
