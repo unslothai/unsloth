@@ -34,6 +34,28 @@ from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 
+def resolve_inventory_handle(value: str) -> str:
+    """Turn a `ref:...` identity from an inventory listing back into the path it stands for.
+
+    Every request model that consumes an inventory identity resolves it, or the row is advertised
+    as actionable and is not. A reference this process did not issue is left as it arrived.
+    Nothing about authorization is decided here.
+    """
+    if not isinstance(value, str) or not value.startswith("ref:"):
+        return value
+    try:
+        from hub.utils.host_paths import note_resolved_handle, resolve_host_path_reference
+    except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail loads
+        return value
+    resolved = resolve_host_path_reference(value)
+    if not resolved:
+        return value
+    # Remembered for the length of this request so the ANSWER carries the handle rather than the
+    # path it stood for: the responses are built from what was asked for.
+    note_resolved_handle(value, resolved)
+    return resolved
+
+
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
@@ -81,6 +103,8 @@ class LoadRequest(BaseModel):
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
     )
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
     @field_validator("chat_template_override")
     @classmethod
@@ -412,6 +436,9 @@ class UnloadRequest(BaseModel):
             "unload takes away the llama-server they are decoding on."
         ),
     )
+    # The reverse of the load side: the resident model is keyed on the path, so without this
+    # the unload matches nothing and reports success while the model keeps its GPU.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
 class SearchImagesLookupRequest(BaseModel):
@@ -468,6 +495,8 @@ class ValidateModelRequest(BaseModel):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -673,6 +702,12 @@ class TransformersUpgradeCheckRequest(BaseModel):
         "installing would strand that checkpoint's exact 4-bit resume.",
     )
 
+    # A preflight is where the reference arrives first, and this route SWALLOWS a failed lookup
+    # and answers "no upgrade needed", so training starts and dies at model load in the worker.
+    _resolve_the_handle = field_validator(
+        "model_name", "model_local_path", "model_snapshot_path", "model_snapshot_repo_id"
+    )(resolve_inventory_handle)
+
 
 class TransformersUpgradeCheckResponse(BaseModel):
     """Upgrade + quantization preflight for a load that does not run /validate.
@@ -873,6 +908,9 @@ class EstimateMemoryRequest(BaseModel):
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
     )(LoadRequest._no_booleans.__func__)
+    # Every field here mirrors the load request it previews, so an unresolved reference is read
+    # as a Hub id and the panel is told the estimate is unavailable for a row it was offered.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
 class EstimateMemoryResponse(BaseModel):
@@ -3651,6 +3689,8 @@ class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
     model_path: str = Field(..., description = "Diffusion repo id or local path")
+    # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
         None,
         description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
@@ -3667,6 +3707,9 @@ class DiffusionLoadRequest(BaseModel):
     base_repo: Optional[str] = Field(
         None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
     )
+    # Referenced on the way out, so it has to resolve on the way back in, or a caller handed a
+    # `ref:` base can see the row and cannot load it.
+    _resolve_the_base_handle = field_validator("base_repo")(resolve_inventory_handle)
     family_override: Optional[str] = Field(
         None, description = "Force a family when it can't be inferred from the repo id"
     )
@@ -4567,6 +4610,8 @@ class VideoLoadRequest(BaseModel):
     """Request to load a local text-to-video checkpoint."""
 
     model_path: str = Field(..., description = "Video repo id or local path")
+    # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
         None,
         description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
@@ -4584,6 +4629,8 @@ class VideoLoadRequest(BaseModel):
         None,
         description = "Companion diffusers repo for VAE/text-encoders (default: family base)",
     )
+    # As on the diffusion request above: referenced out, so resolved back in.
+    _resolve_the_base_handle = field_validator("base_repo")(resolve_inventory_handle)
     family_override: Optional[str] = Field(
         None, description = "Force a family when it can't be inferred from the repo id"
     )

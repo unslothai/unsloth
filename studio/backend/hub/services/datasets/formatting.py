@@ -49,7 +49,7 @@ from hub.utils.paths import (
     normalize_path,
     resolve_dataset_path,
 )
-from hub.utils.hf_tokens import cached_read_refused
+from hub.utils.hf_tokens import cached_read_refused, note_repo_fetched_with_a_request_token
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.paths.path_utils import drop_shadowed_appledouble_names
 
@@ -429,6 +429,11 @@ def check_format_response(
             )
         else:
             from datasets import Dataset, load_dataset
+
+            # A preview materialises rows of the dataset in the datasets cache, and the credential
+            # doing it can be a one-off request token that is saved nowhere. Unrecorded, a later
+            # tokenless caller on a host holding no credential reads "nothing here needed one".
+            note_repo_fetched_with_a_request_token(hf_token, request.dataset_name, "dataset")
 
             # Tier 1: list_repo_files → load only the first data file
             cached_preview = (

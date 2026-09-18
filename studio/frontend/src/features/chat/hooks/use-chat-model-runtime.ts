@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  CACHE_MISS_DOWNLOAD_DESCRIPTION,
+  EMPTY_CACHE_MISS_WATCH,
+  watchCacheMissDownload,
+} from "../lib/cache-miss-download";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import {
   type ServerTuningValues,
@@ -2395,6 +2400,23 @@ export function useChatModelRuntime() {
 
         let downloadComplete = isDownloaded || isCachedLora;
 
+  // A load that begins believing the weights are cached can still turn into a download (#9094):
+  // the backend re-fetches a blob it judged unsafe to resume. MOVEMENT is the only proof
+  // accepted, since a byte count below the expected total is the ordinary state of a partially
+  // fetched revision. Local paths, Ollama manifests and cached LoRAs are never watched.
+        const watchForCacheMiss =
+          isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId(modelId);
+        const cacheMissDescription = [
+          currentCheckpoint ? "Switching models." : null,
+          extraLoadingDescription ?? null,
+          CACHE_MISS_DOWNLOAD_DESCRIPTION,
+        ]
+          .filter(Boolean)
+          .join(" ");
+        let activeLoadingDescription = loadingDescription;
+        let cacheMissWatch = EMPTY_CACHE_MISS_WATCH;
+        let cacheMissDownload = false;
+
         const pollDownload = async () => {
           if (abortCtrl.signal.aborted || !loadingModelRef.current) {
             if (progressInterval) clearInterval(progressInterval);
@@ -2439,7 +2461,7 @@ export function useChatModelRuntime() {
                 ...modelLoadToastOptions(
                   renderLoadDescription(
                     "Downloading model…",
-                    loadingDescription,
+                    activeLoadingDescription,
                     pct,
                     progressLabel,
                   ),
@@ -2455,12 +2477,28 @@ export function useChatModelRuntime() {
               const est = estimate(dlSamples, prog.downloaded_bytes, 0);
               const rateSuffix =
                 est.stable ? ` • ${formatRate(est.rate)}` : "";
+              const unknownTotalLabel = `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`;
               // Inline-status-only state; skip the chat-page re-render unless it is shown.
               if (loadToastDismissedRef.current) {
                 setLoadProgress({
                   percent: null,
-                  label: `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`,
+                  label: unknownTotalLabel,
                   phase: "downloading",
+                });
+              } else {
+                // The toast is UP, and without this it keeps saying "Loading cached
+                // model into memory" for the whole download. A missing total is a
+                // supported answer, not an error.
+                toast(null, {
+                  id: toastId,
+                  ...modelLoadToastOptions(
+                    renderLoadDescription(
+                      "Downloading model…",
+                      activeLoadingDescription,
+                      null,
+                      unknownTotalLabel,
+                    ),
+                  ),
                 });
               }
             } else if (prog.progress >= 1 && hasShownProgress) {
@@ -2543,12 +2581,46 @@ export function useChatModelRuntime() {
           }
         };
 
+        /** Whether this "cached" load has quietly become a download. */
+        const cacheMissDownloadStarted = async (): Promise<boolean> => {
+          try {
+            const reading = await getDownloadProgress(modelId, hfToken);
+              // Re-read AFTER the await, as pollDownload does: the load can finish or
+              // be cancelled while this request is in flight, and `finally` then calls
+              // resetLoadingUi().
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) return false;
+            const verdict = watchCacheMissDownload(cacheMissWatch, reading);
+            cacheMissWatch = verdict.watch;
+            if (!verdict.started) return false;
+            cacheMissDownload = true;
+              // Detection IS movement observed, so the flag has to be set: pollDownload's
+              // completion branch is gated on it, and leaving it false left
+              // `downloadComplete` false forever with later progress suppressed.
+            hasShownProgress = true;
+            downloadComplete = false;
+            activeLoadingDescription = cacheMissDescription;
+            setLoadProgress({
+              percent: verdict.percent,
+              label: "Downloading the rest of the model",
+              phase: "downloading",
+            });
+            return true;
+          } catch {
+            // Ignore polling errors; the next poll asks again.
+            return false;
+          }
+        };
+
         const pollProgress = async () => {
           if (!downloadComplete) {
             await pollDownload();
-          } else {
-            await pollLoad();
+            return;
           }
+          if (watchForCacheMiss && !cacheMissDownload && (await cacheMissDownloadStarted())) {
+            await pollDownload();
+            return;
+          }
+          await pollLoad();
         };
 
         let hasShownProgress = false;
