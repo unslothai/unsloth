@@ -232,6 +232,7 @@ pub async fn desktop_preflight(
     let mutating = || {
         install::is_install_running(install_state.inner())
             || update::is_update_running(update_state.inner())
+            || update::is_repair_running(update_state.inner())
     };
     let mutating_before = mutating();
     let (result, adopted_watchdog_generation) =
@@ -959,13 +960,7 @@ pub async fn start_managed_repair(
         return Err("Cannot repair while installation is in progress.".to_string());
     }
 
-    if update_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("An update or repair is already running.".to_string());
-    }
+    let _repair = update::RepairInFlight::claim(update_state.inner())?;
 
     let diagnostics_state = diagnostics.inner().clone();
 
