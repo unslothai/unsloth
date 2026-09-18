@@ -1854,6 +1854,15 @@ def test_both_rails_are_still_pinned_to_the_bottom_right_corner():
         # _only_under and not _applies: a positive layout guarantee has to hold everywhere, and
         # _applies is satisfied by a gated `md:fixed`, under whose breakpoint the rail would not
         # be in the corner at all. This file's own matcher tests spell that rule out.
+        # The old class-anchored matcher required this as part of its pattern, and finding the
+        # rail by testid instead dropped it silently. It is a behaviour contract, not styling:
+        # the rail spans its cap with 28px of transparent shadow gutter and a scroll region,
+        # and the cards inside opt back in with pointer-events-auto (the download panel does
+        # so by name). Without the container rule those transparent bands swallow clicks meant
+        # for the UI behind them.
+        assert _only_under(rail, "pointer-events-none"), (
+            f"the rail stopped passing clicks through: {rail!r}"
+        )
         assert _only_under(rail, "fixed"), f"the rail is no longer always viewport-fixed: {rail!r}"
         assert _only_under(rail, "bottom-0"), f"the rail can leave the bottom edge: {rail!r}"
         assert _only_under(rail, "right-0"), f"the rail can leave the right edge: {rail!r}"
