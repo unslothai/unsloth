@@ -53,8 +53,6 @@ GGUF_QUANT_PREFERENCE = [
     "UD-IQ1_S",
     "Q4_K_M",
     "Q4_K_S",
-    "MXFP4_MOE",
-    "MXFP4",
     "Q5_K_M",
     "Q5_K_S",
     "Q6_K",
