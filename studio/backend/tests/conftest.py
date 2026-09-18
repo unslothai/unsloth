@@ -1130,6 +1130,7 @@ def _drop_the_settings_memo_between_tests():
     `assert 500 == 404` in the l-r shard and nowhere else.
     """
     from utils import openai_auto_switch_settings as _settings
+
     _settings._cache.clear()
     try:
         yield
