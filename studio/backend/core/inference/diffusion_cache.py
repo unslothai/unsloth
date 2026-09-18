@@ -363,6 +363,19 @@ def apply_step_cache(
             # changing anything, so those hooks are intact and working: there is nothing of ours to
             # clean up, and tearing them down would cost a healthy cache for a call that failed
             # precisely because the cache is there. Report what IS running, as a live MagCache is.
+            # Adopting it adopts the post-enable integration too, which the low-level API runs
+            # neither half of: without the first, a cache installed after a generation leaves a
+            # stale child-registry list and the next cache_context reaches no block ("No context is
+            # set"); without the second, regionally compiled inners stay unhooked. Both idempotent.
+            _invalidate_child_registry_cache(transformer)
+            _compile_hooked_block_inners(transformer, logger)
+            # The marker MUST be set before reporting success: it is what makes the CUDA graph
+            # wrapper fall back to eager, and these hooks are live. Mode only -- the adopted cache
+            # was configured by someone else, so its threshold is not ours to claim.
+            try:
+                transformer._unsloth_step_cache = mode
+            except Exception:  # noqa: BLE001 - marker is best-effort
+                pass
             _warn(logger, mode, exc)
             return mode
         # enable_cache can fail part-hooked; restore armed compiled inners FIRST

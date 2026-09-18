@@ -1055,6 +1055,48 @@ def test_a_cache_installed_through_the_low_level_api_is_not_torn_down(monkeypatc
     assert registry.removed == []  # and the working hooks were never touched
 
 
+def test_a_low_level_cache_is_integrated_and_marked_before_being_reported(monkeypatch):
+    """Adopting hooks installed by ``apply_first_block_cache`` must run the SAME post-enable
+    integration as adopting a live config, and must set the marker before reporting success.
+
+    The low-level API sets no ``_cache_config`` and runs neither of our steps, so returning on it
+    bare leaves two defects on a transformer we have just called cached: a stale child-registry
+    list, so the next ``cache_context`` reaches no block and the forward dies with "No context is
+    set", and -- because ``GraphedForward.__call__`` short-circuits to eager ONLY on
+    ``_unsloth_step_cache`` -- a clear marker over live hooks, which lets the CUDA graph wrapper
+    capture a partly-cached forward whose skip decision is data-dependent Python."""
+    registry = _stub_diffusers(monkeypatch)
+    import core.inference.diffusion_cache as dc
+
+    monkeypatch.setattr(dc, "_first_block_cache_is_hooked", lambda t: True)
+    ran = []
+    monkeypatch.setattr(dc, "_invalidate_child_registry_cache", lambda t: ran.append("invalidate"))
+    monkeypatch.setattr(
+        dc, "_compile_hooked_block_inners", lambda t, log = None: ran.append("compile")
+    )
+
+    class _HookedTheOtherWay:
+        # No _cache_config and no marker: the low-level API sets neither.
+        is_cache_enabled = False
+
+        def enable_cache(self, config):
+            raise ValueError("Hook with name fbc_leader_block_hook already exists in the registry.")
+
+        def disable_cache(self):
+            raise AssertionError("must not be reached: there is no config for diffusers to act on")
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _HookedTheOtherWay()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert ran == ["invalidate", "compile"]  # the same integration the live-config branch runs
+    # Truthy, so the CUDA graph wrapper stays eager over the live hooks; mode-only, because the
+    # threshold this cache is running is whatever its installer chose, not the one we asked for.
+    assert t._unsloth_step_cache == TC_FBCACHE
+    assert registry.removed == []  # and the working hooks were still never touched
+
+
 def test_the_hook_probe_sees_the_names_the_low_level_api_installs(monkeypatch):
     """The probe above is the whole basis for that decision, so it is pinned against the real hook
     names rather than a stub: a rename upstream must fail here, not silently start tearing down
