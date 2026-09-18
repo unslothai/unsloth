@@ -20,18 +20,33 @@ function readPinned(): string[] {
   }
 }
 
-/** The stored list, or null for "nothing to read". Distinct from []: a toggle falling back to []
- *  would drop this window's own pins where every write has failed. */
-function storedPinned(): string[] | null {
+/** What the record says, with the three answers kept apart. A single null conflated them, and the
+ *  two that are not a list mean opposite things: `absent` is a peer's reset and unpins what it
+ *  held, while `unreadable` (storage access revoked mid-session, or a value no one can parse) is
+ *  this window losing its eyes and must change nothing on screen. */
+type StoredRecord =
+  | { readonly kind: "list"; readonly ids: string[] }
+  | { readonly kind: "absent" }
+  | { readonly kind: "unreadable" };
+
+function storedRecord(): StoredRecord {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(KEY);
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed.filter((v): v is string => typeof v === "string")
-      : null;
+    raw = localStorage.getItem(KEY);
   } catch {
-    return null;
+    return { kind: "unreadable" };
+  }
+  if (raw === null) return { kind: "absent" };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? {
+          kind: "list",
+          ids: parsed.filter((v): v is string => typeof v === "string"),
+        }
+      : { kind: "unreadable" };
+  } catch {
+    return { kind: "unreadable" };
   }
 }
 
@@ -52,7 +67,10 @@ function writePinned(pinned: string[]): void {
     storageWritable = false;
     // REPLACED, not added to: undoing a failed pin while writes are still failing has to take the
     // id back out, else the next merge resurrects a model the user just unpinned.
-    const stored = storedPinned() ?? [];
+    // Only a record we can READ narrows this: if storage cannot be read either, every pin on
+    // screen is one this window is carrying, which is exactly what it is.
+    const record = storedRecord();
+    const stored = record.kind === "list" ? record.ids : [];
     unpersisted = new Set(pinned.filter((id) => !stored.includes(id)));
   }
 }
@@ -86,8 +104,11 @@ function retirePersisted(stored: readonly string[]): void {
  *  dropped: another window's additions and removals both land, and only the ids this session
  *  pinned and could not persist are carried over. */
 function persistedBase(fallback: readonly string[]): string[] {
-  const stored = storedPinned();
-  if (stored === null) return fallback.filter(isOurs);
+  const record = storedRecord();
+  if (record.kind !== "list") {
+    return record.kind === "absent" ? fallback.filter(isOurs) : [...fallback];
+  }
+  const stored = record.ids;
   retirePersisted(stored);
   // Nothing of ours is unwritten, so the record is authoritative exactly as it is while writes
   // land: a peer that persisted our failed pin may also have REORDERED since, and holding on to
@@ -113,12 +134,16 @@ function sameOrder(a: readonly string[], b: readonly string[]): boolean {
  *  ids are pinned, since another window's storage event may still be in flight at the drop.
  *  Its additions arrive at the front; null storage leaves the order alone. */
 function rebaseOnStored(order: readonly string[]): string[] {
-  const stored = storedPinned();
   // A record that is GONE is a peer's reset (removeItem, or a clear() of the whole origin), not
   // "nothing to read": everything it held is unpinned now. Only the pins this window is carrying
   // unwritten survive it, because nothing else ever recorded them. Keeping the rendered list here
-  // let the next write that landed put a peer's cleared pins straight back.
-  if (stored === null) return order.filter(isOurs);
+  // let the next write that landed put a peer's cleared pins straight back. A record we could not
+  // READ is the opposite case and leaves the order alone.
+  const record = storedRecord();
+  if (record.kind !== "list") {
+    return record.kind === "absent" ? order.filter(isOurs) : [...order];
+  }
+  const stored = record.ids;
   retirePersisted(stored);
   const added = stored.filter((id) => !order.includes(id));
   // An id survives if the record still carries it, or if it is one of ours the record never

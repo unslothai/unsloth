@@ -416,3 +416,34 @@ test("a peer reordering the same pins reorders this window too", () => {
   externalWrite([B, A]);
   assert.deepEqual(pins.getState().pinned, [B, A]);
 });
+
+test("a record this window cannot read changes nothing on screen", () => {
+  // Storage access revoked mid-session reads like a deleted key and means the opposite. Treating
+  // it as a reset unpinned everything the record held, on a window whose writes still land.
+  reset([A]);
+  const realGet = storage.get.bind(storage);
+  storage.get = () => {
+    throw new Error("SecurityError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+    assert.deepEqual(pins.getState().pinned, [B, A]);
+  } finally {
+    storage.get = realGet;
+  }
+  assert.deepEqual(storedOrder(), [B, A]);
+});
+
+test("an event arriving while the record is unreadable leaves the list alone", () => {
+  reset([A, B]);
+  const realGet = storage.get.bind(storage);
+  storage.get = () => {
+    throw new Error("SecurityError");
+  };
+  try {
+    externalWrite([C]);
+    assert.deepEqual(pins.getState().pinned, [A, B]);
+  } finally {
+    storage.get = realGet;
+  }
+});
