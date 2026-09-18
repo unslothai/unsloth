@@ -22,6 +22,7 @@ from loggers import get_logger
 
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
+    _IFM_TOOL_CALLS_OPEN,
     _balanced_brace_end,
     blocked_bare_json_chain_may_continue,
     blocked_gemma_chain_may_continue,
@@ -93,6 +94,28 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 # Enough settled text to catch a protocol literal split across two cumulative snapshots.
 # ``_rehearsal_name_start`` still walks back through the candidate when the split is ``[ARGS]``.
 _TOOL_SIGNAL_OVERLAP = max(map(len, TOOL_XML_SIGNALS)) - 1
+
+
+def _partial_tool_signal_start(text: str, signals) -> int:
+    """Return the start of a trailing, incomplete protocol signal, or ``-1``.
+
+    ``_earliest_tool_signal`` can only find a complete marker. In the streaming state that is
+    enough for a marker which arrives in one snapshot, but not for a marker whose final ``>`` is
+    in the next snapshot: the earlier snapshot would otherwise emit the marker as prose and the
+    later snapshot could not retract it. Keep the longest non-empty suffix that is a proper prefix
+    of one of the configured signals. The next snapshot either completes the signal (and enters
+    DRAINING) or makes the suffix ordinary text (and releases it).
+    """
+    best = 0
+    for signal in signals:
+        if signal == "[ARGS]":
+            continue
+        limit = min(len(text), len(signal) - 1)
+        for length in range(limit, 0, -1):
+            if text.endswith(signal[:length]):
+                best = max(best, length)
+                break
+    return len(text) - best if best else -1
 
 
 def _active_tool_names(active_tools: list[dict]) -> list[str]:
@@ -406,7 +429,7 @@ def _first_detected_tool_name(content: str) -> Optional[str]:
     """Return the first clearly resolved tool name, or None while incomplete.
 
     Covers every serialization the loop executes (XML ``<function=>`` / ``<tool_call>``,
-    Mistral ``[TOOL_CALLS]``, rehearsal ``NAME[ARGS]``); the earliest marker wins so a
+    native IFM ``<ifm|tool_calls>``, Mistral ``[TOOL_CALLS]``, rehearsal ``NAME[ARGS]``); the earliest marker wins so a
     render_html marker inside another call's argument is treated as data. Markers inside
     a ``<think>`` / ``[THINK]`` block are dropped since the parser skips them."""
     think_spans = _think_spans_outside_tool_markup(content)
@@ -444,6 +467,10 @@ def _first_detected_tool_name(content: str) -> Optional[str]:
             arr_calls = parse_tool_calls_from_text(content[mt:])
             if arr_calls:
                 candidates.append((mt, (arr_calls[0].get("function") or {}).get("name") or ""))
+    ifm = _first_outside(0, lambda i: content.find(_IFM_TOOL_CALLS_OPEN, i))
+    ifm_calls = parse_tool_calls_from_text(content[ifm:]) if ifm >= 0 else []
+    if ifm_calls:
+        candidates.append((ifm, (ifm_calls[0].get("function") or {}).get("name") or ""))
     for rm in _REHEARSAL_RENDER_NAME_RE.finditer(content):
         if not _in_think(rm.start(1)):
             candidates.append((rm.start(1), rm.group(1)))
@@ -777,6 +804,10 @@ def run_safetensors_tool_loop(
         content_accum = ""
         cumulative_display = ""
         last_emitted = ""
+        # An any-position signal can still turn out to be a literal or malformed mention. If it
+        # followed visible text, remember that the old STREAMING fallback would return the raw
+        # cumulative text when no call parsed, rather than final-stripping that ordinary prose.
+        buffered_mid_buffer_signal = False
         provisional_render_html_started = False
         provisional_resolved = False
         provisional_render_html_id = f"call_{next_call_id}"
@@ -933,6 +964,18 @@ def run_safetensors_tool_loop(
                         }
                         _live_args_streamed_upto = len(content_accum)
                     continue
+                partial_signal_pos = _partial_tool_signal_start(candidate, tool_xml_signals)
+                if partial_signal_pos >= 0:
+                    # Do not emit the suffix until the next snapshot decides whether it completes
+                    # a real signal. Keep the full cumulative snapshot for the next look-behind
+                    # scan; only the stable prefix is eligible for display now.
+                    cumulative_display = candidate
+                    _tool_signal_scanned_upto = len(candidate)
+                    stable = _strip_streaming_display(candidate[:partial_signal_pos])
+                    if len(stable) > len(last_emitted):
+                        last_emitted = stable
+                        yield {"type": "content", "text": stable}
+                    continue
                 _tool_signal_scanned_upto = len(candidate)
                 cumulative_display = candidate
                 cleaned = _strip_streaming_display(cumulative_display)
@@ -981,6 +1024,23 @@ def run_safetensors_tool_loop(
                 elif sig.startswith("[") and sig in stripped:
                     is_match = True
                     break
+
+            # The leading-buffer checks above catch a signal whose opener is the first
+            # non-whitespace text, but a tokenizer can deliver a complete atomic opener after
+            # already-safe prose in the same snapshot. Reuse the same any-position scan as the
+            # STREAMING state so only the text before the first genuine signal is eligible for
+            # display. A trailing incomplete opener remains covered by
+            # _partial_tool_signal_start when this buffer first flushes below.
+            tool_signal_pos = -1
+            if not is_prefix:
+                tool_signal_pos = _earliest_tool_signal(
+                    content_buffer,
+                    tool_xml_signals,
+                    _detect_tools,
+                    unrestricted = unrestricted_tools,
+                )
+                if tool_signal_pos >= 0:
+                    is_match = True
 
             # Split rehearsal: hold the bare name until its [ARGS] arrives and matches above.
             is_rehearsal_prefix = False
@@ -1079,9 +1139,20 @@ def run_safetensors_tool_loop(
             if is_match:
                 # Tool signal -- flush any visible prefix before DRAINING
                 # so the route sends it before tool_start.
-                cumulative_display += content_buffer
-                buffer_in_display = True
-                cleaned = _strip_streaming_display(cumulative_display)
+                # Keep the candidate itself in cumulative state: the display stripper only
+                # removes a complete structural call, so an opener-only buffer must remain held
+                # until parsing proves it is a call (or EOS exposes it as ordinary malformed text).
+                if tool_signal_pos >= 0:
+                    visible_prefix = content_buffer[:tool_signal_pos]
+                    if visible_prefix.strip():
+                        buffered_mid_buffer_signal = True
+                    cumulative_display += content_buffer
+                    buffer_in_display = True
+                    cleaned = _strip_streaming_display(visible_prefix)
+                else:
+                    cumulative_display += content_buffer
+                    buffer_in_display = True
+                    cleaned = _strip_streaming_display(cumulative_display)
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
                     yield {"type": "content", "text": cleaned}
@@ -1109,7 +1180,12 @@ def run_safetensors_tool_loop(
                 detect_state = _state_streaming
                 cumulative_display += content_buffer
                 buffer_in_display = True
-                cleaned = _strip_streaming_display(cumulative_display)
+                partial_signal_pos = _partial_tool_signal_start(content_buffer, tool_xml_signals)
+                cleaned = _strip_streaming_display(
+                    content_buffer[:partial_signal_pos]
+                    if partial_signal_pos >= 0
+                    else cumulative_display
+                )
                 # Same trailing-name hold as STREAMING for this first flush out of BUFFERING.
                 if tool_protocol_active:
                     _hold = _held_rehearsal_tail_len(
@@ -1262,12 +1338,19 @@ def run_safetensors_tool_loop(
                 # strips unparseable tool XML; disabled Auto-Heal preserves
                 # the raw text so literal/malformed markup stays visible.
                 if content_accum:
-                    _drain_text = _strip_tool_markup_final(
-                        content_accum,
-                        auto_heal_tool_calls = auto_heal_tool_calls,
-                        tool_protocol_active = False,
-                        enabled_tool_names = _enabled_tool_names,
-                    )
+                    if buffered_mid_buffer_signal:
+                        # This candidate was found after visible prose in the initial buffer.
+                        # Before the any-position handoff, the STREAMING safety-net branch kept
+                        # such an unparseable signal as raw content; retain that recovery so a
+                        # literal/incomplete mention is not truncated at EOS.
+                        _drain_text = content_accum
+                    else:
+                        _drain_text = _strip_tool_markup_final(
+                            content_accum,
+                            auto_heal_tool_calls = auto_heal_tool_calls,
+                            tool_protocol_active = False,
+                            enabled_tool_names = _enabled_tool_names,
+                        )
                     # Drained bare-JSON call that didn't parse: with Auto-Heal on, drop the fragment
                     # (plain JSON answers are left untouched); off keeps it visible per the strict contract.
                     if tool_protocol_active and auto_heal_tool_calls:

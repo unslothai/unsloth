@@ -1118,6 +1118,7 @@
       "_GEMMA_TC_RE": "'<\\\\|tool_call>\\\\s*call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
       "_GLM_JSON_NUMERIC_RE": "'-?\\\\d+(?:\\\\.\\\\d+)?(?:[eE][+-]?\\\\d+)?' flags=32",
       "_GLM_TC_OPEN_RE": "'<tool_call>\\\\s*([\\\\w.\\\\-]+)\\\\s*(?=\\\\n|<arg_key>|</tool_call>)' flags=32",
+      "_IFM_NAME_RE": "'[\\\\w.\\\\-]+' flags=32",
       "_KIMI_ID_RE": "'^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$' flags=32",
       "_LEADING_JSON_FENCE_RE": "'^`{3,}[a-zA-Z0-9_+-]*[ \\\\t]*\\\\r?\\\\n' flags=32",
       "_LLAMA3_CALL_CHAIN_RE": "'\\\\s*;\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
@@ -1195,6 +1196,7 @@
       "re.compile('<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())')": 1,
       "re.compile('<｜tool▁call▁begin｜>(?=\\\\s*function|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile('[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*')": 1,
+      "re.compile('[\\\\w.\\\\-]+')": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\](?=\\\\s*(?:[\\\\[{]|[A-Za-z_][\\\\w.\\\\-]*(?:[\\\\[{]|\\\\s*$))|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w\\\\.\\\\-]+\\\\s*(?:\\\\[ARGS\\\\])?\\\\s*\\\\{.*?\\\\}', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*\\\\[.*?\\\\](?:\\\\s*</s>)?', re.DOTALL)": 1,
@@ -1207,6 +1209,7 @@
       "re.compile('\\\\w+')": 1,
       "re.compile('\\ue000+')": 1,
       "re.compile('^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$')": 1,
+      "re.compile('^[ \\\\t]{0,3}(`{3,}|~{3,})')": 1,
       "re.compile('^`{3,}[a-zA-Z0-9_+-]*[ \\\\t]*\\\\r?\\\\n')": 1,
       "re.compile('`+')": 1,
       "re.compile('```[\\\\s\\\\r\\\\n]*' + re.escape(_DEEPSEEK_CALL_END))": 1,
@@ -1424,6 +1427,63 @@
         "kind": "assign"
       },
       "_HELP_OFFER": {
+        "kind": "assign"
+      },
+      "_IFM_ARG_KEY_CLOSE": {
+        "kind": "assign"
+      },
+      "_IFM_ARG_KEY_OPEN": {
+        "kind": "assign"
+      },
+      "_IFM_ARG_TYPE_CLOSE": {
+        "kind": "assign"
+      },
+      "_IFM_ARG_TYPE_OPEN": {
+        "kind": "assign"
+      },
+      "_IFM_ARG_VALUE_CLOSE": {
+        "kind": "assign"
+      },
+      "_IFM_ARG_VALUE_OPEN": {
+        "kind": "assign"
+      },
+      "_IFM_NAME_RE": {
+        "kind": "assign"
+      },
+      "_IFM_REASONING_CHANNELS": {
+        "kind": "assign"
+      },
+      "_IFM_THINK_CLOSE": {
+        "kind": "assign"
+      },
+      "_IFM_THINK_FASTER_CLOSE": {
+        "kind": "assign"
+      },
+      "_IFM_THINK_FASTER_OPEN": {
+        "kind": "assign"
+      },
+      "_IFM_THINK_FAST_CLOSE": {
+        "kind": "assign"
+      },
+      "_IFM_THINK_FAST_OPEN": {
+        "kind": "assign"
+      },
+      "_IFM_THINK_OPEN": {
+        "kind": "assign"
+      },
+      "_IFM_TOOL_CALLS_CLOSE": {
+        "kind": "assign"
+      },
+      "_IFM_TOOL_CALLS_OPEN": {
+        "kind": "assign"
+      },
+      "_IFM_TOOL_CALL_CLOSE": {
+        "kind": "assign"
+      },
+      "_IFM_TOOL_CALL_OPEN": {
+        "kind": "assign"
+      },
+      "_IFM_XML_RESERVED_MARKERS": {
         "kind": "assign"
       },
       "_INFERENCE_WRAPPER_OPENERS": {
@@ -1676,6 +1736,91 @@
         "kind": "def",
         "signature": "text: str"
       },
+      "_ifm_decode_xml_value": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "raw_value: str, arg_type: Optional[str]"
+      },
+      "_ifm_fenced_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_ifm_find_call_close": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, envelope_close: Optional[int], literal_spans: Optional[list[tuple[int, int]]]=None"
+      },
+      "_ifm_find_envelope_close": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, literal_spans: Optional[list[tuple[int, int]]]=None"
+      },
+      "_ifm_find_value_close": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, envelope_close: Optional[int]=None, call_close: Optional[int]=None"
+      },
+      "_ifm_first_unprotected_foreign_signal": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, stop: int, protected: list[tuple[int, int]]"
+      },
+      "_ifm_in_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "pos: int, spans: list[tuple[int, int]]"
+      },
+      "_ifm_inline_literal_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_ifm_json_loads": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_ifm_literal_and_fence_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_ifm_parse_call_at": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, id_offset: int, envelope_close: Optional[int]=None, call_close: Optional[int]=None, literal_spans: Optional[list[tuple[int, int]]]=None"
+      },
+      "_ifm_parse_envelope_at": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, id_offset: int, literal_spans: Optional[list[tuple[int, int]]]=None"
+      },
+      "_ifm_protected_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "pos: int, spans: list[tuple[int, int]]"
+      },
+      "_ifm_protected_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_ifm_reasoning_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_ifm_skip_whitespace": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, pos: int"
+      },
+      "_ifm_value_literal_spill_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "value_start: int, value_close: int, spans: list[tuple[int, int]]"
+      },
       "_inference_wrapper_spans": {
         "decorators": [],
         "kind": "def",
@@ -1728,7 +1873,7 @@
       "_mask_blocked_bodies": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, enabled_tool_names, *, think: bool=False"
+        "signature": "text: str, enabled_tool_names, *, think: bool=False, ifm_present: Optional[bool]=None"
       },
       "_merge_spans": {
         "decorators": [],
@@ -1784,6 +1929,21 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_ifm_finite_float": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "value: str"
+      },
+      "_parse_ifm_tool_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_ifm_tool_calls_with_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int"
       },
       "_parse_kimi_section_body": {
         "decorators": [],
@@ -1874,6 +2034,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, *, final: bool"
+      },
+      "_strip_ifm_tool_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
       },
       "_strip_leading_code_fence": {
         "decorators": [],
@@ -2031,7 +2196,7 @@
       "strip_segment": {
         "decorators": [],
         "kind": "def",
-        "signature": "segment: str, *, seg_final: bool, enabled_tool_names: Optional[set]=None"
+        "signature": "segment: str, *, seg_final: bool, enabled_tool_names: Optional[set]=None, ifm_present: Optional[bool]=None"
       },
       "strip_tool_markup": {
         "decorators": [],

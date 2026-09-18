@@ -33,6 +33,19 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "<|tool_call>",
         "<tool_call|>",
         '<|"|>',
+        # K2-Horizon / IFM wraps one or more calls in a native outer envelope and uses these
+        # fields for its XML and typed-XML call forms. Keep the call controls visible to the
+        # shared parser; the IFM turn-end token remains an EOS and is intentionally not here.
+        "<ifm|tool_calls>",
+        "</ifm|tool_calls>",
+        "<ifm|tool_call>",
+        "</ifm|tool_call>",
+        "<ifm|arg_key>",
+        "</ifm|arg_key>",
+        "<ifm|arg_type>",
+        "</ifm|arg_type>",
+        "<ifm|arg_value>",
+        "</ifm|arg_value>",
         "[TOOL_CALLS]",
         "[/TOOL_CALLS]",
         "[CALL_ID]",

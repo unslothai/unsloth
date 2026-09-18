@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import bisect
+import math
 import re
 from typing import Any, Optional
 
@@ -34,6 +35,10 @@ _markerless_execution_class = _tool_healing._markerless_execution_class
 # Flip the streaming buffer STREAMING->DRAINING so partial markup never leaks.
 TOOL_XML_SIGNALS = (
     "<tool_call>",
+    # IFM wraps one or more native calls in this envelope. Keep the signal on the outer tag: the
+    # structural parser owns the inner call/argument tags, so their literal appearance in a value
+    # cannot wake a second parser or leak while the outer call is being assembled.
+    "<ifm|tool_calls>",
     "<function=",
     '<function name="',
     "<|python_tag|>",
@@ -419,6 +424,44 @@ _GLM_ARG_VAL_CLOSE = "</arg_value>"
 # Strings arrive raw, non-strings via tojson; only unambiguous JSON literals decode (bare ``42``/``true``/``null``
 # stay strings).
 _GLM_JSON_NUMERIC_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
+
+# K2-Horizon / IFM. The outer envelope is required: a standalone ``<ifm|tool_call>`` in prose is
+# not enough to establish that the model entered its tool-call channel. The parser below handles
+# the XML, typed XML and JSON call bodies without rewriting them into another protocol.
+_IFM_TOOL_CALLS_OPEN = "<ifm|tool_calls>"
+_IFM_TOOL_CALLS_CLOSE = "</ifm|tool_calls>"
+_IFM_TOOL_CALL_OPEN = "<ifm|tool_call>"
+_IFM_TOOL_CALL_CLOSE = "</ifm|tool_call>"
+_IFM_ARG_KEY_OPEN = "<ifm|arg_key>"
+_IFM_ARG_KEY_CLOSE = "</ifm|arg_key>"
+_IFM_ARG_TYPE_OPEN = "<ifm|arg_type>"
+_IFM_ARG_TYPE_CLOSE = "</ifm|arg_type>"
+_IFM_ARG_VALUE_OPEN = "<ifm|arg_value>"
+_IFM_ARG_VALUE_CLOSE = "</ifm|arg_value>"
+_IFM_XML_RESERVED_MARKERS = (
+    _IFM_TOOL_CALLS_OPEN,
+    _IFM_TOOL_CALLS_CLOSE,
+    _IFM_TOOL_CALL_OPEN,
+    _IFM_TOOL_CALL_CLOSE,
+    _IFM_ARG_KEY_OPEN,
+    _IFM_ARG_KEY_CLOSE,
+    _IFM_ARG_TYPE_OPEN,
+    _IFM_ARG_TYPE_CLOSE,
+    _IFM_ARG_VALUE_OPEN,
+    _IFM_ARG_VALUE_CLOSE,
+)
+_IFM_NAME_RE = re.compile(r"[\w.\-]+")
+_IFM_THINK_OPEN = "<ifm|think>"
+_IFM_THINK_CLOSE = "</ifm|think>"
+_IFM_THINK_FAST_OPEN = "<ifm|think_fast>"
+_IFM_THINK_FAST_CLOSE = "</ifm|think_fast>"
+_IFM_THINK_FASTER_OPEN = "<ifm|think_faster>"
+_IFM_THINK_FASTER_CLOSE = "</ifm|think_faster>"
+_IFM_REASONING_CHANNELS = (
+    (_IFM_THINK_OPEN, (_IFM_THINK_CLOSE,)),
+    (_IFM_THINK_FAST_OPEN, (_IFM_THINK_FAST_CLOSE, _IFM_THINK_CLOSE)),
+    (_IFM_THINK_FASTER_OPEN, (_IFM_THINK_FASTER_CLOSE, _IFM_THINK_CLOSE)),
+)
 
 # Kimi K2 / Moonshot (ASCII pipes). Id ``functions.NAME:IDX`` -- strip ``functions.``/``:N`` for the name.
 _KIMI_SECTION_BEGIN = "<|tool_calls_section_begin|>"
@@ -1236,6 +1279,7 @@ def _mask_blocked_bodies(
     enabled_tool_names,
     *,
     think: bool = False,
+    ifm_present: Optional[bool] = None,
 ) -> tuple:
     """``(masked_text, bodies)``; ``bodies`` restores them in order.
 
@@ -1261,6 +1305,23 @@ def _mask_blocked_bodies(
                 if not any(ws <= s < we for ws, we in inference_spans)
             ]
         spans = _merge_spans(spans + think_spans)
+    # A JSON-form IFM call contains a leading object that the markerless safety mask quite
+    # correctly treats as a possible bare-JSON call when considered in isolation. Its enclosing
+    # IFM envelope has already established structural ownership, so keep complete IFM spans
+    # readable for the native parser/stripper.
+    if ifm_present is None:
+        ifm_present = _IFM_TOOL_CALLS_OPEN in text
+    if ifm_present:
+        _ifm_spans = _parse_ifm_tool_calls_with_spans(text, id_offset = 0)[1]
+        if _ifm_spans:
+            spans = [
+                (start, end)
+                for start, end in spans
+                if not any(
+                    outer_start <= start and end <= outer_end
+                    for outer_start, outer_end in _ifm_spans
+                )
+            ]
     if not spans:
         return text, []
     out: list = []
@@ -1490,6 +1551,7 @@ def strip_segment(
     *,
     seg_final: bool,
     enabled_tool_names: Optional[set] = None,
+    ifm_present: Optional[bool] = None,
 ) -> str:
     """Strip tool-call markup from one non-``<think>`` segment. The single definition of the scan
     order, shared by the GGUF and safetensors paths. ``routes/inference.py`` keeps a deliberately
@@ -1497,6 +1559,12 @@ def strip_segment(
     ``seg_final`` enables the end-of-turn arms (markerless Gemma, open tails, trailing partial
     rehearsal)."""
     seg = _strip_mistral_closed_calls(segment)
+    # IFM's outer envelope is structurally owned by the parser. Remove only complete calls so
+    # malformed/truncated native markup remains visible and non-executable.
+    if ifm_present is None:
+        ifm_present = _IFM_TOOL_CALLS_OPEN in seg
+    if ifm_present:
+        seg = _strip_ifm_tool_calls(seg)
     # Bare rehearsal ``name[ARGS]{json}`` and the Mistral name form, through the shared balanced scan. Name-gated: an
     # inactive ``foo[ARGS]{..}`` is prose and is kept.
     seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
@@ -1569,18 +1637,21 @@ def strip_tool_markup(
         # reasoning channel renders.
         text = _strip_mistral_reasoning(text)
 
+    ifm_present = _IFM_TOOL_CALLS_OPEN in text
+
     def _strip_segment(segment: str, is_last: bool) -> str:
         return strip_segment(
             segment,
             seg_final = final and is_last,
             enabled_tool_names = enabled_tool_names,
+            ifm_present = ifm_present,
         )
 
     # ``<think>`` / ``[THINK]`` reasoning is preserved verbatim (a rehearsed call inside it is not executed, so it
     # must not be stripped from display either); a literal think marker inside a real call's arguments is that call's
     # data and is stripped with the call.
     # A blocked call's body is quoted prose: hide it from the passes, then put it back.
-    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names, ifm_present = ifm_present)
     result = _tool_healing.strip_outside_think(masked, _strip_segment)
     if bodies:
         restored = _unmask_blocked_bodies(result, bodies)
@@ -1597,6 +1668,7 @@ def strip_tool_markup(
 # added without its literal here breaks that test rather than production.
 _STRIP_SENTINELS = (
     "<tool_call",  # Qwen/Hermes open + GLM, and the <tool_call|> Gemma closer
+    "<ifm|tool_calls>",  # IFM's outer envelope; inner tags are scanned only after this boundary
     "<|tool_call",  # Gemma open, Kimi <|tool_call_begin|> / <|tool_calls_section_begin|>
     "<function",  # Qwen3.5 <function=name> and <function name="...">
     "[TOOL_CALLS]",
@@ -1649,11 +1721,23 @@ def _first_sentinel(
     it would re-strip every token of a long quoted one."""
     best = -1
     for sentinel in _STRIP_SENTINELS:
+        if sentinel == _IFM_TOOL_CALLS_OPEN:
+            # IFM is the only newly added sentinel without a short prefix shared by an existing
+            # arm. Defer its full-buffer search until the earlier candidates are known; ordinary
+            # responses with an earlier tool marker then pay only the bounded prefix check.
+            continue
         if sentinel == _GEMMA_BARE_SENTINEL:
             continue
         found = text.find(sentinel, start)
         if found >= 0 and (best < 0 or found < best):
             best = found
+    ifm = (
+        text.find(_IFM_TOOL_CALLS_OPEN, start)
+        if best < 0
+        else text.find(_IFM_TOOL_CALLS_OPEN, start, best)
+    )
+    if ifm >= 0 and (best < 0 or ifm < best):
+        best = ifm
     at = start
     while True:
         found = text.find(_GEMMA_BARE_SENTINEL, at)
@@ -1878,19 +1962,24 @@ class StreamingMarkupStripper:
         )
 
     def _full_strip(self, text: str) -> str:
+        ifm_present = _IFM_TOOL_CALLS_OPEN in text
+
         def _seg(segment: str, is_last: bool) -> str:
             # Streaming has no separate ``final`` pass
             return strip_segment(
                 segment,
                 seg_final = is_last and self._seg_final,
                 enabled_tool_names = self._enabled_tool_names,
+                ifm_present = ifm_present,
             )
 
         # Same masking ``strip_tool_markup`` applies: a blocked call's body is quoted prose.
         # Without it the incremental path edited that body while the final strip preserved it,
         # and since consumers get cumulative append-only snapshots, the corrupted one it had
         # already emitted could never be repaired.
-        masked, bodies = _mask_blocked_bodies(text, self._enabled_tool_names)
+        masked, bodies = _mask_blocked_bodies(
+            text, self._enabled_tool_names, ifm_present = ifm_present
+        )
         result = _tool_healing.strip_outside_think(masked, _seg)
         if not bodies:
             return result
@@ -2209,7 +2298,13 @@ def _first_foreign_tool_signal(content: str) -> int | None:
     """Offset of the first tool signal a non-envelope parser would fire on (XML forms plus
     ``<|python_tag|>``, which also runs before the Mistral parser)."""
     first = None
-    for sig in ("<tool_call>", "<|tool_call>", "<function=", "<|python_tag|>"):
+    for sig in (
+        "<tool_call>",
+        "<|tool_call>",
+        "<function=",
+        "<|python_tag|>",
+        _IFM_TOOL_CALLS_OPEN,
+    ):
         p = content.find(sig)
         if p >= 0 and (first is None or p < first):
             first = p
@@ -2440,6 +2535,13 @@ def parse_tool_calls_from_text(
                 )
             )
             return calls
+
+    # IFM has a complete outer envelope and owns any other protocol-looking text inside its
+    # argument values. Dispatch it before the shared parsers, but only when its envelope opens
+    # first; an IFM example quoted by an existing call must remain that call's data.
+    calls = _parse_ifm_tool_calls(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
+    if calls:
+        return calls
 
     # DeepSeek/Kimi markers are unique, so try them first -- unless an outer envelope opens before the first marker
     # (then the marker is argument data).
@@ -4265,6 +4367,708 @@ def _parse_glm_tool_calls(
             )
         pos = close + len(_GLM_TC_CLOSE) if close >= 0 else len(content)
     return out
+
+
+def _ifm_skip_whitespace(text: str, pos: int) -> int:
+    while pos < len(text) and text[pos] in " \t\r\n":
+        pos += 1
+    return pos
+
+
+def _ifm_fenced_spans(text: str) -> list[tuple[int, int]]:
+    """Return Markdown fenced-code spans containing IFM-looking examples.
+
+    IFM's outer tag is a strong protocol signal, but a model can quote a complete native
+    example in a fenced answer. Treating those examples as calls would be a tool-execution
+    injection, so the candidate scan excludes them before structural parsing begins.
+    """
+    fence_re = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+    spans: list[tuple[int, int]] = []
+    active: Optional[tuple[str, int, int]] = None
+    offset = 0
+    for line in text.splitlines(keepends = True):
+        match = fence_re.match(line)
+        if active is not None:
+            char, width, start = active
+            if match is not None and match.group(1)[0] == char and len(match.group(1)) >= width:
+                spans.append((start, offset + len(line)))
+                active = None
+        elif match is not None:
+            marker = match.group(1)
+            active = (marker[0], len(marker), offset)
+        offset += len(line)
+    if active is not None:
+        spans.append((active[2], len(text)))
+    return spans
+
+
+def _ifm_inline_literal_spans(text: str) -> list[tuple[int, int]]:
+    """Return inline quoted spans, preserving quote state across the full text.
+
+    This is deliberately only a candidate guard. The native grammar itself is parsed by the
+    structural scanner below; these spans only stop a complete IFM sample embedded in ordinary
+    prose from being promoted. A quote inside an actual IFM envelope starts after its candidate,
+    so it cannot hide that envelope.
+    """
+    spans: list[tuple[int, int]] = []
+    fenced = _ifm_fenced_spans(text)
+    fence_index = 0
+    cursor = 0
+    quote_start: Optional[int] = None
+    delimiter = ""
+    while cursor < len(text):
+        if delimiter:
+            if text[cursor] == "\\":
+                # Escaped quotes (and escaped backslashes) are data, including when the
+                # escape crosses a line boundary.
+                cursor += 2
+                continue
+            if text.startswith(delimiter, cursor):
+                spans.append((quote_start, cursor + len(delimiter)))
+                cursor += len(delimiter)
+                quote_start = None
+                delimiter = ""
+                continue
+            cursor += 1
+            continue
+
+        while fence_index < len(fenced) and cursor >= fenced[fence_index][1]:
+            fence_index += 1
+        if fence_index < len(fenced):
+            fence_start, fence_end = fenced[fence_index]
+            if fence_start <= cursor < fence_end:
+                cursor = fence_end
+                fence_index += 1
+                continue
+
+        char = text[cursor]
+        if char == "'" and (
+            cursor > 0
+            and cursor + 1 < len(text)
+            and text[cursor - 1].isalnum()
+            and text[cursor + 1].isalnum()
+        ):
+            # Do not let an apostrophe in a contraction (``don't``) open a quote that
+            # hides a genuine protocol marker later in the sentence.
+            cursor += 1
+            continue
+        if (
+            text.startswith("```", cursor)
+            or text.startswith('"""', cursor)
+            or text.startswith("'''", cursor)
+        ):
+            delimiter = text[cursor : cursor + 3]
+        elif char in ("`", '"', "'"):
+            delimiter = char
+        else:
+            cursor += 1
+            continue
+        quote_start = cursor
+        cursor += len(delimiter)
+
+    if delimiter and quote_start is not None:
+        spans.append((quote_start, len(text)))
+    return spans
+
+
+def _ifm_reasoning_spans(text: str) -> list[tuple[int, int]]:
+    """Return native IFM reasoning spans, including accelerated generic closers.
+
+    The production streamer normally converts these markers to canonical ``<think>`` before
+    this parser sees them. Keeping the native spans here as well makes the parser and the stream
+    safety net fail closed when a raw native delta is inspected directly.
+    """
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    while cursor < len(text):
+        candidates = []
+        for opening, closers in _IFM_REASONING_CHANNELS:
+            found = text.find(opening, cursor)
+            if found >= 0:
+                candidates.append((found, opening, closers))
+        if not candidates:
+            break
+        start, opening, closers = min(candidates, key = lambda item: item[0])
+        close_candidates = [text.find(closer, start + len(opening)) for closer in closers]
+        close_candidates = [found for found in close_candidates if found >= 0]
+        if close_candidates:
+            end = min(close_candidates)
+            end += (
+                len(closers[0])
+                if text.startswith(closers[0], end)
+                else next(len(closer) for closer in closers if text.startswith(closer, end))
+            )
+            spans.append((start, end))
+            cursor = end
+        else:
+            spans.append((start, len(text)))
+            break
+    return spans
+
+
+def _ifm_protected_spans(text: str) -> list[tuple[int, int]]:
+    """Spans in which an IFM outer opener is data rather than a tool boundary."""
+    spans = list(_tool_healing._think_spans_outside_tool_markup(text))
+    spans.extend(_ifm_reasoning_spans(text))
+    spans.extend(_ifm_fenced_spans(text))
+    spans.extend(_ifm_inline_literal_spans(text))
+    return _merge_spans(spans)
+
+
+def _ifm_in_spans(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
+
+def _ifm_protected_end(pos: int, spans: list[tuple[int, int]]) -> Optional[int]:
+    """Return the end of the protected span containing ``pos``, if any."""
+    index = bisect.bisect_right(spans, (pos, pos)) - 1
+    if index >= 0:
+        start, end = spans[index]
+        if start <= pos < end:
+            return end
+    return None
+
+
+def _ifm_value_literal_spill_end(
+    value_start: int, value_close: int, spans: list[tuple[int, int]]
+) -> int:
+    """End of a lexical span that began inside one XML arg value and spills past it.
+
+    Quotes/backtick fences have meaning for finding IFM-looking examples in prose, but
+    XML/XML_TYPED values are bounded by IFM tags instead. A lexical literal that starts
+    inside a value must therefore stop protecting protocol structure at the value close.
+    """
+    spill_end = value_close
+    for start, end in spans:
+        if start >= value_close:
+            break
+        if value_start <= start < value_close < end:
+            spill_end = max(spill_end, end)
+    return spill_end
+
+
+def _ifm_first_unprotected_foreign_signal(
+    text: str, stop: int, protected: list[tuple[int, int]]
+) -> Optional[int]:
+    """Find another protocol opener before an IFM envelope.
+
+    Existing formats retain precedence when they open first. This also prevents an IFM-looking
+    string nested in an already recognized call from being promoted by the new pre-pass.
+    """
+    first: Optional[int] = None
+    for signal in TOOL_XML_SIGNALS:
+        if signal in (_IFM_TOOL_CALLS_OPEN, _MISTRAL_ARGS_MARKER):
+            # A bare ``[ARGS]`` is only meaningful as part of the rehearsal form
+            # ``name[ARGS]{...}``, which is checked by the dedicated regex below.
+            # Treating the marker alone as a foreign opener lets explanatory prose
+            # suppress a real IFM envelope that follows it.
+            continue
+        cursor = 0
+        while True:
+            found = text.find(signal, cursor, stop)
+            if found < 0:
+                break
+            if not _ifm_in_spans(found, protected):
+                first = found if first is None else min(first, found)
+                break
+            cursor = found + len(signal)
+    attr = _ATTR_FUNC_OPEN_RE.search(text, 0, stop)
+    if attr is not None and not _ifm_in_spans(attr.start(), protected):
+        first = attr.start() if first is None else min(first, attr.start())
+    for regex in (_GEMMA_BARE_TC_RE, _tool_healing._REHEARSAL_RE):
+        match = regex.search(text, 0, stop)
+        if match is not None and not _ifm_in_spans(match.start(), protected):
+            first = match.start() if first is None else min(first, match.start())
+    return first
+
+
+def _ifm_literal_and_fence_spans(text: str) -> list[tuple[int, int]]:
+    """Return lexical spans in which IFM-looking tags are ordinary text."""
+    return _merge_spans(
+        _tool_healing._think_spans_outside_tool_markup(text)
+        + _ifm_reasoning_spans(text)
+        + _ifm_fenced_spans(text)
+        + _ifm_inline_literal_spans(text)
+    )
+
+
+def _ifm_find_envelope_close(
+    text: str,
+    start: int,
+    literal_spans: Optional[list[tuple[int, int]]] = None,
+) -> Optional[int]:
+    """Find the structurally matching close for one IFM outer envelope."""
+    protected = literal_spans if literal_spans is not None else _ifm_literal_and_fence_spans(text)
+    cursor = start + len(_IFM_TOOL_CALLS_OPEN)
+    nested_depth = 0
+    in_value = False
+    value_start: Optional[int] = None
+    ignore_protected_until = -1
+
+    while cursor < len(text):
+        if not in_value and cursor >= ignore_protected_until:
+            protected_end = _ifm_protected_end(cursor, protected)
+            if protected_end is not None:
+                cursor = protected_end
+                continue
+
+        if text.startswith(_IFM_ARG_VALUE_OPEN, cursor):
+            in_value = True
+            value_start = cursor + len(_IFM_ARG_VALUE_OPEN)
+            cursor = value_start
+            continue
+
+        if text.startswith(_IFM_ARG_VALUE_CLOSE, cursor):
+            if in_value and value_start is not None:
+                ignore_protected_until = max(
+                    ignore_protected_until,
+                    _ifm_value_literal_spill_end(value_start, cursor, protected),
+                )
+            in_value = False
+            value_start = None
+            cursor += len(_IFM_ARG_VALUE_CLOSE)
+            continue
+
+        if text.startswith(_IFM_TOOL_CALLS_OPEN, cursor):
+            if not in_value:
+                nested_depth += 1
+            cursor += len(_IFM_TOOL_CALLS_OPEN)
+            continue
+
+        if text.startswith(_IFM_TOOL_CALLS_CLOSE, cursor):
+            if in_value:
+                # Reserved IFM markup in a value is rejected later by
+                # _ifm_find_value_close; it must not delimit this envelope here.
+                cursor += len(_IFM_TOOL_CALLS_CLOSE)
+                continue
+            if nested_depth == 0:
+                return cursor
+            nested_depth -= 1
+            cursor += len(_IFM_TOOL_CALLS_CLOSE)
+            continue
+
+        cursor += 1
+
+    return None
+
+
+def _ifm_find_call_close(
+    text: str,
+    start: int,
+    envelope_close: Optional[int],
+    literal_spans: Optional[list[tuple[int, int]]] = None,
+) -> Optional[int]:
+    """Find a call close without allowing a later sibling to close this call."""
+    protected = literal_spans if literal_spans is not None else _ifm_literal_and_fence_spans(text)
+    limit = envelope_close if envelope_close is not None and envelope_close >= 0 else len(text)
+    cursor = start + len(_IFM_TOOL_CALL_OPEN)
+    in_value = False
+    value_start: Optional[int] = None
+    ignore_protected_until = -1
+
+    while cursor < limit:
+        if not in_value and cursor >= ignore_protected_until:
+            protected_end = _ifm_protected_end(cursor, protected)
+            if protected_end is not None:
+                cursor = protected_end
+                continue
+
+        if text.startswith(_IFM_TOOL_CALLS_OPEN, cursor):
+            if not in_value:
+                return None
+            nested_close = _ifm_find_envelope_close(text, cursor, protected)
+            if nested_close is None or nested_close >= limit:
+                return None
+            cursor = nested_close + len(_IFM_TOOL_CALLS_CLOSE)
+            continue
+
+        if text.startswith(_IFM_TOOL_CALL_OPEN, cursor):
+            # A second call opener before this call closes is malformed. Inside a value it is
+            # reserved IFM markup and is likewise invalid.
+            return None
+
+        if text.startswith(_IFM_ARG_VALUE_OPEN, cursor):
+            in_value = True
+            value_start = cursor + len(_IFM_ARG_VALUE_OPEN)
+            cursor = value_start
+            continue
+
+        if text.startswith(_IFM_ARG_VALUE_CLOSE, cursor):
+            if in_value and value_start is not None:
+                ignore_protected_until = max(
+                    ignore_protected_until,
+                    _ifm_value_literal_spill_end(value_start, cursor, protected),
+                )
+            in_value = False
+            value_start = None
+            cursor += len(_IFM_ARG_VALUE_CLOSE)
+            continue
+
+        if text.startswith(_IFM_TOOL_CALL_CLOSE, cursor):
+            return cursor if not in_value else None
+
+        if text.startswith(_IFM_TOOL_CALLS_CLOSE, cursor):
+            return None
+
+        cursor += 1
+
+    return None
+
+
+def _ifm_find_value_close(
+    text: str,
+    start: int,
+    envelope_close: Optional[int] = None,
+    call_close: Optional[int] = None,
+) -> Optional[tuple[int, int]]:
+    """Find an argument-value close within the current structurally bounded call.
+
+    Default/XML_TYPED IFM values have no escaping or quoting rule that can disambiguate reserved
+    protocol markers from data. The matching value close is therefore the only reserved marker
+    accepted in the active value; every other IFM marker invalidates the enclosing call.
+    """
+    cursor = start
+    outer_close = (
+        envelope_close if envelope_close is not None else text.find(_IFM_TOOL_CALLS_CLOSE, start)
+    )
+    limit = call_close if call_close is not None else outer_close
+    if limit is None or limit < 0:
+        limit = len(text)
+    while cursor < limit:
+        if text.startswith(_IFM_ARG_VALUE_CLOSE, cursor):
+            after = _ifm_skip_whitespace(text, cursor + len(_IFM_ARG_VALUE_CLOSE))
+            return cursor, after
+        if any(text.startswith(marker, cursor) for marker in _IFM_XML_RESERVED_MARKERS):
+            return None
+        cursor += 1
+    return None
+
+
+def _parse_ifm_finite_float(value: str) -> float:
+    """Parse a JSON float without allowing overflow to produce infinity."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{value} is not a finite JSON number")
+    return parsed
+
+
+def _ifm_json_loads(text: str) -> Any:
+    """Decode IFM JSON with the same strict constant policy as the tool loop."""
+
+    def reject_constant(name: str) -> Any:
+        raise ValueError(f"{name} is not JSON")
+
+    return json.loads(
+        text,
+        parse_constant = reject_constant,
+        parse_float = _parse_ifm_finite_float,
+    )
+
+
+def _ifm_decode_xml_value(raw_value: str, arg_type: Optional[str]) -> tuple[bool, Any]:
+    """Decode IFM XML values according to the default or typed template contract."""
+    if arg_type is None:
+        # Default XML has no type channel: its value text is always a string, including
+        # JSON-looking and numeric-looking strings.
+        return True, raw_value
+
+    kind = arg_type.strip().lower()
+    if kind in ("string", "str", "text"):
+        return True, raw_value
+    if kind not in {
+        "integer",
+        "int",
+        "number",
+        "float",
+        "double",
+        "boolean",
+        "bool",
+        "null",
+        "none",
+        "array",
+        "list",
+        "object",
+        "dict",
+        "mapping",
+    }:
+        # Union/custom schema labels are descriptive metadata, not a license to reinterpret a
+        # scalar. Preserve the template's raw value until a future grammar gives that label a
+        # concrete encoding.
+        return True, raw_value
+
+    try:
+        decoded = _ifm_json_loads(raw_value.strip())
+    except (json.JSONDecodeError, ValueError, OverflowError, RecursionError):
+        return False, raw_value
+
+    if kind in ("integer", "int"):
+        return (isinstance(decoded, int) and not isinstance(decoded, bool)), decoded
+    if kind in ("number", "float", "double"):
+        return (isinstance(decoded, (int, float)) and not isinstance(decoded, bool)), decoded
+    if kind in ("boolean", "bool"):
+        return isinstance(decoded, bool), decoded
+    if kind in ("null", "none"):
+        return decoded is None, decoded
+    if kind in ("array", "list"):
+        return isinstance(decoded, list), decoded
+    if kind in ("object", "dict", "mapping"):
+        return isinstance(decoded, dict), decoded
+    # A future/union type is not a reason to reinterpret a scalar string. The template's
+    # anyOf/oneOf branch already supplies the concrete type when it can.
+    return True, raw_value
+
+
+def _ifm_parse_call_at(
+    text: str,
+    start: int,
+    id_offset: int,
+    envelope_close: Optional[int] = None,
+    call_close: Optional[int] = None,
+    literal_spans: Optional[list[tuple[int, int]]] = None,
+) -> Optional[tuple[dict, int]]:
+    """Parse one complete IFM ``<ifm|tool_call>`` block."""
+    pos = start + len(_IFM_TOOL_CALL_OPEN)
+    pos = _ifm_skip_whitespace(text, pos)
+    if pos >= len(text):
+        return None
+
+    if text[pos] == "{":
+        end = _balanced_brace_end(text, pos)
+        if end is None:
+            return None
+        after = _ifm_skip_whitespace(text, end + 1)
+        if not text.startswith(_IFM_TOOL_CALL_CLOSE, after) or (
+            call_close is not None and after != call_close
+        ):
+            return None
+        try:
+            payload = _ifm_json_loads(text[pos : end + 1])
+        except (json.JSONDecodeError, ValueError, OverflowError, RecursionError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        name = payload.get("name")
+        arguments = payload.get("arguments")
+        if arguments is None and "parameters" in payload:
+            arguments = payload.get("parameters")
+        if not isinstance(name, str) or not _IFM_NAME_RE.fullmatch(name):
+            return None
+        if not isinstance(arguments, dict):
+            return None
+        call = {
+            "id": f"call_{id_offset}",
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)},
+        }
+        return call, after + len(_IFM_TOOL_CALL_CLOSE)
+
+    next_key = text.find(_IFM_ARG_KEY_OPEN, pos)
+    next_close = text.find(_IFM_TOOL_CALL_CLOSE, pos)
+    candidates = [found for found in (next_key, next_close) if found >= 0]
+    if not candidates:
+        return None
+    first = min(candidates)
+    if text.find(_IFM_TOOL_CALLS_CLOSE, pos, first) >= 0:
+        return None
+    name = text[pos:first].strip()
+    if not _IFM_NAME_RE.fullmatch(name):
+        return None
+
+    arguments: dict[str, Any] = {}
+    pos = first
+    while True:
+        pos = _ifm_skip_whitespace(text, pos)
+        if text.startswith(_IFM_TOOL_CALL_CLOSE, pos):
+            call = {
+                "id": f"call_{id_offset}",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(arguments)},
+            }
+            return call, pos + len(_IFM_TOOL_CALL_CLOSE)
+        if not text.startswith(_IFM_ARG_KEY_OPEN, pos):
+            return None
+
+        key_start = pos + len(_IFM_ARG_KEY_OPEN)
+        key_close = text.find(_IFM_ARG_KEY_CLOSE, key_start)
+        if key_close < 0 or text.find(_IFM_TOOL_CALLS_CLOSE, key_start, key_close) >= 0:
+            return None
+        key = text[key_start:key_close].strip()
+        if not key or "<" in key or ">" in key or key in arguments:
+            return None
+        pos = _ifm_skip_whitespace(text, key_close + len(_IFM_ARG_KEY_CLOSE))
+
+        arg_type: Optional[str] = None
+        if text.startswith(_IFM_ARG_TYPE_OPEN, pos):
+            type_start = pos + len(_IFM_ARG_TYPE_OPEN)
+            type_close = text.find(_IFM_ARG_TYPE_CLOSE, type_start)
+            if type_close < 0 or text.find(_IFM_TOOL_CALLS_CLOSE, type_start, type_close) >= 0:
+                return None
+            arg_type = text[type_start:type_close].strip()
+            if not arg_type or "<" in arg_type or ">" in arg_type:
+                return None
+            pos = _ifm_skip_whitespace(text, type_close + len(_IFM_ARG_TYPE_CLOSE))
+
+        if not text.startswith(_IFM_ARG_VALUE_OPEN, pos):
+            return None
+        value_start = pos + len(_IFM_ARG_VALUE_OPEN)
+        value_close = _ifm_find_value_close(
+            text,
+            value_start,
+            envelope_close,
+            call_close,
+        )
+        if value_close is None:
+            return None
+        close, pos = value_close
+        valid, value = _ifm_decode_xml_value(text[value_start:close], arg_type)
+        if not valid:
+            return None
+        arguments[key] = value
+
+
+def _ifm_parse_envelope_at(
+    text: str,
+    start: int,
+    id_offset: int,
+    literal_spans: Optional[list[tuple[int, int]]] = None,
+) -> Optional[tuple[list[dict], int]]:
+    """Parse one complete IFM outer envelope and all of its calls."""
+    calls: list[dict] = []
+    pos = start + len(_IFM_TOOL_CALLS_OPEN)
+    literal_spans = (
+        literal_spans if literal_spans is not None else _ifm_literal_and_fence_spans(text)
+    )
+    envelope_close = _ifm_find_envelope_close(text, start, literal_spans)
+    if envelope_close is None:
+        return None
+    while True:
+        pos = _ifm_skip_whitespace(text, pos)
+        if text.startswith(_IFM_TOOL_CALLS_CLOSE, pos):
+            return (calls, pos + len(_IFM_TOOL_CALLS_CLOSE)) if calls else None
+        if not text.startswith(_IFM_TOOL_CALL_OPEN, pos):
+            return None
+        call_close = _ifm_find_call_close(text, pos, envelope_close, literal_spans)
+        if call_close is None:
+            return None
+        parsed = _ifm_parse_call_at(
+            text,
+            pos,
+            id_offset + len(calls),
+            envelope_close,
+            call_close,
+            literal_spans,
+        )
+        if parsed is None:
+            return None
+        call, pos = parsed
+        calls.append(call)
+
+
+def _parse_ifm_tool_calls_with_spans(
+    content: str, *, id_offset: int
+) -> tuple[list[dict], list[tuple[int, int]]]:
+    """Return complete IFM calls and their removable outer-envelope spans.
+
+    Unlike older tool formats, IFM is intentionally never healed from an incomplete structural
+    envelope. The stream may hold it until EOS, but execution and markup removal require every
+    outer, call, key and value boundary to be present.
+    """
+    if _IFM_TOOL_CALLS_OPEN not in content:
+        return [], []
+
+    lexical_origin = 0
+
+    def protected_from(origin: int) -> list[tuple[int, int]]:
+        """Protected spans whose lexical state begins at ``origin``."""
+        return [
+            (origin + start, origin + end) for start, end in _ifm_protected_spans(content[origin:])
+        ]
+
+    protected = protected_from(lexical_origin)
+    calls: list[dict] = []
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+
+    while True:
+        start = content.find(_IFM_TOOL_CALLS_OPEN, cursor)
+        if start < 0:
+            break
+
+        if _ifm_in_spans(start, protected):
+            cursor = start + len(_IFM_TOOL_CALLS_OPEN)
+            continue
+
+        # Protocol precedence applies only to the still-unconsumed response.
+        # Once a complete IFM envelope is accepted, lexical quote/fence state from
+        # inside that structured envelope must not leak into later siblings.
+        prefix = content[lexical_origin:start]
+        prefix_protected = _ifm_protected_spans(prefix)
+        foreign = _ifm_first_unprotected_foreign_signal(
+            prefix,
+            len(prefix),
+            prefix_protected,
+        )
+        if foreign is not None:
+            break
+
+        parsed = _ifm_parse_envelope_at(
+            content,
+            start,
+            id_offset + len(calls),
+            protected,
+        )
+        if parsed is None:
+            # Do not recover a nested-looking envelope from inside a malformed outer block. A
+            # malformed candidate is data until its next outer close, if one exists.
+            outer_close = _ifm_find_envelope_close(content, start, protected)
+            if outer_close is None:
+                break
+            cursor = outer_close + len(_IFM_TOOL_CALLS_CLOSE)
+            continue
+
+        envelope_calls, end = parsed
+        calls.extend(envelope_calls)
+        spans.append((start, end))
+        cursor = end
+
+        # A successfully parsed structural envelope is a lexical boundary. Re-scan
+        # the suffix so an unmatched quote/fence inside an argument cannot shield a
+        # later real call, while genuinely new quoted/fenced prose still is shielded.
+        lexical_origin = end
+        protected = protected_from(lexical_origin)
+
+    return calls, spans
+
+
+def _parse_ifm_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
+    # ``allow_incomplete`` is deliberately ignored for IFM structural boundaries: accepting a
+    # partial native call would turn truncated model output into an executable request.
+    del allow_incomplete
+    calls, _spans = _parse_ifm_tool_calls_with_spans(content, id_offset = id_offset)
+    return calls
+
+
+def _strip_ifm_tool_calls(text: str) -> str:
+    """Remove only complete, structurally parsed IFM envelopes."""
+    # Keep the common non-IFM streaming path cheap. The structural scanner has to inspect
+    # protected reasoning/quoted spans, so do not enter it when the outer marker is absent.
+    if _IFM_TOOL_CALLS_OPEN not in text:
+        return text
+    _calls, spans = _parse_ifm_tool_calls_with_spans(text, id_offset = 0)
+    if not spans:
+        return text
+    out: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        out.append(text[cursor:start])
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
 
 
 def _parse_kimi_tool_calls(

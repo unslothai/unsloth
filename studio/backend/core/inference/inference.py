@@ -1685,7 +1685,11 @@ class InferenceBackend:
                 # processor template, so its native markers do not describe
                 # this request's response protocol. Passing *tools* matches the
                 # render: a named template selects "tool_use", not "default".
-                reasoning_channel_markers = detect_reasoning_channel_markers(processor, tools = tools)
+                reasoning_channel_markers = detect_reasoning_channel_markers(
+                    processor,
+                    tools = tools,
+                    prompt = prompt_text,
+                )
                 if image
                 else None,
                 reasoning_channel_markers_resolved = True,
@@ -2112,7 +2116,7 @@ class InferenceBackend:
             reasoning_channel_markers
             if reasoning_channel_markers_resolved
             else reasoning_channel_markers
-            or detect_reasoning_channel_markers(protocol_source or tokenizer)
+            or detect_reasoning_channel_markers(protocol_source or tokenizer, prompt = prompt)
         )
         if markers is not None:
             return ReasoningTextIteratorStreamer(

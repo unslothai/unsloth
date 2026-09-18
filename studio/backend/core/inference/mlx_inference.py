@@ -3797,7 +3797,11 @@ class MLXInferenceBackend:
         from core.inference.chat_template_helpers import detect_think_prefill
 
         # Detected once: the decoder keeps the delimiters the normalizer below consumes.
-        vlm_reasoning_markers = detect_reasoning_channel_markers(chat_target, tools = tools)
+        vlm_reasoning_markers = detect_reasoning_channel_markers(
+            chat_target,
+            tools = tools,
+            prompt = prompt,
+        )
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
         prefill = detect_think_prefill(
             prompt,
@@ -4098,7 +4102,7 @@ class MLXInferenceBackend:
             max_new_tokens = min(self._unset_generation_budget(prompt), UNSET_GENERATION_BUDGET)
 
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
-        markers = detect_reasoning_channel_markers(self._processor)
+        markers = detect_reasoning_channel_markers(self._processor, prompt = prompt)
         normalizer = make_reasoning_normalizer(markers) if markers is not None else None
         # Matched on the sampled deltas, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
