@@ -277,7 +277,9 @@ def test_setup_ps1_stale_venv_has_env_mode_guard():
     rm_idx = block.index("Rename-Item -LiteralPath $VenvDir")
     assert guard_idx < rm_idx, "custom-root guard must precede Rename-Item -LiteralPath $VenvDir"
     sweep_idx = src.index("$_staleMatch = [regex]::Match($_old.Name, $_staleShape)")
-    assert src.index("$_studioRootIsOurs = (") < sweep_idx, "the sweep must be able to read the guard"
+    assert (
+        src.index("$_studioRootIsOurs = (") < sweep_idx
+    ), "the sweep must be able to read the guard"
 
 
 def test_setup_ps1_stale_venv_is_moved_aside_not_deleted_in_place():
