@@ -19,9 +19,16 @@
 # does not reuse a cached layer after upstream moves; docker-publish-rocm.yml does.
 # Run (Linux) with the wrapper, which adds the device nodes, the NUMERIC group ids
 # and the Studio volume, but publishes no port and picks :latest unless told:
-#   UNSLOTH_IMAGE=unsloth/unsloth-rocm:studio #     UNSLOTH_PORTS="-p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888" #     UNSLOTH_STUDIO_VOLUME=unsloth-studio-rocm bash docker/run.sh --rocm
+#   UNSLOTH_IMAGE=unsloth/unsloth-rocm:studio \
+#     UNSLOTH_PORTS="-p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888" \
+#     UNSLOTH_STUDIO_VOLUME=unsloth-studio-rocm bash docker/run.sh --rocm
 # or by hand (group ids as numbers: the names do not exist inside the image):
-#   docker run --rm --device /dev/kfd --device /dev/dri #     --group-add "$(getent group video | cut -d: -f3)" #     --group-add "$(getent group render | cut -d: -f3)" #     --ipc=host -p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888 #     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface #     -v unsloth-studio-rocm:/opt/unsloth-studio unsloth/unsloth-rocm:studio
+#   docker run --rm --device /dev/kfd --device /dev/dri \
+#     --group-add "$(getent group video | cut -d: -f3)" \
+#     --group-add "$(getent group render | cut -d: -f3)" \
+#     --ipc=host -p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888 \
+#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface \
+#     -v unsloth-studio-rocm:/opt/unsloth-studio unsloth/unsloth-rocm:studio
 # Windows/WSL2 has no /dev/kfd: the card is reached over /dev/dxg, which the
 # wrapper and the entrypoint only learn in #11212. Until that lands, pass
 # /dev/dxg, the host's librocdxg and HSA_ENABLE_DXG_DETECTION=1 by hand, with
@@ -110,6 +117,10 @@ COPY studio_home.sh /usr/local/bin/unsloth-studio-home
 # the index it actually resolved against: the pytorch.org rocm leaf normally, or
 # repo.amd.com/rocm/whl/<family>/ on a per-arch (ROCM_GFX) build. Letting
 # install.sh detect instead would land on CPU wheels, since the builder has no GPU.
+# ROCM_GFX goes along as UNSLOTH_ROCM_GFX_ARCH for the same reason: with the index
+# pinned, install.sh learns gfx906 only from that variable or a live probe, and
+# without it a gfx906 build would put the prebuilt bitsandbytes (no gfx906
+# kernels) into the Studio venv that the base deliberately leaves out.
 #
 # fetch+checkout FETCH_HEAD, not `clone --branch`: CI passes a commit SHA.
 RUN set -eux \
@@ -122,6 +133,7 @@ RUN set -eux \
  && git checkout -q FETCH_HEAD \
  && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" \
     UNSLOTH_TORCH_INDEX_URL="${TORCH_INDEX_URL}" \
+    UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}" \
     UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
     UNSLOTH_LLAMA_CPP_BACKEND=cpu \
     UNSLOTH_SKIP_WHISPER_INSTALL=1 \

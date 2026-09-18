@@ -673,6 +673,15 @@ class TestRocmEntrypoint:
         assert "load_in_4bit = four_bit" in smoke and "ROCM_GFX=gfx906" in smoke
         entry = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
+        # The Studio venv is installed by install.sh with the index pinned, which
+        # skips the reroute that would notice gfx906, and the builder has no GPU
+        # to probe, so the arch has to be forwarded or the prebuilt wheel goes in.
+        studio = open(os.path.join(_DOCKER, "Dockerfile.studio-rocm"), encoding = "utf-8").read()
+        install = studio[
+            studio.index(". /etc/unsloth-rocm-build") : studio.index("bash install.sh --local")
+        ]
+        assert 'UNSLOTH_TORCH_INDEX_URL="${TORCH_INDEX_URL}"' in install
+        assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in install
 
     def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
         """docker/Dockerfile.studio-rocm is built by the same run as the base, on the
