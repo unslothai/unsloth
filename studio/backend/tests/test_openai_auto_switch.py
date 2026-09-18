@@ -48,7 +48,7 @@ import state.tool_policy as _tp
 
 
 @pytest.fixture(autouse = True)
-def _auto_switch_waiters_are_not_carried_between_tests(request):
+def _auto_switch_waiters_are_not_carried_between_tests(request, monkeypatch):
     """Restore ``_auto_switch_waiters`` around every test, and fail the test that dirties it.
 
     It is a module-level dict in routes.inference, so a test that registers a waiting request
@@ -69,6 +69,16 @@ def _auto_switch_waiters_are_not_carried_between_tests(request):
     decided by xdist at run time. A cleanliness assertion in a second file would pass vacuously
     whenever the two land in different processes, which is worse than no test at all, so the
     restore is kept as a defensive measure and is deliberately left unproven.
+
+    ``monkeypatch`` is requested, and not because this fixture patches anything. It is what
+    fixes the teardown ORDER. ``_wire()`` rebinds the registry with
+    ``monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})``, so the entry a test
+    stages goes into a temporary dict, and whichever of the two fixtures tears down second sees
+    the original one restored and nothing amiss. Depending on ``monkeypatch`` here makes this
+    fixture set up after it and therefore tear down before it, so the read below lands on the
+    dict the test actually wrote to. That ordering held incidentally without the dependency,
+    which is exactly the reason to state it: a guard that works by accident stops working
+    silently.
 
     Three tests stage a waiting request on purpose, with ``_note_switch_waiter(key, 1)`` and no
     matching -1, because that is the honest way to set the condition up. They carry
