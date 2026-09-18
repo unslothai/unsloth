@@ -6164,13 +6164,10 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PreservedInstallerTorchTag = $installedTorchTag
     }
 
-    # A direct `unsloth studio update` has the same shape as the installer-managed case: the CLI is
-    # this script's parent and runs from the venv's own python.exe, which Windows will not delete
-    # while it runs. The wipe below therefore emptied Lib\ and stopped at Scripts\python.exe,
-    # leaving a venv with no unsloth_cli, no rollback copy, and a desktop whose update AND repair
-    # both start from that interpreter (#11247).
-    # Detected rather than assumed: setup.ps1 run by hand from a checkout has no interpreter inside
-    # the venv and keeps the full rebuild.
+    # A direct `unsloth studio update` has the installer-managed shape: the CLI is this script's
+    # parent and runs from the venv's own python.exe, so the wipe below left a venv with no
+    # unsloth_cli and a desktop whose update AND repair both start from it (#11247). Detected, not
+    # assumed: run by hand from a checkout there is no interpreter inside, and the rebuild stands.
     # LAST of the direct-update escapes: this condition holds for EVERY stale direct update, so
     # ahead of the narrower ones it consumes $shouldRebuild and they never fire. Ahead of the
     # nvidia-smi guard specifically, $script:PreservedInstallerTorchTag goes unset and pairs with
@@ -6187,10 +6184,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
 
     # Outside the rebuild branch: an install that moved a venv aside, failed to delete the copy and
     # thereafter only repairs in place would never reach a sweep that lived inside it.
-    # Validated like install.ps1's rollback sweep (Test-StudioVenvRollbackMustBePreserved) and for
-    # its reasons: "stale-*" is a wildcard, not proof of ownership, a user's own
-    # unsloth_studio.stale-backup matches it, and the custom-root guard below runs too late to
-    # help. A live owner means a concurrent setup's rescue copy, not our litter.
+    # Validated like install.ps1's rollback sweep (Test-StudioVenvRollbackMustBePreserved): a
+    # user's own unsloth_studio.stale-backup matches "stale-*" too, and the custom-root guard
+    # below runs too late to help. A live owner is a concurrent setup's rescue copy, not litter.
     $_venvParent = Split-Path -Parent $VenvDir
     $_venvLeaf = Split-Path -Leaf $VenvDir
     $_staleShape = '^' + [regex]::Escape($_venvLeaf) + '\.stale-[0-9]{14}-([0-9]+)$'
@@ -6226,10 +6222,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             Exit-SetupFailure "$VenvDir is not an Unsloth Studio environment"
         }
         # Moved aside, then deleted: a rename takes the whole tree or fails and leaves it intact,
-        # where Remove-Item -Recurse deletes up to the first locked file and leaves an environment
-        # that can neither start nor update itself. The moved copy goes best-effort; whatever a
-        # lock keeps behind is swept at the top of the next run. The pid joins the timestamp so two
-        # rebuilds in one second cannot collide on a destination and fail the rename over a name.
+        # where Remove-Item -Recurse stops at the first locked file and leaves an environment that
+        # can neither start nor update itself. Deleting the copy is best-effort, swept next run.
+        # The pid joins the timestamp so two rebuilds in one second cannot collide on a name.
         $_staleLeaf = "$_venvLeaf.stale-$(Get-Date -Format 'yyyyMMddHHmmss')-$PID"
         try {
             Rename-Item -LiteralPath $VenvDir -NewName $_staleLeaf -ErrorAction Stop
