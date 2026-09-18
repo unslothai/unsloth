@@ -65,12 +65,19 @@ SETTLE_MS = int(os.environ.get("STUDIO_UI_INDICATOR_SETTLE_MS", "12000"))
 CARD = 'text="Loaded models"'
 EJECT = '[aria-label^="Eject "]'
 HANDLE = '[aria-label="Drag to move"]'
+# The collapsed form of the same card. Named up here because a failed presence check has to say which of the two it
+# found: "no card at all" and "no card but a pill" are different bugs, and a local string cannot be read from the
+# diagnostic below.
+PILL = 'button[aria-label*="Show details"]'
 POSITION_KEY = "unsloth_loaded_models_position"
 COLLAPSED_KEY = "unsloth_loaded_models_collapsed"
 SHOW_KEY = "unsloth_show_loaded_models_indicator"
 
 failures: list[str] = []
 checks = [0]
+# Whatever the page logged, newest last. Module level, as `failures` and `checks` are: the presence checks run after a
+# hard navigation, where a bundle that threw and a card that is merely slow are indistinguishable from the outside.
+console_errors: list[str] = []
 
 
 def info(s: str) -> None:
@@ -234,6 +241,62 @@ def card_text(page) -> str:
         return ""
 
 
+def why_no_card(
+    page,
+    state: Runtime,
+    waited: str = "",
+) -> str:
+    """What the page actually looked like when a presence check went the wrong way.
+
+    "FAILED: card survives /hub" reports only that the assertion failed, which is the one thing already known. These
+    are the states that separate the causes, and each one names a different bug: a redirect or a route that never
+    resolved (pathname), an SPA that never mounted (root_children 0), an auth slip that the /login guard in `boot`
+    cannot catch on a mid-suite navigation (auth_token), a preference that was not seeded (show_pref), a poll that
+    never fired (status_reads flat against the previous line), and a bundle that threw (console).
+    """
+
+    def probe(expression: str):
+        try:
+            return page.evaluate(expression)
+        except Exception:
+            return "<unreadable>"
+
+    def nodes(selector: str) -> int:
+        # Attached, not visible: a card that rendered off screen is a position bug, not a missing card, and the two
+        # have to read differently here.
+        try:
+            return page.locator(selector).count()
+        except Exception:
+            return -1
+
+    pathname = probe("location.pathname")
+    mounted = probe("document.getElementById('root')?.childElementCount ?? -1")
+    token = probe("Boolean(localStorage.getItem('unsloth_auth_token'))")
+    shown = probe(f"localStorage.getItem({json.dumps(SHOW_KEY)})")
+    return (
+        f"wait={waited or 'returned'} pathname={pathname!r} card_nodes={nodes(CARD)} "
+        f"collapsed_pill={nodes(PILL)} root_children={mounted} auth_token={token} "
+        f"show_pref={shown!r} status_reads={state.status_reads} console={console_errors[-4:]}"
+    )
+
+
+def await_selector(page, selector: str, timeout: int) -> str:
+    """Wait, and name what ended the wait rather than swallowing it.
+
+    The exception has to be swallowed -- the caller's own presence assertion is what decides pass or fail, so raising
+    here would turn a product verdict into a traceback. But swallowing it ANONYMOUSLY conflates two different
+    outcomes: a TimeoutError means the card really was not there within the budget, while anything else (a closed
+    target, a navigation error) means the run failed for a reason that has nothing to do with the card. Returning the
+    name lets the detail below say which.
+    """
+    try:
+        page.wait_for_selector(selector, timeout = timeout)
+    except Exception as exc:
+        first_line = str(exc).splitlines()[0] if str(exc) else ""
+        return f"{type(exc).__name__}: {first_line[:120]}"
+    return ""
+
+
 def boot(
     page,
     state: Runtime,
@@ -318,6 +381,15 @@ def main() -> int:
         install_routes(context, state)
         page = context.new_page()
         page.set_default_timeout(60_000)
+        # Recorded rather than printed: a passing run must stay quiet, and only a failed presence check reads them
+        # back. Truncated per message, since one React error carries a whole component stack.
+        page.on(
+            "console",
+            lambda message: console_errors.append(f"{message.type}: {message.text}"[:200])
+            if message.type in ("error", "warning")
+            else None,
+        )
+        page.on("pageerror", lambda error: console_errors.append(f"pageerror: {error}"[:200]))
         try:
             run(page, state)
         finally:
@@ -365,6 +437,8 @@ def run(page, state: Runtime) -> None:
     check("dictation row is distinguished", "Dictation" in text)
 
     for route in ("/hub", "/train", "/images"):
+        # Scoped to this navigation, so a failure names what THIS route logged rather than everything since boot.
+        console_errors.clear()
         page.goto(BASE + route, wait_until = "domcontentloaded")
         # Wait for the card, not for the clock. This is a hard navigation: a
         # full SPA reload plus a loaded-models poll, and 3000ms was the only
@@ -374,11 +448,18 @@ def run(page, state: Runtime) -> None:
         # thing that is wrong. The check below is unchanged and still fails if
         # the card genuinely does not survive the navigation -- this only stops
         # a slow render from being read as a missing card.
-        try:
-            page.wait_for_selector(CARD, timeout = SETTLE_MS)
-        except Exception:
-            pass
-        check(f"card survives {route}", page.locator(CARD).count() > 0)
+        waited = await_selector(page, CARD, SETTLE_MS)
+        present = page.locator(CARD).count() > 0
+        # `count` is attached nodes and the wait above is visible ones, so this pair can disagree. It is not a
+        # failure -- the card is there -- but a card that is present and never became visible is a position or
+        # stacking bug wearing a pass, and it would otherwise leave no trace at all.
+        if waited and present:
+            info(
+                f"NOTE card survives {route}: attached but not visible in {SETTLE_MS}ms ({waited})"
+            )
+        check(
+            f"card survives {route}", present, "" if present else why_no_card(page, state, waited)
+        )
 
     # ── Hardware shapes a CUDA runner never produces ────────────────────
     matrix = [
@@ -567,11 +648,19 @@ def run(page, state: Runtime) -> None:
     page.wait_for_selector(CARD, timeout = 30_000)
     page.locator('[aria-label="Collapse loaded models"]').first.click()
     page.wait_for_timeout(1500)
-    pill = 'button[aria-label*="Show details"]'
-    check("collapses to a pill", page.locator(pill).count() > 0)
+    check("collapses to a pill", page.locator(PILL).count() > 0)
+    console_errors.clear()
     page.reload(wait_until = "domcontentloaded")
-    page.wait_for_timeout(SETTLE_MS // 2)
-    check("the collapsed state survives a reload", page.locator(pill).count() > 0)
+    # The last hard-navigation-plus-fixed-budget left in this file, and the same shape the /hub loop above was fixed
+    # for: a reload has to re-parse the bundle and re-read the stored preference before the pill can exist, so wait
+    # for the pill rather than for 6000ms of clock. Still fails if the collapse genuinely did not survive.
+    waited = await_selector(page, PILL, SETTLE_MS)
+    restored = page.locator(PILL).count() > 0
+    check(
+        "the collapsed state survives a reload",
+        restored,
+        "" if restored else why_no_card(page, state, waited),
+    )
 
     # ── Closed, then a load nobody announced ────────────────────────────
     # "Back on the next model load" is what the close tooltip promises, and a
@@ -624,9 +713,9 @@ def run(page, state: Runtime) -> None:
     page.wait_for_timeout(SETTLE_MS // 2)
     page.locator('[aria-label="Collapse loaded models"]').first.click()
     page.wait_for_timeout(SETTLE_MS // 2)
-    collapsed_ok = page.locator(CARD).count() == 0 and page.locator(pill).count() > 0
+    collapsed_ok = page.locator(CARD).count() == 0 and page.locator(PILL).count() > 0
     check("the grip drag still collapses to a pill", collapsed_ok)
-    page.locator(pill).first.click()
+    page.locator(PILL).first.click()
     page.wait_for_timeout(SETTLE_MS // 2)
     check(
         "one click reopens the pill after dragging by the grip",
