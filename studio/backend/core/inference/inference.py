@@ -84,6 +84,9 @@ def _load_cached_repo_as_named(config: ModelConfig, load_in_4bit: bool) -> bool:
     try:
         from unsloth.models import loader, loader_utils
 
+        # ModelScope downloads every repo id to its own cache, so the HF cache says nothing here.
+        if loader.USE_MODELSCOPE:
+            return False
         # Resolve the repo the loader will fetch on this host, after its bitsandbytes fallbacks.
         if not loader.ALLOW_BITSANDBYTES:
             load_in_4bit = False

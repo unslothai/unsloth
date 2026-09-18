@@ -97,6 +97,7 @@ def mapper(monkeypatch):
     loader = types.ModuleType("unsloth.models.loader")
     loader.ALLOW_BITSANDBYTES = True
     loader.ALLOW_PREQUANTIZED_MODELS = True
+    loader.USE_MODELSCOPE = False
     loader._strip_unsloth_bnb_4bit_suffix = lambda name: name.removesuffix("-unsloth-bnb-4bit")
     loader_utils.loader = loader
     models = types.ModuleType("unsloth.models")
@@ -180,6 +181,13 @@ def test_without_prequantized_models_the_stripped_target_decides(mapper, hub_cac
     assert _load_cached_repo_as_named(_config(), True) is True
 
     _cache_repo(hub_cache, PREQUANT.removesuffix("-unsloth-bnb-4bit"))
+    assert _load_cached_repo_as_named(_config(), True) is False
+
+
+def test_modelscope_keeps_the_swap(mapper, hub_cache):
+    mapper.loader.USE_MODELSCOPE = True
+    _cache_repo(hub_cache, UPSTREAM)
+
     assert _load_cached_repo_as_named(_config(), True) is False
 
 
