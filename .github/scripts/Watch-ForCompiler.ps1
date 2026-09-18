@@ -64,6 +64,41 @@ function Get-StudioTempRoots {
     return $result
 }
 
+function Test-StudioPathIsGone {
+    <#
+    .SYNOPSIS
+    Did this enumeration failure mean the directory does not exist, as opposed to could not
+    be read?
+
+    .DESCRIPTION
+    The distinction decides whether a directory is dropped or recorded as a gap, so it has to
+    come from the error itself. Test-Path cannot answer it. Measured under pwsh with
+    $ErrorActionPreference = 'Stop':
+
+        missing directory  ->  ItemNotFoundException, Test-Path returns $false
+        denied directory   ->  Test-Path THROWS "Access to the path ... is denied"
+
+    So probing with Test-Path both mis-answers the ACL case and can raise from inside the
+    catch that was meant to contain the failure.
+
+    Fails safe. Anything not positively identified as a missing path is reported as still
+    present, which records the directory as unread: over-reporting a gap costs a withheld
+    path or a voided run, while under-reporting one silently drops a directory out of the
+    comparison, which is the defect this whole file exists to prevent.
+    #>
+    param([Parameter(Mandatory = $true)]$ErrorRecord)
+    $exception = $ErrorRecord.Exception
+    while ($null -ne $exception) {
+        if ($exception -is [System.Management.Automation.ItemNotFoundException] -or
+            $exception -is [System.IO.DirectoryNotFoundException] -or
+            $exception -is [System.IO.FileNotFoundException]) {
+            return $true
+        }
+        $exception = $exception.InnerException
+    }
+    return $false
+}
+
 function Get-StudioTempSubtree {
     <#
     .SYNOPSIS
@@ -132,19 +167,19 @@ function Get-StudioTempSubtree {
             # A directory that no longer exists is not a gap. It cannot contribute a file to
             # a later listing of itself, and re-reading a path that raised for any other
             # reason is how a transient lock gets a second chance.
-            if (Test-Path -LiteralPath $dir) {
-                try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
-                catch {
-                    # Existence is rechecked HERE and not only above. The window between the
-                    # Test-Path and this retry is the deletion race itself, so a directory that
-                    # went away inside it would otherwise be recorded as unread, and an unread
-                    # directory under an unwatched root voids the run. That is the ordinary
-                    # temp-directory deletion this change exists to tolerate, so it must not be
-                    # the thing that fails the job.
-                    if (Test-Path -LiteralPath $dir) { $unread.Add($dir) }
-                    continue
-                }
-            } else {
+            #
+            # Classified from the error, never by probing the path. Test-Path answers $false
+            # for a missing directory but THROWS on an ACL-denied one, so probing would both
+            # call an unreadable directory deleted - dropping it silently, which is the exact
+            # defect this file exists to prevent - and raise from inside the catch meant to
+            # contain the failure.
+            if (Test-StudioPathIsGone -ErrorRecord $_) { continue }
+            try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
+            catch {
+                # Re-classified rather than assumed: the deletion race can land in the window
+                # between the two reads, and recording that as unread would void a run for the
+                # ordinary temp deletion this change exists to tolerate.
+                if (-not (Test-StudioPathIsGone -ErrorRecord $_)) { $unread.Add($dir) }
                 continue
             }
         }

@@ -479,34 +479,91 @@ def test_a_failed_watcher_root_is_dropped_from_the_coverage_set() -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX permissions only; see the note above.")
-def test_a_directory_deleted_during_the_retry_is_not_recorded_as_unread(
+def test_an_inaccessible_directory_is_recorded_not_mistaken_for_a_deleted_one(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The deletion race, landed inside the retry window rather than before it.
+    """An ACL denial must not read as "the directory is gone".
 
-    The first read fails, Test-Path then says the directory is there, and it is gone by the
-    time the retry runs. Recording that as unread would void the measurement for exactly the
-    ordinary temp deletion this change exists to tolerate.
+    This is why the walk classifies the ERROR instead of probing the path. Measured under pwsh
+    with $ErrorActionPreference = 'Stop':
 
-    Staged by making the parent unreadable so the first enumeration of the child raises, then
-    removing the child before the retry: the walk is re-entered through the same code path a
-    real race takes.
+        missing directory  ->  ItemNotFoundException, Test-Path returns $false
+        denied directory   ->  Test-Path THROWS "Access to the path ... is denied"
+
+    So a Test-Path probe both calls an unreadable directory deleted, dropping it silently out
+    of the comparison, and can raise from inside the catch that was meant to contain the
+    failure. Here the PARENT is denied, so the child cannot be enumerated or probed: the walk
+    must still report the child's parent as unread rather than skipping it.
     """
-    victim = tmp_path / "vanishes"
-    victim.mkdir()
-    (victim / "x.dll").write_text("x")
-    if os.geteuid() == 0:
-        pytest.skip("root reads every directory, so nothing here can be made unreadable")
+    outer = tmp_path / "denied"
+    outer.mkdir()
+    (outer / "inner").mkdir()
+    (outer / "inner" / "hidden.dll").write_text("x")
+    os.chmod(outer, 0o000)
+    try:
+        if os.geteuid() == 0:
+            pytest.skip("root reads every directory, so nothing here can be made unreadable")
+        scan = _scan(tmp_path)
+    finally:
+        os.chmod(outer, 0o700)
 
-    # A directory that is removed between the two reads cannot be distinguished from one that
-    # was never there, which is the point: both must leave `unread` empty.
-    scan = _scan(tmp_path / "gone-before-we-start")
-    assert scan["unread"] == [], scan
+    assert [d for d in scan["unread"] if d.endswith("denied")], (
+        "an unreadable directory was treated as deleted and dropped. Pre-existing files under "
+        f"it then read as new in the other snapshot, or a real artifact is hidden: {scan}"
+    )
 
+
+def test_the_walk_classifies_the_error_and_never_probes_with_test_path() -> None:
+    """The shape that makes the row above possible, pinned so it cannot regress quietly."""
     text = SCRIPT.read_text(encoding = "utf-8")
-    body = text[text.index("function Get-StudioTempSubtree") : text.index("function Get-StudioTempArtifacts")]
-    assert body.count("Test-Path -LiteralPath $dir") >= 2, (
-        "existence is checked only once, before the retry. A directory deleted inside the "
-        "retry window is then recorded as unread and can void the run for an ordinary "
-        "temp-directory deletion."
+    body = text[
+        text.index("function Get-StudioTempSubtree") : text.index("function Get-StudioTempArtifacts")
+    ]
+    # Comments stripped first, like the -Recurse guard above: this function EXPLAINS why it
+    # does not probe, and the prose naming Test-Path is not a call to it.
+    code = "\n".join(
+        line for line in body.splitlines() if not line.strip().startswith("#")
+    )
+    assert "Test-Path" not in code, (
+        "the walk probes with Test-Path again. That throws on an ACL-denied directory and "
+        "answers False for one that merely cannot be read, so it cannot decide deleted "
+        "versus unreadable."
+    )
+    assert body.count("Test-StudioPathIsGone") >= 2, (
+        "both the first failure and the retry must classify the error; otherwise a directory "
+        "deleted inside the retry window is recorded as unread and can void the run"
+    )
+
+
+def test_a_missing_directory_is_still_not_recorded_as_unread(tmp_path: pathlib.Path) -> None:
+    """The control for the row above: fail-safe must not become fail-always.
+
+    Test-StudioPathIsGone returning $false for everything would make every temp deletion a
+    gap, and an unread directory under an unwatched root voids the run. That would fail the
+    job for exactly the race this change exists to tolerate.
+    """
+    scan = _scan(tmp_path / "never-existed")
+    assert scan["files"] == [] and scan["unread"] == [], (
+        f"a missing directory was recorded as a gap, which voids runs for ordinary temp "
+        f"deletions: {scan}"
+    )
+
+
+def test_the_classifier_answers_both_cases() -> None:
+    """Driven against the real helper: missing is gone, denied is not."""
+    proc = _run_pwsh(
+        "$missing = $null\n"
+        "try { Get-ChildItem -LiteralPath '/nonexistent-xyz-123' -Force -ErrorAction Stop | Out-Null }\n"
+        "catch { $missing = $_ }\n"
+        "Write-Output ('missing=' + (Test-StudioPathIsGone -ErrorRecord $missing))\n"
+        "$denied = New-Object System.Management.Automation.ErrorRecord ("
+        "(New-Object System.UnauthorizedAccessException 'denied'), 'x', 'PermissionDenied', $null)\n"
+        "Write-Output ('denied=' + (Test-StudioPathIsGone -ErrorRecord $denied))\n"
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
+    assert out["missing"] == "True", out
+    assert out["denied"] == "False", (
+        "an access-denied error was classified as a deleted directory, so the directory is "
+        f"dropped out of the comparison instead of recorded as a gap: {out}"
     )
