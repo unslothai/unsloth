@@ -46,7 +46,7 @@ test("the dialog mounts only once opened", () => {
 test("local-path rows do not offer Hub info", () => {
   assert.match(
     PICKERS,
-    /info=\{\s*isLocalPath \? undefined : \{ repoId, variant: v\.quant \}\s*\}/,
+    /info=\{\s*isLocalPath\s*\? undefined\s*: \{\s*repoId,\s*variant: v\.quant,\s*hasLocalGguf: v\.downloaded,?\s*\}\s*\}/,
   );
 });
 
@@ -150,13 +150,21 @@ test("disk-only actions stay behind the downloaded guard", () => {
 // The template is already in hand from the header read, so the viewer must not refetch it.
 test("the chat template row opens a read-only viewer", () => {
   assert.match(DIALOG, /ChatTemplateEditorDialog/);
-  assert.match(DIALOG, /readOnly=\{true\}/, "the panel does not configure the model");
+  assert.match(
+    DIALOG,
+    /readOnly=\{true\}/,
+    "the panel does not configure the model",
+  );
   assert.match(
     DIALOG,
     /fact\.key === "chatTemplate" && template/,
     "only an embedded template is clickable",
   );
-  assert.match(DIALOG, /defaultTemplate=\{template\}/, "viewer reads the probed template");
+  assert.match(
+    DIALOG,
+    /defaultTemplate=\{template\}/,
+    "viewer reads the probed template",
+  );
 });
 
 // Popularity and the restated licence verdict were both dropped from the panel.
@@ -173,10 +181,26 @@ test("Hub result rows carry an info-only menu, whatever their format", () => {
   const rows = PICKERS.match(
     /<div className="group flex items-center">\s*<div className="min-w-0 flex-1">\s*<ModelRow/g,
   );
-  assert.ok(rows && rows.length >= 3, `expected the Hub result rows wrapped, saw ${rows?.length ?? 0}`);
+  assert.ok(
+    rows && rows.length >= 3,
+    `expected the Hub result rows wrapped, saw ${rows?.length ?? 0}`,
+  );
   assert.match(
     PICKERS,
-    /ariaLabel=\{`More options for \$\{id\}`\}\s*\n\s*info=\{\{ repoId: id \}\}/,
+    /ariaLabel=\{`More options for \$\{id\}`\}\s*\n\s*info=\{\{\s*repoId: id,/,
     "the parent row's menu should carry info and nothing format-gated",
+  );
+});
+
+test("local probes use the GGUF inventory, not other cached formats", () => {
+  assert.match(ROW_MENU, /hasLocalGguf=\{info\.hasLocalGguf\}/);
+  assert.match(PICKERS, /cachedGguf\.filter\(\(c\) => !c\.partial\)/);
+  const parentProbes = PICKERS.match(
+    /hasLocalGguf:\s*downloadedGgufSet\.has\(\s*id\.toLowerCase\(\),?\s*\)/g,
+  );
+  assert.equal(parentProbes?.length, 3);
+  assert.match(
+    PICKERS,
+    /variant: variant\.quant,\s*hasLocalGguf: isDownloaded/,
   );
 });

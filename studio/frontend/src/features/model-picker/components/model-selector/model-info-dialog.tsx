@@ -128,12 +128,14 @@ function FactRow({
 export function ModelInfoDialog({
   repoId,
   variant,
+  hasLocalGguf = false,
   open,
   onOpenChange,
 }: {
   repoId: string;
   /** Quant to read the header of, when the row names one. */
   variant?: string | null;
+  hasLocalGguf?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -150,11 +152,11 @@ export function ModelInfoDialog({
     online,
   });
 
-  // Reads the file on disk, so it answers with or without a connection.
+  // Validation does remote preflights too; only probe known local GGUFs.
   const localMeta = useLocalModelMeta(open ? repoId : null, {
     variant,
     hfToken: hfToken || undefined,
-    enabled: open,
+    enabled: open && hasLocalGguf,
   });
 
   const meta = metaFromHfResult(result);
@@ -162,7 +164,9 @@ export function ModelInfoDialog({
   const license = facts.find((f) => f.key === "license");
   const localFacts = localMeta ? localModelInfoFacts(localMeta) : [];
   const guide = modelGuide(repoId);
-  const template = localMeta?.chatTemplate?.trim() ? localMeta.chatTemplate : null;
+  const template = localMeta?.chatTemplate?.trim()
+    ? localMeta.chatTemplate
+    : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
