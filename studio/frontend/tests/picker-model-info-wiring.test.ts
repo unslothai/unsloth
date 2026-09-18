@@ -207,22 +207,43 @@ test("Hub result rows carry an info-only menu, whatever their format", () => {
     rows && rows.length >= 3,
     `expected the Hub result rows wrapped, saw ${rows?.length ?? 0}`,
   );
+  // `repoId: id` with nothing after it: the probe was removed from these rows, so the comma
+  // that used to precede `hasLocalGguf` is gone too.
   assert.match(
     PICKERS,
-    /ariaLabel=\{`More options for \$\{id\}`\}\s*\n\s*info=\{\{\s*repoId: id,/,
+    /ariaLabel=\{`More options for \$\{id\}`\}\s*\n(\s*\/\/[^\n]*\n)*\s*info=\{\{\s*repoId: id\s*\}\}/,
     "the parent row's menu should carry info and nothing format-gated",
   );
 });
 
-test("local probes use the GGUF inventory, not other cached formats", () => {
+// This pinned the three repo-level probes as a feature; they were a defect. A variant-less
+// probe resolves to whichever GGUF the backend lists first, so the repo-level rows no longer
+// probe at all and `downloadedGgufSet`, which existed only to feed them, is gone. What is
+// left to assert is that the probe is wired through the menu and that quant-specific rows,
+// which CAN name a file, still use it.
+test("local probes are wired through the menu, from quant-specific rows", () => {
   assert.match(ROW_MENU, /hasLocalGguf=\{info\.hasLocalGguf\}/);
-  assert.match(PICKERS, /cachedGguf\.filter\(\(c\) => !c\.partial\)/);
-  const parentProbes = PICKERS.match(
-    /hasLocalGguf:\s*downloadedGgufSet\.has\(\s*id\.toLowerCase\(\),?\s*\)/g,
-  );
-  assert.equal(parentProbes?.length, 3);
   assert.match(
     PICKERS,
     /variant: variant\.quant,\s*hasLocalGguf: isDownloaded/,
   );
+  assert.doesNotMatch(PICKERS, /downloadedGgufSet/);
+});
+
+// A repo-level row names no quant, and the backend answers a variant-less probe with the
+// FIRST local GGUF it finds (`resolve_local_gguf_path`: `if gguf_variant is None or ...`).
+// Enabling the probe there attributes one arbitrary quant's context length, reasoning
+// support and chat template to the repository as a whole. Hub facts and the licence verdict
+// are unaffected; only the disk probe is withheld.
+test("repo-level rows do not probe an unnamed local GGUF", () => {
+  const menus = PICKERS.split(/<ModelRowMenu\b/).slice(1);
+  for (const m of menus) {
+    const props = m.split("/>")[0];
+    const info = props.match(/info=\{\{([\s\S]*?)\}\}/)?.[1] ?? "";
+    if (!info.includes("hasLocalGguf")) continue;
+    assert.ok(
+      /variant/.test(info),
+      `a row enables the local probe without naming a variant: ${info.trim().slice(0, 120)}`,
+    );
+  }
 });

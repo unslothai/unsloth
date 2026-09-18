@@ -111,3 +111,28 @@ test("bnb-4bit repos still reach their family guide", () => {
   assert.equal(modelGuide("unsloth/gemma-3-12b-it-bnb-4bit")?.title, "Gemma 3");
   assert.equal(modelGuide("unsloth/Qwen3-8B-unsloth-bnb-4bit")?.title, "Qwen3");
 });
+
+// `\b` cannot see an underscore delimiter: in `llama_4bit` both `_` and `4` are word
+// characters, so there was no boundary, the suffix survived, and `llama_4` claimed the
+// Llama 4 guide. Reproduced at head before the fix: nous-hermes-llama_4bit-v2 returned
+// "Llama 4", pointing a Llama-1-era Nous Hermes model at a guide for a different family.
+test("a quant suffix joined by an underscore does not become a family version", () => {
+  assert.equal(modelGuide("unsloth/nous-hermes-llama_4bit-v2"), null);
+  assert.equal(modelGuide("teknium/nous-hermes-llama_8bit"), null);
+  // The hyphen spelling that was already handled must stay handled.
+  assert.equal(modelGuide("unsloth/nous-hermes-llama-4bit-v2"), null);
+});
+
+// The canonical names still have to reach their guides: the family digit comes before the
+// quant suffix, so blanking the suffix must not blank the family. Both delimiters, since the
+// underscore spelling is the one the old pattern could not strip.
+test("stripping the quant suffix leaves the family intact", () => {
+  assert.equal(modelGuide("unsloth/gemma-3-4b-it-bnb-4bit")?.title, "Gemma 3");
+  assert.equal(modelGuide("unsloth/gemma-3-4b-it_4bit")?.title, "Gemma 3");
+  assert.equal(modelGuide("unsloth/qwen3-8b_4bit")?.title, "Qwen3");
+  // A real Llama 4 keeps its guide: the family digit is its own token, not the quant.
+  assert.equal(
+    modelGuide("unsloth/llama-4-scout-17b-16e-instruct_4bit")?.title,
+    "Llama 4",
+  );
+});

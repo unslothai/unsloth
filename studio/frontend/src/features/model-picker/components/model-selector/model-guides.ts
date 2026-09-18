@@ -249,7 +249,11 @@ const GUIDES: ReadonlyArray<{
 // and cannot be forgotten by the next entry added. The canonical `unsloth/*-bnb-4bit` names
 // survive it, because their family digit comes earlier: `llama-3-8b-bnb-4bit` still matches
 // Llama 3 once `4bit` is blanked.
-const QUANT_SUFFIX = /\b\d+[-_]?bit\b/g;
+// `\b` cannot see the delimiter here: in `llama_4bit`, `_` and `4` are both word characters,
+// so there is no boundary to match and the suffix survived, leaving `llama_4` to claim the
+// Llama 4 guide. The delimiter is stated explicitly instead, and the trailing side likewise,
+// so `4bit` is only stripped when it stands alone rather than inside a longer token.
+const QUANT_SUFFIX = /(?<![a-z0-9])\d+[-_]?bit(?![a-z0-9])/g;
 
 /** The Unsloth guide for `repoId`, or null when no family matches. */
 export function modelGuide(repoId: string | null | undefined): ModelGuide | null {

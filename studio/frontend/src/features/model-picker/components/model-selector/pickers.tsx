@@ -3261,13 +3261,6 @@ export function HubModelPicker({
     [cachedGguf, cachedModels],
   );
 
-  const downloadedGgufSet = useMemo(
-    () =>
-      new Set(
-        cachedGguf.filter((c) => !c.partial).map((c) => c.repo_id.toLowerCase()),
-      ),
-    [cachedGguf],
-  );
 
   // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
   // or as absent. Same split, and the same helper, the Hub page uses. One repo id can hold both a
@@ -7247,12 +7240,13 @@ export function HubModelPicker({
                               <span className={ROW_ACTIONS_CLASS}>
                                 <ModelRowMenu
                                   ariaLabel={`More options for ${id}`}
-                                  info={{
-                                    repoId: id,
-                                    hasLocalGguf: downloadedGgufSet.has(
-                                      id.toLowerCase(),
-                                    ),
-                                  }}
+                                  // Repo-level row: no quant is named, and the backend's
+                                  // resolver answers a variant-less request with the FIRST
+                                  // local GGUF it finds. Probing here would attribute one
+                                  // arbitrary quant's context length, reasoning support and
+                                  // chat template to the repo as a whole. Hub facts and the
+                                  // licence verdict still render; only the disk probe is off.
+                                  info={{ repoId: id }}
                                 />
                               </span>
                             </div>
@@ -7390,12 +7384,8 @@ export function HubModelPicker({
                             <span className={ROW_ACTIONS_CLASS}>
                               <ModelRowMenu
                                 ariaLabel={`More options for ${id}`}
-                                info={{
-                                  repoId: id,
-                                  hasLocalGguf: downloadedGgufSet.has(
-                                    id.toLowerCase(),
-                                  ),
-                                }}
+                                // Repo-level row: see the note at the Hub result row above.
+                                info={{ repoId: id }}
                               />
                             </span>
                           </div>
@@ -7528,12 +7518,13 @@ export function HubModelPicker({
                               <span className={ROW_ACTIONS_CLASS}>
                                 <ModelRowMenu
                                   ariaLabel={`More options for ${id}`}
-                                  info={{
-                                    repoId: id,
-                                    hasLocalGguf: downloadedGgufSet.has(
-                                      id.toLowerCase(),
-                                    ),
-                                  }}
+                                  // Repo-level row: no quant is named, and the backend's
+                                  // resolver answers a variant-less request with the FIRST
+                                  // local GGUF it finds. Probing here would attribute one
+                                  // arbitrary quant's context length, reasoning support and
+                                  // chat template to the repo as a whole. Hub facts and the
+                                  // licence verdict still render; only the disk probe is off.
+                                  info={{ repoId: id }}
                                 />
                               </span>
                             </div>
