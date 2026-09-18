@@ -128,18 +128,11 @@ test("connected pins are a separate list from the On Device ones", () => {
   assert.doesNotMatch(pickers, /togglePinned\(model\.id\)/);
   assert.doesNotMatch(pickers, /pinKey\(model\.id\)/);
   assert.match(pickers, /onToggle: \(\) => togglePinnedConnected\(model\.id\)/);
-  // A toggle applies its one change to the STORED list. The write replaces the whole list, so two
-  // windows pinning different models before the storage event lands would otherwise keep only the
-  // second pin. Null, not [], when there is nothing to read: a toggle on an install whose writes
-  // all fail has to keep the session's own pins rather than drop them.
-  assert.match(
-    connectedPins,
-    /const base = storedPinned\(\) \?\? state\.pinned;/,
-  );
-  assert.match(
-    connectedPins,
-    /const raw = localStorage\.getItem\(KEY\);\s*if \(raw === null\) return null;/,
-  );
+  // A toggle applies its one change to the STORED list, since the write replaces the whole list
+  // and two windows pinning different models before the storage event lands would otherwise keep
+  // only the second pin. Asserted as behaviour in pinned-connected-models-reorder.test.ts, which
+  // also covers the storage-unavailable case; a regex here pinned the expression and broke on a
+  // rename that moved nothing.
   // A drag commit rebases too, for the same reason and one more: nothing echoes this window's own
   // write back to it, so a pin another window added mid-drag would be erased with no event left
   // to restore it. The dragged order is this window's; which ids are pinned is the record's.

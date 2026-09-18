@@ -35,12 +35,24 @@ function storedPinned(): string[] | null {
   }
 }
 
+// A write that failed (quota exhausted with the key already present) leaves the RECORD older than
+// this session's list, so re-reading it as a base drops the pins that never persisted. Until a
+// write succeeds again this window's own list is the newer one.
+let storageWritable = true;
+
 function writePinned(pinned: string[]): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(pinned));
+    storageWritable = true;
   } catch {
-    // Ignore unavailable storage; pins stay session-only.
+    storageWritable = false;
   }
+}
+
+/** The record to apply an edit to, or `fallback` while writes are failing. */
+function persistedBase(fallback: readonly string[]): string[] {
+  if (!storageWritable) return [...fallback];
+  return storedPinned() ?? [...fallback];
 }
 
 // movePinnedConnected runs on every dragenter: writing each would make a cancelled drag permanent.
@@ -58,6 +70,7 @@ function sameOrder(a: readonly string[], b: readonly string[]): boolean {
  *  ids are pinned, since another window's storage event may still be in flight at the drop.
  *  Its additions arrive at the front; null storage leaves the order alone. */
 function rebaseOnStored(order: readonly string[]): string[] {
+  if (!storageWritable) return [...order];
   const stored = storedPinned();
   if (stored === null) return [...order];
   const kept = order.filter((id) => stored.includes(id));
@@ -90,7 +103,7 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
         // Applied to the stored list, not to this window's copy of it, since a write replaces the
         // whole list: another window's pin can be newer than the storage event this one has
         // processed, and rewriting our own array would drop it for good.
-        const base = storedPinned() ?? state.pinned;
+        const base = persistedBase(state.pinned);
         // Newest pin first, as On Device does, so "Pin to top" literally lands on top of the
         // pinned group rather than under earlier pins.
         const next = base.includes(modelId)
@@ -123,7 +136,10 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
         dragExternalOrder = null;
         if (snapshot === null) return state;
         // Read storage too, since its event may still be pending.
-        const base = storedPinned() ?? external ?? snapshot;
+        // `external ?? snapshot` while writes are failing, for the reason persistedBase gives.
+        const base = storageWritable
+          ? (storedPinned() ?? external ?? snapshot)
+          : (external ?? snapshot);
         if (commit && !sameOrder(snapshot, state.pinned)) {
           if (sameOrder(base, state.pinned)) return state;
           // The write replaces the whole list and nothing echoes it back to this window, so a

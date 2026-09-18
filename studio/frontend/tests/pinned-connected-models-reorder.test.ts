@@ -91,3 +91,25 @@ test("storage events outside a drag apply immediately", () => {
   externalWrite([C, A]);
   assert.deepEqual(pins.getState().pinned, [C, A]);
 });
+
+test("a pin that could not be written survives the next toggle", () => {
+  // Quota exhausted with the key already present: reads keep working and return the OLDER list,
+  // so basing the next edit on the record drops the pin that never persisted. The store already
+  // intends "pins stay session-only" here; this is that intent holding across a second edit.
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+    assert.deepEqual(pins.getState().pinned, [B, A]);
+    pins.getState().togglePinnedConnected(C);
+    assert.deepEqual(pins.getState().pinned, [C, B, A]);
+  } finally {
+    storage.set = realSet;
+  }
+  // A write succeeding again hands the record back its authority.
+  pins.getState().togglePinnedConnected(D);
+  assert.deepEqual(storedOrder(), [D, C, B, A]);
+});
