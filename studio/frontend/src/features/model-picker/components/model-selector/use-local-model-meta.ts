@@ -22,11 +22,9 @@ export function useLocalModelMeta(
     meta: LocalModelMeta | null;
   }>(() => ({ key: "", meta: null }));
 
-  // `enabled` and the token belong in the key, not just the dependency list. The effect returns
-  // early when the probe is off, so without them a key unchanged by `enabled` going false keeps
-  // the LAST file's header facts on screen: delete a GGUF while its info dialog is open and the
-  // panel goes on reporting that file's context length and layer count. Same for the token — a
-  // sign-in re-fires the fetch, and the pre-token result would be served until it lands.
+  // `enabled` and the token are in the KEY, not just the deps: the effect returns early when
+  // the probe is off, so a key blind to them keeps the last file's facts on screen — delete a
+  // GGUF with its dialog open and the panel still reports its context length.
   const key = `${repoId ?? ""}::${variant ?? ""}::${enabled ? "on" : "off"}::${hfToken ?? ""}`;
 
   useEffect(() => {
@@ -60,8 +58,8 @@ export function useLocalModelMeta(
       cancelled = true;
     };
   }, [repoId, variant, hfToken, enabled, key]);
-  // `key` already encodes all four, but they are listed explicitly so removing one from the key
-  // cannot silently stop the effect re-firing.
+  // Listed explicitly though `key` encodes them, so dropping one from the key cannot silently
+  // stop the effect re-firing.
 
   return state.key === key ? state.meta : null;
 }

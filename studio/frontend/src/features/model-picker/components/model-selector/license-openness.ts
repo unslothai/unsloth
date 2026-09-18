@@ -24,12 +24,11 @@ export interface LicenseVerdict {
   summary: string;
 }
 
-// `obligation`, where present, is the condition the grant is subject to. It is not a catch in the
-// RESTRICTED sense — these licences permit commercial use, modification and redistribution — but
-// omitting it renders copyleft and attribution as if they were absent, and the reader this panel
-// exists for is the one about to ship. AGPL is the expensive case: §13 requires that anyone
-// interacting with the work over a network be offered the source, so "permits commercial use"
-// alone is the sentence most likely to mislead a hosted-inference user.
+// `obligation` is the condition the grant carries, not a catch in the RESTRICTED sense: these
+// licences do permit commercial use. Omitting it renders copyleft and attribution as absent to
+// the reader about to ship. AGPL is the expensive case — §13 obliges anyone offering network
+// access to offer the source, so "permits commercial use" alone misleads a hosted-inference
+// user.
 const OPEN_LICENSES: Readonly<
   Record<string, { label: string; obligation?: string }>
 > = {
@@ -109,10 +108,9 @@ const OPEN_LICENSES: Readonly<
     obligation:
       "derivatives stay under the AGPL and anyone using it over a network is offered the source",
   },
-  // Permissive despite the name: the Apple Sample Code License grants use, reproduction,
-  // modification and redistribution in source or binary form, conditioned only on keeping the
-  // notice and not using Apple's marks to endorse. Its sibling `apple-amlr` is the research-only
-  // one, and lives in RESTRICTED_LICENSES.
+  // Permissive despite the name: the Apple SAMPLE CODE licence grants use, modification and
+  // redistribution, conditioned only on keeping the notice and not implying endorsement. The
+  // research-only sibling is `apple-amlr`, in RESTRICTED_LICENSES.
   "apple-ascl": {
     label: "Apple Sample Code",
     obligation: "you keep Apple's notice and do not imply Apple's endorsement",

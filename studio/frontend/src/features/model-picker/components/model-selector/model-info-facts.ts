@@ -9,9 +9,8 @@ import { formatBytes } from "@/features/hub/lib/format";
 import { detectLicense } from "@/features/hub/lib/model-capabilities";
 import { type LicenseOpenness, classifyLicense } from "./license-openness";
 
-// Deliberately not imported from @/features/hub/lib/view-models: that barrel re-exports the
-// Hub inventory and reaches as far as the auth pages, and pulling it in for ten lines of
-// arithmetic would tie the picker's info panel to all of it. Same output as its
+// Not imported from @/features/hub/lib/view-models: that barrel reaches as far as the auth
+// pages, and ten lines of arithmetic are not worth the coupling. Same output as its
 // formatParamCount for the values this panel sees.
 const BILLION = 1_000_000_000;
 const MILLION = 1_000_000;
@@ -26,9 +25,8 @@ function formatParamCount(totalParams: number): string {
     return `${rounded}B`;
   }
   const millions = totalParams / MILLION;
-  // Rounding straight to whole millions prints "0M" for anything under 500K — a tokenizer or a
-  // small embedding model reported as having no parameters. Below 1M, keep a decimal, and below
-  // 100K fall back to a plain grouped count, which is the only honest rendering left.
+  // Whole millions print "0M" under 500K, reporting a small embedding model as having no
+  // parameters. Keep a decimal below 1M, and a plain grouped count below 100K.
   if (millions >= 1) return `${Math.round(millions)}M`;
   if (millions >= 0.1) return `${millions.toFixed(1)}M`;
   return `${Math.round(totalParams).toLocaleString()}`;
@@ -110,10 +108,9 @@ function formatLanguages(languages: string[]): string {
 /**
  * The rows worth showing for `meta`, in `MODEL_INFO_FIELDS` order.
  *
- * A field whose data HF did not return is omitted rather than rendered as a placeholder:
- * the panel exists to state facts about a model before the user loads it, and an invented
- * row is worse than a shorter panel. The licence is the deliberate exception — "not stated"
- * is itself the answer when someone is checking whether a model is open source.
+ * A field HF did not return is omitted, never placeheld: an invented row is worse than a
+ * shorter panel. The licence is the exception, since "not stated" is itself the answer to
+ * "is this open source?".
  */
 export function modelInfoFacts(meta: ModelInfoMeta): ModelInfoFact[] {
   const facts: ModelInfoFact[] = [];
@@ -229,9 +226,9 @@ export interface HfResultLike {
 
 const LANGUAGE_TAG_PREFIX = "language:";
 
-// HF emits a model's languages both ways: the dataset-style `language:en`, and — far more
-// commonly for models, since a card's `language:` frontmatter list is flattened into `tags` —
-// the bare code `en`. Reading only the prefixed form drops the languages of most model repos.
+// HF emits both `language:en` and, far more commonly for models, the bare `en`: a card's
+// `language:` frontmatter is flattened into `tags`. Reading only the prefixed form drops the
+// languages of most model repos.
 //
 // A bare code cannot be recognised by shape: a length test would sweep in `rl`, `ai` and any
 // two-letter library name alongside the real codes. So bare codes are matched against this

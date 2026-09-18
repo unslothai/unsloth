@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The half of "Model info" read from the local GGUF header, so the panel still answers with
-// no network. Pure, same contract as model-info-facts.ts.
+// The half of "Model info" read from the local GGUF header, so the panel answers with no
+// network. Pure, same contract as model-info-facts.ts.
 
-/** Panel reading order for the local section. */
 export const LOCAL_MODEL_INFO_FIELDS = [
   "contextLength",
   "layers",
@@ -31,43 +30,32 @@ export interface LocalModelMeta {
   chatTemplate?: string | null;
 }
 
-// Jinja comments are documentation, not behaviour. A template that merely MENTIONS `/no_think`
-// in a `{# ... #}` note describing the model is not a template that honours it, and reading the
-// note as a switch is how a non-hybrid model came to advertise a toggle it does not have.
+// Jinja comments are documentation, not behaviour: a `{# ... #}` note mentioning `/no_think`
+// made a non-hybrid model advertise a toggle it does not have.
 const JINJA_COMMENT = /\{#[\s\S]*?#\}/g;
 
-// String-consuming calls whose literal argument is a marker being REMOVED, not emitted. The
-// giveaway idiom is `{{ content.split('</think>')[-1] }}`, which strips a previous turn's
-// reasoning out of the history — something the NON-thinking variant of a pair does, so reading
-// it as evidence of reasoning inverts the answer. Blanking the whole call, argument included,
-// leaves any genuinely emitted marker still standing: a template that both strips history and
-// writes `<think>` itself keeps the second one and still reads as detected.
+// A marker being REMOVED, not emitted: `{{ content.split('</think>')[-1] }}` strips a previous
+// turn's reasoning, which is what the NON-thinking variant of a pair does, so counting it
+// inverts the answer. Blanking the whole call leaves a genuinely emitted marker standing.
 const MARKER_CONSUMING_CALL =
   /\.\s*(?:split|rsplit|replace|partition|rpartition|find|rfind|index|startswith|endswith|strip|lstrip|rstrip)\s*\(\s*(['"])[\s\S]*?\1[^)]*\)/g;
 
-// A thinking switch means thinking can be turned off. Read off the template, not the repo name,
-// so a renamed quant still answers correctly — and, for a variable, only where the template
-// BRANCHES on it. A bare `{%- set enable_thinking = true %}` names the variable without
-// honouring it, and calling that "Hybrid" asserts, in the one tooltip here that makes a hard
-// claim, that reasoning can be turned off per request when nothing in the template can turn it
-// off.
+// A switch means thinking can be turned OFF, so a variable counts only where the template
+// branches on it: a bare `{%- set enable_thinking = true %}` names it without honouring it.
+// Read from the template, not the repo name, so a renamed quant still answers correctly.
 const THINKING_VAR_IN_CONDITION =
   /\{[%{][^%}]*?\b(?:if|elif)\b[^%}]*?(?:\benable_thinking\b|\bthinking_?budget\b)/;
 
-// `/no_think` needs no branch around it: it is a model-specific sentinel rather than a word, so
-// a template that emits it at all is a template built for a model that honours it. The mention
-// this must NOT count is the one in a `{# ... #}` note, and comments are already gone by here.
+// A sentinel rather than a word, so emitting it at all implies a model that honours it. The
+// mention that must not count lives in a `{# ... #}` note, already stripped above.
 const NO_THINK_SENTINEL = /\/no_?think\b/;
 
-// Markers alone do not establish whether thinking can be disabled. Beyond the `<think>` family:
-// `[THINK]` is Mistral's Magistral, `<seed:think>` ByteDance Seed, and `<|start_of_thought|>`
-// and `<thinking>` are used by several others. Omitting them reported a reasoning model this
-// very PR links a guide for — Magistral — as "Not detected".
+// Markers alone do not establish that thinking can be DISABLED. Beyond `<think>`: `[THINK]` is
+// Magistral, `<seed:think>` ByteDance Seed. Omitting them called Magistral "Not detected".
 const REASONING_MARKERS =
   /\breasoning_effort\b|<\/?think>|<\/?thinking>|<\|\/?think\|>|<\/?seed:think>|\[\/?THINK\]|<\|\/?start_of_thought\|>|<\|channel\|>analysis|\breasoning_content\b/;
 
-/** Template text with documentation and marker-stripping expressions removed, so both tests
- *  below see only what the template would actually emit or branch on. */
+/** Only what the template would actually emit or branch on. */
 function executableTemplate(template: string): string {
   return template.replace(JINJA_COMMENT, " ").replace(MARKER_CONSUMING_CALL, " ");
 }
@@ -104,8 +92,7 @@ const REASONING_DETAIL: Record<ReasoningSupport, string> = {
 };
 
 function formatTokens(tokens: number): string {
-  // Million-token windows ship now, and a K-only unit renders Llama 4's 10,485,760 as
-  // "10240K tokens". Step up to M first, so 1M reads as 1M rather than 1024K.
+  // A K-only unit renders Llama 4's 10,485,760 as "10240K tokens".
   const MEGA = 1024 * 1024;
   if (tokens >= MEGA && tokens % MEGA === 0) return `${tokens / MEGA}M tokens`;
   if (tokens >= 1024 && tokens % 1024 === 0) return `${tokens / 1024}K tokens`;
@@ -117,15 +104,12 @@ function isReportedCount(n: number | null | undefined): n is number {
   return typeof n === "number" && Number.isFinite(n) && n >= 0;
 }
 
-/** Whether the probe read the file at all. Every GGUF header carries a context length or a
- *  block count, so neither being reported means nothing was read. Absence of a reading is not
- *  a finding, so no local rows beat turning "not read" into "none embedded".
+/** Whether the probe read the file at all: every GGUF header carries a context length or a
+ *  block count, so neither means nothing was read, and no rows beat "none embedded".
  *
- *  Both counts must be POSITIVE, not merely reported. `isReportedCount` accepts 0 so a dense
- *  model's `moeLayerCount: 0` can render as "None (dense)", but a context length or block count
- *  of 0 is not a reading — no real GGUF has either — and letting it through cleared this gate
- *  while failing every row guard below, leaving the panel showing "Chat template: Not available"
- *  on its own. That is the exact claim the paragraph above says must never be made. */
+ *  POSITIVE, not merely reported. 0 is a real `moeLayerCount` but not a real context length,
+ *  and admitting it cleared this gate while failing every row guard, leaving the panel on
+ *  "Chat template: Not available" alone — the claim the line above forbids. */
 function headerWasRead(meta: LocalModelMeta): boolean {
   return (
     (isReportedCount(meta.contextLength) && meta.contextLength > 0) ||
@@ -157,7 +141,6 @@ export function localModelInfoFacts(
     });
   }
 
-  // 0 is meaningful here (dense, not unknown), so it is reported rather than dropped.
   if (isReportedCount(meta.moeLayerCount)) {
     facts.push({
       key: "moeLayers",
@@ -179,9 +162,8 @@ export function localModelInfoFacts(
     });
   }
 
-  // A null template is not evidence of absence. The probe drops one over 64KB, a read failure
-  // after the dims succeeded leaves the same shape, and read_gguf_chat_template returns null
-  // for absent, unreadable and not-a-GGUF alike. So only presence is ever stated.
+  // Null is not absence: the probe drops templates over 64KB, and read_gguf_chat_template
+  // returns null for absent, unreadable and not-a-GGUF alike. Only presence is stated.
   facts.push({
     key: "chatTemplate",
     label: "Chat template",
