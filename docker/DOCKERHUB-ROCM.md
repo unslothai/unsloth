@@ -58,7 +58,7 @@ That runs a real 5-step LoRA on a 1B model and fails loudly if the GPU is not us
 | `sha-<commit>` | the same image, pinned to the commit it was built from |
 | `nightly` | the scheduled weekly build |
 | `gfx1150`, `gfx1151`, `gfx1152`, `gfx1200`, `gfx1201` | builds using AMD's per-architecture wheels, when published |
-| `studio` | `latest` plus Unsloth Studio's web UI on port 8000, from [`docker/Dockerfile.studio-rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.studio-rocm). Every tag above has a `-studio` twin built on the same base |
+| `studio` | `latest` plus Unsloth Studio's web UI on port 8000, from [`docker/Dockerfile.studio-rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.studio-rocm). The other tags above have a `-studio` twin built on the same base: `nightly-studio`, `sha-<commit>-studio`, `gfx1151-studio`; there is no `latest-studio`, `studio` is that one |
 
 Pin a digest for anything reproducible. `latest` moves.
 
