@@ -2170,8 +2170,18 @@ def remove_special_tokens(tokenizer, prompt):
     return prompt
 
 
+# `{{` and `}}` are how str.format spells a literal brace, and the merged prompt is rendered with
+# str.format, so they are not column references. Blank them out before scanning or a prompt that asks
+# the model for JSON reports its own text as a missing dataset column.
+_ESCAPED_BRACES_RE = re.compile(r"\{\{|\}\}")
+
+
+def _column_names_in(text):
+    return re.findall(r"\{(.+?)\}", _ESCAPED_BRACES_RE.sub("", text))
+
+
 def _parse_combined_prompt(combined_prompt, dataset):
-    possible_columns = re.findall(r"\{(.+?)\}", combined_prompt)
+    possible_columns = _column_names_in(combined_prompt)
     dataset_columns = set(dataset.column_names)
     for column in possible_columns:
         if column not in dataset_columns:
@@ -2214,14 +2224,14 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
     for j, optional_prompt in enumerate(final_optional_prompts):
         if type(optional_prompt) is str:
-            needed_columns = re.findall(r"\{(.+?)\}", optional_prompt)
+            needed_columns = _column_names_in(optional_prompt)
             formatter_templates.append(("required", optional_prompt, needed_columns))
             merged_prompt_parts.append(optional_prompt)
             continue
 
         _, prompt = optional_prompt
         prompt = prompt[2:-2]
-        needed_columns = re.findall(r"\{(.+?)\}", prompt)
+        needed_columns = _column_names_in(prompt)
         if len(needed_columns) == 0:
             raise IndexError("Unsloth: Optional [[...]] blocks must contain at least 1 {column}.")
         optional_name = f"__optional_{j}__"
