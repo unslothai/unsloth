@@ -4,17 +4,12 @@
 /**
  * Telling "loading a cached model" apart from "downloading it again" (#9094).
  *
- * Kept out of the load hook so the rule can be tested on its own:
- *
- *  - A byte count BELOW the expected total proves nothing: that is the ordinary state of a
- *    partially fetched revision.
- *  - A count that GREW between two readings is a transfer, and nothing else is.
- *  - A complete reading (progress at or past 1) resets the watch.
- *  - An unreadable measurement (`cache_measured` false) is not evidence either way and leaves
- *    the watch as it was, rather than forfeiting the comparison.
+ * Only a count that GREW between two readings is a transfer. Below the expected total proves
+ * nothing (that is an ordinary partial revision), a complete reading resets the watch, and an
+ * unmeasurable cache leaves the watch alone rather than forfeiting the comparison.
  */
 
-/** The bytes seen by the previous reading, or null when there is nothing to compare against. */
+/** Previous reading's bytes; null when there is nothing to compare against. */
 export interface CacheMissWatch {
   readonly bytes: number | null;
 }
@@ -35,7 +30,7 @@ export const CACHE_MISS_DOWNLOAD_DESCRIPTION =
 export interface CacheMissVerdict {
   readonly started: boolean;
   readonly watch: CacheMissWatch;
-/** Whole percent to show, or null when the total is unknown and only bytes are countable. */
+  /** Whole percent, or null when the total is unknown and only bytes are countable. */
   readonly percent: number | null;
 }
 

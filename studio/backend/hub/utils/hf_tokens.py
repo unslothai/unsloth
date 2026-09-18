@@ -345,17 +345,12 @@ def hub_answered_no(
     repo_type: str = "model",
     offline: bool = False,
 ) -> bool:
-    """Whether the Hub ANSWERED that this caller may not reach *repo_id*.
+    """Whether the Hub ANSWERED that this caller may not reach *repo_id*; ``None`` is not.
 
-    ``cached_read_refused`` deliberately collapses "answered no" and "could not be asked" into
-    one refusal, because for most readers the two are the same disappointment. A reader that
-    served the cached copy before this gate existed needs them apart: refusing on an answer is
-    the hole being closed, refusing on silence is a regression for a caller whose Hub merely
-    blinked. Only ``False`` -- an answer -- is reported here; ``None`` is not.
-
-    A remembered denial still counts as an answer, which is the point of remembering it. The
-    probe is the memoized one, so asking this after ``cached_read_refused`` costs no second
-    round trip.
+    ``cached_read_refused`` collapses "answered no" and "could not be asked"; a reader that
+    served the cached copy before that gate existed needs them apart, since refusing on silence
+    is a regression for a caller whose Hub merely blinked. A remembered denial counts as an
+    answer. Reuses the memoized probe, so this costs no second round trip.
     """
     repo = (repo_id or "").strip()
     if not repo or _is_local_path(repo):
@@ -585,12 +580,9 @@ def _caller_populated_the_cache(
         return False
     matched = False
     for held in host_tokens:
-        # Encoded, because ``compare_digest`` raises TypeError on a str holding any non-ASCII
-        # character, and BOTH operands are attacker-or-operator text: ``token`` arrives in the
-        # caller's own ``X-Unsloth-HF-Token``, which Starlette latin-1 decodes, so a single raw
-        # 0xE9 byte in that header turned this gate into a 500 that quoted the exception; and a
-        # held credential containing one would have crashed every explicit-token caller instead.
-        # Bytes are also what constant-time comparison is defined over.
+        # Encoded: ``compare_digest`` raises TypeError on a non-ASCII str, and both operands are
+        # somebody else's text (a raw 0xE9 in the caller's X-Unsloth-HF-Token made this gate a
+        # 500; the same byte in a held credential crashed every explicit-token caller).
         if hmac.compare_digest(
             token.encode("utf-8", "surrogatepass"), held.encode("utf-8", "surrogatepass")
         ):
@@ -608,25 +600,12 @@ def _resolve_unaskable(repo_id: str, repo_type: str, *, token: Optional[str]) ->
 
 
 def _denial_can_be_overturned(repo_id: str, repo_type: str, token: Optional[str]) -> bool:
-    """Whether remembering this denial protects anything.
-
-    The memory exists for one reason: an unaskable Hub must not hand a caller the cached copy
-    of a repo the Hub already refused them. That can only happen where ``_resolve_unaskable``
-    would otherwise say yes, which needs BOTH the caller's credential to be one that filled
-    this host's cache AND the repo to be on the disk. A denial failing either test is
-    unoverturnable on its own key, so storing it buys no safety and costs a slot.
-
-    Slots are the whole point: the key carries the CALLER-SUPPLIED repo id, so without this a
-    caller naming 8192 repositories that do not exist -- huggingface.co answers a bare 401 for
-    those, which this module classifies as a denial -- fills the memory, forces an eviction,
-    and ``_denial_memory_is_complete`` then turns every "could not be asked" into "refused"
-    for every repo and every caller until the process restarts. Both flood shapes are closed
-    here: a foreign token fails the credential test without touching the disk, and an
-    unknown repo id fails the presence test.
-
-    Conservative on either question being unanswerable, since a denial not remembered is the
-    direction that loses safety.
-    """
+    """Whether remembering this denial protects anything: only where ``_resolve_unaskable``
+    would otherwise say yes, so both the caller's credential must be one that filled this cache
+    AND the repo must be on disk. Slots are the point -- the key carries the CALLER-SUPPLIED
+    repo id, and 8192 denials for repos that do not exist (huggingface.co answers those a bare
+    401) forced an eviction, after which ``_denial_memory_is_complete`` refused every unaskable
+    probe process-wide. Unanswerable means remember: not remembering is what loses safety."""
     try:
         if not _caller_populated_the_cache(token, repo_id = repo_id, repo_type = repo_type):
             return False
