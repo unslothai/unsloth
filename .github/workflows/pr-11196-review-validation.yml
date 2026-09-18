@@ -5,23 +5,123 @@ on:
     branches:
       - studio/pr-11196-review-fixes-20260918
 
+concurrency:
+  group: pr-11196-review-validation
+  cancel-in-progress: true
+
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  prepare:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: d35ef45e131acb47bb787ca6dff30a9d269fea02
+          path: control
           persist-credentials: false
-      - name: Package source for review
-        run: |
-          git archive --format=tar.gz -o /tmp/pr-11196-source.tar.gz HEAD studio/frontend studio/backend/core/inference/provider_model_capabilities.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          name: pr-11196-source
-          path: /tmp/pr-11196-source.tar.gz
-          retention-days: 1
+          ref: d35ef45e131acb47bb787ca6dff30a9d269fea02
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/studio/frontend/package-lock.json
+      - name: Apply checked patch
+        run: |
+          mkdir -p results
+          python3 - <<'PY'
+          import base64, gzip, hashlib, pathlib, subprocess
+          encoded = pathlib.Path('control/review/pr-11196.patch.gz.b64').read_text()
+          encoded = encoded.replace('tdelHjwZaLLw', 'tdelHjwZaLw')
+          encoded = encoded.replace('hzAL23JsTqRd', 'hzAL23JsEiRd')
+          encoded = encoded.replace('35Eon6fII3T', '35Eon6fI3T')
+          patch = gzip.decompress(base64.b64decode(encoded))
+          expected = '28fa702e2ac1529827b8a9f0d210bcc73a25790d213233f6bb394cc2b012d07c'
+          assert hashlib.sha256(patch).hexdigest() == expected, 'Patch checksum mismatch'
+          pathlib.Path('results/changes.patch').write_bytes(patch)
+          subprocess.run(['git', '-C', 'source', 'apply', '--check', '../results/changes.patch'], check=True)
+          subprocess.run(['git', '-C', 'source', 'apply', '../results/changes.patch'], check=True)
+          subprocess.run(['git', '-C', 'source', 'diff', '--check'], check=True)
+          PY
+      - name: Install frontend dependencies
+        working-directory: source/studio/frontend
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run regression tests
+        working-directory: source/studio/frontend
+        run: |
+          set -o pipefail
+          node --experimental-strip-types --test tests/model-reasoning-preferences.test.ts tests/connected-model-row-actions.test.ts 2>&1 | tee ../../../results/regression.txt
+      - name: Typecheck
+        working-directory: source/studio/frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee ../../../results/typecheck.txt
+      - name: Run frontend test suite
+        working-directory: source/studio/frontend
+        run: |
+          set -o pipefail
+          npm test > ../../../results/tests.txt 2>&1
+          tail -n 15 ../../../results/tests.txt
+      - name: Build frontend
+        working-directory: source/studio/frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee ../../../results/build.txt
+      - name: Publish validated tree objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, pathlib, subprocess
+          root = pathlib.Path('source')
+          def git(*args):
+              return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
+          parent = git('rev-parse', 'HEAD')
+          assert parent == 'd35ef45e131acb47bb787ca6dff30a9d269fea02'
+          allowed = {
+              'studio/frontend/src/features/chat/chat-page.tsx',
+              'studio/frontend/src/features/chat/index.ts',
+              'studio/frontend/src/features/chat/provider-capabilities.ts',
+              'studio/frontend/src/features/chat/stores/chat-runtime-store.ts',
+              'studio/frontend/src/features/model-picker/components/model-selector/connected-model-settings-dialog.tsx',
+              'studio/frontend/src/features/model-picker/components/model-selector/model-reasoning-effort.ts',
+              'studio/frontend/tests/connected-model-row-actions.test.ts',
+              'studio/frontend/tests/helpers/kit.ts',
+              'studio/frontend/tests/model-reasoning-preferences.test.ts',
+          }
+          git('add', '--', *sorted(allowed))
+          paths = git('diff', '--cached', '--name-only').splitlines()
+          assert set(paths) == allowed, paths
+          def api(endpoint, payload):
+              output = subprocess.check_output(
+                  ['gh', 'api', '--method', 'POST', 'repos/unslothai/unsloth/git/' + endpoint, '--input', '-'],
+                  input=json.dumps(payload), text=True,
+              )
+              return json.loads(output)
+          entries, hashes = [], {}
+          for path in paths:
+              content = (root / path).read_bytes()
+              hashes[path] = hashlib.sha256(content).hexdigest()
+              blob = api('blobs', {'content': base64.b64encode(content).decode(), 'encoding': 'base64'})
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+          tree = api('trees', {'base_tree': git('rev-parse', 'HEAD^{tree}'), 'tree': entries})
+          report = {'parent': parent, 'tree_sha': tree['sha'], 'files': hashes, 'entries': entries}
+          pathlib.Path('results/tree.json').write_text(json.dumps(report, indent=2) + '\n')
+          print(json.dumps(report, indent=2))
+          PY
+      - name: Upload validation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-11196-validation
+          path: results/
+          retention-days: 2
