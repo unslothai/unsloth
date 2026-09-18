@@ -254,6 +254,12 @@ Describe "the uv version floor" {
         @{ line = 'uv 0.9.2';                       floor = '0.9.3'; expected = $false }
         @{ line = 'uv 0.4.0';                       floor = '0.9.3'; expected = $false }
         @{ line = 'curl 8.9.1 (x86_64-pc-linux-gnu)'; floor = '0.9.3'; expected = $false }
+        # A prerelease of the floor is the floor minus something. install.sh's _uv_version_ok
+        # refuses exactly this shape, and one above the floor is a normal release to both.
+        @{ line = 'uv 0.9.3-rc.1';                  floor = '0.9.3'; expected = $false }
+        @{ line = 'uv 0.9.3+build5';                floor = '0.9.3'; expected = $false }
+        @{ line = 'uv 0.9.4-rc1';                   floor = '0.9.3'; expected = $true }
+        @{ line = 'uv 1.0.0-beta';                  floor = '0.9.3'; expected = $true }
         @{ line = 'not a version at all';           floor = '0.9.3'; expected = $false }
         @{ line = '';                               floor = '0.9.3'; expected = $false }
     ) {

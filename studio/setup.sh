@@ -2492,7 +2492,11 @@ _setup_uv_version_at_least() {
             # own ("curl 8.9.1") would otherwise clear a floor of 0.9.3 on the strength of
             # being curl 8.
             if ($1 != "uv") { exit 1 }
-            split($2, have, ".")
+            # A prerelease is the version it precedes minus something, so it is compared as that
+            # version and refused when that lands exactly on the floor, as install.sh does.
+            core = $2
+            pre = (sub(/[-+].*$/, "", core) > 0)
+            split(core, have, ".")
             if (have[1] !~ /^[0-9]+$/) { exit 1 }
             split(floor, want, ".")
             for (i = 1; i <= 3; i++) {
@@ -2501,6 +2505,7 @@ _setup_uv_version_at_least() {
                 if (h > w) { exit 0 }
                 if (h < w) { exit 1 }
             }
+            if (pre) { exit 1 }
             # Braced, like every other exit in this program: setup.sh is allowed exactly two
             # exits of its own (tests/sh/test_tauri_retry_failure_context.sh counts the lines),
             # and an awk exit indented on a line of its own reads as a third.

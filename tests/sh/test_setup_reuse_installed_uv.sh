@@ -122,6 +122,14 @@ for shell in sh bash; do
     fake_uv "$OLD" 0 0.9.3
     assert_eq "$shell: a uv exactly at the minimum version is reused" \
         "found=$OLD" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
+    # A prerelease of the floor is the floor minus something, and install.sh's _uv_version_ok
+    # refuses it, so reuse has to as well. One above the floor is a normal release to both.
+    fake_uv "$OLD" 0 "0.9.3-rc.1"
+    assert_eq "$shell: a prerelease of the minimum version is not reused" \
+        "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
+    fake_uv "$OLD" 0 "0.9.4-rc1"
+    assert_eq "$shell: a prerelease above the minimum version is reused" \
+        "found=$OLD" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
     # Runs, answers as something else: a miss, and the case a Windows stand-in cannot express.
     NOTUV="$CASE/not uv"
     mkdir -p "$NOTUV"

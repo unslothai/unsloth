@@ -6555,9 +6555,18 @@ function Test-SetupUvVersionAtLeast {
     # $false: the download that follows is what ran before the reuse existed.
     param([string]$VersionLine, [string]$Minimum)
     if (-not $VersionLine) { return $false }
-    if ($VersionLine -notmatch '(?m)^\s*uv\s+(\d+(?:\.\d+){0,2})') { return $false }
+    if ($VersionLine -notmatch '(?m)^\s*uv\s+(\d+(?:\.\d+){0,2})([-+]\S*)?') { return $false }
     $found = $Matches[1]
-    try { return ([version]$found -ge [version]$Minimum) } catch { return $false }
+    # A group that did not participate is absent from $Matches, and reading it would throw under
+    # a caller's Set-StrictMode rather than read as "no suffix".
+    $pre = if ($Matches.ContainsKey(2)) { $Matches[2] } else { "" }
+    try {
+        if ([version]$found -gt [version]$Minimum) { return $true }
+        # A prerelease of the floor itself is the floor minus something, so it does not clear it.
+        # install.sh's _uv_version_ok refuses the same shape.
+        if ([version]$found -eq [version]$Minimum) { return (-not $pre) }
+        return $false
+    } catch { return $false }
 }
 
 function Get-InstalledUvVerdict {
