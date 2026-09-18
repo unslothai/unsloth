@@ -274,11 +274,7 @@ def select_and_activate_engine(
             logger.warning(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
-            # HELD, not recorded yet. sd-server and sd-cli come from the same bundle, and only the
-            # server being unrunnable (a lost execute bit, a partial install) says nothing about the
-            # accelerator: the CLI below may run it perfectly. Recording here would put a strike on
-            # every otherwise successful one-shot load and reach the two-strike threshold, diverting a
-            # working ROCm host to Vulkan. It is an accelerator failure only if the CLI fails too.
+            # HELD, not recorded. See the single recorder below.
             unlaunchable_server = server_binary
             server_binary = None
         # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
@@ -290,23 +286,25 @@ def select_and_activate_engine(
                 accelerator = install_accelerator,
             )
         )
-        cli_unlaunchable = False
+        unlaunchable_cli: Optional[str] = None
         if binary and SdCppEngine(binary = binary).version() is None:
             logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
-            note_unlaunchable_accelerator_build(binary, card = selected_card)
-            cli_unlaunchable = True
+            unlaunchable_cli = binary
             binary = None
-        if unlaunchable_server is not None and binary is None and not cli_unlaunchable:
-            # Nothing from this bundle runs, so the build really is the problem. Counted here rather
-            # than in the load: the router runs first, so a build it rejects never reaches the
-            # recorders there. Against the CARD being selected, since a card-less note is read as
-            # host-wide and would move every other card to Vulkan too.
+        if binary is None and server_binary is None and (unlaunchable_cli or unlaunchable_server):
+            # ONE recorder, and only once NEITHER executable can run. sd-server and sd-cli are two
+            # files out of a single install, so either one failing alone says nothing about the
+            # accelerator: the other may run it perfectly, the load succeeds, and a strike for it is
+            # a strike on a working host. Two of those reach the diversion bar and replace a healthy
+            # ROCm bundle with Vulkan for good. Recording each separately had the same effect from
+            # the other direction, spending both strikes on one install event.
             #
-            # ONE strike per bundle per selection. sd-server and sd-cli are two executables out of a
-            # single install, so when both fail their probes the CLI branch above has already said
-            # "this build does not run" and saying it twice reaches the two-strike diversion bar on
-            # one install event, condemning ROCm for what is meant to need two independent failures.
-            note_unlaunchable_accelerator_build(unlaunchable_server, card = selected_card)
+            # Counted here rather than in the load because the router runs first, so a build it
+            # rejects never reaches the recorders there. Against the CARD being selected, since a
+            # card-less note is read as host-wide and would move every other card to Vulkan too.
+            note_unlaunchable_accelerator_build(
+                unlaunchable_cli or unlaunchable_server, card = selected_card
+            )
 
     native_available = bool(binary or server_binary) and policy_eligible and fam_ok
     choice = select_diffusion_engine(

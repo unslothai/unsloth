@@ -2416,7 +2416,7 @@ def test_the_router_counts_its_launch_failures_against_the_card_it_selected(fake
 
     body = inspect.getsource(router.select_and_activate_engine)
     calls = body.count("note_unlaunchable_accelerator_build(")
-    assert calls == 2, body
+    assert calls == 1, body                       # one bundle, one recorder
     assert body.count("card = selected_card") == calls, body
 
 
@@ -2772,17 +2772,23 @@ class TestTheRouterRecordsTheBundleNotTheServer:
         from core.inference import diffusion_engine_router as router
         return inspect.getsource(router.select_and_activate_engine)
 
-    def test_a_dead_server_is_held_until_the_cli_has_answered(self):
+    def test_both_verdicts_are_held_until_the_other_has_answered(self):
         source = self._selection_source()
-        held = source.index("unlaunchable_server = server_binary")
+        held_server = source.index("unlaunchable_server = server_binary")
         cli_probe = source.index("SdCppEngine(binary = binary).version() is None")
-        recorded = source.index("note_unlaunchable_accelerator_build(unlaunchable_server")
-        assert held < cli_probe < recorded, (held, cli_probe, recorded)
+        held_cli = source.index("unlaunchable_cli = binary")
+        recorded = source.index("note_unlaunchable_accelerator_build(")
+        assert held_server < cli_probe < held_cli < recorded, (
+            held_server, cli_probe, held_cli, recorded
+        )
 
     def test_a_bundle_where_nothing_runs_is_still_recorded(self):
         source = self._selection_source()
         # The dead-bundle case must still reach the recorder, not be dropped along with the deferral.
-        assert "if unlaunchable_server is not None and binary is None" in source
+        assert (
+            "if binary is None and server_binary is None and (unlaunchable_cli or unlaunchable_server):"
+            in source
+        )
 
 
 def test_the_download_plan_predicts_for_the_card_the_load_will_select():
@@ -2895,3 +2901,33 @@ def test_constructing_the_backend_does_not_claim_a_card_for_its_thread():
     run_load = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
     finally_block = run_load[run_load.rindex("finally:") :]
     assert "_clear_loading_card()" in finally_block
+
+
+def test_a_damaged_cli_beside_a_healthy_server_is_not_a_strike(fake_settings, monkeypatch):
+    """The mirror of the held sd-server verdict. sd-cli losing its execute bit while the server runs
+    says nothing about the accelerator: the server is what this load uses and the load succeeds. A
+    strike there is a strike on a working host, and two of them divert a healthy ROCm bundle to
+    Vulkan for good."""
+    from core.inference import diffusion_engine_router as router
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(router, "_install_allowed", lambda: True)
+    monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server")
+    monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
+    monkeypatch.setattr(router, "_server_binary_runnable", lambda _b: True)   # server is fine
+    monkeypatch.setattr(
+        router, "SdCppEngine", lambda binary: types.SimpleNamespace(version = lambda: None)
+    )  # cli is not
+    monkeypatch.setattr(
+        router,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "rocm", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(router, "family_sd_cpp_supported", lambda _fam: True)
+    monkeypatch.setattr(router, "_activate", lambda name, reason = None: name)
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
+
+    chosen = router.select_and_activate_engine(_detect_load_family(H3_REPO, None, "minimax-h3"))
+    assert chosen == "sd_cpp", chosen              # the healthy server carries the load
+    assert _recorded_strikes(fake_settings) == 0   # and nothing was held against ROCm
