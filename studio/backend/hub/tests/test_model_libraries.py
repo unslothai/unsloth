@@ -15,7 +15,7 @@ from fastapi import HTTPException
 
 from hub.services.models import libraries
 from hub.storage import model_libraries as ml_storage
-from hub.utils import download_manifest, hf_cache_state
+from hub.utils import download_manifest, download_registry, hf_cache_state
 from hub.utils.state_dir import cache_scope_name
 from utils import hf_cache_settings
 
@@ -220,6 +220,37 @@ def test_move_missing_model_raises_404(tmp_path):
     with pytest.raises(HTTPException) as exc:
         libraries.move_model_response("Unsloth/None", None, str(a["id"]))
     assert exc.value.status_code == 404
+
+
+def test_move_refused_while_download_active(monkeypatch, tmp_path):
+    """An active download for the repo still 409s the move, before any scan."""
+    a = _register_library(tmp_path, "libA")
+    b = _register_library(tmp_path, "libB")
+    repo_id = "Unsloth/StillDownloading"
+    _write_repo(Path(a["path"]) / "hub", repo_id)
+
+    registry = download_registry.get_models_registry()
+    monkeypatch.setattr(registry, "active_jobs", lambda repo_id: {"key": "downloading"})
+
+    with pytest.raises(HTTPException) as exc:
+        libraries.move_model_response(repo_id, None, str(b["id"]))
+    assert exc.value.status_code == 409
+    assert (Path(a["path"]) / "hub" / hf_cache_state.repo_cache_dir_name("model", repo_id)).exists()
+
+
+def test_move_refused_while_load_in_flight(monkeypatch, tmp_path):
+    """A loader staging the repo still 409s the move."""
+    a = _register_library(tmp_path, "libA")
+    b = _register_library(tmp_path, "libB")
+    repo_id = "Unsloth/StillLoading"
+    _write_repo(Path(a["path"]) / "hub", repo_id)
+
+    monkeypatch.setattr("hub.services.models.downloads._load_in_flight", lambda repo_id: True)
+
+    with pytest.raises(HTTPException) as exc:
+        libraries.move_model_response(repo_id, None, str(b["id"]))
+    assert exc.value.status_code == 409
+    assert (Path(a["path"]) / "hub" / hf_cache_state.repo_cache_dir_name("model", repo_id)).exists()
 
 
 def test_move_rejects_variant_scoped_requests(tmp_path):

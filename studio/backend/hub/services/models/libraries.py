@@ -2,7 +2,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """HTTP response builders for model libraries: listing, registering, default
-selection and moving a cached model between libraries without re-downloading."""
+selection and moving a cached model between libraries without re-downloading.
+
+Moves are whole-repo only: a variant-scoped move is rejected with a 400. On a
+move the repo's hub/ dir relocates while the source library's shared,
+content-addressed xet/ store stays behind (the response carries an explanatory
+note). When the same repo is cached under more than one library, the first copy
+found outside the target moves in; further duplicates are skipped (they share
+the target dir name) and a copy already in the target short-circuits to a
+no-op."""
 
 from __future__ import annotations
 
@@ -209,19 +217,27 @@ def move_model_response(repo_id: str, variant: Optional[str], target_library_id:
         )
     try:
         from hub.services.models.downloads import _load_in_flight
-        if _load_in_flight(repo_id):
-            raise HTTPException(
-                status_code = 409,
-                detail = "This model is loading or staging right now; try when it is idle.",
-            )
-    except HTTPException:
-        raise
-    except Exception:
-        pass
+        loading = _load_in_flight(repo_id)
+    except Exception as exc:
+        logger.debug("Load-in-flight probe failed for %s; proceeding with move: %s", repo_id, exc)
+        loading = False
+    if loading:
+        raise HTTPException(
+            status_code = 409,
+            detail = "This model is loading or staging right now; try when it is idle.",
+        )
 
     target_name = repo_cache_dir_name("model", repo_id)
     already_in_target = (target_hub / target_name).exists()
     source_dirs = [p for p in iter_repo_cache_dirs("model", repo_id) if p is not None]
+    if len(source_dirs) > 1:
+        logger.warning(
+            "Model %s is cached in %d libraries (%s); the move will relocate every "
+            "copy that is not already in the target.",
+            repo_id,
+            len(source_dirs),
+            ", ".join(str(s.parent) for s in source_dirs),
+        )
     if not source_dirs and not already_in_target:
         raise HTTPException(status_code = 404, detail = "This model is not cached in any library.")
     if already_in_target:
