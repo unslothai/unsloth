@@ -521,8 +521,12 @@ def test_a_host_memory_probe_failure_still_widens_the_total(monkeypatch):
     device = hw.get_visible_gpu_utilization()["devices"][0]
 
     assert device["vram_total_gb"] == N1X_POOL_GB
-    # memory.used is the only numerator left, and it is a real reading.
-    assert device["vram_used_gb"] == N1X_USED_GB
+    # memory.used is scoped to the carve-out, so pairing it with the POOL total would
+    # advertise the whole difference as free on no pool-scoped evidence. The capacity
+    # still widens, which is the half that decides whether a model is offered at all;
+    # the budget stays the one the CLI vouched for.
+    cli_free_gb = round(N1X_CARVE_OUT_GB - N1X_USED_GB, 2)
+    assert device["vram_total_gb"] - device["vram_used_gb"] == pytest.approx(cli_free_gb, abs = 0.01)
 
 
 def test_the_predicate_is_the_whole_rule():
@@ -557,6 +561,12 @@ def _llama_common(monkeypatch, avail_mib):
     monkeypatch.setattr(
         LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: None)
     )
+    # `_resolve_visible_physical_ids` returning None means NO MASK here, so the env has
+    # to say the same or the runner's own CUDA_VISIBLE_DEVICES is read as one. The
+    # ordering mirrors main.py:19, which sets PCI_BUS_ID on import.
+    for _var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_var, raising = False)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
 
 def _integrated_llama_host(monkeypatch, avail_mib = int(HOST_AVAILABLE_GB * 1024)):
@@ -604,7 +614,7 @@ def test_a_cgroup_ceiling_survives_the_never_shrink_floor(monkeypatch):
     assert rows[0][2] == 0
 
 
-def test_a_mask_with_no_physical_ids_refuses_a_multi_row_join(monkeypatch):
+def test_an_unmappable_mask_refuses_the_join_under_any_ordering(monkeypatch):
     """A UUID or MIG mask leaves torch ordinals and nvidia-smi indices unjoinable.
 
     `_resolve_visible_physical_ids()` returns None there, so `_integrated_cuda_gpu_ids`
@@ -613,8 +623,12 @@ def test_a_mask_with_no_physical_ids_refuses_a_multi_row_join(monkeypatch):
     would advertise a discrete card with a system-RAM-sized pool.
     """
     _llama_common(monkeypatch, avail_mib = 43000)
-    # The DEFAULT ordering is the subject here, and main.py sets PCI_BUS_ID on import.
-    monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
+    # A real UUID mask: `_resolve_visible_physical_ids` cannot parse it, and neither can
+    # `_visible_devices_mask`, so the CLI rows are never filtered to match. PCI_BUS_ID
+    # ordering does not help, and main.py sets it by default, so the refusal cannot be
+    # left to the ordering alone.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-deadbeef-0000-0000-0000-000000000003")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {1}))
     monkeypatch.setattr(
         LlamaCppBackend,

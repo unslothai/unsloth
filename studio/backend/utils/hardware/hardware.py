@@ -3960,6 +3960,13 @@ def _reconcile_cuda_integrated_memory(
         if not numerators:
             continue
         pool_used_gb = min(max(numerators), total_gb)
+        if host_used_gb is None and cli_free_gb is not None:
+            # No pool-scoped occupancy at all: the CLI's used figure is scoped to the
+            # carve-out, so pairing it with the pool total would advertise the whole
+            # difference as free on no evidence (45.39/5.73 reads as 39.66 GiB free
+            # where the CLI vouched for 2.21). Keep the budget it did vouch for. The
+            # total still widens, which is what stops the monitor reading Unknown.
+            pool_used_gb = max(pool_used_gb, total_gb - cli_free_gb)
         if cli_free_gb is not None:
             # The floor. A host whose RAM is nearly full would otherwise publish a pool
             # emptier of free bytes than the carve-out reading it replaced.

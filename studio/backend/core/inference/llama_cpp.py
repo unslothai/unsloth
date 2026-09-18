@@ -10576,16 +10576,23 @@ class LlamaCppBackend:
             # that showed a single unmasked GPU, where there is nothing to confuse. That
             # is every shipping Spark, Jetson and N1X. hardware.py states the same rule
             # at `_cuda_join_is_unsafe`.
+            # Ordering alone is not enough: a UUID or MIG mask resolves to no physical
+            # ids whatever CUDA_DEVICE_ORDER says, and since `_visible_devices_mask`
+            # cannot parse that mask either, the CLI rows stay unfiltered. Both halves
+            # have to be mappable, so the mask must be absent or numeric AND the order
+            # PCI_BUS_ID.
             order = (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper()
-            single_gpu_host = (
-                LlamaCppBackend._resolve_visible_physical_ids() is None and len(gpus) == 1
-            )
-            if order != "PCI_BUS_ID" and not single_gpu_host:
+            raw_mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+            mask_unset = raw_mask is None or not raw_mask.strip()
+            mappable = mask_unset or LlamaCppBackend._resolve_visible_physical_ids() is not None
+            single_gpu_host = mask_unset and len(gpus) == 1
+            if not (mappable and order == "PCI_BUS_ID") and not single_gpu_host:
                 logger.debug(
-                    "Not widening integrated CUDA rows: CUDA_DEVICE_ORDER is %r and %d "
-                    "rows were probed, so a CUDA id cannot be joined to an nvidia-smi "
-                    "index here.",
+                    "Not widening integrated CUDA rows: CUDA_DEVICE_ORDER is %r, the "
+                    "mask %s, and %d rows were probed, so a CUDA id cannot be joined "
+                    "to an nvidia-smi index here.",
                     order or "unset (FASTEST_FIRST)",
+                    "resolves to no physical ids" if not mappable else "is mappable",
                     len(gpus),
                 )
                 return gpus
