@@ -65,13 +65,13 @@ test("the rail's edge drops by the gutter, so the cards keep their inset", () =>
 });
 
 test("the cap grows by both gutters, so the cards' band is unchanged", () => {
-  // calc(100dvh - Npx), N being the band's trim less the gutters added back, so
-  // a plus once they outgrow it. Anything smaller spends the cards' own room.
-  const caps = PROVIDER.match(/max-h-\[calc\(100dvh_([-+])_(\d+)px\)\]/g);
+  // 100dvh less N, N being the band's trim less the gutters added back, so a
+  // bare 100dvh once they cover it. Anything smaller spends the cards' own room,
+  // and a cap past 100dvh puts the scrollport's top off screen.
+  const caps = PROVIDER.match(/max-h-\[(?:calc\()?100dvh(?:_-_(\d+)px\))?\]/g);
   assert.equal(caps?.length, 2, "a rail lost its cap");
   for (const cap of caps ?? []) {
-    const [, sign, size] = cap.match(/100dvh_([-+])_(\d+)px/) ?? [];
-    const trim = (sign === "-" ? 1 : -1) * Number(size);
+    const trim = Number(cap.match(/_-_(\d+)px/)?.[1] ?? 0);
     assert.equal(
       trim,
       CARDS_BAND_TRIM - GUTTER_BOTTOM - GUTTER_TOP,

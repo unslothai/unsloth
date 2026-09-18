@@ -91,9 +91,10 @@ const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 // Room the corner rail keeps around its cards so its overflow clip does not cut their shadows off (#9246).
 // Sized off the deepest card shadow, the dark-mode one: 0 8px 28px -6px reaches 22px to a card's left
 // and 14px above it, and a shorter gutter ends the halo on a hard line. Only those two edges show it:
-// the rail is flush with the bottom-right corner, so the clip there lands on the screen edge.
+// the rail is flush with the bottom-right corner, so the clip there lands on the screen edge. Both
+// gutters come out of the cap, never out of the cards: 100dvh less 16 and 16 is the band they had.
 const STACK_SHADOW_GUTTER_BOTTOM = 16;
-const STACK_SHADOW_GUTTER_TOP = 20;
+const STACK_SHADOW_GUTTER_TOP = 16;
 const STACK_SHADOW_GUTTER_LEFT = 28;
 // The cards' own inset from the right edge, not a gutter: the rail is flush there.
 const STACK_CARD_INSET_RIGHT = 16;
@@ -453,7 +454,7 @@ function TauriUpdateLayer({
   ) : (
     <div
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
-      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh_+_4px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
+      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
       data-testid="overlay-rail"
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
@@ -806,7 +807,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             push the top of the stack off screen. */}
         <div
           // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
-          className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh_+_4px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
+          className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
           // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
           data-testid="overlay-rail"
           // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.

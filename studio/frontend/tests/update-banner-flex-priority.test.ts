@@ -346,7 +346,7 @@ test("the rail's block gutter costs the cards no room", () => {
     // around them, so the cards keep exactly the band they had.
     assert.match(
       rules,
-      /max-h-\[calc\(100dvh_[-+]_\d+px\)\]/,
+      /max-h-\[(?:calc\()?100dvh(?:_-_\d+px\))?\]/,
       "the rail lost the cap that pays for its gutters",
     );
     // From the constants, not pb-4/pt-2: those are rem, so at any root size but
