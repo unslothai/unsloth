@@ -35,30 +35,52 @@ function storedPinned(): string[] | null {
   }
 }
 
-// A write that failed (quota exhausted with the key already present) leaves the RECORD older than
-// this session's list, so re-reading it as a base drops the pins that never persisted. Until a
-// write succeeds again this window's own list is the newer one.
+// A write that failed (quota exhausted with the key already present) leaves the RECORD without the
+// pins it rejected, so re-reading it as a base drops them. Only those ids are ours: the record
+// stays authoritative for everything else, including a peer's removals, so the delta is tracked
+// rather than inferred from "everything the record does not have", which re-added what a peer
+// deleted. Cleared as soon as a write lands, which is when the record carries them again.
 let storageWritable = true;
+let unpersisted = new Set<string>();
 
 function writePinned(pinned: string[]): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(pinned));
     storageWritable = true;
+    unpersisted.clear();
   } catch {
     storageWritable = false;
+    const stored = storedPinned() ?? [];
+    for (const id of pinned) {
+      if (!stored.includes(id)) unpersisted.add(id);
+    }
   }
+}
+
+/** Ids this window pinned and could not persist, which the record cannot be asked about. Read from
+ *  the set rather than from the caller's list: a peer's storage event replaces this window's array
+ *  wholesale, so by the next edit the list no longer carries them. */
+function ourPins(stored: readonly string[], present: readonly string[]): string[] {
+  if (storageWritable) return [];
+  // Reversed: the set records them oldest first, and a pin goes to the TOP of the list.
+  return [...unpersisted]
+    .reverse()
+    .filter((id) => !stored.includes(id) && !present.includes(id));
+}
+
+function isOurs(id: string): boolean {
+  return !storageWritable && unpersisted.has(id);
 }
 
 /** The record to apply an edit to. While writes are failing the record is still FRESH for other
  *  windows and only stale for this one's own unpersisted pins, so it is merged rather than
- *  dropped: another window's additions come in, and nothing this session pinned is lost. Its
- *  removals cannot be honoured until a write succeeds, which re-adds rather than deletes. */
+ *  dropped: another window's additions and removals both land, and only the ids this session
+ *  pinned and could not persist are carried over. */
 function persistedBase(fallback: readonly string[]): string[] {
   const stored = storedPinned();
   if (stored === null) return [...fallback];
   if (storageWritable) return stored;
-  const added = stored.filter((id) => !fallback.includes(id));
-  return [...added, ...fallback];
+  return [...ourPins(stored, stored), ...stored];
 }
 
 // movePinnedConnected runs on every dragenter: writing each would make a cancelled drag permanent.
@@ -79,11 +101,10 @@ function rebaseOnStored(order: readonly string[]): string[] {
   const stored = storedPinned();
   if (stored === null) return [...order];
   const added = stored.filter((id) => !order.includes(id));
-  // Writes failing: keep the whole dragged order, since the record is missing this session's own
-  // pins and filtering against it would delete them, and still take the other window's additions.
-  if (!storageWritable) return [...added, ...order];
-  const kept = order.filter((id) => stored.includes(id));
-  return [...added, ...kept];
+  // An id survives if the record still carries it, or if it is one of ours the record never
+  // received. A peer's removal is honoured either way.
+  const kept = order.filter((id) => stored.includes(id) || isOurs(id));
+  return [...ourPins(stored, [...added, ...kept]), ...added, ...kept];
 }
 
 interface PinnedConnectedModelsState {

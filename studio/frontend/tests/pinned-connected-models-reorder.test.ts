@@ -137,3 +137,24 @@ test("a drag after a failed write keeps both sides' pins", () => {
   assert.ok(after.includes(B), `this session's unpersisted pin was lost: ${JSON.stringify(after)}`);
   assert.ok(after.includes(D), `the other window's pin was overwritten: ${JSON.stringify(after)}`);
 });
+
+test("a peer removal survives a failed write", () => {
+  // Only the ids this window failed to persist are its own. Treating everything the record lacks
+  // as local re-added what a peer had just unpinned.
+  reset([A, C]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B); // ours, never persisted
+  } finally {
+    storage.set = realSet;
+  }
+  externalWrite([A]); // a peer unpins C
+  pins.getState().togglePinnedConnected(D); // this one lands
+  const after = pins.getState().pinned;
+  assert.ok(!after.includes(C), `the peer's removal was undone: ${JSON.stringify(after)}`);
+  assert.ok(after.includes(B), `this session's unpersisted pin was lost: ${JSON.stringify(after)}`);
+  assert.deepEqual(storedOrder(), after);
+});
