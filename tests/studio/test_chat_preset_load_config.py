@@ -432,10 +432,12 @@ def _breaks_out(arm: str) -> bool:
 def _jumps_out(text: str, keyword: str, *, absorbed_by_switch: bool) -> bool:
     """A `keyword` jump in `text` that nothing nested inside `text` absorbs."""
     scan = _outside_literals(text)
-    absorbers = "for|while|do|switch" if absorbed_by_switch else "for|while|do"
+    # A statement, not an object key: `{ switch: 1 }` absorbs nothing.
+    loops = r"(?:for|while)\s*\(|do\b(?!\s*:)"
+    absorbers = rf"{loops}|switch\s*\(" if absorbed_by_switch else loops
     absorbing = [
         (match.start(), _consume_statement(scan, match.start())[1])
-        for match in re.finditer(rf"{_KEYWORD}(?:{absorbers})\b", scan)
+        for match in re.finditer(rf"{_KEYWORD}(?:{absorbers})", scan)
     ]
     absorbing += _nested_function_spans(scan)
     return any(
@@ -1258,6 +1260,11 @@ SELECTOR_CASES = [
     ("(s) => { { const s = { reasoningBudget: 1 }; return s.reasoningBudget; } }", False),
     ("({ reasoningBudget }) => s.other.reasoningBudget", False),
     ("(s) => { const value = s.reasoningBudget; return s.other. value; }", False),
+    (
+        '(s) => { switch (s.mode) { case "x": const o = { switch: 1 }; if (s.stop) break; '
+        "return s.reasoningBudget; default: return s.reasoningBudget; } }",
+        False,
+    ),
     (
         '(s) => { switch (s.mode) { case "x": s. switch; if (s.stop) break; '
         "return s.reasoningBudget; default: return s.reasoningBudget; } }",
