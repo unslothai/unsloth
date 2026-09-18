@@ -226,13 +226,17 @@ pub async fn desktop_preflight(
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
     let started = Instant::now();
+    // A window reload re-runs this during our own install or update, and the
+    // installer phase does not hold the runtime gate. Checked on both sides of the
+    // probe: one that ends mid-probe still leaves a half-written reading.
+    let mutating = || {
+        install::is_install_running(install_state.inner())
+            || update::is_update_running(update_state.inner())
+    };
+    let mutating_before = mutating();
     let (result, adopted_watchdog_generation) =
         crate::preflight::desktop_preflight_result_with_state(state.inner()).await?;
-    // A window reload re-runs this during our own install or update, and the
-    // installer phase does not hold the runtime gate.
-    let result = if install::is_install_running(install_state.inner())
-        || update::is_update_running(update_state.inner())
-    {
+    let result = if mutating_before || mutating() {
         crate::preflight::busy_managed_environment(result)
     } else {
         result
