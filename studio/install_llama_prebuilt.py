@@ -7206,9 +7206,7 @@ def write_prebuilt_metadata(
         raise PrebuiltFallback(f"cannot compute install fingerprint for {choice.name}")
     _persisted_backend = persisted_llama_backend(llama_backend, choice)
     _load_probe = (
-        macos_load_probe_record(host)
-        if macos_load_probe_passed and host is not None
-        else None
+        macos_load_probe_record(host) if macos_load_probe_passed and host is not None else None
     )
     # An install kind with no allowlist raises; the binary tier alone is still honest evidence.
     try:

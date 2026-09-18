@@ -90,7 +90,12 @@ def checksums_for(choice) -> "ILP.ApprovedReleaseChecksums":
     )
 
 
-def build_install(tmp_path: Path, host, *, load_probe_passed: bool = True) -> Path:
+def build_install(
+    tmp_path: Path,
+    host,
+    *,
+    load_probe_passed: bool = True,
+) -> Path:
     """Build an install whose marker passes the real fingerprint checks.
 
     *load_probe_passed* mirrors what the installer learned from its own preflight:
