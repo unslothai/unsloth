@@ -14,6 +14,7 @@ import {
 } from "fflate";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
+import { DOMParser } from "@xmldom/xmldom";
 
 registerBundlerResolver();
 
@@ -31,6 +32,8 @@ const {
   truncateAttachmentPreviewText,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
+const { readOfficeOpenXmlAttachmentContent } =
+  await import("../src/features/chat/open-document.ts");
 
 type StubNode = {
   nodeType: number;
@@ -987,4 +990,177 @@ test("a preview is never stricter than the adapter that took the file", async ()
     ),
     (error: Error) => error instanceof UndecodableTextError,
   );
+});
+
+(globalThis as { DOMParser?: unknown }).DOMParser = DOMParser;
+
+
+const REL =
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+
+function rels(entries: [string, string, string][]): string {
+  return `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${entries
+    .map(
+      ([id, type, target]) =>
+        `<Relationship Id="${id}" Type="${REL}/${type}" Target="${target}"/>`,
+    )
+    .join("")}</Relationships>`;
+}
+
+function sheet(body: string): string {
+  return `<worksheet xmlns="${MAIN}">${body}</worksheet>`;
+}
+
+function workbookFile(parts: Record<string, string>, name = "book.xlsx"): File {
+  const zipped = zipSync(
+    Object.fromEntries(
+      Object.entries(parts).map(([path, xml]) => [path, strToU8(xml)]),
+    ),
+  );
+  return new File([zipped], name);
+}
+
+const BASE_PARTS = {
+  "_rels/.rels": rels([["rId1", "officeDocument", "/xl/workbook.xml"]]),
+  "xl/_rels/workbook.xml.rels": rels([
+    ["rIdA", "worksheet", "worksheets/sheet1.xml"],
+    ["rIdB", "worksheet", "/xl/worksheets/sheet2.xml"],
+    ["rIdC", "worksheet", "../xl/worksheets/sheet3.xml"],
+    ["rIdS", "sharedStrings", "sharedStrings.xml"],
+    ["rIdT", "styles", "styles.xml"],
+  ]),
+  // Listed out of archive order: the workbook, not the zip, decides sheet order.
+  "xl/workbook.xml": `<workbook xmlns="${MAIN}" xmlns:r="${REL}"><sheets>
+    <sheet name="Second" sheetId="2" r:id="rIdB"/>
+    <sheet name="Secret" sheetId="3" state="hidden" r:id="rIdC"/>
+    <sheet name="First" sheetId="1" r:id="rIdA"/>
+  </sheets></workbook>`,
+  "xl/sharedStrings.xml": `<sst xmlns="${MAIN}">
+    <si><t>Name</t></si>
+    <si><r><t>Ri</t></r><r><t>ch</t></r><rPh><t>ルビ</t></rPh></si>
+  </sst>`,
+  "xl/styles.xml": `<styleSheet xmlns="${MAIN}">
+    <numFmts><numFmt numFmtId="164" formatCode="yyyy\\-mm\\-dd"/><numFmt numFmtId="165" formatCode="&quot;day&quot; 0"/><numFmt numFmtId="166" formatCode="yyyy-mm-dd hh:mm"/><numFmt numFmtId="167" formatCode="[h]:mm"/></numFmts>
+    <cellXfs><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="165"/><xf numFmtId="21"/><xf numFmtId="46"/><xf numFmtId="166"/><xf numFmtId="167"/></cellXfs>
+  </styleSheet>`,
+  "xl/worksheets/sheet1.xml":
+    sheet(`<cols><col min="-1000000000" max="0" hidden="1"/><col min="3" max="3" hidden="1"/></cols><sheetData>
+    <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1"><v>9</v></c><c r="D1" t="inlineStr"><is><t>inline</t></is></c></row>
+    <row r="2" hidden="1"><c r="A2"><v>hidden row</v></c></row>
+    <row r="3"><c r="B3" t="b"><v>1</v></c><c r="D3" t="e"><v>#DIV/0!</v></c></row>
+    <row r="4"><c r="A4"><v>0.30000000000000004</v></c><c r="B4" s="1"><v>45000</v></c><c r="D4" s="2"><v>45000.5</v></c><c r="E4" s="6"><v>45000.5</v></c></row>
+    <row r="5"><c r="A5" s="3"><v>12</v></c><c r="B5" s="4"><v>1.25</v></c><c r="D5" s="5"><v>1.5</v></c><c r="E5" s="7"><v>2.25</v></c></row>
+  </sheetData>`),
+  "xl/worksheets/sheet2.xml": sheet(
+    `<sheetData><row r="1"><c r="A1" t="str"><v>formula text</v></c></row></sheetData>`,
+  ),
+  "xl/worksheets/sheet3.xml": sheet(
+    `<sheetData><row r="1"><c r="A1" t="str"><v>do not show</v></c></row></sheetData>`,
+  ),
+};
+
+test("a workbook reads as tab-separated sheets in workbook order", async () => {
+  const content = await readOfficeOpenXmlAttachmentContent(
+    workbookFile(BASE_PARTS),
+    "book.xlsx",
+  );
+  assert.equal(content.label, "XLSX");
+  assert.equal(
+    content.text,
+    [
+      "[Sheet: Second]",
+      "formula text",
+      "",
+      "[Sheet: First]",
+      "Name\tRich\tinline",
+      "\tTRUE\t#DIV/0!",
+      "0.3\t2023-03-15\t2023-03-15\t2023-03-15 12:00:00",
+      "12\t06:00:00\t36:00:00\t54:00:00",
+    ].join("\n"),
+  );
+});
+
+test("a part declaring more than the XML cap is refused before it inflates", async () => {
+  await assert.rejects(
+    readOfficeOpenXmlAttachmentContent(
+      workbookFile({
+        ...BASE_PARTS,
+        "xl/worksheets/sheet1.xml": sheet(" ".repeat(10 * 1024 * 1024 + 1)),
+      }),
+      "book.xlsx",
+    ),
+    /unpacks too large/,
+  );
+});
+
+test("parts under the XML cap are still refused once they unpack past the total", async () => {
+  const filler = sheet(" ".repeat(9 * 1024 * 1024));
+  const parts: Record<string, string> = { ...BASE_PARTS };
+  for (let index = 0; index < 12; index++) {
+    parts[`xl/worksheets/filler${index}.xml`] = filler;
+  }
+  await assert.rejects(
+    readOfficeOpenXmlAttachmentContent(workbookFile(parts), "book.xlsx"),
+    /unpacks too large/,
+  );
+});
+
+test("a stored part is charged its real size, not the size it declares", async () => {
+  const name = "xl/worksheets/sheet1.xml";
+  const zipped = zipSync({
+    ...Object.fromEntries(
+      Object.entries(BASE_PARTS).map(([path, xml]) => [path, strToU8(xml)]),
+    ),
+    [name]: [strToU8(sheet(" ".repeat(11 * 1024 * 1024))), { level: 0 }],
+  });
+  // Rewrite the central directory to declare the stored part as 1 byte.
+  const view = new DataView(zipped.buffer);
+  for (let offset = 0; offset < zipped.length - 46; offset++) {
+    if (view.getUint32(offset, true) !== 0x02014b50) continue;
+    const nameLength = view.getUint16(offset + 28, true);
+    const entry = new TextDecoder().decode(
+      zipped.subarray(offset + 46, offset + 46 + nameLength),
+    );
+    if (entry === name) view.setUint32(offset + 24, 1, true);
+  }
+  await assert.rejects(
+    readOfficeOpenXmlAttachmentContent(
+      new File([zipped], "book.xlsx"),
+      "book.xlsx",
+    ),
+    /unpacks too large/,
+  );
+});
+
+test("a row repeating one long shared string stops at the text budget", async () => {
+  const cells = Array.from(
+    { length: 1024 },
+    () => `<c t="s"><v>0</v></c>`,
+  ).join("");
+  const content = await readOfficeOpenXmlAttachmentContent(
+    workbookFile({
+      ...BASE_PARTS,
+      "xl/workbook.xml": `<workbook xmlns="${MAIN}" xmlns:r="${REL}"><sheets><sheet name="S" sheetId="1" r:id="rIdA"/></sheets></workbook>`,
+      "xl/sharedStrings.xml": `<sst xmlns="${MAIN}"><si><t>${"x".repeat(1024 * 1024)}</t></si></sst>`,
+      "xl/worksheets/sheet1.xml": sheet(
+        `<sheetData><row>${cells}</row></sheetData>`,
+      ),
+    }),
+    "book.xlsx",
+  );
+  assert.ok(content.text.length < 11 * 1024 * 1024);
+  // The cells that fit are kept, not the whole row dropped.
+  assert.equal(content.text.split("\t").length, 9);
+  assert.match(content.text, /\[Truncated: /);
+});
+
+test("the preview reads a picked workbook as labelled text", async () => {
+  const preview = await readAttachmentText(
+    workbookFile(BASE_PARTS, "Book.XLSM"),
+    "Book.XLSM",
+    "",
+  );
+  assert.equal(preview.label, "XLSX");
+  assert.match(preview.text, /^\[Sheet: Second\]\nformula text/);
 });

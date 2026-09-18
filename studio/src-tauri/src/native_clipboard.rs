@@ -102,6 +102,10 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "odt" => "application/vnd.oasis.opendocument.text",
         "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xlsm" => "application/vnd.ms-excel.sheet.macroEnabled.12",
+        "xltx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+        "xltm" => "application/vnd.ms-excel.template.macroEnabled.12",
         "mp3" | "mp2" => "audio/mpeg",
         "wav" => "audio/wav",
         "m4a" => "audio/mp4",
@@ -461,6 +465,29 @@ mod tests {
             Some("video/3gpp")
         );
         assert_eq!(clipboard_file_mime_type(Path::new("unknown.bin")), None);
+    }
+
+    #[test]
+    fn clipboard_file_mime_types_cover_composer_documents() {
+        for (name, mime_type) in [
+            (
+                "book.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            (
+                "book.xlsm",
+                "application/vnd.ms-excel.sheet.macroEnabled.12",
+            ),
+        ] {
+            assert_eq!(clipboard_file_mime_type(Path::new(name)), Some(mime_type));
+        }
+        for ext in crate::native_path_policy::OFFICE_OPEN_XML_ATTACHMENT_EXTS {
+            let name = format!("book.{ext}");
+            assert!(
+                clipboard_file_mime_type(Path::new(&name)).is_some(),
+                "{name}"
+            );
+        }
     }
 
     #[test]

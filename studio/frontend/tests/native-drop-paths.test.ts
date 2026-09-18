@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
 } from "../src/features/chat/open-document-accept.ts";
@@ -17,13 +18,6 @@ import {
   MAX_TEXT_ATTACHMENT_BYTES,
   decodeTextAttachmentBytes,
   isTextAttachmentName,
-} from "../src/features/chat/text-attachment-accept.ts";
-import {
-  AUDIO_ATTACHMENT_ACCEPT,
-  AUDIO_PICKER_ACCEPT,
-  isAudioAttachmentFile,
-} from "../src/lib/audio-utils.ts";
-import {
   isBinaryOfficeTemplate,
   isBinaryVobSubSubtitle,
   isCompiledFortranModule,
@@ -32,6 +26,12 @@ import {
   readTextAttachmentOnce,
   UndecodableTextError,
 } from "../src/features/chat/text-attachment-accept.ts";
+import {
+  AUDIO_ATTACHMENT_ACCEPT,
+  AUDIO_PICKER_ACCEPT,
+  isAudioAttachmentFile,
+  AUDIO_ACCEPT,
+} from "../src/lib/audio-utils.ts";
 import {
   dequeueNativeAttachments,
   enqueueNativeAttachments,
@@ -47,7 +47,6 @@ import {
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
 import { MAX_REFERENCE_BYTES } from "../src/features/video/reference-budget.ts";
-import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
 import {
   VIDEO_ACCEPT,
   classifiedAttachmentFile,
@@ -98,6 +97,10 @@ const COMPOSER_IMAGE_ACCEPT_RE = /const IMAGE_ACCEPT\s*=\s*"([^"]+)"/;
 const VISION_ADAPTER_ACCEPT_RE =
   /class VisionImageAdapter[^{]*\{\s*accept\s*=\s*"([^"]+)"/s;
 const OPEN_DOCUMENT_EXTENSION_RE = /\.ods/;
+const OFFICE_OPEN_XML_ADAPTER_RE =
+  /class OfficeOpenXmlAttachmentAdapter[^{]*\{[\s\S]*?accept = OFFICE_OPEN_XML_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readOfficeOpenXmlAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new OfficeOpenXmlAttachmentAdapter\(\),/;
+const RUST_OFFICE_OPEN_XML_ATTACHMENT_EXTS_RE =
+  /OFFICE_OPEN_XML_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
@@ -179,6 +182,25 @@ test("OpenDocument picker types are accepted by native drops", () => {
     .sort();
   const frontend = OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS.split(",").sort();
   assert.deepEqual(rust, frontend);
+});
+
+test("Office Open XML drops route to the composer and match the native allowlist", () => {
+  for (const extension of OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS.split(",")) {
+    const path = `/docs/Book${extension.toUpperCase()}`;
+    assert.equal(classifyDropPaths([path]).kind, "docs", path);
+    assert.ok(isComposerAttachmentName(path), path);
+    assert.ok(SUPPORTED_DROP_HINT.includes(extension));
+  }
+  assert.match(RUNTIME_PROVIDER, OFFICE_OPEN_XML_ADAPTER_RE);
+  const rust = [
+    ...(readText("../../src-tauri/src/native_path_policy.rs")
+      .match(RUST_OFFICE_OPEN_XML_ATTACHMENT_EXTS_RE)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ].map((match) => `.${match[1]}`);
+  assert.deepEqual(
+    rust.sort(),
+    OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS.split(",").sort(),
+  );
 });
 
 test("images route to chat vision attachments, one or many", () => {

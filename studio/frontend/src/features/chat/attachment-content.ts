@@ -12,13 +12,17 @@ import {
   MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
   MAX_OPEN_DOCUMENT_XML_BYTES,
   readOpenDocumentAttachmentContent,
+  readOfficeOpenXmlAttachmentContent,
 } from "./open-document";
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
+  OFFICE_OPEN_XML_SPREADSHEET_MIMES,
+  isOfficeOpenXmlAttachmentName,
 } from "./open-document-accept";
 
-export type AttachmentTextLabel = "PDF" | "DOCX" | "HTML" | "ODS" | "ODT";
+export type AttachmentTextLabel =
+  "PDF" | "DOCX" | "HTML" | "ODS" | "ODT" | "XLSX";
 
 export { TEXT_ATTACHMENT_ACCEPT };
 
@@ -37,7 +41,8 @@ const PDF_ATTACHMENT_RE = /\.pdf$/i;
 const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
-const LABELLED_ATTACHMENT_TEXT_RE = /^\[(PDF|DOCX|HTML|ODS|ODT): [^\n]*\]\n/;
+const LABELLED_ATTACHMENT_TEXT_RE =
+  /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX): [^\n]*\]\n/;
 const ATTACHMENT_TAG_OPEN_RE = /^<attachment name=[^\n]*>\n/;
 const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 // Both wrappers start on the first line, so only a prefix is matched against.
@@ -471,6 +476,18 @@ export function isOpenDocumentAttachment(
   );
 }
 
+export function isOfficeOpenXmlAttachment(
+  name: string | undefined,
+  contentType: string | undefined,
+): boolean {
+  const mime = contentType?.toLowerCase() ?? "";
+  return (
+    OFFICE_OPEN_XML_SPREADSHEET_MIMES.some(
+      (accepted) => accepted.toLowerCase() === mime,
+    ) || isOfficeOpenXmlAttachmentName(name ?? "")
+  );
+}
+
 // CompositeAttachmentAdapter selects the first matching accept string. Text comes before the
 // document-specific adapters, so previews must apply the same MIME-or-extension match
 // before looking at PDF/DOCX/HTML names.
@@ -819,6 +836,13 @@ export async function readAttachmentText(
       file,
       name,
       contentType ?? "",
+    );
+    return { label, text, truncated: false };
+  }
+  if (isOfficeOpenXmlAttachment(name, contentType)) {
+    const { label, text } = await readOfficeOpenXmlAttachmentContent(
+      file,
+      name,
     );
     return { label, text, truncated: false };
   }

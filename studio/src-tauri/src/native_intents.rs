@@ -607,7 +607,7 @@ const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 // Matches the clipboard reader, so a dropped source file and a pasted one
 // accept the same sizes.
 const MAX_NATIVE_TEXT_BYTES: u64 = 20 * 1024 * 1024;
-// OpenDocument archives use the composer's larger archive limit.
+// OpenDocument and Office Open XML archives use the composer's larger archive limit.
 const MAX_NATIVE_OPEN_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
 // drain swallows it, so a larger read loses them silently.
@@ -660,6 +660,10 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "ogv" => Some("video/ogg"),
         "ods" => Some("application/vnd.oasis.opendocument.spreadsheet"),
         "odt" => Some("application/vnd.oasis.opendocument.text"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        "xlsm" => Some("application/vnd.ms-excel.sheet.macroEnabled.12"),
+        "xltx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.template"),
+        "xltm" => Some("application/vnd.ms-excel.template.macroEnabled.12"),
         // Stamped like native_clipboard.rs.
         "json" | "jsonl" | "ndjson" | "jsonc" | "json5" | "geojson" | "har" | "avsc"
         | "tfstate" => Some("application/json"),
@@ -751,7 +755,15 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
         MAX_NATIVE_IMAGE_BYTES
     } else if mime_type.starts_with("video/") {
         MAX_NATIVE_VIDEO_BYTES
-    } else if mime_type.starts_with("application/vnd.oasis.opendocument.") {
+    } else if mime_type.starts_with("application/vnd.oasis.opendocument.")
+        || path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|ext| {
+                crate::native_path_policy::OFFICE_OPEN_XML_ATTACHMENT_EXTS
+                    .contains(&ext.to_ascii_lowercase().as_str())
+            })
+    {
         MAX_NATIVE_OPEN_DOCUMENT_BYTES
     } else {
         MAX_NATIVE_ATTACHMENT_BYTES
@@ -1023,10 +1035,19 @@ mod tests {
     }
 
     #[test]
-    fn open_document_read_round_trips_with_its_mime_type() {
+    fn composer_document_read_round_trips_with_its_mime_type() {
         for (ext, mime) in [
             ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
             ("odt", "application/vnd.oasis.opendocument.text"),
+            (
+                "xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            ("XLSM", "application/vnd.ms-excel.sheet.macroEnabled.12"),
+            (
+                "xltx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+            ),
         ] {
             let path = temp_path("open-document").with_extension(ext);
             fs::write(&path, b"open-document").unwrap();
@@ -1134,17 +1155,15 @@ mod tests {
     }
 
     #[test]
-    fn open_document_read_allows_more_than_the_generic_cap() {
-        let path = temp_path("spreadsheet").with_extension("ods");
-        fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
-        let (_state, entry) = attachment_entry(&path);
-        let payload =
-            read_attachment_payload(&entry).expect("OpenDocument archive under 50 MiB reads");
-        assert_eq!(
-            payload.mime_type,
-            "application/vnd.oasis.opendocument.spreadsheet"
-        );
-        let _ = fs::remove_file(path);
+    fn document_archive_read_allows_more_than_the_generic_cap() {
+        for ext in ["ods", "xlsx"] {
+            let path = temp_path("spreadsheet").with_extension(ext);
+            fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            read_attachment_payload(&entry)
+                .unwrap_or_else(|error| panic!(".{ext} archive under 50 MiB was refused: {error}"));
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]

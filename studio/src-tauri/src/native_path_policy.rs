@@ -50,6 +50,8 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
 pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
 /// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
+/// Office Open XML files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
+pub const OFFICE_OPEN_XML_ATTACHMENT_EXTS: &[&str] = &["xlsx", "xlsm", "xltx", "xltm"];
 pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
 
 /// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so a
@@ -591,6 +593,7 @@ fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
     ATTACHMENT_EXTS
         .iter()
         .chain(OPEN_DOCUMENT_ATTACHMENT_EXTS.iter())
+        .chain(OFFICE_OPEN_XML_ATTACHMENT_EXTS.iter())
         .chain(TEXT_ATTACHMENT_EXTS.iter())
         .chain(IMAGE_ATTACHMENT_EXTS.iter())
         .chain(AUDIO_ATTACHMENT_EXTS.iter())

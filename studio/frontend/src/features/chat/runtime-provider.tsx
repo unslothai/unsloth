@@ -82,11 +82,13 @@ import {
 } from "./external-providers";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
-  type OpenDocumentAttachmentContent,
-  readActiveOpenDocumentAttachmentContent,
+  readOfficeOpenXmlAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
-import { OPEN_DOCUMENT_ATTACHMENT_ACCEPT } from "./open-document-accept";
+import {
+  OFFICE_OPEN_XML_ATTACHMENT_ACCEPT,
+  OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
+} from "./open-document-accept";
 import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
@@ -566,15 +568,39 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
-class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
+type PackagedDocumentContent = { label: string; text: string };
+
+/** Read in the composer, so a file that cannot be read is marked there and not at send. */
+abstract class PackagedDocumentAttachmentAdapter implements AttachmentAdapter {
   private readonly active = new Set<string>();
   private readonly sending = new Set<string>();
   private readonly content = new Map<
     string,
-    Promise<OpenDocumentAttachmentContent | null>
+    Promise<PackagedDocumentContent | null>
   >();
 
-  accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;
+  abstract accept: string;
+
+  protected abstract read(
+    file: File,
+    filename: string,
+    contentType: string,
+  ): Promise<PackagedDocumentContent>;
+
+  private async readWhileActive(
+    id: string,
+    file: File,
+  ): Promise<PackagedDocumentContent | null> {
+    try {
+      const content = await this.read(file, file.name, file.type);
+      return this.active.has(id) ? content : null;
+    } catch (error) {
+      if (!this.active.has(id)) {
+        return null;
+      }
+      throw error;
+    }
+  }
 
   async *add({
     file,
@@ -591,12 +617,7 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     } satisfies PendingAttachment;
 
     yield attachment;
-    const content = readActiveOpenDocumentAttachmentContent(
-      file,
-      file.name,
-      file.type,
-      () => this.active.has(id),
-    );
+    const content = this.readWhileActive(id, file);
     this.content.set(id, content);
 
     try {
@@ -623,7 +644,7 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     try {
       const content =
         (await this.content.get(attachment.id)) ??
-        (await readOpenDocumentAttachmentContent(
+        (await this.read(
           attachment.file,
           attachment.name,
           attachment.contentType ?? "",
@@ -652,6 +673,22 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     this.sending.delete(attachment.id);
     this.content.delete(attachment.id);
     return Promise.resolve();
+  }
+}
+
+class OpenDocumentAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
+  accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;
+
+  protected read(file: File, filename: string, contentType: string) {
+    return readOpenDocumentAttachmentContent(file, filename, contentType);
+  }
+}
+
+class OfficeOpenXmlAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
+  accept = OFFICE_OPEN_XML_ATTACHMENT_ACCEPT;
+
+  protected read(file: File, filename: string) {
+    return readOfficeOpenXmlAttachmentContent(file, filename);
   }
 }
 
@@ -2255,6 +2292,7 @@ function useStudioRuntimeAdapters(
           new PDFAttachmentAdapter(),
           new DocxAttachmentAdapter(),
           new OpenDocumentAttachmentAdapter(),
+          new OfficeOpenXmlAttachmentAdapter(),
         ]),
         () => {
           const state = aui.threadListItem().getState();

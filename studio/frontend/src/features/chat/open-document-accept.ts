@@ -18,3 +18,22 @@ export function isOpenDocumentAttachmentName(filename: string): boolean {
     lower.endsWith(extension),
   );
 }
+
+export const OFFICE_OPEN_XML_SPREADSHEET_MIMES = [
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel.sheet.macroEnabled.12",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+  "application/vnd.ms-excel.template.macroEnabled.12",
+];
+export const OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS = ".xlsx,.xlsm,.xltx,.xltm";
+export const OFFICE_OPEN_XML_ATTACHMENT_ACCEPT = [
+  OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
+  ...OFFICE_OPEN_XML_SPREADSHEET_MIMES,
+].join(",");
+
+export function isOfficeOpenXmlAttachmentName(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  return OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS.split(",").some((extension) =>
+    lower.endsWith(extension),
+  );
+}

@@ -65,27 +65,6 @@ export async function readOpenDocumentAttachmentContent(
   };
 }
 
-export async function readActiveOpenDocumentAttachmentContent(
-  file: File,
-  filename: string,
-  contentType: string,
-  isActive: () => boolean,
-): Promise<OpenDocumentAttachmentContent | null> {
-  try {
-    const content = await readOpenDocumentAttachmentContent(
-      file,
-      filename,
-      contentType,
-    );
-    return isActive() ? content : null;
-  } catch (error) {
-    if (!isActive()) {
-      return null;
-    }
-    throw error;
-  }
-}
-
 async function readOpenDocumentXmlFiles(
   file: File,
 ): Promise<OpenDocumentXmlFiles> {
@@ -715,4 +694,450 @@ function getOpenDocumentAttribute(
   return value === "" && !element.hasAttributeNS(namespaceUri, name)
     ? null
     : value;
+}
+
+// Elements are matched by local name: strict OOXML moves every part to other namespaces.
+const ELEMENT_NODE = 1;
+const MAX_UNPACKED_BYTES = 2 * MAX_OPEN_DOCUMENT_ARCHIVE_BYTES;
+const MAX_TEXT_LENGTH = MAX_OPEN_DOCUMENT_XML_BYTES;
+// A sparse row whose only cell sits at column XFD would otherwise become 16,383 tabs.
+const MAX_SPREADSHEET_COLUMNS = 1024;
+const BUILTIN_TIME_FORMAT_IDS = new Set([
+  18, 19, 20, 21, 32, 33, 34, 35, 45, 47, 55, 56,
+]);
+const BUILTIN_DATE_FORMAT_IDS = new Set([
+  14, 15, 16, 17, 27, 28, 29, 30, 31, 36, 50, 51, 52, 53, 54, 57, 58,
+]);
+const MAX_DATE_SERIAL = 2_958_465;
+
+export type OfficeOpenXmlAttachmentContent = {
+  label: "XLSX";
+  text: string;
+};
+
+type Relationship = { type: string; target: string };
+
+type DateFormatKind = "date" | "time" | "datetime" | "duration" | null;
+
+class OfficeOpenXmlSizeError extends Error {}
+
+export async function readOfficeOpenXmlAttachmentContent(
+  file: File,
+  filename: string,
+): Promise<OfficeOpenXmlAttachmentContent> {
+  const parts = await readPackageParts(file);
+  const main = [...packageRelationships(parts, "").values()].find((rel) =>
+    rel.type.endsWith("/officeDocument"),
+  );
+  const mainXml = main && parts.get(main.target);
+  if (!main || !mainXml) {
+    throw new Error(`Office file has no main document: ${filename}`);
+  }
+  const root = parseXml(mainXml, filename).documentElement;
+  if (root.localName !== "workbook") {
+    throw new Error(`Unsupported Office document: ${filename}`);
+  }
+  return {
+    label: "XLSX",
+    text: extractWorkbookText(parts, main.target, root, filename),
+  };
+}
+
+async function readPackageParts(file: File): Promise<Map<string, string>> {
+  if (file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES) {
+    throw new OfficeOpenXmlSizeError(`Office file is too large: ${file.name}`);
+  }
+  let unpacked = 0;
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unzipSync(new Uint8Array(await file.arrayBuffer()), {
+      filter: (entry) => {
+        if (!/\.(xml|rels)$/i.test(entry.name)) {
+          return false;
+        }
+        // fflate uses the declared size, or the real one for a stored entry, so charge the larger.
+        const bytes = Math.max(entry.size, entry.originalSize);
+        unpacked += bytes;
+        if (
+          bytes > MAX_OPEN_DOCUMENT_XML_BYTES ||
+          unpacked > MAX_UNPACKED_BYTES
+        ) {
+          throw new OfficeOpenXmlSizeError(
+            `Office file unpacks too large: ${file.name}`,
+          );
+        }
+        return true;
+      },
+    });
+  } catch (error) {
+    if (error instanceof OfficeOpenXmlSizeError) {
+      throw error;
+    }
+    throw new Error(`Failed to read Office archive: ${file.name}`, {
+      cause: error,
+    });
+  }
+  return new Map(
+    Object.entries(files).map(([name, bytes]) => [name, strFromU8(bytes)]),
+  );
+}
+
+function packageRelationships(
+  parts: Map<string, string>,
+  partPath: string,
+): Map<string, Relationship> {
+  const slash = partPath.lastIndexOf("/");
+  const dir = partPath.slice(0, slash + 1);
+  const xml = parts.get(`${dir}_rels/${partPath.slice(slash + 1)}.rels`);
+  const relationships = new Map<string, Relationship>();
+  if (!xml) {
+    return relationships;
+  }
+  for (const rel of descendants(parseXml(xml, partPath).documentElement, [
+    "Relationship",
+  ])) {
+    const id = attribute(rel, "Id");
+    const target = attribute(rel, "Target");
+    if (id && target && attribute(rel, "TargetMode") !== "External") {
+      relationships.set(id, {
+        type: attribute(rel, "Type") ?? "",
+        target: resolvePartPath(dir, target),
+      });
+    }
+  }
+  return relationships;
+}
+
+function resolvePartPath(dir: string, target: string): string {
+  let decoded = target;
+  try {
+    decoded = decodeURIComponent(target);
+  } catch {
+    // An unescaped "%" is a literal part name character.
+  }
+  const segments: string[] = [];
+  const joined = decoded.startsWith("/") ? decoded : `${dir}${decoded}`;
+  for (const segment of joined.split("/")) {
+    if (segment === "..") {
+      segments.pop();
+    } else if (segment && segment !== ".") {
+      segments.push(segment);
+    }
+  }
+  return segments.join("/");
+}
+
+function relatedPart(
+  parts: Map<string, string>,
+  relationships: Map<string, Relationship>,
+  typeSuffix: string,
+  filename: string,
+): Element | null {
+  const rel = [...relationships.values()].find((candidate) =>
+    candidate.type.endsWith(typeSuffix),
+  );
+  const xml = rel && parts.get(rel.target);
+  return xml ? parseXml(xml, filename).documentElement : null;
+}
+
+function extractWorkbookText(
+  parts: Map<string, string>,
+  workbookPath: string,
+  workbook: Element,
+  filename: string,
+): string {
+  const relationships = packageRelationships(parts, workbookPath);
+  const sharedStringsRoot = relatedPart(
+    parts,
+    relationships,
+    "/sharedStrings",
+    filename,
+  );
+  const sharedStrings = sharedStringsRoot
+    ? children(sharedStringsRoot, "si").map(richText)
+    : [];
+  const stylesRoot = relatedPart(parts, relationships, "/styles", filename);
+  const dateStyles = stylesRoot ? collectDateFormatKinds(stylesRoot) : [];
+  const workbookProperties = descendants(workbook, ["workbookPr"])[0];
+  const date1904 = ["1", "true"].includes(
+    (workbookProperties && attribute(workbookProperties, "date1904")) ?? "",
+  );
+  const cells: CellContext = { sharedStrings, dateStyles, date1904 };
+
+  const budget = { remaining: MAX_TEXT_LENGTH };
+  const sheets: string[] = [];
+  for (const sheet of descendants(workbook, ["sheet"])) {
+    const state = attribute(sheet, "state");
+    const target = relationships.get(attribute(sheet, "id") ?? "")?.target;
+    const xml = target && parts.get(target);
+    if (state === "hidden" || state === "veryHidden" || !xml) {
+      continue;
+    }
+    const rows = extractSheetRows(
+      parseXml(xml, filename).documentElement,
+      cells,
+      budget,
+    );
+    if (rows.length > 0) {
+      sheets.push(
+        `[Sheet: ${attribute(sheet, "name") ?? ""}]\n${rows.join("\n")}`,
+      );
+    }
+    if (budget.remaining <= 0) {
+      sheets.push(
+        "[Truncated: the workbook has more text than one attachment carries]",
+      );
+      break;
+    }
+  }
+  return sheets.join("\n\n");
+}
+
+type CellContext = {
+  sharedStrings: string[];
+  dateStyles: DateFormatKind[];
+  date1904: boolean;
+};
+
+function extractSheetRows(
+  sheet: Element,
+  cells: CellContext,
+  budget: { remaining: number },
+): string[] {
+  const hiddenColumns = new Set<number>();
+  for (const column of descendants(sheet, ["col"])) {
+    if (!isTrue(attribute(column, "hidden"))) {
+      continue;
+    }
+    const min = Math.max(1, Number(attribute(column, "min")));
+    const max = Math.min(
+      Number(attribute(column, "max")),
+      MAX_SPREADSHEET_COLUMNS,
+    );
+    for (let index = min; index <= max; index++) {
+      hiddenColumns.add(index);
+    }
+  }
+
+  const lines: string[] = [];
+  for (const row of descendants(sheet, ["row"])) {
+    if (isTrue(attribute(row, "hidden"))) {
+      continue;
+    }
+    const values = new Map<number, string>();
+    let column = 0;
+    let rowLength = 0;
+    for (const cell of children(row, "c")) {
+      const reference = attribute(cell, "r");
+      column = reference ? columnIndex(reference) : column + 1;
+      if (column > MAX_SPREADSHEET_COLUMNS || hiddenColumns.has(column)) {
+        continue;
+      }
+      // Charged per cell: one shared string repeated across a row would otherwise build a gigabyte line.
+      const text = cellText(cell, cells);
+      rowLength += text.length + 1;
+      if (rowLength > budget.remaining) {
+        budget.remaining = 0;
+        break;
+      }
+      values.set(column, text);
+    }
+    const lastColumn = Math.max(0, ...values.keys());
+    const line: string[] = [];
+    for (let index = 1; index <= lastColumn; index++) {
+      if (!hiddenColumns.has(index)) {
+        line.push(values.get(index) ?? "");
+      }
+    }
+    const text = line.join("\t").replace(/\t+$/g, "");
+    if (text.trim()) {
+      lines.push(text);
+      budget.remaining -= text.length + 1;
+    }
+    if (budget.remaining <= 0) {
+      break;
+    }
+  }
+  return lines;
+}
+
+function columnIndex(reference: string): number {
+  let index = 0;
+  for (const char of reference.toUpperCase()) {
+    const code = char.charCodeAt(0);
+    if (code < 65 || code > 90) {
+      break;
+    }
+    index = index * 26 + code - 64;
+  }
+  return index;
+}
+
+function cellText(cell: Element, context: CellContext): string {
+  const type = attribute(cell, "t");
+  const value = children(cell, "v")[0]?.textContent ?? "";
+  switch (type) {
+    case "s":
+      return context.sharedStrings[Number(value)] ?? "";
+    case "inlineStr": {
+      const inline = children(cell, "is")[0];
+      return inline ? richText(inline) : "";
+    }
+    case "b":
+      return value === "1" ? "TRUE" : "FALSE";
+    case "str":
+    case "e":
+    case "d":
+      return value;
+  }
+  const number = Number(value);
+  if (value === "" || !Number.isFinite(number)) {
+    return value;
+  }
+  const kind = context.dateStyles[Number(attribute(cell, "s") ?? 0)];
+  return kind
+    ? formatDateSerial(number, kind, context.date1904)
+    : formatNumber(number);
+}
+
+// Excel shows 15 significant digits, so 0.1 + 0.2 stored as 0.30000000000000004 reads 0.3.
+function formatNumber(number: number): string {
+  return String(Number(number.toPrecision(15)));
+}
+
+function formatDateSerial(
+  serial: number,
+  kind: Exclude<DateFormatKind, null>,
+  date1904: boolean,
+): string {
+  if (serial < 0 || serial > MAX_DATE_SERIAL) {
+    return formatNumber(serial);
+  }
+  const seconds = Math.round(serial * 86_400);
+  if (kind === "duration") {
+    const pad = (value: number) => String(value).padStart(2, "0");
+    return `${Math.floor(seconds / 3600)}:${pad(Math.floor(seconds / 60) % 60)}:${pad(seconds % 60)}`;
+  }
+  // The 1900 system counts a nonexistent 1900-02-29 (serial 60), so earlier serials start a day later.
+  const epoch = date1904
+    ? Date.UTC(1904, 0, 1)
+    : Date.UTC(1899, 11, serial < 60 ? 31 : 30);
+  const iso = new Date(epoch + seconds * 1000).toISOString();
+  const date = iso.slice(0, 10);
+  const time = iso.slice(11, 19);
+  return kind === "date" ? date : kind === "time" ? time : `${date} ${time}`;
+}
+
+function collectDateFormatKinds(styles: Element): DateFormatKind[] {
+  const customFormats = new Map<number, string>();
+  for (const format of descendants(styles, ["numFmt"])) {
+    customFormats.set(
+      Number(attribute(format, "numFmtId")),
+      attribute(format, "formatCode") ?? "",
+    );
+  }
+  const cellFormats = descendants(styles, ["cellXfs"])[0];
+  return (cellFormats ? children(cellFormats, "xf") : []).map((format) => {
+    const id = Number(attribute(format, "numFmtId") ?? 0);
+    const code = customFormats.get(id);
+    if (code !== undefined) {
+      return dateFormatCodeKind(code);
+    }
+    if (id === 22) {
+      return "datetime";
+    }
+    if (id === 46) {
+      return "duration";
+    }
+    return BUILTIN_DATE_FORMAT_IDS.has(id)
+      ? "date"
+      : BUILTIN_TIME_FORMAT_IDS.has(id)
+        ? "time"
+        : null;
+  });
+}
+
+function dateFormatCodeKind(code: string): DateFormatKind {
+  const unquoted = code.replace(/"[^"]*"/g, "").replace(/\\./g, "");
+  // [h], [mm] and [ss] count elapsed time, which may pass 24 hours.
+  if (/\[(h+|m+|s+)\]/i.test(unquoted)) {
+    return "duration";
+  }
+  // Padding, [colour]/[$currency]/[condition] sections and AM/PM markers are not date tokens.
+  const tokens = unquoted
+    .replace(/[_*]./g, "")
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/am\/pm|a\/p/gi, "h");
+  const hasDate = /[dy]/i.test(tokens);
+  const hasTime = /[hs]/i.test(tokens);
+  if (hasDate && hasTime) {
+    return "datetime";
+  }
+  if (hasTime) {
+    return "time";
+  }
+  // A lone "m" (e.g. "mmm") is a month.
+  return hasDate || /m/i.test(tokens) ? "date" : null;
+}
+
+// Phonetic guides (rPh) repeat the base text as kana, so only the runs are read.
+function richText(element: Element): string {
+  let text = "";
+  for (const child of elementChildren(element)) {
+    if (child.localName === "t") {
+      text += child.textContent ?? "";
+    } else if (child.localName !== "rPh" && child.localName !== "phoneticPr") {
+      text += richText(child);
+    }
+  }
+  return text;
+}
+
+function isTrue(value: string | null): boolean {
+  return value === "1" || value === "true";
+}
+
+function parseXml(xml: string, filename: string): XMLDocument {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length > 0) {
+    throw new Error(`Failed to parse Office XML: ${filename}`);
+  }
+  return doc;
+}
+
+function elementChildren(element: Element): Element[] {
+  return Array.from(element.childNodes).filter(
+    (child): child is Element => child.nodeType === ELEMENT_NODE,
+  );
+}
+
+function children(element: Element, localName: string): Element[] {
+  return elementChildren(element).filter(
+    (child) => child.localName === localName,
+  );
+}
+
+function descendants(element: Element, localNames: string[]): Element[] {
+  const matches: Element[] = [];
+  const stack = elementChildren(element).reverse();
+  while (stack.length > 0) {
+    const next = stack.pop() as Element;
+    if (localNames.includes(next.localName)) {
+      matches.push(next);
+    }
+    const nested = elementChildren(next);
+    for (let index = nested.length - 1; index >= 0; index--) {
+      stack.push(nested[index]);
+    }
+  }
+  return matches;
+}
+
+function attribute(element: Element, localName: string): string | null {
+  for (const attr of Array.from(element.attributes)) {
+    if ((attr.localName ?? attr.name) === localName) {
+      return attr.value;
+    }
+  }
+  return null;
 }
