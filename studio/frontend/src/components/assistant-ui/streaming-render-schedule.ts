@@ -50,13 +50,51 @@ const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
 const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
-const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
-// Inside a block marked did not lex as code, the container markers and their indentation
-// have already been accounted for, so the label may sit behind any mix of them.
-// A block quote marker may be followed by nothing, but a list marker needs whitespace after
-// it or no list opens -- `-[label]:` is ordinary prose, not a bullet holding a definition.
-const LINK_DEFINITION_LINE_RE =
-  /^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\d{1,9}[.)])[ \t]+))*\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
+// Marked's `def` label, `[^\]]+`: a miss is committed away and Marked emits no
+// token for a label it has already seen, so err toward a false positive, which
+// only costs retention. `\n` is in the class because Marked normalises label
+// whitespace, `\\[\s\S]` because `.` rejected a label whose line ends in a
+// backslash, `u` because without it `{1,999}` bounds 499 emoji. 999 is
+// CommonMark's cap; unbounded would make every `[` an O(n) start position.
+const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
+// Widest match in UTF-16 units: 999 times `\` plus an astral code point, plus `[`.
+const LINK_DEFINITION_WINDOW = 999 * 3 + 2;
+
+// Same predicate as the regex over the whole reply, since the pattern has no
+// anchor or lookaround, but `]:` is rare where `[` is not (unslothai/unsloth#10529).
+function hasLinkDefinition(text: string): boolean {
+  for (let end = text.indexOf("]:"); end >= 0; end = text.indexOf("]:", end + 1)) {
+    const start = end < LINK_DEFINITION_WINDOW ? 0 : end - LINK_DEFINITION_WINDOW;
+    if (LINK_DEFINITION_RE.test(text.slice(start, end + 2))) {
+      return true;
+    }
+  }
+  return false;
+}
+// A label may sit behind any mix of container markers. A list marker needs
+// whitespace after it or no list opens: `-[label]:` is prose, not a bullet.
+const CONTAINER_PREFIX = "[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*";
+const LINK_DEFINITION_LINE_RE = new RegExp(
+  `^${CONTAINER_PREFIX}${LINK_DEFINITION_RE.source}`,
+  `m${LINK_DEFINITION_RE.flags}`,
+);
+// The probe plus exactly what Marked stores after the label, which is what has to
+// move the remount key. Must be spelled as Marked spells it, never as "the rest of
+// the line": this feeds a React key, so anything captured that Marked does not
+// store remounts the subtree once per character of it. Angle destinations run to
+// their `>` and may hold spaces; a bare one runs to whitespace and KEEPS a `>`
+// (`[g]: https://x.test/a>b`). At most one title, on the destination's line or the
+// one below but never both, and padding may precede the break.
+//
+// Residual: a wrapped title stops the key at its opening line, so the link keeps
+// its old title until the message settles.
+const LINK_DEFINITION_DESTINATION = "(?:<[^>\\n]*>?|[^\\s]*)";
+const LINK_DEFINITION_TITLE = "[\"'(][^\\n]*[\"')]";
+const LINK_DEFINITION_KEY_RE = new RegExp(
+  `${LINK_DEFINITION_LINE_RE.source}[ \\t]*(?:\\n${CONTAINER_PREFIX})?${LINK_DEFINITION_DESTINATION}` +
+    `(?:[ \\t]+${LINK_DEFINITION_TITLE}|[ \\t]*\\n${CONTAINER_PREFIX}${LINK_DEFINITION_TITLE})?`,
+  `g${LINK_DEFINITION_LINE_RE.flags}`,
+);
 // The two block shapes whose body is literal code: an opening fence, and an indent that
 // reaches column four -- four spaces, or a tab, which advances to the same column.
 const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
@@ -112,13 +150,20 @@ function blocksOf(markdown: string): readonly string[] {
 // `document` when blocks would have done only costs that reply its per-code-block Copy and
 // Download controls -- which is what this path did for EVERY reply containing a `]:` substring
 // before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
+// Normalised because `\r` counts against `{1,999}` and the `\n` it replaces does
+// not, so the scope would otherwise follow the reply's line ending. NOT for
+// `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
+// a normalised copy misses it and costs a CRLF reply two splits per render.
 function documentProse(markdown: string): string | null {
-  if (!LINK_REFERENCE_RE.test(markdown) || !LINK_DEFINITION_RE.test(markdown)) {
+  const normalized = normalizeLineEndings(markdown);
+  if (!LINK_REFERENCE_RE.test(normalized) || !hasLinkDefinition(normalized)) {
     return null;
   }
-  const prose = blocksOf(markdown)
-    .filter((block) => !isCodeBlock(block))
-    .join("\n");
+  const prose = normalizeLineEndings(
+    blocksOf(markdown)
+      .filter((block) => !isCodeBlock(block))
+      .join("\n"),
+  );
   return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
     ? prose
     : null;
@@ -133,10 +178,7 @@ export function markdownRenderKey(markdown: string): string {
   if (prose === null) {
     return "blocks";
   }
-  return `document:${prose
-    .split("\n")
-    .filter((line) => LINK_DEFINITION_LINE_RE.test(line))
-    .join("\n")}`;
+  return `document:${(prose.match(LINK_DEFINITION_KEY_RE) ?? []).join("\n")}`;
 }
 
 export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
@@ -231,7 +273,7 @@ const createRepairParity = (
 // and shown as a literal line. Keeping every definition in the live tail makes the two lexes agree.
 // Marked reads a fenced block as code, so those do not count.
 function updateLinkDefinitionParity(parity: RepairParity, text: string): void {
-  if (!FENCED_CODE_BLOCK_RE.test(text) && LINK_DEFINITION_RE.test(text)) {
+  if (!FENCED_CODE_BLOCK_RE.test(text) && hasLinkDefinition(text)) {
     parity.linkDefinition = true;
   }
 }
