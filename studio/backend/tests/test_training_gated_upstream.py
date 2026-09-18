@@ -416,6 +416,7 @@ def test_the_start_route_passes_the_requested_load_mode(mapper, monkeypatch):
         model_name,
         hf_token,
         load_in_4bit = True,
+        is_embedding = False,
     ):
         seen["load_in_4bit"] = load_in_4bit
         return None
@@ -604,3 +605,77 @@ def test_an_unreadable_mapper_admits_instead_of_refusing(monkeypatch):
     finally:
         unsloth_mirror._mapper_tables.cache_clear()
         unsloth_mirror._bad_mappings.cache_clear()
+
+
+def test_an_embedding_run_has_no_mirror_so_the_check_still_runs(mapper, monkeypatch):
+    # _run_embedding_training's primary path is SentenceTransformer(model_name, ...) with the
+    # name as given (unsloth/models/sentence_transformer.py), so the mapper never runs and a
+    # Torch mapping says nothing about what that backend fetches.
+    session = _Session(_http_error(401))
+    _route(monkeypatch, gated = "manual", session = session)
+
+    with pytest.raises(HTTPException) as error:
+        tr._remote_untrainable_model_format("google/gemma-3-270m-it", None, True, True)
+    assert error.value.detail["code"] == "hf_model_access_denied"
+    assert session.urls
+
+
+def test_the_start_route_passes_the_embedding_flag(mapper, monkeypatch):
+    seen = {}
+
+    def probe(
+        model_name,
+        hf_token,
+        load_in_4bit = True,
+        is_embedding = False,
+    ):
+        seen["is_embedding"] = is_embedding
+        return None
+
+    monkeypatch.setattr(tr, "_remote_untrainable_model_format", probe)
+    monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
+    monkeypatch.setattr(tr, "cached_read_refused", lambda *a, **kw: False)
+
+    request = TrainingStartRequest(
+        model_name = "google/gemma-3-270m-it",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        is_embedding = True,
+    )
+    tr._reject_untrainable_model_request(request, hf_token = None)
+    assert seen == {"is_embedding": True}
+
+
+def test_the_security_scan_covers_the_repo_the_loader_substitutes(mapper, monkeypatch):
+    # The mapper can send the download somewhere other than the picked name; scanning only the
+    # picked name would let the bytes actually fetched past the malware scan and the consent
+    # fingerprint.
+    import core.training.worker as worker_mod
+
+    scanned: list[str] = []
+
+    class _Decision:
+        blocked = False
+
+        def response_payload(self):
+            return {}
+
+    monkeypatch.setattr(worker_mod, "_model_local_files_only", lambda config: False, raising = False)
+    import utils.security as security_mod
+
+    monkeypatch.setattr(security_mod, "security_load_subdirs", lambda *a, **kw: ())
+    monkeypatch.setattr(security_mod, "load_scan_target", lambda t, s: (t, s))
+    monkeypatch.setattr(
+        security_mod,
+        "evaluate_file_security",
+        lambda target, **kw: (scanned.append(target), _Decision())[1],
+    )
+
+    config = {
+        "model_name": "google/gemma-3-270m-it",
+        "load_in_4bit": True,
+        "trust_remote_code": False,
+    }
+    assert worker_mod._model_load_security_error(config, "google/gemma-3-270m-it", None) is None
+    assert "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" in scanned

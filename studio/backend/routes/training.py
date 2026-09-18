@@ -480,6 +480,7 @@ def _remote_untrainable_model_format(
     model_name: str,
     hf_token: HfTokenArg,
     load_in_4bit: bool = True,
+    is_embedding: bool = False,
 ) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
@@ -582,8 +583,12 @@ def _remote_untrainable_model_format(
     # package and find_spec can land on a directory with no models/mapper.py under it, in which
     # case every lookup answers None and every gated model would be refused, the trainable ones
     # included. Unknown admits, exactly as an unanswered auth-check does.
+    # Embedding runs take _run_embedding_training, whose primary path is
+    # `SentenceTransformer(model_name, ...)` with the name as given, so the mapper never runs
+    # there either. Same reasoning as MLX, separate backend.
     has_public_copy = not mirror_lookup_available() or (
         not should_use_mlx_training_backend()
+        and not is_embedding
         and (
             unsloth_public_mirror(repo_id, load_in_4bit) is not None
             or (load_in_4bit and unsloth_public_mirror(repo_id, False) is not None)
@@ -1059,7 +1064,10 @@ def _reject_untrainable_model_request(
                     ),
                 )
             remote_format = _remote_untrainable_model_format(
-                request.model_name, hf_token, _preflight_load_in_4bit(request)
+                request.model_name,
+                hf_token,
+                _preflight_load_in_4bit(request),
+                bool(getattr(request, "is_embedding", False)),
             )
         except HTTPException as error:
             metadata_error = error

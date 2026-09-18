@@ -917,6 +917,24 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
     except Exception as error:
         logger.debug("Could not resolve LoRA base for security scan: %s", error)
 
+    # Scan the repo the loader SUBSTITUTES too. The mapper can send the download somewhere
+    # other than the name the user picked, and scanning only the picked name would let the
+    # bytes that are actually fetched, and any custom code they carry, past both the malware
+    # scan and the trust_remote_code consent fingerprint.
+    try:
+        from core.training.trainer import _metadata_lookup_name
+        mirrored = _metadata_lookup_name(
+            load_target,
+            load_target,
+            _model_local_files_only(config),
+            config.get("model_revision"),
+            bool(config.get("load_in_4bit", True)),
+        )
+        if mirrored != load_target:
+            requested_targets.append(mirrored)
+    except Exception as error:  # noqa: BLE001
+        logger.debug("Could not resolve the mirror for the security scan: %s", error)
+
     from utils.utils import hf_env_offline
 
     primary_name = config["model_name"]
