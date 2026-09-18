@@ -238,8 +238,8 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
 
   add(state: { file: File }) {
     // A composite picks its adapter synchronously from the name and MIME type, and both say "video"
-    // for an audio-only 3GP recording, so settle that from the container's own tracks first, as the
-    // native readers do. Every other file goes straight through, keeping the delegate's own return.
+    // for an audio-only 3GP recording or a TypeScript .ts, so settle that from the file's own bytes
+    // first, as the native readers do. Every other file goes straight through.
     if (!needsAttachmentTrackInspection(state.file)) {
       return this.delegate.add(state);
     }
@@ -252,9 +252,7 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     const file = await classifiedAttachmentFile(state.file);
     const added = await this.delegate.add({ ...state, file });
     if (Symbol.asyncIterator in added) {
-      // Only the audio and video adapters claim a 3GP and both resolve to one
-      // attachment, so this drains a generator to its last value rather than
-      // forwarding the progress an adapter here does not report.
+      // These adapters each resolve to one attachment, so drain the generator to its last value.
       let last: PendingAttachment | undefined;
       for await (const value of added) last = value;
       if (!last) throw new Error("The attachment adapter yielded nothing.");

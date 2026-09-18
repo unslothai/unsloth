@@ -641,7 +641,7 @@ test("every video MIME Rust stamps is one the video adapter claims", () => {
 });
 
 // The video adapter is registered before the text one, so claiming this MIME would take .ts sources.
-test("an .m2ts clip is a video but a TypeScript file under the same MIME is not", async () => {
+test("an .m2ts clip is a video under the MIME browsers give it", async () => {
   const { fileMatchesAccept } = (await import(
     new URL(
       "../node_modules/@assistant-ui/core/dist/adapters/attachment.js",
@@ -655,8 +655,6 @@ test("an .m2ts clip is a video but a TypeScript file under the same MIME is not"
   };
   const as = (name: string) => ({ name, type: "video/mp2t" });
   assert.ok(fileMatchesAccept(as("clip.M2TS"), VIDEO_ACCEPT));
-  assert.ok(!fileMatchesAccept(as("index.ts"), VIDEO_ACCEPT));
-  assert.ok(!fileMatchesAccept(as("index.mts"), VIDEO_ACCEPT));
 });
 
 test("the rejection hint names video too", () => {
@@ -1689,6 +1687,51 @@ test("the restamped recording routes to the audio adapter", async () => {
   assert.equal(fileMatchesAccept(classified, AUDIO_ATTACHMENT_ACCEPT), true);
 });
 
+test("a transport stream named .ts or .mts routes to video, TypeScript to text", async () => {
+  const { fileMatchesAccept } = (await import(
+    new URL(
+      "../node_modules/@assistant-ui/core/dist/adapters/attachment.js",
+      import.meta.url,
+    ).href
+  )) as { fileMatchesAccept: (file: File, accept: string) => boolean };
+  const stream = (packet: number, start: number) => {
+    const bytes = new Uint8Array(packet * 4);
+    for (let offset = start; offset < bytes.length; offset += packet) {
+      bytes[offset] = 0x47;
+    }
+    return bytes;
+  };
+  for (const file of [
+    new File([stream(192, 4)], "camcorder.MTS", { type: "" }),
+    new File([stream(188, 0)], "broadcast.ts", { type: "video/mp2t" }),
+  ]) {
+    const classified = await classifiedAttachmentFile(file);
+    assert.equal(classified.type, "video/mp2t", file.name);
+    assert.ok(fileMatchesAccept(classified, VIDEO_ACCEPT), file.name);
+  }
+  // Opens with the sync byte's "G", so one matching packet start is not enough.
+  const typescript = new File(
+    ["GENERATED\n" + "export const value = 1;\n".repeat(40)],
+    "index.ts",
+    { type: "video/mp2t" },
+  );
+  const classified = await classifiedAttachmentFile(typescript);
+  assert.equal(classified.type, "text/plain");
+  assert.equal(fileMatchesAccept(classified, VIDEO_ACCEPT), false);
+  const { REFERENCE_DROP_ACCEPT, referenceFileRejection } = await import(
+    "../src/features/video/reference-budget.ts"
+  );
+  assert.ok(REFERENCE_DROP_ACCEPT.video.split(",").includes(".mts"));
+  const clip = await classifiedAttachmentFile(
+    new File([stream(192, 4)], "camcorder.mts", { type: "" }),
+  );
+  assert.equal(referenceFileRejection("video", clip), null);
+  assert.equal(
+    referenceFileRejection("video", classified),
+    "Please choose a video file",
+  );
+});
+
 test("a file dialog offers 3GP recordings, and routing still does not", () => {
   // A dialog decides what is selectable, so it has to name .3gp: a platform
   // that maps it to video/3gpp, or to nothing, greys the recording out. Routing
@@ -2199,7 +2242,7 @@ test("a 3GP is inspected however large the surface taking it allows", async () =
   const source = readSrc("lib/video-utils.ts");
   assert.match(
     source,
-    /export function needsAttachmentTrackInspection[^)]*\)[^{]*\{\s*return \/\\\.3gp\$\/i\.test\(file\.name\);\s*\}/,
+    /export function needsAttachmentTrackInspection[^)]*\)[^{]*\{\s*return \/\\\.\(3gp\|m\?ts\)\$\/i\.test\(file\.name\);\s*\}/,
   );
 });
 

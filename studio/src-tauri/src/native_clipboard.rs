@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 use crate::native_path_policy::{
-    is_audio_only_3gp, is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub,
-    is_binary_office_template, is_compiled_fortran_mod,
+    has_transport_stream_extension, is_audio_only_3gp, is_binary_office_template,
+    is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub, is_compiled_fortran_mod,
+    is_mpeg_transport_stream,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
@@ -201,8 +202,9 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
         // A 3GP recording cannot use its final size limit until its BMFF
         // handlers have been read and classified as audio-only or video. Read it
         // under the larger of the two, as the drop path does; the audio cap is
-        // reapplied below once the track handlers say it is audio-only.
-        let provisional_limit = if is_3gp {
+        // reapplied below once the track handlers say it is audio-only. A .ts or
+        // .mts path is likewise video or TypeScript only once its packets are read.
+        let provisional_limit = if is_3gp || has_transport_stream_extension(&path) {
             MAX_CLIPBOARD_VIDEO_BYTES
         } else {
             clipboard_file_max_bytes(mime_type)
@@ -228,6 +230,8 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
         }
         let mime_type = if is_3gp && is_audio_only_3gp(&bytes) {
             "audio/3gpp"
+        } else if is_mpeg_transport_stream(&path, &bytes) {
+            "video/mp2t"
         } else {
             mime_type
         };
@@ -640,6 +644,26 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].mime_type, "audio/3gpp");
         assert_eq!(files[1].mime_type, "video/3gpp");
+    }
+
+    #[test]
+    fn clipboard_transport_stream_is_video_and_typescript_is_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let stream = directory.path().join("broadcast.ts");
+        let mut raw = vec![0; 188 * 4];
+        for offset in (0..raw.len()).step_by(188) {
+            raw[offset] = 0x47;
+        }
+        std::fs::write(&stream, raw).unwrap();
+        let typescript = directory.path().join("index.ts");
+        // Opens with the sync byte's "G", so one matching packet start is not enough.
+        let source = format!("GENERATED\n{}", "export const value = 1;\n".repeat(40));
+        std::fs::write(&typescript, source).unwrap();
+
+        let files = read_clipboard_files(vec![stream, typescript]).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].mime_type, "video/mp2t");
+        assert_eq!(files[1].mime_type, "text/plain");
     }
 
     #[test]

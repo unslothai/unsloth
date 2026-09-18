@@ -41,9 +41,10 @@ export const MAX_REFERENCE_BYTES: Record<ReferenceKind, number> = {
  *  with the MIME types: a browser answers "" for wma, amr, caf and several
  *  others, and `${kind}/*` alone greys those out of the dialog. The audio list
  *  is the picker one, .3gp included, because the picker reads a recording's
- *  tracks once it has the file and a clip is refused then. */
+ *  tracks once it has the file and a clip is refused then. The video list adds
+ *  .ts and .mts the same way: TypeScript shares them with transport streams. */
 export const REFERENCE_PICKER_ACCEPT: Record<ReferenceKind, string> = {
-  video: VIDEO_ACCEPT,
+  video: `${VIDEO_ACCEPT},.ts,.mts`,
   audio: AUDIO_PICKER_ACCEPT,
 };
 

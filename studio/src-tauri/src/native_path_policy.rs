@@ -576,6 +576,20 @@ pub fn is_audio_only_3gp(raw: &[u8]) -> bool {
     has_audio && !has_video
 }
 
+/// Whether a path's extension is one that TypeScript shares with MPEG transport streams.
+pub fn has_transport_stream_extension(path: &Path) -> bool {
+    has_extension(path, "ts") || has_extension(path, "mts")
+}
+
+/// A camcorder `.mts` or broadcast `.ts` stream, not TypeScript: the 0x47 sync byte opens every
+/// 188-byte packet, or every 192 bytes behind the 4-byte timestamp M2TS adds.
+pub fn is_mpeg_transport_stream(path: &Path, bytes: &[u8]) -> bool {
+    has_transport_stream_extension(path)
+        && [(0, 188), (4, 192)].iter().any(|&(start, packet)| {
+            (0..3).all(|index| bytes.get(start + index * packet) == Some(&0x47))
+        })
+}
+
 /// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
 pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "avif", "bmp", "tif", "tiff",
