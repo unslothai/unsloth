@@ -477,7 +477,7 @@ class ChatSettingsPayload(BaseModel):
     searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
-    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
+    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 0)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
     # Composer and RAG toggles. They describe the installation, not the browser that set them, so a
@@ -524,13 +524,12 @@ class ChatSettingsPayload(BaseModel):
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
     compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
 
-    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @field_validator("researchModelTimeoutSeconds", "maxToolCallsPerMessage", mode = "before")
     @classmethod
     def _not_a_boolean(cls, value: Any) -> Any:
-        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
-        # unlimited for every later run. The run route rejects booleans for the same reason.
+        # bool subclasses int, so False would persist as the 0 sentinel for every later run.
         if isinstance(value, bool):
-            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+            raise ValueError("Expected an integer, got a boolean.")
         return value
 
     @field_validator("researchModelTimeoutSeconds")

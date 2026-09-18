@@ -1728,6 +1728,29 @@ async def get_gguf_variants_answer(
                         ),
                     )
 
+        # A complete main with an unstarted companion has no partial signal. Keep it visible
+        # unless the existing readiness check says it can load.
+        for variant in partial_scan_variants:
+            if variant.quant in partial_quants:
+                continue
+            requirement = requirements_by_quant.get(variant.quant.lower())
+            if requirement is None or _is_fully_downloaded(variant):
+                continue
+            if not (
+                _filenames_cached(requirement.main_filenames, requirement.main_size_bytes)
+                or _quant_and_companions_ready(variant.quant.lower(), variant.size_bytes, ())
+            ):
+                continue
+            partial_quants.add(variant.quant)
+            partial_quant_transports.setdefault(
+                variant.quant,
+                _partial_transport_for_variant(
+                    repo_id,
+                    variant.quant,
+                    repo_cache_dir,
+                ),
+            )
+
         local_blobs_by_quant = (
             _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)
             if cache_reads_authorized

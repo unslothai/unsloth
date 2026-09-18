@@ -1618,9 +1618,10 @@ try:
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
-        _planned_flash_attn,
+        _planned_flash_attn_state,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
+        _reserved_flash_attn_state,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
         paravirtual_normalized_request,
@@ -1680,9 +1681,10 @@ except ImportError:
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
-        _planned_flash_attn,
+        _planned_flash_attn_state,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
+        _reserved_flash_attn_state,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
         paravirtual_normalized_request,
@@ -5073,7 +5075,7 @@ def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
         "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
         "before answering."
         + create_tip
-        + " Skill allowed-tools metadata never overrides Studio tool permissions.\n"
+        + " Skill allowed-tools metadata never overrides Unsloth tool permissions.\n"
         + catalog
     )
 
@@ -8376,14 +8378,40 @@ def _raw_body_model(body) -> Optional[str]:
     return body.get("model") if isinstance(body, dict) else None
 
 
-async def _available_model_ids() -> list[str]:
-    """Sorted ids a /v1 request may name, from the catalog ``GET /v1/models``
-    serves, so an error and the listing can't disagree."""
+def _catalog_object_ids(objects: list[dict]) -> list[str]:
+    """Ids to offer a chat caller. Task-carrying rows are dropped for the reason
+    _chat_servable_ids drops them, or the error names the model it just refused."""
     return sorted(
         mid
-        for mid in (m.get("id") for m in await _openai_catalog_objects())
+        for mid in (m.get("id") for m in objects if m.get("task") is None)
         if isinstance(mid, str) and mid
     )
+
+
+def _chat_servable_ids(objects: list[dict]) -> set[str]:
+    """Casefolded ids the chat endpoints can serve: a media, speech or TTS row carries a ``task``."""
+    return {
+        obj["id"].casefold()
+        for obj in objects
+        if isinstance(obj.get("id"), str) and obj["id"] and obj.get("task") is None
+    }
+
+
+async def _downloaded_model_ids() -> set[str]:
+    """Casefolded ids of every complete model in the local catalog, read before the servability
+    filter so an id here and absent from the chat listing is downloaded but withheld. Filtered for
+    visibility, or it would report another account's inventory."""
+    catalog = await _cached_local_catalog()
+    if account_access.managed_account():
+        catalog = await asyncio.to_thread(account_access.filter_model_rows, catalog)
+    ids = set()
+    for info in catalog:
+        if getattr(info, "partial", False):
+            continue
+        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        if isinstance(cid, str) and cid:
+            ids.add(cid.casefold())
+    return ids
 
 
 def _format_available_models(ids: list[str]) -> str:
@@ -8414,8 +8442,48 @@ async def _unavailable_model_message(requested_model: str) -> str:
             f"The model '{base_id}' is downloaded, but the quant '{wanted}' is not. "
             f"Available quants: {', '.join(variants)}."
         )
-    available = _format_available_models(await _available_model_ids())
+    # One build, two views: each _openai_catalog_objects() call re-probes quants through the resolver.
+    catalog_objects = await _openai_catalog_objects()
+    available = _format_available_models(_catalog_object_ids(catalog_objects))
+    requested = requested_model.strip()
+    base, sep, _tag = requested.rpartition(":")
+    # The branch above only fires for an indexed repo with variants, so test the base too.
+    candidates = [requested.casefold()] + (
+        [base.strip().casefold()] if sep and base.strip() else []
+    )
+    # The advertised ids too, not just the catalog's raw model_id: a task row can be advertised
+    # under an alias (_stt_model_objects() lists "tiny" for unsloth/whisper-tiny), and a request
+    # naming what GET /v1/models showed is a request for something that IS on this machine.
+    downloaded = await _downloaded_model_ids() | {
+        obj["id"].casefold()
+        for obj in catalog_objects
+        if isinstance(obj.get("id"), str) and obj["id"]
+    }
+    servable = _chat_servable_ids(catalog_objects)
+    withheld = next((c for c in candidates if c in downloaded and c not in servable), None)
+    if withheld is not None:
+        named = requested if withheld == requested.casefold() else base.strip()
+        # No "load it in Studio to find out": one of the two reasons a checkpoint lands here is a
+        # truthy `model_file`, which _config_is_servable_here refuses because the MLX loaders
+        # exec_module it, and the Studio consent gate does not cover that key (it reads
+        # trust_remote_code and auto_map only, utils/security/consent.py). Sending the caller
+        # down that path would run exactly the code this refusal exists to stop.
+        message = (
+            f"The model '{named}' is downloaded, but this server cannot serve it here: it is not a "
+            "chat model this backend loads, or it needs custom code an API request cannot approve."
+        )
+        return f"{message} Available models: {available}." if available else message
     if not available:
+        if downloaded:
+            # Something is on this machine, it just is not a chat model the backend loads.
+            # `downloaded`, not `catalog_objects`: a resolver-withheld checkpoint (auto_map,
+            # model_file, encoder-decoder) never enters the catalog at all, so testing the
+            # catalog would claim an empty machine on a full one.
+            return (
+                f"The model '{requested_model}' is not downloaded on this server, and none of "
+                "the downloaded models is a chat model. Download one in Unsloth Studio, "
+                "or list what is here with GET /v1/models."
+            )
         return (
             f"The model '{requested_model}' is not downloaded on this server, and no "
             "models are downloaded yet. Download one in Unsloth Studio."
@@ -9591,7 +9659,7 @@ async def _maybe_auto_switch_model(
                 raise HTTPException(
                     status_code = 400,
                     detail = openai_error_body(
-                        "The requested text-to-speech model requires Python 3.10 or newer in Studio.",
+                        "The requested text-to-speech model requires Python 3.10 or newer in Unsloth.",
                         status = 400,
                         code = "unsupported_runtime",
                         param = "model",
@@ -10667,6 +10735,10 @@ def _gguf_runtime_bytes(
     ctx_last_wins: bool = False,
     model_identifier: Optional[str] = None,
     launch_required_ubatch: int = 0,
+    # False prices the plan the launch runs, which is what the panel shows. True also
+    # keeps load_model's reserve for a flash-attention-off respawn that the fitter cannot
+    # re-place, which is what a guard admitting a load beside training has to hold.
+    reserve_no_flash_respawn: bool = False,
 ) -> _GgufRuntimeBytes:
     """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -10763,7 +10835,6 @@ def _gguf_runtime_bytes(
         # pads V to f16 and charges the whole quantized saving back. Measured on
         # llama-server b10632, Qwen3-0.6B at 32k with -ctk/-ctv q4_0: 2296 MiB reserved
         # against 1008 MiB allocated, identical on the CPU and Vulkan builds.
-        planned_v_type = planned_cache_types[1]
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,
@@ -10835,8 +10906,8 @@ def _gguf_runtime_bytes(
         # so the default here is ON, not off. The false arm pads variable-width V
         # tensors to the model-wide maximum (_max_kv_value_width), which on an
         # architecture whose global and SWA layers disagree about n_embd_v_gqa
-        # inflates the whole cache and can call a load that fits an overflow.
-        # Resolved the way the launch resolves it, narrowed by the capability probe.
+        # inflates the whole cache and can call a load that fits an overflow. Resolved
+        # the way the launch resolves it, Grok's forced-off exception first.
         _fa_supported = True
         try:
             _fa_caps = LlamaCppBackend.probe_server_capabilities()
@@ -10847,12 +10918,30 @@ def _gguf_runtime_bytes(
                 _fa_supported = False
         except Exception as _fa_exc:
             logger.debug("flash-attention capability probe failed: %s", _fa_exc)
-        flash_attn = _planned_flash_attn(
+        # Shared with load_model so the estimate and the launch cannot answer differently
+        # (#9697, #10489).
+        flash_attn = _planned_flash_attn_state(
             llama_extra_args,
-            _fa_supported,
-            planned_v_type,
-            getattr(probe, "_architecture", None),
+            planned_cache_types = planned_cache_types,
+            supports_flash_attn = _fa_supported,
+            tensor_parallel = bool(tensor_parallel),
+            architecture = getattr(probe, "_architecture", None),
+            env = os.environ,
         )
+        if reserve_no_flash_respawn:
+            # load_model holds the reading down where a flash-attention-off respawn cannot
+            # be re-placed, and the training guard is admitting a load against the worst
+            # this placement can reach rather than what it opens with. Resolving only the
+            # plan admitted it against the smaller cache that the same placement then
+            # reserves the larger one for, so the respawn could take VRAM the guard never
+            # admitted and take a training run with it. The panel keeps the plan: its total
+            # is what the launch uses, and is placement-independent.
+            flash_attn = _reserved_flash_attn_state(
+                flash_attn,
+                llama_extra_args,
+                tensor_parallel = bool(tensor_parallel),
+                env = os.environ,
+            )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,
@@ -10989,6 +11078,7 @@ def _estimate_gguf_kv_gb(
         is_diffusion = is_diffusion,
         model_identifier = model_identifier,
         launch_required_ubatch = launch_required_ubatch,
+        reserve_no_flash_respawn = True,
     )
     gpu_kv_bytes = (
         runtime.kv_bytes
@@ -13754,7 +13844,7 @@ async def _preflight_native_audio_placement(
     if audio_type in ("higgs_tts2", "higgs_tts3") and sys.version_info < (3, 10):
         raise HTTPException(
             status_code = 400,
-            detail = "Higgs TTS requires Python 3.10 or newer in Studio.",
+            detail = "Higgs TTS requires Python 3.10 or newer in Unsloth.",
         )
 
     # Before every VRAM question: sizing a CPU load refuses it on a full GPU.
@@ -13790,7 +13880,7 @@ async def _preflight_native_audio_placement(
                     "MiniMax Music 3 requires an NVIDIA CUDA GPU in its official local runtime."
                 )
             if sys.version_info < (3, 10):
-                raise ValueError("MiniMax Music 3 requires Python 3.10 or newer in Studio.")
+                raise ValueError("MiniMax Music 3 requires Python 3.10 or newer in Unsloth.")
         if device not in (hardware.DeviceType.CUDA, hardware.DeviceType.XPU):
             if placement.requested_gpu_ids:
                 raise ValueError(

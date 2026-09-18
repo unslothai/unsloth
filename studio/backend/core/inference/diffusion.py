@@ -1045,6 +1045,68 @@ def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
         logger.warning("diffusion.gguf: prefix-strip shim not installed: %s", exc)
 
 
+def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
+    """Put back the leading size-1 dimensions GGUF drops when it stores a tensor.
+
+    GGUF records a shape with no leading singleton axes, so a parameter declared
+    ``nn.Parameter(torch.zeros((1, dim)))`` comes back as ``(dim,)``. diffusers compares shapes
+    exactly and refuses the load. Z-Image is the case in hand: ``cap_pad_token`` and
+    ``x_pad_token`` are the only two tensors of 453 that disagree, both ``(1, 3840)`` against
+    ``(3840,)``.
+
+    Deliberately narrow. A tensor is reshaped only when it is a prefix-match: same element count,
+    and the expected shape is the stored shape with 1s in front. That is exactly what the format
+    drops and nothing else, so this cannot silently re-interpret a genuinely wrong tensor -- a
+    transposed or mis-sized weight fails the element count or the suffix check and still raises.
+    """
+    expected = model.state_dict()
+    for name, want in expected.items():
+        have = state_dict.get(name)
+        if have is None or tuple(have.shape) == tuple(want.shape):
+            continue
+        want_shape, have_shape = tuple(want.shape), tuple(have.shape)
+        if have.numel() != want.numel() or len(want_shape) <= len(have_shape):
+            continue
+        pad = len(want_shape) - len(have_shape)
+        if want_shape[:pad] != (1,) * pad or want_shape[pad:] != have_shape:
+            continue
+        state_dict[name] = have.reshape(want_shape)
+    return state_dict
+
+
+def _install_gguf_dim_restore(logger: Any) -> None:
+    """Wrap diffusers' meta loader so a GGUF's trimmed dimensions are restored before its shape
+    check. Patched here rather than in the mapping fn because a GGUF whose tensor names already
+    match diffusers skips conversion entirely (``_should_convert_state_dict_to_diffusers``), so the
+    mapping fn never runs for it -- which is precisely the Z-Image case.
+
+    Both names are rebound, and the second one is the one that matters: ``single_file_model``
+    imports the function at MODULE level (under ``if is_accelerate_available()``), so it holds its
+    own reference and patching only the defining module leaves the real call site untouched.
+    Idempotent and best-effort."""
+    try:
+        from diffusers.loaders import single_file_model as sfm
+        from diffusers.models import model_loading_utils as mlu
+
+        original = mlu.load_model_dict_into_meta
+        if getattr(original, "_unsloth_dim_restore", False):
+            return
+
+        def _restoring_loader(model, state_dict, *args: Any, **kwargs: Any):
+            try:
+                state_dict = _restore_gguf_trimmed_dims(model, state_dict)
+            except Exception:  # noqa: BLE001 - never turn a load failure into a different one
+                pass
+            return original(model, state_dict, *args, **kwargs)
+
+        _restoring_loader._unsloth_dim_restore = True
+        mlu.load_model_dict_into_meta = _restoring_loader
+        if getattr(sfm, "load_model_dict_into_meta", None) is not None:
+            sfm.load_model_dict_into_meta = _restoring_loader
+    except Exception as exc:  # noqa: BLE001 - loader-compat shim only, never fail the load
+        logger.warning("diffusion.gguf: dim-restore shim not installed: %s", exc)
+
+
 @functools.lru_cache(maxsize = None)
 def _no_recast_pipeline_class(pipe_cls: Any) -> Any:
     """``pipe_cls`` with the dtype half of ``.to()`` dropped; device moves still work. Pipelines
@@ -4167,9 +4229,10 @@ class DiffusionBackend:
                 elif transformer_quant_pinned is not None and not dense_transformer_supported(
                     target
                 ):
-                    transformer_quant_decline = (
-                        "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
-                    )
+                    # Ask the helper rather than repeating its fallback: on ROCm and on the Windows
+                    # torchao stub it knows a truer reason, and an AMD owner reading "needs a CUDA
+                    # GPU" while holding a working GPU learns nothing about why it declined.
+                    transformer_quant_decline = dense_transformer_unsupported_reason(target)
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 elif transformer_quant_pinned is not None and (
                     select_transformer_quant_scheme(
@@ -4952,6 +5015,7 @@ class DiffusionBackend:
                                 # sd.cpp GGUFs prefix tensors with model.diffusion_model.; the FLUX.2 / Qwen converters
                                 # choke.
                                 _install_gguf_prefix_strip(transformer_cls, logger)
+                                _install_gguf_dim_restore(logger)
                             # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
                             transformer = transformer_cls.from_single_file(
                                 single_file_path, **sf_kwargs

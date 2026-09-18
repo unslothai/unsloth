@@ -247,7 +247,7 @@ export const ja = {
   settings: {
     accounts: {
       title: "アカウント",
-      description: "個別の Studio アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
+      description: "個別の Unsloth Studio アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
       username: "ユーザー名",
       create: "アカウントを作成",
       setupCode: "セットアップコード",
@@ -302,8 +302,6 @@ export const ja = {
     },
     keyboardShortcuts: {
       title: "キーボードショートカット",
-      description:
-        "ショートカットを変更したり、消してブラウザや OS にそのキーを譲ったりできます。",
       searchPlaceholder: "ショートカットを検索…",
       noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",
@@ -501,6 +499,14 @@ export const ja = {
           label: "メッセージを送信",
           description: "入力欄の内容を送信します",
         },
+        queueMessage: {
+          label: "メッセージをキューに追加",
+          description: "下書きをキューの最後に送信します",
+        },
+        steerMessage: {
+          label: "応答を修正",
+          description: "現在の応答を停止して下書きを次に送信します",
+        },
         cycleReasoningEffort: {
           label: "思考の深さを順に切り替え",
           description: "思考の深さのレベルを順に切り替えます",
@@ -567,7 +573,7 @@ export const ja = {
       openLogsFolderFailed: "ログフォルダーを開けませんでした。",
       exportFailed: "ログをダウンロードできませんでした。",
       exportTooOld: "実行中の Unsloth バックエンドが古すぎるため、ログを書き出せません。バックエンドを更新して再起動してください。",
-      exportForbidden: "すべてのログをダウンロードするには、サインイン済みの Studio セッションが必要です。API キーだけでは実行できません。",
+      exportForbidden: "すべてのログをダウンロードするには、サインイン済みの Unsloth Studio セッションが必要です。API キーだけでは実行できません。",
       keywords: "デバッグ ログ エラー クラッシュ トレースバック スタックトレース 診断 障害 調査 debug log logs error",
     },
     voice: {

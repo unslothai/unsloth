@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
+# Spelled out, not imported from utils/worker_stderr.py, to keep this module's import graph stdlib only.
+STDERR_MIRROR_KWARG = "unsloth_stderr_mirror_path"
 _MAX_NATIVE_PATH_REDACTIONS = 100
 _MAX_NATIVE_PATH_LABELS = 10_000
 _MIN_LEASE_SECRET_BYTES = 32
@@ -118,6 +120,15 @@ def run_without_native_path_secret(
     target: Callable[..., Any] | str, *args: Any, **kwargs: Any
 ) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
+
+    # First, before anything else can raise, so a child dying before its entrypoint is explainable (#7843).
+    _stderr_mirror_path = kwargs.pop(STDERR_MIRROR_KWARG, None)
+    if _stderr_mirror_path:
+        try:
+            from utils.worker_stderr import install_worker_stderr_mirror
+            install_worker_stderr_mirror(_stderr_mirror_path)
+        except Exception:
+            pass
 
     # Runs in the spawned child to bind it to the parent's death, since multiprocessing children get no
     # preexec_fn. Shared entrypoint for the inference/export/training/data-recipe workers. Two try

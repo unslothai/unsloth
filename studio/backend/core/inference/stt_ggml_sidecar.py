@@ -988,7 +988,7 @@ class GgmlSttSidecar:
                 # would otherwise start whisper-server after the sweep had run.
                 if is_process_shutting_down():
                     raise SttLoadCancelledError(
-                        "Studio is shutting down; not starting whisper-server."
+                        "Unsloth is shutting down; not starting whisper-server."
                     )
                 process = subprocess.Popen(
                     command,
@@ -1015,7 +1015,7 @@ class GgmlSttSidecar:
                         process.wait(timeout = 10)
                     forget_pid(process.pid)
                     raise SttLoadCancelledError(
-                        "Studio is shutting down; not starting whisper-server."
+                        "Unsloth is shutting down; not starting whisper-server."
                     )
                 try:
                     self._wait_for_server(process, port, cancel_event)
