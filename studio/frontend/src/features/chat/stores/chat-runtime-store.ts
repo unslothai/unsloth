@@ -5126,14 +5126,31 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         });
       }
       // Editing the live model must land on the live params, not just on the next switch back.
+      // Through the restore a switch uses, since systemPrompt is one of the chat's own keys: the
+      // open chat outranks the model it is running, and writing past that would both send the
+      // model's prompt for the rest of the chat and let the next snapshot store it as the chat's.
+      // Live params only, as there: the row above keeps the model's own value.
       const live = state.params.checkpoint === modelId;
-      const liveParams = live ? { ...state.params, ...patch } : null;
+      const liveParams = live
+        ? restoreThreadScopedParams({ ...state.params, ...patch })
+        : null;
+      // Nothing left to apply once the chat has taken its keys back.
+      const liveChanged =
+        liveParams !== null &&
+        shouldAdvanceQueuedSettingsEpoch(state.params, liveParams);
       // And those keys are fenced the way a slider edit fences its own, or a response in flight
       // puts the global set back over them.
-      if (liveParams) getChangedInferenceParams(liveParams, state.params);
+      if (liveChanged) getChangedInferenceParams(liveParams, state.params);
       return {
         paramsByModel: trackParamsByModel(state, next, modelId) ?? next,
-        ...(liveParams ? { params: liveParams } : {}),
+        // The epoch as setParams advances it: a queued prompt or a paste still reading its file
+        // captured the old prompt and cap, and this is what tells it they are no longer current.
+        ...(liveChanged
+          ? {
+              params: liveParams,
+              queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+            }
+          : {}),
       };
     }),
   setReasoningEffort: (reasoningEffort) =>

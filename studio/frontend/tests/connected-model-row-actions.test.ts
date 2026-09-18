@@ -541,7 +541,24 @@ test("the store write merges per key and reaches the live params", () => {
   // puts the global set back over them.
   assert.match(
     runtime,
-    /if \(liveParams\) getChangedInferenceParams\(liveParams, state\.params\);/,
+    /if \(liveChanged\) getChangedInferenceParams\(liveParams, state\.params\);/,
+  );
+  // systemPrompt is one of the chat's own keys, so the live overlay goes through the restore a
+  // switch uses: the open chat outranks the model it is running, and writing past that would
+  // send the model's prompt for the rest of the chat and store it as the chat's own next.
+  assert.match(
+    runtime,
+    /const liveParams = live\s*\? restoreThreadScopedParams\(\{ \.\.\.state\.params, \.\.\.patch \}\)\s*: null;/,
+  );
+  // The epoch as setParams advances it: a queued prompt or a paste still reading its file
+  // captured the old prompt and cap, and nothing else would tell it they had moved.
+  assert.match(
+    runtime,
+    /const liveChanged =\s*liveParams !== null &&\s*shouldAdvanceQueuedSettingsEpoch\(state\.params, liveParams\);/,
+  );
+  assert.match(
+    runtime,
+    /liveChanged\s*\? \{\s*params: liveParams,\s*queuedSettingsEpoch: state\.queuedSettingsEpoch \+ 1,/,
   );
 });
 
