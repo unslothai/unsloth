@@ -64,26 +64,168 @@ function Get-StudioTempRoots {
     return $result
 }
 
+function Get-StudioTempSubtree {
+    <#
+    .SYNOPSIS
+    Every file under one root, walked a directory at a time so that one unreadable
+    directory costs that directory and nothing else.
+
+    .DESCRIPTION
+    Get-ChildItem -Recurse is the obvious way to do this and it is not safe here.
+    A temp root is shared with everything else running on the machine, so a
+    directory can be removed or become unopenable partway through the walk, and
+    the provider raises a Win32Exception that -ErrorAction SilentlyContinue does
+    not suppress: that parameter governs non-terminating errors, and with
+    $ErrorActionPreference = 'Stop' set by the caller this one ends the step.
+    Observed on hosted runners as
+
+        Get-ChildItem : The system cannot find the file specified
+        + CategoryInfo : NotSpecified: (:) [Get-ChildItem], Win32Exception
+
+    from inside the positive control, which failed the job while the installer
+    under test had done nothing wrong. Walking by hand means the failure is
+    contained to the one directory that raised it, and the rest of the subtree is
+    still reported.
+
+    Reparse points are not followed. A junction into an ancestor would otherwise
+    walk forever, and a compile does not write through one.
+
+    Filtering happens here rather than in the caller. A temp root can hold an
+    extracted toolchain or a package cache, and this sweep runs before and after
+    every measured action, so collecting every path first and selecting afterwards
+    means carrying tens of thousands of strings that were never of interest.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string[]]$Patterns
+    )
+    # Generic lists, not PowerShell arrays. += on an array allocates a new one and
+    # copies, so a large temp tree costs quadratic time in the number of entries on
+    # a path that runs twice per measured action.
+    $found = New-Object 'System.Collections.Generic.List[string]'
+    $unread = New-Object 'System.Collections.Generic.List[string]'
+    $pending = New-Object 'System.Collections.Generic.List[string]'
+    $pending.Add($Root)
+    $visited = 0
+    while ($pending.Count -gt 0) {
+        $visited++
+        if ($visited -gt 200000) {
+            # Not a break. A truncated snapshot is indistinguishable from a clean one
+            # to the caller, and this listing is exactly what stands in when the
+            # watcher cannot attach, so a silent stop turns a missed artifact into a
+            # clean verdict. Better to declare the measurement void.
+            throw ("the temp scan of $Root passed $visited directories without finishing. " +
+                   "A partial snapshot would be read as a complete one, so this run cannot " +
+                   "say whether a compiler ran.")
+        }
+        $dir = $pending[$pending.Count - 1]
+        $pending.RemoveAt($pending.Count - 1)
+        $entries = @()
+        try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
+        catch {
+            # Recorded, not just skipped. The caller subtracts the baseline listing from the
+            # final one, so a directory that fails HERE and succeeds in the other snapshot
+            # silently changes the answer: files that were there all along show up as new and
+            # an innocent action is reported as having compiled. The reverse hides a real
+            # artifact. Which directory went unread has to survive to the comparison.
+            #
+            # A directory that no longer exists is not a gap. It cannot contribute a file to
+            # a later listing of itself, and re-reading a path that raised for any other
+            # reason is how a transient lock gets a second chance.
+            if (Test-Path -LiteralPath $dir) {
+                try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
+                catch { $unread.Add($dir); continue }
+            } else {
+                continue
+            }
+        }
+        foreach ($entry in $entries) {
+            if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+            if ($entry.PSIsContainer) { $pending.Add($entry.FullName); continue }
+            foreach ($pattern in $Patterns) {
+                if ($entry.Name -like $pattern) {
+                    $found.Add($entry.FullName)
+                    break
+                }
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Files  = [string[]]$found.ToArray()
+        Unread = [string[]]$unread.ToArray()
+    }
+}
+
 function Get-StudioTempArtifacts {
     <#
     .SYNOPSIS
-    Compiler intermediates and assemblies currently sitting in the temp roots.
+    Compiler intermediates and assemblies currently sitting in the temp roots, and the
+    directories this sweep could not read.
+
+    .DESCRIPTION
+    Both halves are returned because the caller compares two of these snapshots and a
+    directory missing from one side is not the same thing as a directory that is empty.
+    See the comparison in Invoke-WithCompilerWatch.
     #>
     $patterns = @('*.dll', '*.cmdline', '*.rsp', '*.cs', '*.err', '*.out')
-    $found = @()
+    $found = New-Object 'System.Collections.Generic.List[string]'
+    $unread = New-Object 'System.Collections.Generic.List[string]'
     foreach ($root in (Get-StudioTempRoots)) {
-        foreach ($pattern in $patterns) {
-            # Recurse: PowerShell compiles into a per-invocation subdirectory, not
-            # into the root, so a non-recursive listing sees none of this.
-            $found += Get-ChildItem -LiteralPath $root -Filter $pattern -File -Recurse `
-                -Force -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty FullName
+        # The whole subtree: PowerShell compiles into a per-invocation subdirectory,
+        # not into the root, so a non-recursive listing sees none of this.
+        $scan = Get-StudioTempSubtree -Root $root -Patterns $patterns
+        $found.AddRange([string[]]$scan.Files)
+        $unread.AddRange([string[]]$scan.Unread)
+    }
+    # Arrays cast explicitly: PowerShell unrolls an empty array to nothing, and the
+    # caller casts Files into a HashSet whose two-argument constructor rejects null.
+    # On a clean runner that killed the watcher before the positive control ran.
+    return [pscustomobject]@{
+        Files  = [string[]]$found.ToArray()
+        Unread = [string[]]$unread.ToArray()
+    }
+}
+
+function Test-StudioPathUnder {
+    <#
+    .SYNOPSIS
+    Is $Path inside $Directory, or the directory itself?
+
+    .DESCRIPTION
+    Compared with a trailing separator appended to the directory, so C:\Temp\ab does not
+    count as being under C:\Temp\a. Withholding a sibling that merely shares a name prefix
+    would drop real evidence, which is the opposite of what the caller wants.
+
+    Both separators are accepted rather than [System.IO.Path]::DirectorySeparatorChar. That
+    property is '/' under pwsh on Linux, where this script's own tests run, so pinning to it
+    made every Windows-shaped path compare false and the withholding silently did nothing.
+
+    Case-insensitive, like the rest of this script's path handling, because the paths reach
+    here from two different APIs: the directory from Get-ChildItem and the file path from the
+    same walk or from FileSystemWatcher.
+
+    The directory itself counts, and that is load-bearing rather than tidiness. A temp ROOT
+    can be the thing that could not be enumerated, and the root is also what the watcher
+    attaches to, so the coverage check asks whether an unread directory is at or under a
+    watched root and gets back the root itself. Descendants-only there means a root that
+    failed to enumerate twice, on a machine where the watcher did attach to it, is declared
+    uncovered and the run throws - which is the temp-scan failure this whole change exists to
+    contain, put back one layer up.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Directory
+    )
+    $trimmed = $Directory.TrimEnd('\', '/')
+    if ($Path.TrimEnd('\', '/').Equals($trimmed, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    foreach ($separator in @('\', '/')) {
+        if ($Path.StartsWith($trimmed + $separator, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
         }
     }
-    # Comma-wrapped: PowerShell unrolls an empty array to nothing on return, and the
-    # caller casts this into a HashSet whose two-argument constructor rejects null.
-    # On a clean runner that killed the watcher before the positive control ran.
-    return ,[string[]]$found
+    return $false
 }
 
 $script:ArtifactPattern = '\.(dll|cmdline|rsp|cs|err|out)$'
@@ -410,8 +552,9 @@ function Invoke-WithCompilerWatch {
     # recursively and can take seconds, and a csc.exe the machine started during that
     # walk predates the action, so counting it fails a measurement for something it
     # did not do. Same reasoning as the $until below.
+    $beforeScan = Get-StudioTempArtifacts
     $before = New-Object 'System.Collections.Generic.HashSet[string]' (
-        [string[]](Get-StudioTempArtifacts), [StringComparer]::OrdinalIgnoreCase)
+        [string[]]$beforeScan.Files, [StringComparer]::OrdinalIgnoreCase)
     # A second back, so a process created in the same tick as the timestamp survives
     # Get-WinEvent's strictly-later comparison. That reaches one second into the tail
     # of the sweep above, so a compiler started in that second is counted: a deliberate
@@ -458,8 +601,48 @@ function Invoke-WithCompilerWatch {
             Where-Object { $prior -notcontains $_ }
     )
 
-    $after = Get-StudioTempArtifacts
-    $left = @($after | Where-Object { -not $before.Contains($_) })
+    $afterScan = Get-StudioTempArtifacts
+    $after = $afterScan.Files
+
+    # A directory that could not be read in EITHER sweep is a hole in the comparison, not an
+    # empty directory. $left below is "in the final listing and not in the baseline", so a
+    # directory unread at baseline and readable afterwards hands every file that was already
+    # sitting in it to $left, and the action is reported as having compiled something it did
+    # not. Unread afterwards hides the opposite: a real artifact that never reaches $left.
+    #
+    # So paths under an unread directory are not evidence either way and are withheld from
+    # $left, and which directories those were is recorded in the evidence rather than
+    # dropped silently.
+    $unread = @($beforeScan.Unread + $afterScan.Unread | Sort-Object -Unique)
+    $watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' (
+        [string[]]@($watch | ForEach-Object { $_.Root }), [StringComparer]::OrdinalIgnoreCase)
+    if ($unread.Count -gt 0) {
+        foreach ($dir in $unread) {
+            # Withholding is only safe while the watcher is covering that root: it reports
+            # creations live, so a compile inside an unread directory still lands in
+            # $transient. With no watcher on the root the listing is the only evidence there
+            # is, and withholding part of it would report a hole as a clean result. That is
+            # the same call as the traversal cap in Get-StudioTempSubtree, for the same
+            # reason, so it is the same answer: declare the measurement void.
+            $covered = @($watchedRoots | Where-Object { Test-StudioPathUnder -Path $dir -Directory $_ })
+            if ($covered.Count -eq 0) {
+                throw ("the temp sweep could not read $dir, and no file watcher is attached " +
+                       "to the root containing it. The listing is the only evidence here and " +
+                       "it is incomplete, so this run cannot say whether a compiler ran.")
+            }
+        }
+    }
+
+    $left = @(
+        $after | Where-Object {
+            $path = $_
+            if ($before.Contains($path)) { return $false }
+            foreach ($dir in $unread) {
+                if (Test-StudioPathUnder -Path $path -Directory $dir) { return $false }
+            }
+            return $true
+        }
+    )
     # Only the names the compiler writes, because the watcher reports every creation
     # under temp and most of them are nobody's business.
     $transient = @($live | Where-Object { $_ -match $script:ArtifactPattern })
@@ -473,6 +656,9 @@ function Invoke-WithCompilerWatch {
     $stem = Join-Path $EvidenceRoot $Name
     $compilers | Out-File -FilePath "$stem-compilers.txt" -Encoding utf8
     $newArtifacts | Out-File -FilePath "$stem-temp-artifacts.txt" -Encoding utf8
+    # Written even when empty, so "the sweep read everything" is a statement the evidence
+    # makes rather than the absence of a file, which is also what a crash looks like.
+    $unread | Out-File -FilePath "$stem-unread-dirs.txt" -Encoding utf8
     if ($failure) {
         $failure | Out-String | Out-File -FilePath "$stem-error.txt" -Encoding utf8
     }
@@ -483,5 +669,6 @@ function Invoke-WithCompilerWatch {
         Compilers     = $compilers
         TempLibraries = $newLibraries
         TempArtifacts = $newArtifacts
+        UnreadDirs    = $unread
     }
 }
