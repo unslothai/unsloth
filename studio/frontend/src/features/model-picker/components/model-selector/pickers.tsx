@@ -6954,7 +6954,12 @@ export function HubModelPicker({
             )}
           </div>
         </div>
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between px-3.5 pb-[19px]">
+        <div
+          className={cn(
+            "pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between rounded-b-[inherit] px-3.5 pb-[19px]",
+            task === undefined && "bg-popover pt-2",
+          )}
+        >
           {/* Chat only: a task picker's pipeline takes the whole GPU, so nothing stays loaded. */}
           {task === undefined ? (
             <Tooltip>

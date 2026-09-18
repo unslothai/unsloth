@@ -1211,7 +1211,11 @@ export function useChatModelRuntime() {
       const isLocal = isLocalModelPath(modelId);
       const isCachedLora = isLora && isLocal;
       const loadingDescription = [
-        currentCheckpoint ? "Switching models." : null,
+        currentCheckpoint
+          ? keepModelsLoaded && !forceReload
+            ? "Keeping the loaded models."
+            : "Switching models."
+          : null,
         extraLoadingDescription ?? null,
         isDownloaded ? "Loading cached model into memory." : null,
         !isDownloaded && isCachedLora ? "Loading trained model into memory." : null,
