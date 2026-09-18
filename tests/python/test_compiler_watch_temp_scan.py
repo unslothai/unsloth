@@ -57,17 +57,17 @@ def _scan(root: pathlib.Path, patterns: str = "'*.dll','*.cmdline'") -> dict[str
     """
     proc = _run_pwsh(
         f"$scan = Get-StudioTempSubtree -Root '{root}' -Patterns {patterns}\n"
-        "foreach ($f in $scan.Files)  { Write-Output \"FILE $f\" }\n"
-        "foreach ($d in $scan.Unread) { Write-Output \"UNREAD $d\" }\n"
+        'foreach ($f in $scan.Files)  { Write-Output "FILE $f" }\n'
+        'foreach ($d in $scan.Unread) { Write-Output "UNREAD $d" }\n'
     )
     assert proc.returncode == 0, f"the walk itself failed:\n{proc.stdout}\n{proc.stderr}"
     out: dict[str, list[str]] = {"files": [], "unread": []}
     for line in proc.stdout.splitlines():
         line = line.strip()
         if line.startswith("FILE "):
-            out["files"].append(line[len("FILE "):])
+            out["files"].append(line[len("FILE ") :])
         elif line.startswith("UNREAD "):
-            out["unread"].append(line[len("UNREAD "):])
+            out["unread"].append(line[len("UNREAD ") :])
     return out
 
 
@@ -309,7 +309,8 @@ def test_the_unread_directories_are_withheld_from_the_new_artifact_set() -> None
         "$before = New-Object 'System.Collections.Generic.HashSet[string]' "
         "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
         r"$after = @('C:\t\gap\old.dll', 'C:\t\seen\new.dll')" + "\n"
-        r"$unread = @('C:\t\gap')" + "\n"
+        r"$unread = @('C:\t\gap')"
+        + "\n"
         + _shipped_left_expression()
         + "foreach ($p in $left) { Write-Output $p }\n"
     )
@@ -338,9 +339,10 @@ def test_the_same_comparison_still_reports_a_genuinely_new_file() -> None:
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     left = sorted(line.strip() for line in proc.stdout.splitlines() if line.strip())
-    assert left == [r"C:\t\gap\old.dll", r"C:\t\seen\new.dll"], (
-        f"a clean sweep stopped reporting new artifacts, which hides every real compile: {left}"
-    )
+    assert left == [
+        r"C:\t\gap\old.dll",
+        r"C:\t\seen\new.dll",
+    ], f"a clean sweep stopped reporting new artifacts, which hides every real compile: {left}"
 
 
 def test_the_prefix_test_does_not_match_a_sibling_by_name() -> None:
@@ -355,15 +357,12 @@ def test_the_prefix_test_does_not_match_a_sibling_by_name() -> None:
         # The directory itself. A temp ROOT can be what failed to enumerate, and the root is
         # also what the watcher attaches to, so descendants-only makes the coverage check
         # below declare a watched root uncovered and throw.
-        r"Write-Output ('self=' + (Test-StudioPathUnder -Path 'C:\t\a' -Directory 'C:\t\a'))"
-        + "\n"
+        r"Write-Output ('self=' + (Test-StudioPathUnder -Path 'C:\t\a' -Directory 'C:\t\a'))" + "\n"
         r"Write-Output ('selfslash=' + (Test-StudioPathUnder -Path 'C:\t\a\' -Directory 'C:\t\a'))"
         + "\n"
     )
     assert proc.returncode == 0, proc.stderr
-    out = dict(
-        line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line
-    )
+    out = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
     assert out["under"] == "True", out
     assert out["sibling"] == "False", (
         "a sibling directory sharing a name prefix was treated as being inside the unread "
@@ -430,6 +429,6 @@ def test_an_unreadable_root_with_no_watcher_still_voids_the_run() -> None:
         "an unread directory with no watcher on its root was treated as a complete "
         f"measurement:\n{proc.stdout}"
     )
-    assert "cannot say whether a compiler ran" in (proc.stdout + proc.stderr), (
-        f"the run was voided without saying why:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert "cannot say whether a compiler ran" in (
+        proc.stdout + proc.stderr
+    ), f"the run was voided without saying why:\n{proc.stdout}\n{proc.stderr}"
