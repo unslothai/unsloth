@@ -944,7 +944,13 @@ def upload_attachment_file(
     except EmptyAttachment as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     sweep_attachments_if_due()
-    return {"id": attachment_id, "sizeBytes": size}
+    from core.inference.tools import sandbox_attachment_path
+
+    return {
+        "id": attachment_id,
+        "sizeBytes": size,
+        "sandboxPath": sandbox_attachment_path(attachment_id, file.filename or ""),
+    }
 
 
 @router.get("/attachments")

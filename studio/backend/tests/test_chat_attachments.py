@@ -449,7 +449,12 @@ def test_attachment_upload_dedupes_and_renews(tmp_path, monkeypatch):
 
     _reset_studio_db(tmp_path, monkeypatch)
     first = _upload(b"sheet bytes")
-    assert first == {"id": hashlib.sha256(b"sheet bytes").hexdigest(), "sizeBytes": 11}
+    digest = hashlib.sha256(b"sheet bytes").hexdigest()
+    assert first == {
+        "id": digest,
+        "sizeBytes": 11,
+        "sandboxPath": f".unsloth_attachments/{digest[:12]}/book.xlsx",
+    }
     path = store.attachment_path(first["id"])
     assert path.read_bytes() == b"sheet bytes"
     os.utime(path, (1, 1))
