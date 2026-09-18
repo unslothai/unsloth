@@ -8,7 +8,10 @@ import {
   llamaUpdateOffered,
   useLlamaUpdateCheck,
 } from "@/hooks/use-llama-update-check";
-import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
+import {
+  useShowLlamaUpdateBanner,
+  useShowWhisperUpdateBanner,
+} from "@/hooks/use-llama-update-pref";
 import {
   llamaReleaseChanged,
   llamaUpdateToastMessage,
@@ -107,7 +110,8 @@ export function LlamaUpdateBanner({
   enabled = true,
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
-  const showBannerPref = useShowLlamaUpdateBanner();
+  const showLlamaBannerPref = useShowLlamaUpdateBanner();
+  const showWhisperBannerPref = useShowWhisperUpdateBanner();
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   // Not gated on showBannerPref: this hook instance is the app-wide listener
   // for a cross-tab reload_required resync (the settings-sheet's own instance
@@ -142,13 +146,17 @@ export function LlamaUpdateBanner({
     }
   }
 
+  const component = status?.component ?? "llama.cpp";
+  // Muted by the component the card names: a chained apply may carry whisper.cpp
+  // along, but the offer on screen is the release shown here.
+  const showBannerPref =
+    component === "whisper.cpp" ? showWhisperBannerPref : showLlamaBannerPref;
   const show =
     showBannerPref &&
     visible &&
     status != null &&
     (llamaUpdateOffered(status) || applying);
   const sizeBytes = status?.update_size_bytes ?? null;
-  const component = status?.component ?? "llama.cpp";
   const latestTag = status?.latest_tag ?? null;
   const installedTag = status?.installed_tag ?? null;
   // A migration re-applies the install's own automatic choice, so it can be offered at a

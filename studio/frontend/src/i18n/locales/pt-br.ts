@@ -878,6 +878,9 @@ export const ptBR = {
         showLoadedModels: "Indicador de modelos carregados",
         showLoadedModelsDescription:
           "Mostra um pequeno cartão no canto inferior direito listando todos os modelos atualmente na memória (chat, fala, imagem, vídeo), com um botão para liberar cada um.",
+        showWhisperUpdates: "Notificações de atualização do whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Notifica quando uma versão mais recente do whisper.cpp está disponível para modelos de fala para texto. Desative se você nunca transcreve áudio.",
       },
       startup: {
         sectionTitle: "Inicialização",
