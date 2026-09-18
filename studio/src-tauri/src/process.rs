@@ -1194,6 +1194,41 @@ pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) 
     }
 }
 
+/// Whether anything of ours COULD be on *port*, which is a wider question than whether
+/// something of ours is known to be there, and the one the webview's fast path needs.
+///
+/// A handle we spawned carries no port until a probe validates one, so between the spawn and
+/// that report it names no port at all while being exactly the slow start #10520 exists to
+/// survive. `owned_backend_on_port_is_running` reports that as "not ours", which is right for
+/// presence and wrong for absence: a refused connect on a port our own starting backend is
+/// about to bind is not proof that nothing will answer.
+pub(crate) fn owned_backend_could_bind_port(state: &BackendState, port: u16) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let handle = match proc.owned.as_mut() {
+        Some(handle) => handle,
+        None => return false,
+    };
+    match handle {
+        // A port it has not claimed yet is a port it may still claim.
+        OwnedBackendHandle::Spawned {
+            child,
+            reported_port,
+            ..
+        } => {
+            reported_port.is_none_or(|bound| bound == port)
+                && !matches!(child.try_wait(), Ok(Some(_)))
+        }
+        OwnedBackendHandle::Adopted {
+            port: owned_port,
+            pid,
+            ..
+        } => *owned_port == port && backend_pid_is_running(*pid),
+    }
+}
+
 /// Whether *pid* still exists: false only when the pid is PROVABLY gone. A zombie has exited
 /// but is unreaped, which `kill(pid, 0)` alone cannot see.
 pub(crate) fn backend_pid_is_running(pid: u32) -> bool {
@@ -6359,6 +6394,70 @@ mod owned_backend_liveness_tests {
     fn no_handle_at_all_is_not_a_managed_backend() {
         let state = new_backend_state();
         assert!(!owned_backend_on_port_is_running(&state, 8765));
+        assert!(!owned_backend_could_bind_port(&state, 8765));
+    }
+
+    /// A handle carries no port until a probe validates one, and for the whole of that window
+    /// every port reads as "not ours" to the presence predicate. The absence predicate must
+    /// not agree, or a refused connect during our own start is taken as proof of death.
+    #[test]
+    fn a_child_that_has_not_reported_a_port_could_still_bind_the_one_asked_about() {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.owned = Some(OwnedBackendHandle::spawned(
+                spawn_owned(&LIVE_CHILD),
+                None,
+                0,
+                1,
+            ));
+        }
+        assert!(
+            !owned_backend_on_port_is_running(&state, 8765),
+            "presence is unchanged: a handle with no port names no port"
+        );
+        assert!(
+            owned_backend_could_bind_port(&state, 8765),
+            "a live backend of ours that has not bound a port yet was ruled out as the owner \
+             of the port it is starting on, which is the slow start #10520 exists to survive"
+        );
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_that_died_before_reporting_a_port_cannot_bind_anything() {
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let _ = child.wait();
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, 0, 1));
+        }
+        assert!(
+            !owned_backend_could_bind_port(&state, 8765),
+            "an exited child kept the fast path switched off for every port"
+        );
+    }
+
+    #[test]
+    fn a_handle_that_reported_another_port_does_not_cover_this_one() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(
+            !owned_backend_could_bind_port(&state, 8766),
+            "a backend that has told us its port was still treated as a candidate for others"
+        );
+        assert!(owned_backend_could_bind_port(&state, 8765));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
     }
 
     // The adopted half, where there is no child handle to wait on.

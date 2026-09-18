@@ -536,7 +536,7 @@ pub async fn check_backend_is_gone(
 ) -> Result<bool, String> {
     let state = state.inner();
     Ok(backend_is_gone(port, REFUSAL_PROBE_TIMEOUT, || {
-        we_manage_a_backend_on(state, port)
+        we_could_be_bringing_up(state, port)
     })
     .await)
 }
@@ -550,7 +550,14 @@ async fn backend_is_gone(port: u16, budget: Duration, we_manage_it: impl Fn() ->
     if we_manage_it() {
         return false;
     }
-    matches!(connect_outcome(port, budget).await, ConnectOutcome::Refused)
+    if !matches!(connect_outcome(port, budget).await, ConnectOutcome::Refused) {
+        return false;
+    }
+    // Ownership was read BEFORE the connect, and a refusal is not instant everywhere: Windows
+    // retransmits the SYN first, so that read can be 2s stale by the time it decides. Asking
+    // again costs one mutex read and no network, and only a port nobody was bringing up at
+    // either end is reported gone.
+    !we_manage_it()
 }
 
 /// What one loopback connect established, as three answers rather than two.
@@ -591,6 +598,13 @@ fn classify_connect(settled: Option<std::io::Result<()>>) -> ConnectOutcome {
 fn we_manage_a_backend_on(state: &BackendState, port: u16) -> bool {
     // Handle and process state in one pass under the same lock, so they cannot disagree.
     process::owned_backend_on_port_is_running(state, port)
+}
+
+/// The absence question's version of the above, and deliberately wider: a live backend of
+/// ours that has not reported a port yet may be about to bind THIS one, and calling that
+/// "not ours" would hand the fast path a refusal it must not act on.
+fn we_could_be_bringing_up(state: &BackendState, port: u16) -> bool {
+    process::owned_backend_could_bind_port(state, port)
 }
 
 /// The rule `check_backend_present` applies, as a value so the test for it can actually fail.
@@ -2017,6 +2031,29 @@ mod tests {
         assert!(
             !super::backend_is_gone(port, super::REFUSAL_PROBE_TIMEOUT, || true).await,
             "a backend of ours that is still starting was reported as gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn ownership_taken_while_the_probe_ran_still_keeps_the_ladder() {
+        // The ownership read happens before the connect, and a refusal is not instant on
+        // Windows, so a backend that starts during the probe would otherwise be reported gone
+        // on the strength of a read taken up to a whole budget earlier.
+        let port = a_closed_port_below_the_ephemeral_range().await;
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let gone = super::backend_is_gone(port, super::REFUSAL_PROBE_TIMEOUT, || {
+            // nobody owns it when the probe starts, somebody does by the time it answers
+            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0
+        })
+        .await;
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "ownership was not re-read after the connect, so the answer rests on a stale look"
+        );
+        assert!(
+            !gone,
+            "a backend that became ours while the probe was in flight was reported as gone"
         );
     }
 

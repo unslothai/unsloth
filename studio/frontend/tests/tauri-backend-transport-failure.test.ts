@@ -665,3 +665,43 @@ test("panels that all lose the backend at once share one absence probe", async (
     globalThis.fetch = originalFetch;
   }
 });
+
+test("a port nobody here owns that binds late is given up on, and that is the trade", async () => {
+  // The other side of the fast path, pinned so it cannot change by accident. A refusal
+  // proves nothing is listening NOW, not that nothing will bind later, so a backend the
+  // shell did not start -- one attached to from outside Desktop, restarting -- is reported
+  // gone rather than waited for. The owned case above keeps every rung; this one does not,
+  // and the ownership answer is the whole difference between them.
+  const port = await reserveLoopbackPort();
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
+  });
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async (input, init) => {
+    attempts += 1;
+    return await originalFetch(input, init);
+  };
+
+  try {
+    listenAfter(server, port, SLOW_LOOPBACK_ACCEPT_DELAY_MS);
+    // What a truthful native side answers for this port: refused, and owned by nobody here.
+    const authApi = loadAuthApi({ port, checkGone: () => true, checkHealth: () => false });
+    const error = await authApi.authFetch("/api/models").then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+    assert.equal(
+      attempts,
+      1,
+      `the ladder kept climbing for a port reported gone (${attempts} attempts)`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

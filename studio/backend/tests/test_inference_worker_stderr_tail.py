@@ -1285,3 +1285,45 @@ def test_the_mirror_module_does_not_pull_logging_into_a_spawned_worker():
     if preloaded == "True":
         pytest.skip("this interpreter loads logging before any of our code runs")
     assert after == "False", "importing utils.worker_stderr imported logging"
+
+
+def test_a_second_formatter_class_cannot_wrap_a_handler_that_is_already_marked():
+    """The marking class is built on first use, so there can be more than one of it.
+
+    Two threads that both find the cache empty each build a class, and ``isinstance`` is
+    false across the pair, so identity would wrap one handler twice and emit every
+    continuation line with a doubled prefix. Rebuilding the class here is the same
+    observation as that race, without depending on an interleaving.
+    """
+    import io
+    import logging as logging_module
+
+    from utils import worker_stderr
+    from utils.worker_stderr import LOG_RECORD_CONTINUATION_PREFIX, LOG_RECORD_START_MARK
+
+    stream = io.StringIO()
+    handler = logging_module.StreamHandler(stream)
+    handler.setFormatter(logging_module.Formatter("%(message)s"))
+
+    original = worker_stderr._PREFIX_FORMATTER_CLASS
+    try:
+        assert worker_stderr._mark_handler(handler) is True
+        first_class = worker_stderr._PREFIX_FORMATTER_CLASS
+        worker_stderr._PREFIX_FORMATTER_CLASS = None
+        assert (
+            worker_stderr._mark_handler(handler) is False
+        ), "a handler already marked by one formatter class was marked again by another"
+        second_class = worker_stderr._prefix_formatter_class()
+        assert first_class is not second_class, "the rebuild this test needs did not happen"
+
+        logger = logging_module.getLogger(f"{__name__}.two-classes")
+        logger.handlers = [handler]
+        logger.propagate = False
+        logger.setLevel(logging_module.DEBUG)
+        logger.error("boom\n  File x")
+        emitted = stream.getvalue()
+    finally:
+        worker_stderr._PREFIX_FORMATTER_CLASS = original
+
+    expected = LOG_RECORD_START_MARK + "boom\n" + LOG_RECORD_CONTINUATION_PREFIX + "  File x\n"
+    assert emitted == expected, emitted

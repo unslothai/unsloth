@@ -481,6 +481,15 @@ def install_worker_stderr_mirror(
 
 
 _PREFIX_FORMATTER_CLASS = None
+# "already marked" as a property of the formatter rather than of the class object that built
+# it. Building the class lazily means two threads racing the first call can produce two of
+# them, and `isinstance` is false across a pair, so identity would wrap one handler twice and
+# emit every continuation line with a doubled prefix.
+_MARKS_CONTINUATIONS = "_unsloth_marks_continuations"
+
+
+def _formatter_marks_continuations(formatter) -> bool:
+    return getattr(formatter, _MARKS_CONTINUATIONS, False) is True
 
 
 def _prefix_formatter_class():
@@ -497,6 +506,9 @@ def _prefix_formatter_class():
     import logging
 
     class _EveryLineCarriesThePrefix(logging.Formatter):
+        # Read through `_formatter_marks_continuations`, never `isinstance`: see above.
+        _unsloth_marks_continuations = True
+
         def __init__(self, inner: "logging.Formatter") -> None:
             super().__init__()
             self._inner = inner
@@ -532,7 +544,7 @@ def _mark_handler(handler) -> bool:
 
     prefixed = _prefix_formatter_class()
     formatter = getattr(handler, "formatter", None)
-    if isinstance(formatter, prefixed):
+    if _formatter_marks_continuations(formatter):
         return False
     setter = _UNHOOKED_SET_FORMATTER or type(handler).setFormatter
     setter(handler, prefixed(formatter or logging.Formatter()))
@@ -551,7 +563,7 @@ def _install_continuation_hook() -> bool:
     unhooked_add = logging.Logger.addHandler
 
     def setFormatter(self, fmt):  # noqa: N802 -- matches logging's own spelling
-        if fmt is not None and not isinstance(fmt, prefixed):
+        if fmt is not None and not _formatter_marks_continuations(fmt):
             fmt = prefixed(fmt)
         unhooked_set(self, fmt)
 
