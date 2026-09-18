@@ -98,9 +98,16 @@ def _torch_trainer(monkeypatch):
     # and died with AttributeError, which the Linux and Windows legs could never show. These
     # tests are about the Torch path by construction; the MLX path has its own tests below,
     # which patch core.training.training and so are unaffected by this.
-    monkeypatch.setattr(
-        trainer_mod, "should_use_mlx_training_backend", lambda *a, **kw: False, raising = False
-    )
+    import core.training.training as training_mod
+
+    # Patch the definition AND trainer.py's module-scope copy of the name. The route resolves
+    # it from core.training.training at call time, trainer.py bound it at import, and
+    # trainer._metadata_lookup_name re-imports it inside the function; a single patch leaves
+    # one of the three on the real answer, which on Apple Silicon is True.
+    for module in (training_mod, trainer_mod):
+        monkeypatch.setattr(
+            module, "should_use_mlx_training_backend", lambda *a, **kw: False, raising = False
+        )
 
 
 @pytest.fixture
