@@ -572,9 +572,7 @@ def _atomic_copy(src: Path, dst: Path) -> None:
     """
     tmp: Optional[str] = None
     try:
-        fd, tmp = tempfile.mkstemp(
-            dir = str(dst.parent), prefix = f".{dst.name}.", suffix = _TEMP_SUFFIX
-        )
+        fd, tmp = tempfile.mkstemp(dir = str(dst.parent), prefix = f".{dst.name}.", suffix = _TEMP_SUFFIX)
         os.close(fd)
         shutil.copyfile(src, tmp)
         os.replace(tmp, dst)

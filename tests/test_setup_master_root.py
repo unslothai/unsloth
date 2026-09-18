@@ -1105,7 +1105,8 @@ def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
     assert not note.is_symlink()
     # No staging file survives the run, whatever name it was given.
     leftovers = sorted(
-        p.name for p in (studio_home / "share").iterdir()
+        p.name
+        for p in (studio_home / "share").iterdir()
         if p.name.startswith(".unsloth-master-root.") and not p.is_symlink()
     )
     assert leftovers == [], leftovers

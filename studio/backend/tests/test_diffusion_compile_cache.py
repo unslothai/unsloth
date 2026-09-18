@@ -385,9 +385,7 @@ def test_legacy_bundle_is_read_but_the_new_root_takes_the_writes(
     assert ctx.manifest_path.exists()
 
 
-def test_an_interrupted_migration_leaves_no_partial_pair(
-    monkeypatch, tmp_path, fake_megacache
-):
+def test_an_interrupted_migration_leaves_no_partial_pair(monkeypatch, tmp_path, fake_megacache):
     """The migration copies through a temp file and renames, as every other write here does.
 
     A plain copyfile onto the live name is visible while it is still partial. The manifest is the
@@ -420,10 +418,7 @@ def test_an_interrupted_migration_leaves_no_partial_pair(
     # inside is not the live manifest.
     if ctx.manifest_path.exists():
         assert ctx.manifest_path.read_bytes() == (legacy / ctx.key / cc._MANIFEST_NAME).read_bytes()
-    leftovers = [
-        q.name for q in ctx.dir.iterdir()
-        if q.name.endswith(cc._TEMP_SUFFIX)
-    ]
+    leftovers = [q.name for q in ctx.dir.iterdir() if q.name.endswith(cc._TEMP_SUFFIX)]
     assert leftovers == [], leftovers
 
 
