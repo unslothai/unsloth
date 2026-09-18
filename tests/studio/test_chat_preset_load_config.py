@@ -779,6 +779,22 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
     return found if _separates(found) else None
 
 
+def _is_boolean(expression: str) -> bool:
+    """A comparison or negation at the top level: `s.budget > 0` is `true` for 1 and for 2."""
+    scan = _outside_literals(_unwrapped(expression.strip().rstrip(",;")))
+    if re.match(rf"\s*(?:!|{_KEYWORD}typeof\b)", scan):
+        return True
+    depth, flat = 0, []
+    for char in scan:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        flat.append(char if depth == 0 else " ")
+    top_level = "".join(flat).replace("=>", "  ")
+    return re.search(r"[=!]==?|[<>]|\b(?:instanceof|in)\b", top_level) is not None
+
+
 def _selector_reads(selector: str, field: str) -> bool:
     """Does every value this selector can return depend on `field`?
 
@@ -800,8 +816,9 @@ def _selector_reads(selector: str, field: str) -> bool:
     body = selector[signature:].strip()
     if body.startswith("{"):
         block = _balanced(body, 0, "{", "}")
-        # Inline plain bindings; brace-free right-hand sides only, or a function body is cut.
-        for name, expression in re.findall(r"\b(?:const|let)\s+(\w+)\s*=\s*([^;{}]+);", block):
+        # Inline `const` bindings only: a `let` can be reassigned before it is returned.
+        # Brace-free right-hand sides only, or a function body is cut.
+        for name, expression in re.findall(r"\bconst\s+(\w+)\s*=\s*([^;{}]+);", block):
             block = re.sub(rf"\b{re.escape(name)}\b", f"({expression})", block)
         results = [
             result
@@ -812,7 +829,7 @@ def _selector_reads(selector: str, field: str) -> bool:
             results.append(("undefined", ()))
     else:
         results = _split_ternary(body)
-    if not results:
+    if not results or any(_is_boolean(result) for result, _ in results):
         return False
     results = [
         (_normalised(result), tuple((_normalised(guard), taken) for guard, taken in guards))
@@ -1071,6 +1088,12 @@ SELECTOR_CASES = [
         False,
     ),
     ("(s) => s.reasoningBudget / 1", False),
+    # A comparison collapses the field to a boolean that holds while the field moves.
+    ("(s) => s.reasoningBudget > 0", False),
+    ("(s) => !s.reasoningBudget", False),
+    ("(s) => (s.reasoningBudget !== null)", False),
+    # A `let` can be reassigned, so it is not inlined as its initializer.
+    ("(s) => { let value = s.reasoningBudget; value = s.other; return value; }", False),
     # A `continue` inside a nested loop belongs to that loop, not to the switch.
     (
         '(s) => { switch (s.mode) { case "x": for (const q of s.l) { continue; } '
