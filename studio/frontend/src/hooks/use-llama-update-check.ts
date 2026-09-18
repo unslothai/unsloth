@@ -39,11 +39,20 @@ export interface LlamaUpdateJob {
   finished_at: string | null;
 }
 
+export interface WhisperSubStatus {
+  update_available: boolean;
+  installed_tag: string | null;
+  latest_tag: string | null;
+  update_size_bytes: number | null;
+}
+
 export interface LlamaUpdateStatus {
   supported: boolean;
   update_available: boolean;
   source_build: boolean;
   component: "llama.cpp" | "whisper.cpp";
+  // Carried whatever the card names: both components can be behind at once.
+  whisper: WhisperSubStatus | null;
   installed_tag: string | null;
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
@@ -116,6 +125,21 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       typeof details.update_size_bytes === "number"
         ? details.update_size_bytes
         : null,
+    whisper: whisper
+      ? {
+          update_available: whisper.update_available === true,
+          installed_tag:
+            typeof whisper.installed_tag === "string"
+              ? whisper.installed_tag
+              : null,
+          latest_tag:
+            typeof whisper.latest_tag === "string" ? whisper.latest_tag : null,
+          update_size_bytes:
+            typeof whisper.update_size_bytes === "number"
+              ? whisper.update_size_bytes
+              : null,
+        }
+      : null,
     // Always from the top level: the backend belongs to the llama.cpp install whatever
     // component the version fields describe.
     backend_migration_available: s.backend_migration_available === true,

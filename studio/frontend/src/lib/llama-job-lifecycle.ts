@@ -68,6 +68,24 @@ export function llamaUpdatePresentation(
   };
 }
 
+export type UpdateComponent = "llama.cpp" | "whisper.cpp";
+
+/**
+ * Which component's offer the single update card shows.
+ *
+ * Both can be behind at once, and the backend names llama.cpp when they are. If
+ * its switch is off while whisper.cpp's is on, the card shows the whisper.cpp
+ * offer rather than nothing: Update installs both either way.
+ */
+export function updateBannerComponent(
+  named: UpdateComponent,
+  whisperPending: boolean,
+  allow: { llama: boolean; whisper: boolean },
+): UpdateComponent {
+  const swap = named === "llama.cpp" && !allow.llama && allow.whisper;
+  return swap && whisperPending ? "whisper.cpp" : named;
+}
+
 /**
  * Which notification switch answers for the update card, held across a job.
  *

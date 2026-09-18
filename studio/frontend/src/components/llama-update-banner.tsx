@@ -16,6 +16,7 @@ import {
   heldUpdateBannerPref,
   llamaReleaseChanged,
   llamaUpdateToastMessage,
+  updateBannerComponent,
 } from "@/lib/llama-job-lifecycle";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -124,8 +125,19 @@ export function LlamaUpdateBanner({
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
 
+  // The card names one component, the switches answer per component, and both can
+  // be behind at once. Picking the shown one here keeps the toast on the same name.
+  const whisperOffer = status?.whisper ?? null;
+  const component = updateBannerComponent(
+    status?.component ?? "llama.cpp",
+    Boolean(whisperOffer?.update_available),
+    { llama: showLlamaBannerPref, whisper: showWhisperBannerPref },
+  );
+  // The backend names llama.cpp when both are behind, so the whisper offer's own
+  // version line and size come off the sub-status.
+  const showsWhisperOffer = component !== status?.component;
+
   async function handleUpdate() {
-    const component = status?.component ?? "llama.cpp";
     // Read before applying: the status refreshes as the job runs.
     const migrating = Boolean(status?.backend_migration_available);
     const result = await apply();
@@ -147,9 +159,7 @@ export function LlamaUpdateBanner({
     }
   }
 
-  const component = status?.component ?? "llama.cpp";
-  // Muted by the component the card names: a chained apply may carry whisper.cpp
-  // along, but the offer on screen is the release shown here.
+  // Muted by the component the card shows.
   const livePref =
     component === "whisper.cpp" ? showWhisperBannerPref : showLlamaBannerPref;
   // Held across a chained apply, which renames the card mid-job. An error counts
@@ -167,9 +177,10 @@ export function LlamaUpdateBanner({
     visible &&
     status != null &&
     (llamaUpdateOffered(status) || applying);
-  const sizeBytes = status?.update_size_bytes ?? null;
-  const latestTag = status?.latest_tag ?? null;
-  const installedTag = status?.installed_tag ?? null;
+  const offer = showsWhisperOffer ? whisperOffer : status;
+  const sizeBytes = offer?.update_size_bytes ?? null;
+  const latestTag = offer?.latest_tag ?? null;
+  const installedTag = offer?.installed_tag ?? null;
   // A migration re-applies the install's own automatic choice, so it can be offered at a
   // release the machine already has, where the backend pair replaces the version line.
   const backendChange =

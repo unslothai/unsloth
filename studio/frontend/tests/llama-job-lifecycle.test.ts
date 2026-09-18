@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   heldUpdateBannerPref,
+  updateBannerComponent,
   llamaReleaseChanged,
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
@@ -219,4 +220,31 @@ test("a muted card stays muted for a job it never showed", () => {
   assert.equal(heldUpdateBannerPref(null, true, false), false);
   // And an offer with no job in flight always reads the live switch.
   assert.equal(heldUpdateBannerPref(null, false, true), null);
+});
+
+// Both components can be behind at once and the backend names llama.cpp when
+// they are, so the whisper.cpp switch had nothing to answer for in that case.
+test("the card shows the offer the switches allow", () => {
+  const both = { llama: true, whisper: true };
+  assert.equal(updateBannerComponent("llama.cpp", true, both), "llama.cpp");
+  assert.equal(updateBannerComponent("whisper.cpp", true, both), "whisper.cpp");
+  // llama.cpp muted, whisper.cpp on, both behind: show the one asked for.
+  assert.equal(
+    updateBannerComponent("llama.cpp", true, { llama: false, whisper: true }),
+    "whisper.cpp",
+  );
+  // Nothing to swap to when whisper.cpp is current.
+  assert.equal(
+    updateBannerComponent("llama.cpp", false, { llama: false, whisper: true }),
+    "llama.cpp",
+  );
+  // Both muted, or only llama.cpp allowed: the name the backend gave stands.
+  assert.equal(
+    updateBannerComponent("llama.cpp", true, { llama: false, whisper: false }),
+    "llama.cpp",
+  );
+  assert.equal(
+    updateBannerComponent("whisper.cpp", true, { llama: true, whisper: false }),
+    "whisper.cpp",
+  );
 });
