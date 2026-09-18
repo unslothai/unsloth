@@ -457,7 +457,7 @@ def test_a_broken_root_wrapper_is_not_blessed_into_the_record(tmp_path: Path, mo
     host = macos_host()
     install_dir = build_install(tmp_path, host, load_probe_passed = False)
     marker = marker_of(install_dir)
-    for key, entry in marker["runtime_files"].items():          # the pre-change shape
+    for key, entry in marker["runtime_files"].items():  # the pre-change shape
         if not key.endswith(("llama-server", "llama-quantize")):
             entry.pop("sha256", None)
     write_marker(install_dir, marker)
