@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pinned models for the model selector's Connected list, persisted in localStorage. Entries are
-// whole `external::<connectionId>::<modelId>` ids, and they surface in a "Pinned" group above the
-// provider groups.
-//
-// Deliberately not the On Device store in pinned-models.ts: an external id contains "::", which
-// that store reads as the repoId/quant separator, so a pin filed there comes back out of
-// pinnedQuantEntries as a phantom pinned quant on the On Device tab.
+// Pinned `external::<connectionId>::<modelId>` ids for the Connected list, in localStorage.
+// NOT the On Device store in pinned-models.ts: an external id contains "::", which that store
+// reads as its repoId/quant separator and surfaces as a phantom pinned quant on the On Device tab.
 
 import { create } from "zustand";
 
@@ -24,9 +20,8 @@ function readPinned(): string[] {
   }
 }
 
-/** The stored list, or null when there is nothing to read: no key yet, or storage unavailable.
- *  Distinct from an empty list, since a toggle falling back to [] would drop this window's own
- *  pins on an install where every write has failed. */
+/** The stored list, or null for "nothing to read". Distinct from []: a toggle falling back to []
+ *  would drop this window's own pins where every write has failed. */
 function storedPinned(): string[] | null {
   try {
     const raw = localStorage.getItem(KEY);
@@ -48,10 +43,8 @@ function writePinned(pinned: string[]): void {
   }
 }
 
-// A drag reorders live under the cursor, so movePinnedConnected runs on every dragenter. Writing
-// each one would hit localStorage dozens of times per drag and make a cancelled drag permanent.
-// So a session snapshots the order, keeps moves in memory, then commits on drop or restores.
-// Mirrors pinned-models.ts.
+// movePinnedConnected runs on every dragenter: writing each would make a cancelled drag permanent.
+// Snapshot, move in memory, commit on drop. Mirrors pinned-models.ts.
 let dragSnapshot: string[] | null = null;
 
 // Keep remote updates for cancellation without replacing the drag's live order.
@@ -61,11 +54,9 @@ function sameOrder(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((key, index) => key === b[index]);
 }
 
-/** A dragged order over the stored membership. This window owns the order of the rows it dragged;
- *  which ids are pinned belongs to the record, since another window can pin or unpin during the
- *  drag and its storage event may still be in flight at the drop. So another window's additions
- *  come in at the front, where a new pin goes, and anything it unpinned stays unpinned.
- *  Unavailable storage reads as null and leaves the order alone, keeping pins session-only. */
+/** A dragged order over the stored membership: this window owns row ORDER, the record owns which
+ *  ids are pinned, since another window's storage event may still be in flight at the drop.
+ *  Its additions arrive at the front; null storage leaves the order alone. */
 function rebaseOnStored(order: readonly string[]): string[] {
   const stored = storedPinned();
   if (stored === null) return [...order];
