@@ -80,12 +80,14 @@ import {
   loadedGpuMemoryFields,
   noteLoadedModelReasoningMode,
   persistGpuMemoryModeOnLoad,
+  pinHoldsLiveEffort,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   reconcilePersistedGpuIds,
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  takeEffortDisplacedByPin,
   useChatRuntimeStore,
   type LoadingModelPick,
   type ReasoningEffort,
@@ -1965,7 +1967,12 @@ export function useChatModelRuntime() {
               loadResponse.reasoning_effort_levels.length > 0
                 ? (loadResponse.reasoning_effort_levels as ReasoningEffort[])
                 : (["low", "medium", "high"] as const);
-            const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
+            // The chat's own level when the model this replaces was running a pin's, for the
+            // reason applyActiveModelStatusToStore gives at its own clamp: a pin is one model's,
+            // and everything between the pick and this response can abort without loading.
+            const existingReasoningEffort =
+              (pinHoldsLiveEffort() ? takeEffortDisplacedByPin() : null) ??
+              useChatRuntimeStore.getState().reasoningEffort;
             const clampedReasoningEffort =
               reasoningStyle === "enable_thinking_effort" ||
               reasoningStyle === "reasoning_effort"

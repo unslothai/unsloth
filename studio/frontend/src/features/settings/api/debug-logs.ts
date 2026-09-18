@@ -156,7 +156,7 @@ const DESKTOP_STATUS_PATTERN = /^Download failed with status (\d{3})\./;
 // session (per-account isolation, shared installs). No request is made, so
 // there is no status: the command returns this exact sentence (`LOGIN_REQUIRED`
 // in native_file_dialogs.rs). Keep the two in step.
-const DESKTOP_LOGIN_REQUIRED = "Log export requires a signed-in Unsloth Studio session.";
+const DESKTOP_LOGIN_REQUIRED = "Log export requires a signed-in Unsloth session.";
 
 function desktopExportError(error: unknown): LogExportError {
   const message =
