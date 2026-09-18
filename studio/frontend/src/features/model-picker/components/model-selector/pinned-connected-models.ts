@@ -73,7 +73,9 @@ function isOurs(id: string): boolean {
 }
 
 /** An id the record now carries is no longer ours to re-add, whoever wrote it. Without this a peer
- *  persisting the same model and later unpinning it would see the pin resurrected. */
+ *  persisting the same model and later unpinning it would see the pin resurrected. Called from
+ *  every read of the record, not only the storage handler: a drag that ends unchanged observes a
+ *  peer's write synchronously, before its event is delivered. */
 function retirePersisted(stored: readonly string[]): void {
   if (unpersisted.size === 0) return;
   for (const id of stored) unpersisted.delete(id);
@@ -86,6 +88,7 @@ function retirePersisted(stored: readonly string[]): void {
 function persistedBase(fallback: readonly string[]): string[] {
   const stored = storedPinned();
   if (stored === null) return [...fallback];
+  retirePersisted(stored);
   if (storageWritable) return stored;
   return [...ourPins(stored, stored), ...stored];
 }
@@ -107,6 +110,7 @@ function sameOrder(a: readonly string[], b: readonly string[]): boolean {
 function rebaseOnStored(order: readonly string[]): string[] {
   const stored = storedPinned();
   if (stored === null) return [...order];
+  retirePersisted(stored);
   const added = stored.filter((id) => !order.includes(id));
   // An id survives if the record still carries it, or if it is one of ours the record never
   // received. A peer's removal is honoured either way.

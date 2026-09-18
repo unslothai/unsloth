@@ -11,10 +11,16 @@ const { usePinnedConnectedModelsStore: pins } = await import(
 );
 const KEY = "unsloth_pinned_connected_models";
 const [A, B, C, D] = ["a", "b", "c", "d"].map((id) => `external::connection::${id}`);
+const RESET_PROBE = "external::connection::__reset__";
 
 function reset(order = [A, B]) {
   pins.getState().endPinnedConnectedDrag(false);
   storage.clear();
+  // Two toggles that WRITE, to clear the module-private failure state a previous test may have
+  // left behind. Resetting only storage and the zustand state left `storageWritable` false with
+  // ids still in `unpersisted`, which made the test after it pass without testing anything.
+  pins.getState().togglePinnedConnected(RESET_PROBE);
+  pins.getState().togglePinnedConnected(RESET_PROBE);
   storage.set(KEY, JSON.stringify(order));
   pins.setState({ pinned: order });
 }
@@ -214,5 +220,28 @@ test("a peer persisting our failed pin hands it back to the record", () => {
   assert.ok(
     !pins.getState().pinned.includes(B),
     `a peer's removal was undone by a stale unpersisted entry: ${JSON.stringify(pins.getState().pinned)}`,
+  );
+});
+
+test("a record read outside the storage handler retires a pin too", () => {
+  // The peer's write is observed synchronously by an unchanged drag, before its event is
+  // delivered, so retiring only in the handler left the id classified as ours.
+  reset([A]);
+  const realSet = storage.set.bind(storage);
+  storage.set = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    pins.getState().togglePinnedConnected(B);
+  } finally {
+    storage.set = realSet;
+  }
+  externalWrite([B, A], false); // a peer persists the same model, event still pending
+  pins.getState().beginPinnedConnectedDrag();
+  pins.getState().endPinnedConnectedDrag(false); // unchanged drag: reads the record synchronously
+  externalWrite([A]); // the peer then unpins it
+  assert.ok(
+    !pins.getState().pinned.includes(B),
+    `a synchronously observed pin stayed classified as ours: ${JSON.stringify(pins.getState().pinned)}`,
   );
 });
