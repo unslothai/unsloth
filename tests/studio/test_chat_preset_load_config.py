@@ -673,13 +673,30 @@ def _bindings(block: str, name: str) -> int:
 
 
 def _assigned(block: str, name: str) -> bool:
-    """Does `block` write to `name`: `name = x`, a compound assignment, or `++` / `--`?"""
+    """Does `block` write to `name`: `name = x`, a compound assignment, `++` / `--`, a
+    `for (name of xs)` head, or a destructuring pattern that names it, such as `[name] = xs`?"""
     reference = rf"(?<![\w$.]){re.escape(name)}(?![\w$])"
     compound = r"(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])?"
-    return bool(
+    if (
         re.search(rf"{reference}\s*{compound}=(?![=>])", block)
         or re.search(rf"(?:\+\+|--)\s*{reference}|{reference}\s*(?:\+\+|--)", block)
-    )
+        or re.search(rf"\bfor\s*\([^;)]*{reference}[^;)]*\b(?:of|in)\b", block)
+    ):
+        return True
+    for match in re.finditer(r"[\]}]\s*=(?![=>])", block):
+        closer = block[match.start()]
+        opener = "[" if closer == "]" else "{"
+        depth = 0
+        for index in range(match.start(), -1, -1):
+            if block[index] == closer:
+                depth += 1
+            elif block[index] == opener:
+                depth -= 1
+                if depth == 0:
+                    if re.search(reference, block[index : match.start()]):
+                        return True
+                    break
+    return False
 
 
 def _selector_signature(selector: str, field: str):
@@ -1316,6 +1333,10 @@ SELECTOR_CASES = [
     # Nor is the parameter once it is written to.
     ("(s) => { s = other; return s.reasoningBudget; }", False),
     ("({ reasoningBudget }) => { reasoningBudget ??= 1; return reasoningBudget; }", False),
+    ("(s) => { [s] = [other]; return s.reasoningBudget; }", False),
+    ("(s) => { ({ s } = holder); return s.reasoningBudget; }", False),
+    ("(s) => { for (s of others) break; return s.reasoningBudget; }", False),
+    ("(s) => { for (const x of s.list) {} return s.reasoningBudget; }", True),
     ("(s) => { const value = s.reasoningBudget; return s.other. value; }", False),
     # A comma expression returns its last operand, and a declarator list declares two names.
     ("(s) => (s.reasoningBudget, s.other)", False),
