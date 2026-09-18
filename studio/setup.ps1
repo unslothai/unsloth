@@ -195,7 +195,12 @@ function Exit-SetupFailure {
 function Get-SetupHostInterpreterInVenv {
     param([Parameter(Mandatory = $true)][string]$VenvDir)
     $root = $null
-    try { $root = [System.IO.Path]::GetFullPath($VenvDir).TrimEnd('\', '/') + '\' } catch { return $null }
+    # DirectorySeparatorChar, not a literal '\': .NET on Linux and macOS returns '/'-separated
+    # paths from GetFullPath and treats '\' as an ordinary filename character, so a hardcoded
+    # backslash builds a prefix no candidate can match and the helper answers $null for every
+    # input. Only Windows runs this script for real, but the shipped pwsh tests run everywhere.
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    try { $root = [System.IO.Path]::GetFullPath($VenvDir).TrimEnd('\', '/') + $sep } catch { return $null }
     $inside = {
         param([string]$Candidate)
         if ([string]::IsNullOrWhiteSpace($Candidate)) { return $false }
@@ -6144,22 +6149,6 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $shouldRebuild = $false
     }
 
-    # A direct `unsloth studio update` has the same shape: the CLI is this script's parent and runs
-    # from the venv's own python.exe, which Windows will not delete while it runs. The wipe below
-    # therefore emptied Lib\ and stopped at Scripts\python.exe, leaving a venv with no unsloth_cli,
-    # no rollback copy, and a desktop whose update AND repair both start from that interpreter.
-    # Detected rather than assumed: setup.ps1 run by hand from a checkout has no interpreter inside
-    # the venv and keeps the full rebuild.
-    if ($shouldRebuild -and -not $InstallerManagedSetup) {
-        $_hostPy = Get-SetupHostInterpreterInVenv -VenvDir $VenvDir
-        if ($_hostPy) {
-            substep "Environment does not match this host ($reason) -- reinstalling PyTorch in place." "Yellow"
-            substep "setup is running from $_hostPy, which cannot be replaced while it runs." "DarkGray"
-            $script:PinChangedForceReinstall = $true
-            $shouldRebuild = $false
-        }
-    }
-
     # A cu* venv is never wiped by a DIRECT update just because nvidia-smi did not answer:
     # every way that bounded probe comes back empty on a working NVIDIA host collapses
     # $expectedTorchTag to "cpu", no escape above catches it, and the wipe has no rollback
@@ -6175,6 +6164,40 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # Keeping the wheel is half the job: the index selection below rescans, sees no
         # NVIDIA either, and would route the install to the /cpu arm.
         $script:PreservedInstallerTorchTag = $installedTorchTag
+    }
+
+    # A direct `unsloth studio update` has the same shape as the installer-managed case: the CLI is
+    # this script's parent and runs from the venv's own python.exe, which Windows will not delete
+    # while it runs. The wipe below therefore emptied Lib\ and stopped at Scripts\python.exe,
+    # leaving a venv with no unsloth_cli, no rollback copy, and a desktop whose update AND repair
+    # both start from that interpreter (#11247).
+    # Detected rather than assumed: setup.ps1 run by hand from a checkout has no interpreter inside
+    # the venv and keeps the full rebuild.
+    # LAST of the direct-update escapes, and that placement is load-bearing. This block's condition
+    # is true for every stale direct update -- the desktop always runs setup from inside the venv --
+    # so ahead of the narrower escapes it would consume $shouldRebuild before they were tested and
+    # they could never fire. The nvidia-smi guard above is the one that matters: it ALSO publishes
+    # $script:PreservedInstallerTorchTag, and without it the index selection rescans, sees no
+    # NVIDIA, and pairs the $PinChangedForceReinstall set here with the /cpu arm -- force-installing
+    # a CPU wheel over the working cu* venv that guard exists to protect (#9857).
+    if ($shouldRebuild -and -not $InstallerManagedSetup) {
+        $_hostPy = Get-SetupHostInterpreterInVenv -VenvDir $VenvDir
+        if ($_hostPy) {
+            substep "Environment does not match this host ($reason) -- reinstalling PyTorch in place." "Yellow"
+            substep "setup is running from $_hostPy, which cannot be replaced while it runs." "DarkGray"
+            $script:PinChangedForceReinstall = $true
+            $shouldRebuild = $false
+        }
+    }
+
+    # Sweep leftovers from an earlier move-aside whose delete a lock cut short. Outside the rebuild
+    # branch on purpose: an install that renames a venv aside, fails to delete the copy, and
+    # thereafter always takes an in-place route would never reach a sweep that lived inside the
+    # branch, and a multi-GB venv would sit there for good.
+    $_venvParent = Split-Path -Parent $VenvDir
+    $_venvLeaf = Split-Path -Leaf $VenvDir
+    foreach ($_old in @(Get-ChildItem -LiteralPath $_venvParent -Directory -Filter "$_venvLeaf.stale-*" -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $_old.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     if ($shouldRebuild) {
@@ -6199,13 +6222,10 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # Moved aside, then deleted: a rename takes the whole tree or fails and leaves it intact,
         # where Remove-Item -Recurse deletes up to the first locked file and leaves an environment
         # that can neither start nor update itself. The moved copy goes best-effort; whatever a
-        # lock keeps behind is swept by the next run.
-        $_venvParent = Split-Path -Parent $VenvDir
-        $_venvLeaf = Split-Path -Leaf $VenvDir
-        foreach ($_old in @(Get-ChildItem -LiteralPath $_venvParent -Directory -Filter "$_venvLeaf.stale-*" -ErrorAction SilentlyContinue)) {
-            Remove-Item -LiteralPath $_old.FullName -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        $_staleLeaf = "$_venvLeaf.stale-$(Get-Date -Format 'yyyyMMddHHmmss')"
+        # lock keeps behind is swept at the top of the next run.
+        # The pid joins the timestamp so two rebuilds inside the same second cannot collide on the
+        # destination and fail the rename on a name that is merely already taken.
+        $_staleLeaf = "$_venvLeaf.stale-$(Get-Date -Format 'yyyyMMddHHmmss')-$PID"
         try {
             Rename-Item -LiteralPath $VenvDir -NewName $_staleLeaf -ErrorAction Stop
         } catch {

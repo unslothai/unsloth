@@ -302,6 +302,50 @@ def test_setup_ps1_direct_update_from_inside_the_venv_repairs_in_place():
     ), "the in-place route must be chosen before the rebuild branch runs"
 
 
+def test_setup_ps1_direct_update_in_place_route_is_the_last_escape():
+    """The in-place route's condition is true for EVERY stale direct update -- the desktop always
+    runs setup from inside the venv -- so it has to be the last escape tested or it consumes
+    $shouldRebuild before the narrower ones are reached and they can never fire.
+
+    The nvidia-smi guard is the one that makes this load-bearing rather than tidy. It also
+    publishes $script:PreservedInstallerTorchTag, which is what keeps the index selection on the
+    cu* arm. Ordered ahead of it, the in-place route leaves that tag unset while setting
+    $script:PinChangedForceReinstall, and the pair force-installs a CPU wheel over the working
+    cu* venv the guard exists to protect (#9857)."""
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    in_place = src.index(
+        "if ($shouldRebuild -and -not $InstallerManagedSetup) {\n"
+        "        $_hostPy = Get-SetupHostInterpreterInVenv -VenvDir $VenvDir"
+    )
+    nvidia_guard = src.index("nvidia-smi did not answer, but this venv holds a")
+    assert nvidia_guard < in_place, (
+        "the nvidia-smi cu* preservation guard must be tested BEFORE the in-place route, "
+        "or a silent nvidia-smi probe downgrades a working cu* venv to CPU torch"
+    )
+    # Every other escape that can clear $shouldRebuild on a direct update belongs ahead of it too.
+    for earlier in (
+        "Keeping the installed Intel XPU environment",
+        "Torch-index pin changed",
+        "CUDA family $installedTorchTag does not cover this host",
+    ):
+        assert (
+            src.index(earlier) < in_place
+        ), f"{earlier!r} must be tested before the in-place route"
+
+
+def test_setup_ps1_stale_sweep_runs_outside_the_rebuild_branch():
+    """The sweep collects leftovers from an earlier move-aside whose delete a lock cut short. Inside
+    the rebuild branch it would never run for the install that needs it most: one that renamed a
+    venv aside, failed to delete the copy, and thereafter always takes an in-place route."""
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    sweep = src.index('-Filter "$_venvLeaf.stale-*"')
+    rebuild = src.index("Stale venv detected ($reason) -- rebuilding")
+    assert sweep < rebuild, "the stale-venv sweep must run whether or not this run rebuilds"
+    # A second rebuild inside the same second must not collide on the destination name.
+    stale_leaf = src[src.index("$_staleLeaf = ") : src.index("\n", src.index("$_staleLeaf = "))]
+    assert "$PID" in stale_leaf, f"stale destination needs a per-process suffix, got {stale_leaf!r}"
+
+
 def _extract_setup_ps1_function(name: str) -> str:
     src = SETUP_PS1.read_text(encoding = "utf-8")
     m = re.search(rf"^function {re.escape(name)} \{{.*?\n\}}\n", src, re.DOTALL | re.MULTILINE)
