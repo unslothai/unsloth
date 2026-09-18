@@ -865,10 +865,18 @@ def _selector_reads(selector: str, field: str) -> bool:
         # Inline `const` bindings only: a `let` can be reassigned before it is returned.
         # Brace-free right-hand sides only, or a function body is cut.
         for name, expression in re.findall(r"\bconst\s+(\w+)\s*=\s*([^;{}]+);", block):
-            # A reference, not a property that happens to share the name: `s.other.value`, or
-            # the key in `{ value: s.other }`, which is left uninlined rather than rewritten.
+            # A reference, not a property that happens to share the name: `s.other.value`.
+            # A name bound anywhere else (again, as a parameter, in a `catch`) or used as an
+            # object key is left uninlined, since which binding a use resolves to is not read.
             reference = rf"(?<![\w$.]){re.escape(name)}(?![\w$])"
-            if re.search(rf"[{{,]\s*{reference}\s*:", block):
+            rebound = (
+                len(re.findall(rf"\b(?:const|let|var|function|class)\s+{reference}", block)) > 1
+                or re.search(rf"{reference}\s*=>|\([^()]*{reference}[^()]*\)\s*=>", block)
+                or re.search(rf"\b(?:function\b[^(]*|catch\s*)\([^()]*{reference}", block)
+                or re.search(rf"\b(?:const|let|var)\s*[{{\[][^=;]*{reference}", block)
+                or re.search(rf"[{{,]\s*{reference}\s*:", block)
+            )
+            if rebound:
                 continue
             block = re.sub(reference, f"({expression})", block)
         results = [
@@ -1211,6 +1219,11 @@ SELECTOR_CASES = [
     ("(s) => { const value = s.reasoningBudget; return s.other.value; }", False),
     ("(s) => { const value = s.reasoningBudget; return value; }", True),
     ("(s) => { const value = s.reasoningBudget; return { value: s.other }; }", False),
+    (
+        "(s) => { const value = s.reasoningBudget; { const value = s.other; return value; } }",
+        False,
+    ),
+    ("(s) => { const v = s.reasoningBudget; const f = (v) => v; return f(s.other); }", False),
     ('(s) => s.enabled ? "s.reasoningBudget" : s.reasoningBudget', False),
     # Inside a literal a bracket is part of the value, not an access to rewrite.
     ('(s) => s.reasoningBudget === \'s["x"]\' ? "s.x" : s.reasoningBudget', False),
