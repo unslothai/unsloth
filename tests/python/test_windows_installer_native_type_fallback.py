@@ -74,10 +74,7 @@ SABOTAGE = (
 # What a host that cannot emit looks like. Constrained Language Mode and App Control's
 # Dynamic Code Security both come through Test-StudioCanDefineNativeTypes, so overriding
 # that gate is the whole of "no native side".
-# "No exact resolver of any kind", which is what these tests mean by degraded. The Python rung
-# added below the native one would otherwise answer exactly on any host that has an interpreter,
-# and an exact answer is the opposite of the state being exercised here. The rung has its own
-# coverage in tests/studio/test_early_python_path_resolver.ps1.
+# The Python rung is off too: it would answer exactly on any host with an interpreter.
 NO_NATIVE = """$env:UNSLOTH_EARLY_PYTHON_PROBE = "0"
 function Test-StudioCanDefineNativeTypes { return $false }"""
 

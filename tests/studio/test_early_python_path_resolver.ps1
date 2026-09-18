@@ -1,18 +1,7 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# When the native path resolver cannot answer, ask Python before giving up on an exact identity.
-#
-# os.path.realpath calls GetFinalPathNameByHandleW on Windows, so it follows junctions, symlinks
-# and SUBST drives, expands 8.3 names and reports the stored casing: the same answer the native
-# helper gives. unsloth_cli/_studio_runtime_gate.py already derives the runtime lock name from
-# os.path.realpath, so an answer from this rung agrees with a running Unsloth by construction
-# rather than by two implementations happening to match.
-#
-# The rung is strictly additive. It runs only where the native resolver already returned nothing,
-# which is what happens under WDAC Dynamic Code Security and on any host where kernel32 will not
-# resolve. A host that resolves natively is untouched. Constrained Language Mode never gets here:
-# Resolve-StudioFinalPathInfo's own GetFullPath is refused there, before any rung runs.
+# The Python rung of Resolve-StudioFinalPathInfo, used when the native resolver answers nothing.
 # Run: pwsh -NoProfile -File tests/studio/test_early_python_path_resolver.ps1
 
 $ErrorActionPreference = "Stop"
@@ -41,8 +30,7 @@ foreach ($name in @(
     Invoke-Expression $fn[0].Extent.Text
 }
 
-# The native rung, forced off. This is the state the new rung exists to improve: on a host where
-# it works nothing below this file's premise ever runs.
+# The native rung, forced off.
 function Initialize-StudioFinalPathNativeType { return $false }
 function Get-StudioNativeFinalPath { param([string]$Path) return $null }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
@@ -75,13 +63,7 @@ try {
     }
 
     if ($madeAlias) {
-        # The control that makes the rest meaningful, and it is about Exact rather than about the
-        # string. On PowerShell 7 Get-StudioLexicalPath already folds a symlink, because
-        # Resolve-StudioLinkTarget can call ResolveLinkTarget there; on Windows PowerShell 5.1 it
-        # sees only the raw reparse target, and it can never expand an 8.3 name or recover stored
-        # casing on any version. What it can never do on ANY host is claim the answer is exact,
-        # and Exact is what the install and runtime locks key on. So assert that: without this
-        # rung the alias resolves inexactly, which is the state the rung exists to fix.
+        # Control: the lexical rung may fold a symlink on pwsh 7, but it is never exact.
         $savedFinder = ${function:Get-StudioEarlyPython}
         function Get-StudioEarlyPython { return $null }
         $inexact = Resolve-StudioFinalPathInfo -Path $alias
@@ -93,23 +75,16 @@ try {
         Check "Python folds the alias onto its target" (
             -not [string]::IsNullOrWhiteSpace($viaAlias) -and $viaAlias -eq $viaReal)
 
-        # The integration check: the resolver as a whole now reports an EXACT identity for the
-        # alias, which is what the install and runtime locks key on.
         $infoAlias = Resolve-StudioFinalPathInfo -Path $alias
         $infoReal = Resolve-StudioFinalPathInfo -Path $real
         Check "the resolver reports the alias as exact" ($infoAlias.Exact -eq $true)
         Check "the resolver gives one identity for both spellings" ($infoAlias.Path -eq $infoReal.Path)
     }
 
-    # No interpreter means today's behaviour, unchanged: lexical answer, not exact. Verified by
-    # replacing the finder rather than by reasoning about it, and restored afterwards: leaving it
-    # stubbed made every later check silently exercise the disabled rung instead of the real one.
+    # No interpreter: lexical and inexact, as before. Restored afterwards so later checks use the rung.
     $savedFinder2 = ${function:Get-StudioEarlyPython}
     function Get-StudioEarlyPython { return $null }
     $script:StudioEarlyPythonProbed = $false
-    # The resolver's per-run cache is cleared with it. This stub stands in for a DIFFERENT run,
-    # one that never had an interpreter, and a cached answer from the run above would otherwise
-    # be served without the rung being reached at all.
     $script:StudioPythonFinalPathCache = $null
     $noPy = Resolve-StudioFinalPathInfo -Path $real
     Check "with no interpreter the identity is inexact, as before" ($noPy.Exact -eq $false)
@@ -120,11 +95,7 @@ try {
     $script:StudioEarlyPython = $null
     Check "the interpreter is back after the no-interpreter case" ($null -ne (Get-StudioEarlyPython))
 
-    # Non-ASCII survives the child boundary. This string is hashed into a lock name that the
-    # running Unsloth derives from _studio_runtime_gate.py's own resolve(), so a byte that does
-    # not round-trip is not a cosmetic defect: the two sides compute different names for one
-    # directory and neither excludes the other. Windows PowerShell 5.1 decodes a child's stdout
-    # with the console codepage unless told otherwise, which is exactly how that happens.
+    # The answer is hashed into a lock name, so non-ASCII must survive 5.1's console codepage.
     $unicodeName = "studio-ünïcôde-日本語-ß"
     $unicodeDir = Join-Path $tmp $unicodeName
     New-Item -ItemType Directory -Force -Path $unicodeDir | Out-Null
@@ -133,25 +104,18 @@ try {
         -not [string]::IsNullOrWhiteSpace($unicodeAnswer) -and
         $unicodeAnswer.EndsWith($unicodeName))
 
-    # NTFS keeps a trailing U+00A0 and GetFullPath does not strip it, but String.Trim() does. With
-    # a sibling lacking it, a trimmed answer passes Test-Path and names the wrong directory.
+    # Trim() would drop the U+00A0 and name the sibling instead.
     $nbspName = "studio-nbsp" + [char]0x00A0
     New-Item -ItemType Directory -Force -Path (Join-Path $tmp "studio-nbsp") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $tmp $nbspName) | Out-Null
     $nbspAnswer = Get-StudioPythonFinalPath -Path (Join-Path $tmp $nbspName)
     Check "a trailing non-breaking space is kept" ("$nbspAnswer".EndsWith($nbspName))
 
-    # The resolver must produce what the running Unsloth produces, since both are hashed into
-    # lock names. Compare against _studio_runtime_gate.py's own expression rather than against
-    # another spelling of it.
     $gateScript = "import pathlib,sys" + [char]10 +
         "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=False)).encode('utf-8'))"
     $gateAnswer = & $exe -I -c $gateScript $unicodeDir
     Check "the answer matches the runtime gate's own resolve()" ($unicodeAnswer -eq "$gateAnswer".Trim())
 
-    # A symlink loop must not be promoted to an exact identity. realpath is non-strict, so it
-    # returns a best-effort string rather than raising, and promoting that to Exact would let a
-    # caller treat an unresolved path as a vouched-for one.
     $loopA = Join-Path $tmp "loop-a"
     $loopOk = $false
     try {
@@ -164,28 +128,19 @@ try {
         Check "a link loop is not promoted to an exact identity" ([string]::IsNullOrWhiteSpace($loopAnswer))
     }
 
-    # A path with spaces must survive argument construction. On Windows PowerShell 5.1 there is no
-    # ProcessStartInfo.ArgumentList, so the arguments go through a single quoted string and the
-    # quoting has to be right. This exercises the result on whichever branch the host takes.
+    # 5.1 has no ArgumentList, so arguments go through one quoted string.
     $spacedDir = Join-Path $tmp "a dir with spaces"
     New-Item -ItemType Directory -Force -Path $spacedDir | Out-Null
     $spacedAnswer = Get-StudioPythonFinalPath -Path $spacedDir
     Check "a path containing spaces resolves" (
         -not [string]::IsNullOrWhiteSpace($spacedAnswer) -and $spacedAnswer.EndsWith("spaces"))
 
-    # The 5.1 branch itself, asserted on the source: ArgumentList does not exist in .NET
-    # Framework, so using it unconditionally makes every candidate fail on the one host that
-    # matters most, and it fails invisibly because the finder just reports "no Python".
     $src = Get-Content -Raw -LiteralPath $installPs1
     Check "argument construction does not assume ArgumentList exists" (
         $src -match 'PSObject\.Properties\["ArgumentList"\]')
-    # Likewise the version gate: before 3.8 Windows path resolution did not follow junctions, so
-    # such an interpreter would return the alias spelling and this rung would call it exact.
     Check "the probe refuses an interpreter older than 3.8" (
         $src -match 'sys\.version_info\s*<\s*\(3,\s*8\)')
 
-    # An interpreter that answers non-zero is rejected rather than trusted, which is the path the
-    # version gate above takes on an old Python.
     $refuser = Join-Path $tmp $(if ($IsWindows -or $env:OS -eq "Windows_NT") { "refuse.cmd" } else { "refuse.sh" })
     if ($IsWindows -or $env:OS -eq "Windows_NT") {
         "@echo off`r`nexit /b 2`r`n" | Set-Content -LiteralPath $refuser -Encoding ASCII
@@ -196,8 +151,6 @@ try {
     Check "an interpreter that exits non-zero is rejected" (
         $null -eq (Invoke-StudioEarlyPython -Exe $refuser -Path $real))
 
-    # A hung interpreter must not hang the installer. The whole point of running this before the
-    # install lock is that it cannot be allowed to wedge the run.
     $slow = Join-Path $tmp $(if ($IsWindows -or $env:OS -eq "Windows_NT") { "slow.cmd" } else { "slow.sh" })
     if ($IsWindows -or $env:OS -eq "Windows_NT") {
         "@echo off`r`nping -n 30 127.0.0.1 >nul`r`n" | Set-Content -LiteralPath $slow -Encoding ASCII
@@ -211,8 +164,7 @@ try {
     Check "a hung interpreter returns null" ($null -eq $hung)
     Check "a hung interpreter is killed at the deadline, not waited out" ($elapsed -lt 15)
 
-    # Finding an interpreter must not write anything: this runs before the install lock, so a
-    # mutation here would be a mutation before exclusion is established.
+    # This runs before the install lock, so finding an interpreter must write nothing.
     $before = @(Get-ChildItem -LiteralPath $tmp -Recurse -Force).Count
     $script:StudioEarlyPythonProbed = $false
     $script:StudioEarlyPython = $null
@@ -227,39 +179,21 @@ try {
     $after = @(Get-ChildItem -LiteralPath $tmp -Recurse -Force).Count
     Check "finding an interpreter writes nothing" ($after -eq $before)
 
-    # site stays out of the probe, and the reason is measured rather than quoted.
-    #
-    # Isolated mode implies -E, -P and -s, but NOT -S, so site is still imported and a
-    # system-level sitecustomize still runs. On a corporate host that is instrumentation: it can
-    # print to stdout and corrupt the single line this rung reads back, it can hang and burn the
-    # timeout on a good interpreter, and it can patch pathlib, which would let an influenced
-    # answer be marked exact. The first check asks the real interpreter under test, so a Python
-    # that ever does imply -S would show up here as a stale justification rather than pass.
+    # -I alone still imports site, so a sitecustomize could print into the answer or hang.
     $exe = Get-StudioEarlyPython
     $isoOnly = (& $exe -I -c "import sys;print(sys.flags.no_site)" 2>$null | Select-Object -First 1)
     $isoPlus = (& $exe -I -S -c "import sys;print(sys.flags.no_site)" 2>$null | Select-Object -First 1)
     Check "-I alone leaves site imported on this interpreter" ("$isoOnly".Trim() -eq "0")
     Check "-S is what turns site off" ("$isoPlus".Trim() -eq "1")
 
-    # And the launcher passes it. Read out of the source, because the end-to-end drive is not
-    # available here: sitecustomize is resolved on sys.path and the stdlib directory precedes
-    # site-packages, so a planted copy is shadowed by the host's own on any machine that has one.
+    # Read from the source: a planted sitecustomize is shadowed by the host's own.
     $launcherFn = @($ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $n.Name -eq "Invoke-StudioEarlyPythonScript"
     }, $true))[0].Extent.Text
     Check "the launcher runs every probe with -S as well as -I" (
         $launcherFn -match '@\("-I",\s*"-S",\s*"-c"')
-    # ---- a miss recorded before $VenvDir existed is not final ----
-    #
-    # The --tauri path resolves the Studio-home override well before $VenvDir is assigned. On a
-    # host with no system Python that probe finds nothing, and the latch used to hold that answer
-    # for the whole run, so the rung could never reach the previous install's own interpreter
-    # once the variable appeared. Every consumer below it (the path resolver, the process-image
-    # table, the NVIDIA fallback) then stayed degraded on exactly the hosts they exist for.
-    #
-    # Driven with the interpreter this host really has, planted where a venv would put it, and
-    # with system discovery switched off so the venv rung is the only one that can answer.
+    # A miss recorded before $VenvDir existed (the --tauri path) is probed again once it does.
     $venvHome = Join-Path $tmp "venvhome"
     $venvBin = if ($IsWindows -or $env:OS -eq "Windows_NT") { "Scripts" } else { "bin" }
     $venvLeaf = if ($IsWindows -or $env:OS -eq "Windows_NT") { "python.exe" } else { "python3" }
@@ -280,7 +214,6 @@ try {
         -not [string]::IsNullOrWhiteSpace($found))
     Check "and it is the one inside the venv, not some other copy" (
         "$found" -like ("*" + $venvBin + "*"))
-    # And exactly once more: the latch still holds, or every resolution spawns a probe.
     $script:ReprobeCount = 0
     function Test-Path { param($LiteralPath, $PathType, $ErrorAction) $script:ReprobeCount++; return $false }
     $null = Get-StudioEarlyPython
@@ -288,12 +221,6 @@ try {
     Remove-Item Function:Test-Path -ErrorAction SilentlyContinue
     Remove-Item Function:Get-Command -ErrorAction SilentlyContinue
     Remove-Variable -Name VenvDir -Scope Global -ErrorAction SilentlyContinue
-    # ---- one child per distinct path, not one per call ----
-    #
-    # The process scan resolves every running process's image path, and the install repeats that
-    # for each protected root, so the same strings are asked for over and over. On a host where
-    # the rung above this one declines, each of those was a child process with a ten second bound
-    # behind it. Counted rather than timed: the count is what separates a cache from a fast host.
     $script:ResolveCalls = 0
     $savedInvoke = ${function:Invoke-StudioEarlyPython}
     function Invoke-StudioEarlyPython { param($Exe, $Path, $TimeoutMs) $script:ResolveCalls++; return $Path }
@@ -306,7 +233,6 @@ try {
     Check "three calls for one path spawn one child" ($script:ResolveCalls -eq 1)
     $null = Get-StudioPythonFinalPath -Path $tmp
     Check "and a different path still spawns its own" ($script:ResolveCalls -eq 2)
-    # The miss is worth caching too: learning it twice costs the same child as learning it once.
     function Invoke-StudioEarlyPython { param($Exe, $Path, $TimeoutMs) $script:ResolveCalls++; return $null }
     $missPath = Join-Path $tmp "no-such-thing"
     $null = Get-StudioPythonFinalPath -Path $missPath

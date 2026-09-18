@@ -2673,32 +2673,16 @@ exit 1
         return $current
     }
 
-    # An interpreter to answer path questions with, found WITHOUT installing one.
-    #
-    # Python resolves a path the same way the native helper does: os.path.realpath on Windows
-    # calls GetFinalPathNameByHandleW, so it follows junctions, symlinks and SUBST drives, expands
-    # 8.3 names and reports the stored casing. That matters twice over, because
-    # unsloth_cli/_studio_runtime_gate.py computes the runtime lock name from os.path.realpath
-    # too: an answer from here agrees with the running Unsloth by construction rather than by two
-    # implementations happening to match.
-    #
-    # Finding one must not mutate anything, because this runs before the install lock is taken.
-    # Get-Command and Test-Path only, never Install-PythonFromPythonOrg, and never the full
-    # Find-CompatiblePython, which is defined thousands of lines below this point anyway.
+    # A Python to resolve paths with, found without installing one: this runs before the install
+    # lock, so Get-Command and Test-Path only. Path.resolve is GetFinalPathNameByHandleW on Windows
+    # and is what unsloth_cli/_studio_runtime_gate.py hashes, so both sides name the same lock.
     $script:StudioEarlyPythonProbed = $false
     $script:StudioEarlyPython = $null
-    # Recorded with the miss, because a miss is not always final. See Get-StudioEarlyPython.
     $script:StudioEarlyPythonProbedWithoutVenv = $false
 
     function Get-StudioEarlyPython {
-        # $VenvDir is assigned thousands of lines below this function's earliest caller, so it is
-        # read defensively rather than assumed, and WHETHER it was known is recorded with the
-        # answer. One re-probe, and only this one: a miss taken before the variable existed never
-        # looked at the previous install's own interpreter, and latching it for the rest of the
-        # run leaves every rung below without one on a host that has no system Python, which is
-        # the population they exist for. The --tauri path reaches this well before the assignment.
-        # A miss taken WITH the variable known is final and a hit is always final, so the latch
-        # still holds the spawn count down to one.
+        # $VenvDir is assigned far below the first caller (--tauri), so a miss taken before it existed
+        # is probed again once it does. A hit, or a miss taken with it known, is final.
         $venvDirValue = $null
         try { $venvDirValue = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue } catch {}
         $venvKnown = -not [string]::IsNullOrWhiteSpace($venvDirValue)
@@ -2710,14 +2694,9 @@ exit 1
         }
         $script:StudioEarlyPythonProbed = $true
         $script:StudioEarlyPythonProbedWithoutVenv = (-not $venvKnown)
-        # Same kill switch shape as UNSLOTH_NVIDIA_LIBRARY_PROBE: a host where spawning an
-        # interpreter is unwelcome, or a support case that needs the old behaviour back, sets this
-        # to 0 and the ladder falls through to the lexical resolver exactly as it did before.
+        # 0 restores the previous ladder, like UNSLOTH_NVIDIA_LIBRARY_PROBE.
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $null }
         $candidates = @()
-        # A previous install's own interpreter first: it is the one this installer chose last
-        # time, and reaching it through $VenvDir means an alias of the root resolves to the same
-        # file without anyone canonicalising anything.
         if ($venvKnown) {
             $candidates += (Join-Path $venvDirValue "Scripts\python.exe")
             $candidates += (Join-Path $venvDirValue "bin/python3")
@@ -2732,12 +2711,7 @@ exit 1
         foreach ($candidate in $candidates) {
             if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
             if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-            # The probe IS a realpath call, so an interpreter that cannot answer one is rejected
-            # here rather than passing a check and failing later. Python 2 fails it too, since its
-            # Windows realpath does not follow links.
-            # The interpreter's own directory: it exists, since the executable inside it just
-            # passed Test-Path. Not $PSScriptRoot, which is empty under `irm | iex` (no script
-            # file), and not the temp directory, which this installer relocates.
+            # Probe the interpreter's own directory: $PSScriptRoot is empty under `irm | iex`.
             $probeDir = [System.IO.Path]::GetDirectoryName($candidate)
             if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
             $probe = Invoke-StudioEarlyPython -Exe $candidate -Path $probeDir
@@ -2749,54 +2723,22 @@ exit 1
         return $null
     }
 
-    # os.path.realpath in a bounded child. Null on anything other than a clean answer, because
-    # every caller already treats "no exact answer" as "use the lexical one".
+    # Path.resolve in a bounded child. $null on anything but a clean answer.
     function Invoke-StudioEarlyPython {
         param(
             [Parameter(Mandatory = $true)][string]$Exe,
             [Parameter(Mandatory = $true)][string]$Path,
             [int]$TimeoutMs = 10000
         )
-        # -I isolates the run from PYTHONPATH, a sitecustomize and the user site directory, so a
-        # broken environment cannot change the answer. studio/setup.sh runs nvidia_probe.py the
-        # same way.
-        # Deliberately the SAME expression unsloth_cli/_studio_runtime_gate.py's
-        # _resolved_windows_path uses, Path(...).resolve(strict = False), not os.path.realpath.
-        # The two agree today, but this string is hashed into a lock name that the running
-        # Unsloth derives from that function, so matching the expression removes a whole class of
-        # divergence rather than relying on two spellings staying equivalent.
-        #
-        # Written as UTF-8 bytes rather than through print, and read back as UTF-8 below. Windows
-        # PowerShell 5.1 decodes a child's stdout with the console codepage, which mangles every
-        # non-ASCII character in a path and would silently produce a different hash from the one
-        # the Python side computes.
-        # strict=True, unlike the gate's strict=False, and the difference is deliberate. For any
-        # path that genuinely resolves the two return the same string, so the byte-identity above
-        # holds for every valid input. They part company on a symlink loop or a dangling
-        # component, where strict=False returns the path UNRESOLVED rather than raising. That
-        # string is not an identity, and this rung's whole contract is that an answer is exact, so
-        # handing one back would let a caller treat an unresolved path as vouched for and decide
-        # two paths are different when it cannot know. Raising means null here and the lexical
-        # fallback with Exact = $false, which fails closed.
-        #
-        # Test-Path is not enough on its own: it returns true for the loop's own symlink.
-        # The version gate is load-bearing, not hygiene. Before 3.8, Windows path resolution did
-        # not follow junctions or symlinks, so an older interpreter would hand back the ALIAS
-        # spelling and this rung would mark it exact. Test-StudioPathEqual would then read an
-        # alias and its target as definitively different instead of taking both runtime locks,
-        # which is permission to install over a live managed environment. The probe cannot catch
-        # it either, since it only resolves the interpreter's own ordinary directory. Refusing
-        # the interpreter outright is the honest answer: the ladder falls through to lexical and
-        # Exact stays false.
+        # The gate's expression (_resolved_windows_path) but strict=True: identical for any path that
+        # resolves, while a loop or dangling link raises instead of coming back unresolved.
+        # Before 3.8 Windows resolve does not follow links, so an alias would be reported as exact.
         $script = "import pathlib,sys" + [char]10 +
                   "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
-        # Verbatim: the child writes no delimiter, and Trim() would also strip a trailing
-        # U+00A0 that NTFS keeps in a name and the native rung and the gate both preserve.
+        # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
         $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
         if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
-        # A relative answer is not an identity, and a path that does not exist cannot be the
-        # resolution of one that does.
         if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
         if (-not (Test-Path -LiteralPath $answer)) { return $null }
         return $answer
@@ -2814,26 +2756,13 @@ exit 1
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
-            # ArgumentList is .NET Core only. Windows PowerShell 5.1, which is the host the
-            # desktop installer launches, gets ProcessStartInfo from .NET Framework where the
-            # property does not exist, so .Add() throws, the catch below returns null and every
-            # candidate is rejected: the rung would never work on the primary Windows host while
-            # looking perfectly healthy. Branch on the property rather than assume it.
-            # -S as well as -I. Isolated mode implies -E, -P and -s, but NOT -S, so site is still
-            # imported and a system-level sitecustomize still runs before this script. On a
-            # corporate host that is instrumentation: it can print to stdout, which corrupts the
-            # one line this rung reads back, it can hang, which burns the timeout and rejects a
-            # perfectly good interpreter, and it can patch pathlib, which would let this mark an
-            # influenced answer as exact. Measured, not assumed: under -I alone sys.flags.no_site
-            # is 0. Nothing routed through here needs site-packages.
+            # -S as well as -I: -I still imports site, so a sitecustomize could print or hang.
+            # ArgumentList is .NET Core only; Windows PowerShell 5.1 lacks it.
             $argv = @("-I", "-S", "-c", $Script) + $ScriptArgs
             if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
                 foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
             } else {
-                # Quote for CommandLineToArgvW. The scripts carry no double quote by
-                # construction and a Windows path cannot contain one, so only two things matter:
-                # wrap each argument, and double any run of trailing backslashes, since
-                # "C:\dir\" would otherwise escape its own closing quote.
+                # Quote for CommandLineToArgvW, doubling trailing backslashes so "C:\dir\" keeps its quote.
                 $psi.Arguments = (@($argv | ForEach-Object {
                     '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
                 }) -join ' ')
@@ -2841,9 +2770,7 @@ exit 1
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
-            # Without this, 5.1 decodes the child's bytes with the console codepage and a path
-            # containing any non-ASCII character comes back corrupted. The corruption is silent:
-            # the string still looks like a path, and it is what gets hashed into a lock name.
+            # Otherwise 5.1 decodes with the console codepage and corrupts non-ASCII paths.
             $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
             $psi.CreateNoWindow = $true
             $proc = [System.Diagnostics.Process]::Start($psi)
@@ -2862,17 +2789,8 @@ exit 1
         }
     }
 
-    # One child per DISTINCT path, not per call.
-    #
-    # The process scan resolves the image path of every running process, and the install repeats
-    # that for each protected root, so a machine with a few hundred processes asked this the same
-    # questions two to four times over. Most of those paths are also the same string: many
-    # processes run the same executable. Where the rung above this one declines, which is what
-    # WDAC Dynamic Code Security does, every one of those was a child process with a ten second
-    # bound behind it.
-    #
-    # The miss is cached too, as $null, because "asked, and there is no exact answer for this
-    # path" is worth exactly as much as an answer and costs the same child to learn twice.
+    # One child per distinct path: the process scan asks for the same image paths repeatedly.
+    # Misses are cached too.
     $script:StudioPythonFinalPathCache = $null
 
     function Get-StudioPythonFinalPath {
@@ -2882,8 +2800,7 @@ exit 1
             return $script:StudioPythonFinalPathCache[$Path]
         }
         $exe = Get-StudioEarlyPython
-        # Not cached: the interpreter can appear later in the run (the ladder re-probes once
-        # $VenvDir is known), and recording a miss taken without one would outlive the reason.
+        # Not cached: the re-probe once $VenvDir is known may still find an interpreter.
         if (-not $exe) { return $null }
         $answer = Invoke-StudioEarlyPython -Exe $exe -Path $Path
         $script:StudioPythonFinalPathCache[$Path] = $answer
@@ -2933,12 +2850,7 @@ exit 1
             }
         }
         if ([string]::IsNullOrEmpty($resolved)) {
-            # Strictly additive: this rung only runs where the native one already gave up, so a
-            # host that resolves natively today behaves exactly as it did. Where it answers, the
-            # identity is exact for the same reason the native one is, os.path.realpath being
-            # GetFinalPathNameByHandleW on Windows, so Exact = $true is earned rather than
-            # assumed. Where there is no usable interpreter it returns null and the lexical
-            # fallback below runs, which is today's behaviour unchanged.
+            # Only reached when the native rung gave up, so hosts that resolve natively are unchanged.
             $resolved = Get-StudioPythonFinalPath -Path $existingPath
             if (-not [string]::IsNullOrWhiteSpace($resolved)) { $exact = $true }
         }
