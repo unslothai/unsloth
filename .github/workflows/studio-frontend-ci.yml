@@ -415,7 +415,7 @@ jobs:
       - name: Model-load notification and cancellation regression
         working-directory: ${{ github.workspace }}
         timeout-minutes: 3
-        run: python3 tests/studio/playwright_model_load_notice.py --artifacts logs/model-load-notice
+        run: python3 tests/studio/playwright_model_load_notice.py --artifacts logs/playwright-model-load-notice
 
       # A gate, not a measurement. The released and streamdown variants are positive controls
       # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
