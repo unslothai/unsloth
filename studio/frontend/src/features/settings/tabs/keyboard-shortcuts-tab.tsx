@@ -15,7 +15,7 @@ import {
   Alert01Icon,
   ArrowTurnBackwardIcon,
   Delete02Icon,
-  KeyboardIcon,
+  EnergyRectangleIcon,
   PencilEdit02Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
@@ -469,7 +469,7 @@ export function KeyboardShortcutsTab() {
               )}
             >
               <HugeiconsIcon
-                icon={KeyboardIcon}
+                icon={EnergyRectangleIcon}
                 strokeWidth={1.75}
                 className="size-4"
               />
