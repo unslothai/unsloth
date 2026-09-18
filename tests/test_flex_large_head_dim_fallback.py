@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The large-head-dim flex opt-in must never move a VLM vision tower.
-
-On Transformers < 4.57 there is no per-sub-config attn_implementation mapping, so a plain
-"flex_attention" string would apply to the vision tower as well as the decoder. That is a
-regression rather than a fallback: the tower has a small head dim so SDPA already reaches a
-fused kernel, and it attends over a different length every call, which would make flex
-recompile per shape. These pin that the unofferable case degrades to sdpa instead.
-"""
+"""The large-head-dim flex routing: decoder-only scoping, opt-outs, config-driven detection,
+and why the mask is always present under Unsloth."""
 
 import pytest
 
@@ -64,10 +58,7 @@ def test_mapping_support_text_only_is_a_plain_string():
     assert u._flex_attn_impl_for(_text_only(), "sdpa") == "flex_attention"
 
 
-# --- explicit opt-outs must survive the force-enable path ------------------------------
-# PreTrainedModel sets _supports_flex_attn = False for every model, so getattr() cannot tell
-# "never mentioned it" (qwen3_5) from "deliberately off" (T5Gemma2, whose custom masks cannot
-# merge under flex). Hence the vars() read with the MRO walk stopping at the generic base.
+# getattr cannot tell an inherited False (qwen3_5) from a deliberate one (T5Gemma2).
 
 
 def _real_model_class(module_path, class_name):
@@ -116,11 +107,6 @@ def test_force_enable_still_opts_in_qwen3_5():
     assert u._enable_flex_attention_support(cls, "qwen3_5") is True
 
 
-# --- the decision comes from the model's own config, with no env var set ---------------
-# head_dim and model_type are both read off config.json, so a model that needs flex gets it
-# without the caller naming a backend. The env var overrides in either direction.
-
-
 @pytest.fixture
 def _no_env(monkeypatch):
     monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising = False)
@@ -154,8 +140,7 @@ def test_head_dim_derived_from_hidden_size_when_absent(_no_env):
 
 
 def test_per_layer_head_dims_take_the_maximum(_no_env):
-    # Gemma 4's decoder is 256 except on its KV-shared layers, which are 512, expressed as a
-    # 5.x per_layer_config. The largest layer decides whether any flash kernel is reachable.
+    # 5.x per_layer_config: the largest layer decides.
     cfg = _Cfg(
         model_type = "fake",
         head_dim = 128,
@@ -246,8 +231,7 @@ def test_forcing_the_env_var_outranks_flash_attention(monkeypatch, env, expected
 
 
 def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch):
-    # the env var decides head-dim preference only; a deliberate _supports_flex_attn = False
-    # on the architecture's own class still wins.
+    # a deliberate _supports_flex_attn = False still wins over the env var
     monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, "1")
     cls = _real_model_class(
         "transformers.models.t5gemma2.modeling_t5gemma2", "T5Gemma2ForConditionalGeneration"
@@ -256,15 +240,8 @@ def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch
     assert u._enable_flex_attention_support(cls, "t5gemma2") is False
 
 
-# --- what actually costs SDPA the flash kernel above head_dim 128 -----------------------
-# Not the head dim: an explicit MASK. Upstream returns None from create_causal_mask for an
-# unpadded batch so SDPA can use is_causal and reach a real flash kernel even at head_dim 256.
-# Unsloth torch.compiles create_causal_mask, and `_ignore_causal_mask_sdpa` bails out with
-# `if is_tracing(padding_mask): return False`, so under Unsloth the skip never fires and an
-# unpadded batch still gets a dense 4D mask. Measured cost of that on a B200, fwd+bwd:
-# head_dim 64 1.89x, 128 1.05x, 256 7.02x (the mask drops SDPA to fmha_cutlassF...sm80).
-# These pin both halves, so neither an upstream change nor a change to our own compile can
-# move this silently.
+# Upstream skips the mask for an unpadded batch, but `_ignore_causal_mask_sdpa` returns False
+# while tracing, so Unsloth's compiled create_causal_mask always builds one. Pins both halves.
 
 
 def _mask_for(

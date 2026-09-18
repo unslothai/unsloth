@@ -1,20 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Gemma 4 keeps SDPA, because its sliding layers already have something better than flex.
-
-Transformers has no per-LAYER attention implementation: every one of Gemma 4's 30 decoder
-layers reads the same `config._attn_implementation` (modeling_gemma4.py, the
-`ALL_ATTENTION_FUNCTIONS.get_interface(self.config._attn_implementation, ...)` call). 25 of
-those layers are sliding (window 1024, head_dim 256) and 5 are full attention
-(global_head_dim 512), so routing the decoder to flex routes the sliding layers too.
-
-unsloth_zoo's gemma4_flash_sliding installs a flash-attn-2 windowed router under the "sdpa"
-key. Measured at the Gemma 4 sliding shape, fwd+bwd, T=8192: FA2 with window_size=(w-1, 0)
-2.285 ms against flex's 3.283 ms, break-even 1 step against flex's 78. Switching to flex does
-not just lose that, it disables the router outright, because those layers never look up "sdpa"
-again -- and the banded SDPA fallback and the UNSLOTH_GEMMA4_FLASH_SLIDING knob go with it.
-
-These pin the exclusion, and that it does not leak onto the models the routing is for.
-"""
+"""Gemma 4 stays on SDPA: all its layers share one _attn_implementation, and flex would
+disable unsloth_zoo's gemma4_flash_sliding router ("sdpa" key) for its 25 sliding layers."""
 
 import pytest
 
@@ -35,8 +21,6 @@ def _clean(monkeypatch):
 
 
 def _gemma4():
-    # Shape of the real models/gemma-4-26B-A4B-it/config.json: head_dim 256 on the 25 sliding
-    # layers, global_head_dim 512 on the 5 full-attention ones.
     text = _Cfg(
         model_type = "gemma4_text",
         head_dim = 256,
@@ -56,8 +40,7 @@ def test_gemma4_is_not_routed_to_flex():
 
 
 def test_gemma4_text_only_is_not_routed_either():
-    # The exclusion has to match on the text sub-config's model_type as well as the top-level
-    # one, because a text-only load presents gemma4_text at the top.
+    # A text-only load presents gemma4_text at the top.
     text_only = _Cfg(
         model_type = "gemma4_text",
         head_dim = 256,
@@ -68,8 +51,6 @@ def test_gemma4_text_only_is_not_routed_either():
 
 
 def test_the_head_dim_is_still_large_so_this_really_is_the_exclusion_talking():
-    # Guard against the test passing for the wrong reason: if the head-dim probe stopped seeing
-    # 512 the assertion above would hold with no exclusion at all.
     assert u._text_attention_head_dim(_gemma4()) == 512
 
 
@@ -85,15 +66,8 @@ def test_the_models_this_routing_is_for_are_unaffected(model_type):
 
 
 def test_an_explicit_request_can_still_force_flex_on_gemma4(monkeypatch):
-    # The exclusion is a default, not a ban: someone with a long run who wants the global
-    # layers on flex must still be able to ask.
     monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, "1")
     assert u._prefers_flex_for_head_dim(_gemma4()) is True
-
-
-# ---------------------------------------------------------------------------------------------
-# The vision tower must never be dragged along, even behind a proxied text config
-# ---------------------------------------------------------------------------------------------
 
 
 class _Proxy:
@@ -109,11 +83,7 @@ class _Proxy:
 
 
 def test_a_proxied_text_config_is_still_recognised_by_name():
-    # unsloth_zoo wraps Gemma 4's text config to hide num_kv_shared_layers when it is 0, so
-    # get_text_config() returns something that is NOT `config.text_config`. A plain `is` test
-    # fails to name the field, and the old fall-through then applied flex as a plain string to
-    # the whole model -- vision tower included, the exact regression _flex_attn_impl_for exists
-    # to prevent.
+    # unsloth_zoo's proxy means get_text_config() is not `config.text_config`.
     u._ATTN_IMPL_MAPPING_SUPPORTED.clear()
     u._ATTN_IMPL_MAPPING_SUPPORTED.append(True)
     try:
@@ -139,7 +109,6 @@ def test_an_unnameable_text_config_declines_rather_than_flexing_everything():
             model_type = "fake_vl",
             vision_config = _Cfg(model_type = "fake_vision", head_dim = 64, num_attention_heads = 8),
         )
-        # A text config that is not reachable from any *_config field at all.
         cfg.get_text_config = lambda: stranger
         assert u._flex_attn_impl_for(cfg, "sdpa") is None
     finally:
