@@ -243,14 +243,17 @@ def _tokens(expression: str):
     """`expression` as (kind, text) tokens, or None if it steps outside what is read here.
 
     Reads, calls, literals, ternaries, `??` and comparisons only. Assignment, arrow functions,
-    blocks, templates, regexes, escapes, arithmetic and the comma operator are refused rather
-    than modelled, which leaves nothing that can bind, write or hide a statement. Parentheses
+    blocks, templates, regexes, escapes, arithmetic, optional chaining and the comma operator
+    are refused rather than modelled, which leaves nothing that can bind, write, hide a
+    statement or skip a read. Parentheses
     come back as "call" or "group"; `s["x"]` comes back as `s.x`.
     """
     raw, index, end = [], 0, len(expression.rstrip())
     while index < end:
         match = _TOKEN.match(expression, index)
         if match is None:
+            return None
+        if match.group(match.lastgroup) == "?.":
             return None
         raw.append((match.lastgroup, match.group(match.lastgroup)))
         index = match.end()
@@ -259,7 +262,7 @@ def _tokens(expression: str):
     while index < len(raw):
         kind, text = raw[index]
         previous = out[-1] if out else (None, None)
-        member = previous[1] in (".", "?.")
+        member = previous[1] == "."
         if kind == "name" and text in _RESERVED and not member:
             return None
         if text == "-":
@@ -399,7 +402,7 @@ def _reads_field(arm: list, access: list) -> bool:
             continue
         before = arm[index - 1][1] if index else None
         after = arm[index + size] if index + size < len(arm) else None
-        if before in (".", "?."):
+        if before == ".":
             continue
         if after is None or after[1] in (",", "??") or after == ("call", ")"):
             return True
@@ -524,6 +527,8 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget.length", False),
     ("(s) => s.reasoningBudget.toString()", False),
     ("(s) => (s.reasoningBudget).length", False),
+    # `?.` can skip the rest of the chain, the read of the field included.
+    ("(s) => s.other?.format(s.reasoningBudget)", False),
     # A constant arm counts only when a guard pins the field to that very value there.
     ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
     ("(s) => -1 === s.reasoningBudget ? -1 : s.reasoningBudget", True),
