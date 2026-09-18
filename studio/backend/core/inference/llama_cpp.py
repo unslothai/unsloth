@@ -10585,15 +10585,20 @@ class LlamaCppBackend:
             raw_mask = os.environ.get("CUDA_VISIBLE_DEVICES")
             mask_unset = raw_mask is None or not raw_mask.strip()
             mappable = mask_unset or LlamaCppBackend._resolve_visible_physical_ids() is not None
-            single_gpu_host = mask_unset and len(gpus) == 1
-            if not (mappable and order == "PCI_BUS_ID") and not single_gpu_host:
+            # No single-row exemption. `gpus` is what SURVIVED parsing, not what the
+            # host has: the N1X's own NPU row is dropped because its memory.free does
+            # not parse, so one surviving row proves nothing about how many cards are
+            # out there, and a host whose discrete row happened to drop could have had
+            # its remaining row widened. main.py:19 sets PCI_BUS_ID on import, so the
+            # condition below already covers every Spark, Jetson and N1X; a host that
+            # overrides the ordering loses the widening rather than risking the join.
+            if not (mappable and order == "PCI_BUS_ID"):
                 logger.debug(
-                    "Not widening integrated CUDA rows: CUDA_DEVICE_ORDER is %r, the "
-                    "mask %s, and %d rows were probed, so a CUDA id cannot be joined "
-                    "to an nvidia-smi index here.",
+                    "Not widening integrated CUDA rows: CUDA_DEVICE_ORDER is %r and "
+                    "the mask %s, so a CUDA id cannot be joined to an nvidia-smi index "
+                    "here.",
                     order or "unset (FASTEST_FIRST)",
                     "resolves to no physical ids" if not mappable else "is mappable",
-                    len(gpus),
                 )
                 return gpus
             totals = LlamaCppBackend._integrated_cuda_pool_total_mib()
@@ -12729,7 +12734,10 @@ class LlamaCppBackend:
         nvml_gpus = LlamaCppBackend._get_gpu_memory_nvml()
         if nvml_gpus:
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
-            return nvml_gpus
+            # nvidia-smi IS NVML, so this arm reports the same carve-out and needs the
+            # same correction; its rows are PCI-indexed identically, as the flag above
+            # says, so the join and its guard carry over unchanged.
+            return LlamaCppBackend._widen_integrated_cuda_rows(nvml_gpus)
 
         # ── AMD ROCm via amd-smi ─────────────────────────────────────
         rocm_gpus = LlamaCppBackend._get_gpu_memory_amd_smi(

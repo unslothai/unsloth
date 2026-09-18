@@ -713,3 +713,49 @@ def test_the_widened_utilization_is_capped_by_the_cgroup(monkeypatch):
     assert device["vram_total_gb"] == N1X_POOL_GB
     free_gb = device["vram_total_gb"] - device["vram_used_gb"]
     assert free_gb == pytest.approx(2.0, abs = 0.01), device
+
+
+def test_one_surviving_row_is_not_proof_of_one_gpu(monkeypatch):
+    """`gpus` is what survived parsing, not what the host has.
+
+    The N1X's own NPU row is dropped because its memory.free does not parse, so a
+    single surviving row says nothing about how many cards are present: a host whose
+    DISCRETE row dropped would otherwise have had that row widened under an ordering
+    that cannot be joined.
+    """
+    _llama_common(monkeypatch, avail_mib = 43000)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {1}))
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_integrated_cuda_pool_total_mib",
+        staticmethod(lambda: {1: N1X_POOL_MIB}),
+    )
+    # Index 1 here is the DISCRETE card; the integrated part is the row that dropped.
+    smi_rows = [(1, 20000, 24564)]
+
+    assert LlamaCppBackend._widen_integrated_cuda_rows(list(smi_rows)) == smi_rows
+
+
+def test_the_nvml_fallback_is_widened_too(monkeypatch):
+    """nvidia-smi IS NVML, so the fallback reports the same carve-out.
+
+    It is reached whenever the CLI is absent, hung or unparseable, and returning its
+    raw rows reproduced the fit failure this change exists to remove.
+    """
+    _integrated_llama_host(monkeypatch)
+    # The nvidia-smi arm finds nothing, so the NVML arm answers.
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.subprocess.run",
+        lambda *a, **k: types.SimpleNamespace(returncode = 1, stdout = "", stderr = "no smi"),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_get_gpu_memory_nvml",
+        staticmethod(lambda: [(0, 2256, N1X_CARVE_OUT_MIB)]),
+    )
+
+    rows = LlamaCppBackend._get_gpu_memory()
+
+    assert rows[0][2] == N1X_POOL_MIB, rows
+    assert rows[0][1] > N1X_CARVE_OUT_MIB, rows
