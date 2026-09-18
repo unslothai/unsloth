@@ -219,17 +219,17 @@ huggingfacenotorch = [
     # reaches users once a zoo release carries the same ceiling. The two halves are not in
     # the same state:
     #
-    # trl: SATISFIED. 2026.9.5 ships unslothai/unsloth-zoo#1260 and says `trl<=1.13.0`, so
-    #   the floor names it and the gate in tests/test_trl_cap_sites.py is live again.
-    # transformers: NOT SATISFIED. 2026.9.5 still says `transformers<=5.5.0` because
-    #   unslothai/unsloth-zoo#1227 is still open, so pip keeps intersecting the wider window
-    #   below back down to 5.5.0 and that lift is advertised rather than delivered. The gate
-    #   in tests/test_transformers_cap_sites.py stays deferred for exactly that reason.
+    # trl: SATISFIED. 2026.9.5 shipped unslothai/unsloth-zoo#1260 and says `trl<=1.13.0`,
+    #   so the floor covers it and the gate in tests/test_trl_cap_sites.py is live.
+    # transformers: NOT SATISFIED. 2026.9.6 still says `transformers<=5.5.0` because
+    #   unslothai/unsloth-zoo#1227 has not shipped, so pip keeps intersecting the wider
+    #   window below back down to 5.5.0 and that lift is advertised rather than delivered.
+    #   The gate in tests/test_transformers_cap_sites.py stays deferred for that reason,
+    #   and expires by itself once PyPI shows a zoo carrying the lift.
     #
-    # The floor therefore stops at 2026.9.5: a floor no published release satisfies would
-    # make unsloth uninstallable, which is worse than under-delivering. Raise it again, and
-    # re-enable that one remaining gate, in the same commit that #1227 ships.
-    "unsloth_zoo>=2026.9.5",
+    # The floor therefore stops at 2026.9.6: a floor no published release satisfies would
+    # make unsloth uninstallable, which is worse than under-delivering.
+    "unsloth_zoo>=2026.9.6",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -302,7 +302,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.5",
+    "unsloth_zoo>=2026.9.6",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -921,7 +921,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.5",
+    "unsloth_zoo>=2026.9.6",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",

@@ -912,7 +912,7 @@ def stub_embeddings(monkeypatch):
 
     from core.rag import config, embeddings
 
-    # Pin the backend: "auto" reprobes the hardware (nvidia-smi) on every use.
+    # Pin the backend: "auto" probes the hardware (nvidia-smi) for each backend it builds.
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     dim = 32
 

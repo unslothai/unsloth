@@ -177,6 +177,12 @@ jobs:
               'datasets>=3.4,<4.4' 'bitsandbytes>=0.45.5' 'triton==3.2.0'
               hf_transfer
           - slug: ceiling
+            # datasets carries the declared window rather than being installed bare: both
+            # checkout installs below use --no-deps, so pyproject's `<4.4.0` never reaches
+            # the resolver and a bare name takes the newest release (datasets 5 today).
+            # This lane would then fail on an unsupported datasets instead of isolating
+            # compatibility with the transformers ceiling it exists to measure. The
+            # `latest` lane stays bare on purpose: resolving outside the window is its job.
             # 3.11, not 3.12: the cache key is pip-v2-<name>-<os>-<arch>-py<minor>-<hash>
             # and every lane here shares the name and the key-files, so two lanes on one
             # interpreter mint the same key, whichever saves first wins and the other
@@ -198,8 +204,8 @@ jobs:
               torch torchvision 'torchcodec>=0.12'
             pkg_pins: >-
               'transformers==5.17.0' 'trl==1.13.0'
-              peft sentence-transformers accelerate datasets bitsandbytes triton
-              hf_transfer
+              peft sentence-transformers accelerate 'datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0'
+              bitsandbytes triton hf_transfer
           - slug: latest
             continue_on_error: true
             python: '3.12'

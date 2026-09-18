@@ -23,8 +23,30 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# The floor we owe compatibility to. Below it there is no claim to check.
-_FLOOR = (4, 57, 6)
+# The floor we owe compatibility to, READ from pyproject rather than repeated, for the
+# same reason the ceiling is (see _CAP): a hardcoded 4.57.6 stayed put when the declared
+# floor moved to 4.52.4, so _release_tags() discarded every 4.52 through 4.56 release and
+# this matrix went green while claiming support for versions it never checked.
+_FLOOR_RE = re.compile(r"^\s*\"transformers[^\"]*?>=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
+_FLOOR_FALLBACK = (4, 52, 4)
+
+
+def _declared_floor() -> tuple[int, ...]:
+    """The oldest transformers pyproject admits; the fallback keeps a bad read from
+    widening the matrix to every release ever published."""
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        found = _FLOOR_RE.findall(pyproject.read_text(encoding = "utf-8"))
+    except OSError:
+        return _FLOOR_FALLBACK
+    if not found:
+        return _FLOOR_FALLBACK
+    # The lowest, so a marker-gated half declaring a higher floor cannot raise it and hide
+    # the releases the other half still admits.
+    return min(tuple(int(part) for part in v.split(".")) for v in found)
+
+
+_FLOOR = _declared_floor()
 
 # Always present whatever PyPI says, because each one is load-bearing somewhere else:
 # 4.57.6 is the floor, 5.5.0 is the old ceiling and still the Apple Silicon cap, and 5.16.0
@@ -67,11 +89,24 @@ def _declared_ceiling_tag() -> tuple[str, ...]:
 # PyPI version -> the tag that actually carries it, where upstream disagrees with itself.
 # Upstream tagged PyPI 5.10.4 as v5.10.3 (that tag's __init__ says 5.10.4); there is no
 # v5.10.4 tag and no 5.10.3 on PyPI, so the tag name is not "v" + the release name.
-_TAG_OVERRIDES = {"5.10.4": "v5.10.3"}
+# 4.54.1 is on PyPI and inside the window, but upstream never pushed a v4.54.1 tag: the
+# only 4.54 refs are v4.54.0 (whose __init__ says 4.54.0, so it is NOT this release) and
+# v4.54-release, whose __init__ says 4.54.1. Without this entry every check against 4.54.1
+# fails on the fetch rather than on the symbol.
+_TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release"}
 
 # Used when PyPI cannot be reached. A frozen list is the point: a network failure must not
-# quietly shrink the matrix to nothing and report green.
+# quietly shrink the matrix to nothing and report green. It has to START at the declared
+# floor for the same reason _FLOOR is derived: a fallback beginning at 4.57.6 silently
+# drops every 4.52 through 4.56 check on any outage, and _ALWAYS does not restore them, so
+# CI could pass through a regression at the newly supported low end.
+# test_the_outage_fallback_reaches_the_declared_floor holds this to the declared floor.
 _TAGS_FALLBACK = (
+    "v4.52.4",
+    "v4.53.3",
+    "v4.54-release",
+    "v4.55.4",
+    "v4.56.2",
     "v4.57.6",
     "v5.0.0",
     "v5.1.0",
@@ -216,8 +251,14 @@ def _with_always(tags) -> list[str]:
     return sorted(set(tuple(tags) + _ALWAYS + _declared_ceiling_tag()), key = _sort_key)
 
 
+# release version -> tag, inverted, so a tag whose NAME is not its version still sorts by
+# the release it carries. v4.54-release is exactly that case.
+_TAG_TO_RELEASE = {tag: release for release, tag in _TAG_OVERRIDES.items()}
+
+
 def _sort_key(tag: str) -> tuple[int, ...]:
-    return tuple(int(g) for g in tag.lstrip("v").split("."))
+    name = _TAG_TO_RELEASE.get(tag, tag).lstrip("v")
+    return tuple(int(g) for g in name.split("."))
 
 
 # `main` catches drift before it ships to PyPI.
@@ -507,4 +548,24 @@ def test_training_args_parallel_mode_importable(tag: str):
     assert "ParallelMode" in src, (
         f"{tag}: transformers.training_args.ParallelMode missing; "
         f"unsloth-zoo loss_utils.py:232 ImportError"
+    )
+
+
+def test_the_matrix_starts_at_the_declared_floor(tag: str) -> None:
+    """The matrix is only a compatibility claim if it begins where the claim does.
+
+    `_FLOOR` was a literal 4.57.6 while pyproject declared 4.51.3 and then 4.52.4, so every
+    4.52 through 4.56 release was discarded and a symbol or source-pattern change landing
+    after the floor could break supported users with this matrix still green.
+    """
+    declared = _declared_floor()
+    assert _FLOOR == declared, (
+        f"_FLOOR is {_FLOOR} but pyproject declares {declared}; the matrix would skip "
+        f"every release between them"
+    )
+    if tag == "main":
+        return
+    assert _sort_key(tag) >= declared, (
+        f"{tag} sits below the declared floor {declared}, so the matrix is checking a "
+        f"release no supported install can resolve"
     )
