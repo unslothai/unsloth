@@ -47,6 +47,68 @@ import routes.models as model_routes
 import state.tool_policy as _tp
 
 
+@pytest.fixture(autouse = True)
+def _auto_switch_waiters_are_not_carried_between_tests(request, monkeypatch):
+    """Restore ``_auto_switch_waiters`` around every test, and fail the test that dirties it.
+
+    It is a module-level dict in routes.inference, so a test that registers a waiting request
+    and does not unregister it leaves that entry behind for every later test in the same xdist
+    worker. It matters beyond tidiness because ``_switch_waiter_count()`` sums every key rather
+    than reading one, so a single stranded entry inflates the count for the whole worker and
+    ``_wait_for_model_switch_idle`` sees waiters that do not exist.
+
+    Two jobs, deliberately. Restoring keeps the next test starting from a known state. Raising
+    names the test that left the residue instead of the unrelated one that trips over it later,
+    which is the whole difficulty with this class of bug: the failure surfaces nowhere near its
+    cause.
+
+    The two halves have different proofs, and one of them has none. Removing the marker from a
+    staging test makes that test fail, so the detection half is covered. Removing the restore
+    changes nothing any test here can observe: the growth check is per-test, so a carried-over
+    entry only harms files that run LATER in the same worker, and which files share a worker is
+    decided by xdist at run time. A cleanliness assertion in a second file would pass vacuously
+    whenever the two land in different processes, which is worse than no test at all, so the
+    restore is kept as a defensive measure and is deliberately left unproven.
+
+    ``monkeypatch`` is requested, and not because this fixture patches anything. It is what
+    fixes the teardown ORDER. ``_wire()`` rebinds the registry with
+    ``monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})``, so the entry a test
+    stages goes into a temporary dict, and whichever of the two fixtures tears down second sees
+    the original one restored and nothing amiss. Depending on ``monkeypatch`` here makes this
+    fixture set up after it and therefore tear down before it, so the read below lands on the
+    dict the test actually wrote to. That ordering held incidentally without the dependency,
+    which is exactly the reason to state it: a guard that works by accident stops working
+    silently.
+
+    Three tests stage a waiting request on purpose, with ``_note_switch_waiter(key, 1)`` and no
+    matching -1, because that is the honest way to set the condition up. They carry
+    ``@pytest.mark.stages_switch_waiter`` to say so, which is checked here rather than inferred
+    from a name, so a new leak cannot arrive silently by resembling them.
+    """
+    before = dict(inference_route._auto_switch_waiters)
+    try:
+        yield
+    finally:
+        after = dict(inference_route._auto_switch_waiters)
+        inference_route._auto_switch_waiters.clear()
+        inference_route._auto_switch_waiters.update(before)
+    # Only counts that GREW. A test that clears the dict, or decrements a key it did not add,
+    # is tidying up after somebody else and must not be blamed for it: several tests here reset
+    # the registry as part of their own setup, and flagging any difference at all turned every
+    # one of them into a failure the moment another file in the same worker left an entry
+    # behind. Growth is the only direction that inflates _switch_waiter_count() for the tests
+    # that follow.
+    leaked = {key: count for key, count in after.items() if count > before.get(key, 0)}
+    if leaked and request.node.get_closest_marker("stages_switch_waiter") is None:
+        raise AssertionError(
+            "this test left routes.inference._auto_switch_waiters dirty: "
+            f"{leaked!r} (registry went {before!r} -> {after!r}). _switch_waiter_count() sums "
+            "every key, so the entry inflates the waiter count for every later test in this "
+            "xdist worker. Unregister it, or mark the test @pytest.mark.stages_switch_waiter "
+            "if the residue is the point."
+        )
+
+
 async def _boom(*a, **k):
     raise _Reached()
 
@@ -2960,6 +3022,7 @@ def test_streaming_responses_uses_advertised_id_helper():
     assert 'public_model_id(getattr(llama_backend, "model_identifier"' not in src
 
 
+@pytest.mark.stages_switch_waiter
 def test_concurrent_same_target_requests_load_once(monkeypatch):
     # Two concurrent requests for the same unloaded model must load once, not each
     # 409 the other. Simulate the second request already waiting (registered) while
@@ -2973,6 +3036,7 @@ def test_concurrent_same_target_requests_load_once(monkeypatch):
     assert len(rec.calls) == 1
 
 
+@pytest.mark.stages_switch_waiter
 def test_queued_different_target_does_not_deadlock_current_swap(monkeypatch):
     # A concurrent request already queued for another target is not generating,
     # so it must not prevent the current serialized swap from proceeding.
@@ -3110,6 +3174,7 @@ def test_pending_same_target_request_does_not_block_swap(monkeypatch):
     assert len(rec.calls) == 1
 
 
+@pytest.mark.stages_switch_waiter
 def test_swap_waits_until_concurrent_request_finishes_resolving(monkeypatch):
     # The real middleware counts a concurrent same-model request as in-flight
     # before it resolves and registers a target waiter. Treat it as active until
