@@ -13,6 +13,24 @@
 #   docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
+# Studio image: relink its code into the home (maybe an earlier image's volume) before
+# anything reads the venv, as entrypoint.sh does on the CUDA image. Fatal on failure
+# (a half-linked home); no-op on the base image, which has no linker.
+if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
+    /usr/local/bin/unsloth-studio-home || {
+        echo "ERROR: could not link Unsloth Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}; see the messages above" >&2
+        exit 1
+    }
+fi
+
+# best-effort, gated by UNSLOTH_SKIP_NOTEBOOK_SYNC, never blocks the container;
+# no-op on the base image, which ships no notebooks
+sync_notebooks() {
+    if [[ -x /usr/local/bin/unsloth-sync-notebooks ]]; then
+        /usr/local/bin/unsloth-sync-notebooks || true
+    fi
+}
+
 err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
 warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 
@@ -41,6 +59,7 @@ esac
 # The skip flag bypasses the diagnostics only; the override cleanup above
 # still applies, since it changes what the command sees.
 if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
+    sync_notebooks
     exec "$@"
 fi
 
@@ -273,4 +292,5 @@ for i in range(torch.cuda.device_count()):
 sys.exit(0)
 PY
 
+sync_notebooks
 exec "$@"
