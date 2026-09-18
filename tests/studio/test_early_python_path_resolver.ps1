@@ -132,6 +132,14 @@ try {
         -not [string]::IsNullOrWhiteSpace($unicodeAnswer) -and
         $unicodeAnswer.EndsWith($unicodeName))
 
+    # NTFS keeps a trailing U+00A0 and GetFullPath does not strip it, but String.Trim() does. With
+    # a sibling lacking it, a trimmed answer passes Test-Path and names the wrong directory.
+    $nbspName = "studio-nbsp" + [char]0x00A0
+    New-Item -ItemType Directory -Force -Path (Join-Path $tmp "studio-nbsp") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $tmp $nbspName) | Out-Null
+    $nbspAnswer = Get-StudioPythonFinalPath -Path (Join-Path $tmp $nbspName)
+    Check "a trailing non-breaking space is kept" ("$nbspAnswer".EndsWith($nbspName))
+
     # The resolver must produce what the running Unsloth produces, since both are hashed into
     # lock names. Compare against _studio_runtime_gate.py's own expression rather than against
     # another spelling of it.

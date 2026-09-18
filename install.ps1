@@ -2835,7 +2835,9 @@ exit 1
                 return $null
             }
             if ($proc.ExitCode -ne 0) { return $null }
-            $answer = "$($stdout.Result)".Trim()
+            # Verbatim: the child writes no delimiter, and Trim() would also strip a trailing
+            # U+00A0 that NTFS keeps in a name and the native rung and the gate both preserve.
+            $answer = "$($stdout.Result)"
             if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
             # A relative answer is not an identity, and a path that does not exist cannot be the
             # resolution of one that does.
