@@ -3936,15 +3936,35 @@ _amd_node_repairs() {
         case "$(ls -ld "$_anr_node" 2>/dev/null | cut -c11)" in
             +) printf 'acl:%s\n' "$_anr_node"; continue ;;
         esac
-        stat -c '%a|%G|%g|%n|%u' "$_anr_node" 2>/dev/null || true
+        # The group NAME goes LAST, because it is the one field NSS controls and the only
+        # one that can carry the separator: winbind hands back DOMAIN\group, and an LDAP
+        # directory can return anything at all. With it anywhere else a name carrying a
+        # pipe shifts every field after it, so the mode, the GID and the uid this branches
+        # on would all be read out of the name. Everything before it comes from the kernel
+        # or from the node list this was called with.
+        stat -c '%a|%g|%u|%n|%G' "$_anr_node" 2>/dev/null || true
     done | awk -F'|' -v self="$(id -u 2>/dev/null || echo -1)" \
               -v mygids=" $(id -G 2>/dev/null) " '
         /^acl:/ { print; next }
         {
+            # mode|gid|uid|path|group-name. The name is last and is rejoined from every
+            # remaining field, so a name carrying the separator is recovered whole rather
+            # than silently truncated at its first pipe.
+            gname = $5
+            for (i = 6; i <= NF; i++) { gname = gname "|" $i }
+            # A name that cannot be pasted on as ONE group is treated as no name at all,
+            # and the node is reported by its GID instead. usermod -G takes a
+            # comma-separated list, so a group genuinely named "render,sudo" is two groups
+            # to it and the privileged test below, which compares whole names, walks
+            # straight past it. Quoting is the wrong layer: the splitting happens inside
+            # usermod, after the shell has handed it a single argument. The charset is
+            # groupadd(8) portable plus the trailing $ of a Samba machine account, and
+            # mirrors _GROUP_NAME_RE in utils/hardware/amd.py.
+            if (gname !~ /^[A-Za-z_][A-Za-z0-9_.-]*[$]?$/) { gname = "" }
             # POSIX resolves the owner class EXCLUSIVELY once the uid matches, so on a
             # node this account owns the group bits are never consulted and no membership
             # opens it however they read. The repair there is the mode.
-            if (self != -1 && $5 + 0 == self + 0) {
+            if (self != -1 && $3 + 0 == self + 0) {
                 # Unless the OWNER digit already grants rw: the node is known shut, so
                 # the mode is not what denies it. Same external denial as the
                 # already-a-member branch, by owner class. Mirrors amd.py external.
@@ -3958,6 +3978,11 @@ _amd_node_repairs() {
                 if (u == 6 || u == 7) { print "external:" $4; next }
                 print "owner:" $4; next
             }
+            # A record whose GID did not come back as a number is one this cannot reason
+            # about at all, so it is reported as a node no membership opens rather than
+            # branched on. Unreachable while stat answers, and the direction that cannot
+            # invent a repair if it ever stops.
+            if ($2 !~ /^[0-9]+$/) { print "mode:" $4; next }
             # Group digit of the octal mode; read AND write, since HIP and the Vulkan
             # loader both open the node read-write.
             g = substr($1, length($1) - 1, 1) + 0
@@ -3969,8 +3994,8 @@ _amd_node_repairs() {
             # test: stat prints UNKNOWN for a gid the group database cannot name, so a
             # minimal container with no entry for gid 0 filed the node as an ordinary
             # unnamed GID and prescribed groupadd -g 0 plus usermod into root.
-            if ($3 + 0 == 0 || $2 ~ /^(root|wheel|sudo|admin|adm|disk|kmem|shadow|docker|lxd)$/) {
-                pname = $2
+            if ($2 + 0 == 0 || gname ~ /^(root|wheel|sudo|admin|adm|disk|kmem|shadow|docker|lxd)$/) {
+                pname = gname
                 if (pname == "" || pname ~ /^UNKNOWN/) { pname = "root" }
                 if (!pseen[pname]++) print "privileged:" pname
                 next
@@ -3979,14 +4004,14 @@ _amd_node_repairs() {
             # not what denies it: a container device cgroup or an LSM is, and usermod
             # would exit 0 and change nothing. Read from `id -G`, space-padded so 100
             # cannot match 1001. Above the unnamed branch for the same reason.
-            if (mygids ~ (" " $3 " ")) {
-                held = $2
-                if (held == "" || held ~ /^UNKNOWN/) { held = $3 }
+            if (mygids ~ (" " $2 " ")) {
+                held = gname
+                if (held == "" || held ~ /^UNKNOWN/) { held = $2 }
                 if (!aseen[held]++) print "already:" held
                 next
             }
-            if ($2 == "" || $2 ~ /^UNKNOWN/) { if (!gseen[$3]++) print "gid:" $3; next }
-            if (!nseen[$2]++) print "join:" $2
+            if (gname == "" || gname ~ /^UNKNOWN/) { if (!gseen[$2]++) print "gid:" $2; next }
+            if (!nseen[gname]++) print "join:" gname
         }'
 }
 
@@ -5239,7 +5264,12 @@ _amd_probed_gfx_first=""
 # use the card. On a runtime-less host the reroute above then rewrites a */cpu index to
 # a per-arch */gfx* one -- which is exactly the #10466 host -- so answering inside one
 # arm would miss the case this was written for.
-_closed_amd_nodes="$(_amd_nodes_closed_to_this_user)"
+# `|| true` because this whole block is a DIAGNOSTIC and the script runs under `set -e`:
+# an unguarded assignment takes the installer down with it if the helper's last command
+# fails, and the helpers here shell out to stat, awk and tr. On a host missing one of
+# those the answer is "no advice", never "no install". Empty is what every consumer below
+# already treats as nothing to report.
+_closed_amd_nodes="$(_amd_nodes_closed_to_this_user || true)"
 case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
@@ -6031,7 +6061,9 @@ _run_may_open_a_gpu_node() {
 # $_torch_index_leaf, since the per-arch reroutes rewrite the URL after that is set.
 # repo.radeon.com is named separately: its leaf is rocm-rel-X.Y, a real ROCm route that is
 # not a pip family, so the family test alone would drop it.
-_amd_node_diag_leaf=$(_torch_index_url_leaf "$TORCH_INDEX_URL")
+# Guarded for the same reason as the closed-node read above: a diagnostic may not
+# abort the install under `set -e`. An empty leaf falls to the pip-family arm below.
+_amd_node_diag_leaf=$(_torch_index_url_leaf "$TORCH_INDEX_URL" || true)
 case "$_amd_node_diag_leaf" in
     # A repo.radeon.com leaf is rocm-rel-X.Y[.Z] and nothing else, anchored the way
     # _is_pip_rocm_family_leaf anchors its own rocm[0-9]* arm: a pin that merely STARTS
@@ -6134,7 +6166,9 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
         substep "  ROCm needs it; Vulkan does not."
     fi
     # Read from the nodes that were refused, so the advice matches those files.
-    _closed_amd_repairs=$(_amd_node_repairs "$_closed_amd_nodes")
+    # Guarded: `set -e` plus an unguarded substitution would let a missing awk abort
+    # the installer from inside the advice it was about to print.
+    _closed_amd_repairs=$(_amd_node_repairs "$_closed_amd_nodes" || true)
     _closed_amd_groups=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^join://p' \
         | tr '\n' ',' | sed 's/,*$//')
     _closed_amd_gids=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^gid://p' \

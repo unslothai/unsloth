@@ -1364,6 +1364,26 @@ _PRIVILEGED_GROUPS = frozenset(
 )
 
 
+# A group name this can safely pass on to usermod, which is narrower than a name NSS can
+# return. The portable set from groupadd(8), plus the trailing $ a Samba machine account
+# carries. Anything outside it is reported by its GID instead of being pasted into a
+# command, because two layers below this one read such a name as structure rather than as
+# a name:
+#   usermod -G takes a COMMA-SEPARATED list, so a group genuinely named "render,sudo" is
+#   two groups to it, and _PRIVILEGED_GROUPS never matches because it compares the whole
+#   string. Shell quoting is the wrong layer -- the splitting happens inside usermod,
+#   after the shell has handed it one argument.
+#   install.sh's twin parses `stat -c` output with awk -F'|', so a name carrying a pipe
+#   shifts every field after it.
+# The GID is what --group-add takes anyway, so nothing is lost by reporting it.
+_GROUP_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*\$?\Z")
+
+
+def _group_name_is_prescribable(name: str) -> bool:
+    """Whether ``name`` can be pasted into a repair command as a single group."""
+    return bool(name) and _GROUP_NAME_RE.match(name) is not None
+
+
 def _groups_that_own(paths: list) -> tuple:
     """How to open ``paths``, read from the nodes themselves.
 
@@ -1439,6 +1459,12 @@ def _groups_that_own(paths: list) -> tuple:
             import grp
             name = grp.getgrgid(_st.st_gid).gr_name
         except Exception:  # noqa: BLE001 -- no group database, or no entry for this gid
+            name = ""
+        # A name that cannot be pasted on as one group is treated as no name at all, so the
+        # node is reported by its GID rather than prescribed for. Above every branch that
+        # reads the name, including the privileged one, which compares whole strings and so
+        # is exactly what a name carrying a comma walks through.
+        if name and not _group_name_is_prescribable(name):
             name = ""
         # Asked of the GID, and BEFORE the name is required, because the lookup above is
         # exactly what fails in a minimal container: with no entry for gid 0 it raised, the
