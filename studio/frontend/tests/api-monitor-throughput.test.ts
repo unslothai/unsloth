@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { computeStats } from "../src/features/api-monitor/stats.ts";
@@ -54,4 +55,76 @@ test("rating is total tokens over total decode time, not a mean of rates", () =>
     queuedEntry({ id: "b", completion_tokens: 99, decode_ms: 1_000 }),
   ]);
   assert.equal(stats.tokensPerSecond, 50);
+});
+
+test("context usage follows the busiest running request", () => {
+  const stats = computeStats([
+    queuedEntry({ id: "done", context_usage: 0.94, updated_at: 1_000_030 }),
+    queuedEntry({
+      id: "live-low",
+      status: "running",
+      finished_at: null,
+      duration_ms: null,
+      context_usage: 0.41,
+      updated_at: 1_000_040,
+    }),
+    queuedEntry({
+      id: "live-high",
+      status: "running",
+      finished_at: null,
+      duration_ms: null,
+      context_usage: 0.78,
+      updated_at: 1_000_050,
+    }),
+  ]);
+
+  assert.equal(stats.contextUsage, 0.78);
+  assert.equal(stats.active, 2);
+});
+
+test("context usage falls back to the latest known request when idle", () => {
+  const stats = computeStats([
+    queuedEntry({ id: "newer", context_usage: 0.58, updated_at: 1_000_050 }),
+    queuedEntry({ id: "older", context_usage: 0.91, updated_at: 1_000_040 }),
+  ]);
+
+  assert.equal(stats.contextUsage, 0.58);
+});
+
+test("a running request without usage never inherits an older completed request's percentage", () => {
+  const stats = computeStats([
+    queuedEntry({ id: "running", status: "running", context_usage: null, updated_at: 1_000_060 }),
+    queuedEntry({ id: "finished", context_usage: 0.95, updated_at: 1_000_050 }),
+  ]);
+  assert.equal(stats.active, 1);
+  assert.equal(stats.contextUsage, null);
+});
+
+test("unknown context and lifecycle traffic do not invent a percentage", () => {
+  for (const context_usage of [null, NaN, Infinity]) {
+    assert.equal(computeStats([queuedEntry({ context_usage })]).contextUsage, null);
+  }
+  assert.equal(computeStats([
+    queuedEntry({ kind: "lifecycle", status: "running", context_usage: 0.99 }),
+  ]).contextUsage, null);
+  assert.equal(computeStats([]).contextUsage, null);
+});
+
+test("context usage is clamped before it reaches the live monitor", () => {
+  const stats = computeStats([
+    queuedEntry({ context_usage: 1.4 }),
+  ]);
+  assert.equal(stats.contextUsage, 1);
+});
+
+test("floating monitor surfaces context usage and the live-call counter", () => {
+  const source = readFileSync(
+    new URL("../src/features/api-monitor/api-monitor-overlay.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /label="Context"/);
+  assert.match(source, /stats\.contextUsage/);
+  assert.match(source, /entry\.context_usage/);
+  assert.match(source, /label="Live calls"/);
 });
