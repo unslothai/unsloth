@@ -6297,16 +6297,12 @@ function Get-SetupUvExecutableVerdict {
     # Mirrors Get-UvExecutableVerdict in install.ps1: "ok", "failed" or "unknown". Only the
     # binary answering non-zero is "failed"; a launch that throws or a wait that times out got
     # no verdict, and the digest already proved the bytes are astral's pinned release.
-    # Returns the verdict ONLY. The reasons used to go to the pipeline, so on the paths that
-    # have one the caller got [reason, verdict] and had to read the last element to get the
-    # verdict; measured, the "ok" path emitted nothing and was always a bare "ok". substep puts
-    # them where the rest of the uv step's lines go instead, which is where a user looks.
-    # A cached exit code decides; with none (the timed wait can return first), a printed
-    # version is "ok".
+    # Returns the verdict ONLY: a reason on the pipeline made the caller read [reason, verdict]
+    # and take the last element, so substep carries them instead. A cached exit code decides;
+    # with none (the timed wait can return first), a printed version is "ok".
     param([string]$Path)
     # What the binary printed, for the caller that has to know WHICH uv answered. A second
-    # pipeline value would put the reason back in the return value this function exists to keep
-    # clean, and running the binary again to read it would be a second chance to hang.
+    # pipeline value would undo the paragraph above; re-running it would be a chance to hang.
     $script:SetupUvVersionLine = ""
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
     $outFile = [System.IO.Path]::GetTempFileName()
@@ -6507,14 +6503,13 @@ Assert-VenvActivated -VenvDir $VenvDir
 
 function Find-InstalledUv {
     # The uv a previous run installed but this process's PATH lacks (a desktop shell launched
-    # before the install, a CI step): the miss re-downloaded the pinned archive on every
-    # update, 42 of a 53 s Windows no-op. Same priority list Install-UvFromPinnedRelease
-    # writes to, plus install.ps1's winget alias directory; it has to run, not merely exist.
+    # before the install, a CI step): the miss re-downloaded the pinned archive every update,
+    # 42 of a 53 s Windows no-op. Install-UvFromPinnedRelease's own priority list plus
+    # install.ps1's winget alias directory; it has to run, not merely exist.
     # .NET Combine, not the path cmdlet: under ErrorActionPreference Stop, before the
     # installation branch's try, the cmdlet terminates on a missing drive (XDG_DATA_HOME=Z:\xdg).
-    # Get-UvInstallDir first, so the destination the installer WILL write to is the first one
-    # searched however that helper later changes, rather than by two lists agreeing today. It
-    # joins with the cmdlet, hence the try: reached here it is outside the installation branch's.
+    # Get-UvInstallDir first, so the installer's own destination leads however that helper
+    # changes. It joins with the cmdlet, hence the try: here that is outside the branch's own.
     $installerDest = $null
     try { $installerDest = Get-UvInstallDir } catch { $installerDest = $null }
     $candidates = @($installerDest, $env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)
@@ -6528,9 +6523,8 @@ function Find-InstalledUv {
     # Assigned even when no uv.exe exists: unassigned, it terminates under a caller's Set-StrictMode.
     $script:InstalledUvProbeMiss = $null
     $script:InstalledUvTooOld = $null
-    # The installer destination normally IS one of the tiers below, and two variables can point
-    # at one directory: without this, that directory is launched twice and named twice in the
-    # miss diagnostic. Ordinal, since a path that differs only in case is the same directory here.
+    # Two variables commonly name one directory, which would then be launched and reported twice.
+    # Ordinal, since a path differing only in case is the same directory here.
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($dir in $candidates) {
         if (-not $dir) { continue }
@@ -6539,14 +6533,11 @@ function Find-InstalledUv {
         $script:InstalledUvLooked += $exe
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
         # "ok" only: no digest vouches for a found binary, and a launch that threw or timed out
-        # would reach an unbounded uv pip. Asked twice: one miss (Defender scanning a fresh
+        # would reach an unbounded uv pip. Asked twice: one miss (a scanner holding a fresh
         # binary) sent setup to the pinned download, which put an OLDER uv over this one.
         if ((Get-InstalledUvVerdict -Path $exe) -ne "ok") { continue }
-        # It runs; it also has to be new enough to do the work the pinned release would. The
-        # floor is install.ps1's UvMinVersion, kept for the same reason: below it uv's
-        # managed-Python manifest tops out at a CPython that cannot import torch. A version
-        # line this cannot read leaves the candidate alone, which is what happened before this
-        # search existed.
+        # install.ps1's UvMinVersion, for its reason: below it uv's managed-Python manifest tops
+        # out at a CPython that cannot import torch. Unreadable leaves the candidate alone.
         if (-not (Test-SetupUvVersionAtLeast -VersionLine $script:SetupUvVersionLine -Minimum $SetupUvMinVersion)) {
             $script:InstalledUvTooOld = $exe
             continue
@@ -6560,8 +6551,8 @@ function Find-InstalledUv {
 $SetupUvMinVersion = "0.9.3"
 
 function Test-SetupUvVersionAtLeast {
-    # "uv 0.12.1 (abcdef0 2026-01-01)" -> $true when 0.12.1 is at least $Minimum. Anything this
-    # cannot parse is $false: the download that follows is what ran before the reuse existed.
+    # "uv 0.12.1 (abcdef0 2026-01-01)" -> $true when 0.12.1 is at least $Minimum. Unparseable is
+    # $false: the download that follows is what ran before the reuse existed.
     param([string]$VersionLine, [string]$Minimum)
     if (-not $VersionLine) { return $false }
     if ($VersionLine -notmatch '(?m)^\s*uv\s+(\d+(?:\.\d+){0,2})') { return $false }

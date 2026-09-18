@@ -3242,16 +3242,16 @@ _uv_probe_exec() {
         timeout -k 5 "$_upe_secs" "$1" --version >/dev/null 2>&1 </dev/null
         return $?
     fi
-    # Monitor mode, where the shell has it, gives the probe a process group of its own, so the
-    # signals below reach what IT started, the way `timeout`'s do. Turned off again at once.
+    # Monitor mode gives the probe a process group of its own, so the signals below reach what IT
+    # started, as `timeout`'s do. Off again at once.
     _upe_monitor=off
     case "$-" in *m*) _upe_monitor=on ;; esac
     [ "$_upe_monitor" = on ] || set -m 2>/dev/null || :
     "$1" --version >/dev/null 2>&1 </dev/null &
     _upe_pid=$!
     [ "$_upe_monitor" = on ] || set +m 2>/dev/null || :
-    # The group only where it is demonstrably not this shell's own; otherwise the single pid,
-    # exactly as before. Parameter expansion, not `tr`: this branch has to hold on a bare PATH.
+    # The group only where it is provably not this shell's own, else the single pid as before.
+    # Parameter expansion, not `tr`: this branch has to hold on a bare PATH.
     _upe_target="$_upe_pid"
     if command -v ps >/dev/null 2>&1; then
         _upe_pgid=$(ps -o pgid= -p "$_upe_pid" 2>/dev/null)

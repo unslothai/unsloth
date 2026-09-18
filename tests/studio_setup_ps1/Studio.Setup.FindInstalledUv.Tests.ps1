@@ -20,8 +20,8 @@ BeforeAll {
         if (-not $src) { throw "could not extract $fn from setup.ps1" }
         . ([scriptblock]::Create($src))
     }
-    # The floor the finder compares against, read from setup.ps1 rather than repeated here, so
-    # a change to the number cannot leave these cases testing the old one.
+    # Read from setup.ps1, not repeated here, so a change to the number cannot leave these cases
+    # testing the old one.
     $script:SetupUvMinVersionSource = (Select-String -Path $setup -Pattern '^\$SetupUvMinVersion = "([^"]+)"' |
         Select-Object -First 1).Matches[0].Groups[1].Value
     if (-not $script:SetupUvMinVersionSource) { throw "could not read `$SetupUvMinVersion from setup.ps1" }
@@ -45,12 +45,9 @@ BeforeAll {
     }
 
     function Copy-RunnableExe {
-        # A stand-in for "a uv that runs": copied ALONE into a candidate directory, it still has
-        # to launch and exit 0 for `--version`. pwsh.exe does not qualify, however obvious it
-        # looks: on Windows it cannot start without its runtime files beside it, so a fixture
-        # built from it made the finder correctly return nothing and the tests fail for a reason
-        # that had nothing to do with setup.ps1. Windows' own curl.exe and tar.exe are ordinary
-        # console binaries that link only against System32 and take --version for real.
+        # Copied ALONE into a candidate directory, it still has to launch and exit 0 for
+        # `--version`. pwsh.exe does NOT qualify: on Windows it cannot start without its runtime
+        # files beside it. curl.exe and tar.exe link only against System32 and take --version.
         param([Parameter(Mandatory)][string]$Destination)
         foreach ($src in $script:RunnableExeCandidates) {
             if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
@@ -86,11 +83,8 @@ BeforeAll {
     }
 
     function New-FakeUv {
-        # -Kind ok      : an executable that really runs and exits 0
-        # -Kind broken  : a file that exists and cannot be launched
-        # -Kind folder  : a directory named uv.exe
-        # -Kind old     : runs, and answers with a version below the floor (POSIX hosts only,
-        #                 where the stand-in is a script and can say what it likes)
+        # ok: runs and exits 0. broken: exists, cannot launch. folder: a directory named uv.exe.
+        # old: runs, answers below the floor (POSIX only, where the stand-in is a script).
         param([Parameter(Mandatory)][string]$Dir, [string]$Kind = 'ok')
         New-Item -ItemType Directory -Force -Path $Dir | Out-Null
         $exe = Join-Path $Dir 'uv.exe'
@@ -138,10 +132,9 @@ Describe "the fixtures themselves" {
 
 Describe "Find-InstalledUv" {
     BeforeAll {
-        # On Windows the stand-in is a real console binary that is NOT uv, so its --version line
-        # cannot clear the finder's floor and every discovery case here would miss for a reason
-        # that has nothing to do with discovery. The floor is answered for this block and tested
-        # on its own in "the uv version floor" below, including the refusal path.
+        # The Windows stand-in is a real console binary that is NOT uv, so its --version line
+        # cannot clear the floor and every discovery case would miss for an unrelated reason.
+        # The floor is answered here and tested on its own in "the uv version floor" below.
         if ($IsWindows) {
             function Test-SetupUvVersionAtLeast { param([string]$VersionLine, [string]$Minimum) return $true }
         }

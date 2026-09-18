@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# A uv installed but off THIS process's PATH (a desktop shell launched before the install, a
-# CI step, an unread profile line) made setup.sh re-download the pinned archive on every
-# update, 42 of a 53 s Windows no-op. It now searches astral's destinations first, and only
-# a uv that runs counts.
+# A uv installed but off THIS process's PATH made setup.sh re-download the pinned archive every
+# update, 42 of a 53 s Windows no-op. It now searches astral's destinations first, and only a uv
+# that runs, and answers as uv at or above install.sh's floor, counts.
 set -e
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -58,9 +57,8 @@ printf '%s\n' "$PS_FINDER" | grep -q '^function Find-InstalledUv {' || {
     echo "FATAL: could not extract Find-InstalledUv from setup.ps1" >&2; exit 1; }
 
 fake_uv() {  # fake_uv <dir> [exit code] [version]
-    # It prints a version because the finder reads one: a uv below the floor is refused, so a
-    # stand-in that printed nothing would be refused too and every reuse case would go green
-    # for the wrong reason.
+    # It prints a version because the finder reads one: a silent stand-in would be refused for
+    # that reason and every reuse case would go green for the wrong one.
     mkdir -p "$1"
     printf '#!/bin/sh\necho "uv %s (0123456 2026-01-01)"\nexit %s\n' "${3:-0.12.12}" "${2:-0}" > "$1/uv"
     chmod +x "$1/uv"
@@ -105,9 +103,8 @@ for shell in sh bash; do
     assert_eq "$shell: ...and with nothing else installed that is a miss" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$BROKEN" "$shell" "$PROBE")"
 
-    # Runs, but older than the floor install.sh keeps: a uv whose managed-Python manifest tops
-    # out at a CPython that cannot import torch must not be reused in place of the pinned
-    # release, which is what a bare "does it run" check did.
+    # Runs, but below install.sh's floor: its managed-Python manifest tops out at a CPython that
+    # cannot import torch, and a bare "does it run" check reused it over the pinned release.
     OLD="$CASE/old uv"
     fake_uv "$OLD" 0 0.4.0
     assert_eq "$shell: a uv below the minimum version is not reused" \
@@ -120,8 +117,7 @@ for shell in sh bash; do
     fake_uv "$OLD" 0 0.9.3
     assert_eq "$shell: a uv exactly at the minimum version is reused" \
         "found=$OLD" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
-    # A binary that runs but is not uv at all answers --version with something else: that is a
-    # miss, not a reuse, and this is the case a Windows stand-in cannot express.
+    # Runs, answers as something else: a miss, and the case a Windows stand-in cannot express.
     NOTUV="$CASE/not uv"
     mkdir -p "$NOTUV"
     printf '#!/bin/sh\necho "curl 8.9.1 (x86_64-pc-linux-gnu)"\nexit 0\n' > "$NOTUV/uv"
@@ -129,8 +125,7 @@ for shell in sh bash; do
     assert_eq "$shell: a binary that runs but does not answer as uv is not reused" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$NOTUV" "$shell" "$PROBE")"
 
-    # One directory, however many variables name it: launched once, named once. Two of these
-    # commonly point at the same place, and a candidate that hangs costs the ceiling each time.
+    # One directory, however many variables name it: launched once, named once.
     DUP="$CASE/one dir"
     fake_uv "$DUP"
     case "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$DUP" UV_UNMANAGED_INSTALL="$DUP" XDG_BIN_HOME="$DUP" "$shell" "$DIAG")" in
@@ -157,11 +152,8 @@ BODY
         "looked=$HOME_DIR/.local/bin/uv" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" "$shell" "$TWICE")"
 
     # A uv that never answers: the probe is bounded, so a miss is reported, not a hang.
-    # Not gated on `command -v timeout`. It was, and stock macOS has none, so on the only
-    # platform that actually takes the watchdog branch the whole block was skipped: 27
-    # assertions there against 43 on Linux, and the fallback bound asserted nowhere but on
-    # hosts that never use it. The helper bounds itself either way, and the elapsed-time
-    # checks below are what makes that a test rather than a hope.
+    # NOT gated on `command -v timeout`: it was, and stock macOS has none, so the one platform
+    # that takes the watchdog branch skipped the whole block (27 assertions against 43 on Linux).
     if true; then
         HANG="$CASE/hangs"
         mkdir -p "$HANG"
@@ -262,9 +254,8 @@ else
     bad "setup.ps1 reuses only a uv with an ok verdict"
 fi
 
-# ...and on both sides it also has to clear the floor, at the SAME number install.sh keeps:
-# a uv below it resolves a CPython that cannot import torch, which is why the installer
-# refuses one outright rather than building on it.
+# ...and on both sides it clears the floor, at the SAME number install.sh keeps: below it uv
+# resolves a CPython that cannot import torch, which the installer refuses outright.
 _sh_floor=$(grep '^_SETUP_UV_MIN_VERSION="' "$SETUP_SH" | head -1 | sed 's/.*"\(.*\)"/\1/')
 _ps_floor=$(grep '^\$SetupUvMinVersion = "' "$SETUP_PS1" | head -1 | sed 's/.*"\(.*\)"/\1/')
 _install_floor=$(grep '^UV_MIN_VERSION="' "$SCRIPT_DIR/../../install.sh" | head -1 | sed 's/.*"\(.*\)"/\1/')
