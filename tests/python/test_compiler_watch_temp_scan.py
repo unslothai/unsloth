@@ -217,9 +217,9 @@ def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path)
     assert (
         "NO-THROW" not in proc.stdout
     ), "the walk returned a partial snapshot instead of declaring the measurement void"
-    assert _says(proc, "cannot say whether a compiler ran"), (
-        f"the walk raised, but not with the message that explains why:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert _says(
+        proc, "cannot say whether a compiler ran"
+    ), f"the walk raised, but not with the message that explains why:\n{proc.stdout}\n{proc.stderr}"
 
 
 def test_the_artifact_filter_still_selects_by_extension(tmp_path: pathlib.Path) -> None:
@@ -482,9 +482,9 @@ def test_an_unreadable_root_with_no_watcher_still_voids_the_run() -> None:
         "an unread directory with no watcher on its root was treated as a complete "
         f"measurement:\n{proc.stdout}"
     )
-    assert _says(proc, "cannot say whether a compiler ran"), (
-        f"the run was voided without saying why:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert _says(
+        proc, "cannot say whether a compiler ran"
+    ), f"the run was voided without saying why:\n{proc.stdout}\n{proc.stderr}"
 
 
 def test_the_error_subscription_exists_and_condemns_its_root() -> None:
@@ -520,15 +520,16 @@ def test_a_failed_watcher_root_is_dropped_from_the_coverage_set() -> None:
     proc = _run_pwsh(
         r"$watch = @([pscustomobject]@{ Root = 'C:\good' }, [pscustomobject]@{ Root = 'C:\bad' })"
         + "\n"
-        r"$watchFailedRoots = @('C:\bad')" + "\n"
+        r"$watchFailedRoots = @('C:\bad')"
+        + "\n"
         + expression
         + "\nforeach ($r in $watchedRoots) { Write-Output $r }\n"
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     roots = sorted(line.strip() for line in proc.stdout.splitlines() if line.strip())
-    assert roots == [r"C:\good"], (
-        f"a root whose watcher raised Error was still counted as covering it: {roots}"
-    )
+    assert roots == [
+        r"C:\good"
+    ], f"a root whose watcher raised Error was still counted as covering it: {roots}"
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX permissions only; see the note above.")
@@ -570,13 +571,13 @@ def test_the_walk_classifies_the_error_and_never_probes_with_test_path() -> None
     """The shape that makes the row above possible, pinned so it cannot regress quietly."""
     text = SCRIPT.read_text(encoding = "utf-8")
     body = text[
-        text.index("function Get-StudioTempSubtree") : text.index("function Get-StudioTempArtifacts")
+        text.index("function Get-StudioTempSubtree") : text.index(
+            "function Get-StudioTempArtifacts"
+        )
     ]
     # Comments stripped first, like the -Recurse guard above: this function EXPLAINS why it
     # does not probe, and the prose naming Test-Path is not a call to it.
-    code = "\n".join(
-        line for line in body.splitlines() if not line.strip().startswith("#")
-    )
+    code = "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
     assert "Test-Path" not in code, (
         "the walk probes with Test-Path again. That throws on an ACL-denied directory and "
         "answers False for one that merely cannot be read, so it cannot decide deleted "
