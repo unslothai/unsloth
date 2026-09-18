@@ -27,8 +27,38 @@ const SERVER_MANAGED_LINK_KEYS = new Set<string>([
   "generationSettled",
 ]);
 
+// A backup is a file that arrived from somewhere, so its settings snapshot is
+// untrusted input, not a saved preference. These are the only keys a restored chat
+// carries. Everything else in ThreadScopedSettings either turns a capability on
+// (toolsEnabled, codeToolsEnabled, mcpEnabledForChat, webFetchToolsEnabled,
+// deepResearchEnabled, artifactsEnabled, the rag* group), silences the approval
+// prompt (permissionMode "off" sets confirm_tool_calls false and never pauses) or
+// injects text the sender chose (systemPrompt, systemVariables). Restoring those
+// together lets a sent backup arm a chat that runs tools unattended under the
+// importer's account on their first message.
+// An ALLOWLIST, so a setting added later is dropped until someone decides it is
+// safe to restore, rather than shipping restorable by default.
+const RESTORABLE_SETTING_KEYS = new Set<string>([
+  "temperature",
+  "topP",
+  "topK",
+  "minP",
+  "minPMode",
+  "repetitionPenalty",
+  "presencePenalty",
+  "seed",
+  "reasoningEnabled",
+  "reasoningEffort",
+]);
+
 function isDict(value: unknown): value is Dict {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function restorableSettings(settings: Dict): Dict {
+  return Object.fromEntries(
+    Object.entries(settings).filter(([key]) => RESTORABLE_SETTING_KEYS.has(key)),
+  );
 }
 
 function str(value: unknown): string | null {
@@ -183,8 +213,13 @@ export function studioBackupToConversations(
               ...(forkedFromMessageId ? { forkedFromMessageId } : {}),
             }
           : {}),
-        ...(isDict(thread.settings)
-          ? { settings: thread.settings as ThreadRecord["settings"] }
+        ...(isDict(thread.settings) &&
+        Object.keys(restorableSettings(thread.settings)).length > 0
+          ? {
+              settings: restorableSettings(
+                thread.settings,
+              ) as ThreadRecord["settings"],
+            }
           : {}),
       },
     });
