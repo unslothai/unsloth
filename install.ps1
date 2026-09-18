@@ -6731,33 +6731,13 @@ exit 0
 
             # uvw.exe is the windowless launcher and has no console to answer a probe on, so
             # the staged uv.exe above stands for the set: it came from the same verified
-            # archive. Copy-Item under Stop so a locked or ACL-denied destination fails the
-            # install rather than leaving half a set behind quietly.
-            $ok = $true
-            foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
-                $src = Join-Path $work $exe
-                if (-not (Test-Path -LiteralPath $src)) { continue }
-                $dst = Join-Path $destDir $exe
-                try {
-                    Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
-                } catch {
-                    $ok = $false
-                    break
-                }
-                if ($exe -eq "uv.exe") {
-                    # Copy-Item is non-terminating under some callers preference, so compare
-                    # against the archive we verified: a stale uv.exe must not pass for ours.
-                    $copied = $false
-                    try {
-                        $copied = (Test-Path -LiteralPath $dst) -and
-                            (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
-                            (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
-                    } catch { $copied = $false }
-                    if (-not $copied) { $ok = $false; break }
-                }
-            }
-            if (-not $ok) {
-                substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
+            # archive.
+            if (-not (Copy-UvSet -Work $work -DestDir $destDir)) {
+                # Not "could not run": the staged binary answered the probe above. The
+                # destination could not be replaced, which on Windows is an open handle --
+                # a uv still running, or a scanner reading the fresh download (#9804).
+                substep "uv $UvPinnedVersion downloaded and verified, but $script:UvCopyBlockedAt could not be replaced." "Yellow"
+                substep "It is probably in use (a running uv, or a scanner); close it and re-run the installer." "Yellow"
                 return $false
             }
         } finally {
@@ -6773,6 +6753,53 @@ exit 0
         # Refresh-SessionPath rebuilds PATH machine-first and drops that prepend,
         # so record where uv actually landed for the probe below.
         $script:UvInstallDestDir = $destDir
+        return $true
+    }
+
+    function Test-UvFileMatches {
+        # Whether $Destination already holds exactly $Source's bytes. False on any error, so a
+        # missing, locked or ACL-denied destination reads as "not ours yet".
+        param([string]$Source, [string]$Destination)
+        try {
+            return (Test-Path -LiteralPath $Destination) -and
+                (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash -eq
+                (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
+        } catch { return $false }
+    }
+
+    function Copy-UvSet {
+        # Put the staged uv.exe / uvx.exe / uvw.exe in place. A destination that already holds
+        # the verified bytes is left alone: the uv this installer is "replacing" may be that very
+        # build, still running, and Windows refuses to overwrite an executable in use (#9804).
+        # Anything else is copied under Stop, retried briefly for a transient handle (a scanner
+        # opening a fresh download), and verified against the staged file rather than trusted:
+        # Copy-Item is non-terminating under some callers' preference, and a stale uv.exe must
+        # not pass for ours. On failure $script:UvCopyBlockedAt names the file, so the caller
+        # can say which one and why instead of blaming the binary.
+        param(
+            [Parameter(Mandatory = $true)][string]$Work,
+            [Parameter(Mandatory = $true)][string]$DestDir
+        )
+        $script:UvCopyBlockedAt = $null
+        foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
+            $src = Join-Path $Work $exe
+            if (-not (Test-Path -LiteralPath $src)) { continue }
+            $dst = Join-Path $DestDir $exe
+            if (Test-UvFileMatches -Source $src -Destination $dst) { continue }
+            $copied = $false
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                try {
+                    Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+                } catch {}
+                $copied = Test-UvFileMatches -Source $src -Destination $dst
+                if ($copied) { break }
+                if ($attempt -lt 3) { Start-Sleep -Milliseconds (250 * $attempt) }
+            }
+            if (-not $copied) {
+                $script:UvCopyBlockedAt = $dst
+                return $false
+            }
+        }
         return $true
     }
 
