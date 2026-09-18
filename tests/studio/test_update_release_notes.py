@@ -1860,9 +1860,9 @@ def test_both_rails_are_still_pinned_to_the_bottom_right_corner():
         # and the cards inside opt back in with pointer-events-auto (the download panel does
         # so by name). Without the container rule those transparent bands swallow clicks meant
         # for the UI behind them.
-        assert _only_under(rail, "pointer-events-none"), (
-            f"the rail stopped passing clicks through: {rail!r}"
-        )
+        assert _only_under(
+            rail, "pointer-events-none"
+        ), f"the rail stopped passing clicks through: {rail!r}"
         assert _only_under(rail, "fixed"), f"the rail is no longer always viewport-fixed: {rail!r}"
         assert _only_under(rail, "bottom-0"), f"the rail can leave the bottom edge: {rail!r}"
         assert _only_under(rail, "right-0"), f"the rail can leave the right edge: {rail!r}"
