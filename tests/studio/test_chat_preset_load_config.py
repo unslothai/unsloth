@@ -1163,7 +1163,7 @@ SELECTOR_CASES = [
     ('(s) => s.reasoningBudget ? s.other : s["other"]', False),
     ('(s) => s["reasoningBudget"]', True),
     # Inside a literal a bracket is part of the value, not an access to rewrite.
-    ("(s) => s.reasoningBudget === 's[\"x\"]' ? \"s.x\" : s.reasoningBudget", False),
+    ('(s) => s.reasoningBudget === \'s["x"]\' ? "s.x" : s.reasoningBudget', False),
     ("(s) => s.reasoningBudget === 's[\"x\"]' ? 's[\"x\"]' : s.reasoningBudget", True),
     # A comment is not part of the value an arm returns.
     ("(s) => s.reasoningBudget ? s.other : /* same value */ s.other", False),
