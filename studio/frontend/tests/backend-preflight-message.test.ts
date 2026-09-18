@@ -9,6 +9,7 @@ import test from "node:test";
 // lives in its own module and is driven directly here.
 import {
   MANAGED_ENVIRONMENT_BUSY,
+  MANAGED_ENVIRONMENT_UPDATING,
   WORKING_DIRECTORY_UNAVAILABLE,
   PATH_SETTING_UNRESOLVABLE,
   preflightStaleMessage,
@@ -100,14 +101,17 @@ test("the setting that could not be resolved is named", () => {
   assert.doesNotMatch(unnamed, UPDATE_ADVICE);
 });
 
-// The constant crosses a language boundary, so the two spellings are checked against
-// each other. What the hook DOES with it is driven in managed-environment-wait.test.ts.
-test("the busy reason is spelled the same in Rust", async () => {
+test("the busy reasons are spelled the same in Rust", async () => {
   const native = await readFile(
     new URL("../../src-tauri/src/preflight/managed.rs", import.meta.url),
     "utf8",
   );
   assert.ok(
     native.includes(`MANAGED_ENVIRONMENT_BUSY: &str = "${MANAGED_ENVIRONMENT_BUSY}"`),
+  );
+  assert.ok(
+    native.includes(
+      `MANAGED_ENVIRONMENT_UPDATING: &str = "${MANAGED_ENVIRONMENT_UPDATING}"`,
+    ),
   );
 });

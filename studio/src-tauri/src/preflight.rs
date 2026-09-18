@@ -67,19 +67,24 @@ fn stale_reason(managed: &ManagedProbe, reason: &str) -> String {
     reason.to_string()
 }
 
-/// An install, update or repair this app is running rewrites the very environment
-/// the probe just read. Only the `studio update` phase holds the runtime gate, so a
-/// stale probe during the installer phase is mid-rewrite, not a broken install.
+/// While this app's own install, update or repair runs, the probe reads a half-written
+/// environment: acting on it as missing, ready or broken would install, start or
+/// repair over the running mutation.
 pub fn busy_managed_environment(result: DesktopPreflightResult) -> DesktopPreflightResult {
-    match result.disposition {
-        DesktopPreflightDisposition::ManagedStale | DesktopPreflightDisposition::OwnedStale => {
-            DesktopPreflightResult {
-                reason: Some(managed::MANAGED_ENVIRONMENT_BUSY.to_string()),
-                can_auto_repair: false,
-                ..result
-            }
-        }
-        _ => result,
+    let disposition = match result.disposition {
+        DesktopPreflightDisposition::AttachedReady
+        | DesktopPreflightDisposition::OwnedReady
+        | DesktopPreflightDisposition::ExternalConflict => return result,
+        DesktopPreflightDisposition::OwnedStale => DesktopPreflightDisposition::OwnedStale,
+        DesktopPreflightDisposition::NotInstalled
+        | DesktopPreflightDisposition::ManagedReady
+        | DesktopPreflightDisposition::ManagedStale => DesktopPreflightDisposition::ManagedStale,
+    };
+    DesktopPreflightResult {
+        disposition,
+        reason: Some(managed::MANAGED_ENVIRONMENT_UPDATING.to_string()),
+        can_auto_repair: false,
+        ..result
     }
 }
 
@@ -116,7 +121,7 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             },
             ManagedProbe::Stale { bin, reason } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedStale,
-                // The repair needs the same home directory, so do not offer it.
+                // A busy gate or unreachable context would refuse the repair too.
                 can_auto_repair: release_auto_repair() && !managed::blocks_auto_repair(&reason),
                 reason: Some(reason),
                 port: None,
@@ -513,9 +518,6 @@ mod tests {
             reason: managed::MANAGED_ENVIRONMENT_BUSY.to_string(),
         };
 
-        // The owned paths decided this through is_context_reason, which the busy
-        // reason is deliberately not: the repair they offered is the one the busy
-        // environment then refuses.
         assert!(managed_profile_unreachable(&busy));
         assert!(!stale_auto_repair(&busy));
 
@@ -540,9 +542,12 @@ mod tests {
             Some(8000),
         );
 
-        for result in [owned, ownerless, choose_preflight(busy, BackendProbe::Missing)] {
+        for result in [
+            owned,
+            ownerless,
+            choose_preflight(busy, BackendProbe::Missing),
+        ] {
             assert!(!result.can_auto_repair, "{result:?}");
-            // The reason has to survive too: it is what the frontend waits on.
             assert_eq!(
                 result.reason.as_deref(),
                 Some(managed::MANAGED_ENVIRONMENT_BUSY),
@@ -552,10 +557,8 @@ mod tests {
     }
 
     #[test]
-    fn our_own_install_makes_a_stale_probe_busy_rather_than_broken() {
-        // Only `studio update` holds the runtime gate; the installer phase does not,
-        // so mid-install the probe reports a broken install nobody can repair.
-        let stale = |disposition| DesktopPreflightResult {
+    fn our_own_install_makes_every_managed_probe_wait() {
+        let probed = |disposition| DesktopPreflightResult {
             disposition,
             reason: Some("cli_unusable".to_string()),
             port: None,
@@ -563,28 +566,26 @@ mod tests {
             managed_bin: Some(PathBuf::from("/managed/unsloth")),
         };
 
-        for disposition in [
-            DesktopPreflightDisposition::ManagedStale,
-            DesktopPreflightDisposition::OwnedStale,
+        use DesktopPreflightDisposition as D;
+        for (probe, waits_as) in [
+            (D::NotInstalled, D::ManagedStale),
+            (D::ManagedReady, D::ManagedStale),
+            (D::ManagedStale, D::ManagedStale),
+            (D::OwnedStale, D::OwnedStale),
         ] {
-            let busy = busy_managed_environment(stale(disposition.clone()));
-            assert_eq!(busy.disposition, disposition);
+            let busy = busy_managed_environment(probed(probe));
+            assert_eq!(busy.disposition, waits_as);
             assert_eq!(
                 busy.reason.as_deref(),
-                Some(managed::MANAGED_ENVIRONMENT_BUSY)
+                Some(managed::MANAGED_ENVIRONMENT_UPDATING)
             );
             assert!(!busy.can_auto_repair);
             assert_eq!(busy.managed_bin, Some(PathBuf::from("/managed/unsloth")));
         }
 
-        // A backend that answers is not waiting on anything: leave it alone.
-        for disposition in [
-            DesktopPreflightDisposition::ManagedReady,
-            DesktopPreflightDisposition::AttachedReady,
-            DesktopPreflightDisposition::NotInstalled,
-            DesktopPreflightDisposition::ExternalConflict,
-        ] {
-            let untouched = stale(disposition);
+        // A backend that answers is not waiting on anything.
+        for disposition in [D::AttachedReady, D::OwnedReady, D::ExternalConflict] {
+            let untouched = probed(disposition);
             assert_eq!(busy_managed_environment(untouched.clone()), untouched);
         }
     }

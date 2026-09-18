@@ -11,6 +11,7 @@ import {
 import { isTauri, setApiBase } from "@/lib/api-base";
 import {
   MANAGED_ENVIRONMENT_BUSY,
+  MANAGED_ENVIRONMENT_UPDATING,
   preflightStaleMessage,
 } from "@/hooks/backend-preflight-message";
 import {
@@ -81,10 +82,8 @@ interface DesktopPreflightResult {
 
 const MANAGED_STARTUP_POLL_MS = 500;
 const MANAGED_ENVIRONMENT_POLL_MS = 5_000;
-// Five minutes of polling. The same gate is taken by `unsloth studio update` in a
-// terminal and by an installer behind an elevation prompt, neither of which has to
-// finish: past this the user gets the error screen, with Retry and Copy Diagnostics,
-// back instead of a spinner that never resolves.
+// Five minutes. Only bounds a gate held outside this app, e.g. a terminal
+// `unsloth studio update` left at a prompt, which need never finish.
 const MANAGED_ENVIRONMENT_WAIT_POLLS = 60;
 
 type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
@@ -186,9 +185,8 @@ export function useTauriBackend() {
 
   function setBackendStatus(nextStatus: BackendStatus) {
     if (authFailureRef.current) return;
-    // Any move out of the wait retires its re-poll. The native install or repair keeps
-    // running across a window reload and can raise a real screen -- elevation, failure
-    // -- over it, which the timer would otherwise replace five seconds later.
+    // A native install or repair outlives a reload and can raise elevation or
+    // failure over the wait, which the next poll would otherwise overwrite.
     stopManagedEnvironmentWait();
     statusRef.current = nextStatus;
     setStatus(nextStatus);
@@ -277,19 +275,17 @@ export function useTauriBackend() {
     environmentWaitPollsRef.current = 0;
   }
 
-  function waitForManagedEnvironment() {
-    // setBackendStatus is a no-op behind a persisted auth failure, so without this the
-    // poll would run on forever behind an error screen the user is already looking at.
+  function waitForManagedEnvironment(bounded: boolean) {
+    // setBackendStatus is a no-op here, so the poll would run on behind the error.
     if (authFailureRef.current) return;
-    if (environmentWaitPollsRef.current >= MANAGED_ENVIRONMENT_WAIT_POLLS) {
+    if (bounded && environmentWaitPollsRef.current >= MANAGED_ENVIRONMENT_WAIT_POLLS) {
       setBackendError(
-        "Unsloth is still finishing an install or update. If nothing is installing, close any `unsloth` command running in a terminal, then retry.",
+        "Another Unsloth install or update, such as `unsloth studio update` in a terminal, is still running. Retry once it finishes.",
       );
       return;
     }
-    // setBackendStatus clears the wait, counter and all, so the count is carried over
-    // the status write rather than read back through it.
-    const polls = environmentWaitPollsRef.current + 1;
+    // Read before setBackendStatus, which resets the count.
+    const polls = bounded ? environmentWaitPollsRef.current + 1 : 0;
     setStartupMessage(UPDATE_STARTUP_MESSAGE);
     setBackendStatus("starting");
     environmentWaitPollsRef.current = polls;
@@ -347,8 +343,11 @@ export function useTauriBackend() {
         case "managed_stale":
           setIsExternalServer(false);
           stopExternalServerPoll();
-          if (preflight.reason === MANAGED_ENVIRONMENT_BUSY) {
-            waitForManagedEnvironment();
+          if (
+            preflight.reason === MANAGED_ENVIRONMENT_BUSY ||
+            preflight.reason === MANAGED_ENVIRONMENT_UPDATING
+          ) {
+            waitForManagedEnvironment(preflight.reason === MANAGED_ENVIRONMENT_BUSY);
             return;
           }
           if (preflight.can_auto_repair) {

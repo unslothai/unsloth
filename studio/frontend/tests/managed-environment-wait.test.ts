@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A reload during an install or update finds an environment that is being rewritten.
-// The preflight reports it busy, and the app has to wait it out: repairing instead is
-// what produced "Update failed: An update or repair is already running.".
-//
-// The hook cannot be rendered here, so checkInstallAndStart and the wait it arms are
-// lifted by regex and run under an injected scope, the way forced-repair-retry.test.ts
-// does beside it.
+// A reload during an install or update must wait it out: repairing instead is what
+// produced "Update failed: Repair is already running.". The hook cannot be rendered,
+// so its functions are lifted by regex, as in forced-repair-retry.test.ts.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MANAGED_ENVIRONMENT_BUSY } from "../src/hooks/backend-preflight-message.ts";
+import {
+  MANAGED_ENVIRONMENT_BUSY,
+  MANAGED_ENVIRONMENT_UPDATING,
+} from "../src/hooks/backend-preflight-message.ts";
 import { UPDATE_STARTUP_MESSAGE } from "../src/components/tauri/startup-messages.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
@@ -29,8 +28,16 @@ const checkBody = lift(
   "checkInstallAndStart",
 );
 const waitBody = lift(
-  /  function waitForManagedEnvironment\(\) \{[\s\S]*?\n  \}\n/,
+  /  function waitForManagedEnvironment\([^)]*\) \{[\s\S]*?\n  \}\n/,
   "waitForManagedEnvironment",
+);
+const statusBody = lift(
+  /  function setBackendStatus\([^)]*\) \{[\s\S]*?\n  \}\n/,
+  "setBackendStatus",
+);
+const errorBody = lift(
+  /  function setBackendError\([\s\S]*?\n  \}\n/,
+  "setBackendError",
 );
 const stopBody = lift(
   /  function stopManagedEnvironmentWait\(\) \{[\s\S]*?\n  \}\n/,
@@ -49,8 +56,7 @@ interface Preflight {
 
 const BUSY: Preflight = {
   disposition: "managed_stale",
-  // can_auto_repair true on purpose: the busy branch must win over it, because the
-  // repair it would start is the thing the busy environment goes on to refuse.
+  // The busy branch must win over it: the busy environment refuses that repair.
   can_auto_repair: true,
   reason: MANAGED_ENVIRONMENT_BUSY,
   port: null,
@@ -61,6 +67,7 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
   const statuses: string[] = [];
   const messages: string[] = [];
   let repairs = 0;
+  let starts = 0;
   let armed: (() => void) | null = null;
   let armedCount = 0;
   const environmentWaitPollsRef = { current: 0 };
@@ -68,6 +75,7 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
 
   const scope: Record<string, unknown> = {
     MANAGED_ENVIRONMENT_BUSY,
+    MANAGED_ENVIRONMENT_UPDATING,
     UPDATE_STARTUP_MESSAGE,
     MANAGED_ENVIRONMENT_POLL_MS: 5_000,
     MANAGED_ENVIRONMENT_WAIT_POLLS: POLL_LIMIT,
@@ -77,8 +85,7 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
     environmentWaitPollsRef,
     statusRef: { current: "checking" },
     portRef: { current: null as number | null },
-    // The lifted body's `await import("@tauri-apps/api/core")` is rewritten to this:
-    // the bare specifier does not resolve inside `new Function`.
+    // The bare specifier does not resolve inside `new Function`.
     importTauriCore: () =>
       Promise.resolve({
         invoke: (command: string) => {
@@ -108,7 +115,10 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
     stopExternalServerPoll: noop,
     startExternalServerPoll: noop,
     setRunningStatus: noop,
-    startManagedServer: () => Promise.resolve(),
+    startManagedServer: () => {
+      starts += 1;
+      return Promise.resolve();
+    },
     startRepair: () => {
       repairs += 1;
       return Promise.resolve();
@@ -119,20 +129,9 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
 
   const source = `
 ${stopBody}
-    function setBackendStatus(nextStatus) {
-      if (authFailureRef.current) return;
-      stopManagedEnvironmentWait();
-      statusRef.current = nextStatus;
-      setStatus(nextStatus);
-    }
-    function setBackendError(nextError, nextStatus = "error") {
-      if (authFailureRef.current) return;
-      stopManagedEnvironmentWait();
-      statusRef.current = nextStatus;
-      setStatus(nextStatus);
-      setError(nextError);
-    }
-${waitBody}
+${statusBody.replace(": BackendStatus", "")}
+${errorBody.replace(/: (string|BackendStatus)/g, "")}
+${waitBody.replace("bounded: boolean", "bounded")}
 ${checkBody
   .replace('await import("@tauri-apps/api/core")', "await importTauriCore()")
   .replace("invoke<DesktopPreflightResult>(", "invoke(")}
@@ -148,6 +147,9 @@ ${checkBody
     errors,
     statuses,
     messages,
+    get starts() {
+      return starts;
+    },
     get repairs() {
       return repairs;
     },
@@ -195,6 +197,7 @@ test("the wait re-polls and starts by itself once the environment frees up", asy
   await run.fireWait();
   assert.equal(run.waiting, false, "a ready install ends the wait");
   assert.equal(run.polls(), 0, "and retires the count with it");
+  assert.equal(run.starts, 1);
   assert.equal(run.repairs, 0);
 });
 
@@ -216,12 +219,21 @@ test("the wait is bounded, so a gate nobody releases still reaches Retry", async
   await run.fireWait();
   assert.equal(run.waiting, false, "the wait gives up rather than spinning for ever");
   assert.equal(run.statuses.at(-1), "error", "which is the screen that carries Retry");
-  assert.match(run.errors.at(-1) ?? "", /still finishing an install or update/);
+  assert.match(run.errors.at(-1) ?? "", /install or update/);
+});
+
+test("our own install or update is waited out without a bound", async () => {
+  const run = harness({ ...BUSY, reason: MANAGED_ENVIRONMENT_UPDATING });
+  await run.check();
+  for (let i = 0; i < POLL_LIMIT + 1; i += 1) await run.fireWait();
+
+  assert.ok(run.waiting, "the app's own mutation always ends, so it is never cut short");
+  assert.equal(run.polls(), 0);
+  assert.deepEqual(run.errors, []);
+  assert.equal(run.repairs, 0);
 });
 
 test("a persisted auth failure is not buried under the wait", async () => {
-  // setBackendStatus is a no-op behind an auth failure, so an unguarded wait would
-  // poll on for ever behind the error screen the user is already reading.
   const run = harness(BUSY, "Desktop auth failed");
   await run.check();
 

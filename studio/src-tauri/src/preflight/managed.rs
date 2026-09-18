@@ -53,8 +53,10 @@ pub(super) fn is_context_reason(reason: &str) -> bool {
     head == WORKING_DIRECTORY_UNAVAILABLE || head == PATH_SETTING_UNRESOLVABLE
 }
 
-/// An install, update or repair holds the runtime gate. Mirrored in the frontend.
+/// The runtime gate was held, so the CLI was never probed. Mirrored in the frontend.
 pub(super) const MANAGED_ENVIRONMENT_BUSY: &str = "managed_environment_busy";
+/// This app's own install, update or repair is running. Mirrored in the frontend.
+pub(super) const MANAGED_ENVIRONMENT_UPDATING: &str = "managed_environment_updating";
 
 pub(super) fn blocks_auto_repair(reason: &str) -> bool {
     reason == MANAGED_ENVIRONMENT_BUSY || is_context_reason(reason)

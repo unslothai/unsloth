@@ -228,10 +228,8 @@ pub async fn desktop_preflight(
     let started = Instant::now();
     let (result, adopted_watchdog_generation) =
         crate::preflight::desktop_preflight_result_with_state(state.inner()).await?;
-    // A reload during our own install or update re-runs this probe against an
-    // environment that is being rewritten. Only the update phase holds the runtime
-    // gate, so the probe answers "broken install" for the whole installer phase and
-    // start_managed_repair then refuses the repair it asked for.
+    // A window reload re-runs this during our own install or update, and the
+    // installer phase does not hold the runtime gate.
     let result = if install::is_install_running(install_state.inner())
         || update::is_update_running(update_state.inner())
     {

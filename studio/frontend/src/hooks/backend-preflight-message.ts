@@ -14,6 +14,9 @@ export const PATH_SETTING_UNRESOLVABLE = "path_setting_unresolvable";
 /// Mirrors MANAGED_ENVIRONMENT_BUSY in studio/src-tauri/src/preflight/managed.rs.
 export const MANAGED_ENVIRONMENT_BUSY = "managed_environment_busy";
 
+/// Mirrors MANAGED_ENVIRONMENT_UPDATING in studio/src-tauri/src/preflight/managed.rs.
+export const MANAGED_ENVIRONMENT_UPDATING = "managed_environment_updating";
+
 export function preflightStaleMessage(
   disposition: string,
   reason: string | null,
