@@ -111,6 +111,13 @@ LOCK_CHAIN = (
     "Invoke-StudioEarlyPythonScriptViaCmdlets",
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
+    "Get-StudioSystem32Tool",
+    "Test-StudioPathUnderAdminRoot",
+    "Test-StudioSddlRightsAreWrite",
+    "Test-StudioSddlPrincipalIsAdminOnly",
+    "Test-StudioSddlWritableByNonAdmin",
+    "Test-StudioDirectoryIsAdminOnly",
+    "Get-StudioLexicalParent",
     "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
@@ -1722,4 +1729,39 @@ def test_split_path_never_pairs_literalpath_with_parent(name: str) -> None:
         "resolves no parameter set for the pair and the call throws at runtime. Drop "
         "-Parent -- -LiteralPath alone already returns the parent, and unlike -Path it does "
         "not treat [ ] in an install root as a wildcard.\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_lock_chain_defines_everything_it_reaches() -> None:
+    """A helper the chain calls but the list forgets is a runtime break, not a missing test.
+
+    These scripts run under -ErrorActionPreference Stop, so the first call to an undefined name
+    ends the run, and the failure names the caller rather than the omission:
+
+        Get-StudioPythonFinalPath: The term 'Get-StudioSystem32Tool' is not recognized
+
+    LOCK_CHAIN is hand-written and install.ps1 moves under it, so splitting a body out into a new
+    helper silently breaks every case in this file. Found exactly that way on the windows-latest
+    parity row, hours after the helper landed. Closing the list over what the extracted bodies
+    actually call turns that into a local failure on every platform.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    extracted = _helpers(*LOCK_CHAIN)
+    installer_functions = set(re.findall(r"^    function ([\w-]+) \{", source, flags = re.M))
+    provided = set(re.findall(r"^    function ([\w-]+) \{", extracted, flags = re.M))
+    assert provided, "the helper extraction produced nothing"
+    assert len(installer_functions) > 50, (
+        f"only {len(installer_functions)} installer functions found, so the scan is not reading "
+        "install.ps1 and this test would pass on an empty set"
+    )
+    # Whole-line comments dropped first: a helper NAMED in prose is not a call, and treating it
+    # as one grows the list to satisfy a mention rather than a dependency.
+    code = "\n".join(
+        line for line in extracted.splitlines() if not line.lstrip().startswith("#")
+    )
+    called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", code))
+    missing = sorted((called & installer_functions) - provided)
+    assert not missing, (
+        f"LOCK_CHAIN extracts functions that call {missing}, which nothing here defines. "
+        "Add them to LOCK_CHAIN, or the scripts in this file die on the first call."
     )
