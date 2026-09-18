@@ -194,9 +194,15 @@ def _split_ternary(expression: str, guards: tuple = ()) -> list:
     """
 
     # A wholly wrapped arm hides its own ternary at depth 1, where the scan below never looks.
-    expression = expression.strip()
-    while expression.startswith("(") and _balanced(expression, 0) == expression[1:-1]:
-        expression = expression[1:-1].strip()
+    # A comma expression returns only its last operand; the others are evaluated and dropped.
+    while True:
+        expression = expression.strip()
+        if expression.startswith("(") and _balanced(expression, 0) == expression[1:-1]:
+            expression = expression[1:-1]
+        elif len(_top_level_operands(expression, ",")) > 1:
+            expression = _top_level_operands(expression, ",")[-1]
+        else:
+            break
 
     # Literals blanked: a `?` or `:` inside a message is not an operator.
     scan = _outside_literals(expression)
@@ -891,7 +897,7 @@ def _selector_reads(selector: str, field: str) -> bool:
             inner = _balanced(text, start + 1, "{", "}")
             if text[start - 1] != "\\":
                 # Parked too: a message inside a substitution is no more code than any other.
-                substitutions.append(_STRING_LITERAL.sub(_park, inner))
+                substitutions.append(_STRING_LITERAL.sub(_park, _without_comments(inner)))
             start = text.find("${", start + len(inner) + 3)
         return f"({placeholder}, {', '.join(substitutions)})" if substitutions else placeholder
 
@@ -916,6 +922,9 @@ def _selector_reads(selector: str, field: str) -> bool:
             reference = rf"(?<![\w$.]){re.escape(name)}(?![\w$])"
             if _bindings(block, name) > 1 or re.search(rf"[{{,]\s*{reference}\s*:", block):
                 continue
+            # `const a = x, b = y` declares two names; its text past the comma is not `a`'s value.
+            if len(_top_level_operands(expression, ",")) > 1:
+                continue
             block = re.sub(reference, f"({expression})", block)
         results = [
             result
@@ -925,7 +934,9 @@ def _selector_reads(selector: str, field: str) -> bool:
         if results and not _block_always_returns(block):
             results.append(("undefined", ()))
     else:
-        results = _split_ternary(body)
+        # An arrow's expression body ends at its first top-level comma: what follows is the
+        # next argument of the call, such as an equality function.
+        results = _split_ternary((_top_level_operands(body, ",") or [""])[0])
     if not results or any(_is_boolean(result) for result, _ in results):
         return False
     # The field is looked for while literals are still parked: `"s.budget"` is not a read.
@@ -1277,6 +1288,12 @@ SELECTOR_CASES = [
     ("(s) => { { const s = { reasoningBudget: 1 }; return s.reasoningBudget; } }", False),
     ("({ reasoningBudget }) => s.other.reasoningBudget", False),
     ("(s) => { const value = s.reasoningBudget; return s.other. value; }", False),
+    # A comma expression returns its last operand, and a declarator list declares two names.
+    ("(s) => (s.reasoningBudget, s.other)", False),
+    ("(s) => (s.other, s.reasoningBudget)", True),
+    ("(s) => { return s.reasoningBudget, s.other; }", False),
+    ("(s) => { const value = s.other, ignored = s.reasoningBudget; return value; }", False),
+    ("(s) => `${/* s.reasoningBudget */ 1}`", False),
     # Automatic semicolon insertion: the loop ends at `while (...)`, not at the next `;`.
     (
         '(s) => { switch (s.mode) { case "x": do {} while (false)\n if (s.stop) break; '
