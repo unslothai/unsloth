@@ -194,7 +194,11 @@ test("the connection request is one-shot and tab-scoped", () => {
 });
 
 test("the deep link waits for the provider and fires once", () => {
-  // The panel mounts before its first sync lands, so an id it cannot find yet is not a miss.
+  // Cached providers must not seed the form before the first backend sync.
+  assert.match(providersDialog, /\[providersReady, setProvidersReady\] = useState\(false\)/);
+  assert.match(providersDialog, /onProvidersChange\(syncedProviders\);\s*setProvidersReady\(true\);/);
+  assert.match(providersDialog, /if \(!providersReady\) return;/);
+  assert.match(providersDialog, /\[openProviderId, providers, providersReady, onOpenProviderConsumed\]/);
   assert.match(providersDialog, /if \(!provider\) return;/);
   assert.match(
     providersDialog,

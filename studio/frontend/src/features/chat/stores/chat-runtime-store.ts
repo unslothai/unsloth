@@ -5045,6 +5045,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // Mirror setCheckpoint's persistence: dropping the checkpoint must also clear any stored external selection.
     saveLastExternalCheckpoint(null);
     saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+    const restoredEffort = pinHoldsLiveEffort()
+      ? takeEffortDisplacedByPin()
+      : null;
     return set((state) => ({
       queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       // An unload leaves the model the same way a switch does, so record what it was running with.
@@ -5072,6 +5075,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       reasoningAlwaysOn: false,
       reasoningEnabled: true,
       reasoningStyle: "enable_thinking",
+      reasoningEffort: restoredEffort ?? state.reasoningEffort,
       supportsReasoningOff: false,
       reasoningEffortLevels: ["low", "medium", "high"],
       supportsPreserveThinking: false,
@@ -5226,9 +5230,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setReasoningEffort: (reasoningEffort) => {
-    // Every caller is the user picking a level for the model on screen, which is what its pin
-    // claims to decide, so the pin goes. Leaving it ran this level now and put the pin's back on
-    // the next switch or resync, with the row still naming a level the composer did not show.
+    // Choosing another level removes the current model's override.
     const checkpoint = useChatRuntimeStore.getState().params.checkpoint;
     const { effortByModel, setModelReasoningEffort } =
       useModelReasoningEffortStore.getState();
@@ -5238,8 +5240,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       setModelReasoningEffort(checkpoint, null);
     }
     set((state) => {
-      // The user has just stated their own level, so whatever a pin displaced before is history.
-      effortDisplacedByPin = null;
+      // A retained pin must keep the preference it displaced.
+      if (pinned !== reasoningEffort) effortDisplacedByPin = null;
       setScalarSettingVersion(
         "reasoningEffort",
         reasoningEffort,

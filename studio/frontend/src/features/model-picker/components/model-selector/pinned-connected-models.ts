@@ -54,8 +54,7 @@ function writePinned(pinned: string[]): void {
 // Mirrors pinned-models.ts.
 let dragSnapshot: string[] | null = null;
 
-// Another window can rewrite the list mid-drag, which makes the snapshot stale. The listener
-// records the order it installed and the session rolls back to that instead.
+// Keep remote updates for cancellation without replacing the drag's live order.
 let dragExternalOrder: string[] | null = null;
 
 function sameOrder(a: readonly string[], b: readonly string[]): boolean {
@@ -132,10 +131,9 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
         dragSnapshot = null;
         dragExternalOrder = null;
         if (snapshot === null) return state;
-        // What this window and localStorage last agreed on: the order another window installed
-        // mid-drag if there was one, else the pre-drag snapshot.
-        const base = external ?? snapshot;
-        if (commit) {
+        // Read storage too, since its event may still be pending.
+        const base = storedPinned() ?? external ?? snapshot;
+        if (commit && !sameOrder(snapshot, state.pinned)) {
           if (sameOrder(base, state.pinned)) return state;
           // The write replaces the whole list and nothing echoes it back to this window, so a
           // plain write of the dragged order would erase a pin another window added mid-drag
@@ -144,7 +142,7 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
           writePinned(next);
           return sameOrder(next, state.pinned) ? state : { pinned: next };
         }
-        // A cancel writes nothing, so it has to land on the order already in localStorage.
+        // Cancellation and unchanged drags use the latest persisted order.
         if (sameOrder(base, state.pinned)) return state;
         return { pinned: base };
       }),
@@ -155,8 +153,10 @@ if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === KEY || event.key === null) {
       const next = readPinned();
-      // A drag in flight rolls back to this instead of its own snapshot.
-      if (dragSnapshot !== null) dragExternalOrder = next;
+      if (dragSnapshot !== null) {
+        dragExternalOrder = next;
+        return;
+      }
       usePinnedConnectedModelsStore.setState({ pinned: next });
     }
   });

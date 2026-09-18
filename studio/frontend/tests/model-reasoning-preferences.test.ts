@@ -31,7 +31,7 @@ const CAPS: ExternalReasoningCapabilities = {
 type RuntimeModule = typeof import("../src/features/chat/stores/chat-runtime-store.ts");
 const runtimeUrl = new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url).href;
 
-async function boot(scenario: string, paired = true): Promise<RuntimeModule> {
+async function boot(scenario: string, paired: boolean | null = true): Promise<RuntimeModule> {
   storageData.clear();
   storageData.set("unsloth_chat_settings_imported_to_studio_db", "true");
   useModelReasoningEffortStore.getState().syncFromStorage();
@@ -43,9 +43,9 @@ async function boot(scenario: string, paired = true): Promise<RuntimeModule> {
   await store.getState().hydratePersistedSettings();
   store.getState().setCheckpoint(MODEL, null);
   store.setState({ ...CAPS, reasoningEffort: "medium" });
-  store.getState().setActiveThreadId(THREAD);
+  if (paired !== null) store.getState().setActiveThreadId(THREAD);
   if (paired) store.getState().applyThreadScopedSettings(THREAD, { reasoningEffort: "medium" });
-  else runtime.beginThreadScopedPairing(THREAD);
+  else if (paired === false) runtime.beginThreadScopedPairing(THREAD);
   settingsHttp.puts.length = 0;
   return runtime;
 }
@@ -247,4 +247,60 @@ test("a global effort edit survives pinning after leaving a saved chat", async (
   remotePin(runtime, "high");
   remotePin(runtime, null);
   assert.equal(store.getState().reasoningEffort, "low");
+});
+
+test("reselecting a pinned level preserves the unsent chat's preference", async () => {
+  const runtime = await boot("reselect-pin", null);
+  const store = runtime.useChatRuntimeStore;
+  store.getState().setReasoningEffort("low");
+  remotePin(runtime, "high");
+  store.getState().setReasoningEffort("high");
+  assert.equal(pinnedReasoningEffort(MODEL, CAPS.reasoningEffortLevels), "high");
+  remotePin(runtime, null);
+  assert.equal(store.getState().reasoningEffort, "low");
+  assert.equal(runtime.pinHoldsLiveEffort(), false);
+});
+
+test("choosing a different effort clears the pin and keeps the new preference", async () => {
+  const runtime = await boot("replace-pin", null);
+  const store = runtime.useChatRuntimeStore;
+  remotePin(runtime, "high");
+  store.getState().setReasoningEffort("low");
+  assert.equal(pinnedReasoningEffort(MODEL, CAPS.reasoningEffortLevels), null);
+  remotePin(runtime, null);
+  assert.equal(store.getState().reasoningEffort, "low");
+  assert.equal(runtime.pinHoldsLiveEffort(), false);
+});
+
+test("eject restores effort before a snapshotless chat captures its defaults", async () => {
+  const runtime = await boot("eject-unsent", null);
+  const store = runtime.useChatRuntimeStore;
+  store.getState().setReasoningEffort("low");
+  remotePin(runtime, "high");
+  store.getState().clearCheckpoint();
+  assert.equal(store.getState().params.checkpoint, "");
+  assert.equal(store.getState().reasoningEffort, "low");
+  assert.equal(runtime.pinHoldsLiveEffort(), false);
+  assert.equal(pinnedReasoningEffort(MODEL, CAPS.reasoningEffortLevels), "high");
+  runtime.beginThreadScopedPairing(THREAD);
+  store.getState().applyThreadScopedSettings(null, null);
+  store.getState().setActiveThreadId(THREAD);
+  store.getState().applyThreadScopedSettings(THREAD, null);
+  assert.equal(runtime.threadScopedOverride("reasoningEffort"), "low");
+  store.getState().clearCheckpoint();
+  assert.equal(store.getState().reasoningEffort, "low");
+});
+
+test("eject restores the active thread's effort without persisting the pin", async (t) => {
+  const runtime = await boot("eject-thread");
+  const store = runtime.useChatRuntimeStore;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  store.getState().setReasoningEffort("low");
+  remotePin(runtime, "high");
+  store.getState().clearCheckpoint();
+  assert.equal(store.getState().reasoningEffort, "low");
+  t.mock.timers.tick(400);
+  await runtime.awaitStartedThreadScopedSettingsWrites();
+  assert.equal(threadRows.rows.get(THREAD)?.reasoningEffort, "low");
+  assert.equal(settingsHttp.puts.some((patch) => "reasoningEffort" in patch), false);
 });

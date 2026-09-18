@@ -260,6 +260,7 @@ export function ChatProvidersSettings({
   const [registry, setRegistry] = useState<ProviderRegistryEntry[]>([]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
+  const [providersReady, setProvidersReady] = useState(false);
   const [syncingProviders, setSyncingProviders] = useState(false);
   const [registryLoading, setRegistryLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -451,6 +452,7 @@ export function ChatProvidersSettings({
         // Trust the backend response. An empty array means every connection was removed, often from
         // another tab; mirror that locally, else stale entries are un-removable here.
         onProvidersChange(syncedProviders);
+        setProvidersReady(true);
         // An empty list never says what this page is for, so open the form instead. Reads the synced
         // response, not the local snapshot, so a stale empty list cannot flash the form at an
         // existing user. Once only, else the focus re-sync would pull the user back here.
@@ -1213,15 +1215,14 @@ export function ChatProvidersSettings({
     }
   }
 
-  // Deep link at one connection. Waits for `providers` to carry the id, since this panel mounts
-  // before its first sync. The ref latches per id: editProvider sets state this would otherwise
-  // read as a new reason to run, and the user may have navigated back to the list since.
+  // Wait for backend data before opening a connection's form.
   const openedProviderRef = useRef<string | null>(null);
   useEffect(() => {
     if (!openProviderId) {
       openedProviderRef.current = null;
       return;
     }
+    if (!providersReady) return;
     if (openedProviderRef.current === openProviderId) return;
     const provider = providers.find(
       (candidate) => candidate.id === openProviderId,
@@ -1232,7 +1233,7 @@ export function ChatProvidersSettings({
     onOpenProviderConsumed?.();
     // editProvider is redeclared each render; the latch above is what fires this once per id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openProviderId, providers, onOpenProviderConsumed]);
+  }, [openProviderId, providers, providersReady, onOpenProviderConsumed]);
 
   async function deleteProvider(providerId: string) {
     setMutatingProvider(true);
