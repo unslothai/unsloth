@@ -1444,8 +1444,27 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if n_items is None:
                     n_items = kwargs.get("n_items", None)
 
+                # Same logit transforms the non-fused branch below applies, read the same way
+                # (cohere logit_scale multiplies, granite logits_scaling divides). The fused
+                # kernel takes them as kwargs, and without them training sees a different loss
+                # than both the reference implementation and the branch below.
+                if detect_logit_transforms is not None:
+                    _transforms = detect_logit_transforms(self.config)
+                    logit_softcapping = _transforms["logit_softcapping"]
+                    logit_scale_multiply = _transforms["logit_scale_multiply"]
+                    logit_scale_divide = _transforms["logit_scale_divide"]
+                else:
+                    logit_scale_multiply = getattr(self.config, "logit_scale", 0)
+                    logit_scale_divide = 0
+                    if self.config.model_type == "granite":
+                        logit_scale_divide = getattr(self.config, "logits_scaling", 1)
+                    elif self.config.model_type == "falcon_h1":
+                        logit_scale_multiply = self.config.lm_head_multiplier
+
                 if self.config.model_type == "falcon_h1":
                     hidden_states = hidden_states * self.config.lm_head_multiplier
+                    # Now folded into the hidden states, so the kernel must not scale again.
+                    logit_scale_multiply = 0
 
                 # Packed-boundary guard on raw labels (the fused kernel shifts internally). This branch RETURNS,
                 # so mask_packed_sequence_boundaries() below is dead on packed paths: it needs
@@ -1470,6 +1489,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                     target_gb = None,
                     torch_compile = True,
                     logit_softcapping = logit_softcapping,
+                    logit_scale_multiply = logit_scale_multiply,
+                    logit_scale_divide = logit_scale_divide,
                 )
                 if not return_dict:
                     # Fused CE never materializes logits; use EMPTY_LOGITS like the return_dict branch below (#2068).
