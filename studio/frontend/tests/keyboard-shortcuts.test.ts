@@ -1959,3 +1959,23 @@ test("the composer submits an Enter-bound chord with the named behavior", async 
   assert.match(body, /const named = followUpShortcutBehavior\(event\);/);
   assert.match(body, /submitIntentRef\.current = named\n?\s*\?/);
 });
+
+// Compare hides the thread composer and puts SharedComposer on screen, so a
+// composer chord registered in only one of them is dead in the other mode.
+test("the follow-up chords are registered in both composers", async () => {
+  const shared = await readSrcAsync("features/chat/shared-composer.tsx");
+  for (const id of FOLLOW_UP_IDS) {
+    assert.match(
+      THREAD,
+      new RegExp(`useShortcut\\(\\s*\n?\\s*"${id}"`),
+      `thread.tsx does not register ${id}`,
+    );
+    assert.match(
+      shared,
+      new RegExp(`useShortcut\\(\\s*\n?\\s*"${id}"`),
+      `shared-composer.tsx does not register ${id}`,
+    );
+  }
+  // The reason the second registration is needed rather than optional.
+  assert.match(CHAT_PAGE, /<Thread hideComposer=\{true\}/);
+});
