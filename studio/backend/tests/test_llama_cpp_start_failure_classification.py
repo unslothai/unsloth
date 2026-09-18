@@ -777,6 +777,29 @@ class TestMacOSLoaderFailures:
         assert "llama-server failed to start." in msg
 
 
+class TestPrismLegacyQ2Gguf:
+    _OUT = (
+        "load_model: loading model "
+        "'Ternary-Bonsai-27B-dspark-Q4_1.gguf'\n"
+        "gguf_init_from_reader: tensor 'dspark.fc.weight' has offset 337718592, "
+        "expected 357584192\n"
+        "gguf_init_from_reader: failed to read tensor data\n"
+        "llama_model_load: error loading model: llama_model_loader: failed to load model"
+    )
+
+    def test_tensor_offset_mismatch_is_not_blamed_on_memory(self):
+        msg = _classify(
+            self._OUT,
+            "/cache/Ternary-Bonsai-27B-dspark-Q4_1.gguf",
+            "prism-ml/Ternary-Bonsai-27B-gguf",
+            1,
+        )
+        assert "Q2_g64" in msg
+        assert "dspark.fc.weight" in msg
+        assert "enough memory" not in msg.lower()
+        assert not msg.startswith("llama-server failed to start.")
+
+
 class TestANonGgufFile:
     # What llama.cpp prints when the bytes are not a GGUF. It formats the four it found with %c,
     # so an AppleDouble sidecar's 0x00051607 arrives as unprintable characters (#8566).
