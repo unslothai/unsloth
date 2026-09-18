@@ -426,6 +426,9 @@ def maybe_toggle_step_cache(
     if not want and engaged:
         disable_cache = getattr(transformer, "disable_cache", None)
         if callable(disable_cache):
+            # Read BEFORE the teardown: it is what says whether diffusers' own disable_cache can
+            # do the removal, and disable_cache clears it.
+            ours = type(getattr(transformer, "_cache_config", None)).__name__ == "FirstBlockCacheConfig"
             try:
                 # Restore before remove_hook splices original_forward back, so compiled wrappers do not leak onto the
                 # uncached path.
@@ -433,7 +436,14 @@ def maybe_toggle_step_cache(
                 disable_cache()
                 # disable_cache removes nothing when _cache_config is None, which is exactly an
                 # adopted low-level cache, so trusting it would clear the marker over live hooks.
-                if not _unhook_first_block_cache(transformer):
+                # THAT is the case the verification exists for, so it only gets a veto there. A
+                # live FirstBlockCacheConfig means diffusers just removed both hooks and cleared
+                # the config itself, and disable_cache returning without raising is the evidence;
+                # demanding the private-name sweep succeed on top of it makes every disengage
+                # depend on `diffusers.hooks.first_block_cache` staying importable, and when it is
+                # not, FBCache stays engaged on short trajectories forever -- the exact quality
+                # regression the auto policy exists to avoid.
+                if not _unhook_first_block_cache(transformer) and not ours:
                     _warn(
                         logger,
                         "fbcache disable",
