@@ -502,6 +502,14 @@ export const es = {
           label: "Enviar mensaje",
           description: "Enviar lo que hay en el redactor",
         },
+        queueMessage: {
+          label: "Poner el mensaje en cola",
+          description: "Enviar el borrador al final de la cola",
+        },
+        steerMessage: {
+          label: "Dirigir la respuesta",
+          description: "Detener la respuesta actual y enviar el borrador a continuación",
+        },
         cycleReasoningEffort: {
           label: "Alternar esfuerzo de razonamiento",
           description: "Recorrer los niveles de esfuerzo de razonamiento",

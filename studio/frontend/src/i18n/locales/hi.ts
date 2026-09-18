@@ -502,6 +502,14 @@ export const hi = {
           label: "संदेश भेजें",
           description: "लिखने के बॉक्स की सामग्री भेजें",
         },
+        queueMessage: {
+          label: "संदेश कतार में डालें",
+          description: "ड्राफ़्ट को कतार के अंत में भेजें",
+        },
+        steerMessage: {
+          label: "उत्तर बदलें",
+          description: "मौजूदा उत्तर रोककर ड्राफ़्ट अगला भेजें",
+        },
         cycleReasoningEffort: {
           label: "तर्क प्रयास बदलें",
           description: "तर्क प्रयास के स्तरों में क्रमशः बदलें",

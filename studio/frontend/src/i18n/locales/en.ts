@@ -504,6 +504,14 @@ export const en = {
           label: "Send message",
           description: "Send what is in the composer",
         },
+        queueMessage: {
+          label: "Queue message",
+          description: "Send the draft to the end of the prompt queue",
+        },
+        steerMessage: {
+          label: "Steer response",
+          description: "Stop the current response and send the draft next",
+        },
         cycleReasoningEffort: {
           label: "Cycle reasoning effort",
           description: "Step through the reasoning effort levels",

@@ -497,6 +497,14 @@ export const zhCN = {
           label: "发送消息",
           description: "发送输入框中的内容",
         },
+        queueMessage: {
+          label: "将消息排队",
+          description: "把草稿发送到队列末尾",
+        },
+        steerMessage: {
+          label: "引导回复",
+          description: "停止当前回复并接着发送草稿",
+        },
         cycleReasoningEffort: {
           label: "循环切换推理强度",
           description: "在各推理强度等级之间循环",

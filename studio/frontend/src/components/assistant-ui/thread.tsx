@@ -58,6 +58,7 @@ import {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  followUpSubmitIntent,
   steeringInsertionIndex,
   cancelPreStreamRunForThreadIds,
   type ComposerSendShortcut,
@@ -4731,6 +4732,41 @@ const Composer: FC<{
       skipInTextFields: true,
       textFieldException: COMPOSER_INPUT_SELECTOR,
     },
+  );
+  // Same send as above, with the follow-up named rather than left to the
+  // preference. handleSubmit reads the intent ref, so ask it for the opposite
+  // whenever the preference is not already the behaviour wanted here.
+  const submitWithFollowUp = useCallback(
+    (behavior: ComposerFollowUpBehavior) => {
+      // No dictation branch: the recording bar replaces the composer, so the
+      // foreground gate below already turns these into a no-op there.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      submitIntentRef.current = followUpSubmitIntent(
+        useChatPreferencesStore.getState().followUpBehavior,
+        behavior,
+      );
+      try {
+        formRef.current?.requestSubmit();
+      } finally {
+        submitIntentRef.current = "default";
+      }
+    },
+    [],
+  );
+  const followUpShortcutOptions = {
+    enabled: chatActive && !disabled,
+    skipInTextFields: true,
+    textFieldException: COMPOSER_INPUT_SELECTOR,
+  };
+  useShortcut(
+    "queueMessage",
+    () => submitWithFollowUp("queue"),
+    followUpShortcutOptions,
+  );
+  useShortcut(
+    "steerMessage",
+    () => submitWithFollowUp("steer"),
+    followUpShortcutOptions,
   );
   const wasDictatingRef = useRef(false);
   useEffect(() => {

@@ -503,6 +503,14 @@ export const fr = {
           label: "Envoyer le message",
           description: "Envoyer le contenu de la zone de saisie",
         },
+        queueMessage: {
+          label: "Mettre le message en file",
+          description: "Envoyer le brouillon à la fin de la file",
+        },
+        steerMessage: {
+          label: "Réorienter la réponse",
+          description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
+        },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
           description: "Parcourir les niveaux d’effort de raisonnement",
