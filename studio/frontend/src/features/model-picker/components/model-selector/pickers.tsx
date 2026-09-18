@@ -80,6 +80,7 @@ import {
   useModelMemory,
 } from "@/hooks/use-model-memory";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { type GgufFitClass, requiredGgufMemoryGb } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
@@ -4440,11 +4441,14 @@ export function HubModelPicker({
     connectionMaxOutputTokens: number | null;
   } | null>(null);
 
-  const copyConnectedModelId = useCallback((providerModelId: string) => {
-    navigator.clipboard
-      .writeText(providerModelId)
-      .then(() => toast.success(`Copied ${providerModelId}`))
-      .catch(() => toast.error("Could not copy the model ID"));
+  // The shared helper, not navigator.clipboard: that is undefined in the desktop shell and over
+  // plain HTTP on a LAN address, where reading .writeText off it throws before any catch runs.
+  const copyConnectedModelId = useCallback(async (providerModelId: string) => {
+    if (await copyToClipboard(providerModelId)) {
+      toast.success(`Copied ${providerModelId}`);
+    } else {
+      toast.error("Could not copy the model ID");
+    }
   }, []);
 
   // Candidate pins whose repo still exists in the cache; per-quant validation below is needed
@@ -5549,7 +5553,7 @@ export function HubModelPicker({
                     className="size-icon"
                   />
                 ),
-                onSelect: () => copyConnectedModelId(providerModelId),
+                onSelect: () => void copyConnectedModelId(providerModelId),
               },
               // Only where no heading is carrying it. A group heading has its own gear, so a row
               // under one would be offering the same destination twice; a pinned row, or one in

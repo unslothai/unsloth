@@ -173,6 +173,14 @@ test("the row menu carries the connected actions", () => {
   for (const label of ["Model info", "Copy model ID"]) {
     assert.match(pickers, new RegExp(`label: "${label}"`));
   }
+  // Through the shared helper, which handles the desktop shell and falls back to execCommand.
+  // navigator.clipboard is undefined there and over plain HTTP on a LAN address, and reading
+  // .writeText off it throws where no catch on the promise can report it.
+  assert.match(
+    pickers,
+    /if \(await copyToClipboard\(providerModelId\)\) \{\s*toast\.success/,
+  );
+  assert.doesNotMatch(pickers, /navigator\.clipboard\s*\n?\s*\.?writeText/);
   // The picked model already carries into a new chat, so a default-for-new-chats pin said nothing.
   assert.doesNotMatch(pickers, /Use by default in new chats/);
   // Unticking a model belongs to the connection form, which owns that list.
