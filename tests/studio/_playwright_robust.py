@@ -185,7 +185,12 @@ def _require_frontend_toolchain() -> None:
     )
 
 
-def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
+def start_vite(
+    port: int,
+    *,
+    host: str = "127.0.0.1",
+    config: str | None = None,
+) -> subprocess.Popen[str]:
     """Start `vite dev` on `port` in its own process group, with stdout drained.
 
     Refuses an occupied port. --strictPort would make vite exit anyway, and then the
@@ -204,8 +209,11 @@ def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
     # shutil.which honours PATHEXT, so this resolves npm.cmd on Windows. CreateProcess cannot run a .cmd directly, so
     # a bare "npm" is a FileNotFoundError there.
     npm = shutil.which("npm") or "npm"
+    command = [npm, "run", "dev", "--", "--host", host, "--port", str(port), "--strictPort"]
+    if config is not None:
+        command.extend(["--config", config])
     proc = subprocess.Popen(
-        [npm, "run", "dev", "--", "--host", host, "--port", str(port), "--strictPort"],
+        command,
         cwd = FRONTEND,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,

@@ -11,7 +11,7 @@ type ModelLoadDescriptionProps = {
   message?: string | null;
   progressPercent?: number | null;
   progressLabel?: string | null;
-  // Extra classes for the root row (e.g. a titleless caller dropping min-h-12).
+  // Extra classes for the root row.
   className?: string;
 };
 
@@ -47,11 +47,9 @@ export function ModelLoadDescription({
     splitProgressLabel(progressLabel);
 
   return (
-    <div className={cn("relative flex min-h-12 w-full items-stretch gap-2", className)}>
-      <div className="flex h-full shrink-0 items-center self-center">
-        <Spinner className="size-3.5 text-muted-foreground" />
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col justify-center">
+    <div className={cn("flex w-full items-start gap-2.5", className)}>
+      <Spinner className="mt-0.5 size-3.5 text-muted-foreground" />
+      <div className="flex min-w-0 flex-1 flex-col">
         {title ? <p className="text-foreground leading-tight font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">

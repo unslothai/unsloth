@@ -86,8 +86,9 @@ def installed_frontend(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("osname", ["posix", "nt"])
+@pytest.mark.parametrize("config", [None, "tests/fixtures/model-load-notice/vite.config.ts"])
 def test_start_vite_picks_the_platform_process_group(
-    monkeypatch, no_signals, installed_frontend, osname
+    monkeypatch, no_signals, installed_frontend, osname, config
 ) -> None:
     captured: dict = {}
     monkeypatch.setattr(robust.os, "name", osname)
@@ -101,9 +102,13 @@ def test_start_vite_picks_the_platform_process_group(
     if osname == "nt":
         monkeypatch.setattr(robust.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising = False)
 
-    robust.start_vite(5199)
+    robust.start_vite(5199, config = config)
 
     assert "--strictPort" in captured["cmd"], "a drifting port must fail, not pick another"
+    if config is None:
+        assert "--config" not in captured["cmd"]
+    else:
+        assert captured["cmd"][-2:] == ["--config", config]
     if osname == "nt":
         assert captured["kw"]["creationflags"] == 0x200
         assert "start_new_session" not in captured["kw"]

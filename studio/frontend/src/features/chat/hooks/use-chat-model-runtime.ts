@@ -235,14 +235,16 @@ function rememberApprovedRemoteCode(
   if (fingerprint) approvedRemoteCodeFingerprints.set(checkpoint, fingerprint);
 }
 
-// Class carries the progress-bar spacing; layout is shared CSS now.
+// Keep the controls below the progress description, with distinct cancel/hide labels.
 const MODEL_LOAD_TOAST_CLASSNAMES = {
   toast: "chat-model-load-toast",
   content: "gap-0.5 flex-1 min-w-0",
   title: "leading-5",
   description: "mt-0 w-full",
   cancelButton:
-    "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-ui-11 !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
+    "!h-7 !px-2.5 !text-ui-11 !font-medium",
+  actionButton:
+    "!h-7 !bg-transparent !px-2.5 !text-ui-11 !font-normal !text-muted-foreground hover:!text-foreground",
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -724,7 +726,9 @@ export function useChatModelRuntime() {
     setLoadToastDismissed(dismissed);
   }, []);
 
-  const resetLoadingUi = useCallback(() => {
+  const resetLoadingUi = useCallback((attempt: AbortController) => {
+    // A cancelled request can settle after its replacement has started.
+    if (loadAbortRef.current !== attempt) return;
     const inFlight = loadingModelRef.current;
     setLoadingModel(null);
     setLoadProgress(null);
@@ -1842,7 +1846,7 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
 
               force_reload: forceReload,
-            });
+            }, { signal: abortCtrl.signal });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
 
@@ -2311,15 +2315,27 @@ export function useChatModelRuntime() {
           }
         }
 
+        // Token preparation can outlive cancellation; do not create a toast afterwards.
+        if (abortCtrl.signal.aborted) return;
+        const isCurrentLoad = () =>
+          !abortCtrl.signal.aborted && loadAbortRef.current === abortCtrl;
         const isCachedLoad = isDownloaded || isCachedLora;
         const toastTitle = isCachedLoad ? "Starting model…" : "Downloading model…";
         const modelLoadToastOptions = (description: ReturnType<typeof renderLoadDescription>) => ({
           description,
           duration: Infinity,
-          closeButton: true,
+          closeButton: false,
           cancel: {
-            label: "Cancel",
-            onClick: cancelLoading,
+            label: "Cancel loading",
+            onClick: () => {
+              if (isCurrentLoad()) cancelLoading();
+            },
+          },
+          action: {
+            label: "Hide",
+            onClick: () => {
+              if (isCurrentLoad()) setLoadToastDismissedState(true);
+            },
           },
           classNames: MODEL_LOAD_TOAST_CLASSNAMES,
           onDismiss: (dismissedToast: { id: string | number }) => {
@@ -2396,7 +2412,7 @@ export function useChatModelRuntime() {
         let downloadComplete = isDownloaded || isCachedLora;
 
         const pollDownload = async () => {
-          if (abortCtrl.signal.aborted || !loadingModelRef.current) {
+          if (!isCurrentLoad()) {
             if (progressInterval) clearInterval(progressInterval);
             return;
           }
@@ -2410,7 +2426,7 @@ export function useChatModelRuntime() {
                     hfToken,
                   )
                 : await getDownloadProgress(modelId, hfToken);
-            if (!loadingModelRef.current) return;
+            if (!isCurrentLoad()) return;
 
             if (prog.progress > 0 && prog.progress < 1) {
               hasShownProgress = true;
@@ -2492,13 +2508,13 @@ export function useChatModelRuntime() {
         };
 
         const pollLoad = async () => {
-          if (abortCtrl.signal.aborted || !loadingModelRef.current) {
+          if (!isCurrentLoad()) {
             if (progressInterval) clearInterval(progressInterval);
             return;
           }
           try {
             const prog = await getLoadProgress();
-            if (!loadingModelRef.current) return;
+            if (!isCurrentLoad()) return;
             if (!prog || prog.phase == null) return;
             if (prog.phase === "ready") {
               // Loaded. The chat flow will flip loadingModelRef shortly; just stop polling.
@@ -2580,6 +2596,8 @@ export function useChatModelRuntime() {
               id: toastId,
               description: loadedDescription,
               cancel: undefined,
+              action: undefined,
+              classNames: undefined,
               closeButton: true,
               duration: 8000,
               onDismiss: undefined,
@@ -2596,6 +2614,7 @@ export function useChatModelRuntime() {
                 id: toastId,
                 description: undefined,
                 cancel: undefined,
+                action: undefined,
                 classNames: undefined,
                 closeButton: true,
                 duration: 8000,
@@ -2606,7 +2625,7 @@ export function useChatModelRuntime() {
           throw err;
         } finally {
           if (progressInterval) clearInterval(progressInterval);
-          resetLoadingUi();
+          resetLoadingUi(abortCtrl);
           if (postLoadRefresh.needed && !abortCtrl.signal.aborted) {
             void refreshContextUsage({ afterModelLoad: true });
           }
@@ -2614,7 +2633,7 @@ export function useChatModelRuntime() {
       } catch (error) {
         restorePreviousConfig();
         if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
-        resetLoadingUi();
+        resetLoadingUi(abortCtrl);
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
