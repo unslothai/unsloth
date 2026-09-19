@@ -26711,11 +26711,19 @@ async def produce_openai_chat_completions(
     # the same history again from the raw payload: a retained picture can be a 40
     # megapixel raster, and it is decoded once, not once per promotion.
     _sf_mcp_decode_cache: dict = {}
+    # The DECODED pictures, not the base64 they arrived as. Promotion treats a caller
+    # payload as opaque -- it zips it onto a marker by identity and deletes it by index,
+    # never reading it -- and the sink it fills is what generation sends, ahead of the
+    # decoded list (`sf_mcp_images or images`). Handing it the raw base64 therefore threw
+    # the decode away: _decode_and_resize_image forces the load, scales a 16-bit raster
+    # down from 65535 and converts CMYK/PA/F/LAB to RGB, while the worker's own decode
+    # does none of that, so a 16-bit PNG reached the model clipped to white. Falls back
+    # to the payloads when nothing was decoded, which keeps the positions aligned.
     chat_messages, sf_mcp_images = await _promote_local_mcp_images_async(
         chat_messages,
         vision = bool(_sf_model_info.get("is_vision")),
         decode_cache = _sf_mcp_decode_cache,
-        caller_images = served_images,
+        caller_images = images or served_images,
     )
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     # Resolve the tool policy BEFORE the protocol is classified: the template
