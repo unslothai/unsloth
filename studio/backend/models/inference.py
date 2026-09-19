@@ -520,6 +520,15 @@ class ValidateModelRequest(BaseModel):
             "for VRAM. -1 (Auto) keeps the previous behaviour for callers that omit it."
         ),
     )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = (
+            "Per-GPU share (--tensor-split) intended for the follow-up load. Manual "
+            "mode promotes an explicit -ts from llama_extra_args into this field "
+            "before stripping the raw flag, so this preflight must carry the same "
+            "ratio /load will emit (#11330)."
+        ),
+    )
     n_parallel: Optional[int] = Field(
         None,
         ge = PARALLEL_MIN,
@@ -608,6 +617,10 @@ class ValidateModelRequest(BaseModel):
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "reasoning_budget", mode = "before"
     )(LoadRequest._no_booleans.__func__)
+
+    _reject_degenerate_tensor_split = field_validator("tensor_split")(
+        LoadRequest._reject_degenerate_tensor_split.__func__
+    )
 
 
 class TransformersUpgradeInfo(BaseModel):

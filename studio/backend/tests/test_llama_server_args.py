@@ -30,6 +30,7 @@ parse_gpu_layers_override = _lsa.parse_gpu_layers_override
 parse_reasoning_budget_message_override = _lsa.parse_reasoning_budget_message_override
 parse_reasoning_budget_override = _lsa.parse_reasoning_budget_override
 parse_split_mode_override = _lsa.parse_split_mode_override
+parse_tensor_split_override = _lsa.parse_tensor_split_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_reasoning_budget = _lsa.resolve_reasoning_budget
 resolve_reasoning_budget_message = _lsa.resolve_reasoning_budget_message
@@ -591,6 +592,48 @@ def test_parse_gpu_layers_override_rejects_malformed_values(args):
 def test_validate_extra_args_rejects_malformed_gpu_layers_override():
     with pytest.raises(ValueError, match = "GPU layers"):
         validate_extra_args(["-ngl", "abc"])
+
+
+# ── parse_tensor_split_override ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--tensor-split", "2.2,1"], [2.2, 1.0]),
+        (["-ts", "3,1"], [3.0, 1.0]),
+        (["-ts", "3/1"], [3.0, 1.0]),
+        (["--tensor-split=1,1"], [1.0, 1.0]),
+        (["-ts", "1,1", "--tensor-split", "2.2,1"], [2.2, 1.0]),
+    ],
+)
+def test_parse_tensor_split_override(args, expected):
+    assert parse_tensor_split_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--tensor-split"],
+        ["--tensor-split", "--top-k"],
+        ["--tensor-split", "abc"],
+        ["--tensor-split", "1,-1"],
+        ["--tensor-split", "0,0"],
+        ["--tensor-split", "nan,1"],
+        ["--tensor-split", "inf,1"],
+    ],
+)
+def test_parse_tensor_split_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "tensor-split"):
+        parse_tensor_split_override(args)
+
+
+def test_validate_extra_args_rejects_malformed_tensor_split_override():
+    with pytest.raises(ValueError, match = "tensor-split"):
+        validate_extra_args(["-ts", "abc"])
 
 
 # ── reasoning budget first-class shadows ─────────────────────────────

@@ -10,7 +10,9 @@ https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"""
 from __future__ import annotations
 
 import logging
+import math
 import os
+import re
 import sys
 from typing import Any, Callable, Iterable, Mapping, Optional
 
@@ -346,6 +348,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     parse_cache_override(out)
     parse_split_mode_override(out)
     parse_gpu_layers_override(out)
+    parse_tensor_split_override(out)
     parse_reasoning_budget_override(out)
     parse_reasoning_budget_message_override(out)
     return out
@@ -914,6 +917,38 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     if value < -1:
         raise ValueError("llama-server GPU layers flag requires an integer value of at least -1")
     return value
+
+
+def parse_tensor_split_override(args: Optional[Iterable[str]]) -> Optional[list[float]]:
+    """Return the last user-supplied ``-ts`` / ``--tensor-split`` ratios from extras.
+
+    Manual GPU memory with ``gpu_layers >= 0`` strips ``--tensor-split`` because the first-class
+    ``tensor_split`` field owns it. Callers must promote the last-wins extras value into that
+    field first, or an asymmetric MoE split such as ``-ts 2.2,1`` is discarded and llama-server
+    falls back to a near-even layer count (#11330).
+
+    Delimiters match llama.cpp's ``[,/]+`` (``-ts 3/1`` is the same as ``-ts 3,1``). Degenerate
+    values raise so ``validate_extra_args`` can refuse them as a 400 rather than stripping them
+    silently.
+    """
+    raw_value = _last_flag_value(args, _TENSOR_SPLIT_FLAGS)
+    if raw_value is None:
+        return None
+    try:
+        parts = [float(p) for p in re.split(r"[,/]+", raw_value) if p.strip()]
+    except ValueError as exc:
+        raise ValueError(
+            "llama-server --tensor-split requires a comma- or slash-separated list of numbers"
+        ) from exc
+    if not parts:
+        raise ValueError(
+            "llama-server --tensor-split requires a comma- or slash-separated list of numbers"
+        )
+    if any((not math.isfinite(v)) or v < 0 for v in parts):
+        raise ValueError("llama-server --tensor-split entries must be finite and non-negative")
+    if sum(parts) <= 0:
+        raise ValueError("llama-server --tensor-split must have a positive total")
+    return parts
 
 
 def check_batch_floor(args: Optional[Iterable[str]], n_parallel: int) -> None:
