@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -433,13 +434,176 @@ def test_delete_attachment_route_then_404(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _upload(data: bytes) -> dict:
+def _upload(data: bytes, filename: str = "book.xlsx") -> dict:
     import io
 
     from fastapi import UploadFile
     return chat_history.upload_attachment_file(
-        UploadFile(io.BytesIO(data), filename = "book.xlsx"), current_subject = "unsloth"
+        UploadFile(io.BytesIO(data), filename = filename), current_subject = "unsloth"
     )
+
+
+def test_tool_only_upload_returns_a_preview(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    preview = _upload(b"P5\n2 1\n255\n\x00\x80", "depth.pgm")["preview"]
+    assert preview["kind"] == "image" and preview["description"].endswith("2x1, mode L")
+    # A corrupt file is still stored; it just has no preview.
+    broken = _upload(b"P5 not a netpbm", "t.pgm")
+    assert "preview" not in broken and broken["id"]
+
+    # A reader that runs past the deadline is killed: MuPDF takes about 18 s to lay this out.
+    from core import chat_attachment_preview as previews
+
+    monkeypatch.setattr(previews, "PREVIEW_TIMEOUT_SECONDS", 1.0)
+    started = time.monotonic()
+    slow = f"<FictionBook><body><section><p>{'a' * 128_000}</p></section></body></FictionBook>"
+    assert "preview" not in _upload(slow.encode(), "slow.fb2") and time.monotonic() - started < 5
+
+
+def test_previews_convert_images_and_read_drawings(tmp_path):
+    import io
+    import zipfile
+
+    from PIL import Image
+
+    from core.chat_attachment_preview import build_preview
+
+    # 16-bit grey is stretched to 8 bits rather than clipped to white.
+    Image.frombytes("I;16", (2, 1), bytes([0, 0, 128, 0])).save(tmp_path / "depth.pgm")
+    preview = build_preview(tmp_path / "depth.pgm", "depth.pgm")
+    png = Image.open(io.BytesIO(base64.b64decode(preview["image"].split(",", 1)[1])))
+    assert preview["description"].endswith("2x1, mode I")
+    assert (png.mode, list(png.getdata())) == ("L", [0, 255])
+
+    with zipfile.ZipFile(tmp_path / "deck.odp", "w") as archive:
+        archive.writestr(
+            "content.xml",
+            '<o xmlns:d="urn:d" xmlns:t="urn:t"><d:page><t:p>Roadmap</t:p></d:page>'
+            "<d:page><t:h>Beta</t:h><t:p>April</t:p></d:page></o>",
+        )
+    # The upload stores an attachment under its hash, so the reader cannot go by the path.
+    xps = "http://schemas.openxps.org/oxps/v1.0"
+    with zipfile.ZipFile(tmp_path / "3f9a", "w") as archive:
+        archive.writestr(
+            "_rels/.rels",
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="r1" Type="{xps}/fixedrepresentation" Target="/s.fdseq"/>'
+            "</Relationships>",
+        )
+        archive.writestr(
+            "s.fdseq",
+            f'<FixedDocumentSequence xmlns="{xps}"><DocumentReference Source="/d.fdoc"/></FixedDocumentSequence>',
+        )
+        archive.writestr(
+            "d.fdoc",
+            f'<FixedDocument xmlns="{xps}"><PageContent Source="/p.fpage"/></FixedDocument>',
+        )
+        archive.writestr(
+            "p.fpage", f'<FixedPage xmlns="{xps}" Width="816" Height="1056" xml:lang="en-US"/>'
+        )
+    assert build_preview(tmp_path / "3f9a", "manifest.oxps") == {
+        "kind": "outline",
+        "text": "1 pages with no text (images only)",
+    }
+
+    assert build_preview(tmp_path / "deck.odp", "Deck.ODP") == {
+        "kind": "text",
+        "label": "ODP",
+        "text": "[Slide 1]\nRoadmap\n\n[Slide 2]\nBeta\nApril",
+    }
+
+
+def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
+    import io
+    import struct
+    import zipfile
+    from xml.etree import ElementTree
+
+    import fitz
+    from PIL import Image
+
+    from core import chat_attachment_preview as previews
+
+    def text(name: str) -> str:
+        return previews.build_preview(tmp_path / name, name)["text"]
+
+    monkeypatch.setattr(previews, "MAX_XML_BYTES", 250)
+    with zipfile.ZipFile(tmp_path / "net.vsdx", "w") as archive:
+        for n in (10, 2, 1):
+            archive.writestr(f"visio/pages/page{n}.xml", f"<P><Text>{'n' * 80}{n}</Text></P>")
+    assert text("net.vsdx") == (
+        f"[Page 1]\n{'n' * 80}1\n\n[Page 2]\n{'n' * 80}2\n[Truncated: 1 more pages over the read budget]"
+    )
+
+    monkeypatch.setattr(previews, "MAX_DOCUMENT_PAGES", 1)
+    (tmp_path / "book.fb2").write_text(
+        f"<FictionBook><body><section>{'<p>tide and harbour</p>' * 400}</section></body></FictionBook>"
+    )
+    assert text("book.fb2").endswith("more pages not read]")
+
+    monkeypatch.setattr(previews, "MAX_TEXT_CHARS", 10)
+    assert text("book.fb2").endswith(
+        "[Truncated: the document has more text than one attachment carries]"
+    )
+
+    # Nested elements repeat their descendants' text, so the budget bounds what is built at all.
+    nested = ("<p>" * 2000) + ("body " * 100) + ("</p>" * 2000)
+    root = ElementTree.fromstring(f"<o>{nested}</o>")
+    assert len(previews._xml_text(root, {"p"}, 50)) <= 50
+    siblings = ElementTree.fromstring("<o>" + "<p>ten chars</p>" * 50 + "</o>")
+    assert len(previews._xml_text(siblings, {"p"}, 50)) <= 50
+    two = '<o xmlns:d="urn:d"><d:page><p>{}</p></d:page><d:page><p>{}</p></d:page></o>'
+    with zipfile.ZipFile(tmp_path / "two.odp", "w") as archive:
+        archive.writestr("content.xml", two.format("a" * 50, "b" * 50))
+    assert "b" not in previews._drawing_text(tmp_path / "two.odp", ".odp")
+
+    # ZipFile does not cap what one read of an LZMA or bzip2 member inflates, so those are not read.
+    with zipfile.ZipFile(tmp_path / "packed.odp", "w", zipfile.ZIP_BZIP2) as archive:
+        archive.writestr("content.xml", "<o><p>packed</p></o>")
+    assert previews.build_preview(tmp_path / "packed.odp", "packed.odp") is None
+
+    monkeypatch.setattr(previews, "MAX_ZIP_DIRECTORY_BYTES", 100)
+    # Documents that are zips get the same directory check, and image-only pages end the walk too.
+    with zipfile.ZipFile(tmp_path / "comic.cbz", "w") as archive:
+        archive.writestr("ComicInfo.xml", "<ComicInfo/>")
+        for number in range(3):
+            page = io.BytesIO()
+            Image.new("RGB", (1, 1)).save(page, format = "PNG")
+            archive.writestr(f"{number}.png", page.getvalue())
+    assert text("comic.cbz").startswith("central directory of")
+    monkeypatch.setattr(previews, "MAX_ZIP_DIRECTORY_BYTES", 4096)
+    monkeypatch.setattr(previews, "MAX_DOCUMENT_MEMBER_BYTES", 60)
+    assert text("comic.cbz") == "0.png is 69 bytes, too large to read"
+    monkeypatch.setattr(previews, "MAX_DOCUMENT_MEMBER_BYTES", 4096)
+    monkeypatch.setattr(previews, "MAX_DOCUMENT_PAGES", 2)
+    assert text("comic.cbz") == "3 pages, no text in the first 2 (images only)"
+
+    # An icon's PNG or BMP frame is checked before Pillow decodes it on open.
+    monkeypatch.setattr(previews, "MAX_IMAGE_PIXELS", 100)
+    for frames in ("png", "bmp"):
+        Image.new("RGB", (16, 16)).save(tmp_path / f"{frames}.ico", bitmap_format = frames)
+    # An icon named as another format opens as that format only, so it cannot skip the check.
+    (tmp_path / "icon.tga").write_bytes((tmp_path / "png.ico").read_bytes())
+    assert previews.build_preview(tmp_path / "icon.tga", "icon.tga") is None
+    monkeypatch.setattr(Image, "open", lambda *args, **kwargs: pytest.fail("icon was decoded"))
+    siz = b"\xff\x4f\xff\x51" + struct.pack(">HHII", 41, 0, 16, 16)
+    (tmp_path / "raw.icns").write_bytes(
+        b"icns" + struct.pack(">I", 24 + len(siz)) + b"ic09" + struct.pack(">I", 8 + len(siz)) + siz
+    )
+    assert previews.build_preview(tmp_path / "raw.icns", "raw.icns")["kind"] == "outline"
+    for frames in ("png", "bmp"):
+        assert previews.build_preview(tmp_path / f"{frames}.ico", "app.ico")["kind"] == "outline"
+
+    seen = {}
+
+    def opened(path, **kwargs):
+        seen.update(kwargs)
+        raise ValueError("stop")
+
+    monkeypatch.setattr(fitz, "open", opened)
+    zipfile.ZipFile(tmp_path / "deck.ppsm", "w").close()
+    assert previews.build_preview(tmp_path / "deck.ppsm", "deck.ppsm") is None
+    assert seen == {"filetype": "pptx"}
 
 
 def test_attachment_upload_dedupes_and_renews(tmp_path, monkeypatch):

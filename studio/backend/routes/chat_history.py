@@ -929,10 +929,12 @@ def _sweep_attachment_files() -> None:
 def upload_attachment_file(
     file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
 ) -> dict:
-    """Keep an attachment's original bytes so tools can read the file itself."""
+    """Keep an attachment's original bytes so tools can read the file itself. A file only the python
+    tool can read also gets a preview (image, text or outline) for the message."""
     from storage.chat_attachment_store import (
         AttachmentTooLarge,
         EmptyAttachment,
+        attachment_path,
         store_attachment,
         sweep_attachments_if_due,
     )
@@ -944,12 +946,17 @@ def upload_attachment_file(
     except EmptyAttachment as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     sweep_attachments_if_due()
+    from core.chat_attachment_preview import preview_attachment
     from core.inference.tools import sandbox_attachment_path
 
+    filename = file.filename or ""
+    stored = attachment_path(attachment_id)
+    preview = preview_attachment(stored, filename) if stored is not None else None
     return {
         "id": attachment_id,
         "sizeBytes": size,
-        "sandboxPath": sandbox_attachment_path(attachment_id, file.filename or ""),
+        "sandboxPath": sandbox_attachment_path(attachment_id, filename),
+        **({"preview": preview} if preview else {}),
     }
 
 
