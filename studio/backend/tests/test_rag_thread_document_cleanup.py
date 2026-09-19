@@ -357,6 +357,26 @@ def test_a_fork_warns_if_a_source_document_is_deleted_during_file_copy(client, m
     assert _thread_documents(client, "fork") == []
 
 
+def test_deleting_a_fork_during_file_copy_does_not_leave_orphan_documents(client, monkeypatch):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    source = _upload(client, "source", "source.txt", "echo foxtrot golf " * 50)
+    upload_dir = os.path.dirname(_stored_path(source))
+    before = set(os.listdir(upload_dir))
+    copy_upload = ingestion._copy_upload
+
+    def copy_then_delete_fork(path):
+        copied = copy_upload(path)
+        response = client.request("DELETE", "/api/chat/threads", json = {"ids": ["fork"]})
+        assert response.status_code == 200, response.text
+        return copied
+
+    monkeypatch.setattr(ingestion, "_copy_upload", copy_then_delete_fork)
+    _fork(client, "source", "m1", "fork")
+    assert _document_ids(client) == {source}
+    assert set(os.listdir(upload_dir)) == before
+
+
 def _cite(client, thread_id, message_id, document_id):
     sources = [
         {
