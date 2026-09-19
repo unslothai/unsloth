@@ -455,6 +455,12 @@ from core.inference.tool_call_parser import (
 )
 from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
 from core.inference.repetition_guard import is_repetition_dominated
+from core.inference.mcp_images import (
+    DETACHED_IMAGE_TURN_TEXT as MCP_DETACHED_IMAGE_TURN_TEXT,
+    IMAGE_TURN_TEXT as MCP_IMAGE_TURN_TEXT,
+    append_image_turn as append_mcp_image_turn,
+    mentions_images as mcp_images_mentioned_in,
+)
 from core.inference.tool_loop_controller import (
     _WORKSPACE_TOOLS,
     ToolLoopController,
@@ -462,6 +468,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     deferred_nudge_text,
     provisional_tool_provenance,
+    tool_call_limit_nudge,
 )
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -33351,6 +33358,17 @@ class LlamaCppBackend:
         httpx.Client + auth headers for the stream's lifetime; raises
         RuntimeError on a non-200. Shared scaffold for the streaming consumers,
         which differ only in how they parse the SSE body."""
+        from core.inference.mcp_images import prepare_image_turn_boundaries
+
+        if "messages" in payload:
+            payload = {
+                **payload,
+                "messages": prepare_image_turn_boundaries(
+                    payload["messages"],
+                    getattr(self, "_chat_template_override", None)
+                    or getattr(self, "_chat_template", None),
+                ),
+            }
         stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
         with httpx.Client(
             timeout = stream_timeout,
@@ -34263,6 +34281,7 @@ class LlamaCppBackend:
         self,
         messages: list[dict],
         tools: list[dict],
+        replayed_image_parts: "tuple" = (),
         temperature: float = 0.6,
         top_p: float = 0.95,
         top_k: int = 20,
@@ -34618,6 +34637,7 @@ class LlamaCppBackend:
         # Hold a leading ``{`` well past the 32-char XML cap until it balances (mirrors safetensors).
         _MAX_BARE_JSON_BUFFER = 16384
         _append_budget_exhausted_nudge = True
+        _limit_notice_in_user_turn = False
         # RAG: cap knowledge-base searches per assistant turn. The controller is
         # tool-agnostic, so this gate stays in the loop.
         _kb_search_count = 0
@@ -34803,6 +34823,13 @@ class LlamaCppBackend:
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
         iteration = -1
+        # Outside the loop: the cap is across the whole run, and a per-iteration list
+        # would only ever see the current batch, leaving every earlier iteration's
+        # images in the conversation untrimmed.
+        # Seeded with what promotion already put in the conversation, not empty. The cap
+        # is across the CONVERSATION, so a resumed chat whose history already carries the
+        # allowance would otherwise get a second one for this run and send both.
+        loop_mcp_image_parts: list = list(replayed_image_parts)
         while True:
             iteration += 1
             # Here rather than at each append: six sites grow the conversation and all of
@@ -36402,6 +36429,8 @@ class LlamaCppBackend:
 
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
+                _over_cap: list = []
+                _limit_notice_in_user_turn = False
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
                     _last_workspace_key = None
@@ -36427,15 +36456,23 @@ class LlamaCppBackend:
                         elif _key in _seen_keys:
                             continue
                         _seen_keys.add(_key)
-                        _deduped.append(_tc)
-                        if len(_deduped) >= _MAX_TOOL_CALLS_PER_TURN:
-                            break
-                    if len(_deduped) != len(tool_calls):
+                        if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
+                            _deduped.append(_tc)
+                        else:
+                            _over_cap.append(_tc)
+                    if len(_deduped) + len(_over_cap) != len(tool_calls):
                         logger.info(
                             "GGUF textual fallback: collapsed %d repeated tool call(s) "
                             "in one turn to %d",
                             len(tool_calls),
-                            len(_deduped),
+                            len(_deduped) + len(_over_cap),
+                        )
+                    if _over_cap:
+                        logger.info(
+                            "GGUF textual fallback: skipped %d tool call(s) over the "
+                            "per-turn limit of %d",
+                            len(_over_cap),
+                            _MAX_TOOL_CALLS_PER_TURN,
                         )
                     tool_calls = _deduped
 
@@ -36444,6 +36481,7 @@ class LlamaCppBackend:
                 # conversation stays consistent and extra calls are never executed.
                 if disable_parallel_tool_use and tool_calls and len(tool_calls) > 1:
                     tool_calls = tool_calls[:1]
+                    _over_cap = []
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 if reasoning_accum.strip():
@@ -36455,6 +36493,11 @@ class LlamaCppBackend:
                 # Which tools those no-ops were about, so the flush below can tell
                 # whether the trailing result belongs to the same tool.
                 deferred_noop_tools: set = set()
+                # Per result, so a parallel batch is not squeezed into one
+                # result's worth of images.
+                batch_mcp_images: list = []
+                # Where this batch's results start, for the image turn\'s wording.
+                batch_conversation_start = len(conversation)
 
                 # The text-path provisional card uses the parser's default id ("call_0");
                 # a Mistral-style call carries its own id and would open a duplicate. Reuse
@@ -37012,6 +37055,13 @@ class LlamaCppBackend:
                                         }
                                         for _call in _pending
                                     ]
+                                    # reserve the notice before sharing space among retained results.
+                                    if _over_cap:
+                                        _pending_msgs.append(
+                                            tool_call_limit_nudge(
+                                                _over_cap, _MAX_TOOL_CALLS_PER_TURN
+                                            )
+                                        )
                                     # Measured, not estimated: the estimator charges ASCII
                                     # four characters per token, and a pending call can
                                     # carry base64, minified JSON or a block of code, which
@@ -37273,6 +37323,15 @@ class LlamaCppBackend:
                     _forced_choice_resolved = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
+                    # Parsed only for a result that carries them and a model that will
+                    # be shown them; the marker test first, so a text result never asks.
+                    _completion_images = (
+                        completion.mcp_images()
+                        if mcp_images_mentioned_in(completion.result or "") and self.is_vision
+                        else []
+                    )
+                    if _completion_images:
+                        batch_mcp_images.append(_completion_images)
                     if _compact_after_execution and decision.tool_call_id:
                         # The promise the gate made when it let this run. Applied here
                         # rather than on the next pass because the next pass may not
@@ -37312,15 +37371,45 @@ class LlamaCppBackend:
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
 
+                # On the turn that ends the loop no tools are offered again, so the notice
+                # must not ask for a retry and rides the tool result like the budget nudge.
+                _over_cap_final = bool(_over_cap) and (
+                    tool_controller.force_final_answer
+                    or not tool_controller.active_tools()
+                    or (_turn_executed_real_tool and _tool_iters_done + 1 >= max_tool_iterations)
+                    # The tool-iteration cap is not the only way out: the loop also stops on
+                    # the outer iteration range, which no-op and continuation turns consume
+                    # without advancing _tool_iters_done. Missing it asks for a retry and then
+                    # tells the model not to call any tools, in adjacent user turns.
+                    or iteration + 1 >= max_tool_iterations + _extra + _continuation_credits
+                )
+                _final_over_cap = _over_cap if _over_cap_final else []
+                if _over_cap_final:
+                    _over_cap = []
+                if _over_cap:
+                    deferred_noop_msgs.append(
+                        tool_call_limit_nudge(
+                            _over_cap,
+                            _MAX_TOOL_CALLS_PER_TURN,
+                            unavailable_tools = {
+                                _limit_decision.tool_name
+                                for _call in _over_cap
+                                if (_limit_decision := tool_controller.prepare_call(_call)).action
+                                in ("disabled", "render_html_repeat")
+                            },
+                        )
+                    )
                 # A mixed execute/no-op batch already has a real tool result, so keeping the
                 # feedback with that result beats appending a newer user turn, which makes
                 # templates hide this turn's structured reasoning. Only when the result is
                 # the SAME tool the feedback is about: templates label the whole block with
                 # the result's own tool name (gemma-4.jinja resolves tool_call_id -> name and
                 # wraps the body), so folding a note about tool A into tool B's result reads
-                # as B's own output. Then the user turn is the lesser loss.
+                # as B's own output. Then the user turn is the lesser loss. A retry notice for
+                # skipped calls is never folded: read as the tail of a result, the calls are not re-issued.
                 _fold_target_matches = (
-                    len(deferred_noop_tools) == 1
+                    not _over_cap
+                    and len(deferred_noop_tools) == 1
                     and bool(conversation)
                     and conversation[-1].get("role") == "tool"
                     and conversation[-1].get("name") in deferred_noop_tools
@@ -37361,6 +37450,53 @@ class LlamaCppBackend:
                         )
                         assistant_appended = True
                     append_deferred_nudges(conversation, deferred_noop_msgs)
+                if _final_over_cap:
+                    _limit_text = tool_call_limit_nudge(
+                        _final_over_cap, _MAX_TOOL_CALLS_PER_TURN, final = True
+                    )["content"]
+                    # Same rule as _fold_target_matches above: a template labels the folded
+                    # block with the result's own tool name, so a note about tool A inside
+                    # tool B's result reads as B's output. Fold only when every skipped call
+                    # belongs to the result's own tool.
+                    _limit_names = {
+                        (_tc.get("function") or {}).get("name") for _tc in _final_over_cap
+                    }
+                    _limit_foldable = (
+                        bool(conversation)
+                        and conversation[-1].get("role") == "tool"
+                        and _limit_names == {conversation[-1].get("name")}
+                    )
+                    if not (
+                        _limit_foldable and _attach_internal_feedback_to_tool_result(_limit_text)
+                    ):
+                        if deferred_noop_msgs and conversation[-1].get("role") == "user":
+                            conversation[-1] = {
+                                **conversation[-1],
+                                "content": f"{conversation[-1]['content']}\n\n{_limit_text}",
+                            }
+                        else:
+                            conversation.append({"role": "user", "content": _limit_text})
+                        _limit_notice_in_user_turn = True
+
+                if batch_mcp_images and self.is_vision:
+                    # One block after the whole batch. With a single result "the tool
+                    # call above" is exact; with several it names whichever ran last,
+                    # which may have returned no picture at all, so the block says so
+                    # instead -- the external loop's rule.
+                    _batch_results = sum(
+                        1
+                        for m in conversation[batch_conversation_start:]
+                        if isinstance(m, dict) and m.get("role") == "tool"
+                    )
+                    append_mcp_image_turn(
+                        conversation,
+                        batch_mcp_images,
+                        per_result = True,
+                        owned = loop_mcp_image_parts,
+                        lead = MCP_DETACHED_IMAGE_TURN_TEXT
+                        if _batch_results != 1
+                        else MCP_IMAGE_TURN_TEXT,
+                    )
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():
@@ -37427,7 +37563,14 @@ class LlamaCppBackend:
         # continuing to request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
             if not _attach_internal_feedback_to_tool_result(BUDGET_EXHAUSTED_NUDGE):
-                conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
+                # Two user turns in a row break strict templates (Gemma), so ride the notice's turn.
+                if _limit_notice_in_user_turn and conversation[-1].get("role") == "user":
+                    conversation[-1] = {
+                        **conversation[-1],
+                        "content": f"{conversation[-1]['content']}\n\n{BUDGET_EXHAUSTED_NUDGE}",
+                    }
+                else:
+                    conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
         # Clear status.
         yield {"type": "status", "text": ""}
@@ -38364,7 +38507,13 @@ class LlamaCppBackend:
                     return len(tokens)
 
                 # 1. Try /apply-template to render the real chat prompt.
-                template_messages = list(messages) if messages else []
+                from core.inference.mcp_images import prepare_image_turn_boundaries
+
+                template_messages = prepare_image_turn_boundaries(
+                    list(messages) if messages else [],
+                    getattr(self, "_chat_template_override", None)
+                    or getattr(self, "_chat_template", None),
+                )
                 if system_text:
                     template_messages = [
                         {"role": "system", "content": system_text}
