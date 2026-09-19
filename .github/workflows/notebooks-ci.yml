@@ -31,7 +31,11 @@ on:
       - 'scripts/data/colab_os_info.gpu.txt'
       - 'scripts/data/colab_to_cpu_pin.json'
       - 'tests/notebooks/**'
+      # Every helper the smoke steps import, or a change to one of them merges without the
+      # matrix that runs it ever starting. test_smoke_install_contract.py derives this list
+      # from the steps themselves, so a new helper fails that test until it is listed here.
       - 'tests/_zoo_aggressive_cuda_spoof.py'
+      - 'tests/_torchcodec_stub.py'
       - '.github/workflows/notebooks-ci.yml'
   schedule:
     # Daily 06:17 UTC. Catches Colab preinstall bumps (the upstream image
@@ -735,10 +739,11 @@ jobs:
           awk '/^from unsloth import/ { print "import sys; sys.exit(0)"; exit } { print }' "$PY" > _smoke.py
           PYTHONPATH=unsloth/tests python -u - <<'PY'
           import _zoo_aggressive_cuda_spoof as _s; _s.apply()
-          # Stub torchcodec for cells that import it — no CPU wheel exists.
-          import sys, types
-          if "torchcodec" not in sys.modules:
-              sys.modules["torchcodec"] = types.ModuleType("torchcodec")
+          # Stub torchcodec for cells that import it — no CPU wheel exists. Through the
+          # shared helper, which installs a tiny placeholder DISTRIBUTION rather than poking
+          # sys.modules: transformers asks find_spec and then reads the distribution version
+          # at import time, and a sys.modules entry answers at most the first of those.
+          import _torchcodec_stub as _t; _t.install()
           exec(open("_smoke.py").read(), {"__name__": "__main__"})
           PY
 
@@ -746,9 +751,7 @@ jobs:
         timeout-minutes: 5
         run: |
           PYTHONPATH=unsloth/tests python -u - <<'PY'
-          import sys, types
-          if "torchcodec" not in sys.modules:
-              sys.modules["torchcodec"] = types.ModuleType("torchcodec")
+          import _torchcodec_stub as _t; _t.install()
           import _zoo_aggressive_cuda_spoof as _s; _s.apply()
           import unsloth, peft, torch, torchao, transformers, tokenizers
           print("OK: imports pass under CUDA spoof")
