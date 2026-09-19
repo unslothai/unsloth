@@ -735,10 +735,11 @@ jobs:
           awk '/^from unsloth import/ { print "import sys; sys.exit(0)"; exit } { print }' "$PY" > _smoke.py
           PYTHONPATH=unsloth/tests python -u - <<'PY'
           import _zoo_aggressive_cuda_spoof as _s; _s.apply()
-          # Stub torchcodec for cells that import it — no CPU wheel exists.
-          import sys, types
-          if "torchcodec" not in sys.modules:
-              sys.modules["torchcodec"] = types.ModuleType("torchcodec")
+          # Stub torchcodec for cells that import it — no CPU wheel exists. Through the
+          # shared helper, which gives the placeholder a real __spec__: a bare ModuleType
+          # leaves __spec__ None, and importlib.util.find_spec RAISES on that rather than
+          # returning None, so transformers' is_torchcodec_available() blew up on import.
+          import _torchcodec_stub as _t; _t.install()
           exec(open("_smoke.py").read(), {"__name__": "__main__"})
           PY
 
@@ -746,9 +747,7 @@ jobs:
         timeout-minutes: 5
         run: |
           PYTHONPATH=unsloth/tests python -u - <<'PY'
-          import sys, types
-          if "torchcodec" not in sys.modules:
-              sys.modules["torchcodec"] = types.ModuleType("torchcodec")
+          import _torchcodec_stub as _t; _t.install()
           import _zoo_aggressive_cuda_spoof as _s; _s.apply()
           import unsloth, peft, torch, torchao, transformers, tokenizers
           print("OK: imports pass under CUDA spoof")

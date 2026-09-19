@@ -369,3 +369,76 @@ def test_the_skip_list_is_closed_under_the_freezes_dependencies():
         f"each of these is skipped while a retained pin still requires it, so pip "
         f"downloads it anyway and the skip saves nothing: {leaks}"
     )
+
+
+# --- the torchcodec placeholder --------------------------------------------------------
+
+
+def test_the_torchcodec_placeholder_answers_find_spec_instead_of_raising():
+    """`types.ModuleType(name)` leaves `__spec__` None, and importlib.util.find_spec RAISES on
+    a module sitting in sys.modules with no spec rather than returning None. transformers hits
+    exactly that probe while importing audio_utils (is_torchcodec_available ->
+    _is_package_available), which peft pulls in through BloomPreTrainedModel, so every leg of
+    the smoke matrix died on `import peft` with `ValueError: torchcodec.__spec__ is None`.
+    """
+    import importlib.util
+    import types
+
+    sys.path.insert(0, str(REPO / "tests"))
+    import _torchcodec_stub  # noqa: PLC0415
+
+    # The shape that broke, so the test states what it is defending against rather than
+    # asserting a spec exists for reasons a reader has to reconstruct.
+    bare = types.ModuleType(_torchcodec_stub.NAME)
+    assert bare.__spec__ is None
+    saved = sys.modules.get(_torchcodec_stub.NAME)
+    sys.modules[_torchcodec_stub.NAME] = bare
+    try:
+        with pytest.raises(ValueError, match = "__spec__ is None"):
+            importlib.util.find_spec(_torchcodec_stub.NAME)
+        del sys.modules[_torchcodec_stub.NAME]
+
+        _torchcodec_stub.install()
+        assert importlib.util.find_spec(_torchcodec_stub.NAME) is not None
+    finally:
+        if saved is None:
+            sys.modules.pop(_torchcodec_stub.NAME, None)
+        else:
+            sys.modules[_torchcodec_stub.NAME] = saved
+
+
+def test_the_placeholder_never_displaces_a_real_torchcodec():
+    """A machine that does have the wheel must keep it: the stub is for the CPU runner, and
+    overwriting a genuine module would be the opposite of what it is for."""
+    import types
+
+    sys.path.insert(0, str(REPO / "tests"))
+    import _torchcodec_stub  # noqa: PLC0415
+
+    real = types.ModuleType(_torchcodec_stub.NAME)
+    real.__unsloth_real__ = True
+    saved = sys.modules.get(_torchcodec_stub.NAME)
+    sys.modules[_torchcodec_stub.NAME] = real
+    try:
+        assert _torchcodec_stub.install() is real
+        assert sys.modules[_torchcodec_stub.NAME] is real
+    finally:
+        if saved is None:
+            sys.modules.pop(_torchcodec_stub.NAME, None)
+        else:
+            sys.modules[_torchcodec_stub.NAME] = saved
+
+
+def test_both_smoke_steps_stub_torchcodec_through_the_shared_helper():
+    """Two steps stub it, and they used to carry their own copy of the bare-ModuleType form.
+    One fixed copy is how this comes back."""
+    shell = _shell(_job())
+    assert "_torchcodec_stub" in shell, "the smoke job no longer uses the shared placeholder"
+    assert shell.count("import _torchcodec_stub") == 2, (
+        "both the install-cell step and the import-verification step must install the "
+        f"placeholder; found {shell.count('import _torchcodec_stub')} site(s)"
+    )
+    assert 'types.ModuleType("torchcodec")' not in shell, (
+        "a hand-rolled torchcodec stub is back in the workflow; its __spec__ is None and "
+        "importlib.util.find_spec raises on it"
+    )
