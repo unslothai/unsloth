@@ -128,7 +128,16 @@ _SHARED_PAYLOAD = {
         "libggml-cpu.so",
         "libmtmd.so",
     ],
-    "windows": ["llama.dll"],
+    # Written unconditionally: the check is "has", not "has only".
+    "windows": [
+        "llama.dll",
+        "llama-common.dll",
+        "llama-server-impl.dll",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll",
+        "mtmd.dll",
+    ],
     "macos": ["libllama.dylib", "libggml.dylib", "libmtmd.dylib"],
 }
 _BACKEND_PAYLOAD = {

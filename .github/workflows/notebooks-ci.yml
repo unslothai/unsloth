@@ -26,6 +26,9 @@ on:
       - 'scripts/notebook_validator.py'
       - 'scripts/notebook_to_python.py'
       - 'scripts/data/colab_pip_freeze.gpu.txt'
+      # Rule-bearing since _marker_environment started reading the image's Python out of it:
+      # an OS-only rotation changes which requirements the validator replays.
+      - 'scripts/data/colab_os_info.gpu.txt'
       - 'scripts/data/colab_to_cpu_pin.json'
       - 'tests/notebooks/**'
       - 'tests/_zoo_aggressive_cuda_spoof.py'
@@ -144,10 +147,17 @@ jobs:
           python unsloth/scripts/notebook_validator.py colab-diff \
               --snapshot-dir unsloth/scripts/data
 
-      - name: Refresh Colab pip-freeze (best-effort; falls back to snapshot)
+      - name: Refresh Colab oracles (best-effort; falls back to snapshot)
+        # --all, not just pip-freeze: marker evaluation reads the Python version out of
+        # colab_os_info.gpu.txt, so refreshing the package set on its own would judge the
+        # live packages against the previous image's Python after a Colab version rotation,
+        # skipping requirements that apply or replaying ones that do not. --all writes
+        # nothing unless it fetched every rule-bearing oracle AND could write the whole set,
+        # restoring the committed files if it could not, so the fallback is always a
+        # self-consistent generation.
         run: |
           python unsloth/scripts/notebook_validator.py refresh-colab \
-              --out unsloth/scripts/data/colab_pip_freeze.gpu.txt \
+              --all --snapshot-dir unsloth/scripts/data \
             || echo "::warning::refresh-colab failed; using committed snapshot"
 
       - name: Drift check (re-run update_all_notebooks.py + git diff)
@@ -228,7 +238,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with: { python-version: '3.12' }
       - name: Install
-        run: pip install -U pip
+        # packaging is not in a bare setup-python environment, and _requirement_applies
+        # falls back to "applies" when it cannot import Marker. Without it this job
+        # replays every environment-marked requirement, including the ones Colab's pip
+        # skips, which is exactly what the Python-version oracle exists to decide.
+        run: pip install -U pip packaging
       - name: Diff Colab oracle vs committed snapshots (--strict on cron)
         # Cron-only escalation of the advisory PR-time check. Fails if
         # pip-freeze.gpu.txt has drifted from scripts/data/colab_*.txt --
@@ -247,11 +261,13 @@ jobs:
         # the lint below. A Colab rotation is exactly when the live-metadata
         # pass is worth having, and skipping it there would mean the job only
         # ever lints on the days nothing changed. The strict step still decides
-        # the job's verdict.
+        # the job's verdict. An advisory oracle that will not fetch is skipped
+        # rather than fatal, matching how colab-diff treats its drift; only the
+        # rule-bearing ones stop the refresh.
         if: always()
         run: |
           python unsloth/scripts/notebook_validator.py refresh-colab \
-              --out unsloth/scripts/data/colab_pip_freeze.gpu.txt
+              --all --snapshot-dir unsloth/scripts/data
       - name: Lint with live PyPI metadata
         if: always()
         # Same backlog, same disposition as the PR-time `Lint` step above:
@@ -321,10 +337,10 @@ jobs:
           # Pin to the same versions update_all_notebooks.py installs in
           # generated notebooks. Keep these in lockstep with PIN_TRL /
           # PIN_TRANSFORMERS in unslothai/notebooks/update_all_notebooks.py.
-          # `triton` is added because unsloth/_gpu_init.py:232 does an
-          # unconditional `import triton`; the PyPI wheel installs cleanly
-          # on Linux x86_64 even without CUDA (same rationale as
-          # consolidated-tests-ci.yml line 192-205).
+          # `triton` because unsloth/kernels and unsloth_zoo's compiler and
+          # loss_utils import it at module scope, so `import unsloth` needs it
+          # even though _gpu_init.py treats it as optional. Same rationale as
+          # consolidated-tests-ci.yml line 192-205.
           # Pillow is listed explicitly as a defensive belt-and-braces
           # next to torchvision (vision_utils crashes ModuleNotFoundError
           # if torchvision skipped its Pillow dep for any reason).
@@ -458,17 +474,44 @@ jobs:
         # transfer is otherwise unbounded and lands on the job clock.
         timeout-minutes: 8
         with:
-          name: notebooks-colab
-          # The freeze is the pin set, so it is what the downloads depend on. The
-          # workflow comes too because the seed step rewrites those pins in place
-          # -- CPU index mapping, skips, spoofs -- so an edit there changes what
-          # gets installed without touching the freeze.
+          # `-cpu`, not `notebooks-colab`, and the suffix is load-bearing rather
+          # than descriptive: it retires the old prefix so nothing falls back to
+          # it.
+          #
+          # pip's HTTP cache is cumulative and pip never evicts from it, while
+          # the save step saves the whole directory. With restore-keys on, a run
+          # that misses its exact key still restores the PREVIOUS generation's
+          # wheels into that directory and saves them straight back out, so
+          # dropping pins from the install set cannot shrink the entry. Measured
+          # on the two live generations: 7,486,810,247 bytes on 2026-09-15 and
+          # 7,486,845,334 on 2026-09-18, 35 KB apart, because the second run
+          # inherited the first instead of re-downloading 5 GiB.
+          #
+          # So #11270 removed 39 pins and freed nothing. A one-time prefix change
+          # is what collects it: the next run on main starts from an empty pip
+          # directory and saves only what the trimmed set actually downloads.
+          # Costs one cold install. Renaming this job rather than bumping the
+          # shared `v2` segment on purpose -- v3 would invalidate all 13 pip
+          # families at once AND fall outside cache-janitor.yml's `pip-v2-` glob,
+          # which would leave the new entries unpruneable.
+          name: notebooks-colab-cpu
+          # Everything the seed step READS, or the key cannot represent what the
+          # job installs. The freeze is the pin set. The workflow comes too
+          # because the seed step rewrites those pins in place. And the mapping
+          # is where the rewrites, skips and spoofs actually live -- it was
+          # missing here, so every edit to it (#11270 among them) changed the
+          # install while the key stayed put, the restore hit exactly, and
+          # pip-cache-save skipped on `cache-hit == 'true'`. A stale entry cannot
+          # serve wrong CONTENT, since pip's cache is addressed by URL and hash,
+          # but it can and did pin the entry's SIZE to a pin set that no longer
+          # exists.
           #
           # api-introspect above keys on the workflow alone because it pins inline.
           # This job does not, and keying it on the workflow alone would rebuild
           # 709 downloads for an unrelated edit to any other job in this file.
           key-files: |
             unsloth/scripts/data/colab_pip_freeze.gpu.txt
+            unsloth/scripts/data/colab_to_cpu_pin.json
             unsloth/.github/workflows/notebooks-ci.yml
 
       - name: Seed Colab-shaped venv from pip-freeze (CPU-mapped)

@@ -7,7 +7,11 @@ import test from "node:test";
 
 import ts from "typescript";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import {
+  readSrc,
+  readSrcAsync,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -22,6 +26,12 @@ const {
 const { isAcceptableBinding, parseBinding } = await import(
   "../src/features/settings/lib/keyboard-shortcuts.ts"
 );
+
+const SRC__ROOT = readSrc("app/routes/__root.tsx");
+const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
+const THREAD = readSrc("components/assistant-ui/thread.tsx");
+const CHAT_PAGE = readSrc("features/chat/chat-page.tsx");
+const USE_SHORTCUT = readSrc("features/settings/hooks/use-shortcut.ts");
 
 /** A keydown the dispatcher would see, with only the fields it reads. */
 function keydown(init: { isComposing?: boolean; keyCode?: number }) {
@@ -43,14 +53,10 @@ test("a keydown mid-IME-composition is not a chord", () => {
 });
 
 test("the dispatcher checks composition before it matches anything", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/hooks/use-shortcut.ts", import.meta.url),
-    "utf8",
-  );
   // Before the match, so no chord is found, and before preventDefault, so the
   // candidate window keeps its key.
   assert.match(
-    source,
+    USE_SHORTCUT,
     /if \(isImeComposing\(event\)\) return;\n\s*const hit = bindings\.find/,
   );
 });
@@ -120,13 +126,9 @@ test("every match under a modal is still not the foreground", () => {
 });
 
 test("dictation asks at press time, not through enabled", async () => {
-  const source = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
-  const at = source.indexOf('useShortcut(\n    "startDictation"');
+  const at = THREAD.indexOf('useShortcut(\n    "startDictation"');
   assert.notEqual(at, -1, "the dictation chord lost its call site");
-  const body = source.slice(at, source.indexOf("\n  );", at));
+  const body = THREAD.slice(at, THREAD.indexOf("\n  );", at));
   // Inside the handler: `enabled` is read at render, and a dialog opening need
   // not re-render this component.
   assert.match(
@@ -138,27 +140,19 @@ test("dictation asks at press time, not through enabled", async () => {
 // A write that fails with a good payload used to report nothing at all, so the
 // chord was indistinguishable from a dead key.
 test("both copy chords report a failed write", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    source,
+    APP_SIDEBAR,
     /} else if \(empty\.value\) \{[\s\S]*?\} else \{[\s\S]*?toast\.error\("Could not copy this chat\."\)/,
   );
-  assert.match(source, /toast\.error\("Could not copy the session id\."\)/);
+  assert.match(APP_SIDEBAR, /toast\.error\("Could not copy the session id\."\)/);
 });
 
 // Current membership says nothing about where a chat's older files went: it can
 // join a project, record that session, and move back out.
 test("the sandbox probe does not skip a chat that is out of a project", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-  const at = source.indexOf("async function sandboxSessionIdsHolding");
+  const at = APP_SIDEBAR.indexOf("async function sandboxSessionIdsHolding");
   assert.notEqual(at, -1);
-  const body = source.slice(at, source.indexOf("\n  }", at));
+  const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  }", at));
   assert.doesNotMatch(body, /if \(!item\.projectId\) return recorded;/);
   assert.match(
     body,
@@ -186,13 +180,9 @@ test("both composers gate dictation on the foreground", async () => {
 });
 
 test("route shortcuts stay idle while Settings is open", async () => {
-  const sourceText = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
   const source = ts.createSourceFile(
     "__root.tsx",
-    sourceText,
+    SRC__ROOT,
     ts.ScriptTarget.ESNext,
     true,
     ts.ScriptKind.TSX,
@@ -240,7 +230,7 @@ test("route shortcuts stay idle while Settings is open", async () => {
     "routeShortcutEnabled && !videoDisabled",
   );
   assert.match(
-    sourceText,
+    SRC__ROOT,
     /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
   );
 });
@@ -248,20 +238,13 @@ test("route shortcuts stay idle while Settings is open", async () => {
 // The sidebar used to hold the unread set in component state, which died with
 // it. A module store does not, so the next account inherits it.
 test("signing out drops the previous account's navigation state", async () => {
-  const store = await readFile(
-    new URL("../src/features/chat/stores/chat-navigation-store.ts", import.meta.url),
-    "utf8",
-  );
+  const store = await readSrcAsync("features/chat/stores/chat-navigation-store.ts");
   assert.match(store, /resetAccountState: \(\) =>/);
   // A fresh Set, or every account after the first shares one.
   assert.match(store, /set\(\{ \.\.\.ACCOUNT_STATE, unreadThreadIds: new Set\(\), unreadRowIds: \{\} \}\)/);
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   // On unmount, which is what the auth routes do to the sidebar.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /useEffect\(\n\s*\(\) => \(\) => useChatNavigationStore\.getState\(\)\.resetAccountState\(\),\n\s*\[\],\n\s*\);/,
   );
 });
@@ -269,31 +252,20 @@ test("signing out drops the previous account's navigation state", async () => {
 // The latch holds back a repeat of the action that took the selection, not a
 // different command issued straight after it.
 test("the selection latch is keyed by action", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(sidebar, /selectionActedRef = useRef<\{ id: ShortcutId; at: number \} \| null>/);
-  assert.match(sidebar, /last\?\.id === id &&/);
-  assert.doesNotMatch(sidebar, /followsSelectionAction\(\)/);
+  assert.match(APP_SIDEBAR, /selectionActedRef = useRef<\{ id: ShortcutId; at: number \} \| null>/);
+  assert.match(APP_SIDEBAR, /last\?\.id === id &&/);
+  assert.doesNotMatch(APP_SIDEBAR, /followsSelectionAction\(\)/);
 });
 
 // One selector has to mean "the composer" whichever of the two is on screen, or
 // Escape stops declining in Compare and the dictation gate reads the wrong one.
 test("both composers answer to the shared selector", async () => {
-  const shared = await readFile(
-    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-    "utf8",
-  );
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const shared = await readSrcAsync("features/chat/shared-composer.tsx");
   const { COMPOSER_INPUT_SELECTOR } = await import(
     "../src/features/settings/hooks/use-shortcut.ts"
   );
   const className = COMPOSER_INPUT_SELECTOR.replace(/^\./, "");
-  for (const [name, source] of [["shared", shared], ["thread", thread]]) {
+  for (const [name, source] of [["shared", shared], ["thread", THREAD]]) {
     assert.match(
       source,
       new RegExp(`className="[^"]*\\b${className}\\b[^"]*"`),
@@ -373,10 +345,6 @@ test("an absent surface is not a covered one", () => {
 // Window-level chords stay registered under a dialog, so the destructive ones
 // have to ask at press time whether the sidebar is still the foreground.
 test("the sidebar's mutating chords refuse to fire under a dialog", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   for (const id of [
     "archiveChat",
     "markChatUnread",
@@ -385,9 +353,9 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
     "renameChat",
     "clearAllUnreads",
   ]) {
-    const at = sidebar.indexOf(`useShortcut("${id}", () => {`);
+    const at = APP_SIDEBAR.indexOf(`useShortcut("${id}", () => {`);
     assert.notEqual(at, -1, `${id} is gone`);
-    const body = sidebar.slice(at, sidebar.indexOf("\n  });", at));
+    const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  });", at));
     assert.match(
       body,
       /if \(sidebarCovered\(\)\) return;/,
@@ -395,11 +363,11 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
     );
   }
   // Covered, not "not in the foreground", or the mobile drawer kills them all.
-  assert.match(sidebar, /isSurfaceBackgrounded\(SIDEBAR_SELECTOR\)/);
+  assert.match(APP_SIDEBAR, /isSurfaceBackgrounded\(SIDEBAR_SELECTOR\)/);
   // And with the drawer closed the sidebar is unmounted, so the app root is
   // what carries the modal signal there.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /document\.querySelector\(SIDEBAR_SELECTOR\) === null &&\n\s*isSurfaceBackgrounded\("#root"\)/,
   );
 });
@@ -408,31 +376,23 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
 // thread folder and in the project one. Probing only the thread folder
 // answered for one and hid the other.
 test("the sandbox probe leaves the shared project folder alone", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-  const at = sidebar.indexOf("async function sandboxSessionIdsHolding(");
+  const at = APP_SIDEBAR.indexOf("async function sandboxSessionIdsHolding(");
   assert.notEqual(at, -1);
-  const body = sidebar.slice(at, sidebar.indexOf("\n  }", at));
+  const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  }", at));
   // The shared project workspace is not probed: every chat in the project
   // writes there, so its files are no evidence about this one, and counting
   // them reported a second folder for any chat that joined a used project.
   assert.doesNotMatch(body, /sandboxSessionIdFor\(/);
   assert.doesNotMatch(body, /candidates\.add\(/);
-  assert.equal(sidebar.split("sandboxSessionIdsHolding(ids)").length - 1, 2);
+  assert.equal(APP_SIDEBAR.split("sandboxSessionIdsHolding(ids)").length - 1, 2);
 });
 
 // Loading a model that drops the level in force leaves the effort set to one
 // the model does not list, and indexOf then returns -1.
 test("an unlisted reasoning effort steps to the first supported level", async () => {
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
-  const at = page.indexOf("const current = levels.indexOf(state.reasoningEffort);");
+  const at = CHAT_PAGE.indexOf("const current = levels.indexOf(state.reasoningEffort);");
   assert.notEqual(at, -1);
-  const body = page.slice(at, at + 700);
+  const body = CHAT_PAGE.slice(at, at + 700);
   assert.match(
     body,
     /if \(current === -1\) \{\n\s*state\.setReasoningEffort\(levels\[0\]\);/,
@@ -465,27 +425,17 @@ test("only a chord that types nothing keeps the composer exception", () => {
 });
 
 test("the dispatcher drops the exception for a typing chord", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/hooks/use-shortcut.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    source,
+    USE_SHORTCUT,
     /const exception = typesInTextField\(hit\) \? undefined : textFieldException;/,
   );
-  assert.match(source, /isTextEntryFocused\(exception\)/);
+  assert.match(USE_SHORTCUT, /isTextEntryFocused\(exception\)/);
 });
 
 // Every keydown is swallowed while recording, and on a bare-key row Escape is
 // a chord rather than a cancel, so a keyboard-only user had no way out.
 test("recording can be left from the keyboard", async () => {
-  const tab = await readFile(
-    new URL(
-      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const tab = await readSrcAsync("features/settings/tabs/keyboard-shortcuts-tab.tsx");
   const at = tab.indexOf("const onKeyDown = (event: KeyboardEvent) => {");
   assert.notEqual(at, -1);
   const body = tab.slice(at, at + 900);
@@ -497,21 +447,17 @@ test("recording can be left from the keyboard", async () => {
 
 // The page stays mounted under a dialog, so `enabled` still says yes.
 test("the header pickers do not open behind a dialog", async () => {
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
   for (const id of ["openModelPicker", "openProjectPicker"]) {
-    const at = page.indexOf(`"${id}",`);
+    const at = CHAT_PAGE.indexOf(`"${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);
     assert.match(
-      page.slice(at, at + 260),
+      CHAT_PAGE.slice(at, at + 260),
       /if \(chatCovered\(\)\) return;/,
       `${id} opens a control on the covered surface`,
     );
   }
   assert.match(
-    page,
+    CHAT_PAGE,
     /isSurfaceBackgrounded\(COMPOSER_INPUT_SELECTOR\)/,
   );
 });
@@ -538,13 +484,7 @@ test("both composers refuse to attach from behind a modal", async () => {
 // not be reachable by accident, and the Chat route stays mounted under a
 // dialog, so `keyboardReady` alone still says yes.
 test("a tool call cannot be answered from behind a dialog", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/components/assistant-ui/tool-confirmation-controls.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/assistant-ui/tool-confirmation-controls.tsx");
   for (const id of ["approveToolRequest", "declineToolRequest"]) {
     const at = source.indexOf(`"${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);
@@ -560,14 +500,10 @@ test("a tool call cannot be answered from behind a dialog", async () => {
 // A selection made behind a dialog is invisible and still what the mutating
 // chords act on afterwards, and the clipboard is outside the app entirely.
 test("selection and clipboard chords stop at a covered sidebar", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   for (const id of ["selectAllChats", "copyChatAsMarkdown", "copySessionId"]) {
-    const at = sidebar.indexOf(`useShortcut("${id}", () => {`);
+    const at = APP_SIDEBAR.indexOf(`useShortcut("${id}", () => {`);
     assert.notEqual(at, -1, `${id} is gone`);
-    const body = sidebar.slice(at, sidebar.indexOf("\n  });", at));
+    const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  });", at));
     assert.match(
       body,
       /if \(sidebarCovered\(\)\) return;/,
@@ -581,16 +517,9 @@ test("selection and clipboard chords stop at a covered sidebar", async () => {
 // so the click lands on a page that shows its own loading state. Gating the
 // chords on the unknown verdict would make them disagree with their own rows.
 test("the workspace chords wait on the same verdict their rows do", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(root, /enabled: routeShortcutEnabled && !chatOnlyMeasured,/);
-  assert.match(root, /enabled: routeShortcutEnabled && !videoDisabled,/);
-  const rowState = await readFile(
-    new URL("../src/components/nav-row-state.ts", import.meta.url),
-    "utf8",
-  );
+  assert.match(SRC__ROOT, /enabled: routeShortcutEnabled && !chatOnlyMeasured,/);
+  assert.match(SRC__ROOT, /enabled: routeShortcutEnabled && !videoDisabled,/);
+  const rowState = await readSrcAsync("components/nav-row-state.ts");
   assert.match(
     rowState,
     /if \(row\.pending\) \{\n\s*return \{\n\s*disabled: false,/,
@@ -601,32 +530,24 @@ test("the workspace chords wait on the same verdict their rows do", async () => 
 // The reasoning, Fast mode and fork chords drive controls on the page behind a
 // dialog just as the pickers do.
 test("the remaining chat-page chords stop at a covered surface", async () => {
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
   for (const id of [
     "cycleReasoningEffort",
     "increaseReasoningEffort",
     "decreaseReasoningEffort",
     "toggleFastMode",
   ]) {
-    const at = page.indexOf(`"${id}",`);
+    const at = CHAT_PAGE.indexOf(`"${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);
     assert.match(
-      page.slice(at, at + 220),
+      CHAT_PAGE.slice(at, at + 220),
       /if \(chatCovered\(\)\) return;/,
       `${id} acts on the covered surface`,
     );
   }
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
-  const at = thread.indexOf('"forkChat",');
+  const at = THREAD.indexOf('"forkChat",');
   assert.notEqual(at, -1);
   assert.match(
-    thread.slice(at, at + 320),
+    THREAD.slice(at, at + 320),
     /if \(!isSurfaceInForeground\(COMPOSER_INPUT_SELECTOR\)\) return;/,
   );
 });

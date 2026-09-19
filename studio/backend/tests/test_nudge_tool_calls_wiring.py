@@ -12,9 +12,8 @@ Mechanism (verified here without loading a model):
   * the GGUF loop and external Unsloth loop use the same normalizer;
   * the external route forwards the request flag into ``ToolLoopPolicy``;
   * the API request models default the flag to ``None`` (opt-in / off);
-  * the Unsloth-facing routes forward the request's flag, and the Unsloth frontend
-    sends ``nudge_tool_calls: true`` -- exercised behaviourally in
-    ``test_safetensors_tool_loop.py`` and ``test_llama_cpp_tool_loop.py``.
+  * the Unsloth-facing routes forward the request's flag;
+  * the frontend sends the user setting locally and an explicit ``false`` externally.
 """
 
 import inspect
@@ -107,9 +106,6 @@ def test_api_request_models_default_the_flag_off():
 
 
 def test_studio_routes_forward_the_request_flag():
-    # The Unsloth chat frontend posts to /v1/chat/completions and /v1/messages
-    # with nudge_tool_calls=true; the route handlers forward the request value
-    # (external API clients that omit it fall back to the opt-in default).
     from routes import inference as routes_inference
     for handler in (
         routes_inference.produce_openai_chat_completions,
@@ -119,6 +115,32 @@ def test_studio_routes_forward_the_request_flag():
         assert "nudge_tool_calls = payload.nudge_tool_calls" in src, handler.__name__
 
 
-def test_studio_external_adapter_forwards_the_nudge_flag():
+def _external_request_body(src: str) -> str:
+    """Brace-match the whole literal: carving only the spread let a re-added
+    nudge_tool_calls elsewhere in the external body pass the guard."""
+    anchor = src.find("run_tools_locally: true")
+    assert anchor != -1, "external branch lost its run_tools_locally marker"
+    start = src.rfind("return {", 0, anchor)
+    assert start != -1
+    depth, i = 0, src.index("{", start)
+    for end in range(i, len(src)):
+        if src[end] == "{":
+            depth += 1
+        elif src[end] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start : end + 1]
+    raise AssertionError("unbalanced braces in the external request body")
+
+
+def test_studio_external_adapter_disables_the_nudge_on_the_external_loop():
     src = _CHAT_ADAPTER_SOURCE.read_text(encoding = "utf-8")
-    assert "nudge_tool_calls: runtime.nudgeToolCalls" in src
+    external_body = _external_request_body(src)
+
+    # false, not omitted (#9686); chat-adapter.ts carries the why.
+    assert "nudge_tool_calls: false" in external_body
+    assert "nudge_tool_calls: runtime.nudgeToolCalls" not in external_body
+
+    local_src = src.replace(external_body, "")
+    assert "nudge_tool_calls: runtime.nudgeToolCalls" in local_src
+    assert "run_tools_locally: true" not in local_src

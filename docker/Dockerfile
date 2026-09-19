@@ -69,7 +69,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl git build-essential \
         ninja-build cmake pkg-config \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && for i in 1 2 3 4 5; do add-apt-repository -y ppa:deadsnakes/ppa && break; \
+         [ "$i" = 5 ] && exit 1; echo "add-apt-repository failed (attempt $i), retrying in 30s"; sleep 30; done \
     && apt-get update && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python \
@@ -424,14 +425,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   ffmpeg  torchcodec dlopens system FFmpeg libs (not bundled in the wheel)
 #   wget    notebooks fetch assets with `!wget URL`
 #   ninja-build  flashinfer cpp_ext JIT shells out to ninja
-#   cuda-nvcc + cudart-dev  flash-linear-attention TileLang JIT-compiles CUDA
-#                kernels via nvcc, absent from the -base image
+#   cuda-nvcc + cudart-dev  flashinfer JIT-compiles CUDA kernels via nvcc for
+#                ops with no cached cubin, absent from the -base image
 RUN CUDA_PKG="$(echo "${CUDA_VERSION}" | awk -F. '{print $1"-"$2}')" \
     && apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl wget git libgomp1 \
         gcc g++ zstd ffmpeg ninja-build \
         "cuda-nvcc-${CUDA_PKG}" "cuda-cudart-dev-${CUDA_PKG}" \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && for i in 1 2 3 4 5; do add-apt-repository -y ppa:deadsnakes/ppa && break; \
+         [ "$i" = 5 ] && exit 1; echo "add-apt-repository failed (attempt $i), retrying in 30s"; sleep 30; done \
     && apt-get update && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python \

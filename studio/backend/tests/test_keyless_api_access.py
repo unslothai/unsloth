@@ -23,6 +23,7 @@ from auth.authentication import (
     admitted_without_credential,
     admitted_without_session,
     create_access_token,
+    credentials_for_token,
     get_current_subject,
     security,
 )
@@ -131,6 +132,44 @@ def test_exact_route_matrix_matches_registered_topology():
     assert intended <= registered
 
 
+def test_the_allowlisted_studio_paths_name_routes_that_exist():
+    # The matrix above pins the /v1 router. This one covers the studio router, whose
+    # paths carry a mount prefix, so a rename there cannot silently strand an entry.
+    from routes.inference import studio_router
+    from utils.keyless_api_access import _INFERENCE_ROUTES
+
+    registered = {("/api/inference" + route.path, method)
+                  for route in studio_router.routes
+                  for method in getattr(route, "methods", set())}
+    for method, path in _INFERENCE_ROUTES:
+        if path.startswith("/api/inference/"):
+            assert (path, method) in registered, path
+
+
+@pytest.mark.parametrize("token", [None, "not-needed"])
+def test_resident_model_discovery_preserves_keyless_inference_access(token):
+    seed_user()
+    set_keyless_api_access("inference", tools = False)
+
+    def discovery_request(method = "GET", path = "/api/inference/loaded-models"):
+        if token is None:
+            return request_for(path = path, method = method)
+        return bearer_request(token, path = path, method = method)
+
+    assert subject_of(discovery_request()) == storage.DEFAULT_ADMIN_USERNAME
+    for method, path in (
+        ("POST", "/api/inference/loaded-models"),
+        ("POST", "/api/inference/load"),
+        ("GET", "/api/inference/status"),
+    ):
+        with pytest.raises(HTTPException):
+            subject_of(discovery_request(method, path))
+
+    set_keyless_api_access("off")
+    with pytest.raises(HTTPException):
+        subject_of(discovery_request())
+
+
 def test_settings_are_immediate_and_fail_closed(monkeypatch):
     import storage.studio_db as studio_db
 
@@ -222,6 +261,7 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
 
 def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monkeypatch):
     import utils.keyless_api_access as keyless
+
     from utils.keyless_api_access import asgi_request_is_keyless
 
     set_keyless_api_access("inference", tools = False)
@@ -314,8 +354,9 @@ def test_async_stale_cache_miss_broadcasts_one_refresh_result(monkeypatch):
 
 
 def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
-    import anyio.to_thread
     import utils.keyless_api_access as keyless
+
+    import anyio.to_thread
     from starlette.concurrency import run_in_threadpool
 
     set_keyless_api_access("inference", tools = False)
@@ -426,9 +467,10 @@ def test_failed_refresh_does_not_reuse_permissive_stale_settings(monkeypatch):
 
 
 def test_async_settings_tasks_do_not_retain_closed_event_loops(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     import gc
     import weakref
-    import utils.keyless_api_access as keyless
 
     loop_refs = []
 
@@ -775,16 +817,20 @@ def test_credentials_never_downgrade_to_keyless():
     seed_user()
     set_keyless_api_access("full")
     assert resolve(request_for()).scheme == KEYLESS_SCHEME
-    for token in ("not-needed", "lm-studio", "ollama"):
+    for token in ("not-needed", "lm-studio", "ollama", "no-key-required"):
         assert resolve(bearer_request(token)).scheme == KEYLESS_FALLBACK_SCHEME
     set_keyless_api_access("inference")
     with pytest.raises(HTTPException):
         subject_of(bearer_request("not-needed", path = "/v1/load"))
     set_keyless_api_access("full")
 
-    for header in ("Bearer arbitrary", "garbage", "Basic abc", "Bearer"):
+    for header in ("Bearer arbitrary", "garbage", "Basic abc"):
         with pytest.raises(HTTPException):
             subject_of(request_for(headers = {"Authorization": header}))
+    for header in ("Bearer", "Bearer ", "bearer   "):
+        blank = request_for(headers = {"Authorization": header})
+        assert resolve(blank).scheme == KEYLESS_SCHEME
+        assert subject_of(blank) == storage.DEFAULT_ADMIN_USERNAME
     duplicate = asgi_scope()
     duplicate["headers"] = [
         (b"authorization", b"Bearer not-needed"),
@@ -833,6 +879,28 @@ def _middleware_policy(scope):
     return observed
 
 
+def test_a_blank_bearer_is_the_missing_header_on_routes_that_read_it_themselves():
+    """A blank header must not suppress the `?token=` credential, turning its 401 into a pass."""
+    from routes.inference import _authenticate_header_or_query
+
+    seed_user()
+    set_keyless_api_access("full")
+    stale = create_access_token(
+        storage.DEFAULT_ADMIN_USERNAME, expires_delta = timedelta(seconds = -60))
+    for headers in (None, {"Authorization": "Bearer "}, {"Authorization": "Bearer"}):
+        sandbox = lambda token: _authenticate_header_or_query(
+            request_for(path = "/v1/sandbox/x", headers = headers), token)
+        with pytest.raises(HTTPException):
+            asyncio.run(sandbox(stale))
+        assert asyncio.run(sandbox(None)) == storage.DEFAULT_ADMIN_USERNAME
+    # /api/health has no query credential to fall back on, so "" must resolve the way None does.
+    for token in (None, "", "   "):
+        credentials = asyncio.run(credentials_for_token(request_for(path = "/api/health"), token))
+        assert credentials is not None and credentials.scheme == KEYLESS_SCHEME, token
+    set_keyless_api_access("off")
+    assert asyncio.run(credentials_for_token(request_for(path = "/api/health"), "")) is None
+
+
 def test_tool_policy_and_api_identity(monkeypatch):
     from core.inference.llama_keepwarm import _carries_bearer_credentials
     from routes import inference
@@ -844,6 +912,8 @@ def test_tool_policy_and_api_identity(monkeypatch):
     assert request.state.keyless_api_admitted is True
     assert admitted_without_credential(resolve(request)) is True
     assert admitted_without_session(request) is True
+    # Same verdict before one is recorded: read as credentialed, it would skip the keyless guards.
+    assert admitted_without_session(request_for(headers = {"Authorization": "Bearer "})) is True
     assert inference._request_has_api_key(request) is True
     assert inference._request_used_api_key(request) is True
     assert inference._request_is_saved_credential_workflow(request) is False

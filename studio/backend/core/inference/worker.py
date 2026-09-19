@@ -112,9 +112,7 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
 
 
 def _decode_image(image_base64: str):
-    """Decode base64 string to PIL.Image."""
     from PIL import Image
-
     image_data = base64.b64decode(image_base64)
     return Image.open(BytesIO(image_data))
 
@@ -157,14 +155,24 @@ def _clean_token(value: str | None) -> str | None:
     return value if value and value.strip() else None
 
 
+def _config_hf_token(config: dict) -> str | bool | None:
+    if config.get("anonymous_hf_access"):
+        return False
+    return _clean_token(config.get("hf_token"))
+
+
+def _apply_worker_hf_token_environment(config: dict) -> None:
+    from hub.utils.hf_tokens import apply_token_to_child_env
+    apply_token_to_child_env(os.environ, _config_hf_token(config))
+
+
 def _build_model_config(config: dict):
-    """Build a ModelConfig from the config dict."""
     from utils.models import ModelConfig
 
     model_name = config["model_name"]
     mc = ModelConfig.from_identifier(
         model_id = model_name,
-        hf_token = _clean_token(config.get("hf_token")),
+        hf_token = _config_hf_token(config),
         gguf_variant = config.get("gguf_variant"),
     )
     if not mc:
@@ -382,11 +390,10 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
 
 
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
-    """Handle a load command: load a model into the backend."""
     try:
         mc = _build_model_config(config)
 
-        hf_token = _clean_token(config.get("hf_token"))
+        hf_token = _config_hf_token(config)
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
 
         # Latest-transformers sidecar models load 16-bit: bnb 4-bit feeds quantized
@@ -466,6 +473,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "trust_remote_code": trust_remote_code,
                 "gpu_ids": config.get("resolved_gpu_ids"),
             }
+            if config.get("audio_codec_path") is not None:
+                load_kwargs["audio_codec_path"] = config["audio_codec_path"]
             if getattr(backend, "device", None) == "mlx":
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
@@ -510,9 +519,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             # backend does not answer, which is not the same as a confirmed False.
             if _entry.get("context_length_enforced") is not None:
                 model_info["context_length_enforced"] = bool(_entry["context_length_enforced"])
-            # Backend post-load audio classification outranks pre-load config.
+            # Backend post-load audio and video classification outranks pre-load config.
             model_info.update(
-                {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
+                {
+                    k: _entry[k]
+                    for k in ("is_audio", "audio_type", "has_audio_input", "has_video_input")
+                    if k in _entry
+                }
             )
             # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
@@ -543,6 +556,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         # The IMAGE-turn body; the whitelist is the only way out.
                         "processor_template": _tpl_info.get("processor_template"),
                         "renders_image": _tpl_info.get("renders_image"),
+                        "accepts_multiple_images": _tpl_info.get("accepts_multiple_images"),
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)
@@ -665,13 +679,18 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         image = None
         image_b64 = cmd.get("image_base64")
         if image_b64:
-            image = _decode_image(image_b64)
-            image = _resize_image(image)
+            image = _resize_image(_decode_image(image_b64))
+        images = [
+            _resize_image(_decode_image(encoded))
+            for encoded in cmd.get("images_base64") or ()
+            if encoded
+        ]
 
         gen_kwargs = {
             "messages": cmd["messages"],
             "system_prompt": cmd.get("system_prompt", ""),
             "image": image,
+            "images": images,
             "temperature": cmd.get("temperature", 0.7),
             "top_p": cmd.get("top_p", 0.9),
             "top_k": cmd.get("top_k", 40),
@@ -693,12 +712,22 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
 
-        # These options are MLX-only. The transformers backend declares none of
-        # them and takes no **kwargs, so forwarding unconditionally would turn
-        # its documented "ignores them" behavior into a TypeError.
-        for gated in ("seed", "frequency_penalty", "logit_bias", "stop"):
+        if cmd.get("image_ordinal") is not None and _backend_declares(backend, "image_ordinal"):
+            gen_kwargs["image_ordinal"] = cmd["image_ordinal"]
+
+        # Not every backend declares these (transformers declares only ``stop``)
+        # and none takes **kwargs, so forwarding unconditionally would turn a
+        # backend's documented "ignores them" behavior into a TypeError.
+        # ``tool_protocol_active`` rides here rather than above: MLX declares no such
+        # parameter and takes no **kwargs, so an unconditional forward would raise.
+        for gated in ("seed", "frequency_penalty", "logit_bias", "stop", "tool_protocol_active"):
             if gated in cmd and _backend_declares(backend, gated):
                 gen_kwargs[gated] = cmd[gated]
+        # A clip cannot be dropped like an unknown sampling knob: the answer would ignore it.
+        if cmd.get("video_base64"):
+            if not _backend_declares(backend, "video"):
+                raise RuntimeError("The loaded backend does not read video.")
+            gen_kwargs["video"] = cmd["video_base64"]
 
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
@@ -998,7 +1027,6 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
 
 
 def _handle_unload(backend, cmd: dict, resp_queue: Any) -> None:
-    """Handle an unload command."""
     model_name = cmd.get("model_name", "")
     try:
         if model_name and model_name in backend.models:
@@ -1045,6 +1073,8 @@ def run_inference_process(
             here, so a generate still queued behind a cancelled one is skipped rather
             than run — the cancel survives the queue handoff.
     """
+    # Apply request credentials before a Hugging Face import snapshots the environment.
+    _apply_worker_hf_token_environment(config)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
 
@@ -1052,16 +1082,12 @@ def run_inference_process(
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         logger.info("Xet transport disabled (HF_HUB_DISABLE_XET=1)")
 
-    # Offline auto-detect, as the training and export workers already do. The parent's
-    # guard is scoped, so child_env deliberately scrubs it rather than turning a
-    # per-request flag into a lifetime one; without a probe of its own this worker would
-    # then walk back into the retry paths the parent already ruled out, in
-    # _remote_lora_base and in tier activation below. Runs before any HF import, so env
-    # alone is enough.
-    # Skip it entirely for a filesystem-only load: a local checkpoint whose recorded base
-    # (an adapter's, or a full checkpoint's config.json one, both of which activation
-    # resolves and reads Hub metadata for) is local too never reaches the Hub, so probing
-    # would spend seconds before a load that has no Hub dependency.
+    # Offline auto-detect, as the training and export workers already do. The parent's guard is scoped, so child_env
+    # deliberately scrubs it rather than turning a per-request flag into a lifetime one; without a probe of its own
+    # this worker would then walk back into the retry paths the parent already ruled out, in _remote_lora_base and in
+    # tier activation below. Runs before any HF import, so env alone is enough. Skipped entirely for a filesystem-only
+    # load: a local checkpoint whose recorded base is local too never reaches the Hub, so probing would spend seconds
+    # before a load that has no Hub dependency.
     _probe_model = config["model_name"]
     _probe_base, _probe_needs_hub = _recorded_local_base(_probe_model)
     if "HF_HUB_OFFLINE" not in os.environ and (
@@ -1102,6 +1128,13 @@ def run_inference_process(
         service_name = "unsloth-studio-inference-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+    # Must follow setup_logging. Structlog records go to fd 1, but a third-party library
+    # logging through stdlib `logging` reaches fd 2 via `logging.lastResort`, and that
+    # traceback is byte-identical to a dying process's: unmarked, the parent hands a
+    # RECOVERED failure to the NEXT caller on a shared worker as their crash.
+    from utils.worker_stderr import mark_log_record_continuations
+
+    mark_log_record_continuations()
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
@@ -1125,14 +1158,13 @@ def run_inference_process(
             mask_accelerators_for_cpu_audio(os.environ)
             logger.info("Audio model '%s' pinned to CPU RAM; accelerators hidden", model_name)
 
-    # ── 0. MLX fast-path - skip torch/transformers ──
     _ensure_backend_on_path()
 
     if is_apple_silicon():
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
-            _activate_transformers_version(model_name, config.get("hf_token") or None)
+            _activate_transformers_version(model_name, _config_hf_token(config))
         except Exception as exc:
             logger.warning(
                 "Failed to activate transformers version for '%s' (MLX inference); "
@@ -1303,32 +1335,29 @@ def run_inference_process(
                 )
         return
 
-    # ── Windows: check Triton availability ──
-    # Ahead of the torchao stub below, matching the training and export workers' gate-then-stub order.
-    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
+    # Windows Triton check, ahead of the torchao stub below, matching the training and export workers' gate-then-stub
+    # order. Importable Triton is not enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
         from core._msvc_env import gate_torch_compile_on_windows
         gate_torch_compile_on_windows(logger)
 
-    # ── Stub torchao on Windows ROCm before ANY transformers import ──
-    # Must precede every path that pulls transformers, not just the ML imports in section 2:
-    # a local LoRA adapter with no recorded base reaches transformers here via
+    # Stub torchao on Windows ROCm before ANY transformers import. Must precede every path that pulls transformers,
+    # not just the ML imports below: a local LoRA adapter with no recorded base reaches transformers here via
     # _resolve_base_model -> utils.models. See core/_torchao_stub.py; no-op off Windows ROCm.
     from core._torchao_stub import install_torchao_windows_rocm_stub
 
     install_torchao_windows_rocm_stub()
 
-    # ── Resolve the effective base once, before activation/gates/install ──
-    # No ML import on the common path; a local adapter with no recorded base pulls
-    # transformers via utils.models, which is why the stub above precedes this.
-    # A remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig
-    # after import). _lora_base is set only for a genuine adapter, never a full fine-tune's base.
+    # Resolve the effective base once, before activation, gates and install. No ML import on the common path; a local
+    # adapter with no recorded base pulls transformers via utils.models, which is why the stub above precedes this. A
+    # remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig after import).
+    # _lora_base is set only for a genuine adapter, never a full fine-tune's base.
     import json as _json
 
     _ensure_backend_on_path()
     from utils.transformers_version import _remote_lora_base, _resolve_base_model
 
-    _hf_token = _clean_token(config.get("hf_token"))
+    _hf_token = _config_hf_token(config)
     _lora_base = None
     _local_adapter_cfg = Path(model_name) / "adapter_config.json"
     if _local_adapter_cfg.is_file():
@@ -1347,7 +1376,6 @@ def run_inference_process(
     # fine-tune's recorded base from config.json (its name reveals the SSM/sidecar arch).
     _base = _lora_base or _resolve_base_model(model_name)
 
-    # ── 1. Activate transformers version (on the resolved base) BEFORE any ML imports ──
     try:
         _activate_transformers_version(_base, _hf_token)
     except Exception as exc:
@@ -1361,12 +1389,11 @@ def run_inference_process(
         )
         return
 
-    # ── 1b. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
-    # transformers snapshots its optional-backend gates at import, so a hybrid model's kernels
-    # must be installed before the import below ("mamba-ssm is required" otherwise). The gates
-    # are metadata-only, so run them first and refuse a blocked model before any native build.
-    # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
-    # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
+    # Security gates, then SSM/Mamba kernels, BEFORE importing transformers. transformers snapshots its
+    # optional-backend gates at import, so a hybrid model's kernels must be installed before the import below
+    # ("mamba-ssm is required" otherwise). The gates are metadata-only, so run them first and refuse a blocked model
+    # before any native build. Gate only the model and a genuine LoRA base (matching _handle_load), never a full
+    # fine-tune's unloaded base; _handle_load re-runs the authoritative gates with the mc base.
     _gate_targets = _native_audio_security_targets_or_error(model_name, _hf_token, resp_queue)
     if _gate_targets is None:
         return
@@ -1393,7 +1420,6 @@ def run_inference_process(
     if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
         return
 
-    # ── 2. Import ML libraries (fresh in this clean process) ──
     try:
         _send_response(
             resp_queue,
@@ -1433,7 +1459,6 @@ def run_inference_process(
         )
         return
 
-    # ── 3. Create inference backend and load initial model ──
     try:
         # Native audio picks its device in __init__, so the preference goes there.
         backend = (
@@ -1463,9 +1488,8 @@ def run_inference_process(
         )
         return
 
-    # ── 4. Command loop — process commands until shutdown ──
-    # cancel_event is an mp.Event the parent can set anytime to cancel
-    # generation instantly (no queue polling needed).
+    # Command loop: process commands until shutdown. cancel_event is an mp.Event the parent can set anytime to cancel
+    # generation instantly, with no queue polling.
     logger.info("Inference subprocess ready, entering command loop")
 
     while True:

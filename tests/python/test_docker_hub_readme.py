@@ -35,22 +35,86 @@ def test_the_hub_readme_describes_the_shipped_images():
         "/workspace/host",
         "/workspace/.cache/huggingface",
         "sm_75 sm_80 sm_86 sm_90 sm_100 sm_120",
+        "UNSLOTH_STUDIO_PASSWORD",
     ):
         assert needle in text, f"the Hub README no longer mentions {needle!r}"
     # the previous image's conventions, none of which exist in this one
-    for stale in ("USER_PASSWORD", "/workspace/work", "2222:22", "localhot"):
+    # Studio writes the generated password to a file and does not print it itself
+    for stale in (
+        "USER_PASSWORD",
+        "/workspace/work",
+        "2222:22",
+        "localhot",
+        "prints its first-boot",
+    ):
         assert stale not in text, f"the Hub README still carries {stale!r} from the old image"
+
+
+def test_the_hub_readme_explains_the_studio_volume():
+    """The volume keeps Studio's data and never pins its code; a volume from an image
+    before the code/data split is migrated with its old code kept aside. Both facts,
+    the way back to an older image, and what `docker rm` still discards have to be on
+    the page, since the quick start above them mounts the volume by default."""
+    text = HUB_README.read_text(encoding = "utf-8")
+    for needle in (
+        "-v unsloth-studio:/opt/unsloth-studio",
+        "/opt/unsloth-studio-app",
+        ".unsloth-studio-legacy/",
+        "UNSLOTH_STUDIO_KEEP_LEGACY=0",
+        "unsloth-studio-update",
+        "named volume, not a bind mount of a Windows or macOS host directory",
+    ):
+        assert needle in text, f"the Hub README no longer mentions {needle!r}"
+    # the helper is described as setting the flags of the quick start, which now
+    # includes the volume: run.sh must mount it (test_docker_cpu_fallback.py checks)
+    assert "including the `unsloth-studio` volume" in text
+    repo = REPO_README.read_text(encoding = "utf-8")
+    assert "-v unsloth-studio:/opt/unsloth-studio" in repo
+    assert ".unsloth-studio-legacy/" in repo
+
+
+def _docker_sections(text: str) -> list[str]:
+    """Every `#### Docker` section in the README, not just the first one.
+
+    This used to take `text.index("#### Docker")` and read to the next `####`. The README
+    grew a second Docker heading above the one that carries the run command (a one-line
+    pointer in the install list), and the pins below then read a section that was never
+    meant to hold a `docker run` and failed on main. Which heading comes first is an
+    editing accident, so key on the content instead: the section that runs the image is
+    the one these assertions are about.
+    """
+    sections = []
+    start = text.find("#### Docker")
+    while start >= 0:
+        end = text.find("####", start + len("#### Docker"))
+        sections.append(text[start : end if end >= 0 else len(text)])
+        start = text.find("#### Docker", start + 1)
+    return sections
 
 
 def test_the_repo_readme_run_command_matches_the_image():
     text = REPO_README.read_text(encoding = "utf-8")
-    start = text.index("#### Docker")
-    section = text[start : text.index("####", start + 1)]
+    sections = _docker_sections(text)
+    assert sections, "the README no longer has a `#### Docker` section"
+    running = [s for s in sections if "docker run" in s]
+    # Exactly one, in both directions. Zero means the run command was dropped, which is the
+    # regression this test was written for and which picking by content would otherwise hide.
+    # More than one means two places tell the user how to start the image and only one of
+    # them is pinned here, which is how they drift apart.
+    assert len(running) == 1, (
+        f"expected exactly one `#### Docker` section carrying a `docker run`, found "
+        f"{len(running)} of {len(sections)} Docker sections. Pin the other one too or fold "
+        f"them together; a second unpinned run command is how the README goes stale."
+    )
+    section = running[0]
     assert "unsloth/unsloth:core" in section
     assert "/workspace/host" in section
     assert "--ipc=host" in section
+    # Across every Docker section, not only the one that runs the image: a stale port or path
+    # left behind in the short pointer misleads exactly as much as one in the full command.
     for stale in ("2222:22", "/workspace/work"):
-        assert stale not in section, f"the README run command still has {stale!r}"
+        for other in sections:
+            assert stale not in other, f"a README Docker section still has {stale!r}"
 
 
 @pytest.fixture(scope = "module")
@@ -80,6 +144,7 @@ def _run_sync(
     *,
     live_after_patch: str,
     token: str = "tok",
+    secret: str = "not-a-secret",
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -101,7 +166,9 @@ def _run_sync(
     (bin_dir / "curl").chmod(0o755)
     (tmp_path / "docker").mkdir()
     shutil.copy(HUB_README, tmp_path / "docker" / "DOCKERHUB.md")
-    script = step.replace("${{ secrets.DOCKER_API_KEY }}", "not-a-secret")
+    script = step.replace("${{ secrets.DOCKER_API_KEY }}", secret).replace(
+        "${{ env.REGISTRY_USERNAME }}", "unsloth"
+    )
     assert "${{" not in script, "unexpanded expression in the sync step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
@@ -122,8 +189,20 @@ def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: P
     step = sync_job["steps"][-1]["run"]
     res, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "-X PATCH https://hub.docker.com/v2/repositories/unsloth/unsloth/" in log
+    assert "-X PATCH https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth" in log
     assert "Authorization: Bearer tok" in log
+    assert '"identifier": "unsloth"' in log, "the organization token authenticates as the org"
+
+
+def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_path: Path):
+    """Docker Hub rejects every organization access token on
+    /v2/repositories/{owner}/{repo}/ with 403 "token issued from organization access
+    token is not allowed", whatever its scopes; only the namespace-scoped route
+    accepts it. That 403 failed the sync on every publish before this test existed."""
+    step = sync_job["steps"][-1]["run"]
+    _, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
+    assert "/v2/repositories/" not in log
+    assert "/v2/namespaces/unsloth/repositories/unsloth" in log
 
 
 def test_the_sync_fails_when_the_page_did_not_change(sync_job: dict, tmp_path: Path):
@@ -140,3 +219,30 @@ def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
     res, log = _run_sync(step, tmp_path, live_after_patch = "", token = "")
     assert res.returncode != 0
     assert "PATCH" not in log, "a PATCH was attempted with an empty token"
+
+
+def test_the_hub_readme_matches_what_each_image_ships():
+    text = HUB_README.read_text(encoding = "utf-8")
+    # whisper.cpp comes from Studio's setup, so only that image has it
+    assert "The `latest` image adds whisper.cpp" in text
+    # SYNC disables the notebooks entirely; REFRESH only skips the GitHub fetch
+    assert "`UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub" in text
+    assert "`UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all" in text
+    # Studio's services run as root and exit 1 under --user
+    assert "On `core`, `--user <uid>:<gid>` is supported" in text
+    assert "AGPL-3.0" in text and "Apache-2.0" in text
+
+
+def test_both_images_declare_both_licenses():
+    """metadata-action labels both images Apache-2.0, but they carry Studio's AGPL-3.0 code."""
+    text = WORKFLOW.read_text(encoding = "utf-8")
+    assert text.count("org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only") == 2
+
+
+def test_the_studio_image_does_not_ship_the_uv_download_cache():
+    """install.sh's uv cache sits under the Studio home, which /root/.cache never reached: ~9 GB baked into :latest."""
+    body = (REPO_ROOT / "docker" / "Dockerfile.studio").read_text(encoding = "utf-8")
+    # an image that points uv elsewhere (the code/data split does) must drop that cache
+    assert "rm -rf" in body
+    cleanup = body[body.index("rm -rf") :]
+    assert '"${UV_CACHE_DIR:-${UNSLOTH_STUDIO_HOME}/cache/uv}"' in cleanup

@@ -274,6 +274,10 @@ INDICATOR_VIEWPORTS = [(921, 534), (768, 500)]
 # One roomy viewport and one capped viewport.
 NO_PREVIEW_VIEWPORTS = [(1440, 900), (921, 534)]
 
+# Where the cards sit, off both edges. The rail carries a shadow gutter, so this
+# is the cards' inset and not the rail's own box; see RAIL_CORNER below.
+CORNER_INSET_PX = 16
+
 # Where the rail actually is, against the corner it is anchored to. It was placed from JS for a while, lifting clear
 # of the boxes in the frame store, and drifted to the middle and the top of the window as those boxes and its own
 # cards changed. Nothing on the page may move it now.
@@ -284,9 +288,10 @@ RAIL_CORNER = """
   const rail = card.parentElement;
   const a = rail.getBoundingClientRect();
   // Cards in the rail's own flow. A dragged loaded models card is `fixed`
-  // somewhere else and says nothing about the rail.
+  // somewhere else and says nothing about the rail; `relative` and `sticky`
+  // still take part in layout, so only the out-of-flow pair is excluded.
   const flowed = Array.from(rail.children).filter(
-    (kid) => getComputedStyle(kid).position === 'static',
+    (kid) => !['absolute', 'fixed'].includes(getComputedStyle(kid).position),
   );
   return {
     rail: {top: Math.round(a.top), bottom: Math.round(a.bottom),
@@ -464,7 +469,18 @@ MEASURE = """
   const snooze = q('[data-testid="web-update-snooze-button"]');
   const copy = q('[data-testid="web-update-copy-button"]');
   const footer = snooze ? snooze.closest('div').parentElement : null;
-  const rail = card ? card.parentElement : (llama ? llama.parentElement : null);
+  // By its own handle, not through whichever banner happens to be up: reaching
+  // the rail via a card finds nothing when no card is up, and "no cards" is a
+  // state the download panel and the loaded models card have to be judged in.
+  const rail = document.querySelector('[data-testid="overlay-rail"]')
+            || (card ? card.parentElement : (llama ? llama.parentElement : null));
+  // Cards in the rail's own flow. A dragged loaded models card is `fixed`
+  // somewhere else and says nothing about the rail; `relative` and `sticky`
+  // still take part in layout, so only the out-of-flow pair is excluded.
+  const flowed = rail
+    ? [...rail.children].filter(
+        (kid) => !['absolute', 'fixed'].includes(getComputedStyle(kid).position))
+    : [];
   // The clipper is the card's inner surface, the one with overflow-hidden; the
   // rail-facing root above it is overflow-visible and clips nothing.
   const surface = card ? card.firstElementChild : null;
@@ -474,6 +490,30 @@ MEASURE = """
     // fold the reader can scroll to; what the card hides is gone for good.
     card: rect(card), llama: rect(llama),
     cardDead: dead(card), llamaDead: dead(llama),
+    // Every card in the rail, not only the two update banners. #10117 put an
+    // ungated floor on a card that had none the day before, so naming the cards
+    // to check is naming the ones that have already gone wrong.
+    railCards: flowed.map((kid) => ({
+      // Enough to name the offender in the failure without opening a browser.
+      tag: kid.tagName.toLowerCase(),
+      testid: kid.getAttribute('data-testid'),
+      cls: (kid.getAttribute('class') || '').slice(0, 120),
+      painted: kid.firstElementChild
+        ? (kid.firstElementChild.getAttribute('class') || '').slice(0, 80)
+        : null,
+      dead: dead(kid),
+    })),
+    // Where the bottom-most card ACTUALLY paints, against the corner it is
+    // anchored to. `fromBottom` in RAIL_CORNER comes off the rail's padding
+    // box, which is `fixed bottom-0` and so reports the intended offset however
+    // much dead air sits inside the last card. That is why the rail passed its
+    // own corner check all through #10117. This reads the painted surface.
+    lastPaintedFromBottom: (() => {
+      const last = flowed[flowed.length - 1];
+      const paint = last && (last.firstElementChild || last);
+      if (!paint) return null;
+      return Math.round((innerHeight - paint.getBoundingClientRect().bottom) * 10) / 10;
+    })(),
     // The same two, as much of them as the rail is SHOWING. Containment is
     // asked of these: a card the rail has folded away is not on screen at all,
     // and judging its unclipped rect against the viewport fails it for being
@@ -673,15 +713,31 @@ def measure(page, label: str) -> dict:
             facts["gutterIsRail"] is False,
             f"scrolls={scrolls} gutterIsRail={facts['gutterIsRail']}",
         )
-    # A floor must not leave unpainted space around a compact card.
-    for name in ("card", "llama"):
-        hole = facts[f"{name}Dead"]
+    # The rail is bottom-anchored, so one card's dead space lifts the rest off the corner.
+    cards = facts["railCards"]
+    check(
+        f"{label}: the rail has cards to judge",
+        len(cards) > 0,
+        f"railCards={cards}, so every dead-space check below passed vacuously",
+    )
+    for index, kid in enumerate(cards):
+        hole = kid["dead"]
         if hole is None:
             continue
+        who = kid["testid"] or kid["cls"] or f"{kid['tag']}#{index}"
         check(
-            f"{label}: the {name}'s slot reserves no height it does not paint",
+            f"{label}: {who} reserves no height it does not paint",
             hole["above"] <= 1.0 and hole["below"] <= 1.0,
-            f"{name}Dead={hole}",
+            f"dead={hole} painted-child={kid['painted']}",
+        )
+    # Measured off the card the reader sees. Not while scrolling: under the cap the
+    # bottom card is wherever the scroll position puts it, which REACH covers.
+    if cards and not facts["railScrolls"]:
+        check(
+            f"{label}: the bottom card is on the corner, not floating above it",
+            facts["lastPaintedFromBottom"] == CORNER_INSET_PX,
+            f"lastPaintedFromBottom={facts['lastPaintedFromBottom']} "
+            f"(want {CORNER_INSET_PX}) last={cards[-1]}",
         )
     # The notes are allowed to yield all of their height, and do; the controls are not, and a card clipped to nothing is
     # the failure being tested for.
@@ -693,6 +749,49 @@ def measure(page, label: str) -> dict:
             f"{name}={box}",
         )
     return facts
+
+
+# #9849 made the Downloads overlay always mount, and was reverted by #10298.
+DOWNLOADS = """
+() => {
+  const rail = document.querySelector('[data-testid="overlay-rail"]');
+  if (!rail) return null;
+  return {
+    // The panel and its collapsed FAB. Neither may exist with no jobs.
+    panels: document.querySelectorAll('.hub-download-panel, .hub-download-fab').length,
+    // Slots, not pixels: a panel that renders a wrapper around nothing is
+    // invisible but still takes a flex slot and its gap-2, which pushes the
+    // card that is meant to hold the corner up off it.
+    cards: [...rail.children].filter(
+      (kid) => !['absolute', 'fixed'].includes(getComputedStyle(kid).position)).length,
+  };
+}
+"""
+
+
+def check_downloads_absent(page, label: str, expected_cards: int) -> None:
+    """With no transfers, the Downloads overlay must not be in the rail at all."""
+    seen = page.evaluate(DOWNLOADS)
+    check(
+        f"{label}: the rail is reachable by its own handle",
+        seen is not None,
+        "no [data-testid=overlay-rail] on the page, so the two checks below prove nothing",
+    )
+    if seen is None:
+        return
+    check(
+        f"{label}: no Downloads overlay while there is nothing downloading",
+        seen["panels"] == 0,
+        f"{seen['panels']} download panel(s) mounted with an empty job list, "
+        "which is the permanent corner FAB from #9849",
+    )
+    # An exact count: a bare absence also holds when the selector has rotted.
+    check(
+        f"{label}: the rail holds exactly the cards that are up",
+        seen["cards"] == expected_cards,
+        f"cards={seen['cards']} want={expected_cards}; an extra slot is an "
+        "overlay mounting when it has nothing to show",
+    )
 
 
 def stub(payload: dict):
@@ -946,6 +1045,9 @@ def main() -> int:
                         "nothing to measure, so every other check is vacuous",
                     )
                 measure(page, f"{size} {name} collapsed")
+                if path == "/":
+                    # Both update cards up, indicator off by default (#8346).
+                    check_downloads_absent(page, f"{size} {name}", 2)
                 page.screenshot(path = str(ART / f"{size}-{path.strip('/') or 'new-chat'}.png"))
 
                 toggle = page.locator('[data-testid="web-update-release-notes-toggle"]')
@@ -1044,7 +1146,9 @@ def main() -> int:
             )
             check(
                 f"{width}x{height}: the rail is still in its bottom-right corner",
-                seen is not None and seen["fromBottom"] == 16 and seen["fromRight"] == 16,
+                seen is not None
+                and seen["fromBottom"] == CORNER_INSET_PX
+                and seen["fromRight"] == CORNER_INSET_PX,
                 f"{seen}, so the rail has left the corner it is anchored to",
             )
             check(

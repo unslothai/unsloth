@@ -16,11 +16,13 @@ llama descriptor here exercises the canonical dialect a future migration
 would use, including the "no fallback backend -> report no prebuilt" policy.
 """
 
+import contextlib
 import importlib.util
 import io
 import json
 import sys
 import tarfile
+import urllib.error
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -915,3 +917,188 @@ def test_module_ops_prefers_module_globals_over_core_defaults(component):
     assert callable(ops.fetch_json)
     with pytest.raises(AttributeError):
         _ = ops.does_not_exist_anywhere
+
+
+def _github_api_403(headers):
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b1",
+        403,
+        "rate limit exceeded",
+        headers,
+        io.BytesIO(b""),
+    )
+
+
+@pytest.mark.parametrize(
+    ("headers", "retryable"),
+    [
+        ({}, False),
+        ({"Retry-After": "5"}, True),
+        ({"X-RateLimit-Reset": "1700000030"}, True),
+        ({"X-RateLimit-Reset": "1700003600"}, False),
+    ],
+)
+def test_github_api_403_retries_only_with_a_reachable_reset(monkeypatch, headers, retryable):
+    monkeypatch.setattr(core.time, "time", lambda: 1_700_000_000.0)
+    assert core.is_retryable_url_error(_github_api_403(headers)) is retryable
+
+
+def test_github_api_403_without_a_reachable_reset_makes_one_request():
+    component = Component(LLAMA_DESCRIPTOR)
+    requests = []
+
+    class Opener:
+        def open(
+            self,
+            request,
+            timeout = None,
+        ):
+            requests.append(request.full_url)
+            raise _github_api_403({})
+
+    component.namespace["_URL_OPENER"] = Opener()
+
+    with pytest.raises(urllib.error.HTTPError):
+        core.download_bytes(
+            component.ops,
+            "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b1",
+        )
+
+    assert len(requests) == 1
+
+
+def test_a_settle_does_not_hold_a_finished_launch_for_the_install_timeout(tmp_path):
+    """The catch-up runs on the FIRST update after an upgrade, for every existing user, and
+    it writes fields whose only effect is to spare the next run some work. A box where
+    another installer is running must not wait five minutes for that: it asks briefly, gives
+    up, logs, and reports the install it already validated."""
+    install_dir = tmp_path / "component"
+    install_dir.mkdir()
+    server = install_dir / "server"
+    server.write_text("", encoding = "utf-8")
+    events = []
+    asked = []
+
+    @contextlib.contextmanager
+    def busy_lock(path, *, timeout = None):
+        asked.append(timeout)
+        raise core.BusyInstallConflict("held elsewhere")
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    ops = SimpleNamespace(
+        COMPONENT = "test",
+        existing_install_matches = lambda d, h, s: True,
+        install_lock = busy_lock,
+        install_lock_path = lambda d: d / "lock",
+        kept_install_needs_settling = lambda d: True,
+        settle_kept_install = lambda d: events.append("settled"),
+        _install_from_bundle = lambda d, h, b, s: events.append("installed"),
+        installed_server_path = lambda d, h: server,
+        log = lambda message: events.append(message),
+    )
+    bundle = SimpleNamespace(release_tag = "b1")
+    selection = SimpleNamespace(backend = "cpu")
+    rc = core.install_selected_prebuilt(
+        ops, install_dir, host = None, bundle = bundle, selection = selection, force = False
+    )
+    assert rc == 0
+    assert "installed" not in events, "a kept install was reinstalled over a busy lock"
+    assert "settled" not in events
+    assert asked == [core.SETTLE_LOCK_TIMEOUT_SECONDS]
+    assert core.SETTLE_LOCK_TIMEOUT_SECONDS < core.INSTALL_LOCK_TIMEOUT_SECONDS
+
+
+def test_a_kept_install_that_changes_under_the_lock_is_re_validated(tmp_path):
+    """The pre-lock keep re-checks the install under the lock before settling its marker.
+    A concurrent installer that swapped the tree in between makes that re-check fail, and
+    the keep then falls through to the locked path instead of reporting the release it
+    just saw replaced as installed."""
+    install_dir = tmp_path / "component"
+    install_dir.mkdir()
+    server = install_dir / "server"
+    server.write_text("", encoding = "utf-8")
+    # pre-lock keep, the settle's re-check, the locked path's re-check
+    answers = iter([True, False, False])
+    events = []
+    ops = SimpleNamespace(
+        COMPONENT = "test",
+        existing_install_matches = lambda d, h, s: next(answers),
+        install_lock = lambda path, **kwargs: contextlib.nullcontext(),
+        install_lock_path = lambda d: d / "lock",
+        kept_install_needs_settling = lambda d: True,
+        settle_kept_install = lambda d: events.append("settled"),
+        _install_from_bundle = lambda d, h, b, s: events.append("installed"),
+        installed_server_path = lambda d, h: server,
+        log = lambda message: events.append(message),
+    )
+    bundle = SimpleNamespace(release_tag = "b1")
+    selection = SimpleNamespace(backend = "cpu")
+    rc = core.install_selected_prebuilt(
+        ops, install_dir, host = None, bundle = bundle, selection = selection, force = False
+    )
+    assert rc == 0
+    assert "settled" not in events
+    assert "installed" in events
+
+
+@pytest.mark.skipif(not hasattr(core.os, "chown"), reason = "os.chown is POSIX only")
+def test_a_live_marker_rewrite_keeps_the_group_when_the_owner_is_refused(tmp_path, monkeypatch):
+    """A non-root member of a group-shared install can hand the temp file to the
+    marker's group, but not to its owner; asking for both refuses the call before the
+    group is applied and os.replace installs the member's primary group instead. So the
+    combined call is tried first, for the root case that can honour it, and the group-only
+    call is the fallback."""
+    marker = tmp_path / "MARKER.json"
+    marker.write_text('{"a": 1}', encoding = "utf-8")
+    original = marker.stat()
+    calls = []
+
+    def refusing(path, uid, gid):
+        calls.append((uid, gid))
+        if uid != -1:
+            raise PermissionError("a non-root member may not give a file away")
+
+    monkeypatch.setattr(core.os, "chown", refusing)
+    core.write_live_marker(marker, {"a": 1, "b": 2})
+    assert json.loads(marker.read_text(encoding = "utf-8")) == {"a": 1, "b": 2}
+    assert calls == [(original.st_uid, original.st_gid), (-1, original.st_gid)]
+    assert not list(tmp_path.glob("MARKER.json.tmp-*"))
+
+
+def test_a_walk_back_is_recorded_with_the_host_version_that_decided_it():
+    """prebuilt_core.WalkBack: the marker-only re-check may hold an install on a Mac
+    below the newest release's floor current only while the newest release is the one
+    skipped AND the host is the macOS version that skipped it."""
+    mac = SimpleNamespace(is_macos = True, macos_version = (14, 7))
+    assert core.macos_version_label(mac) == "14.7"
+    assert core.macos_version_label(SimpleNamespace(is_macos = True, macos_version = None)) is None
+    assert core.macos_version_label(SimpleNamespace(is_macos = False, macos_version = (14, 7))) is None
+    walk_back = core.walk_back_for(mac, "r2")
+    assert walk_back == core.WalkBack(release_tag = "r2", macos_version = "14.7")
+    assert core.walk_back_for(mac, None) is None
+    assert core.walk_back_for(SimpleNamespace(is_macos = False, macos_version = None), "r2") is None
+    marker = {"release_tag": "r1", **walk_back.marker_fields()}
+    assert core.marker_walk_back(marker) == walk_back
+    assert core.marker_walk_back({"release_tag": "r1", "walked_back_from": "r2"}) is None
+    assert core.walk_back_stands(marker, mac, "r2") is True
+    assert core.walk_back_stands(marker, mac, "r3") is False
+    assert core.walk_back_stands(marker, mac, None) is False
+    assert (
+        core.walk_back_stands(marker, SimpleNamespace(is_macos = True, macos_version = (15, 0)), "r2")
+        is False
+    )
+    assert (
+        core.walk_back_stands(marker, SimpleNamespace(is_macos = False, macos_version = None), "r2")
+        is False
+    )
+    # What a kept marker owes this run's plan.
+    assert core.walk_back_patch({}, walk_back) == walk_back.marker_fields()
+    assert core.walk_back_patch(marker, walk_back) == {}
+    assert core.walk_back_patch({"walked_back_from": "r2"}, walk_back) == {
+        "walked_back_on_macos": "14.7"
+    }
+    assert core.walk_back_patch(marker, None) == {
+        "walked_back_from": None,
+        "walked_back_on_macos": None,
+    }
+    assert core.walk_back_patch({}, None) == {}

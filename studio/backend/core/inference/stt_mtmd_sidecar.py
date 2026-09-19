@@ -30,7 +30,12 @@ from typing import Iterator, Optional
 from loggers import get_logger
 
 from hub.utils.hf_tokens import normalize_token
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
 
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
@@ -94,10 +99,9 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
 # complies. Parakeet and Nemotron ASR are too: llama.cpp has the audio graphs but not the text architectures.
 
 _TRANSCRIBE_PROMPT = "Transcribe the audio."
-# Speech runs about 3 tokens a second in English and more in scripts with no word boundaries Output cap per second of
-# audio. Speech runs about 3 tokens a second in English and more in scripts with no word boundaries, so this is
-# generous: generation stops at EOS long before it, and the cap only exists so a looping model cannot run to the request
-# timeout.
+# Output cap per second of audio. Speech runs about 3 tokens a second in English and more in scripts with no word
+# boundaries, so this is generous: generation stops at EOS long before it, and the cap only exists so a looping model
+# cannot run to the request timeout.
 _TRANSCRIPT_TOKENS_PER_SECOND = 30
 _MIN_TRANSCRIPT_TOKENS = 512
 # Well under any of these models' trained context, which also has to hold the audio. llama-server is left on its default
@@ -184,8 +188,18 @@ def _reap(process: Optional[subprocess.Popen]) -> None:
     except Exception as exc:  # noqa: BLE001 - shutdown must not raise
         logger.warning("Could not reap llama-server (pid %s): %s", process.pid, exc)
     finally:
-        # the PID is dead, so drop it before it can be reused by something else that terminate_all would then signal
-        forget_pid(process.pid)
+        # Drop the pid once it is dead, before it can be reused by something else that
+        # terminate_all would then signal. Only once it is dead: if the terminate, the
+        # kill or either wait raised, the child is still alive, and after the shutdown
+        # sweep has passed this record is the last thing that could reap it.
+        if process.poll() is not None:
+            forget_pid(process.pid)
+        else:
+            logger.warning(
+                "llama-server (pid %s) survived the reap; leaving it adopted so a later "
+                "sweep can still find it",
+                process.pid,
+            )
 
 
 def _cached_file(
@@ -319,7 +333,6 @@ class _MtmdDownloadState:
                 "model": model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
-                # "model" goes None once the worker thread stops
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
                 # cancellation was indistinguishable from an unrelated one and a deferred load restarted the whole
                 # download.
@@ -920,6 +933,13 @@ class MtmdSttSidecar:
                 # chat backend's _cmd_has_gpu_companion() treats as a GPU companion whatever --gpu-layers says.
                 cmd.append("--no-mmproj-offload")
             sock.close()
+            # One flag at every spawn, as above: nothing in _graceful_shutdown stops
+            # this sidecar, so without it a quit during a load starts a server the
+            # step-7 sweep has already passed by.
+            if is_process_shutting_down():
+                raise SttLoadCancelledError(
+                    "Unsloth is shutting down; not starting the MTMD server."
+                )
             process = subprocess.Popen(
                 cmd,
                 # nothing reads these, and an undrained pipe blocks llama-server mid-startup once its logs fill the
@@ -938,6 +958,13 @@ class MtmdSttSidecar:
             with self._lock:
                 self._starting_process = process
             adopt_pid(process.pid)  # terminate_all backstop for graceful exits
+            # Recheck once the pid is recorded, for the window between the gate and the
+            # record. _reap kills and forgets, so nothing is left half-tracked.
+            if is_process_shutting_down():
+                _reap(process)
+                raise SttLoadCancelledError(
+                    "Unsloth is shutting down; not starting the MTMD server."
+                )
             if not self._wait_for_server(process, port, cancel_event):
                 # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and
                 # keeps port and VRAM.
@@ -995,6 +1022,7 @@ class MtmdSttSidecar:
         language: Optional[str] = None,
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
+        on_progress = None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -1035,7 +1063,12 @@ class MtmdSttSidecar:
             # outside the lock: a held lock would block unload, including a training run's, for the whole request
             # timeout
             text = self._post_transcribe(
-                port, model_id, wav_bytes, audio_seconds, cancel_event = cancel_event
+                port,
+                model_id,
+                wav_bytes,
+                audio_seconds,
+                cancel_event = cancel_event,
+                **({"on_progress": on_progress} if on_progress is not None else {}),
             )
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1067,6 +1100,7 @@ class MtmdSttSidecar:
         audio_seconds: Optional[float] = None,
         *,
         cancel_event: Optional[threading.Event] = None,
+        on_progress = None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
@@ -1089,6 +1123,8 @@ class MtmdSttSidecar:
             "temperature": 0,
             "max_tokens": _transcript_token_budget(audio_seconds),
         }
+        if on_progress is not None:
+            payload["stream"] = True
         connection = http.client.HTTPConnection(
             "127.0.0.1", port, timeout = _TRANSCRIBE_TIMEOUT_SECONDS
         )
@@ -1109,6 +1145,36 @@ class MtmdSttSidecar:
                 headers = {"Content-Type": "application/json"},
             )
             with connection.getresponse() as response:
+                if on_progress is not None and 200 <= response.status < 300:
+                    text = ""
+                    finished = False
+                    for line in response:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise SttTranscriptionCancelledError("Transcription cancelled.")
+                        if not line.startswith(b"data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == b"[DONE]":
+                            finished = True
+                            break
+                        event = json.loads(data)
+                        if event.get("error"):
+                            raise RuntimeError(
+                                "The transcription server could not complete this recording."
+                            )
+                        choices = event.get("choices") or []
+                        if choices:
+                            finished = finished or choices[0].get("finish_reason") is not None
+                            text += choices[0].get("delta", {}).get("content") or ""
+                            if not spec.transcript_marker or spec.transcript_marker in text:
+                                on_progress(
+                                    {"text": _clean_transcript(text, spec.transcript_marker)}
+                                )
+                    if not finished:
+                        raise RuntimeError(
+                            "The transcription server disconnected before finishing."
+                        )
+                    return _clean_transcript(text, spec.transcript_marker)
                 response_body = response.read()
                 if not 200 <= response.status < 300:
                     raise RuntimeError(

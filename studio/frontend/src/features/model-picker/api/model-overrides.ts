@@ -6,6 +6,7 @@
 // routes/inference.py reads this map and rebuilds the picker's LoadRequest.
 
 import { authFetch } from "@/features/auth";
+import type { GpuIndexKind } from "@/hooks/gpu-selection";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
   normalizeGgufVariantIdentity,
@@ -40,6 +41,10 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   n_parallel?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  reasoning_budget_message?: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
   n_batch?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   n_ubatch?: number;
@@ -65,6 +70,9 @@ export interface ApiModelOverride {
   n_cpu_moe?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_ids?: number[];
+  // Which index space gpu_ids is in. Absent means "physical", all an older row could mean.
+  // biome-ignore lint/style/useNamingConvention: API schema
+  gpu_index_kind?: GpuIndexKind;
 }
 
 export type ApiModelOverrides = Record<string, ApiModelOverride>;
@@ -111,9 +119,8 @@ export function foldOverrideKey(key: string): string {
     return path;
   }
   // splitQuantSuffix, not the last colon: a colon is legal in a POSIX filename, so
-  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would fold it
-  // onto the real, different file "/models/foo:bar.gguf". Mirrors the backend's
-  // split_quant_suffix.
+  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would fold it onto the
+  // real, different file "/models/foo:bar.gguf". Mirrors the backend's split_quant_suffix.
   const split = splitQuantSuffix(key);
   const id = split ? split[0] : key;
   const quant = split ? `:${split[1].toLowerCase()}` : "";
@@ -278,8 +285,7 @@ export function fromApiOverride(
   const extraArgs = Array.isArray(override.llama_extra_args)
     ? override.llama_extra_args
     : local.llamaExtraArgs;
-  // Only a physical pin travels (toApiOverride drops the rest), so a row without ids says
-  // nothing about placement and a local Vulkan ordinal keeps its own namespace.
+  // A row without ids says nothing about placement, so the local pin keeps its namespace.
   const serverGpuIds = override.gpu_ids?.length ? override.gpu_ids : null;
   // The pin is ONE setting in one of two fields, and an edit clears the other
   // (contextPinPatch). Filling them from different sources mints a record that loads at
@@ -302,6 +308,9 @@ export function fromApiOverride(
     specDraftCacheDtype:
       override.spec_draft_cache_type ?? local.specDraftCacheDtype,
     nParallel: override.n_parallel ?? local.nParallel,
+    reasoningBudget: override.reasoning_budget ?? local.reasoningBudget,
+    reasoningBudgetMessage:
+      override.reasoning_budget_message ?? local.reasoningBudgetMessage,
     nBatch: override.n_batch ?? local.nBatch,
     nUbatch: override.n_ubatch ?? local.nUbatch,
     loadMode: override.load_mode ?? local.loadMode,
@@ -317,8 +326,9 @@ export function fromApiOverride(
     gpuLayers: override.gpu_layers ?? local.gpuLayers,
     nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,
     selectedGpuIds: serverGpuIds ?? local.selectedGpuIds ?? null,
+    // reconcileGpuSelection drops the pin if this host numbers its devices the other way.
     selectedGpuIndexKind: serverGpuIds
-      ? "physical"
+      ? (override.gpu_index_kind ?? "physical")
       : (local.selectedGpuIndexKind ?? null),
   });
   // normalizePerModelConfig collapses an empty list to null. The server uses [] as a tombstone
@@ -359,6 +369,12 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   // Blank follows the server-wide --parallel default, which is the app default here.
   if (config.nParallel && config.nParallel > 0) {
     payload.n_parallel = config.nParallel;
+  }
+  if (config.reasoningBudget !== -1) {
+    payload.reasoning_budget = config.reasoningBudget;
+  }
+  if (config.reasoningBudgetMessage) {
+    payload.reasoning_budget_message = config.reasoningBudgetMessage;
   }
   // blank follows the llama.cpp defaults (2048 / 512)
   if (config.nBatch && config.nBatch > 0) {
@@ -407,16 +423,16 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (typeof config.nCpuMoe === "number" && config.nCpuMoe > 0) {
     payload.n_cpu_moe = config.nCpuMoe;
   }
-  // Only a physical pin travels. The same integers are a Vulkan ordinal under Vulkan and a
-  // CUDA/ROCm index elsewhere, and the override carries no namespace, so after a backend
-  // change the server would pin a different device. An absent kind predates the field.
+  // The pin travels with its namespace, or after a backend change the server pins a
+  // different device; reconcileGpuSelection drops it on a mismatch instead.
   const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
-  if (
-    config.selectedGpuIds &&
-    config.selectedGpuIds.length > 0 &&
-    gpuIndexKind === "physical"
-  ) {
+  if (config.selectedGpuIds && config.selectedGpuIds.length > 0) {
     payload.gpu_ids = config.selectedGpuIds;
+    // Sent only when it is not the legacy default, so a physical pin's payload is
+    // unchanged from before this field.
+    if (gpuIndexKind !== "physical") {
+      payload.gpu_index_kind = gpuIndexKind;
+    }
   }
   return payload;
 }
@@ -440,6 +456,9 @@ export interface PutModelOverrideOptions {
    *  local entry for the storage budget is not a forget, so it must not take
    *  `llama_extra_args` the page can neither show nor restore. */
   keepLaunchFlags?: boolean;
+  /** Remove a legacy passthrough value only after this control was explicitly reset. */
+  resetReasoningBudget?: boolean;
+  resetReasoningBudgetMessage?: boolean;
 }
 
 export async function putModelOverride(
@@ -482,13 +501,16 @@ async function sendModelOverride(
     body: JSON.stringify({
       // biome-ignore lint/style/useNamingConvention: API schema
       model_id: modelOverrideKey(modelId, ggufVariant),
-      // This build mirrors the llama-server tuning group, so an omission here is the
-      // user clearing it rather than a client that predates the fields. Without this
-      // the backend preserves the stored values, which is what stops a cached older
-      // bundle from deleting settings it never knew to send. An older backend ignores
-      // the key.
+      // This build mirrors the llama-server tuning group, so an omission here is the user clearing
+      // it rather than a client that predates the fields. Without this the backend preserves the
+      // stored values, which is what stops a cached older bundle from deleting settings it never
+      // knew to send. An older backend ignores the key.
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_server_tuning: true,
+      // Same contract for the reasoning pair, which a build mirroring the tuning group
+      // can still predate.
+      // biome-ignore lint/style/useNamingConvention: API schema
+      mirrors_reasoning_budget: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
       ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema
@@ -504,6 +526,20 @@ async function sendModelOverride(
           { llama_extra_args: [] }
         : {}),
       ...toApiOverride(config),
+      // Write-only reset markers let the backend remove legacy passthrough flags
+      // shadowing these controls. Fill-only migration must never delete stored flags.
+      ...(options?.resetReasoningBudget && config?.reasoningBudget === -1
+        ? {
+            // biome-ignore lint/style/useNamingConvention: API schema
+            reasoning_budget: -1,
+          }
+        : {}),
+      ...(options?.resetReasoningBudgetMessage && config?.reasoningBudgetMessage === ""
+        ? {
+            // biome-ignore lint/style/useNamingConvention: API schema
+            reasoning_budget_message: "",
+          }
+        : {}),
     }),
   });
   if (!res.ok) {

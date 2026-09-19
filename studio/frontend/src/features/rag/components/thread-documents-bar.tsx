@@ -355,7 +355,7 @@ export function ThreadDocumentsBar({
   // (ProjectLanding's pendingNewThreadId branch) and drop the just-attached chips.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
-  const initPromiseRef = useRef<Promise<string | null> | null>(null);
+  const initPromiseRef = useRef<Promise<string> | null>(null);
   const initGenerationRef = useRef(0);
   const hadThreadIdRef = useRef(threadId !== null);
   useEffect(() => {
@@ -374,9 +374,8 @@ export function ThreadDocumentsBar({
     initPromiseRef.current = null;
   }, [threadId]);
 
-  // An abandoned composer leaves its choice under the pending key, where the
-  // next new chat would claim it. Adoption removes the key, so this drops only
-  // what nobody claimed.
+  // An abandoned composer leaves its choice under the pending key, where the next new chat would
+  // claim it. Adoption removes the key, so this drops only what nobody claimed.
   useEffect(
     () => () =>
       useChatRuntimeStore.getState().clearPendingProjectAttachmentTarget(),
@@ -444,14 +443,13 @@ export function ThreadDocumentsBar({
     projectLister,
   );
 
-  // Tell the composer whether any doc is still indexing, so it can hold a queued
-  // send until retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope
-  // is null, so both lists are empty and this reads false.
-  // From the hooks, not the rows: work started in the Sources panel is in flight
-  // before either instance has a row for it, and a job already running on a
-  // reopened project arrives with the first list, so hold until that lands.
-  // Both scopes hold on their first list, for the same reason: reopening a chat
-  // whose own attachment was still indexing lists nothing until it lands either.
+  // Tell the composer whether any doc is still indexing, so it can hold a queued send until
+  // retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope is null, so both lists are
+  // empty and this reads false. From the hooks, not the rows: work started in the Sources panel is
+  // in flight before either instance has a row for it, and a job already running on a reopened
+  // project arrives with the first list, so hold until that lands. Both scopes hold on their first
+  // list, for the same reason: reopening a chat whose own attachment was still indexing lists
+  // nothing until it lands either.
   const hasIndexing =
     threadIndexing || threadListLoading || projectIndexing || projectListLoading;
   useEffect(() => {
@@ -461,14 +459,10 @@ export function ThreadDocumentsBar({
 
   // Materialize the thread id on first use; ref-deduped so a double-click can't
   // start two threads. A thread switch gets separate work even if the prior request is pending.
-  const ensureThreadId = useCallback((): Promise<string | null> => {
+  const ensureThreadId = useCallback((): Promise<string> => {
     if (effectiveThreadId) {
       return requireStoredThread(effectiveThreadId).then(
         () => effectiveThreadId,
-        () => {
-          toast.error("Couldn't start a chat for these documents");
-          return null;
-        },
       );
     }
     const current = initPromiseRef.current;
@@ -497,10 +491,6 @@ export function ThreadDocumentsBar({
           setMaterializedId(remoteId);
         }
         return remoteId;
-      })
-      .catch(() => {
-        toast.error("Couldn't start a chat for these documents");
-        return null;
       });
     initPromiseRef.current = pending;
     const clear = () => {
@@ -526,12 +516,11 @@ export function ThreadDocumentsBar({
         );
         return;
       }
-      // The id as a promise, so upload() flips its in-flight guard before
-      // materialization re-renders us: on the first click `scope` is null.
-      const threadScope = ensureThreadId().then((id) =>
-        id ? ({ type: "thread", threadId: id } as const) : null,
-      );
-      void upload(items, threadScope);
+      // Filter duplicates before initializing the chat.
+      void upload(items, async () => ({
+        type: "thread",
+        threadId: await ensureThreadId(),
+      }));
     },
     [ensureThreadId, projectId, sharesWithProject, upload, uploadToProject],
   );
@@ -616,10 +605,9 @@ export function ThreadDocumentsBar({
   if (ragEnabled && ragSource.type === "kb") {
     return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;
   }
-  // Project sources retrieve whether the Docs pill is on or not (chat-adapter's
-  // projectRagEnabled), so list them either way rather than letting the model
-  // answer from files the user cannot see. The attach controls stay behind the
-  // pill: with it off, thread scope is inert.
+  // Project sources retrieve whether the Docs pill is on or not (chat-adapter's projectRagEnabled),
+  // so list them either way rather than letting the model answer from files the user cannot see.
+  // The attach controls stay behind the pill: with it off, thread scope is inert.
   if (!ragEnabled) {
     return projectDocuments.length > 0 ? (
       <InheritedProjectSources documents={projectDocuments} />
@@ -677,6 +665,7 @@ export function ThreadDocumentsBar({
             filename={doc.filename}
             status={doc.status}
             progress={doc.progress}
+            stage={doc.stage}
             error={doc.error}
             shared={true}
             onRemove={
@@ -692,6 +681,7 @@ export function ThreadDocumentsBar({
             filename={doc.filename}
             status={doc.status}
             progress={doc.progress}
+            stage={doc.stage}
             error={doc.error}
             onRemove={
               doc.id.startsWith("pending_")

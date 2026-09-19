@@ -365,7 +365,6 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     from diffusers.hooks import apply_layerwise_casting
     from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
 
-    # idempotent, keyed on the completion marker NOT hook presence
     # Idempotent: a pre-cast encoder arrives with the layerwise hooks installed and re-registering a hook name raises,
     # which would report an engaged cast as failed. Keyed on the completion marker, NOT hook presence, so a mid-pass
     # failure still fails closed.
@@ -398,7 +397,6 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         storage_dtype = torch.float8_e4m3fn,
         compute_dtype = target.dtype,
         skip_modules_pattern = skip,
-        # fp8-ing nn.Embedding would put every prompt token on the coarse fp8 grid
         # Keep token-embedding tables full precision: the diffusers default only skips vision pos/patch embeds, and
         # fp8-ing nn.Embedding puts every prompt token on the coarse fp8 grid.
         skip_modules_classes = (torch.nn.Embedding,),
@@ -459,12 +457,17 @@ def _cast_nvfp4(encoder: Any, target: Any) -> None:
     # exclusions as the int8/fp8 TE modes; require_bf16 skips non-bf16 Linears so the cast engages instead of aborting.
     from torchao.quantization import quantize_
     from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
-    from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES, make_filter_fn
+    from .diffusion_transformer_quant import (
+        DEFAULT_MIN_LINEAR_FEATURES,
+        _quiet_config,
+        make_filter_fn,
+    )
 
     filter_fn = make_filter_fn(
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
-    quantize_(encoder, NVFP4WeightOnlyConfig(), filter_fn = filter_fn)
+    # No-op today (the prototype config has no set_inductor_config knob), but no torchao config is built bare.
+    quantize_(encoder, _quiet_config(NVFP4WeightOnlyConfig), filter_fn = filter_fn)
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

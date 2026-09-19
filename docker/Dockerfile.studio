@@ -7,12 +7,18 @@
 #     -f docker/Dockerfile.studio -t unsloth/unsloth:studio docker/
 # Run:
 #   docker run --rm --gpus all -p 8000:8000 -p 8888:8888 \
-#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface unsloth/unsloth:studio
+#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface \
+#     -v unsloth-studio:/opt/unsloth-studio unsloth/unsloth:studio
 #
-# Studio on :8000 (first-boot admin password in the logs, persisted under
-# /opt/unsloth-studio/auth/); JupyterLab on :8888 (JUPYTER_PASSWORD env, else a
-# random one is printed). Without GPU passthrough add -e UNSLOTH_ALLOW_CPU=1:
-# training is unavailable but Studio chat / Data Recipes / GGUF / Jupyter work.
+# Studio on :8000 (user unsloth; UNSLOTH_STUDIO_PASSWORD env, else a generated one
+# is printed in the logs; persisted under /opt/unsloth-studio/auth/); JupyterLab on
+# :8888 (JUPYTER_PASSWORD env, else a random one is printed). Without a GPU it starts on CPU: no training, but Studio chat / Data Recipes / GGUF / Jupyter work.
+# /opt/unsloth-studio (UNSLOTH_STUDIO_HOME) holds only Studio's data; the code lives in
+# /opt/unsloth-studio-app (UNSLOTH_STUDIO_APP) and unsloth-studio-home links it into the
+# home at build time and at every start, so a named volume on the home keeps accounts,
+# chats and outputs without pinning the first image's code. Real code directories that
+# an older image left on the volume are moved to .unsloth-studio-legacy/ (not deleted;
+# UNSLOTH_STUDIO_KEEP_LEGACY=0 deletes them), which is also the way back to that image.
 # CI pins BASE_IMAGE to the published base digest so both images ship the same stack.
 
 ARG BASE_IMAGE=unsloth/unsloth:core
@@ -51,18 +57,19 @@ ARG TARGETARCH
 # disabled unless PUBLIC_KEY/SSH_KEY is set (see studio_launch.sh). The
 # JUPYTER_PORT / UNSLOTH_ENABLE_SSHD defaults let supervisord's %(ENV_*)s resolve.
 USER root
-# UNSLOTH_ALLOW_CPU defaults to 1 on THIS image only. It publishes as :latest, so a
-# plain `docker run unsloth/unsloth` on a CPU-only, AMD or Docker-Desktop host would
-# otherwise exit 1 from entrypoint.sh before Studio ever starts. Most of what this
-# image offers (Studio chat over llama.cpp/GGUF, Data Recipes, JupyterLab, GGUF
-# tooling) needs no GPU. The entrypoint only takes the CPU path when no GPU is
-# visible, so this does not weaken the checks on a GPU host, and `-e
-# UNSLOTH_ALLOW_CPU=0` restores the strict behaviour. The base/training image keeps
-# the strict check: FastLanguageModel genuinely requires a GPU there.
+# UNSLOTH_IMAGE_ALLOW_CPU=1 lets THIS image (:latest) start without a GPU. The entrypoint turns it into
+# UNSLOTH_ALLOW_CPU=1 only when no GPU is visible, since that one disables the TRL patches. :core never opts in.
+# UV_CACHE_DIR in the app dir: install.sh, setup.sh and Studio default it to $UNSLOTH_STUDIO_HOME/cache/uv,
+# which would fill a volume on the home with wheels; cache/ there stays runtime data.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
-    UNSLOTH_ALLOW_CPU=1 \
+    UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
+    UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
+    UNSLOTH_IMAGE_ALLOW_CPU=1 \
     JUPYTER_PORT=8888 \
+    UNSLOTH_STUDIO_PORT=8000 \
     UNSLOTH_ENABLE_SSHD=false \
+    UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120 \
+    UNSLOTH_STUDIO_STOP_WAIT_S=150 \
     DEBIAN_FRONTEND=noninteractive
 
 # install.sh needs curl + git; supervisor + openssh-server run the service
@@ -72,22 +79,31 @@ RUN apt-get update \
         curl git ca-certificates supervisor openssh-server \
  && rm -rf /var/lib/apt/lists/*
 
-# Clone + install Studio into a dedicated venv under $UNSLOTH_STUDIO_HOME.
-# --local is editable, so the source MUST persist -- keep it at $STUDIO_HOME/src,
-# strip .git (~120MB).
+# The linker the install RUN below finishes with, and the entrypoint reruns (studio_home.sh).
+COPY studio_home.sh /usr/local/bin/unsloth-studio-home
+
+# Clone + install Studio into a venv under $UNSLOTH_STUDIO_HOME, then move it to
+# $UNSLOTH_STUDIO_APP (end of this RUN). --local is editable: the venv imports through
+# $STUDIO_HOME/src, which the linker makes a symlink into the app dir. .git is stripped (~120MB).
 #
 # The llama.cpp symlink BEFORE install.sh points Studio's prebuilt dir at the
 # base's baked bundle so the installer skips a second ~400MB download; the
 # .unsloth-studio-owned marker satisfies setup.sh's ownership assertion.
+# UNSLOTH_LLAMA_KEEP_PREBUILT=1 keeps it: no GPU is visible here, so setup.sh's detection would install the CPU bundle over it.
 #
 # UNSLOTH_TORCH_INDEX_FAMILY pins the Studio venv's torch index (no nvidia-smi at
 # build time would land on cpu/cu126). cu128 on both arches, mirroring the base.
 # Blackwell JIT (sm_103/sm_121) comes from the same cu13 NVRTC swap, repeated below.
 #
+# install.sh's uv cache sits under $UNSLOTH_STUDIO_HOME/cache/uv (or $UV_CACHE_DIR), not
+# /root/.cache, so it is removed by path below; the venv's hardlinks survive, the rest is dead.
+#
 # UNSLOTH_PYTHON=3.12 pins the Studio venv to the base's Python minor so the
 # nvidia-*-cu12 wheels are byte-identical and the dedup below can symlink them.
 #
 # fetch+checkout FETCH_HEAD, not `clone --branch`: CI passes a commit SHA.
+#
+# UNSLOTH_ALLOW_CPU=1 is inline for install.sh only: the build has no GPU, and the image ENV must not carry it (see above).
 RUN set -eux \
  && case "${TARGETARCH:-amd64}" in \
         amd64|arm64) TORCH_FAMILY="cu128" ;; \
@@ -105,18 +121,30 @@ RUN set -eux \
     UNSLOTH_TORCH_INDEX_FAMILY="${TORCH_FAMILY}" \
     UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
     UNSLOTH_LLAMA_TAG="${LLAMA_PREBUILT_TAG}" \
+    UNSLOTH_LLAMA_KEEP_PREBUILT=1 \
     UNSLOTH_PYTHON=3.12 \
+    UNSLOTH_ALLOW_CPU=1 \
     bash install.sh --local \
     # Fail loud unless the Studio venv torch EXACTLY matches the base (version AND
     # CUDA family) before the dedup symlinks their CUDA libs. Compare to the base's
     # own torch (no hardcoded version); metadata only (QEMU arm64 can't import torch).
  && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
- && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; assert sys.version_info[:2] == (3, 12), 'Studio venv python %d.%d is not 3.12 (UNSLOTH_PYTHON pin ignored) -- CUDA dedup below depends on it' % sys.version_info[:2]; v = version('torch'); assert v == '${BASE_TORCH}', 'Studio venv torch ' + v + ' does not match base venv torch ${BASE_TORCH} (CUDA dedup would link mismatched libs)'; print('Studio venv python %d.%d torch' % sys.version_info[:2], v, '== base', '${BASE_TORCH}')" \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; assert sys.version_info[:2] == (3, 12), 'Unsloth Studio venv python %d.%d is not 3.12 (UNSLOTH_PYTHON pin ignored) -- CUDA dedup below depends on it' % sys.version_info[:2]; v = version('torch'); assert v == '${BASE_TORCH}', 'Unsloth Studio venv torch ' + v + ' does not match base venv torch ${BASE_TORCH} (CUDA dedup would link mismatched libs)'; print('Unsloth Studio venv python %d.%d torch' % sys.version_info[:2], v, '== base', '${BASE_TORCH}')" \
     # setup.sh may relink llama-quantize into build/bin; prove it still resolves its
     # libraries. Content check, not rc: --help exits nonzero but prints usage.
  && { "${UNSLOTH_STUDIO_HOME}/llama.cpp/llama-quantize" --help 2>&1 || true; } | grep -q "usage" \
+    # The base baked a CUDA llama.cpp; fail the build if install.sh left a CPU-only tree behind.
+ && for CUDA_SO in /opt/unsloth/llama.cpp/libggml-cuda.so /opt/unsloth/llama.cpp/build/bin/libggml-cuda.so; do \
+        [ -f "$CUDA_SO" ] || { \
+            echo "ERROR: $CUDA_SO is missing after install.sh; GGUF inference would silently run on the CPU"; \
+            cat /opt/unsloth/llama.cpp/UNSLOTH_PREBUILT_INFO.json || true; \
+            exit 1; \
+        }; \
+    done \
+ && echo "OK: Unsloth Studio kept the base image's CUDA llama.cpp bundle" \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
           "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
+          "${UV_CACHE_DIR:-${UNSLOTH_STUDIO_HOME}/cache/uv}" \
           /root/.cache \
     # Stage the Studio venv's NVRTC like the base (.cu128.orig default + .cu13
     # alias, retargeted per device by select_cuda_jit_tools). Both arches.
@@ -148,10 +176,23 @@ RUN set -eux \
             fi; \
         done; \
         echo "studio venv size after dedup:"; du -sh "${UNSLOTH_STUDIO_HOME}/unsloth_studio"; \
-    fi
+    fi \
+    # Move the code to the app dir in this same layer (a later RUN would store it twice)
+    # and leave symlinks, so a volume on the home no longer freezes the code at the first
+    # image's version. cache/ stays a real directory: with UV_CACHE_DIR in the app dir it
+    # holds only install.sh's uv-cache-dir marker now and Studio's runtime caches later.
+ && mkdir -p "${UNSLOTH_STUDIO_APP}" \
+ && find "${UNSLOTH_STUDIO_HOME}" -mindepth 1 -maxdepth 1 ! -name cache -exec mv -t "${UNSLOTH_STUDIO_APP}" {} + \
+ && test ! -e "${UNSLOTH_STUDIO_HOME}/cache/uv" \
+    # through bash: the exec bit is set further down, with the other bin scripts
+ && bash /usr/local/bin/unsloth-studio-home \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import os, sys, studio; print('Unsloth Studio venv', sys.prefix, 'imports studio from', studio.__file__); assert os.path.realpath(studio.__file__).startswith(os.path.realpath('${UNSLOTH_STUDIO_HOME}/src') + '/'), studio.__file__" \
+ && ls -la "${UNSLOTH_STUDIO_HOME}"
 
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch
+COPY studio_password.sh /usr/local/bin/unsloth-studio-password
+COPY studio_run.sh /usr/local/bin/unsloth-studio-run
 # In-place updaters (no image pull):
 #   unsloth-studio-update  refresh Studio packages (backend + frontend) and restart
 #   unsloth-llama-update   swap the baked llama.cpp prebuilt to the latest release
@@ -206,13 +247,21 @@ RUN SP="$(/opt/unsloth-venv/bin/python -c 'import sysconfig; print(sysconfig.get
        /opt/unsloth-venv/share/jupyter/UNSLOTH_LICENSE.AGPL-3.0 \
  && rm -rf /tmp/unsloth-branding-guard \
  && /opt/unsloth-venv/bin/python -m unsloth_branding --verify
-RUN chmod +x /usr/local/bin/unsloth-studio-launch \
+RUN chmod +x /usr/local/bin/unsloth-studio-home \
+             /usr/local/bin/unsloth-studio-launch \
+             /usr/local/bin/unsloth-studio-password \
+             /usr/local/bin/unsloth-studio-run \
              /usr/local/bin/unsloth-studio-update \
              /usr/local/bin/unsloth-llama-update \
              /usr/local/bin/unsloth-jupyter-tunnel
 
 # Studio, JupyterLab, sshd. All bind 0.0.0.0 in the container; publish with -p.
 EXPOSE 8000 8888 22
+
+# BASE_IMAGE defaults to the PUBLISHED :core, whose baked entrypoint predates
+# UNSLOTH_IMAGE_ALLOW_CPU: without this copy a standalone build opts in above and still exits 1 on a CPU-only host.
+COPY entrypoint.sh /usr/local/bin/unsloth-entrypoint
+RUN chmod +x /usr/local/bin/unsloth-entrypoint
 
 # The base ENTRYPOINT (unsloth-entrypoint) still runs its GPU pre-flight
 # first, then hands off to the service launcher.

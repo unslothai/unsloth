@@ -8,7 +8,6 @@
 // then lands inside the measured span: 100 MB/s published 13 MB/s.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -17,16 +16,12 @@ import {
   computeTransferStats,
 } from "../src/lib/transfer-stats.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const MB = 1e6;
 
 test("a generation change clears the rate samples before the next one is taken", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/hub/download-manager/poll-loop.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/hub/download-manager/poll-loop.ts");
   const clear = source.indexOf(
     "rt.speedSamples.length = 0",
     source.indexOf("generationChanged) {"),

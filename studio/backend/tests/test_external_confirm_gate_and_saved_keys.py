@@ -52,8 +52,12 @@ def _request(authorization = None):
     async def is_disconnected():
         return False
 
+    headers = {"X-Unsloth-Events": "1"}
+    if authorization:
+        headers["authorization"] = authorization
     return SimpleNamespace(
-        headers = {"authorization": authorization} if authorization else {},
+        # The confirm gate can only ask over these frames.
+        headers = headers,
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
     )

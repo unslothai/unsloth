@@ -201,9 +201,8 @@ def test_the_launch_charges_the_pipeline_overhead_per_extra_device():
     """max(0, n - 1), so a single-GPU load adds nothing, and ungated by whether
     llama.cpp keeps the pipeline -- the per-device context is there either way,
     which is why the placement's own term is ungated too."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert "pipeline_overhead_bytes=(max(0,_fit_devices-1)*_pipeline_overhead_bytes)" in compact
@@ -307,9 +306,8 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     """The budget nulls the drafter path before its weights are sized, so the
     fit has to keep its own copy. Checked at the source, like the other launch
     ordering invariants here: the call site sits inside load_model's fit try."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
     # Captured BEFORE the VRAM budget drops it.
@@ -317,9 +315,8 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     assert compact.index("_cpu_draft_path=_mtp_draft_for_budget") < compact.index(
         "if_draft_on_cpu:_mtp_draft_for_budget=None"
     )
-    # ... and charged to the footprint as a HOST-ONLY term (free VRAM cannot pay for
-    # an allocation the child only ever makes in RAM), abstaining when unpriceable.
-    assert "host_only_bytes=_cpu_draft_fit_bytesor0" in compact
+    # CPU-pinned drafter and checkpoint bytes are host-only.
+    assert "host_only_bytes=(_cpu_draft_fit_bytesor0)+_ckpt_host_bytes," in compact
     assert "or_cpu_draft_fit_bytesisNone" in compact
 
 
@@ -331,9 +328,8 @@ def test_a_weights_only_drafter_reserve_counts_as_unsized():
     that as a sized drafter understates a ctx-linear term the placement only covers
     with a flat cushion the footprint has no room for. Re-narrowing to
     "mtp_overhead_fn is None" absorbs the arm away, which is what it used to do."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert (
@@ -460,9 +456,8 @@ def test_the_fit_and_the_flag_read_the_same_margin(auto_fit, delta, supports, ex
 
 def test_the_launch_charges_the_fitters_margin_only_when_fit_stays_on():
     """Checked at the source: reaching this call needs a real GPU probe."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
     call = compact[compact.index("_fit_margin_mib=(") :]
@@ -487,9 +482,9 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
     `-ngl -1` is its own default, which the fitter is free to lower (common/fit.cpp
     aborts only on a count the user really set). So the margin has to be charged.
     """
+    from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
-    from core.inference.llama_cpp import LlamaCppBackend as B
     from core.inference.llama_server_args import fit_is_effectively_on
 
     compact = "".join(inspect.getsource(B.load_model).split())
@@ -551,10 +546,9 @@ def test_a_pass_through_fit_target_is_the_margin_the_child_really_keeps(extras, 
 @pytest.fixture
 def toggles(monkeypatch):
     """Drive the Model Memory settings the two policies read lazily."""
+    import utils.model_memory_settings as mm
 
     def _set(keep_resident, no_ram_reserve):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(
             mm, "get_model_memory_settings", lambda: (keep_resident, no_ram_reserve)
         )
@@ -708,11 +702,11 @@ def test_a_hand_typed_flag_still_wins_by_last_arg(toggles):
 def test_the_cpu_fallback_drops_the_fits_load_mode(monkeypatch):
     """A CPU replay runs on no GPU, so the VRAM half of the fit is void and the
     whole model has to come out of host RAM. mmap is what makes that survivable."""
+    from core.inference import llama_cpp as lc
     from unittest import mock
 
-    from core.inference import llama_cpp as lc
-
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
     backend._fit_load_mode_flags = ["--load-mode", "none"]
     replay = [
         "llama-server",
@@ -744,11 +738,11 @@ def test_the_cpu_fallback_drops_the_fits_load_mode(monkeypatch):
 
 def test_the_cpu_fallback_keeps_a_load_mode_the_user_asked_for(monkeypatch):
     """Only Unsloth's own tokens are recorded, so a user's pick survives."""
+    from core.inference import llama_cpp as lc
     from unittest import mock
 
-    from core.inference import llama_cpp as lc
-
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
     backend._fit_load_mode_flags = []  # user pick: nothing recorded
     replay = ["llama-server", "-m", "model.gguf", "--load-mode", "none"]
     with (
@@ -783,9 +777,8 @@ def test_the_fit_on_retry_drops_the_fits_load_mode():
     from that fit cannot ride along. Checked at the source, like the other
     ordering invariants in this launch path, because the retry only runs behind a
     real startup crash."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     src = inspect.getsource(B.load_model)
     retry = src[src.index("retrying once with --fit on so it can offload") :]
@@ -827,9 +820,8 @@ def test_the_arch_crash_retry_drops_the_fits_load_mode():
     narrowing), so the mode that fit concluded cannot ride along. Checked at the
     source, like the --fit on retry above, because this arm only runs behind a real
     kernel-image crash."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     src = inspect.getsource(B.load_model)
     retry = src[src.index("the llama.cpp build has no kernels") :]
@@ -850,9 +842,8 @@ def test_the_no_flash_retry_drops_the_fits_load_mode():
     (gated on fully_gpu_offloaded) is not a second net. Checked at the source, like
     the retries above, because this arm only runs behind a real signal crash.
     """
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     src = inspect.getsource(B.load_model)
     # Both sites, each bounded at its own respawn so the strip is proved to happen
@@ -993,9 +984,8 @@ def test_the_launch_hands_the_fit_the_extras_the_child_will_get():
     """The predicate is only worth anything if the call site feeds it. Checked at
     the source, like the fallback ordering tests above, because reaching this call
     needs a real GPU probe."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     src = inspect.getsource(B.load_model)
     call = src[src.index("_fit_extras = (") :]
@@ -1490,17 +1480,10 @@ def test_a_cpu_only_kv_cache_is_not_charged_twice(monkeypatch):
 
 
 def test_a_tensor_split_charges_the_replicated_compute_buffer():
-    """Checked at the source: reaching this call needs a real multi-GPU probe.
-
-    _plan_tensor_parallel admits devices against, and reserves per device,
-    _estimate_compute_buffer_bytes(per_device_tensor = True). The fit has to charge
-    the same thing: the layer-mode lump is ONE device's buffer at the smaller rate,
-    and understating it on a pooled multi-GPU credit is the direction that claims a
-    fit that is not there.
-    """
-    import inspect
-
+    """Check that the fit charges the same per-device buffer as _plan_tensor_parallel.
+    This source check avoids requiring a multi-GPU probe."""
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
     # The tensor-mode rate is measured alongside the layer one...
@@ -1519,26 +1502,18 @@ def test_a_tensor_split_charges_the_replicated_compute_buffer():
     ) in compact
 
 
-def test_the_tensor_rate_really_exceeds_the_layer_one():
-    """The under-charge the fix closes is not a rounding difference: at one slot
-    the layer figure drops the vocab-width output buffer entirely."""
-
-    class _Dims:
-        # is_embedding_gguf is a read-only property on the real backend.
-        _vocab_size = 151936
-        _embedding_length = 5120
-        is_embedding_gguf = False
-        _DEFAULT_N_UBATCH = LlamaCppBackend._DEFAULT_N_UBATCH
-        _COMPUTE_BUFFER_SAFETY = LlamaCppBackend._COMPUTE_BUFFER_SAFETY
-
-    layer = LlamaCppBackend._estimate_compute_buffer_bytes(
-        _Dims(), n_ubatch = 512, n_parallel = 1, per_device_tensor = False
-    )
-    tensor = LlamaCppBackend._estimate_compute_buffer_bytes(
-        _Dims(), n_ubatch = 512, n_parallel = 1, per_device_tensor = True
-    )
-    assert tensor > layer
-    # 4-GPU tensor split: what the fit used to charge vs what it now does.
+def test_a_tensor_split_pays_the_buffer_on_every_device():
+    """Each device of a tensor split reserves the whole single-GPU compute buffer
+    (Qwen3 8B across two GPUs: 128 MiB on each at ubatch 512, 512 MiB at 2048), so
+    the fit's per-device multiplication is the whole difference from a layer lump."""
+    b = LlamaCppBackend()
+    b._vocab_size = 151936
+    b._embedding_length = 4096
+    b._feed_forward_length = 12288
+    layer = b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 1)
+    tensor = b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 1, per_device_tensor = True)
+    assert tensor == layer
+    # 4-GPU tensor split: three more copies than the layer lump.
     assert 4 * tensor - layer > GIB
 
 
@@ -1599,6 +1574,7 @@ def test_the_draft_whole_offload_threshold_matches_the_main_model():
     VRAM for a block that never reaches the card.
     """
     from core.inference.llama_cpp import LlamaCppBackend as B
+
     from core.inference.llama_cpp import _draft_is_split_across_host
 
     # The boundary itself, from both spellings and the env twin.
@@ -1627,9 +1603,8 @@ def test_a_partial_draft_offload_leaves_the_drafter_unsized():
     in host RAM. Nothing at the call site can say which slice stays on the card, so
     it has to abstain rather than credit VRAM for bytes that never reach it.
     """
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert (
@@ -1672,9 +1647,8 @@ def test_the_cpu_projector_retry_drops_the_fits_load_mode():
     """The projector respawn changes placement, so the fit's conclusion goes with
     it, like the --fit on, arch-crash and no-flash retries. Checked at the source,
     like those, because this arm only runs behind a real projector startup crash."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     src = inspect.getsource(B.load_model)
     # Bounded at the respawn, so the strip is proved to happen BEFORE it.
@@ -1737,14 +1711,16 @@ def test_context_checkpoint_snapshots_move_the_fit_verdict(monkeypatch):
 
 
 def test_the_fit_prices_the_effective_checkpoint_count():
-    """...and the call site really passes it, while the closure default leaves the
-    placement paths -- which price the snapshots by their own route -- unmoved."""
+    """The load-mode footprint prices checkpoints as host-only bytes."""
+    from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
-    from core.inference.llama_cpp import LlamaCppBackend as B
-
     compact = "".join(inspect.getsource(B.load_model).split())
-    assert "kv_cache_bytes=_kv_bytes(effective_ctx,_effective_ctx_checkpoints)," in compact
+    assert "kv_cache_bytes=_kv_bytes(effective_ctx,0)," in compact
+    assert "_kv_bytes(effective_ctx,_effective_ctx_checkpoints)-_kv_bytes(effective_ctx,0)," in (
+        compact
+    )
+    assert "host_only_bytes=(_cpu_draft_fit_bytesor0)+_ckpt_host_bytes," in compact
     assert "def_kv_bytes(ctx:int,ctx_checkpoints:int=0)->int:" in compact
 
 
@@ -1753,9 +1729,8 @@ def test_an_inherited_loader_mode_wins_over_the_fits_pick():
     beat an operator's inherited choice silently. The fit's mode stands aside for
     it, the way it stands aside for the per-model pick; a per-model pick still
     wins, and so does a hand-typed flag, by last-arg."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
     arm = compact[
@@ -1765,7 +1740,8 @@ def test_an_inherited_loader_mode_wins_over_the_fits_pick():
     ]
     # Asked of the child's environment AFTER the same scrub it gets, so a var a
     # Model Memory toggle drops vetoes nothing.
-    assert "scrub_memory_env(_fit_load_mode_env_view)" in arm
+    # Now handed the launch's snapshot explicitly, the same value it read before.
+    assert "scrub_memory_env(_fit_load_mode_env_view,_mem_settings)" in arm
     # Assert the CONDITIONS, not one rendering: the formatter is free to wrap this,
     # which breaks a single-string pin. Each clause is asserted on its own.
     assert "_fit_load_mode" in arm and "notload_mode" in arm
@@ -1796,9 +1772,8 @@ def test_the_fit_prices_a_projector_inherited_through_the_environment():
     through LLAMA_ARG_MMPROJ is resident but uncharged. Sized when it can be, and
     abstaining when it cannot: a URL names a download that has not happened, and an
     unreadable path cannot be sized."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert 'else(_fit_env.get("LLAMA_ARG_MMPROJ")or"").strip()' in compact
@@ -1875,9 +1850,8 @@ def test_the_projector_allowance_flips_a_fit_that_only_looked_like_one(monkeypat
 
 def test_the_launch_wires_the_projector_allowance_into_the_fit():
     """Reachability only: driving load_model this far needs a real GPU probe."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert "_inherited_mmproj_soft_overhead" in compact
@@ -2043,10 +2017,10 @@ def test_a_chained_retry_cannot_eat_the_users_own_load_mode():
     user's. The fit standing aside when the extras pick a mode is what keeps the
     strips the no-ops their docstrings claim to be.
     """
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
     from core.inference.llama_cpp import _without_subsequence
+    import inspect
+
     from core.inference.llama_server_args import (
         apply_load_mode_policy,
         extra_args_select_load_mode,
@@ -2113,8 +2087,9 @@ def test_a_stripped_load_mode_changes_what_the_reload_predicate_answers(monkeypa
     reserve system RAM" that is a full model reload the running server already
     satisfies.
     """
-    import utils.model_memory_settings as mm
     from core.inference.llama_cpp import _without_subsequence
+    import utils.model_memory_settings as mm
+
     from core.inference.llama_server_args import (
         memory_state_satisfies_settings,
         resolve_effective_memory_state,
@@ -2146,6 +2121,7 @@ def test_the_recompute_reads_the_argv_not_the_managed_block():
     would read as satisfied while the reservation stands.
     """
     from core.inference.llama_cpp import _without_subsequence
+
     from core.inference.llama_server_args import resolve_effective_memory_state
 
     retried = ["llama-server", "-m", "m.gguf", "--load-mode", FIT_MODE, "--load-mode", "mmap+mlock"]
@@ -2159,32 +2135,32 @@ def test_the_no_flash_rung_recomputes_the_memory_record():
     """Reachability at the source, like the strip it sits next to: the arm only
     runs behind a real signal crash. Whitespace stripped, so a reformat that
     wraps the call cannot break the pin."""
+    from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
-    from core.inference.llama_cpp import LlamaCppBackend as B
-
     src = inspect.getsource(B.load_model)
-    helper = src[src.index("_drop_fit_load_mode_for_no_flash") :]
+    # Anchored on the DEFINITION: the bare name also appears in comments earlier in
+    # load_model, so slicing from the first mention sliced a comment.
+    helper = src[src.index("def _drop_fit_load_mode_for_no_flash(") :]
     # Bounded at the next definition, so this proves the recompute is in the
     # helper and not merely somewhere later in load_model.
-    helper = helper[: helper.index("_spawn_and_wait")]
-    assert "self._memory_state" in helper
+    helper = helper[: helper.index("def _spawn_and_wait")]
+    assert "self._record_memory_state" in helper
     compact = "".join(helper.split())
-    assert "resolve_effective_memory_state(stripped" in compact
+    assert "self._record_memory_state(stripped" in compact
 
 
 def test_the_cpu_projector_rung_recomputes_the_memory_record():
     """Same, for the projector respawn."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     src = inspect.getsource(B.load_model)
     arm = src[: src.index('"-mmproj-cpu"')]
     arm = arm[arm.rindex("_with_mmproj_offload_disabled") :]
-    assert "self._memory_state" in arm
+    assert "self._record_memory_state" in arm
     compact = "".join(arm.split())
-    assert "resolve_effective_memory_state(_stripped_cpu_projector_cmd" in compact
+    assert "self._record_memory_state(_stripped_cpu_projector_cmd" in compact
 
 
 def test_the_arch_crash_rung_records_from_the_argv_not_the_parts():
@@ -2196,9 +2172,9 @@ def test_the_arch_crash_rung_records_from_the_argv_not_the_parts():
     drops whatever those paths added, and dropping a page-lock records an
     unlocked child that is in fact locked -- the optimistic direction.
     """
+    from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
-    from core.inference.llama_cpp import LlamaCppBackend as B
     from core.inference.llama_server_args import resolve_effective_memory_state
 
     # The two inputs genuinely disagree, so which one is used is observable.
@@ -2211,7 +2187,7 @@ def test_the_arch_crash_rung_records_from_the_argv_not_the_parts():
     # Reachability: single call expression, whitespace stripped, so a reformat
     # that wraps the call cannot break it.
     compact = "".join(inspect.getsource(B.load_model).split())
-    assert "resolve_effective_memory_state(cmd,env)" in compact
+    assert "self._record_memory_state(cmd,env)" in compact
 
 
 # ------------------ round 12: the CPU fallback is a rung that strips the loader
@@ -2225,16 +2201,17 @@ def test_the_cpu_replay_and_the_launch_record_disagree(monkeypatch):
     "Don't reserve system RAM" that stale record is a full model reload the CPU
     server already satisfies.
     """
-    from unittest import mock
-
-    import utils.model_memory_settings as mm
     from core.inference import llama_cpp as lc
+    from unittest import mock
+    import utils.model_memory_settings as mm
+
     from core.inference.llama_server_args import (
         memory_state_satisfies_settings,
         resolve_effective_memory_state,
     )
 
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
     backend._fit_load_mode_flags = ["--load-mode", FIT_MODE]
     launched = ["llama-server", "-m", "model.gguf", "--load-mode", FIT_MODE]
     with (
@@ -2270,9 +2247,8 @@ def test_the_crash_path_cpu_fallback_recomputes_the_memory_record():
     argv that really started, so a page-lock _spawn_and_wait's own --fit retry
     appended is kept rather than recorded away.
     """
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     # Whitespace stripped before slicing, so a reformat that rewraps any of it
     # cannot break the pin.
@@ -2281,19 +2257,155 @@ def test_the_crash_path_cpu_fallback_recomputes_the_memory_record():
     # Bounded at the normalisation that closes the recovery, so this proves the
     # recompute is in the arm and not merely somewhere later in load_model.
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
-    assert "resolve_effective_memory_state(_last_spawn_cmd,env)" in arm
+    assert "self._record_memory_state(_last_spawn_cmd,env)" in arm
 
 
 def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
     """Same, for a request that carries cpu_fallback and rebuilds the replay
     before anything spawns."""
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
 
     src = "".join(inspect.getsource(B.load_model).split())
     # allow_manual_cpu is what distinguishes this eligibility check from the
     # crash path's, which reads the same helper without it.
     arm = src[src.index("allow_manual_cpu=True") :]
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
-    assert "resolve_effective_memory_state(cmd,env)" in arm
+    assert "self._record_memory_state(cmd,env)" in arm
+
+
+def _no_flash_fit_rewriter(
+    extra_args,
+    *,
+    manual_gpu_layers = None,
+    env = None,
+):
+    """The nested `_enable_managed_fit_for_no_flash` as a callable: it closes over
+    load_model's locals, so compiling its source is the only way to run the REAL rewrite."""
+    from core.inference.llama_cpp import LlamaCppBackend as B
+    from core.inference import llama_cpp as B_module
+    from core.inference.llama_cpp import logger, _flag_name
+    import inspect, textwrap
+
+    src = inspect.getsource(B.load_model)
+    start = src.index("                def _enable_managed_fit_for_no_flash(")
+    end = src.index("                def ", start + 1)
+    namespace = {
+        "logger": logger,
+        "_flag_name": _flag_name,
+        "_placement_is_fitter_proof": B_module._placement_is_fitter_proof,
+        "_user_fit_disabled": B_module._user_fit_disabled,
+        "extra_args": extra_args,
+        "_manual_gpu_layers": manual_gpu_layers,
+        "env": {} if env is None else env,
+    }
+    exec(textwrap.dedent(src[start:end]), namespace)
+    return namespace["_enable_managed_fit_for_no_flash"]
+
+
+def test_the_no_flash_retry_re_enables_unsloths_own_fitter():
+    """A managed `--fit off` is flipped back on for the respawn.
+
+    The reserve is only safe because the respawn is re-placed, and it inherits the auto
+    placement's `--fit off` that `_fit_off_retry_eligible` will not override, so without the
+    flip the retry re-lands on the smaller-cache placement and OOMs.
+    """
+    rewrite = _no_flash_fit_rewriter(None)
+    out = rewrite(["llama-server", "--fit", "off", "--flash-attn", "off"])
+    assert out[out.index("--fit") + 1] == "on"
+    on = ["llama-server", "--fit", "on"]
+    assert rewrite(on) == on
+    bare = ["llama-server", "--flash-attn", "off"]
+    assert rewrite(bare) == bare
+
+
+def test_the_no_flash_fit_flip_leaves_a_user_fit_alone():
+    """The user's own `--fit off` survives the respawn, in both spellings: theirs wins by
+    last-arg anyway, except where the only `--fit` present is theirs."""
+    for user_tokens in (["--fit", "off"], ["--fit=off"], ["-fit", "off"]):
+        rewrite = _no_flash_fit_rewriter(user_tokens)
+        # Unsloth's token present as well: the last value is still the user's "off".
+        both = rewrite(["llama-server", "--fit", "off", *user_tokens])
+        assert both == ["llama-server", "--fit", "off", *user_tokens]
+        theirs = rewrite(["llama-server", *user_tokens])
+        assert theirs == ["llama-server", *user_tokens]
+
+
+def test_an_inherited_fit_off_survives_the_no_flash_retry():
+    """LLAMA_ARG_FIT=off is the user's `--fit off`, and only manual mode scrubs it from the
+    child env, so outside manual the flip would put `--fit on` on the CLI and beat it.
+
+    `_user_fit_disabled` reads the same variable and already reserved the padded V cache for
+    this load, so the respawn lands on a placement priced for it and needs no re-place.
+    """
+    off = ["llama-server", "--fit", "off", "--flash-attn", "off"]
+    for value in ("off", "0", "false", "no", "disabled", " OFF "):
+        rewrite = _no_flash_fit_rewriter(None, env = {"LLAMA_ARG_FIT": value})
+        assert rewrite(off) == off, value
+
+    # Only an off. An inherited "on" leaves the managed placement re-placeable as before,
+    # and an empty value is not an answer.
+    for value in ("on", "1", ""):
+        rewrite = _no_flash_fit_rewriter(None, env = {"LLAMA_ARG_FIT": value})
+        assert rewrite(off)[off.index("--fit") + 1] == "on", value
+
+    # A user's own --fit token skips whatever the environment says, as it already did.
+    theirs = _no_flash_fit_rewriter(["--fit", "on"], env = {"LLAMA_ARG_FIT": "off"})
+    assert theirs(off) == off
+
+
+def test_the_no_flash_retry_re_places_at_both_respawns():
+    """Both --flash-attn off arms re-enable the fitter, each before its own spawn. Checked
+    at the source because these arms only run behind a real crash."""
+    from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
+
+    src = inspect.getsource(B.load_model)
+    for label in ('label = "-noflash"', 'label = "-noflash-mtp"'):
+        arm = src[: src.index(label)]
+        arm = arm[arm.rindex("self._with_flash_attn_off(") :]
+        assert "_enable_managed_fit_for_no_flash(_fa_cmd)" in arm
+    assert src.count("_enable_managed_fit_for_no_flash(_fa_cmd)") == 2
+
+
+def test_a_fixed_layer_count_keeps_the_no_flash_retry_on_its_placement():
+    """Manual mode's `--fit off` is not an auto placement's, and must not be flipped.
+
+    Manual emits `--gpu-layers N --fit off`, token for token what an auto placement emits,
+    but `common_params_fit_impl` throws "n_gpu_layers already set by user"
+    (common/fit.cpp:377) for any count but -1, so the retry keeps the fixed placement and
+    the flip would only buy a reserve priced for a re-placement that cannot happen.
+    """
+    rewrite = _no_flash_fit_rewriter(None, manual_gpu_layers = 20)
+    fixed = ["llama-server", "--gpu-layers", "20", "--fit", "off"]
+    assert rewrite(fixed) == fixed
+
+    # The argv count decides on its own: llama.cpp reads the tokens, not this process.
+    assert _no_flash_fit_rewriter(None)(fixed) == fixed
+    # And an inherited count, which the fitting path emits no -ngl to lose to.
+    inherited = _no_flash_fit_rewriter(None, env = {"LLAMA_ARG_N_GPU_LAYERS": "20"})
+    auto = ["llama-server", "--fit", "off"]
+    assert inherited(auto) == auto
+    # llama.cpp's own default is not an override, so an auto placement still re-places.
+    default_count = ["llama-server", "--gpu-layers", "-1", "--fit", "off"]
+    assert _no_flash_fit_rewriter(None)(default_count)[-1] == "on"
+
+
+def test_the_reserve_holds_for_a_placement_the_fitter_will_not_move():
+    """The other half of the same case, on the estimate rather than the argv: with no
+    re-placement available the reserve prices the padded, f16-floored V."""
+    from core.inference.llama_cpp import _placement_is_fitter_proof, _reserved_flash_attn_state
+
+    assert _reserved_flash_attn_state(True, None, gpu_layers = 20, env = {}) is False
+    assert _reserved_flash_attn_state(True, ["-ngl", "20"], env = {}) is False
+    assert _reserved_flash_attn_state(True, None, env = {"LLAMA_ARG_N_GPU_LAYERS": "20"}) is False
+    # Auto placements keep the planned answer: the retry really is re-placed there.
+    assert _reserved_flash_attn_state(True, None, gpu_layers = -1, env = {}) is True
+    assert _reserved_flash_attn_state(True, ["-ngl", "-1"], env = {}) is True
+    assert _reserved_flash_attn_state(True, None, env = {}) is True
+
+    assert _placement_is_fitter_proof(["--gpu-layers=20"], env = {}) is True
+    assert _placement_is_fitter_proof(["--n-gpu-layers", "0"], env = {}) is True
+    assert _placement_is_fitter_proof(["-ngl", "auto"], env = {}) is False
+    assert _placement_is_fitter_proof(None, gpu_layers = 0, env = {}) is True
+    assert _placement_is_fitter_proof(None, env = {}) is False
