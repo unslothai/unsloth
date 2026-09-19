@@ -552,21 +552,25 @@ def test_every_helper_the_smoke_steps_import_is_a_path_trigger():
         )
 
 
-def test_this_file_never_puts_the_tests_dir_on_sys_path():
-    """`tests/` holds a `utils/` package. Putting that directory on sys.path shadows
-    studio/backend's `utils` for every test that runs after it in the same worker, and the
-    casualty is some other file entirely: this one did exactly that and reddened
-    tests/test_studio_root_resilience.py with
+def test_loading_the_stub_helper_leaves_sys_path_alone():
+    """`tests/` holds a `utils/` package, so a module that puts that directory at the FRONT of
+    sys.path shadows studio/backend's `utils` for every test after it in the same worker. This
+    file did exactly that to reach the helper, and the casualty was another file entirely:
+    tests/test_studio_root_resilience.py, red with
     `ModuleNotFoundError: No module named 'utils.native_path_leases'`.
 
-    Load helpers by path instead, which is what `_load_stub_helper` does.
+    The claim is that loading the helper changes nothing, not that `tests/` is absent from
+    sys.path: pytest's own prepend import mode puts the basedir of every collected test module
+    there, so absence was never true to begin with and asserting it failed in CI for a reason
+    that had nothing to do with this file.
     """
+    before = list(sys.path)
     _load_stub_helper()
-    tests_dir = str(REPO / "tests")
-    assert tests_dir not in sys.path, (
-        f"{tests_dir} is on sys.path; anything under it now shadows a top-level package of "
-        "the same name for the rest of this worker"
+    assert sys.path == before, (
+        "loading the helper mutated sys.path: "
+        f"added {[p for p in sys.path if p not in before]!r}"
     )
+
     # Assembled rather than written out, so the needle does not match this line itself.
     needle = "sys.path" + ".insert(0, str(REPO / " + chr(34) + "tests" + chr(34) + "))"
     source = Path(__file__).read_text(encoding = "utf-8")
