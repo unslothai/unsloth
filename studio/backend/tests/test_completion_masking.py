@@ -422,3 +422,125 @@ def test_mlx_tokenizer_wrapper_unwrapped_for_detection():
     )
     assert applied is True
     assert seen == [inner]
+
+
+# --- Truncation-aware no-training-signal diagnosis (issue #11321) -------------
+
+
+def _zoo_no_signal_error(response_part = "<|turn>model\\n"):
+    return ValueError(
+        "Unsloth: train_on_responses_only masked every label to -100 in "
+        "train_dataset, so there is nothing to train on. The response marker "
+        f"{response_part!r} was not found in any sample - check that "
+        "instruction_part and response_part match your chat template."
+    )
+
+
+def _truncated_trainer(
+    n_rows = 10,
+    max_seq_length = 2048,
+    drop_args = False,
+):
+    """A trainer whose train_dataset mimics the post-masking state: rows already
+    tokenized and sitting at the sequence cap (prompts longer than max_seq_length)."""
+    cap = max_seq_length
+
+    class _Args:
+        packing = False
+        max_length = None
+        max_seq_length = cap
+
+    class _Ds:
+        def __init__(self, rows):
+            self._data = {"input_ids": rows}
+
+    trainer = _Trainer()
+    if not drop_args:
+        trainer.args = _Args()
+    trainer.train_dataset = _Ds([[42] * cap for _ in range(n_rows)])
+    return trainer
+
+
+def test_no_signal_error_with_truncated_rows_names_max_seq_length():
+    # Issue #11321: a long-prompt dataset truncated at max_seq_length masks every
+    # label; the zoo's error blames the markers. The rows sit at the cap, so the
+    # raised error must point at max_seq_length instead.
+    trainer = _truncated_trainer()
+    notes = _Notes()
+
+    def train_fn(_trainer, **_kwargs):
+        raise _zoo_no_signal_error()
+
+    with pytest.raises(ValueError, match = "raise.*max_seq_length") as exc_info:
+        apply_completion_masking(
+            trainer, "unsloth/gemma-4-E4B-it", train_fn, notify = notes, detect_fn = _detect_ok
+        )
+
+    message = str(exc_info.value)
+    assert "max_seq_length=2048" in message
+    assert str(_zoo_no_signal_error()) in message  # original text preserved
+    assert exc_info.value.__cause__ is not None  # chained for debugging
+
+
+def test_no_signal_error_with_short_rows_is_preserved_verbatim():
+    # Genuinely wrong markers: rows are short, so the original zoo error must
+    # pass through unchanged (no bogus truncation advice).
+    trainer = _truncated_trainer(max_seq_length = 2048)
+    trainer.train_dataset._data = {"input_ids": [[42] * 30 for _ in range(10)]}
+
+    def train_fn(_trainer, **_kwargs):
+        raise _zoo_no_signal_error()
+
+    with pytest.raises(ValueError, match = "was not found in any sample") as exc_info:
+        apply_completion_masking(trainer, "unsloth/gemma-4-E4B-it", train_fn, detect_fn = _detect_ok)
+
+    assert "max_seq_length" not in str(exc_info.value)
+    assert str(exc_info.value) == str(_zoo_no_signal_error())
+
+
+def test_other_value_errors_propagate_unchanged():
+    trainer = _truncated_trainer()
+
+    def train_fn(_trainer, **_kwargs):
+        raise ValueError("Unsloth: instruction_part and response_part must be given!")
+
+    with pytest.raises(ValueError, match = "must be given") as exc_info:
+        apply_completion_masking(trainer, "unsloth/gemma-4-E4B-it", train_fn, detect_fn = _detect_ok)
+
+    assert str(exc_info.value) == "Unsloth: instruction_part and response_part must be given!"
+
+
+def test_no_signal_diagnosis_skipped_without_args():
+    # No .args (defensive): the zoo error propagates as-is rather than crashing
+    # in the diagnosis itself.
+    trainer = _truncated_trainer(drop_args = True)
+
+    def train_fn(_trainer, **_kwargs):
+        raise _zoo_no_signal_error()
+
+    with pytest.raises(ValueError, match = "was not found in any sample"):
+        apply_completion_masking(trainer, "unsloth/gemma-4-E4B-it", train_fn, detect_fn = _detect_ok)
+
+
+def test_no_signal_diagnosis_skipped_for_streaming_dataset():
+    # Iterable train_dataset: rows cannot be sampled, so the zoo error must
+    # propagate untouched instead of raising AttributeError in the diagnosis.
+    from torch.utils.data import IterableDataset as TorchIterableDataset
+
+    import utils.datasets.iterable as iterable_mod
+
+    class _Stream(TorchIterableDataset):
+        def __iter__(self):
+            return iter(())
+
+    trainer = _Trainer()
+    trainer.args = type("A", (), {"max_length": None, "max_seq_length": 2048})()
+    trainer.train_dataset = _Stream()
+
+    def train_fn(_trainer, **_kwargs):
+        raise _zoo_no_signal_error()
+
+    assert iterable_mod.is_streaming_dataset(_Stream())  # guard actually fires
+
+    with pytest.raises(ValueError, match = "was not found in any sample"):
+        apply_completion_masking(trainer, "unsloth/gemma-4-E4B-it", train_fn, detect_fn = _detect_ok)
