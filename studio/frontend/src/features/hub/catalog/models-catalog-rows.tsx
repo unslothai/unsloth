@@ -883,7 +883,12 @@ export const InventoryRow = memo(function InventoryRow({
           ) : null}
         </div>
 
-        <div className="flex w-9 shrink-0 items-center justify-end">
+        <div
+          className={cn(
+            "flex shrink-0 items-center justify-end",
+            !isDataset && deletableRepoId ? "w-[68px]" : "w-9",
+          )}
+        >
           {deleteAction}
         </div>
       </div>

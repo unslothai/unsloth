@@ -22,7 +22,11 @@ import {
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { getCachedModelPath, revealCachedModel } from "@/features/chat";
-import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
+import {
+  ModelFavoriteAction,
+  pinKey,
+  usePinnedModelsStore,
+} from "@/features/model-picker";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -323,6 +327,12 @@ export function QuantOptionsMenu({
 
   return (
     <DropdownMenu>
+      {showPin && downloaded && (
+        <ModelFavoriteAction
+          favorite={pinned}
+          onToggle={() => togglePinned(repoId, quant)}
+        />
+      )}
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
