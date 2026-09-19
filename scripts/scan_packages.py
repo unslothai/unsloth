@@ -2704,7 +2704,10 @@ def _classify_reviewed_site(f: Finding, entries: list[tuple[str, list[str]]]) ->
         # in its current form, which is the same position a new occurrence puts you in.
         # Narrowing the full read to strict additions would route exec(compile(src, path,
         # "exec")) -> exec(payload) -- an edit, by the diff -- to the "did it just move" path.
-        return ("unread", f"{added} matched line(s) added and {removed} gone: the flagged code was rewritten")
+        return (
+            "unread",
+            f"{added} matched line(s) added and {removed} gone: the flagged code was rewritten",
+        )
     if removed:
         return ("edited", f"{removed} matched line(s) gone, none added")
     return ("edited", "matched lines reordered")
