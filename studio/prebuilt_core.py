@@ -51,6 +51,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
+if __package__:
+    from .backend.utils.auth_safe import AuthSafeRedirectHandler
+else:
+    from backend.utils.auth_safe import AuthSafeRedirectHandler
+
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
 except ImportError:
@@ -389,23 +394,8 @@ def auth_headers(ops: ModuleOps, url: str | None = None) -> dict[str, str]:
     return headers
 
 
-class _CrossHostAuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Drop Authorization when a redirect leaves the original host.
-
-    huggingface.co redirects downloads to CDN hosts whose signed URLs can reject
-    a foreign Authorization header; urllib forwards headers across redirects by
-    default (requests/huggingface_hub strip them).
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        new_request = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new_request is not None and parsed_hostname(newurl) != parsed_hostname(req.full_url):
-            new_request.headers.pop("Authorization", None)
-            new_request.unredirected_hdrs.pop("Authorization", None)
-        return new_request
-
-
-_URL_OPENER = urllib.request.build_opener(_CrossHostAuthStrippingRedirectHandler())
+_CrossHostAuthStrippingRedirectHandler = AuthSafeRedirectHandler
+_URL_OPENER = urllib.request.build_opener(AuthSafeRedirectHandler())
 
 
 def github_api_headers(ops: ModuleOps, url: str | None = None) -> dict[str, str]:

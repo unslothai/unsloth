@@ -5,8 +5,6 @@
 
 import os
 import structlog
-import urllib.parse
-import urllib.request
 import threading
 from contextvars import ContextVar
 import time
@@ -17,6 +15,7 @@ from typing import Optional
 import shutil
 import tempfile
 from utils.paths.path_utils import is_appledouble_metadata
+from .auth_safe import AuthSafeRedirectHandler, auth_safe_open
 
 
 logger = get_logger(__name__)
@@ -117,40 +116,6 @@ def hf_proxy_usable_by_urllib(proxy: Optional[str]) -> bool:
 def hf_proxy_configured() -> bool:
     """True when egress goes through a proxy: it resolves the hub host, so local DNS proves nothing about reachability and must not declare the hub offline."""
     return hf_proxy_for_endpoint() is not None
-
-
-class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Redirect policy for a urllib request carrying a Hub token.
-
-    urllib's default handler copies request headers onto the redirect target, so a
-    mirror's cross-host 302 hands the token to a host the operator never configured.
-    Pass this to ``build_opener``, which then leaves out the default. A refusal
-    surfaces as ``HTTPError`` on the 3xx, which every probe here reads as reachable.
-    """
-
-    @staticmethod
-    def _origin(url):
-        parts = urllib.parse.urlsplit(url)
-        scheme = parts.scheme.lower()
-        port = parts.port or (443 if scheme == "https" else 80)
-        return scheme, (parts.hostname or "").lower(), port
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        old = self._origin(req.full_url)
-        new = self._origin(newurl)
-        if old[0] == "https" and new[0] == "http":
-            return None  # no TLS downgrade, whatever the target is
-        result = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if result is not None and new != old:
-            # The redirected request, not the caller's: urllib copied req.headers into a
-            # fresh dict, so the original stays reusable.
-            result.headers.pop("Authorization", None)
-        return result
-
-
-def auth_safe_open(req, timeout):
-    """The single seam: tests patch THIS, never ``urllib.request.urlopen``."""
-    return urllib.request.build_opener(AuthSafeRedirectHandler()).open(req, timeout = timeout)
 
 
 def call_with_deadline(
