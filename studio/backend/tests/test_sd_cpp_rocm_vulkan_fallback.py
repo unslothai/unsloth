@@ -138,6 +138,14 @@ def h3_amd_host(monkeypatch, tmp_path):
         monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
         monkeypatch.setattr(sd_cpp_backend, "is_managed_binary", lambda _b: True)
         monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+        # The simulated host has no ROCm userspace; Windows is never asked, as in production.
+        # Left live, this read the test machine's own loader.
+        monkeypatch.setattr(
+            sd_cpp_backend,
+            "rocm_runtime_resolvable",
+            lambda: None if platform == "win32" else False,
+            raising = False,
+        )
 
         ensured: list[str] = []
         by_binary = {f"/opt/sd/{accel}/sd-cli": accel for accel in devices}
@@ -235,7 +243,10 @@ def test_a_rocm_build_that_cannot_run_falls_back_to_vulkan(
     assert host.ensured == ["rocm", "vulkan"], host.ensured
     assert backend_obj._state.device == "cuda"
     assert len(host.downloads) == 4
-    assert _noted_accelerators(fake_settings) == (["rocm"] if diverts else [])
+    # A bare CPU-only answer is proof only where the loader preflight can run, which excludes Windows.
+    assert _noted_accelerators(fake_settings) == (
+        ["rocm"] if diverts and platform != "win32" else []
+    )
     assert _recorded_strikes(fake_settings) == 1
 
 
@@ -1316,7 +1327,11 @@ def test_the_masks_compose_the_way_rocm_applies_them(monkeypatch):
     """ROCR filters the agents the runtime reports and HIP then indexes into WHAT IS LEFT."""
     from core.inference import video as video_mod
 
+    from core.inference import sd_cpp_backend
+
     _no_visibility_mask(monkeypatch)
+    # ROCR is Linux-only; the Windows reading has its own test.
+    monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1,2,3")
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")  # -> physical 3
     _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX"])
@@ -1719,7 +1734,7 @@ def test_the_fingerprint_reads_the_root_that_owns_the_binary(monkeypatch):
         "tag-for-legacy"
     )
     assert sd_cpp_backend._accelerator_fingerprint()["bundle"] == "tag-for-current"
-    assert asked == ["/roots/legacy", "/roots/current"], asked
+    assert asked == [str(Path("/roots/legacy")), str(Path("/roots/current"))], asked
 
     # Named nothing while the finder serves the legacy tree (every CONSULTATION, since `accelerator_runtime_failed` passes no binary), it is that root too.
     asked.clear()
@@ -1727,7 +1742,7 @@ def test_the_fingerprint_reads_the_root_that_owns_the_binary(monkeypatch):
         sd_cpp_backend, "find_sd_cpp_binary", lambda: "/roots/legacy/bin/sd", raising = False
     )
     assert sd_cpp_backend._accelerator_fingerprint()["bundle"] == "tag-for-legacy"
-    assert asked == ["/roots/legacy"], asked
+    assert asked == [str(Path("/roots/legacy"))], asked
 
 
 def test_the_decided_class_is_read_under_the_claim_that_validated_it():
@@ -2746,10 +2761,11 @@ class TestACpuOnlyAnswerIsOnlyProofWhenItIsExplained:
     def _run(self, h3_amd_host, monkeypatch, *, resolvable):
         from core.inference import sd_cpp_backend
 
+        host = h3_amd_host(platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_CPU_ONLY)
+        # After the fixture, which pins its own default.
         monkeypatch.setattr(
             sd_cpp_backend, "rocm_runtime_resolvable", lambda: resolvable, raising = False
         )
-        host = h3_amd_host(platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_CPU_ONLY)
         host.run()
 
     def test_a_loadable_runtime_makes_it_ambiguous(self, h3_amd_host, fake_settings, monkeypatch):
