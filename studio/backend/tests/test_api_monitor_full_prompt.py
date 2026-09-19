@@ -127,3 +127,22 @@ def test_eviction_releases_prompt_budget_for_new_requests(monkeypatch):
     monitor.clear()
     third = _start(monitor, prompt)
     assert monitor.get(third)["prompt"] == prompt
+
+
+def test_reply_refresh_can_omit_immutable_prompt():
+    monitor = ApiMonitor()
+    prompt = "long prompt\n" * 2000
+    entry_id = _start(monitor, prompt)
+    first = monitor.get(entry_id, subject = "alice")
+    for chunk in ("first", " second", " third"):
+        monitor.append_reply(entry_id, chunk)
+        refresh = monitor.get(entry_id, subject = "alice", include_prompt = False)
+        full = monitor.get(entry_id, subject = "alice")
+        assert "prompt" not in refresh
+        assert refresh == {key: value for key, value in full.items() if key != "prompt"}
+        assert full["prompt"] == prompt
+    assert refresh["reply"] == "first second third"
+    assert refresh["updated_at"] > first["updated_at"]
+    assert monitor.get(entry_id, subject = "bob", include_prompt = False) is None
+    monitor.finish(entry_id)
+    assert monitor.get(entry_id, include_prompt = False)["status"] == "completed"

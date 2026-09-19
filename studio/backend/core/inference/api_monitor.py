@@ -223,6 +223,7 @@ class ApiMonitorEntry:
         self,
         *,
         include_details: bool = True,
+        include_prompt: bool = True,
         attributed: bool = True,
     ) -> dict[str, Any]:
         duration_ms = None
@@ -294,7 +295,7 @@ class ApiMonitorEntry:
             "stop_reason": self.stop_reason,
         }
         if include_details:
-            if self.prompt_complete:
+            if include_prompt and self.prompt_complete:
                 payload["prompt"] = self.prompt
             payload["reply"] = self.reply
         return payload
@@ -948,6 +949,7 @@ class ApiMonitor:
         entry_id: str,
         *,
         subject: Optional[str] = None,
+        include_prompt: bool = True,
     ) -> Optional[dict[str, Any]]:
         with self._lock:
             entry = self._find_locked(entry_id)
@@ -957,6 +959,7 @@ class ApiMonitor:
                 return None
             return entry.snapshot(
                 include_details = True,
+                include_prompt = include_prompt,
                 attributed = self._attributed(entry, subject),
             )
 

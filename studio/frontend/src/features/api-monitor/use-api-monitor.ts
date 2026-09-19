@@ -166,12 +166,15 @@ export function useApiMonitor({
     }
     inFlightDetails.current.add(id);
     setLoadingDetails((prev) => new Set(prev).add(id));
-    getApiMonitorEntry(id)
+    const cachedPrompt = details[id]?.prompt;
+    getApiMonitorEntry(id, cachedPrompt == null)
       .then((entry) => {
         if (!retainedEntryIds.current.has(id)) return;
         setDetails((prev) => {
-          const retained: Record<string, ApiMonitorEntry> = { [id]: entry };
-          let promptChars = entry.prompt?.length ?? 0;
+          const refreshed =
+            cachedPrompt == null ? entry : { ...entry, prompt: cachedPrompt };
+          const retained: Record<string, ApiMonitorEntry> = { [id]: refreshed };
+          let promptChars = refreshed.prompt?.length ?? 0;
           for (const [cachedId, cached] of Object.entries(prev)) {
             if (cachedId === id) continue;
             const cachedChars = cached.prompt?.length ?? 0;
@@ -200,7 +203,7 @@ export function useApiMonitor({
         });
       });
     return true;
-  }, []);
+  }, [details]);
 
   // The Clear log button discards this promise, so a failed DELETE has to land in the
   // error banner here: rethrowing leaves an unhandled rejection and a log that silently
