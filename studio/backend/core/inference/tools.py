@@ -78,6 +78,8 @@ from core.inference.tool_confinement import ToolConfinementUnavailable, account_
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
 
+from . import os_sandbox
+
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -9251,6 +9253,174 @@ def _bypass_preexec():
         pass
 
 
+# Never read back by the executors, so a concurrent second call can only make
+# this stale, never wrong.
+_last_tool_execution_record: "os_sandbox.ToolExecutionRecord | None" = None
+
+
+def _note_tool_execution(record) -> None:
+    """Built by ``os_sandbox`` from a live probe, never from anything a model
+    said, which is what makes it safe to show as a badge."""
+    global _last_tool_execution_record
+    if record is None:
+        return
+    _last_tool_execution_record = record
+    logger.info("tool execution mode: %s", record.as_dict())
+
+
+def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -> str:
+    """Require disable_sandbox for full access; it also selects env and software guards."""
+    if disable_sandbox:
+        return "full"
+    if tool_execution_mode == "full":
+        raise os_sandbox.SandboxUnavailableError(
+            "TOOL_EXECUTION_MODE_INVALID: full access is not requestable through "
+            "tool_execution_mode",
+            remediation = "Full access is granted with disable_sandbox (Bypass Permissions).",
+        )
+    return tool_execution_mode
+
+
+def _with_session_packages(env: dict, workdir: str) -> dict:
+    """Reuse existing session packages without letting their binaries shadow PATH."""
+    packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+    if not os.path.isdir(packages):
+        return env
+    updated = dict(env)
+    # Block planted usercustomize.py from running before analysis on later
+    # unisolated calls. In safe mode, the trusted sitecustomize shim stays first
+    # on PYTHONPATH so a planted copy cannot shadow it.
+    updated["PYTHONNOUSERSITE"] = "1"
+    for key, value in (
+        ("PYTHONPATH", packages),
+        ("PATH", os.path.join(packages, "bin")),
+    ):
+        updated[key] = os.pathsep.join(part for part in (updated.get(key, ""), value) if part)
+    return updated
+
+
+def _software_safeguards_launch(plan, fault: str):
+    """Prepare an unisolated launch, retaining session packages and recording *fault*."""
+    full = plan.requested_mode == "full"
+    return os_sandbox.PreparedSandboxLaunch(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = _with_session_packages(plan.env, plan.workdir),
+        preexec_fn = plan.preexec_fn,
+        backend = "software-safeguards",
+        timeout_seconds = plan.timeout_seconds,
+        close_fds = plan.close_fds,
+        terminate_descendants = plan.terminate_descendants,
+        execution_record = os_sandbox.ToolExecutionRecord(
+            requested_mode = plan.requested_mode,
+            # A record saying "software safeguards" about a launch that skipped
+            # the analysis and the rlimits would claim more than the run got.
+            effective_mode = "full" if full else "software_safeguards",
+            environment = sys.platform,
+            backend = "software-safeguards",
+            profile_id = "full-access" if full else "software-safeguards-v1",
+            probe_generation = "",
+            os_isolation = False,
+            retained_safeguards = tuple(
+                item
+                for item in (
+                    os_sandbox._FULL_SAFEGUARDS if full else os_sandbox._SOFTWARE_SAFEGUARDS
+                )
+                if item != "timeout" or plan.timeout_seconds is not None
+            ),
+            # Naming only the fault made the record depend on which door the
+            # fallback came through.
+            limitations = (
+                ("security_restrictions_disabled", fault)
+                if full
+                else (*os_sandbox._software_only_limitations(), fault)
+            ),
+        ),
+    )
+
+
+def _prepare_tool_launch(plan):
+    """Allow auto fallback for unavailable backends or unexpected planner errors.
+
+    Unsafe workdirs and backend construction failures always refuse execution.
+    """
+    try:
+        prepared = os_sandbox.prepare_tool_launch(plan)
+        if plan.preexec_fn is not None and prepared.preexec_fn is None:
+            # Preserve setsid so timeout cleanup cannot kill the server's process group.
+            logger.warning(
+                "Sandbox backend %s dropped the launch pre-exec; restoring it",
+                prepared.backend,
+            )
+            prepared.preexec_fn = plan.preexec_fn
+        if prepared.execution_record is not None and not prepared.execution_record.os_isolation:
+            # The other door: os_sandbox returns its own fallback through here.
+            prepared.env = _with_session_packages(prepared.env, plan.workdir)
+        return prepared
+    except (os_sandbox.WorkdirUnsafeError, os_sandbox.SandboxBuildError):
+        # These failures can be tool-induced; fallback would let code remove its own boundary.
+        raise
+    except os_sandbox.SandboxUnavailableError:
+        # Any other refusal means the backend stopped being available.
+        if plan.requested_mode == "required" or (
+            plan.requested_mode not in os_sandbox.TOOL_EXECUTION_MODES
+        ):
+            raise
+        logger.warning(
+            "The sandbox backend is no longer available, running with software safeguards",
+            exc_info = True,
+        )
+        return _software_safeguards_launch(plan, "sandbox_became_unavailable")
+    except Exception as exc:  # noqa: BLE001 - auto falls back on unexpected planner errors
+        logger.warning("Sandbox planning failed, running with software safeguards", exc_info = True)
+        if plan.requested_mode == "required":
+            raise os_sandbox.SandboxUnavailableError(
+                f"OS_ISOLATION_UNAVAILABLE: the sandbox planner failed: {exc}",
+                remediation = os_sandbox.linux_unavailable_remediation()
+                if sys.platform == "linux"
+                else "This host cannot start an OS sandbox.",
+            ) from exc
+        return _software_safeguards_launch(plan, "sandbox_planner_error")
+
+
+def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
+    """``prepare()`` only builds an argv, so a stale probe verdict is not found
+    until bwrap exits at exec. Dropping it bounds the damage to that one call
+    instead of every call for the rest of the cache's life."""
+    if prepared is None or prepared.backend == "software-safeguards":
+        return
+    if not output.startswith("Exit code ") or "bwrap: " not in output[:400]:
+        return
+    logger.warning("The sandbox backend failed at launch; re-probing the capability")
+    try:
+        from .sandbox_probe import reset_probe_cache
+        reset_probe_cache()
+    except Exception:  # noqa: BLE001 - a cache reset never breaks a tool result
+        logger.debug("could not reset the sandbox probe cache", exc_info = True)
+
+
+def _sandbox_refusal(exc) -> str:
+    """The remediation is part of the answer, not a log line: the reader is the
+    person who can fix the host."""
+    remediation = getattr(exc, "remediation", "") or ""
+    return _truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}")
+
+
+def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
+    """``preexec_fn`` comes from the plan untouched on POSIX: every kill path here
+    is killpg based, so the OUTER process must land in its own session or a
+    timeout signals the Unsloth server's group instead of the tool's."""
+    popen_kwargs["cwd"] = prepared.workdir
+    popen_kwargs["env"] = prepared.env
+    if sys.platform != "win32":
+        popen_kwargs["preexec_fn"] = prepared.preexec_fn
+    popen_kwargs["close_fds"] = prepared.close_fds
+    if prepared.pass_fds:
+        # Empty for every fallback, so Windows never sees a kwarg it rejects.
+        popen_kwargs["pass_fds"] = tuple(prepared.pass_fds)
+    return popen_kwargs
+
+
 # Hardening the Unsloth parent is done once (PR_SET_DUMPABLE is process-global and sticky); guarded so repeated bypass
 # calls do not re-issue the prctl.
 _parent_proc_hardened = False
@@ -12501,6 +12671,8 @@ def execute_tool(
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
     result_budget_tokens: int | None = None,
+    *,
+    tool_execution_mode: str = "auto",
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -12513,7 +12685,10 @@ def execute_tool(
     tools; web_search / MCP are unchanged. ``output_callback``: optional ``callable(str)`` invoked
     with incremental stdout/stderr chunks while python/terminal executions run. Purely
     observational: the returned result string is identical with or without it. ``website_policy``:
-    hidden server-validated domain limits for web_search.
+    hidden server-validated domain limits for web_search. ``tool_execution_mode`` controls OS
+    isolation for python/terminal: ``"auto"`` isolates when available and otherwise preserves
+    existing behavior, while ``"required"`` refuses unisolated execution. Full access remains
+    controlled by ``disable_sandbox``; ``"full"`` here is refused.
     """
     from state.tool_policy import require_tool_access
 
@@ -12713,6 +12888,7 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = tool_execution_mode,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -12724,6 +12900,7 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = tool_execution_mode,
             )
     # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
     # unlink it underneath.
@@ -18034,11 +18211,14 @@ def _python_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    *,
+    tool_execution_mode: str = "auto",
 ) -> str:
     """Execute Python code in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip the
     safety analysis and rlimit pre-exec, and use the host env minus secrets. output_callback:
     optional callable(str) streamed each stdout line as it is produced; the returned result is
-    unchanged."""
+    unchanged. tool_execution_mode selects automatic or required OS isolation; disable_sandbox
+    keeps full access as a separate explicit choice."""
     if not code or not code.strip():
         return "No code provided."
 
@@ -18071,6 +18251,8 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
+    # Bound before the try so the finally can release even when prepare raised.
+    prepared = None
     try:
         workdir = _get_workdir(session_id)
         confinement = _account_confinement()
@@ -18105,25 +18287,53 @@ def _python_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # close_fds leaves 0, 1 and 2 alone, so an unset stdin is the
+            # server's own and no path rule applies to an open descriptor.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING); replace so non-ASCII output never
             # crashes the read on Windows.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
-            env = safe_env,
         )
-        if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
-        else:
+        if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        base_preexec = (
+            None
+            if sys.platform == "win32"
+            else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
+        )
+        # Managed accounts already have a fail-closed, account-specific boundary. Keep it
+        # as the outer launch contract instead of stacking a generic sandbox around it:
+        # on Linux its pre-exec Landlock policy would restrict bwrap before mount setup.
+        if confinement is None:
+            prepared = _prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = (sys.executable, "-u", tmp_path),
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = base_preexec,
+                    requested_mode = requested_mode,
+                    timeout_seconds = timeout,
+                    execution_kind = "python",
+                )
+            )
+            _note_tool_execution(prepared.execution_record)
+            proc = os_sandbox.spawn_prepared_launch(
+                prepared, **_apply_prepared_launch(prepared, popen_kwargs)
+            )
+        else:
+            popen_kwargs.update(cwd = workdir, env = safe_env)
+            if sys.platform != "win32":
+                popen_kwargs["preexec_fn"] = base_preexec
+            argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
+            proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
@@ -18183,8 +18393,11 @@ def _python_exec(
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
 
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
+    except os_sandbox.SandboxUnavailableError as e:
+        return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
@@ -18194,6 +18407,9 @@ def _python_exec(
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
+        # Private mounts and descriptors, released on every exit path.
+        if prepared is not None:
+            prepared.cleanup()
         _forget_tool_pid(locals().get("proc"))
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -18210,11 +18426,13 @@ def _bash_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    *,
+    tool_execution_mode: str = "auto",
 ) -> str:
     """Execute a bash command in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip
     the command blocklist and rlimit pre-exec, and use the host env minus secrets.
     output_callback: optional callable(str) streamed each stdout line as it is produced; the
-    returned result is unchanged."""
+    returned result is unchanged. tool_execution_mode follows _python_exec."""
     if not command or not command.strip():
         return "No command provided."
 
@@ -18248,6 +18466,7 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
+    prepared = None
     _scratch_name = None
     try:
         try:
@@ -18266,25 +18485,50 @@ def _bash_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # See _python_exec: the server's stdin must not reach a tool call.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Match _python_exec: decode utf-8 with "replace" so invalid output bytes never raise UnicodeDecodeError
             # (which the streaming reader thread would swallow), keeping both paths byte-identical.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
-            env = safe_env,
         )
-        if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
-        else:
+        if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
-        argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        base_preexec = (
+            None
+            if sys.platform == "win32"
+            else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
+        )
+        # Use the same mutually exclusive launch paths as the Python executor.
+        if confinement is None:
+            prepared = _prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = tuple(shell_argv),
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = base_preexec,
+                    requested_mode = requested_mode,
+                    timeout_seconds = timeout,
+                    execution_kind = "terminal",
+                )
+            )
+            _note_tool_execution(prepared.execution_record)
+            proc = os_sandbox.spawn_prepared_launch(
+                prepared, **_apply_prepared_launch(prepared, popen_kwargs)
+            )
+        else:
+            popen_kwargs.update(cwd = workdir, env = safe_env)
+            if sys.platform != "win32":
+                popen_kwargs["preexec_fn"] = base_preexec
+            argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
+            proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see _python_exec); None on Windows.
         pgid = _capture_process_group(proc)
@@ -18334,14 +18578,20 @@ def _bash_exec(
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
+    except os_sandbox.SandboxUnavailableError as e:
+        return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
+        # Private mounts and descriptors, released on every exit path.
+        if prepared is not None:
+            prepared.cleanup()
         _forget_tool_pid(locals().get("proc"))
         if _scratch_name:
             with _scratch_lock:
