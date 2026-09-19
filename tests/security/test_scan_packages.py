@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -2728,3 +2730,86 @@ def test_building_the_fixtures_leaves_the_callers_environment_alone() -> None:
             os.environ.pop("SOURCE_DATE_EPOCH", None)
         else:
             os.environ["SOURCE_DATE_EPOCH"] = previous
+
+
+# --- what a reopened baseline entry is told to be -----------------------------------------
+
+
+def _reviewed_site_report(tmp_path, entries, findings):
+    """Run the reopened-site reporter over a hand-written baseline and return what it printed."""
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"entries": entries}), encoding = "utf-8")
+    loaded = sp._load_baseline(str(path))
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        sp._report_reviewed_sites(findings, loaded, str(path))
+    return buffer.getvalue()
+
+
+_EXEC_CHECK = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+
+
+def _exec_entry(evidence, digest = None):
+    entry = {
+        "package": "unsloth-zoo",
+        "file": "unsloth_zoo/compiler.py",
+        "check": _EXEC_CHECK,
+        "severity": sp.HIGH,
+        "evidence": evidence,
+        "evidence_hash": sp._evidence_hash(evidence),
+    }
+    if digest is not None:
+        entry["file_sha256"] = digest
+    return entry
+
+
+def _exec_finding(evidence, digest = ""):
+    return sp.Finding(sp.HIGH, "unsloth-zoo", "unsloth_zoo/compiler.py", _EXEC_CHECK, evidence, digest)
+
+
+def test_an_occurrence_added_to_a_reviewed_file_is_not_called_a_mere_change(tmp_path):
+    """A file's matches are aggregated into one finding, so appending a new `exec` reopens the
+    same `(package, file, check)` an edited one does. Membership of that triple therefore cannot
+    mean "the flagged code changed": reporting it that way sends a genuinely new occurrence down
+    the narrow "did known metaprogramming move" path, which is the one review it must not get.
+    """
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [_exec_finding("L10: exec(compile(src, path, 'exec'))\nL88: eval(user_supplied)")],
+    )
+    assert "1 new matched line(s)" in report, report
+    assert "read it as you would a new site" in report, report
+
+
+def test_a_pin_miss_says_the_matched_code_is_unchanged(tmp_path):
+    """Identical evidence under a digest pin that no longer matches: the flagged lines did not
+    change, some other edit to the file did. Calling that "different evidence" describes the one
+    thing that is provably the same.
+    """
+    evidence = "L10: exec(compile(src, path, 'exec'))"
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry(evidence, digest = "a" * 64)],
+        [_exec_finding(evidence, digest = "b" * 64)],
+    )
+    assert "same matched code, file digest outside the pin" in report, report
+    assert "new matched line(s)" not in report, report
+
+
+def test_an_edited_match_is_still_reported_as_an_edit(tmp_path):
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [_exec_finding("L10: exec(compile(src, path, 'exec'), module.__dict__)")],
+    )
+    assert "1 new matched line(s) in a reviewed file, 1 gone" in report, report
+
+
+def test_a_site_that_was_never_reviewed_gets_no_line(tmp_path):
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [sp.Finding(sp.HIGH, "unsloth-zoo", "unsloth_zoo/vllm_utils.py", _EXEC_CHECK, "L4: exec(new)")],
+    )
+    assert report.strip() == "", report

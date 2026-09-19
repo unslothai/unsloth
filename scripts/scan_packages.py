@@ -56,6 +56,7 @@ Exit codes:
 import argparse
 import atexit
 import bisect
+import collections
 import contextlib
 import hashlib
 import io
@@ -2625,21 +2626,102 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
     return keys
 
 
+def _evidence_spans(evidence: str) -> list[str]:
+    """Canonical matched lines of one finding, in discovery order."""
+    canon = _canon_evidence(evidence)
+    return canon.split("\n") if canon else []
+
+
+def _load_baseline_evidence(path: "str | None") -> "dict[tuple[str, str, str], list[tuple[str, list[str]]]]":
+    """Load the baseline's own evidence, grouped by site, as {(package, relpath, check): [(evidence_hash, spans)]}.
+
+    `_load_baseline` deliberately reduces every entry to a key and its pins, which is all
+    the gate needs. Saying *why* a reviewed site reopened needs the entry's matched lines
+    as well, so this reads them separately rather than widening the suppression loader.
+    """
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        return {}
+    sites: dict[tuple[str, str, str], list[tuple[str, list[str]]]] = {}
+    for e in data["entries"]:
+        if not isinstance(e, dict):
+            continue
+        try:
+            site = (_norm_pkg(e["package"]), _relpath_in_package(e["file"]), e["check"])
+        except (KeyError, TypeError):
+            continue
+        evidence = e.get("evidence") or ""
+        digest = e.get("evidence_hash") or _evidence_hash(evidence)
+        sites.setdefault(site, []).append((digest, _evidence_spans(evidence)))
+    return sites
+
+
+def _span_delta(active_spans: list[str], baseline_spans: list[str]) -> tuple[int, int]:
+    """(added, removed) matched lines, as a multiset difference against one baseline entry."""
+    added = collections.Counter(active_spans)
+    removed = collections.Counter(baseline_spans)
+    shared = added & removed
+    added -= shared
+    removed -= shared
+    return sum(added.values()), sum(removed.values())
+
+
+def _classify_reviewed_site(
+    f: Finding,
+    entries: list[tuple[str, list[str]]],
+) -> tuple[str, str]:
+    """Say what actually differs between a reopened finding and the baseline entries at its site.
+
+    Three cases reach the report identically and want different reviews:
+
+    * the same matched code under a pin that no longer matches -- nothing flagged changed,
+      something else in that file did, and the pin is doing exactly its job;
+    * new matched lines inside a reviewed file -- a genuinely new occurrence, which wants
+      the same read a brand new site would get, not a glance at a diff;
+    * matched lines edited, removed or reordered -- the narrow "did known metaprogramming
+      move" question.
+
+    Membership of `(package, file, check)` alone cannot tell them apart, because a file's
+    matches are aggregated into one finding: an added `exec` reopens the same key an edited
+    one does.
+    """
+    spans = _evidence_spans(f.evidence)
+    digest = _evidence_hash(f.evidence)
+    if any(digest == h for h, _ in entries):
+        return ("pin", "same matched code, file digest outside the pin")
+    best = min((_span_delta(spans, b) for _, b in entries), key = lambda d: (d[0] + d[1], d[0]))
+    added, removed = best
+    if added:
+        return ("added", f"{added} new matched line(s) in a reviewed file, {removed} gone")
+    if removed:
+        return ("edited", f"{removed} matched line(s) gone, none added")
+    return ("edited", "matched lines reordered")
+
+
 def _report_reviewed_sites(
     active: list[Finding],
     baseline: "dict[tuple[str, str, str, str], set[str] | None]",
     baseline_path: "str | None",
 ) -> None:
-    """Separate "this reviewed site changed" from "this site is new".
+    """Separate "this reviewed site changed" from "this site is new", and say which kind of change.
 
     Both reach the report as an identical CRITICAL/HIGH line, and they need different
     reviews: the first asks whether known metaprogramming moved, the second asks whether
-    something dangerous just appeared. Telling them apart is the difference between
-    reading three diffs and reading a file. The gate is unchanged -- every finding below
-    still fails the run; this only says which question to ask.
+    something dangerous just appeared. A file's matches are aggregated into a single
+    finding, though, so a reviewed site also reopens when a *new* occurrence is appended to
+    it -- that one wants the full read, not a diff -- and a pinned entry reopens on an edit
+    elsewhere in the file with its matched code untouched. Each line below says which it
+    is. The gate is unchanged: every finding above still fails the run.
     """
     if not baseline or not active:
         return
+    site_evidence = _load_baseline_evidence(baseline_path)
     reviewed_sites = {(pkg, path, check) for pkg, path, check, _ in baseline}
     moved = [
         f
@@ -2650,14 +2732,23 @@ def _report_reviewed_sites(
         return
     print(
         f"\n  {len(moved)} of the {len(active)} finding(s) above are at a site already "
-        f"reviewed in {baseline_path}, under different evidence: the flagged code changed "
-        f"rather than a new site appearing."
+        f"reviewed in {baseline_path}. What differs from the reviewed entry:"
     )
+    verdicts = []
     for f in sorted(moved, key = lambda f: (f.package, _relpath_in_package(f.filename))):
-        print(f"    {f.severity}  {f.package}  {_relpath_in_package(f.filename)}  ({f.check})")
+        rel = _relpath_in_package(f.filename)
+        entries = site_evidence.get((_norm_pkg(f.package), rel, f.check), [])
+        kind, why = _classify_reviewed_site(f, entries) if entries else ("unknown", "baseline entry carries no evidence")
+        verdicts.append(kind)
+        print(f"    {f.severity}  {f.package}  {rel}  ({f.check})\n        {why}")
+    if "added" in verdicts:
+        print(
+            "  A site reporting new matched lines is a NEW occurrence inside an already "
+            "reviewed file: read it as you would a new site."
+        )
     print(
-        "  Re-review those diffs and regenerate with --write-baseline. A site with no line "
-        "here is NEW and wants a full read of the file."
+        "  Re-review, then regenerate with --write-baseline. A finding with no line here "
+        "is at a site that was never reviewed and wants a full read of the file."
     )
 
 
