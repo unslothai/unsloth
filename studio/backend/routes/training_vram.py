@@ -428,6 +428,7 @@ def free_chat_models_for_training(reason: str) -> List[str]:
 
     try:
         from routes.inference import get_llama_cpp_backend
+
         llama = get_llama_cpp_backend()
         # CPU-only GGUF holds no VRAM, so killing it can't help (see summarize).
         if llama.is_active and getattr(llama, "_gpu_offload_active", None) is not False:
@@ -439,6 +440,29 @@ def free_chat_models_for_training(reason: str) -> List[str]:
             )
             llama.unload_model()
             freed.append(f"gguf:{name}")
+        # Secondary resident llama-servers hold VRAM the training run needs too;
+        # each is judged by the same CPU-only exemption as the active one, and a
+        # freed slot leaves the registry so it stops answering by name. Read via
+        # getattr: module-level test doubles stub only the symbols they assert
+        # on, and no registry simply means no secondary slots to sweep.
+        import routes.inference as _routes_inference
+
+        registry = getattr(_routes_inference, "get_resident_registry", lambda: None)()
+        if registry is not None:
+            for slot in registry.slots_for_sweep():
+                backend = slot.backend
+                if backend is llama or not backend.is_active:
+                    continue
+                if getattr(backend, "_gpu_offload_active", None) is False:
+                    continue
+                name = backend.model_identifier or "gguf"
+                logger.info(
+                    "Unloading resident GGUF model '%s' to free GPU memory for training (%s)",
+                    name,
+                    reason,
+                )
+                registry.drop_slot(slot.id)
+                freed.append(f"gguf:{name}")
     except Exception as e:
         logger.warning("Could not unload GGUF chat model: %s", e)
 

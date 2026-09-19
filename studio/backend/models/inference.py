@@ -51,6 +51,14 @@ class LoadRequest(BaseModel):
         False,
         description = "Start a fresh runtime even when the active settings already match",
     )
+    keep_existing_loaded: bool = Field(
+        False,
+        description = (
+            "Load this model but keep other resident GGUF models loaded; the requested "
+            "model still becomes the active one. Requires multi-residency "
+            "(UNSLOTH_RESIDENT_MODEL_SLOTS > 1); a single-model server rejects the load."
+        ),
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -1578,6 +1586,14 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
+    resident_models: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description = (
+            "Every resident GGUF backend under multi-residency (UNSLOTH_RESIDENT_MODEL_SLOTS > 1), "
+            "each with slot_id, is_active, model identifier, public model id and quant variant. "
+            "Null on a single-model server, so its response shape is unchanged."
+        ),
+    )
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )

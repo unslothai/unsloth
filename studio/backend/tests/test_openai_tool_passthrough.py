@@ -3889,6 +3889,9 @@ def _passthrough_backend(**overrides):
         "base_url": "http://llama.test",
         "context_length": 4096,
         "_request_reasoning_kwargs": lambda *_args, **_kwargs: None,
+        # The stream's error recovery runs against the backend it was handed,
+        # so the double carries the method the real one has.
+        "_maybe_recover_from_mtp_crash": lambda *_args, **_kwargs: None,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -11112,7 +11115,9 @@ class TestMcpReplayDetectorProvenance:
         import routes.inference as inference_route
 
         body = inspect.getsource(inference_route.chat_count_tokens)
-        guard = body.index("_resident_model_reads_images()")
+        # Open paren, not the call's closing one: multi-residency passes the
+        # backend the count will render with into the guard.
+        guard = body.index("_resident_model_reads_images(")
         dispatch = body.index("_mlx_count_chat_tokens(")
         assert guard < dispatch, "the replay guard has to run before MLX answers"
 

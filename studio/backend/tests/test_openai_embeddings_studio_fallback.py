@@ -1000,7 +1000,6 @@ def test_resident_embedding_gguf_answering_the_name_keeps_the_proxy(studio_embed
             return None
 
     _identity_names(studio_embedder)
-    studio_embedder.setattr(inference_route, "_loaded_satisfies", lambda requested: answers)
     studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", _Client)
     studio_embedder.setattr(
         inference_route,
@@ -1010,7 +1009,7 @@ def test_resident_embedding_gguf_answering_the_name_keeps_the_proxy(studio_embed
             is_embedding_gguf = True,
             base_url = "http://llama.test",
             context_length = 512,
-            model_identifier = f"{MODEL}-GGUF",
+            model_identifier = MODEL if answers else f"{MODEL}-GGUF",
         ),
     )
     payload = _call({"input": "alpha", "model": MODEL})
