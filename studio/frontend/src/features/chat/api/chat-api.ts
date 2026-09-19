@@ -390,6 +390,8 @@ export async function fetchGgufStagedMetadata(payload: {
   gguf_variant?: string | null;
   hf_token?: string | null;
   nativePathToken?: string | null;
+  /** Also read the embedded chat template. Opt-in so the dims-only callers do not pay for it. */
+  includeChatTemplate?: boolean;
 }): Promise<{
   contextLength: number | null;
   layerCount: number | null;
@@ -398,6 +400,8 @@ export async function fetchGgufStagedMetadata(payload: {
   /** Unclassifiable, so `isDiffusion: false` above means "not known to be diffusion": callers
    *  picking a GPU split must assume possibly-diffusion. */
   diffusionUnknown: boolean;
+  /** Null unless `includeChatTemplate` was set and the header carried one. */
+  chatTemplate: string | null;
 }> {
   let nativePathLease: string | null = null;
   if (payload.nativePathToken) {
@@ -414,6 +418,7 @@ export async function fetchGgufStagedMetadata(payload: {
         moeLayerCount: null,
         isDiffusion: false,
         diffusionUnknown: true,
+        chatTemplate: null,
       };
     }
   }
@@ -426,6 +431,7 @@ export async function fetchGgufStagedMetadata(payload: {
       hf_token: payload.hf_token ?? null,
       native_path_lease: nativePathLease,
       include_context_length: true,
+      ...(payload.includeChatTemplate ? { include_chat_template: true } : {}),
     }),
   });
   const res = await parseJsonOrThrow<ValidateModelResponse>(response);
@@ -436,6 +442,7 @@ export async function fetchGgufStagedMetadata(payload: {
     isDiffusion: res.is_diffusion ?? false,
     // Absent on a pre-#7575 backend, which never reported the inconclusive case.
     diffusionUnknown: res.diffusion_unknown ?? false,
+    chatTemplate: res.chat_template ?? null,
   };
 }
 

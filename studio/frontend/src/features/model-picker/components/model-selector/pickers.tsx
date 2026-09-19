@@ -2257,16 +2257,32 @@ function GgufVariantExpander({
                 }
               />
             )}
-            {(v.downloaded || v.partial === true) &&
-              (allowPin ||
+            {/* The cache/pin/update/delete actions only mean something once a variant exists on
+                disk, but Model info is exactly what a user wants *before* downloading: it is
+                where the licence verdict lives. So an undownloaded variant still gets a menu,
+                carrying info alone. Local checkpoints are excluded — they have no Hub entry to
+                read (issue #11033 review). The test is `checkpointIsLocal`, not the path-prefix
+                regex: a marker-less relative directory like "models/my-model" has no prefix to
+                match, so the spelling says "hub" while the listing says it resolved on disk, and
+                the panel would query Hugging Face for a filesystem path. */}
+            {(v.downloaded || v.partial === true
+              ? allowPin ||
                 (v.update_available && onUpdateVariant) ||
                 onDeleteVariant ||
-                !isLocalPath) && (
+                !checkpointIsLocal
+              : !checkpointIsLocal) && (
                 <ModelRowMenu
                   ariaLabel={`More options for ${repoId} ${v.quant}`}
                   iconClassName="size-3"
                   cachePath={
-                    isLocalPath ? undefined : { repoId, variant: v.quant }
+                    isLocalPath || !(v.downloaded || v.partial === true)
+                      ? undefined
+                      : { repoId, variant: v.quant }
+                  }
+                  info={
+                    checkpointIsLocal
+                      ? undefined
+                      : { repoId, variant: v.quant, hasLocalGguf: v.downloaded }
                   }
                   pin={
                     allowPin && v.downloaded
@@ -2303,7 +2319,7 @@ function GgufVariantExpander({
                       : undefined
                   }
                   del={
-                    onDeleteVariant
+                    onDeleteVariant && (v.downloaded || v.partial === true)
                       ? {
                           title: deleteVariantTitle,
                           impact: { repoId, variant: v.quant },
@@ -3244,6 +3260,7 @@ export function HubModelPicker({
       ),
     [cachedGguf, cachedModels],
   );
+
 
   // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
   // or as absent. Same split, and the same helper, the Hub page uses. One repo id can hold both a
@@ -5633,6 +5650,11 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${entry.repoId} ${entry.quant}`}
             cachePath={{ repoId: entry.repoId, variant: entry.quant }}
+            info={{
+              repoId: entry.repoId,
+              variant: entry.quant,
+              hasLocalGguf: true,
+            }}
             pin={{
               pinned: true,
               pinLabel: "Pin to top",
@@ -5762,6 +5784,11 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+            info={{
+              repoId: c.repo_id,
+              variant: variant.quant,
+              hasLocalGguf: isDownloaded,
+            }}
             pin={{
               pinned: isPinned,
               pinLabel: "Pin to top",
@@ -5856,6 +5883,7 @@ export function HubModelPicker({
               <ModelRowMenu
                 ariaLabel={`More options for ${c.repo_id}`}
                 cachePath={{ repoId: c.repo_id }}
+                info={{ repoId: c.repo_id }}
                 del={{
                   title: "Delete cached model?",
                   impact: { repoId: c.repo_id },
@@ -6005,6 +6033,7 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id}`}
             cachePath={{ repoId: c.repo_id }}
+            info={{ repoId: c.repo_id }}
             pin={{
               pinned: pinnedSet.has(pinKey(c.repo_id)),
               pinLabel: "Pin to top",
@@ -7155,54 +7184,72 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("recommended", id);
                         return (
                           <div key={id}>
-                            <ModelRow
-                              label={curatedRow(id).name}
-                              tags={curatedRow(id).tags}
-                              hubUrl={hubRepoUrl(id)}
-                              alignMeta="hub"
-                              showSize={hubRowsShowSize}
-                              // A community row without its owner reads as an unsloth upload, and two
-                              // publishers would collide.
-                              hideOwner={isUnslothOwned(id)}
-                              downloaded={downloadedSet.has(id.toLowerCase())}
-                              partial={partialSet.has(id.toLowerCase())}
-                              partialResumable={partialResumableSet.has(
-                                id.toLowerCase(),
-                              )}
-                              capabilities={capsById.get(id)}
-                              meta={
-                                info?.meta ??
-                                (isG ? "GGUF" : extractParamLabel(id))
-                              }
-                              selected={value === id}
-                              loaded={isRuntimeLoadedModel(
-                                loadedModelId,
-                                activeGgufVariant,
-                                id,
-                                isG ? "required" : "none",
-                              )}
-                              optionProps={hubModelList.getOptionProps(
-                                optionKey,
-                                value === id,
-                              )}
-                              onClick={() => {
-                                if (isG) {
-                                  setExpandedGguf((prev) =>
-                                    prev === id ? null : id,
-                                  );
-                                } else {
-                                  handleModelClick(id);
-                                }
-                              }}
-                              vramStatus={info?.status ?? null}
-                              vramEst={info?.est}
-                              gpuGb={isG ? expanderGpuGb : expanderSystemGpuGb}
-                              onArrowDownIntoChildren={
-                                expandedGguf === id
-                                  ? () => focusFirstChildOption(optionKey)
-                                  : undefined
-                              }
-                            />
+                            <div className="group flex items-center">
+                              <div className="min-w-0 flex-1">
+                                <ModelRow
+                                  label={curatedRow(id).name}
+                                  tags={curatedRow(id).tags}
+                                  hubUrl={hubRepoUrl(id)}
+                                  alignMeta="hub"
+                                  showSize={hubRowsShowSize}
+                                  // A community row without its owner reads as an unsloth upload, and two
+                                  // publishers would collide.
+                                  hideOwner={isUnslothOwned(id)}
+                                  downloaded={downloadedSet.has(id.toLowerCase())}
+                                  partial={partialSet.has(id.toLowerCase())}
+                                  partialResumable={partialResumableSet.has(
+                                    id.toLowerCase(),
+                                  )}
+                                  capabilities={capsById.get(id)}
+                                  meta={
+                                    info?.meta ??
+                                    (isG ? "GGUF" : extractParamLabel(id))
+                                  }
+                                  selected={value === id}
+                                  loaded={isRuntimeLoadedModel(
+                                    loadedModelId,
+                                    activeGgufVariant,
+                                    id,
+                                    isG ? "required" : "none",
+                                  )}
+                                  optionProps={hubModelList.getOptionProps(
+                                    optionKey,
+                                    value === id,
+                                  )}
+                                  onClick={() => {
+                                    if (isG) {
+                                      setExpandedGguf((prev) =>
+                                        prev === id ? null : id,
+                                      );
+                                    } else {
+                                      handleModelClick(id);
+                                    }
+                                  }}
+                                  vramStatus={info?.status ?? null}
+                                  vramEst={info?.est}
+                                  gpuGb={isG ? expanderGpuGb : expanderSystemGpuGb}
+                                  onArrowDownIntoChildren={
+                                    expandedGguf === id
+                                      ? () => focusFirstChildOption(optionKey)
+                                      : undefined
+                                  }
+                                />
+                              </div>
+                              {/* Info only, and outside the format and download guards: the licence
+                                  verdict matters most before a download starts. */}
+                              <span className={ROW_ACTIONS_CLASS}>
+                                <ModelRowMenu
+                                  ariaLabel={`More options for ${id}`}
+                                  // Repo-level row: no quant is named, and the backend's
+                                  // resolver answers a variant-less request with the FIRST
+                                  // local GGUF it finds. Probing here would attribute one
+                                  // arbitrary quant's context length, reasoning support and
+                                  // chat template to the repo as a whole. Hub facts and the
+                                  // licence verdict still render; only the disk probe is off.
+                                  info={{ repoId: id }}
+                                />
+                              </span>
+                            </div>
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
@@ -7267,68 +7314,81 @@ export function HubModelPicker({
                       );
                       return (
                         <div key={id}>
-                          <ModelRow
-                            label={curatedRow(id).name}
-                            tags={curatedRow(id).tags}
-                            hubUrl={hubRepoUrl(id)}
-                            alignMeta="hub"
-                            showSize={hubRowsShowSize}
-                            downloaded={downloadedSet.has(id.toLowerCase())}
-                            partial={partialSet.has(id.toLowerCase())}
-                            partialResumable={partialResumableSet.has(
-                              id.toLowerCase(),
-                            )}
-                            capabilities={capsById.get(id)}
-                            // Same meta the unfiltered Recommended row shows, so a model keeps its size chip when reached by
-                            // typing.
-                            meta={
-                              isKnownGgufRepo(id)
-                                ? (recommendedMeta.get(id)?.meta ?? "GGUF")
-                                : (vram?.detail ?? extractParamLabel(id))
-                            }
-                            selected={value === id}
-                            loaded={isRuntimeLoadedModel(
-                              loadedModelId,
-                              activeGgufVariant,
-                              id,
-                              isKnownGgufRepo(id) ? "required" : "none",
-                            )}
-                            optionProps={hubModelList.getOptionProps(
-                              optionKey,
-                              value === id,
-                            )}
-                            onClick={() => {
-                              if (isKnownGgufRepo(id)) {
-                                setExpandedGguf((prev) =>
-                                  prev === id ? null : id,
-                                );
-                              } else {
-                                handleModelClick(id);
-                              }
-                            }}
-                            vramStatus={
-                              isKnownGgufRepo(id)
-                                ? null
-                                : (vram?.status ?? null)
-                            }
-                            vramEst={
-                              isKnownGgufRepo(id) ? undefined : vram?.est
-                            }
-                            gpuGb={
-                              isKnownGgufRepo(id)
-                                ? expanderGpuGb
-                                : expanderSystemGpuGb
-                            }
-                            onArrowDownIntoChildren={
-                              expandedGguf === id
-                                ? () => {
-                                    const focused =
-                                      focusFirstChildOption(optionKey);
-                                    return focused;
+                          <div className="group flex items-center">
+                            <div className="min-w-0 flex-1">
+                              <ModelRow
+                                label={curatedRow(id).name}
+                                tags={curatedRow(id).tags}
+                                hubUrl={hubRepoUrl(id)}
+                                alignMeta="hub"
+                                showSize={hubRowsShowSize}
+                                downloaded={downloadedSet.has(id.toLowerCase())}
+                                partial={partialSet.has(id.toLowerCase())}
+                                partialResumable={partialResumableSet.has(
+                                  id.toLowerCase(),
+                                )}
+                                capabilities={capsById.get(id)}
+                                // Same meta the unfiltered Recommended row shows, so a model keeps its size chip when reached by
+                                // typing.
+                                meta={
+                                  isKnownGgufRepo(id)
+                                    ? (recommendedMeta.get(id)?.meta ?? "GGUF")
+                                    : (vram?.detail ?? extractParamLabel(id))
+                                }
+                                selected={value === id}
+                                loaded={isRuntimeLoadedModel(
+                                  loadedModelId,
+                                  activeGgufVariant,
+                                  id,
+                                  isKnownGgufRepo(id) ? "required" : "none",
+                                )}
+                                optionProps={hubModelList.getOptionProps(
+                                  optionKey,
+                                  value === id,
+                                )}
+                                onClick={() => {
+                                  if (isKnownGgufRepo(id)) {
+                                    setExpandedGguf((prev) =>
+                                      prev === id ? null : id,
+                                    );
+                                  } else {
+                                    handleModelClick(id);
                                   }
-                                : undefined
-                            }
-                          />
+                                }}
+                                vramStatus={
+                                  isKnownGgufRepo(id)
+                                    ? null
+                                    : (vram?.status ?? null)
+                                }
+                                vramEst={
+                                  isKnownGgufRepo(id) ? undefined : vram?.est
+                                }
+                                gpuGb={
+                                  isKnownGgufRepo(id)
+                                    ? expanderGpuGb
+                                    : expanderSystemGpuGb
+                                }
+                                onArrowDownIntoChildren={
+                                  expandedGguf === id
+                                    ? () => {
+                                        const focused =
+                                          focusFirstChildOption(optionKey);
+                                        return focused;
+                                      }
+                                    : undefined
+                                }
+                              />
+                            </div>
+                            {/* Info only, and outside the format and download guards: the licence
+                                verdict matters most before a download starts. */}
+                            <span className={ROW_ACTIONS_CLASS}>
+                              <ModelRowMenu
+                                ariaLabel={`More options for ${id}`}
+                                // Repo-level row: see the note at the Hub result row above.
+                                info={{ repoId: id }}
+                              />
+                            </span>
+                          </div>
                           {expandedGguf === id && (
                             <GgufVariantExpander
                               diffusionLoad={diffusionLoad}
@@ -7386,70 +7446,88 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("search-hf", id);
                         return (
                           <div key={id}>
-                            <ModelRow
-                              label={curatedRow(id).name}
-                              tags={curatedRow(id).tags}
-                              hubUrl={hubRepoUrl(id)}
-                              alignMeta="hub"
-                              showSize={hubRowsShowSize}
-                              // Typed results are Hub rows like any other, so a repo left
-                              // half-downloaded is marked here too. Without it the row reads
-                              // as never fetched while the click resumes a download.
-                              partial={partialSet.has(id.toLowerCase())}
-                              partialResumable={partialResumableSet.has(
-                                id.toLowerCase(),
-                              )}
-                              capabilities={capsById.get(id)}
-                              meta={
-                                isSearchGguf
-                                  ? "GGUF"
-                                  : [
-                                      metricsById.get(id) ??
-                                        extractParamLabel(id),
-                                      isMlxId(id) ? "MLX" : "Safetensors",
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" · ")
-                              }
-                              selected={value === id}
-                              loaded={isRuntimeLoadedModel(
-                                loadedModelId,
-                                activeGgufVariant,
-                                id,
-                                isSearchGguf ? "required" : "none",
-                              )}
-                              optionProps={hubModelList.getOptionProps(
-                                optionKey,
-                                value === id,
-                              )}
-                              onClick={() => {
-                                if (isSearchGguf) {
-                                  setExpandedGguf((prev) =>
-                                    prev === id ? null : id,
-                                  );
-                                } else {
-                                  handleModelClick(id);
-                                }
-                              }}
-                              vramStatus={
-                                isSearchGguf ? null : (vram?.status ?? null)
-                              }
-                              vramEst={isSearchGguf ? undefined : vram?.est}
-                              gpuGb={
-                                isSearchGguf
-                                  ? expanderGpuGb
-                                  : expanderSystemGpuGb
-                              }
-                              onArrowDownIntoChildren={
-                                expandedGguf === id
-                                  ? () => {
-                                      const focused =
-                                        focusFirstChildOption(optionKey);
-                                      return focused;
+                            <div className="group flex items-center">
+                              <div className="min-w-0 flex-1">
+                                <ModelRow
+                                  label={curatedRow(id).name}
+                                  tags={curatedRow(id).tags}
+                                  hubUrl={hubRepoUrl(id)}
+                                  alignMeta="hub"
+                                  showSize={hubRowsShowSize}
+                                  // Typed results are Hub rows like any other, so a repo left
+                                  // half-downloaded is marked here too. Without it the row reads
+                                  // as never fetched while the click resumes a download.
+                                  partial={partialSet.has(id.toLowerCase())}
+                                  partialResumable={partialResumableSet.has(
+                                    id.toLowerCase(),
+                                  )}
+                                  capabilities={capsById.get(id)}
+                                  meta={
+                                    isSearchGguf
+                                      ? "GGUF"
+                                      : [
+                                          metricsById.get(id) ??
+                                            extractParamLabel(id),
+                                          isMlxId(id) ? "MLX" : "Safetensors",
+                                        ]
+                                          .filter(Boolean)
+                                          .join(" · ")
+                                  }
+                                  selected={value === id}
+                                  loaded={isRuntimeLoadedModel(
+                                    loadedModelId,
+                                    activeGgufVariant,
+                                    id,
+                                    isSearchGguf ? "required" : "none",
+                                  )}
+                                  optionProps={hubModelList.getOptionProps(
+                                    optionKey,
+                                    value === id,
+                                  )}
+                                  onClick={() => {
+                                    if (isSearchGguf) {
+                                      setExpandedGguf((prev) =>
+                                        prev === id ? null : id,
+                                      );
+                                    } else {
+                                      handleModelClick(id);
                                     }
-                                  : undefined
-                              }
-                            />
+                                  }}
+                                  vramStatus={
+                                    isSearchGguf ? null : (vram?.status ?? null)
+                                  }
+                                  vramEst={isSearchGguf ? undefined : vram?.est}
+                                  gpuGb={
+                                    isSearchGguf
+                                      ? expanderGpuGb
+                                      : expanderSystemGpuGb
+                                  }
+                                  onArrowDownIntoChildren={
+                                    expandedGguf === id
+                                      ? () => {
+                                          const focused =
+                                            focusFirstChildOption(optionKey);
+                                          return focused;
+                                        }
+                                      : undefined
+                                  }
+                                />
+                              </div>
+                              {/* Info only, and outside the format and download guards: the licence
+                                  verdict matters most before a download starts. */}
+                              <span className={ROW_ACTIONS_CLASS}>
+                                <ModelRowMenu
+                                  ariaLabel={`More options for ${id}`}
+                                  // Repo-level row: no quant is named, and the backend's
+                                  // resolver answers a variant-less request with the FIRST
+                                  // local GGUF it finds. Probing here would attribute one
+                                  // arbitrary quant's context length, reasoning support and
+                                  // chat template to the repo as a whole. Hub facts and the
+                                  // licence verdict still render; only the disk probe is off.
+                                  info={{ repoId: id }}
+                                />
+                              </span>
+                            </div>
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
