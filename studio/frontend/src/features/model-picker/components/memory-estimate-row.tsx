@@ -54,10 +54,10 @@ function MemoryFigure({
     let active = true;
     const fit = () => {
       if (!active) return;
-      // Room is measured on the row, never on the pill. The pill sizes to the label it is
-      // showing, so measuring itself confirms whatever it picked first: once a narrow row
-      // forced a shorter label the pill shrank to match, and widening the panel resized
-      // nothing, so the full-precision figure never came back.
+      // Room is measured on the row, never on the pill, which sizes to the label it is
+      // showing and so would confirm whatever it picked first. Siblings are reserved at
+      // their content width for the same reason: the label gives way to the pill, so its
+      // rendered width is an effect of the figure rather than a constraint on it.
       const style = getComputedStyle(button);
       const gutters =
         Number.parseFloat(style.paddingLeft) +
@@ -73,7 +73,9 @@ function MemoryFigure({
         Number.parseFloat(rowStyle.paddingRight) -
         gap * siblings.length -
         siblings.reduce(
-          (total, child) => total + child.getBoundingClientRect().width,
+          (total, child) =>
+            total +
+            Math.max(child.getBoundingClientRect().width, child.scrollWidth),
           0,
         ) -
         gutters;
@@ -94,7 +96,9 @@ function MemoryFigure({
   }, [candidates]);
   return (
     <div className="flex min-h-8 min-w-0 items-center justify-between gap-3">
-      <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+      {/* No min-w-0: the label keeps its min-content floor, so a wide figure shortens
+          itself rather than collapsing the word next to it. */}
+      <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
         {label}
       </span>
       {/* Sizes to the figure it holds, in the same h-8 pill as the controls below. */}
