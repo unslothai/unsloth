@@ -197,7 +197,9 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     assert gate < speech and gate < audio_input
     assert 'gen_kwargs["video"] = _video_clip' in source
     use_tools = source.index("_sf_use_tools = (", handler)
-    assert "and _video_clip is None" in source[use_tools : use_tools + 400]
+    tools_block = source[use_tools : source.index("\n    )", use_tools)]
+    tools_block = "\n".join(line.split("#")[0] for line in tools_block.splitlines())
+    assert "and _video_clip is None" in tools_block
     # Structural, not literal. This pinned the exact
     # "(image is not None or _video_clip is not None) and not _sf_use_tools"; #10970
     # widened the image half to `_sf_has_image`, a superset, so the clause still fires
