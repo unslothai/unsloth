@@ -1131,7 +1131,10 @@ def _stored_accelerator_runtime_failures() -> dict[str, dict]:
     out: dict[str, dict] = {}
     for key, value in stored.items():
         name = str(key).strip().lower()
-        record = _normalise_failure_record(name, value) if name else None
+        try:
+            record = _normalise_failure_record(name, value) if name else None
+        except Exception:  # noqa: BLE001 - a malformed entry costs only its own preference
+            record = None
         if record is not None:
             out[name] = record
     return out

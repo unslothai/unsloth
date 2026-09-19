@@ -761,14 +761,31 @@ def test_the_early_list_shape_is_still_read(fake_settings):
 
 
 @pytest.mark.parametrize(
-    "stored", [None, "", [], {}, "not json", '["rocm"]', {"rocm": "yes"}, {"": {}}, 17]
+    "stored",
+    [
+        None,
+        "",
+        [],
+        {},
+        "not json",
+        '["rocm"]',
+        {"rocm": "yes"},
+        {"": {}},
+        17,
+        {"rocm": {"strikes": 2, "cards": 5}},
+        {"rocm": {"strikes": 2, "per_card": {"A": {"strikes": "x"}}, "cards": ["A"]}},
+        {"rocm": {"strikes": 2, "unscoped": {"strikes": [1]}}},
+    ],
 )
 def test_an_unreadable_record_never_breaks_a_load(fake_settings, stored):
     from core.inference import sd_cpp_backend
 
     fake_settings["sd_cpp_accelerator_runtime_failures"] = stored
     assert sd_cpp_backend.accelerator_runtime_failed("rocm") in (True, False)
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", "A") in (True, False)
     assert sd_cpp_backend.preferred_accelerator("rocm") in ("rocm", "vulkan")
+    assert isinstance(sd_cpp_backend.accelerator_runtime_failure_state()["records"], list)
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False, card = "A")
 
 
 # Before the fix the CPU-only Vulkan binary inherited listed_accelerator=True from the unreadable ROCm probe.
