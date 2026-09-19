@@ -135,9 +135,7 @@ interface ChatSearchIndexBuild {
 // Exported for the bare-node cache harness: it must prove a failed read is not
 // indistinguishable from a completed empty history.
 export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
-  const active = (
-    await listStoredChatThreads({ includeArchived: false })
-  ).slice(0, THREAD_LIMIT);
+  const active = await listStoredChatThreads({ includeArchived: false });
 
   const itemThreadIds = new Map<
     string,
@@ -180,17 +178,15 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
     }
   }
 
-  const allThreadIds = Array.from(itemThreadIds.values()).flatMap(
-    (e) => e.threadIds,
-  );
-  let messagesByThread = await batchListChatMessages(allThreadIds).catch(
+  const loadedThreadIds = active.slice(0, THREAD_LIMIT).map((t) => t.id);
+  let messagesByThread = await batchListChatMessages(loadedThreadIds).catch(
     () => new Map<string, MessageRecord[]>(),
   );
   let complete = true;
 
   // Legacy-only chats can exist before server-side history import finishes. Fill only the
   // missing ids via the legacy path instead of one request per thread up front.
-  const missingThreadIds = allThreadIds.filter(
+  const missingThreadIds = loadedThreadIds.filter(
     (threadId) => !messagesByThread.has(threadId),
   );
   if (missingThreadIds.length > 0) {
@@ -219,7 +215,10 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
       const arr = messagesByThread.get(tid);
       if (arr) merged.push(...arr);
     }
-    if (merged.length === 0) {
+    if (
+      merged.length === 0 &&
+      threadIds.every((tid) => messagesByThread.has(tid))
+    ) {
       continue;
     }
     merged.sort((a, b) => b.createdAt - a.createdAt);
