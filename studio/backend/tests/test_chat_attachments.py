@@ -444,11 +444,22 @@ def _upload(data: bytes, filename: str = "book.xlsx") -> dict:
 
 
 def test_tool_only_upload_returns_a_preview(tmp_path, monkeypatch):
+    import io
+    import zipfile
+
     _reset_studio_db(tmp_path, monkeypatch)
-    preview = _upload(b"P5\n2 1\n255\n\x00\x80", "depth.pgm")["preview"]
-    assert preview["kind"] == "image" and preview["description"].endswith("2x1, mode L")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("big.bin", b"x" * 5000)
+        archive.writestr("notes/readme.txt", "codeword: OTTER")
+    preview = _upload(buffer.getvalue(), "cities.zip")["preview"]
+    assert preview == {
+        "kind": "outline",
+        "text": "2 entries:\n  big.bin (5000 bytes)\n  notes/readme.txt (15 bytes)\n"
+        "--- notes/readme.txt ---\ncodeword: OTTER",
+    }
     # A corrupt file is still stored; it just has no preview.
-    broken = _upload(b"P5 not a netpbm", "t.pgm")
+    broken = _upload(b"PK\x03\x04 not a zip", "t.zip")
     assert "preview" not in broken and broken["id"]
 
     # A reader that runs past the deadline is killed: MuPDF takes about 18 s to lay this out.
@@ -514,8 +525,10 @@ def test_previews_convert_images_and_read_drawings(tmp_path):
 
 
 def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
+    import gzip
     import io
     import struct
+    import tarfile
     import zipfile
     from xml.etree import ElementTree
 
@@ -526,6 +539,21 @@ def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
 
     def text(name: str) -> str:
         return previews.build_preview(tmp_path / name, name)["text"]
+
+    # tarfile reads extended headers whole, so the scan cap has to hold below it.
+    monkeypatch.setattr(previews, "MAX_SCANNED_BYTES", 4096)
+    with tarfile.open(tmp_path / "logs.tar.gz", "w:gz") as archive:
+        for name, pax in (("a.txt", {}), ("b.txt", {"comment": "x" * 8192}), ("c.txt", {})):
+            info = tarfile.TarInfo(name)
+            info.size, info.pax_headers = 5, pax
+            archive.addfile(info, io.BytesIO(b"first"))
+    outline = text("logs.tar.gz")
+    assert outline.startswith("1+ entries:") and "first" in outline and "c.txt" not in outline
+    with tarfile.open(
+        tmp_path / "latin.tar", "w", format = tarfile.GNU_FORMAT, encoding = "latin-1"
+    ) as tar:
+        tar.addfile(tarfile.TarInfo("café.txt"))
+    assert "caf\ufffd.txt" in text("latin.tar")
 
     monkeypatch.setattr(previews, "MAX_XML_BYTES", 250)
     with zipfile.ZipFile(tmp_path / "net.vsdx", "w") as archive:
@@ -541,9 +569,15 @@ def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     )
     assert text("book.fb2").endswith("more pages not read]")
 
+    # The read cap counts bytes, so multi-byte text is cut short of the character cap.
     monkeypatch.setattr(previews, "MAX_TEXT_CHARS", 10)
     assert text("book.fb2").endswith(
         "[Truncated: the document has more text than one attachment carries]"
+    )
+    (tmp_path / "poem.txt.gz").write_bytes(gzip.compress("la marée monte".encode()))
+    assert (
+        text("poem.txt.gz")
+        == "la marée \n[Truncated: poem.txt is longer than one attachment carries]"
     )
 
     # Nested elements repeat their descendants' text, so the budget bounds what is built at all.
@@ -558,11 +592,23 @@ def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     assert "b" not in previews._drawing_text(tmp_path / "two.odp", ".odp")
 
     # ZipFile does not cap what one read of an LZMA or bzip2 member inflates, so those are not read.
+    with zipfile.ZipFile(tmp_path / "packed.zip", "w", zipfile.ZIP_LZMA) as archive:
+        archive.writestr("notes.txt", "packed")
+    assert "packed" not in text("packed.zip")
     with zipfile.ZipFile(tmp_path / "packed.odp", "w", zipfile.ZIP_BZIP2) as archive:
         archive.writestr("content.xml", "<o><p>packed</p></o>")
     assert previews.build_preview(tmp_path / "packed.odp", "packed.odp") is None
 
+    monkeypatch.setattr(previews, "LISTED_MEMBERS", 2)
+    with zipfile.ZipFile(tmp_path / "bin.zip", "w") as archive:
+        for name, data in (("a.bin", b"\x80"), ("b.bin", b"\x81"), ("c.txt", b"late")):
+            archive.writestr(name, data)
+    assert "late" not in text("bin.zip")
     monkeypatch.setattr(previews, "MAX_ZIP_DIRECTORY_BYTES", 100)
+    assert previews.build_preview(tmp_path / "bin.zip", "bin.zip") == {
+        "kind": "outline",
+        "text": "central directory of 153 bytes, too large to list",
+    }
     # Documents that are zips get the same directory check, and image-only pages end the walk too.
     with zipfile.ZipFile(tmp_path / "comic.cbz", "w") as archive:
         archive.writestr("ComicInfo.xml", "<ComicInfo/>")
