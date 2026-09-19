@@ -1,0 +1,22 @@
+# Bundled prompts for a no-download acceptance-rate measurement.
+# One prompt per line. Lines starting with '#' and blank lines are ignored.
+Explain how a transformer's attention mechanism works, step by step.
+Write a short story about a lighthouse keeper who discovers a message in a bottle.
+Summarise the causes of the 2008 financial crisis in a few sentences.
+What are the trade-offs between microservices and a monolithic architecture?
+Give me a recipe for a weeknight vegetarian chili.
+Describe the water cycle to a ten-year-old.
+List five practical tips for reducing latency in a web API.
+Translate the following sentence into French: "The weather is lovely today, let's go for a walk."
+Prove that the square root of two is irrational.
+What is the difference between supervised and self-supervised learning?
+Draft a polite email declining a meeting invitation due to a scheduling conflict.
+Explain the CAP theorem and why you can't have all three properties at once.
+Write a Python function that returns the nth Fibonacci number using memoisation.
+What were the main consequences of the printing press for European society?
+Compare and contrast mitochondria and chloroplasts.
+Describe what happens in your body when you sprint for thirty seconds.
+Outline an argument for and against a universal basic income.
+How does public-key cryptography let two strangers communicate securely?
+Give a brief history of the transistor and its impact on computing.
+Explain why the sky is blue and why sunsets are red.
