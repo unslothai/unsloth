@@ -3,6 +3,7 @@
 
 import { getAuthSessionEpoch, hasAuthToken } from "@/features/auth";
 import {
+  listProviderConfigs,
   listProviderModels,
   testProviderConnection,
   updateProviderConfig,
@@ -71,18 +72,23 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
       if (connection.connected) return;
       const listed = await listProviderModels(payload);
       await withProviderModelUpdate(provider.id, async () => {
+        if (!current(provider.id, connection)) return;
+        const saved = (await listProviderConfigs()).find(
+          (item) => item.id === provider.id,
+        );
         const latest = current(provider.id, connection);
-        if (!latest) return;
+        if (!latest || !saved || saved.base_url !== latest.baseUrl) return;
         const availableModels = [
           ...new Set(listed.map((model) => model.id.trim()).filter(Boolean)),
         ];
         // an empty catalog during server startup must not erase the last working selection.
         if (availableModels.length === 0) return;
-        const previousCatalog = new Set(
-          latest.availableModels ?? latest.models,
-        );
-        const selected = new Set(latest.models);
-        const manualModels = latest.models.filter(
+        const savedModels = saved.models ?? latest.models;
+        const savedCatalog =
+          saved.available_models ?? latest.availableModels ?? savedModels;
+        const previousCatalog = new Set(savedCatalog);
+        const selected = new Set(savedModels);
+        const manualModels = savedModels.filter(
           (id) => !previousCatalog.has(id),
         );
         const selectedModels = [
@@ -99,10 +105,11 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
           latest.models,
           latest.availableModels,
         ]);
-        const unchanged =
-          previousModels === JSON.stringify([models, availableModels]);
-        if (!unchanged) {
+        const nextModels = JSON.stringify([models, availableModels]);
+        if (JSON.stringify([savedModels, savedCatalog]) !== nextModels) {
           await updateProviderConfig(provider.id, { models, availableModels });
+        }
+        if (previousModels !== nextModels) {
           const afterSave = current(provider.id, connection);
           if (
             !afterSave ||

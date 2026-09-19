@@ -72,6 +72,10 @@ test("monitor refreshes once per connection, retains selections, retries failure
   let failCatalog = false;
   let delayCatalog: Promise<void> | undefined;
   const counts = { probes: 0, catalogs: 0, saves: 0 };
+  const savedConfigs = new Map<
+    string,
+    { models: string[]; available_models: string[] }
+  >();
   const provider = {
     id: "llama",
     providerType: "llama_cpp",
@@ -99,11 +103,20 @@ test("monitor refreshes once per connection, retains selections, retries failure
         ? Response.json({ detail: "offline" }, { status: 502 })
         : Response.json(models.map((id) => ({ id })));
     }
+    if (url.replace(/\/$/, "").endsWith("/providers")) {
+      return Response.json(store.getState().providers.map((item: typeof provider) => {
+        if (!savedConfigs.has(item.id)) {
+          savedConfigs.set(item.id, { models: item.models, available_models: item.availableModels });
+        }
+        return { id: item.id, base_url: item.baseUrl, ...savedConfigs.get(item.id) };
+      }));
+    }
     if (init?.method === "PUT") {
       counts.saves++;
-      return failSave
-        ? Response.json({ detail: "save failed" }, { status: 500 })
-        : Response.json(JSON.parse(String(init.body)));
+      if (failSave) return Response.json({ detail: "save failed" }, { status: 500 });
+      const payload = JSON.parse(String(init.body));
+      savedConfigs.set(url.split("/").at(-1)!, payload);
+      return Response.json(payload);
     }
     throw new Error(`Unexpected request ${url}`);
   }) as typeof fetch;
@@ -213,6 +226,28 @@ test("monitor refreshes once per connection, retains selections, retries failure
     await waitFor(
       () => store.getState().providers[0].models[0] === "only-remaining",
     );
+    healthy = false;
+    await pause();
+    savedConfigs.set("replaced", {
+      models: ["selected-elsewhere"],
+      available_models: ["only-remaining", "selected-elsewhere"],
+    });
+    models = ["only-remaining", "selected-elsewhere", "new-from-reconnect"];
+    healthy = true;
+    await waitFor(() => store.getState().providers[0].models.includes("new-from-reconnect"));
+    assert.deepEqual(store.getState().providers[0].models, [
+      "selected-elsewhere", "new-from-reconnect",
+    ], "a completed save in another tab must not resurrect a disabled model");
+    healthy = false;
+    await pause();
+    const savesBeforeLocalSync = counts.saves;
+    store.getState().setProviders(store.getState().providers.map((item: typeof provider) => ({
+      ...item,
+      models: ["stale-local-selection"],
+    })));
+    healthy = true;
+    await waitFor(() => !store.getState().providers[0].models.includes("stale-local-selection"));
+    assert.equal(counts.saves, savesBeforeLocalSync, "a current server catalog only needs local reconciliation");
     storage.delete("unsloth_auth_token");
     const beforeLogout = counts.probes;
     await pause();
