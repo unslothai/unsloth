@@ -248,6 +248,7 @@ export function ChatProvidersSettings({
   // Latches the one-shot auto-open below. Every user-driven navigation sets it too, so a slow
   // first sync cannot pull them back into the form.
   const autoOpenedAddFormRef = useRef(false);
+  const modelSelectionBaselineRef = useRef<string | null>(null);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
@@ -510,6 +511,7 @@ export function ChatProvidersSettings({
   }, [onProvidersChange]);
 
   function resetForm() {
+    modelSelectionBaselineRef.current = null;
     // Any form transition retires an in-flight Codex catalog request, and its spinner with it:
     // the state is shared across forms, so leaving it set would hold the next form's Load and
     // Save disabled until the abandoned request times out.
@@ -995,6 +997,10 @@ export function ChatProvidersSettings({
         return;
       }
     }
+    const preserveCurrentModels =
+      existing.providerType === "llama_cpp" &&
+      modelSelectionBaselineRef.current ===
+        JSON.stringify([selectedModelIds, manualIds, availableModels]);
     const sessionEpoch = getAuthSessionEpoch();
     const isCurrent = () =>
       hasAuthToken() && getAuthSessionEpoch() === sessionEpoch;
@@ -1010,16 +1016,26 @@ export function ChatProvidersSettings({
         const maxOutputTokens = supportsMaxOutputTokens
           ? parseMaxOutputTokens(maxOutputTokensDraft)
           : undefined;
+        const latestProvider =
+          useExternalProvidersStore.getState().providers.find(
+            (provider) => provider.id === editingProviderId,
+          ) ?? existing;
+        const savedModels = preserveCurrentModels
+          ? latestProvider.models
+          : modelsToSave;
+        const savedAvailableModels = preserveCurrentModels
+          ? latestProvider.availableModels ?? []
+          : manualOnly
+            ? []
+            : pruneProviderModelIds(existing.providerType, availableModels);
         const updated = await updateProviderConfig(editingProviderId, {
           displayName: isEditingCustomProvider
             ? customProviderName.trim() ||
               customProviderDisplayName(existing.providerType)
             : existing.name,
           baseUrl,
-          models: modelsToSave,
-          availableModels: manualOnly
-            ? []
-            : pruneProviderModelIds(existing.providerType, availableModels),
+          models: savedModels,
+          availableModels: savedAvailableModels,
           maxOutputTokens,
           ...(credentialEdit.action === "replace"
             ? { apiKey: credentialEdit.apiKey }
@@ -1043,10 +1059,8 @@ export function ChatProvidersSettings({
           backendProviderType: updated.provider_type,
           name: updated.display_name,
           baseUrl: updated.base_url ?? "",
-          models: modelsToSave,
-          availableModels: manualOnly
-            ? []
-            : pruneProviderModelIds(existing.providerType, availableModels),
+          models: savedModels,
+          availableModels: savedAvailableModels,
           maxOutputTokens: updated.max_output_tokens ?? undefined,
 
           hasApiKey: updated.has_api_key,
@@ -1141,6 +1155,7 @@ export function ChatProvidersSettings({
   }
 
   async function editProvider(provider: ExternalProviderConfig) {
+    modelSelectionBaselineRef.current = null;
     // Switching connections retires an in-flight catalog request, including on the branches
     // below that never reach applyCodexSubscriptionModels.
     codexCatalogRequestRef.current += 1;
@@ -1197,12 +1212,15 @@ export function ChatProvidersSettings({
       ]);
       setAvailableModels(catalogModels);
       const catalogSet = new Set(catalogModels);
-      setSelectedModelIds(
-        provider.models.filter((model) => catalogSet.has(model)),
-      );
-      setManualModelIds(
-        provider.models.filter((model) => !catalogSet.has(model)).join("\n"),
-      );
+      const selectedModels = provider.models.filter((model) => catalogSet.has(model));
+      const manualModels = provider.models.filter((model) => !catalogSet.has(model));
+      setSelectedModelIds(selectedModels);
+      setManualModelIds(manualModels.join("\n"));
+      modelSelectionBaselineRef.current = JSON.stringify([
+        selectedModels,
+        manualModels,
+        catalogModels,
+      ]);
       return;
     }
     if (provider.authKind === "chatgpt_oauth") {
