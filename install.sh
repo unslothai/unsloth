@@ -4309,6 +4309,21 @@ _detect_rocm_version_tag() {
     printf '%s\n' "$_rt_best"
 }
 
+# The generic bitsandbytes ROCm wheel is built for the rocm6.4 ABI. Keep the
+# published ROCm leaf mapping in get_torch_index_url intact for explicit and
+# legacy callers, but floor automatic generic selections to this compatible tag.
+_ROCM_BNB_GENERIC_FLOOR_TAG="rocm6.4"
+_rocm_bnb_compatible_generic_tag() {
+    case "$1" in
+        rocm6.0|rocm6.0.*|rocm6.1|rocm6.1.*|rocm6.2|rocm6.2.*|rocm6.3|rocm6.3.*)
+            printf '%s\n' "$_ROCM_BNB_GENERIC_FLOOR_TAG"
+            ;;
+        *)
+            printf '%s\n' "$1"
+            ;;
+    esac
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -4421,20 +4436,44 @@ get_torch_index_url() {
                     echo "[WARN]   UNSLOTH_TORCH_INDEX_URL=<full index URL>   (takes precedence, used verbatim)" >&2
                     echo "$_base/cpu"; return ;;
             esac
-            # Normalise to major.minor; 6.5+ clips to rocm6.4, 7.3+ caps to rocm7.2.
+            # Supported tags; automatic generic 6.0-6.3 selections floor to rocm6.4
+            # for bitsandbytes compatibility, 6.5+ clips to rocm6.4, and 7.3+
+            # caps to rocm7.2.
+            # PyTorch publishes major.minor URLs only (no patch level), so
+            # rocm7.2.1 / rocm6.0.2 / etc. must normalise to rocm7.2 / rocm6.0.
             case "$_rocm_tag" in
-                rocm6.0|rocm6.0.*) echo "$_base/rocm6.0" ;;
-                rocm6.1|rocm6.1.*) echo "$_base/rocm6.1" ;;
-                rocm6.2|rocm6.2.*) echo "$_base/rocm6.2" ;;
-                rocm6.3|rocm6.3.*) echo "$_base/rocm6.3" ;;
-                rocm6.4|rocm6.4.*) echo "$_base/rocm6.4" ;;
-                rocm7.0|rocm7.0.*) echo "$_base/rocm7.0" ;;
-                rocm7.1|rocm7.1.*) echo "$_base/rocm7.1" ;;
-                rocm7.2|rocm7.2.*) echo "$_base/rocm7.2" ;;
+                rocm6.0|rocm6.0.*) _rocm_selected_tag=rocm6.0 ;;
+                rocm6.1|rocm6.1.*) _rocm_selected_tag=rocm6.1 ;;
+                rocm6.2|rocm6.2.*) _rocm_selected_tag=rocm6.2 ;;
+                rocm6.3|rocm6.3.*) _rocm_selected_tag=rocm6.3 ;;
+                rocm6.4|rocm6.4.*) _rocm_selected_tag=rocm6.4 ;;
+                rocm7.0|rocm7.0.*) _rocm_selected_tag=rocm7.0 ;;
+                rocm7.1|rocm7.1.*) _rocm_selected_tag=rocm7.1 ;;
+                rocm7.2|rocm7.2.*) _rocm_selected_tag=rocm7.2 ;;
                 rocm6.*)
-                    echo "$_base/rocm6.4" ;;
+                    # ROCm 6.5+ (no published PyTorch wheels): clip down
+                    # to the last supported 6.x wheel set.
+                    _rocm_selected_tag=rocm6.4 ;;
                 *)
-                    echo "$_base/rocm7.2" ;;
+                    # ROCm 7.3+ (future): cap to rocm7.2 (latest known)
+                    _rocm_selected_tag=rocm7.2 ;;
+            esac
+            # gfx906 deliberately stays on the literal rocm6.0-6.3 selection: its
+            # later legacy block (when the chosen tag is newer than rocm6.3) and
+            # its prebuilt-BNB skip must remain unchanged. Other automatic generic
+            # targets use the shared BNB ABI floor.
+            # Normalize first, exactly as _is_gfx906_bnb_skip and the legacy reroute
+            # block do: _probe_amd_gfx_arch emits one token per rocminfo match and
+            # rocminfo names each agent twice, so a real MI50 reads "gfx906\ngfx906";
+            # an UNSLOTH_ROCM_GFX_ARCH override keeps its ISA suffix
+            # (gfx906:sramecc-:xnack-). Comparing the raw probe missed both and floored
+            # the very hosts this exemption exists for. Deduping also gives the
+            # sole-distinct-arch rule for free: a mixed host keeps the generic floor.
+            _bnb_floor_gfx=$(printf '%s\n' "$_amd_gfx_probe" \
+                | sed 's/:.*$//' | tr -d '[:blank:]' | awk 'NF && !seen[$0]++')
+            case "$_bnb_floor_gfx" in
+                gfx906) echo "$_base/$_rocm_selected_tag" ;;
+                *) echo "$_base/$(_rocm_bnb_compatible_generic_tag "$_rocm_selected_tag")" ;;
             esac
             return
         fi

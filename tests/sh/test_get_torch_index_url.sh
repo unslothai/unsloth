@@ -75,6 +75,9 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_detect_rocm_version_tag()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_ROCM_BNB_GENERIC_FLOOR_TAG=/p' "$INSTALL_SH"
+    sed -n '/^_rocm_bnb_compatible_generic_tag()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
@@ -82,7 +85,7 @@ _FAKE_ROCM_DIR=$(mktemp -d)
 
 for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
            _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
-           _detect_rocm_version_tag get_torch_index_url; do
+           _detect_rocm_version_tag _rocm_bnb_compatible_generic_tag get_torch_index_url; do
     if ! grep -q "^$_fn()" "$_FUNC_FILE"; then
         echo "FAIL: install.sh no longer defines $_fn() at column 0"
         exit 1
@@ -151,11 +154,12 @@ MOCK
 # the GPU presence check (amd-smi list) also succeeds in tests.
 make_mock_amd_smi() {
     _dir=$(mktemp -d)
+    _gfx_arch="${2:-gfx1100}"
     cat > "$_dir/amd-smi" <<MOCK
 #!/bin/sh
 case "\$1" in
     list)
-        printf 'GPU: 0\\n  BDF: 0000:03:00.0\\n  NAME: gfx1100\\n'
+        printf 'GPU: 0\\n  BDF: 0000:03:00.0\\n  NAME: $_gfx_arch\\n'
         ;;
     *)
         cat <<AMD_OUT
@@ -165,6 +169,62 @@ AMD_OUT
 esac
 MOCK
     chmod +x "$_dir/amd-smi"
+    echo "$_dir"
+}
+
+# amd-smi above emits ONE gfx token, which is not the shape a real host produces:
+# _probe_amd_gfx_arch greps every match out of rocminfo, and rocminfo names each
+# agent twice (Name: and the ISA Name:), so one card reads as two identical lines.
+# Any gfx comparison that matters has to be exercised against this shape.
+# $1 ROCm version, $2 gfx arch, $3 GPU agent count (default 1).
+make_mock_rocminfo() {
+    _dir=$(make_mock_amd_smi "$1" "$2")
+    _rocm_gfx="$2"
+    _rocm_agents="${3:-1}"
+    {
+        echo '#!/bin/sh'
+        echo "cat <<'ROCMINFO_OUT'"
+        echo 'ROCk module is loaded'
+        echo 'Agent 1'
+        echo '  Name:                    AMD Ryzen 9 5950X'
+        echo '  Device Type:             CPU'
+        _i=0
+        while [ "$_i" -lt "$_rocm_agents" ]; do
+            echo "Agent $((_i + 2))"
+            echo "  Name:                    $_rocm_gfx"
+            echo '  Device Type:             GPU'
+            echo '  ISA Info:'
+            echo "    Name:                  amdgcn-amd-amdhsa--$_rocm_gfx:sramecc-:xnack-"
+            _i=$((_i + 1))
+        done
+        echo 'ROCMINFO_OUT'
+    } > "$_dir/rocminfo"
+    chmod +x "$_dir/rocminfo"
+    echo "$_dir"
+}
+
+# Same, for a mixed host: $2 is a space-separated arch list, one GPU agent each.
+make_mock_rocminfo_multi() {
+    _dir=$(make_mock_amd_smi "$1" "${2%% *}")
+    _rocm_n=1
+    {
+        echo '#!/bin/sh'
+        echo "cat <<'ROCMINFO_OUT'"
+        echo 'ROCk module is loaded'
+        echo 'Agent 1'
+        echo '  Name:                    AMD Ryzen 9 5950X'
+        echo '  Device Type:             CPU'
+        for _a in $2; do
+            _rocm_n=$((_rocm_n + 1))
+            echo "Agent $_rocm_n"
+            echo "  Name:                    $_a"
+            echo '  Device Type:             GPU'
+            echo '  ISA Info:'
+            echo "    Name:                  amdgcn-amd-amdhsa--$_a:sramecc-:xnack-"
+        done
+        echo 'ROCMINFO_OUT'
+    } > "$_dir/rocminfo"
+    chmod +x "$_dir/rocminfo"
     echo "$_dir"
 }
 
@@ -321,10 +381,10 @@ if [ -n "$_prime" ] && [ -n "$_assign" ] && [ "$_prime" -lt "$_assign" ]; then _
 assert_eq "presence check primes the inventory before the index substitution" "ordered" "$_result"
 assert_eq "the prime is skipped for a pinned index or no torch" 'if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ]; then' "$_guard"
 
-# 9) ROCm 6.3 (no nvidia-smi) -> rocm6.3
+# 9) ROCm 6.3 (no nvidia-smi) -> rocm6.4 for the generic BNB ABI floor
 _dir=$(make_mock_amd_smi "6.3")
 _result=$(run_func "$_dir")
-assert_eq "ROCm 6.3 -> rocm6.3" "https://download.pytorch.org/whl/rocm6.3" "$_result"
+assert_eq "ROCm 6.3 automatic generic floor -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 rm -rf "$_dir"
 
 # 10) ROCm 7.1 (no nvidia-smi) -> rocm7.1
@@ -353,10 +413,61 @@ rm -rf "$_cuda_dir" "$_amd_dir" "$_combined_dir"
 _result=$(run_func "none")
 assert_eq "no GPU -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 
-# 14) ROCm 6.1 (no nvidia-smi) -> rocm6.1
+# 14) ROCm 6.1 (no nvidia-smi) -> rocm6.4 for the generic BNB ABI floor
 _dir=$(make_mock_amd_smi "6.1")
 _result=$(run_func "$_dir")
-assert_eq "ROCm 6.1 -> rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+assert_eq "ROCm 6.1 automatic generic floor -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
+# 14a) The other old supported tags share the same automatic generic floor.
+_dir=$(make_mock_amd_smi "6.0")
+_result=$(run_func "$_dir")
+assert_eq "ROCm 6.0 automatic generic floor -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_amd_smi "6.2")
+_result=$(run_func "$_dir")
+assert_eq "ROCm 6.2 automatic generic floor -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
+# gfx906 is intentionally exempt from the generic floor; its later installer block
+# keeps the legacy rocm6.3 route for hosts whose detected tag is newer than 6.3.
+_dir=$(make_mock_amd_smi "6.1" "gfx906")
+_result=$(run_func "$_dir")
+assert_eq "gfx906 ROCm 6.1 keeps its legacy generic tag" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+# The exemption must survive the shape REAL discovery produces, not just the single
+# token amd-smi emits. rocminfo names each agent twice, so one MI50 probes as
+# "gfx906\ngfx906"; comparing the raw probe floored it to rocm6.4 and handed it to
+# the legacy reroute, which then rewrote it to rocm6.3 instead of the literal tag.
+_dir=$(make_mock_rocminfo "6.1" "gfx906" 1)
+_result=$(run_func "$_dir")
+assert_eq "gfx906 via rocminfo (agent named twice) keeps rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_rocminfo "6.1" "gfx906" 2)
+_result=$(run_func "$_dir")
+assert_eq "two gfx906 agents still keep rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+# A copied HIP gcnArchName in the override keeps its ISA suffix; every other gfx906
+# comparison in install.sh strips it, so this one must too.
+_dir=$(make_mock_amd_smi "6.1" "gfx906")
+_result=$(UNSLOTH_ROCM_GFX_ARCH=gfx906:sramecc-:xnack- run_func "$_dir")
+assert_eq "suffixed gfx906 override keeps rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+# The floor itself must still reach a non-gfx906 host through the same real shape.
+_dir=$(make_mock_rocminfo "6.1" "gfx1100" 1)
+_result=$(run_func "$_dir")
+assert_eq "gfx1100 via rocminfo still floors to rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
+# A mixed host is not a sole gfx906 target, so it keeps the generic floor.
+_dir=$(make_mock_rocminfo_multi "6.1" "gfx906 gfx1100")
+_result=$(run_func "$_dir")
+assert_eq "mixed gfx906 + gfx1100 host floors to rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 rm -rf "$_dir"
 
 # 15) ROCm 6.4 (no nvidia-smi) -> rocm6.4
@@ -399,10 +510,10 @@ _result=$(run_func "$_dir")
 assert_eq "N/A amd-smi version -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
-# 20) ROCm version with trailing text (e.g. "6.3.1-beta") -> rocm6.3
+# 20) ROCm version with trailing text (e.g. "6.3.1-beta") -> rocm6.4 floor
 _dir=$(make_mock_amd_smi "6.3.1-beta")
 _result=$(run_func "$_dir")
-assert_eq "ROCm 6.3.1-beta -> rocm6.3" "https://download.pytorch.org/whl/rocm6.3" "$_result"
+assert_eq "ROCm 6.3.1-beta automatic generic floor -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 rm -rf "$_dir"
 
 # 22) CUDA 12.6 still works after ROCm changes (regression check)
@@ -617,6 +728,12 @@ assert_eq "url override trailing slash stripped" "https://mirror.example.com/whl
 # 44) URL override takes precedence over family override.
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu130" UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
 assert_eq "url override beats family override -> url" "https://mirror.example.com/whl/cu130" "$_result"
+
+# 44a) Explicit ROCm pins remain authoritative and are not floored.
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="rocm6.1" run_func "none")
+assert_eq "explicit ROCm family pin remains rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.1" run_func "none")
+assert_eq "explicit ROCm URL pin remains rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
 
 # 45) An empty override is ignored (falls through to normal detection).
 _result=$(UNSLOTH_TORCH_INDEX_FAMILY="" UNSLOTH_TORCH_INDEX_URL="" run_func "none")
