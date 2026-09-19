@@ -585,3 +585,31 @@ def test_ingestion_with_real_embedder(rag_home, tmp_path):
         assert hits and hits[0].chunk_id == f"{doc_id}:0"
     finally:
         conn.close()
+
+
+def test_embedding_reports_progress_for_every_batch(
+    rag_home, stub_embeddings, tmp_path, monkeypatch
+):
+    """Embedding is the one stage that can run for many minutes. Reported once on entry, a
+    long embed looks identical to a dead worker to anything watching -- which is what the
+    save dialog's stall timeout reads -- and it renews the job lease only there too."""
+    monkeypatch.setattr(ingestion, "_EMBED_BATCH", 1)
+    seen = []
+    real_progress = ingestion._progress
+
+    def record(conn, job_id, stage, progress):
+        seen.append((stage, round(progress, 4)))
+        return real_progress(conn, job_id, stage, progress)
+
+    monkeypatch.setattr(ingestion, "_progress", record)
+    # Several chunks, so several batches at _EMBED_BATCH=1.
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie delta echo foxtrot " * 40)
+    scope = store.kb_scope("KB-EMBED")
+    _, job_id = ingestion.start_ingestion(scope, "KB-EMBED", None, "doc.txt", path)
+    assert _wait_finished(job_id)["status"] == "completed"
+
+    embedding = [p for stage, p in seen if stage == "embedding"]
+    assert len(embedding) > 1, f"embedding reported once and then went quiet: {seen}"
+    assert embedding == sorted(embedding), "progress must not go backwards"
+    # Confined to the span the stage owns, so it never overtakes "storing".
+    assert embedding[0] >= 0.5 and embedding[-1] <= 0.9

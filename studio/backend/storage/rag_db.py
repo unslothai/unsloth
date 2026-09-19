@@ -257,6 +257,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_documents_archive_ordinal "
         "ON documents(scope, archive_ordinal) WHERE archive_ordinal IS NOT NULL"
     )
+    # The source an edit is replacing, held on the replacement row rather than only in the
+    # worker's arguments. A crash between claiming the original and retiring it would
+    # otherwise lose the relationship with the dead process, leaving the original stuck
+    # 'running' with nothing able to work out what it was waiting for.
+    if "replaces_document_id" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN replaces_document_id TEXT")
     # After the ALTER that adds the column on an older database. Partial, so it holds only folder-owned rows and
     # is empty with nothing linked, which keeps the lexical fast-path gate an index probe rather than a scan.
     conn.execute(
@@ -382,6 +388,27 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _remove_managed_upload(stored_path: str) -> None:
+    """Delete a retired document's file, confined to the managed uploads root.
+
+    Same confinement and best-effort handling as ingestion._remove_upload: a path that
+    escaped the root (a linked-folder snapshot, the user's own file) is never touched, and
+    on Windows commonpath raises across drives while os.remove raises on a file still held
+    open -- neither of which should turn startup recovery into a failure.
+    """
+    try:
+        import os
+
+        from utils.paths import rag_uploads_root
+
+        target = os.path.realpath(stored_path)
+        uploads = os.path.realpath(str(rag_uploads_root()))
+        if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
+            os.remove(target)
+    except Exception:  # noqa: BLE001 - cleanup must not block startup
+        logger.warning("failed to remove retired RAG upload %s", stored_path, exc_info = True)
+
+
 def _delete_document_chunks(conn, document_id: str) -> None:
     """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the documents row. Used when
     reconciling a half-ingested doc to failed: retrieval filters by scope not status, so leftover chunks would
@@ -423,11 +450,73 @@ def reconcile_orphaned_ingestion_jobs() -> int:
             "AND l.job_id=j.id AND l.expires_at>?)",
             (now,),
         ).fetchall()
+        retired_paths: list[str] = []
         for row in rows:
             doc = conn.execute(
-                "SELECT status FROM documents WHERE id=?", (row["document_id"],)
+                "SELECT status, replaces_document_id FROM documents WHERE id=?",
+                (row["document_id"],),
             ).fetchone()
-            if doc is not None and doc["status"] == "completed":
+            # An edit claims its original with status='running' and the worker hands that
+            # claim back on every non-successful exit -- but a crash never reaches that
+            # finally, and the relationship died with the process. The replacement row
+            # records it, so this is the last thing able to settle the pair. Exactly one of
+            # them survives, matching what the worker would have done:
+            #
+            # * the replacement completed, so the crash landed between marking it and
+            #   retiring the original. It is a finished, chunked document, so it wins and
+            #   the original is retired -- releasing the claim instead would publish both.
+            #   Unless the original is already gone: someone deleted it while the crashed
+            #   job was unreconciled, and publishing would bring it back under a new id, so
+            #   the delete wins exactly as it does in _replace_old_document.
+            #
+            # An absent original here always means that deletion, never a retirement this
+            # job already did: the worker retires the original, clears this pointer and
+            # completes the job in one transaction, so a settled edit leaves no pointer to
+            # follow and a terminal job this query does not select. Were that not so, a
+            # successful retirement would read exactly like a deletion and be "undone" by
+            # withdrawing the replacement -- losing the source and both files.
+            # * anything else means the replacement never landed. The branch below fails it
+            #   and drops its chunks, so the original is handed back to the user.
+            replaced_id = doc["replaces_document_id"] if doc is not None else None
+            withdrawn = False
+            if replaced_id and doc["status"] == "completed":
+                original = conn.execute(
+                    "SELECT stored_path FROM documents WHERE id=?", (replaced_id,)
+                ).fetchone()
+                if original is None:
+                    # Deleted while this job sat unreconciled: withdraw the replacement.
+                    withdrawn = True
+                    _delete_document_chunks(conn, row["document_id"])
+                    path = conn.execute(
+                        "SELECT stored_path FROM documents WHERE id=?", (row["document_id"],)
+                    ).fetchone()
+                    if path is not None and path["stored_path"]:
+                        retired_paths.append(path["stored_path"])
+                    conn.execute("DELETE FROM documents WHERE id=?", (row["document_id"],))
+                else:
+                    _delete_document_chunks(conn, replaced_id)
+                    conn.execute("DELETE FROM documents WHERE id=?", (replaced_id,))
+                    # The row holding this path is going, and nothing sweeps the uploads
+                    # root for orphans, so an unremoved file is leaked for good. Collected
+                    # and removed after the commit: os.remove is not part of the
+                    # transaction and must not hold its write lock.
+                    if original["stored_path"]:
+                        retired_paths.append(original["stored_path"])
+            elif replaced_id:
+                conn.execute(
+                    "UPDATE documents SET status='completed' WHERE id=? AND status='running'",
+                    (replaced_id,),
+                )
+            if withdrawn:
+                # The document this job produced is gone, so neither completed nor failed
+                # describes it: the source it was replacing was deleted, which is the same
+                # outcome the worker reports when a delete beats it.
+                conn.execute(
+                    "UPDATE ingestion_jobs SET status='cancelled', stage='done', "
+                    "progress=1.0, error='Document was deleted' WHERE id=?",
+                    (row["id"],),
+                )
+            elif doc is not None and doc["status"] == "completed":
                 # The worker finished indexing before the crash but did not retire the job row: mark it completed
                 # and keep its chunks, so the UI does not flag a searchable document as a failed ingestion.
                 conn.execute(
@@ -454,6 +543,10 @@ def reconcile_orphaned_ingestion_jobs() -> int:
                 (row["id"],),
             )
         conn.commit()
-        return len(rows)
     finally:
         conn.close()
+    # After the commit and outside the connection: the rows that named these files are
+    # gone, so nothing can find them again, and os.remove is not part of the transaction.
+    for path in retired_paths:
+        _remove_managed_upload(path)
+    return len(rows)

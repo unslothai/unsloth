@@ -27,6 +27,7 @@ import {
 } from "../api/rag-api";
 import { useRagAvailabilityStore } from "../api/rag-availability";
 import {
+  isAlreadyGone,
   type RagDocument,
   type TerminalJobStatus,
   terminalJobStatus,
@@ -293,6 +294,15 @@ export function useRagDocuments(
         // live "running %" chip. Failed docs hidden (toast warned at upload).
         const rows = (await lister()).filter((row) => row.status !== "failed");
         if (refreshSeq.current !== requestId) return true;
+        // The scope this call was made for, not the one now mounted. A mutation
+        // that awaits -- an upload, or a bulk remove walking its DELETEs --
+        // reconciles with the `refresh` it captured, which can start only after
+        // the user has switched scopes, so its ticket is the newest and the
+        // sequence check above lets it through. Publishing here would put the
+        // previous scope's documents into the list on screen, and the panel is
+        // reused without a key, so they would then be shown with the new
+        // scope's controls.
+        if (scopeKey !== liveScopeKeyRef.current) return true;
         setDocuments((prev) => {
           const merged = rows.map((row) => {
             const tracked = prev.find((p) => p.id === row.id);
@@ -679,10 +689,47 @@ export function useRagDocuments(
     [scope, uploadOne, sigBlocksReupload],
   );
 
+  /** Resolves true when the document is gone from the server, false when the
+   * delete failed and the row has been put back. A caller removing several in a
+   * row needs the outcome: a batch that ignored it would clear its selection and
+   * leave rows on screen that 404 on the next action. */
   const remove = useCallback(
-    async (documentId: string) => {
-      const prev = documents;
-      setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+    async (documentId: string): Promise<boolean> => {
+      // Whether this delete is for the scope on screen. A bulk batch keeps
+      // deleting the scope it started in after the user has navigated away, and
+      // both the invalidation and the optimistic drop below belong to that old
+      // list, not the one now mounted.
+      const forCurrentScope = scopeKey === liveScopeKeyRef.current;
+      // Stand down list requests already in flight, as the scope change does. One
+      // issued before this delete still carries the document, and letting it land
+      // afterwards would put the deleted row back on screen. Only for the mounted
+      // scope: a stale batch bumping this would discard the new scope's own load
+      // and leave it empty until something unrelated refreshed it.
+      //
+      // Retiring a request also means its `finally` will not clear the in-flight
+      // marker, because the sequence no longer matches. The poll skips a tick
+      // while that is set, so it has to be handed back here or a scope whose
+      // caller starts no replacement refresh -- the KB dialog and the thread bar
+      // both call remove() bare -- would stop polling for the rest of the
+      // session, leaving an indexing row stuck as running and sends gated on it.
+      if (forCurrentScope) {
+        refreshSeq.current += 1;
+        refreshInFlight.current = false;
+      }
+      // Restore by re-inserting this one row rather than reinstating a whole
+      // snapshot: during a batch an earlier snapshot still holds the rows previous
+      // iterations deleted, and replaying it would resurrect them. Carry the
+      // index too, so the row comes back where it was and not at the end: the KB
+      // dialog and the thread bar render the list in the order the server sent it
+      // and never sort, while being the two callers with no reconciling refresh.
+      let restore: { doc: TrackedDocument; index: number } | undefined;
+      if (forCurrentScope) {
+        setDocuments((rows) => {
+          const index = rows.findIndex((row) => row.id === documentId);
+          if (index !== -1) restore = { doc: rows[index], index };
+          return rows.filter((row) => row.id !== documentId);
+        });
+      }
       // Forget the dedup signature so re-uploading re-indexes.
       const prevSig = sigByDocId.current.get(documentId);
       sigByDocId.current.delete(documentId);
@@ -699,19 +746,51 @@ export function useRagDocuments(
           documentId,
           scope?.type === "project" ? scope.projectId : undefined,
         );
+        // Again, now the row is actually gone. The invalidation above only covers
+        // requests already in flight; a poll starting between it and this line takes
+        // the newest ticket, still reads the row on the server, and would put it back
+        // on screen when it lands. Same mounted-scope gate as the first bump, and the
+        // marker handed back with it, or a scope whose caller starts no replacement
+        // refresh would stop polling.
+        if (forCurrentScope) {
+          refreshSeq.current += 1;
+          refreshInFlight.current = false;
+        }
+        return true;
       } catch (err) {
-        setDocuments(prev);
+        // 404 means someone else removed it first -- another client, or a replacement
+        // retiring the source it was edited from. The state this asked for is the state
+        // the server is in, so restoring the row would put back a document that does not
+        // exist and 404s on every action, on a completed project with no poll to correct
+        // it. Report it as the success it effectively is.
+        if (isAlreadyGone(err)) {
+          if (forCurrentScope) {
+            refreshSeq.current += 1;
+            refreshInFlight.current = false;
+          }
+          return true;
+        }
+        // `restore` is only set for the mounted scope, so a stale batch's
+        // rollback cannot insert its row into the list now on screen. The slice
+        // clamps on its own if the list has shrunk since, which puts the row last
+        // rather than dropping it.
+        setDocuments((rows) => {
+          if (!restore || rows.some((row) => row.id === documentId)) return rows;
+          const { doc, index } = restore;
+          return [...rows.slice(0, index), doc, ...rows.slice(index)];
+        });
         if (prevSig !== undefined) sigByDocId.current.set(documentId, prevSig);
         toast.error("Delete failed", {
           description: err instanceof Error ? err.message : String(err),
         });
+        return false;
       } finally {
         if (removingProjectId) {
           noteProjectWork(removingProjectId, -1);
         }
       }
     },
-    [documents, scope],
+    [scope, scopeKey],
   );
 
   return {
