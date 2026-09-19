@@ -842,8 +842,15 @@ def test_status_passthrough(client, monkeypatch):
     )
     body = client.get("/api/inference/video/status").json()
     assert body["loaded"] is True and body["family"] == "ltx-2"
-    assert body["resolved"]["transformer_quant"] == resolved["transformer_quant"]
-    assert body["resolved"]["text_encoder_quant"] == resolved["text_encoder_quant"]
+    # ``artifact`` is additive on the response model: a record naming no hosted checkpoint is null.
+    assert body["resolved"]["transformer_quant"] == {
+        **resolved["transformer_quant"],
+        "artifact": None,
+    }
+    assert body["resolved"]["text_encoder_quant"] == {
+        **resolved["text_encoder_quant"],
+        "artifact": None,
+    }
     # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
     assert body["resolved"]["speed_mode"]["requested"] is None
     assert body["resolved"]["speed_mode"]["status"] == "applied"

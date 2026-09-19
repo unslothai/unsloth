@@ -369,6 +369,124 @@ def validated_repo_cache_path(
         return None
 
 
+# repo_folder_name builds these: f"{repo_type}s--" + repo_id.split("/") joined by "--". A cached
+# private dataset or space holds readable bytes exactly as a model does.
+_CACHE_REPO_TYPES = ("model", "dataset", "space")
+
+
+def cached_repo_ref_for_path(path: Path | str) -> Optional[tuple[str, str]]:
+    """Map a path inside a Hub cache to the ``(repo_id, repo_type)`` that owns it.
+
+    ``None`` means "not the operator's cache", which every caller reads as "no check needed", so a
+    miss here is fail-OPEN. Hence every repo type rather than models alone, and candidates walked
+    OUTWARD rather than committing to the deepest match: repo file paths are arbitrary, so a
+    private snapshot may itself contain a directory named ``models--foo--bar``.
+    """
+    try:
+        resolved = Path(path).expanduser().resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    scan_errors: list = []
+    resolved_roots: Optional[list] = None
+
+    def roots() -> list:
+        # Lazily and once: an ordinary local path matches no prefix below, so the stat calls are
+        # wasted and hf_cache_roots reaches callers that never stub it.
+        nonlocal resolved_roots
+        if resolved_roots is None:
+            resolved_roots = []
+            for root in hf_cache_roots(scan_errors):
+                try:
+                    resolved_roots.append(root.resolve(strict = True))
+                except (OSError, RuntimeError):
+                    scan_errors.append(root)
+        return resolved_roots
+
+    fallback: Optional[tuple[str, str]] = None
+    for candidate in (resolved, *resolved.parents):
+        name = candidate.name
+        lowered = name.lower()
+        for repo_type in _CACHE_REPO_TYPES:
+            prefix = f"{repo_type}s--"
+            if not lowered.startswith(prefix) or len(name) <= len(prefix):
+                continue
+            # "--" is forbidden in a repo id (validate_repo_id rejects it), so this is unambiguous.
+            ref = (name[len(prefix) :].replace("--", "/"), repo_type)
+            if any(same_existing_path(candidate.parent, root) for root in roots()):
+                return ref
+            # An unreadable root may be this path's: authorize rather than skip. Held, so an outer
+            # candidate genuinely under a readable root still wins.
+            if scan_errors and fallback is None:
+                fallback = ref
+    return fallback
+
+
+def cached_repo_id_for_path(path: Path | str, repo_type: str = "model") -> Optional[str]:
+    """The *repo_type*-restricted view of :func:`cached_repo_ref_for_path`."""
+    ref = cached_repo_ref_for_path(path)
+    if ref is None or ref[1] != repo_type:
+        return None
+    return ref[0]
+
+
+def _is_repo_boilerplate(path: Path) -> bool:
+    """Whether *path* is repository furniture rather than anything a load consumes.
+
+    Deliberately a denylist of things no loader reads, not an allowlist of weight formats: a name
+    this does not recognise still counts as content, so a private snapshot in an unusual format is
+    refused rather than waved through."""
+    name = path.name
+    if name in (".gitattributes", ".gitignore", ".gitmodules"):
+        return True
+    if name.split(".", 1)[0].upper() in ("LICENSE", "LICENCE", "NOTICE"):
+        return True
+    return path.suffix.lower() in (".md", ".txt")
+
+
+def repo_cache_has_usable_snapshot(
+    repo_type: str,
+    repo_id: str,
+    metadata_filenames: tuple[str, ...] = (),
+) -> bool:
+    """Whether the cache holds a snapshot of *repo_id* that a load could actually consume.
+
+    NOT "does a repo directory exist": an interrupted download leaves one with no snapshot under
+    it, and refusing on that costs a caller bytes that were never there, which the anonymous
+    ``/auth-check`` cannot clear on an ``HF_ENDPOINT`` mirror that does not serve it. An unlistable
+    directory counts as usable: the guard's own failure must not open the path it guards.
+    """
+    scan_errors: list = []
+    for repo_dir in iter_repo_cache_dirs(repo_type, repo_id, scan_errors = scan_errors):
+        snapshots = repo_dir / "snapshots"
+        try:
+            revisions = list(snapshots.iterdir()) if snapshots.is_dir() else []
+        except OSError:
+            return True
+        if not metadata_filenames:
+            # Some content, not merely a revision directory: an interrupted download leaves the
+            # latter empty, and a barely started one leaves the model card and .gitattributes that
+            # huggingface_hub fetches first. Any other file at any depth, since a diffusers
+            # snapshot keeps its weights in per-component subdirectories and the metadata name
+            # varies by family: an extension allowlist would skip the check for a private snapshot
+            # in a format not on it, which is the failure that matters. Short-circuits on the first
+            # hit; an unreadable tree counts, as above.
+            for revision in revisions:
+                if revision.is_file():
+                    return True
+                try:
+                    if any(
+                        p.is_file() and not _is_repo_boilerplate(p) for p in revision.rglob("*")
+                    ):
+                        return True
+                except OSError:
+                    return True
+            continue
+        for revision in revisions:
+            if any((revision / name).is_file() for name in metadata_filenames):
+                return True
+    return bool(scan_errors)
+
+
 def latest_snapshot_from_cache_path(
     local_path: Optional[str],
     repo_type: str,

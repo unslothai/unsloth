@@ -450,7 +450,8 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         hf_split: "",
         hf_path: "",
         hf_token: "",
-        hf_endpoint: "https://huggingface.co",
+        // Blank so buildSeedConfig resolves the endpoint at build time.
+        hf_endpoint: "",
         local_file_name: "",
         unstructured_upload_uid:
           nextSourceType === "unstructured" ? makeUnstructuredUploadUid() : "",

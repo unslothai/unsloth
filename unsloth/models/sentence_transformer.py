@@ -42,7 +42,27 @@ import re
 from transformers import AutoModel, AutoConfig
 import tempfile
 from huggingface_hub import HfApi, get_token
-from ..save import unsloth_save_pretrained_torchao, unsloth_save_pretrained_gguf
+# Deferred to first call: a module-scope bind out of `unsloth.save` closes an import cycle.
+# See the note in unsloth/models/vision.py and tests/test_cold_import_order.py.
+
+
+def unsloth_save_pretrained_torchao(*args, **kwargs):
+    """Hand off to ``unsloth.save.unsloth_save_pretrained_torchao``, imported on first call."""
+    from ..save import unsloth_save_pretrained_torchao as _impl
+    return _impl(*args, **kwargs)
+
+
+def unsloth_save_pretrained_gguf(*args, **kwargs):
+    """Hand off to ``unsloth.save.unsloth_save_pretrained_gguf``, imported on first call."""
+    from ..save import unsloth_save_pretrained_gguf as _impl
+    return _impl(*args, **kwargs)
+
+
+# How unsloth/save.py tells its own shims from functions someone else put here.
+unsloth_save_pretrained_torchao._unsloth_deferred_shim = True
+unsloth_save_pretrained_gguf._unsloth_deferred_shim = True
+
+
 import contextlib
 import shutil
 
@@ -53,7 +73,9 @@ _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
 def _normalize_save_method(save_method):
     """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
     if isinstance(save_method, str):
-        return save_method.lower().replace(" ", "_")
+        # Stripped BEFORE the spaces are folded, or " lora " becomes "_lora_" and the
+        # adapter guard below sends the request to the merge path instead.
+        return save_method.strip().lower().replace(" ", "_")
     return save_method
 
 
@@ -1542,7 +1564,7 @@ class FastSentenceTransformer(FastModel):
             if isinstance(st_device, dict) or (
                 isinstance(st_device, str) and st_device in ["auto", "sequential"]
             ):
-                st_device = "cuda"
+                st_device = None
 
             model_kwargs = {"torch_dtype": dtype}
 
@@ -1819,6 +1841,28 @@ class FastSentenceTransformer(FastModel):
                     f"for this SentenceTransformer: no modules.json was found, "
                     f"so Unsloth falls back to merge_and_unload, which can only "
                     f"produce 'merged_16bit'."
+                )
+            # Imported here rather than at module scope: a module-scope bind out of
+            # unsloth.save closes an import cycle, which is why the two shims above are
+            # deferred too. See tests/test_cold_import_order.py.
+            from ..save import _is_adapter_save_method
+
+            if _is_adapter_save_method(save_method):
+                # Refused because nothing here writes base weights: self.save_pretrained writes the
+                # sentence-transformers scaffolding and, for a PEFT auto_model, an adapter, and the
+                # lines below then delete that adapter and hand the transformer module to
+                # save_pretrained_merged, leaving modules.json and an adapter with no config.json
+                # and no weights, which SentenceTransformer cannot load. Before unsloth#11067
+                # "lora" matched no branch in merge_and_overwrite_lora and fell through to a 16bit
+                # merge, which happened to write something loadable; an error is the honest
+                # replacement. Save the adapter with self[0].auto_model.save_pretrained(...).
+                raise NotImplementedError(
+                    f"Unsloth: save_method = {save_method!r} is not supported for a "
+                    f"SentenceTransformer: `save_pretrained_merged` writes a loadable "
+                    f"SentenceTransformer, and an adapter-only save has no base weights "
+                    f"for one. Use `save_pretrained_merged(..., save_method = "
+                    f"'merged_16bit')` for a loadable model, or save the adapter on its "
+                    f"own with `model[0].auto_model.save_pretrained(save_directory)`."
                 )
             if save_method is not None:
                 kwargs.setdefault("save_method", save_method)

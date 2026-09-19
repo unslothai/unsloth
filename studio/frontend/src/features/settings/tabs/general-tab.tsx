@@ -30,7 +30,9 @@ import {
 } from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
+  setShowWhisperUpdateBanner,
   useShowLlamaUpdateBanner,
+  useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
@@ -74,6 +76,7 @@ import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
 import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
 import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
+import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
@@ -85,6 +88,7 @@ const PREFS_KEYS: string[] = [
   "theme",
   "palette",
   "unsloth_appearance_customization",
+  INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
@@ -148,6 +152,7 @@ const PREFS_KEYS: string[] = [
   "tour:studio:v1",
   // Update notifications
   "unsloth_show_llama_update_banner",
+  "unsloth_show_whisper_update_banner",
   "unsloth_monitor_overlay",
   LOADED_MODELS_PREFERENCE_KEYS.show,
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
@@ -185,6 +190,7 @@ export function GeneralTab() {
     (s) => s.persistenceError,
   );
   const showLlamaUpdates = useShowLlamaUpdateBanner();
+  const showWhisperUpdates = useShowWhisperUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -607,6 +613,17 @@ export function GeneralTab() {
           <Switch
             checked={showLlamaUpdates}
             onCheckedChange={setShowLlamaUpdateBanner}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.showWhisperUpdates")}
+          description={t(
+            "settings.general.notifications.showWhisperUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showWhisperUpdates}
+            onCheckedChange={setShowWhisperUpdateBanner}
           />
         </SettingsRow>
       </SettingsSection>

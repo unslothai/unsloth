@@ -25,7 +25,8 @@ import {
   type DownloadProgressResponse,
 } from "@/features/chat/api/chat-api";
 import { useTransferStats } from "@/features/chat/hooks/use-transfer-stats";
-import { formatEta, formatRate } from "@/features/chat/utils/format-transfer";
+import { formatEta } from "@/features/chat/utils/format-transfer";
+import { formatBytes, formatRate } from "@/features/hub";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   EMPTY_DOWNLOAD_STATE,
@@ -55,14 +56,6 @@ const HF_REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 // overlay unmounts on navigation away, so without this its typing/fade-in would
 // replay on every return mid-run. Module-level so it survives remounts.
 const animatedJobs = new Set<string>();
-
-function formatBytes(n: number): string {
-  if (n <= 0) return "0 B";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  return `${(n / 1024 ** 3).toFixed(2)} GB`;
-}
 
 function formatCachePath(path: string): string {
   return path
@@ -198,7 +191,7 @@ function ResourceRow({
 }: ResourceRowProps): ReactElement | null {
   const t = useT();
   // Rolling-window rate + ETA from the cumulative-byte series the poll hook
-  // produces, so we show "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left", not just the pair.
+  // produces, so we show "5.2 GB / 21 GB • 85 MB/s • 3m 12s left", not just the pair.
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
   if (!resourceRowHasContent(state, preparation)) return null;

@@ -348,10 +348,9 @@ def test_the_gallery_persist_window_still_belongs_to_the_generating_account(monk
             progress = client.get("/api/inference/images/generate-progress").json()
             assert progress["active"] is True
         with client_for(BOB) as client:
-            assert client.get("/api/inference/images/generate-progress").json() == {
-                "loaded": True,
-                "yours": False,
-            }
+            hidden = client.get("/api/inference/images/generate-progress").json()
+            assert hidden["yours"] is False, hidden
+            assert hidden["active"] is False and hidden["step"] == 0, hidden
     finally:
         release.set()
         thread.join(20)

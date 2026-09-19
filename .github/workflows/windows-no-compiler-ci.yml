@@ -40,12 +40,20 @@ on:
       - 'install.ps1'
       - 'studio/setup.ps1'
       - 'scripts/uninstall.ps1'
+      # install.sh generates PowerShell into a here-string and runs it on the Windows
+      # side for the WSL shortcut, so it can put a compiler on a user's Windows machine
+      # without touching a .ps1. It did: the Add-Type that #10540 removed from
+      # install.ps1 stayed live here, outside this list and outside the text guard.
+      - 'install.sh'
       - 'studio/src-tauri/src/install.rs'
       - 'studio/src-tauri/src/process.rs'
       - 'tests/studio/test_installer_av_shapes.py'
       # The watcher implements both detectors, so a PR touching only it could disable
       # detection without running the positive control that would catch that.
       - '.github/scripts/Watch-ForCompiler.ps1'
+      # Its own tests, whose Windows-only ACL control can only run on a Windows
+      # runner, so an edit to them has to reach one.
+      - 'tests/python/test_compiler_watch_temp_scan.py'
       - '.github/workflows/windows-no-compiler-ci.yml'
   push:
     branches: [main]

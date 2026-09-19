@@ -187,7 +187,7 @@ test("the effort scale matches the backend's _REASONING_EFFORT_SCALE", () => {
   // ladders from the backend one, so drift hands the clamp a level it cannot rank.
   const here = path.dirname(fileURLToPath(import.meta.url));
   const frontend = readFileSync(
-    path.join(here, "../src/features/chat/provider-capabilities.ts"),
+    path.join(here, "../src/features/chat/model-catalog.ts"),
     "utf8",
   );
   const backend = readFileSync(
@@ -375,4 +375,29 @@ test("a connection override cannot raise a documented per-model cap", () => {
   assert.equal(getExternalMaxOutputTokens("openai", "gpt-5.6-sol", 8192), 8192);
   // a vLLM server hosting an id borrowed from OpenAI has no documented cap of its own
   assert.equal(getExternalMaxOutputTokens("vllm", "gpt-5.6-sol", 131072), 131072);
+});
+
+test("earlier Claude 4 and 3.7 Sonnet keep a Thinking control the backend can serve", () => {
+  // The backend sends these ids manual budget_tokens, but models.dev has no entry for them,
+  // so leaving them to the catalog left the picker with no control at all and the backend
+  // path unreachable. The 4-1 prefix must not claim a two-digit minor either.
+  for (const id of [
+    "claude-opus-4-1-20250805",
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-20250514",
+    "claude-3-7-sonnet-20250219",
+  ]) {
+    const caps = getExternalReasoningCapabilities("anthropic", id);
+    assert.equal(caps.supportsReasoning, true, id);
+    assert.equal(caps.reasoningStyle, "reasoning_effort", id);
+    assert.deepEqual([...caps.reasoningEffortLevels], ["none", "low", "medium", "high"], id);
+  }
+  assert.deepEqual(
+    [...getExternalReasoningCapabilities("anthropic", "claude-opus-4-5-20251101").reasoningEffortLevels],
+    ["none", "low", "medium", "high"],
+  );
+  assert.deepEqual(
+    [...getExternalReasoningCapabilities("anthropic", "claude-sonnet-4-6-20260219").reasoningEffortLevels],
+    ["none", "low", "medium", "high", "max"],
+  );
 });

@@ -397,7 +397,7 @@ def test_openai_catalog_and_advertised_paths_are_account_scoped(monkeypatch):
     monkeypatch.setattr(
         models,
         "collect_local_models",
-        lambda path: [SimpleNamespace(model_id = "same/name", path = current_account_id())],
+        lambda *_a, **_kw: [SimpleNamespace(model_id = "same/name", path = current_account_id())],
     )
 
     async def read(account):
@@ -418,7 +418,7 @@ def test_the_local_id_v1_models_publishes_is_usable_by_its_own_account(monkeypat
 
     rows = [_row(OWNER), _row(ALICE), _row(BOB)]
     monkeypatch.setattr(inference, "_classified_catalog", lambda listed: listed)
-    monkeypatch.setattr(models, "collect_local_models", lambda path: rows)
+    monkeypatch.setattr(models, "collect_local_models", lambda *_a, **_kw: rows)
 
     request = SimpleNamespace(
         scope = {},
@@ -440,7 +440,7 @@ def test_the_local_id_v1_models_publishes_is_usable_by_its_own_account(monkeypat
         assert run_as(account, inference._own_local_model_for_alias, "other-model") is None
 
     monkeypatch.setattr(inference, "_managed_catalogs", {})
-    monkeypatch.setattr(models, "collect_local_models", lambda path: [_row(OWNER)])
+    monkeypatch.setattr(models, "collect_local_models", lambda *_a, **_kw: [_row(OWNER)])
     for account in (ALICE, BOB):
         with pytest.raises(HTTPException) as refused:
             asyncio.run(resolve(account))
@@ -499,9 +499,13 @@ def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unl
         "org/private",
     )
     with client_for(BOB) as client:
-        for path in ["load-progress", "generate-progress"]:
-            response = client.get(f"/api/inference/{kind}/{path}")
-            assert response.json() == {"loaded": True, "yours": False}
+        assert client.get(f"/api/inference/{kind}/load-progress").json() == {
+            "loaded": True,
+            "yours": False,
+        }
+        # Hidden, but still the declared shape: `active` reads false, not KeyError.
+        hidden = client.get(f"/api/inference/{kind}/generate-progress").json()
+        assert hidden["yours"] is False and hidden["active"] is False, hidden
         response = client.post(f"/api/inference/{kind}/generate", json = {"prompt": "hello"})
         assert response.status_code == 404, response.text
         assert client.post(f"/api/inference/{kind}/unload").status_code == 404

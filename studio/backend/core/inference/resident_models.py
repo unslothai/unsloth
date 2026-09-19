@@ -261,7 +261,7 @@ class ResidentLlamaRegistry:
         return [s.backend for s in slots]
 
     def any_slot_busy(self) -> bool:
-        """Whether any slot backend holds, or is on the way to holding, a process.
+        """Whether any slot backend holds, or is on its way to holding, a process.
 
         ``is_active`` (a process exists, healthy or not), not ``is_loaded``: a
         starting model holds VRAM the GPU arbiter must still count before
@@ -271,6 +271,29 @@ class ResidentLlamaRegistry:
             return bool(self._loading_slot_ids) or any(
                 s.backend.is_active for s in self._slots.values()
             )
+
+    def any_slot_holding_vram(self) -> bool:
+        """Whether any slot holds, or is on its way to holding, GPU VRAM.
+
+        The arbiter's resource question, unlike :meth:`any_slot_busy`'s process
+        question: a live server that is a settled, confirmed zero-VRAM launch
+        holds none of what the arbiter allocates, so the CHAT claim may drop
+        while it keeps serving. A slot whose load is still in flight only
+        answers through its backend once healthy -- before the process exists
+        or reports healthy, ``holds_no_vram`` still describes the previous
+        launch and cannot be trusted, so those states count as holding.
+        """
+        with self._lock:
+            for slot_id, slot in self._slots.items():
+                backend = slot.backend
+                if not backend.is_active:
+                    # No process yet: only a load still in flight can reach the GPU.
+                    if slot_id in self._loading_slot_ids:
+                        return True
+                    continue
+                if not backend.is_loaded or not backend.holds_no_vram:
+                    return True
+        return False
 
     def loading_slots(self) -> "list[ResidentSlot]":
         """Slots with a GGUF load in progress, in deterministic slot order.

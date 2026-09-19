@@ -883,6 +883,145 @@ def test_gpu_owner_eviction_tears_down_secondary_residents(monkeypatch):
     assert "active" not in unloaded
 
 
+# ── Behavioral: the CHAT claim follows VRAM, not process liveness ──
+
+
+@pytest.fixture()
+def chat_claim(monkeypatch):
+    """The arbiter holding CHAT, with its owner state reset around the test."""
+    import core.inference.gpu_arbiter as arb
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+    monkeypatch.setattr(arb, "_prior_account", None)
+    arb.acquire_for(arb.CHAT)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: None)
+    return arb
+
+
+def _llama_double(**overrides):
+    state = {"is_active": True, "is_loaded": True, "holds_no_vram": True}
+    state.update(overrides)
+    return SimpleNamespace(**state)
+
+
+def test_a_live_cpu_only_gguf_releases_the_chat_claim(monkeypatch, chat_claim):
+    # A settled zero-VRAM server holds none of the arbitrated resource, so the
+    # claim drops while the process keeps serving -- an Images/Video acquire
+    # then allocates beside it instead of tearing it down.
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _llama_double())
+    assert inference_route.release_chat_gpu_claim() is True
+    assert chat_claim.current_owner() is None
+
+
+def test_a_live_gpu_resident_gguf_keeps_the_chat_claim(monkeypatch, chat_claim):
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: _llama_double(holds_no_vram = False)
+    )
+    assert inference_route.release_chat_gpu_claim() is False
+    assert chat_claim.current_owner() == chat_claim.CHAT
+
+
+def test_a_starting_gguf_still_keeps_the_chat_claim(monkeypatch, chat_claim):
+    # Not yet healthy: holds_no_vram would describe the previous launch, so a
+    # starting server keeps the claim regardless of what the marker says.
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: _llama_double(is_loaded = False, holds_no_vram = True),
+    )
+    assert inference_route.release_chat_gpu_claim() is False
+    assert chat_claim.current_owner() == chat_claim.CHAT
+
+
+def test_an_idle_chat_side_still_releases_the_claim(monkeypatch, chat_claim):
+    # The release's original purpose is unchanged: nothing resident or loading.
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: _llama_double(is_active = False, is_loaded = False),
+    )
+    assert inference_route.release_chat_gpu_claim() is True
+
+
+def test_a_slot_still_downloading_its_model_keeps_the_claim(monkeypatch, chat_claim, residents):
+    # No process yet: a load in flight may still land on the GPU, and the
+    # registry cannot vouch for its VRAM-ness until the backend reports healthy.
+    registry, load = residents
+    slot, _double = load("org/A-GGUF", make_active = True)
+    _double.is_active = False
+    _double.is_loaded = False
+    registry.start_loading(slot.id)
+
+    assert registry.any_slot_holding_vram() is True
+    assert inference_route.release_chat_gpu_claim() is False
+
+
+def test_two_cpu_only_residents_release_the_claim_and_stay_loaded(chat_claim, residents):
+    _, load = residents
+    _slot, active = load("org/A-GGUF", make_active = True)
+    _slot, secondary = load("org/B-GGUF")
+    active.holds_no_vram = True
+    secondary.holds_no_vram = True
+
+    assert inference_route.release_chat_gpu_claim() is True
+    assert chat_claim.current_owner() is None
+    # Releasing the claim is ownership bookkeeping only: no server is touched.
+    assert active.is_loaded and secondary.is_loaded
+    assert active.unloads == 0 and secondary.unloads == 0
+
+
+def test_a_cpu_only_resident_beside_a_gpu_resident_keeps_the_claim(chat_claim, residents):
+    _, load = residents
+    _slot, active = load("org/A-GGUF", make_active = True)
+    _slot, secondary = load("org/B-GGUF")
+    # Either arrangement: one GPU-resident anywhere keeps the claim held.
+    active.holds_no_vram = True
+    secondary.holds_no_vram = False
+    assert inference_route.release_chat_gpu_claim() is False
+    assert chat_claim.current_owner() == chat_claim.CHAT
+
+    active.holds_no_vram = False
+    secondary.holds_no_vram = True
+    assert inference_route.release_chat_gpu_claim() is False
+    assert chat_claim.current_owner() == chat_claim.CHAT
+
+
+def test_a_diffusion_acquire_spares_a_claimless_zero_vram_chat(monkeypatch, chat_claim, residents):
+    evicted: list[str] = []
+    monkeypatch.setitem(chat_claim._EVICTORS, chat_claim.CHAT, lambda: evicted.append("chat"))
+    monkeypatch.setitem(
+        chat_claim._EVICTORS, chat_claim.DIFFUSION, lambda: evicted.append("diffusion")
+    )
+    monkeypatch.setattr(chat_claim, "other_accounts_active", lambda account_id = None: 0)
+
+    _, load = residents
+    _slot, active = load("org/A-GGUF", make_active = True)
+    active.holds_no_vram = True
+
+    # The zero-VRAM load dropped the claim, so an Images/Video acquire must
+    # allocate beside the CPU-only server, not evict it.
+    assert inference_route.release_chat_gpu_claim() is True
+    chat_claim.acquire_for(chat_claim.DIFFUSION)
+    assert evicted == []
+    assert active.is_loaded and active.unloads == 0
+
+
+def test_a_diffusion_acquire_still_evicts_a_gpu_resident_chat(monkeypatch, chat_claim, residents):
+    evicted: list[str] = []
+    monkeypatch.setitem(chat_claim._EVICTORS, chat_claim.CHAT, lambda: evicted.append("chat"))
+    monkeypatch.setattr(chat_claim, "other_accounts_active", lambda account_id = None: 0)
+
+    _, load = residents
+    _slot, active = load("org/A-GGUF", make_active = True)
+    active.holds_no_vram = False
+
+    # The GPU server kept the claim, so the transfer still runs chat eviction.
+    assert inference_route.release_chat_gpu_claim() is False
+    chat_claim.acquire_for(chat_claim.DIFFUSION)
+    assert evicted == ["chat"]
+
+
 # ── Source contracts for the load/seam wiring ─────────────────────
 # The load impl's slot targeting and failure cleanup cannot be driven end to
 # end without disproportionate machinery (real downloads, GPU placement,
@@ -1394,3 +1533,69 @@ def test_status_loaded_lists_residents_when_nothing_is_active():
     # field never contradicts resident_models.
     assert 'loaded = [row["model"] for row in _resident_rows' in src
     assert 'row["model"] not in backend.models' in src
+
+
+def test_a_stale_ollama_resident_stays_unlisted_when_a_sibling_answers_its_id(
+    monkeypatch, residents
+):
+    """The stale-tag skip asks THIS backend, not the account-wide predicate.
+
+    A sibling resident advertising the same public id would keep a re-pulled
+    slot looking live, so the scanned row the re-pull was supposed to hand the
+    listing back to never appears -- the stale slot must yield regardless."""
+    _, load = residents
+    _slot, stale = load(
+        "ollama-manifest:library/llama3:latest", advertised_id = "ollama/llama3:latest"
+    )
+    _slot, sibling = load("org/B-GGUF", advertised_id = "ollama/llama3:latest", make_active = True)
+
+    monkeypatch.setattr(
+        inference_route,
+        "is_ollama_manifest_ref",
+        lambda ref: ref == "ollama-manifest:library/llama3:latest",
+    )
+    monkeypatch.setattr(inference_route, "_ollama_public_id", lambda ref: "ollama/llama3:latest")
+    monkeypatch.setattr(inference_route, "_resident_is_still_tagged", lambda ref, backend: False)
+    monkeypatch.setattr(inference_route, "_ollama_request_is_resident", lambda requested, backend: False)
+
+    # Stale on its own slot, yet answerable account-wide through the sibling.
+    assert not inference_route._llama_backend_satisfies(stale, "ollama/llama3:latest")
+    assert inference_route._loaded_satisfies("ollama/llama3:latest")
+
+    # Only the live sibling lists: the stale slot's row belongs to the scanner.
+    assert [entry["id"] for entry in inference_route._openai_model_objects()] == [
+        "ollama/llama3:latest"
+    ]
+
+
+def test_the_count_vision_guard_asks_the_backend_that_renders_the_count(monkeypatch, residents):
+    """_resident_model_reads_images answers for the slot it is handed.
+
+    A text-only named secondary must not inherit the active slot's vision, the
+    orchestrator must not be consulted while a GGUF slot serves the count, and
+    an MLX model still answers once no GGUF does (the MLX dispatch)."""
+    _, load = residents
+    _slot, active = load("org/A-GGUF", make_active = True)
+    _slot, text_only = load("org/B-GGUF")
+    active.is_vision = True
+    text_only.is_vision = False
+
+    def _no_orchestrator():
+        raise AssertionError("a loaded GGUF slot answers the vision question itself")
+
+    monkeypatch.setattr(inference_route, "get_inference_backend", _no_orchestrator)
+    assert asyncio.run(inference_route._resident_model_reads_images(active)) is True
+    assert asyncio.run(inference_route._resident_model_reads_images(text_only)) is False
+
+    class _MlxOrchestrator:
+        active_model_name = "org/mlx-vision"
+        models = {"org/mlx-vision": {"is_vision": True}}
+
+    text_only.is_loaded = False
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _MlxOrchestrator())
+    assert asyncio.run(inference_route._resident_model_reads_images(text_only)) is True
+
+
+def test_chat_count_tokens_hands_the_serving_backend_to_the_vision_guard():
+    src = inspect.getsource(inference_route.chat_count_tokens)
+    assert "_resident_model_reads_images(llama_backend)" in src

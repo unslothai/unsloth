@@ -50,7 +50,7 @@ const { backfillModelOverrides } = await import(
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 
 const STORAGE_KEY = "unsloth_model_configs";
-const BACKFILL_FLAG = "unsloth_model_overrides_backfilled_v1";
+const BACKFILL_FLAG = "unsloth_model_overrides_backfilled_v2";
 const MODEL = "unsloth/Repo-GGUF";
 const VARIANT = "Q4_K_M";
 
@@ -319,6 +319,29 @@ test("the one-time backfill now uploads a tuning-only config", async () => {
   assert.equal(puts[0].fill_absent_fields, true);
   assert.equal(puts[0].remove, false);
   assert.equal(store.get(BACKFILL_FLAG), "1", "a completed pass must not run again");
+});
+
+test("the backfill offers an Ollama tag's settings even after the v1 pass ran", async () => {
+  // The v1 filter dropped these, so the marker had to move with it, or an install past that pass
+  // would never mirror what it saved for an Ollama model.
+  store.clear();
+  store.set("unsloth_model_overrides_backfilled_v1", "1");
+  const ref = "ollama-manifest:%2Fh%2F.ollama%2Fmanifests%2Fllama3%2Flatest";
+  assert.ok(savePerModelConfig(ref, null, config({ cacheRam: -1 })));
+
+  const puts: unknown[] = [];
+  setAuthFetchHandler((_input, init) => {
+    if (init?.method === "PUT") {
+      puts.push(JSON.parse(String(init.body)).model_id);
+    }
+    return new Response(JSON.stringify({ overrides: {} }), { status: 200 });
+  });
+  try {
+    await backfillModelOverrides();
+  } finally {
+    setAuthFetchHandler(null);
+  }
+  assert.deepEqual(puts, [ref.toLowerCase()]);
 });
 
 test("an all-default config is still filtered out of the backfill", async () => {
@@ -619,12 +642,18 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
     "if \\(",
     "resolvedRow &&",
     "serverConfig &&",
+    // Load-bearing once the editors share a draft: an edit the OTHER one made before this
+    // read started is already in configAtStart, so the comparison below reads as untouched.
+    "!isModelConfigDraftEdited\\(draftKey\\) &&",
     "configRef\\.current === configAtStart &&",
     "rememberRef\\.current === rememberAtStart",
     "\\) \\{",
   ].join("\\s*\\n\\s*");
   assert.match(PANEL, new RegExp(adoptGuard));
-  assert.match(PANEL, /setRemember\(true\);\s*\n\s*setSavedRemember\(true\);/);
+  assert.match(
+    PANEL,
+    /replaceModelConfigDraft\(draftKey, serverConfig, \{\s*remember: true,\s*savedRemember: true,\s*\}\);/,
+  );
   // The write is local only. An erased server field is therefore NOT restored by
   // opening the panel, even though this browser still holds it: that takes a save.
   // Unconditional, because savePerModelConfig expresses "no settings" by deleting

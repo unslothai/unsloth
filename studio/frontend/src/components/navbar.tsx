@@ -56,7 +56,9 @@ export function Navbar() {
           "flex h-full",
           usesCustomTitlebar
             ? "items-center pl-3"
-            : "items-start pt-[11px] pl-2",
+            : usesNativeMacTitlebar
+              ? "items-start pt-[11px] pl-[calc(var(--studio-mac-traffic-light-inset,78px)+6px)]"
+              : "items-start pt-[11px] pl-2",
         )}
       >
         <SidebarTrigger className="pointer-events-auto !size-[34px]" />

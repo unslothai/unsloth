@@ -25,8 +25,10 @@ import {
   loadedGpuMemoryFields,
   normalizeSpeculativeType,
   noteLoadedModelReasoningMode,
+  pinHoldsLiveEffort,
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
+  takeEffortDisplacedByPin,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -34,6 +36,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import type { ChatModelRow } from "../types/runtime";
+import { showLoadWarning } from "../utils/load-warning-toast";
 import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
@@ -186,6 +189,9 @@ export function applyActiveModelStatusToStore(
   const hydratingExistingModel =
     previousCheckpoint !== checkpointId ||
     previousGgufVariant !== (status.gguf_variant ?? null);
+  if (hydratingExistingModel) {
+    showLoadWarning(status.memory_warning);
+  }
   const supportsReasoning = status.supports_reasoning ?? false;
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
@@ -201,14 +207,18 @@ export function applyActiveModelStatusToStore(
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
+  // The chat's own level when the model this replaces was running a per-model pin's: the clamp
+  // narrows the chat's level to this model's ladder, and a pin is one model's, not the chat's.
+  // Taken here rather than where the model was picked, because this is a model that has actually
+  // become resident: everything from the pick to here can still abort, or only queue a download.
+  const effortToClamp =
+    (pinHoldsLiveEffort() ? takeEffortDisplacedByPin() : null) ??
+    prevState.reasoningEffort;
   const clampedReasoningEffort =
     reasoningStyle === "enable_thinking_effort" ||
     reasoningStyle === "reasoning_effort"
-      ? clampReasoningEffortToLevels(
-          prevState.reasoningEffort,
-          reasoningEffortLevels,
-        )
-      : clampLocalReasoningEffort(prevState.reasoningEffort);
+      ? clampReasoningEffortToLevels(effortToClamp, reasoningEffortLevels)
+      : clampLocalReasoningEffort(effortToClamp);
   const nextDefaultChatTemplate =
     status.chat_template === undefined
       ? prevState.defaultChatTemplate
@@ -323,6 +333,34 @@ export function applyActiveModelStatusToStore(
     gpuLayers: status.gpu_layers ?? null,
     loadedPin: prevState.loadedCustomContextLength ?? null,
   });
+  const reasoningBudgetApplicable =
+    status.is_gguf === true && status.is_diffusion !== true;
+  const incomingReasoningBudget = reasoningBudgetApplicable
+    ? (status.reasoning_budget ?? -1)
+    : -1;
+  const incomingReasoningBudgetMessage = reasoningBudgetApplicable
+    ? (status.reasoning_budget_message ?? "")
+    : "";
+  const reasoningBudgetStatusChanged =
+    prevState.loadedReasoningBudget !== incomingReasoningBudget ||
+    prevState.loadedReasoningBudgetMessage !== incomingReasoningBudgetMessage;
+  const reasoningBudgetEditPending =
+    prevState.loadedReasoningBudget !== null &&
+    prevState.reasoningBudget !== prevState.loadedReasoningBudget;
+  const reasoningBudgetMessageEditPending =
+    prevState.loadedReasoningBudgetMessage !== null &&
+    prevState.reasoningBudgetMessage !==
+      prevState.loadedReasoningBudgetMessage;
+  const reasoningBudgetStatusFields = {
+    loadedReasoningBudget: incomingReasoningBudget,
+    loadedReasoningBudgetMessage: incomingReasoningBudgetMessage,
+    ...(!reasoningBudgetEditPending || hydratingExistingModel
+      ? { reasoningBudget: incomingReasoningBudget }
+      : {}),
+    ...(!reasoningBudgetMessageEditPending || hydratingExistingModel
+      ? { reasoningBudgetMessage: incomingReasoningBudgetMessage }
+      : {}),
+  };
   const incomingGpuMode = status.is_gguf
     ? (status.gpu_memory_mode ?? "auto")
     : null;
@@ -540,6 +578,31 @@ export function applyActiveModelStatusToStore(
     // Per-model: a change underneath this tab blanks the control like performLoad's cross-model
     // reset, or the old count follows onto the new model. The baseline still has the rollback.
     ...(seedLoadParams && slotsModelChanged && { nParallel: null }),
+    ...(seedLoadParams &&
+      (prevState.loadedReasoningBudget === null ||
+        hydratingExistingModel ||
+        reasoningBudgetStatusChanged) &&
+      reasoningBudgetStatusFields),
+    // Rollback needs the request, not the effective environment-resolved value.
+    // Refresh on every settled echo: a same-model reload can change only the request.
+    ...(seedLoadParams && {
+      ...(!reasoningBudgetApplicable ||
+      status.requested_reasoning_budget !== undefined
+        ? {
+            loadedReasoningBudgetRequested: reasoningBudgetApplicable
+              ? (status.requested_reasoning_budget ?? -1)
+              : -1,
+          }
+        : {}),
+      ...(!reasoningBudgetApplicable ||
+      status.requested_reasoning_budget_message !== undefined
+        ? {
+            loadedReasoningBudgetMessageRequested: reasoningBudgetApplicable
+              ? (status.requested_reasoning_budget_message ?? "")
+              : "",
+          }
+        : {}),
+    }),
     // AFTER that clear, which both a first hydration and a model change trip: either would leave
     // the control blank while the model runs on a remembered override, so the next Apply would
     // save the blank over it. Adopted only when the running count matches.

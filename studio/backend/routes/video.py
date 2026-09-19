@@ -636,11 +636,11 @@ async def video_generate_progress(current_subject: str = Depends(get_current_sub
         with _generation_lock:
             started_by = _generation_account
     if _generation_hidden(backend, started_by):
-        return account_access.hidden_resident_response()
+        return account_access.hidden_generate_progress_response(VideoGenerateProgressResponse)
     progress = _read_generate_progress(backend, reserved)
     if progress is None:
         # The reservation changed hands mid-poll; the successor's progress is not ours to see.
-        return account_access.hidden_resident_response()
+        return account_access.hidden_generate_progress_response(VideoGenerateProgressResponse)
     log_media_generation_progress("video", progress)
     return VideoGenerateProgressResponse(**progress)
 
