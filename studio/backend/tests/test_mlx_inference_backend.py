@@ -6455,3 +6455,60 @@ def test_a_single_image_template_is_served_one_picture_not_refused(monkeypatch):
     list(backend.generate_chat_response(turn, image = attachment, images = [older]))
     assert calls[-1]["images"] == [attachment]
     assert calls[-1]["prompt"].count("<|image|>") == 1
+
+
+@pytest.mark.parametrize("merged_question", [False, True])
+def test_single_image_replay_notes_describe_only_retained_pixels(monkeypatch, merged_question):
+    from core.inference.mcp_images import IMAGE_TURN_TEXT, image_marker_parts, placeholder_turn
+
+    backend, calls = _vlm_runtime(monkeypatch, marker = None)
+    older, newer = object(), object()
+    previous_image = placeholder_turn(1)
+    if merged_question:
+        previous_image["content"].append({"type": "text", "text": "Keep this user question."})
+    history = [
+        {"role": "user", "content": "Inspect the first screenshot."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "first",
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__test__screenshot",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "first", "content": "[1 image returned]"},
+        previous_image,
+        {"role": "assistant", "content": "The first screenshot was inspected."},
+        {"role": "user", "content": "Inspect the next screenshot."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "second",
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__test__screenshot",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "second", "content": "[1 image returned]"},
+        placeholder_turn(1),
+    ]
+    assert list(backend.generate_chat_response(history, images = [older, newer])) == ["ok"]
+    assert calls[-1]["images"] == [newer]
+    assert calls[-1]["prompt"].count("<|image|>") == 1
+    if merged_question:
+        assert "Keep this user question." in calls[-1]["prompt"]
+        assert "(0 of 1)" in calls[-1]["prompt"]
+    else:
+        assert calls[-1]["prompt"].count(IMAGE_TURN_TEXT) == 1
+    assert len(image_marker_parts(history)) == 2

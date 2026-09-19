@@ -48,6 +48,7 @@ from core.inference.mcp_images import (
     image_marker_parts,
     pixels_in_marker_order,
     top_up_image_markers,
+    trim_image_turns,
 )
 from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
@@ -2419,24 +2420,6 @@ class _VLMMediaBlock:
         return entries
 
 
-def _keep_one_image_marker(messages: list, keep: int) -> list:
-    seen = 0
-    out = []
-    for message in messages:
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, list):
-            parts = []
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "image":
-                    seen += 1
-                    if seen - 1 != keep:
-                        continue
-                parts.append(part)
-            message = {**message, "content": parts}
-        out.append(message)
-    return out
-
-
 class MLXInferenceBackend:
     def __init__(self):
         self.models = {}
@@ -3324,8 +3307,8 @@ class MLXInferenceBackend:
                     len(attached),
                     self.active_model_name,
                 )
-                full_messages = _keep_one_image_marker(full_messages, keep)
-                attached = [attached[keep]]
+                full_messages = list(full_messages)
+                trim_image_turns(full_messages, attached, limit = 1, keep = (keep,))
 
         if self._is_vlm:
             stream = self._generate_vlm(
