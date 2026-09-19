@@ -186,7 +186,7 @@ def test_image_mirrored_in_structured_content_is_not_dumped():
     structured = {"content": [{"type": "image", "data": PNG_B64, "mimeType": "image/png"}]}
     flat = _flatten_result(_result(_image(), structured = structured))
     body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
-    assert body == "[1 image attached; displayed to the user]"
+    assert body == "[1 image returned]"
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
     assert PNG_B64 not in strip_result_for_model(flat)
     huge = "A" * (MAX_IMAGE_PAYLOAD_CHARS + 1)
@@ -199,16 +199,14 @@ def test_image_mirrored_in_structured_content_is_not_dumped():
 def test_image_and_audio_share_one_note():
     flat = _flatten_result(_result(_image(), _audio()))
     body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
-    assert body == (
-        "[1 image attached; displayed to the user; audio attachment (audio/wav) not shown to the model]"
-    )
+    assert body == ("[1 image returned; audio attachment (audio/wav) not shown to the model]")
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
 
 
 def test_independent_structured_content_is_kept_beside_attachments():
     flat = _flatten_result(_result(_image(), structured = {"rows": 3, "max": 41.5}))
     body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
-    assert body == "{'rows': 3, 'max': 41.5}\n[1 image attached; displayed to the user]"
+    assert body == "{'rows': 3, 'max': 41.5}\n[1 image returned]"
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
     assert _flatten_result(_result(_audio(), structured = {"duration_s": 1.0})) == (
         "{'duration_s': 1.0}\n[audio attachment (audio/wav) not shown to the model]"
