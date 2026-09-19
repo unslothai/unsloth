@@ -264,8 +264,9 @@ _TAURI_TAG = re.compile(r"^\\\[TAURI:STEP\\\]\s*")
 
 
 def _installer_text() -> str:
-    return "\n".join((REPO / name).read_text(encoding = "utf-8", errors = "replace")
-                     for name in INSTALLER_SOURCES)
+    return "\n".join(
+        (REPO / name).read_text(encoding = "utf-8", errors = "replace") for name in INSTALLER_SOURCES
+    )
 
 
 def _markers(matrix_file: str) -> list[tuple[str, str, str]]:
