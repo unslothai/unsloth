@@ -24,6 +24,8 @@
       "why": "Ubuntu 24.04, which the image moved to in the 2026-09-19 rotation, ships Mako as the distro build labelled 1.3.2.dev0; PyPI has 1.3.2 and never had 1.3.2.dev0."
     }
   },
+  "_published_prerelease_comment": "The other kind of .devN pin: one upstream really published, which the seed must pass through untouched. Listed so every .devN entry in the freeze has been judged one way or the other -- a new one fails the guard until someone says which it is, rather than being rewritten by guess or shipped to pip to fail the whole resolve.",
+  "published_prerelease": [],
   "module_spoof": {
     "torchcodec": "no CPU wheel published; smoke job sys.modules-stubs torchcodec before importing unsloth"
   },

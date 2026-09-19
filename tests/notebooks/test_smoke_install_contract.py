@@ -305,6 +305,40 @@ def test_no_declared_distro_marker_survives_the_seed(tmp_path):
     assert not local, f"the seed left a local version on: {local}"
 
 
+def test_every_dev_pin_in_the_freeze_has_been_judged():
+    """Read from the FREEZE, not from the mapping, so deleting the mapping fails here.
+
+    Scoping the other checks to what `distro_dev_version` declares left a hole: delete or
+    misspell that key and the declared set is empty, so the marker test passes vacuously and
+    the rewrite test skips, while the seed hands pip the unresolvable `Mako==1.3.2.dev0` and
+    every leg of the matrix dies exactly as it did.
+
+    The freeze is what the image actually has, so it decides. Each `.devN` entry must be
+    judged one way or the other: a distro label to rewrite, or a prerelease upstream really
+    published and the seed must leave alone. A new one fails this until someone says which,
+    which is the point -- neither answer is guessable from the version string.
+    """
+    mapping = _mapping()
+    rewrites = mapping.get("distro_dev_version", {})
+    allowed = {entry.lower() for entry in mapping.get("published_prerelease", [])}
+
+    unjudged = []
+    for line in FREEZE.read_text(encoding = "utf-8").splitlines():
+        m = re.match(r"^([A-Za-z0-9._-]+)\s*==\s*(.+)$", line.strip())
+        if not m or ".dev" not in m.group(2):
+            continue
+        name, ver = m.group(1).lower(), m.group(2)
+        declared = rewrites.get(name, {}).get("from") == ver
+        if not declared and f"{name}=={ver}" not in allowed:
+            unjudged.append(f"{name}=={ver}")
+
+    assert not unjudged, (
+        "these pins carry a .devN version that nothing has judged. Add a distro_dev_version "
+        "entry if the image is labelling a distro build, or list it under "
+        f"published_prerelease if PyPI really publishes it: {unjudged}"
+    )
+
+
 def test_a_rewritten_pin_is_still_installed_at_the_published_version(tmp_path):
     """The rewrite must not become a skip: the image carries Mako, so the venv this job builds
     has to carry it too, at the version PyPI publishes."""
