@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+"""Role detection on columns whose names contain a shorter role word: "text" inside
+"context" used to win the user slot, sending the passage to the user turn and the
+question to the system prompt."""
+
 import sys
 from pathlib import Path
 
@@ -77,7 +81,46 @@ _CASES = [
 ]
 
 
+# An assistant column must never be drafted into the user turn just because the shadow
+# rule emptied the user candidates: the context column is the better user turn.
+_ASSISTANT_LEFTOVER_CASES = [
+    (
+        {"context": _LONG, "answer": _MID, "explanation": _MID},
+        {"answer": "assistant", "context": "user", "explanation": "system"},
+    ),
+    (
+        {"context": _LONG, "answer": _MID, "output": _MID},
+        {"answer": "assistant", "context": "user", "output": "system"},
+    ),
+    (
+        {"context": _LONG, "response": _MID, "target": _MID},
+        {"response": "assistant", "context": "user", "target": "system"},
+    ),
+]
+
+# A column that is only ever a system word stays unmapped, so the caller keeps asking
+# for a manual mapping instead of silently training the system prompt as the user turn.
+_NO_USER_COLUMN_ROWS = [
+    {"system": _MID, "output": _MID},
+    {"persona": _MID, "reply": _MID},
+    {"role": _MID, "response": _MID},
+    {"template": _MID, "output": _MID},
+]
+
+
 @pytest.mark.parametrize("heuristic", _HEURISTICS)
 @pytest.mark.parametrize("row, expected", _CASES)
 def test_context_column_is_not_matched_as_text(heuristic, row, expected):
     assert heuristic([row]) == expected
+
+
+@pytest.mark.parametrize("heuristic", _HEURISTICS)
+@pytest.mark.parametrize("row, expected", _ASSISTANT_LEFTOVER_CASES)
+def test_assistant_column_is_not_promoted_to_the_user_turn(heuristic, row, expected):
+    assert heuristic([row]) == expected
+
+
+@pytest.mark.parametrize("heuristic", _HEURISTICS)
+@pytest.mark.parametrize("row", _NO_USER_COLUMN_ROWS)
+def test_system_only_column_is_not_promoted_to_the_user_turn(heuristic, row):
+    assert heuristic([row]) is None

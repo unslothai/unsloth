@@ -209,6 +209,7 @@ def detect_custom_format_heuristic(dataset):
         "task",
     ]
 
+    # Only pair today: "text" inside "context".
     role_words = assistant_words + user_words + system_words
 
     metadata_exact_match = {
@@ -244,13 +245,16 @@ def detect_custom_format_heuristic(dataset):
         "completion": 60,
     }
 
-    def has_keyword(col_name, keywords):
-        """True if any keyword appears in the column name."""
+    def has_keyword(col_name, keywords, apply_shadowing = True):
+        """True if any keyword appears in the column name, ignoring a keyword that only
+        matches inside a longer role word the name also carries ("text" in "context")."""
         col_lower = col_name.lower()
         col_normalized = col_lower.replace("_", "").replace("-", "").replace(" ", "")
 
         for keyword in keywords:
             if keyword in col_lower or keyword in col_normalized:
+                if not apply_shadowing:
+                    return True
                 shadowed = any(
                     keyword != other and keyword in other and other in col_normalized
                     for other in role_words
@@ -302,9 +306,9 @@ def detect_custom_format_heuristic(dataset):
         except:
             return 0
 
-    def score_column(col_name, keywords, role_type, num_candidates):
+    def score_column(col_name, keywords, role_type, num_candidates, apply_shadowing = True):
         """Score how likely a column is to be a given role."""
-        if not has_keyword(col_name, keywords):
+        if not has_keyword(col_name, keywords, apply_shadowing = apply_shadowing):
             return 0
 
         score = 0
@@ -367,6 +371,24 @@ def detect_custom_format_heuristic(dataset):
         if score > 0:
             user_candidates.append((col, score))
 
+    if not user_candidates:
+        # has_keyword drops "context" from user_potential because "text" only matches
+        # inside it. When nothing else can hold the user turn, that column is a better
+        # user turn than an assistant-worded leftover.
+        shadowed_potential = [
+            col
+            for col in content_columns
+            if col not in user_potential and has_keyword(col, user_words, apply_shadowing = False)
+        ]
+        for col in shadowed_potential:
+            if col == assistant_col:
+                continue
+            score = score_column(
+                col, user_words, "user", len(shadowed_potential), apply_shadowing = False
+            )
+            if score > 0:
+                user_candidates.append((col, score))
+
     if user_candidates:
         user_candidates.sort(key = lambda x: x[1], reverse = True)
         user_col = user_candidates[0][0]
@@ -406,10 +428,6 @@ def detect_custom_format_heuristic(dataset):
                 mapping[col] = "user"
                 has_user = True
                 break
-
-    if not has_user and system_col:
-        mapping[system_col] = "user"
-        has_user = True
 
     if has_user and has_assistant:
         return mapping
