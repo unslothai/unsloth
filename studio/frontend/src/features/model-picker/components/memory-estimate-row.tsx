@@ -49,23 +49,42 @@ function MemoryFigure({
   useLayoutEffect(() => {
     const button = buttonRef.current;
     const measurement = measureRef.current;
-    if (!button || !measurement) return;
+    const row = button?.parentElement;
+    if (!button || !measurement || !row) return;
     let active = true;
     const fit = () => {
       if (!active) return;
+      // Measured on the row, never on the pill or its label: both give way to the figure,
+      // so either would just confirm whatever the first pass picked.
       const style = getComputedStyle(button);
-      const width =
-        button.clientWidth -
-        Number.parseFloat(style.paddingLeft) -
+      const gutters =
+        Number.parseFloat(style.paddingLeft) +
         Number.parseFloat(style.paddingRight);
+      const rowStyle = getComputedStyle(row);
+      const gap = Number.parseFloat(rowStyle.columnGap) || 0;
+      const siblings = Array.from(row.children).filter(
+        (child) => child !== button,
+      );
+      const room =
+        row.clientWidth -
+        Number.parseFloat(rowStyle.paddingLeft) -
+        Number.parseFloat(rowStyle.paddingRight) -
+        gap * siblings.length -
+        siblings.reduce(
+          (total, child) =>
+            total +
+            Math.max(child.getBoundingClientRect().width, child.scrollWidth),
+          0,
+        ) -
+        gutters;
       const index = Array.from(measurement.children).findIndex(
-        (child) => child.getBoundingClientRect().width <= width,
+        (child) => child.getBoundingClientRect().width <= room + 0.5,
       );
       setDisplayIndex(index < 0 ? candidates.length - 1 : index);
     };
     fit();
     const observer = new ResizeObserver(fit);
-    observer.observe(button);
+    observer.observe(row);
     observer.observe(measurement);
     void document.fonts.ready.then(fit);
     return () => {
@@ -75,16 +94,18 @@ function MemoryFigure({
   }, [candidates]);
   return (
     <div className="flex min-h-8 min-w-0 items-center justify-between gap-3">
-      <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+      {/* No min-w-0: the label holds its width, so the figure shortens instead. */}
+      <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
         {label}
       </span>
+      {/* Sizes to the figure it holds, in the same h-8 pill as the controls below. */}
       <Tooltip>
         <TooltipTrigger asChild>
           <button
             ref={buttonRef}
             type="button"
             aria-label={`${label}: ${value}`}
-            className={`relative inline-flex h-8 w-[80px] shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-black/[0.04] px-2 text-ui-13 font-medium tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 dark:bg-white/[0.05] ${tone ?? "text-nav-fg"}`}
+            className={`relative inline-flex h-8 w-auto min-w-[64px] max-w-full shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-black/[0.04] px-3.5 text-ui-13 font-medium leading-none tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 dark:bg-white/[0.05] ${tone ?? "text-nav-fg"}`}
           >
             <span aria-hidden="true" className="min-w-0 truncate">
               {candidates[displayIndex] ?? value}
@@ -216,7 +237,7 @@ export function MemoryEstimateRow({
         aria-expanded={expanded}
         aria-controls={contentId}
         aria-label={`Estimated Memory Usage: ${expanded ? "Hide" : "Show"} breakdown`}
-        className="group flex min-h-7 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        className="group flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <span className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
