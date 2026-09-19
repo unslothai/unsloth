@@ -100,6 +100,31 @@ def seed_mcp(account) -> dict[str, str]:
     return {"server_id": SERVER_ID}
 
 
+SKILL_NAME = "matrix-skill"
+
+
+@seeder("skill")
+def seed_skill(account) -> dict[str, str]:
+    # Skills of a managed account live in its own workspace; the owner reads the home folders.
+    from core.inference import skills as skills_module
+
+    if account.is_owner:
+        root = skills_module._owner_home() / ".agents" / "skills" / SKILL_NAME
+    else:
+        root = run_as(account, workspace_root) / "skills" / SKILL_NAME
+    root.mkdir(parents = True, exist_ok = True)
+    # Quoted: the sentinel carries a colon, which a plain YAML scalar cannot.
+    (root / "SKILL.md").write_text(
+        f"---\nname: {SKILL_NAME}\ndescription: {json.dumps(SENTINEL, ensure_ascii = False)}\n"
+        "---\nInstructions\n",
+        encoding = "utf-8",
+    )
+    from routes.inference import _invalidate_agent_skills_cache
+
+    _invalidate_agent_skills_cache()
+    return {"name": SKILL_NAME}
+
+
 CORE_FACTORIES = {
     "routes.chat_history:GET:/threads/{thread_id}": Factory("chat", fragment = SENTINEL),
     "routes.chat_history:PATCH:/threads/{thread_id}": Factory(
@@ -128,6 +153,9 @@ CORE_FACTORIES = {
         "mcp", {"display_name": EDITED}, fragment = EDITED
     ),
     "routes.mcp_servers:DELETE:/{server_id}": Factory("mcp", success = 204),
+    "routes.skills:PUT:/{name}/enabled": Factory(
+        "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL
+    ),
 }
 
 

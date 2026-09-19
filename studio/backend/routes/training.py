@@ -461,9 +461,21 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
-def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> Optional[str]:
+_HF_MODEL_ACCESS_DENIED = (
+    "Hugging Face denied access to this model. Add a valid Hugging Face "
+    "token with repository access and accept any required access terms, "
+    "then try again."
+)
+
+
+def _remote_untrainable_model_format(
+    model_name: str,
+    hf_token: HfTokenArg,
+    is_embedding: bool = False,
+) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
+    from utils.models.unsloth_mirror import unsloth_public_mirror
     from utils.security import load_scan_target
 
     # Registry aliases such as "Spark-TTS-0.5B/LLM" are not repos; probe the repo the trainer
@@ -498,11 +510,7 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
                 raise _hf_preflight_error(
                     422,
                     "hf_model_access_denied",
-                    (
-                        "Hugging Face denied access to this model. Add a valid Hugging Face "
-                        "token with repository access and accept any required access terms, "
-                        "then try again."
-                    ),
+                    _HF_MODEL_ACCESS_DENIED,
                 ) from error
             retry_available = attempt + 1 < len(timeouts)
             if transient_status:
@@ -538,6 +546,78 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
                     "Retry before starting training."
                 ),
             ) from error
+
+    # Which mirror a run fetches depends on the mode the WORKER ends up in, and this process
+    # cannot know it. A full finetune forces 16-bit, the latest-transformers sidecar forces
+    # 16-bit, and from_pretrained silently clears load_in_4bit wherever bitsandbytes is
+    # unusable - which is not "not installed": unsloth/device_type.py decides it with a guarded
+    # import plus native_kernels_ready(bnb, DEVICE_TYPE), because from 0.46 a dead native
+    # library still imports and only raises when called. Reading that here would import
+    # bitsandbytes and torch into the backend parent, which this whole helper exists to avoid.
+    #
+    # So do not guess. A mirror in EITHER mode admits the model. The two directions are not
+    # symmetric in cost: a wrong refusal blocks a model the worker would have trained, which is
+    # a regression against main, while a wrong admission only lets the run reach the worker and
+    # fail there exactly as it does on main today. 36 of the 1617 mapper keys map in one mode
+    # only, so the widened set is small either way.
+    #
+    # This deliberately supersedes the earlier narrowing to "bitsandbytes is not installed at
+    # all": find_spec answers a different question from the one the loader asks.
+    # "Could not read the tables" is not "no public copy": they live in the installed unsloth
+    # package and find_spec can land on a directory with no models/mapper.py under it, in which
+    # case every lookup answers None and every gated model is refused, the trainable ones
+    # included. Unknown admits, exactly as an unanswered auth-check does.
+    #
+    # And only where the TORCH loader runs. _run_mlx_training hands model_load_name straight to
+    # FastMLXModel.from_pretrained, and that loader never consults the upstream-to-Unsloth
+    # mapper (unsloth_zoo/mlx/loader.py only strips bnb suffixes off ids already under
+    # unsloth/), so on Apple Silicon the worker really does fetch the gated upstream.
+    # Embedding runs take _run_embedding_training, whose primary path is
+    # `SentenceTransformer(model_name, ...)` with the name as given: same reasoning, separate
+    # backend. Both are platform/route tests rather than device probes, so the parent may ask.
+    from core.training.training import should_use_mlx_training_backend
+    from utils.models.unsloth_mirror import mirror_lookup_available
+
+    # Fail open only INSIDE the Torch path. MLX and embedding runs fetch the picked repo
+    # directly, so an unreadable mapper tells us nothing about them and the auth-check is the
+    # only thing standing between an inaccessible gated model and a worker-side failure.
+    # Written the other way round, an unreadable mapper admitted those runs too.
+    torch_loader_path = not should_use_mlx_training_backend() and not is_embedding
+    has_public_copy = torch_loader_path and (
+        not mirror_lookup_available()
+        or any(unsloth_public_mirror(repo_id, mode) is not None for mode in (True, False))
+    )
+
+    # Gated model metadata is public, so verify access to its files separately.
+    if getattr(info, "gated", False) and not has_public_copy:
+        from urllib.parse import quote
+        from huggingface_hub import constants
+        from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
+
+        url = f"{constants.ENDPOINT}/api/models/{quote(repo_id, safe = '/')}/auth-check"
+        headers = build_hf_headers(token = account_hf_token(hf_token))
+        # Same two timeouts as the model_info probe above: a transient failure here admits a
+        # run that then dies in the worker with the raw Hub error, which is the whole point of
+        # asking. Retry it, then fail open, since only a definite denial may block a start.
+        for attempt, timeout in enumerate(timeouts):
+            try:
+                hf_raise_for_status(get_session().get(url, headers = headers, timeout = timeout))
+                break
+            except Exception as error:
+                status_code = hf_error_status(error)
+                if status_code in (401, 403):
+                    raise _hf_preflight_error(
+                        422,
+                        "hf_model_access_denied",
+                        _HF_MODEL_ACCESS_DENIED,
+                    ) from error
+                if attempt + 1 < len(timeouts):
+                    continue
+                logger.warning(
+                    "Could not verify access to gated %s (%s); starting anyway",
+                    repo_id,
+                    type(error).__name__,
+                )
 
     load_roots = ("", *(f"{subdir.strip('/')}/" for subdir in load_subdirs if subdir))
     root_files: set[str] = set()
@@ -976,7 +1056,11 @@ def _reject_untrainable_model_request(
                         "Retry before starting training."
                     ),
                 )
-            remote_format = _remote_untrainable_model_format(request.model_name, hf_token)
+            remote_format = _remote_untrainable_model_format(
+                request.model_name,
+                hf_token,
+                is_embedding = bool(getattr(request, "is_embedding", False)),
+            )
         except HTTPException as error:
             metadata_error = error
             from core.training.training import _resolve_model_snapshot
@@ -2855,11 +2939,15 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
         or _is_local_path(repo)
     ):
         return
-    url = f"https://huggingface.co/{repo}/resolve/main/model_index.json"
+    from utils.hf_endpoint import get_hf_endpoint
+    from utils.utils import auth_safe_open
+
+    url = f"{get_hf_endpoint()}/{repo}/resolve/main/model_index.json"
     headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
     req = urllib.request.Request(url, method = "HEAD", headers = headers)
+    # Not urlopen: a mirror's cross-host 302 would carry this token off-origin.
     try:
-        urllib.request.urlopen(req, timeout = 5)
+        auth_safe_open(req, timeout = 5)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise HTTPException(

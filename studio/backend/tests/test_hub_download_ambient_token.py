@@ -235,17 +235,17 @@ def _spawn_env(monkeypatch, hf_token, **kwargs):
     captured = {}
 
     class _Fake:
-        pass
+        pid = 4242
 
     def _fake_popen(*_args, **popen_kwargs):
         captured.update(popen_kwargs["env"])
         return _Fake()
 
     monkeypatch.setattr(download_lifecycle.subprocess, "Popen", _fake_popen)
+    kwargs.setdefault("use_xet", False)
     download_lifecycle.spawn_worker(
         ["--repo-id", "attacker/private-model"],
         hf_token,
-        use_xet = False,
         **kwargs,
     )
     return captured
@@ -281,7 +281,10 @@ def test_an_explicit_request_token_wins_over_the_backend_one(monkeypatch):
     assert env["HF_TOKEN"] == "request-token"
 
 
-def test_an_anonymous_job_stays_anonymous_on_the_http_retry(monkeypatch, tmp_path):
+@pytest.mark.parametrize("allow_ambient", [False, True])
+def test_http_retry_preserves_ambient_token_policy(
+    monkeypatch, tmp_path, cached_hf_login, allow_ambient
+):
     """The recovery ladder must carry the token policy: a job started without the ambient token
     must not pick it up when the Xet worker fails and the HTTP one takes over."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -300,6 +303,14 @@ def test_an_anonymous_job_stays_anonymous_on_the_http_retry(monkeypatch, tmp_pat
         blob_hashes = frozenset({"blob"}),
     )[0]
     retried = []
+    environments = []
+    original_spawn = download_lifecycle.spawn_worker
+
+    def fake_popen(*args, **kwargs):
+        environments.append(kwargs["env"])
+        return _Proc(0)
+
+    monkeypatch.setattr(download_lifecycle.subprocess, "Popen", fake_popen)
 
     def fake_spawn(
         _args,
@@ -310,7 +321,13 @@ def test_an_anonymous_job_stays_anonymous_on_the_http_retry(monkeypatch, tmp_pat
         **_kwargs,
     ):
         retried.append(allow_ambient_token)
-        return _Proc(0)
+        return original_spawn(
+            _args,
+            _token,
+            use_xet = use_xet,
+            allow_ambient_token = allow_ambient_token,
+            **_kwargs,
+        )
 
     monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn)
     monkeypatch.setattr(download_lifecycle, "register_worker", lambda *a, **k: True)
@@ -326,7 +343,195 @@ def test_an_anonymous_job_stays_anonymous_on_the_http_retry(monkeypatch, tmp_pat
         repo_id = "Org/Model",
         transport = download_registry.TRANSPORT_XET,
         watch_name = "model-watch",
-        allow_ambient_token = False,
+        allow_ambient_token = allow_ambient,
     )
 
-    assert retried == [False], "the HTTP retry regained the backend's token"
+    assert retried == [allow_ambient]
+    assert len(environments) == 1
+    assert environments[0].get("HF_TOKEN") == (cached_hf_login if allow_ambient else None)
+
+
+@pytest.fixture
+def cached_hf_login(monkeypatch, tmp_path):
+    from huggingface_hub import constants
+
+    token_path = tmp_path / "token"
+    token_path.write_text("hf_test_cached_login\n")
+    monkeypatch.setattr(constants, "HF_TOKEN_PATH", str(token_path))
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", False)
+    for key in (
+        "HF_TOKEN",
+        "HF_HUB_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising = False)
+    return "hf_test_cached_login"
+
+
+@pytest.mark.parametrize("allow_ambient", [False, True])
+@pytest.mark.parametrize("explicit", [None, "hf_test_request"])
+@pytest.mark.parametrize("implicit_disabled", [False, True])
+def test_cached_login_obeys_caller_and_implicit_auth_policy(
+    monkeypatch, cached_hf_login, allow_ambient, explicit, implicit_disabled
+):
+    from huggingface_hub import constants
+
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", implicit_disabled)
+    env = _spawn_env(monkeypatch, explicit, allow_ambient_token = allow_ambient)
+
+    expected = explicit or (cached_hf_login if allow_ambient and not implicit_disabled else None)
+    assert env.get("HF_TOKEN") == expected
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == ("0" if expected else "1")
+
+
+def test_environment_token_takes_precedence_over_cached_login(monkeypatch, cached_hf_login):
+    monkeypatch.setenv("HF_TOKEN", "hf_test_environment")
+
+    env = _spawn_env(monkeypatch, None, allow_ambient_token = True)
+
+    assert env["HF_TOKEN"] == "hf_test_environment"
+
+
+def test_forbidden_ambient_token_is_not_resolved(monkeypatch, cached_hf_login):
+    import huggingface_hub.utils
+
+    def unexpected_resolution(*args):
+        pytest.fail("A restricted caller must not resolve the owner's credentials")
+
+    monkeypatch.setattr(huggingface_hub.utils, "get_token_to_send", unexpected_resolution)
+    env = _spawn_env(
+        monkeypatch,
+        None,
+        allow_ambient_token = False,
+        cache_env = {
+            "HF_TOKEN": "hf_test_environment",
+            "HF_HUB_TOKEN": "hf_test_alias",
+            "HUGGING_FACE_HUB_TOKEN": "hf_test_alias",
+            "HUGGINGFACE_HUB_TOKEN": "hf_test_alias",
+            "HUGGINGFACEHUB_API_TOKEN": "hf_test_alias",
+        },
+    )
+
+    assert not any(
+        key in env
+        for key in (
+            "HF_TOKEN",
+            "HF_HUB_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "HUGGINGFACE_HUB_TOKEN",
+            "HUGGINGFACEHUB_API_TOKEN",
+        )
+    )
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "invalid_encoding"])
+def test_unusable_cached_login_does_not_block_an_anonymous_worker(
+    monkeypatch, cached_hf_login, failure
+):
+    from pathlib import Path
+    from huggingface_hub import constants
+
+    token_path = Path(constants.HF_TOKEN_PATH)
+    if failure == "invalid_encoding":
+        token_path.write_bytes(b"\x81")
+    else:
+        original_read_text = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path == token_path:
+                raise PermissionError("cached token is unreadable")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+
+    env = _spawn_env(monkeypatch, None, allow_ambient_token = True)
+
+    assert "HF_TOKEN" not in env
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+
+
+class _OIDCLike(Exception):
+    """Stands in for huggingface_hub's OIDCError, which is a plain Exception."""
+
+
+class _HttpxLike(Exception):
+    """Stands in for httpx.ConnectError, which is not an OSError either."""
+
+
+# Everything hub's resolver can raise that is NOT an unreadable-file OSError/UnicodeError. The OIDC
+# rungs reach all of these whenever HF_OIDC_RESOURCE is set in the backend's environment.
+_RESOLVER_FAILURES = [
+    _OIDCLike("no OIDC id token is available"),
+    _HttpxLike("all connection attempts failed"),
+    NotImplementedError("unsupported OIDC provider"),
+    ValueError("malformed stored token"),
+    RuntimeError("unexpected hub failure"),
+]
+
+
+@pytest.mark.parametrize("failure", _RESOLVER_FAILURES, ids = lambda e: type(e).__name__)
+def test_a_failed_ambient_lookup_still_starts_an_anonymous_worker(
+    monkeypatch, cached_hf_login, failure
+):
+    """The ambient lookup is best effort. Before it existed this branch was an os.environ read and
+    could not raise, so letting one escape would take a public download down with a 500."""
+    import huggingface_hub.utils
+
+    def raiser(*args):
+        raise failure
+
+    monkeypatch.setattr(huggingface_hub.utils, "get_token_to_send", raiser)
+    env = _spawn_env(monkeypatch, None, allow_ambient_token = True)
+
+    assert "HF_TOKEN" not in env
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+
+
+def test_a_failed_ambient_lookup_does_not_strand_the_xet_reservation(monkeypatch, cached_hf_login):
+    """apply_xet_env books RAM against the imminent spawn and only bind_worker_budget settles it, so
+    a resolver that escaped in between would leave the promise counted against every sibling."""
+    import huggingface_hub.utils
+    from utils import hf_xet_fallback
+
+    def sized(env, cache_dir = None):
+        hf_xet_fallback._reserve_worker_budget(1 << 30)
+        return dict(env)
+
+    monkeypatch.setattr(hf_xet_fallback, "apply_xet_env", sized)
+    monkeypatch.setattr(hf_xet_fallback._pending_reservation, "token", None, raising = False)
+    with hf_xet_fallback._budget_lock:
+        hf_xet_fallback._budget_reservations.clear()
+
+    def raiser(*args):
+        raise _OIDCLike("no OIDC id token is available")
+
+    monkeypatch.setattr(huggingface_hub.utils, "get_token_to_send", raiser)
+    _spawn_env(monkeypatch, None, use_xet = True, allow_ambient_token = True)
+
+    with hf_xet_fallback._budget_lock:
+        unbound = [e for e in hf_xet_fallback._budget_reservations.values() if e[1] is None]
+    assert unbound == []
+
+
+def test_a_failed_ambient_lookup_reports_the_cause_without_the_credential(
+    monkeypatch, caplog, cached_hf_login
+):
+    """The warning has to name the failure to be diagnosable, and a resolver that quoted a token back
+    is exactly the case the existing scrubber exists for."""
+    import huggingface_hub.utils
+
+    leaked = "hf_" + "A" * 34
+
+    def raiser(*args):
+        raise RuntimeError(f"hub rejected {leaked}")
+
+    monkeypatch.setattr(huggingface_hub.utils, "get_token_to_send", raiser)
+    with caplog.at_level(logging.WARNING):
+        _spawn_env(monkeypatch, None, allow_ambient_token = True)
+
+    assert leaked not in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "downloading anonymously" in caplog.text

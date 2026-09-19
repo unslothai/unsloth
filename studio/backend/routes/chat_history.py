@@ -34,6 +34,7 @@ from core.inference.llama_server_args import (
     PARALLEL_MIN,
 )
 from loggers import get_logger
+from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
@@ -152,6 +153,7 @@ class ChatThreadSettings(BaseModel):
     # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
     topK: Optional[int] = Field(default = None, ge = -1, le = 100)
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    minPMode: Optional[Literal["server-default", "custom"]] = None
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
     seed: SamplingSeed = None
@@ -385,6 +387,7 @@ class ChatInferenceSettings(BaseModel):
     topP: Optional[float] = None
     topK: Optional[float] = None
     minP: Optional[float] = None
+    minPMode: Optional[Literal["server-default", "custom"]] = None
     repetitionPenalty: Optional[float] = None
     presencePenalty: Optional[float] = None
     maxSeqLength: Optional[float] = None
@@ -406,6 +409,8 @@ class ChatPresetLoadConfig(BaseModel):
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
+    reasoningBudget: NotABoolean = Field(default = None, ge = -1, le = 2_147_483_647)
+    reasoningBudgetMessage: Optional[str] = None
     # The normalizer emits both keys on every preset (null included) and this model is
     # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
     # preset carrying a loadConfig, including one that only pinned nParallel.
@@ -423,6 +428,11 @@ class ChatPresetLoadConfig(BaseModel):
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+
+    @field_validator("reasoningBudgetMessage")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else validate_reasoning_budget_message(value)
 
 
 class ChatPreset(BaseModel):
@@ -467,7 +477,7 @@ class ChatSettingsPayload(BaseModel):
     searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
-    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
+    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 0)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
     # Composer and RAG toggles. They describe the installation, not the browser that set them, so a
@@ -514,13 +524,12 @@ class ChatSettingsPayload(BaseModel):
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
     compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
 
-    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @field_validator("researchModelTimeoutSeconds", "maxToolCallsPerMessage", mode = "before")
     @classmethod
     def _not_a_boolean(cls, value: Any) -> Any:
-        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
-        # unlimited for every later run. The run route rejects booleans for the same reason.
+        # bool subclasses int, so False would persist as the 0 sentinel for every later run.
         if isinstance(value, bool):
-            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+            raise ValueError("Expected an integer, got a boolean.")
         return value
 
     @field_validator("researchModelTimeoutSeconds")
@@ -814,9 +823,9 @@ async def delete_threads(
     # Keyed by thread id, so the folder is unreachable once the thread is gone; done in a worker because the
     # post-upgrade legacy move can be a cross-filesystem copy.
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
-    # Archived turns are keyed by thread id and unreferenced once the thread is gone, so
-    # drop them rather than leaking a scope per deleted chat.
-    await run_in_threadpool(_remove_conversation_archives, payload.ids, cutoff = cutoff)
+    # Archived turns and uploaded documents are keyed by thread id and unreferenced once the thread
+    # is gone, so drop them rather than leaking scopes per deleted chat.
+    await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
@@ -826,25 +835,30 @@ def _archive_cutoff() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _remove_conversation_archives(thread_ids, *, cutoff: "str | None" = None) -> None:
-    """Drop each deleted thread's archived turns. Never raises."""
+def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
+    """Drop each deleted thread's archived turns and uploaded documents. Never raises."""
     try:
         from core.rag import conversation_archive
     except Exception:
         return
     for thread_id in thread_ids or []:
         # Cut at the instant the delete was accepted, not on recreation: another tab can have recreated this
-        # id, and skipping the scope left the deleted conversation recallable. Everything archived before
+        # id, and skipping the scope left the deleted conversation recallable. Everything stored before
         # that instant belongs to the deleted conversation, everything after to the new one.
         recreated = get_chat_thread(str(thread_id)) is not None
         if recreated and not cutoff:
             continue
+        created_before = cutoff if recreated else None
         try:
-            conversation_archive.delete_for_thread(
-                str(thread_id), created_before = cutoff if recreated else None
-            )
+            conversation_archive.delete_for_thread(str(thread_id), created_before = created_before)
         except Exception:
             logger.warning("Could not remove the conversation archive for %s", thread_id)
+        try:
+            conversation_archive.delete_thread_documents(
+                str(thread_id), created_before = created_before
+            )
+        except Exception:
+            logger.warning("Could not remove the uploaded documents for %s", thread_id)
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
@@ -1165,8 +1179,8 @@ async def delete_project(
         await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
-    # The project's chats go with it, so their archives have to as well.
-    await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
+    # The project's chats go with it, so their archives and documents have to as well.
+    await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1504,10 +1518,10 @@ async def clear_history(
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
     _cancel_chat_generation_runs(request, cleared_chat_runs)
-    # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
-    # conversation searchable in rag.db, and a reused thread id reads the old archive.
+    # Same cleanup as DELETE /threads. Without it "Clear all chats" leaves every conversation
+    # searchable in rag.db, and a reused thread id reads the old archive.
     await run_in_threadpool(
-        _remove_conversation_archives, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
+        _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.

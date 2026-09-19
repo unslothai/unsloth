@@ -56,6 +56,8 @@ class ModelLayout:
     # llama-model.cpp pins dev_input to the CPU unconditionally, so this is never charged to VRAM. Tracked because it IS
     # charged to host RAM.
     token_embd_bytes: int = 0
+    # Every tensor's bytes, excluded blocks included; the file size less its metadata.
+    tensor_bytes: int = 0
     # output_norm and friends: GPU-resident, too small to be worth spilling.
     other_resident_bytes: int = 0
     # Attention cache for ONE token at f16, across the attention layers only.
@@ -256,7 +258,8 @@ def _layout_from_readers(readers) -> ModelLayout:
             else:
                 resident[index] = resident.get(index, 0) + nbytes
             continue
-        if "token_embd" in name:
+        # token_embd_norm is a repeating-layer tensor, not a host-pinned input embedding.
+        if "token_embd" in name and not name.startswith("token_embd_norm"):
             token_embd += nbytes
         elif name == "output.weight":
             lm_head += nbytes
@@ -306,6 +309,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         blocks = blocks,
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd,
+        tensor_bytes = sum(int(t.n_bytes) for r in readers for t in r.tensors),
         other_resident_bytes = other_resident,
         kv_bytes_per_token_f16 = kv_per_token,
         recurrent_bytes = recurrent,

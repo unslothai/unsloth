@@ -138,7 +138,9 @@ def test_ownership_holds_from_the_reservation_not_from_the_end_of_begin_generate
         assert backend.reserved.wait(20)
         with _client(ALICE) as client:
             assert client.post(cancel).json() == {"cancelled": False}
-            assert client.get(progress).json() == {"loaded": True, "yours": False}
+            hidden = client.get(progress).json()
+            assert hidden["yours"] is False and hidden["active"] is False, hidden
+            assert hidden.get("video") is None, hidden
         assert backend.cancelled == []
         with _client(BOB) as client:
             assert client.get(progress).json()["video"]["prompt"] == CLIP["prompt"]

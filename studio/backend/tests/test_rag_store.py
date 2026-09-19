@@ -11,6 +11,7 @@ import pytest
 
 from core.rag import store
 from core.rag.chunking import Chunk
+from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
 
 VOCAB = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
 
@@ -408,14 +409,13 @@ def test_query_shaping_stays_cheap_on_a_pasted_log():
     takes about 4.6s of CPU; linear it takes about 6ms. A 1.0s ceiling is unreachable by
     a linear implementation on any machine that can run this suite at all.
     """
-    import time
-
-    question = f"what is the current value of ZQXVARA123\n{_pasted_prose(6000)}"
-    started = time.perf_counter()
-    expressions = store.conversation_match_queries(question)
-    elapsed = time.perf_counter() - started
+    expressions = assert_linear(
+        store.conversation_match_queries,
+        lambda n: f"what is the current value of ZQXVARA123\n{_pasted_prose(n)}",
+        "paste shaping",
+        1_500,
+    )
     assert expressions and expressions[0] == '"zqxvara123"'
-    assert elapsed < 1.0, f"shaping a 6000-word paste took {elapsed:.2f}s"
 
 
 def test_a_quoted_function_word_survives_the_stopword_filter():

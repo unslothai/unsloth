@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
+import { setHfEndpoints } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
   isProvisionalVerdict,
@@ -165,12 +166,18 @@ export async function fetchDeviceType(options?: {
         cloudflare_url?: string | null;
         server_url?: string | null;
         secure?: boolean;
+        hf_endpoint?: string;
+        hf_datasets_server?: string;
       };
       // Once the store holds an authoritative (server-reported) platform, a non-forced response
       // must not overwrite it. It may be an unauthenticated fallback, or an earlier authenticated
       // request that resolved after a later forced refresh already picked up device_type and the
       // tunnel fields; writing either would reset device type or null the tunnel fields. Forced
       // refreshes are explicit re-reads, so they still write.
+      // Before the authoritative-platform guard below: unauthenticated and
+      // idempotent, and a mirror whose first authoritative reply already landed
+      // would otherwise never route its Hub calls.
+      setHfEndpoints(data.hf_endpoint, data.hf_datasets_server);
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
       }

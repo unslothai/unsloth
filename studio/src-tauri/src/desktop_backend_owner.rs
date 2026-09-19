@@ -54,6 +54,13 @@ struct DesktopBackendMetadata {
     studio_root_id: String,
     started_at_ms: u64,
     updated_at_ms: u64,
+    // The endpoints this backend was launched with. A process that adopts it may
+    // have a different environment, and builds its CSP before it can ask
+    // /api/health. Absent in older files, hence the defaults.
+    #[serde(default)]
+    hf_endpoint: Option<String>,
+    #[serde(default)]
+    hf_datasets_server: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -470,6 +477,29 @@ fn metadata_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| metadata_path_for_home(&home))
 }
 
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// The endpoints recorded by whichever process started the backend still
+/// running, so this one can allow them in its CSP. Best effort: a missing,
+/// unreadable or older file yields nothing.
+pub(crate) fn recorded_hf_endpoints() -> Vec<String> {
+    let Some(path) = metadata_path() else {
+        return Vec::new();
+    };
+    let Ok(Some(metadata)) = read_metadata(&path) else {
+        return Vec::new();
+    };
+    [metadata.hf_endpoint, metadata.hf_datasets_server]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
 pub(crate) fn token_sha256(token: &str) -> String {
     hex_bytes(&Sha256::digest(token.as_bytes()))
 }
@@ -530,6 +560,8 @@ pub(crate) fn activate_owner(
         studio_root_id: pending.studio_root_id,
         started_at_ms: now,
         updated_at_ms: now,
+        hf_endpoint: non_empty_env("HF_ENDPOINT"),
+        hf_datasets_server: non_empty_env("HF_DATASETS_SERVER"),
     };
     let state = BackendOwnerState { path, metadata };
     state.write().map_err(|error| {
@@ -769,6 +801,8 @@ pub(crate) fn install_test_owner(root_id: &str, token: &str) {
         studio_root_id: root_id.to_string(),
         started_at_ms: 1,
         updated_at_ms: 1,
+        hf_endpoint: None,
+        hf_datasets_server: None,
     };
     *TEST_EXPECTED_STUDIO_ROOT_ID.lock().unwrap() = Some(root_id.to_string());
     *TEST_METADATA.lock().unwrap() = Some(metadata);
@@ -789,6 +823,8 @@ pub(crate) fn test_owner_state(root_id: &str, token: &str, port: u16) -> Backend
         studio_root_id: root_id.to_string(),
         started_at_ms: 1,
         updated_at_ms: 1,
+        hf_endpoint: None,
+        hf_datasets_server: None,
     };
     BackendOwnerState {
         path: std::env::temp_dir().join(format!(
@@ -1401,6 +1437,8 @@ mod tests {
             studio_root_id: ROOT_ID.to_string(),
             started_at_ms: 1,
             updated_at_ms: 1,
+            hf_endpoint: None,
+            hf_datasets_server: None,
         }
     }
 

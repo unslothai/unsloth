@@ -50,15 +50,71 @@ def test_the_hub_readme_describes_the_shipped_images():
         assert stale not in text, f"the Hub README still carries {stale!r} from the old image"
 
 
+def test_the_hub_readme_explains_the_studio_volume():
+    """The volume keeps Studio's data and never pins its code; a volume from an image
+    before the code/data split is migrated with its old code kept aside. Both facts,
+    the way back to an older image, and what `docker rm` still discards have to be on
+    the page, since the quick start above them mounts the volume by default."""
+    text = HUB_README.read_text(encoding = "utf-8")
+    for needle in (
+        "-v unsloth-studio:/opt/unsloth-studio",
+        "/opt/unsloth-studio-app",
+        ".unsloth-studio-legacy/",
+        "UNSLOTH_STUDIO_KEEP_LEGACY=0",
+        "unsloth-studio-update",
+        "named volume, not a bind mount of a Windows or macOS host directory",
+    ):
+        assert needle in text, f"the Hub README no longer mentions {needle!r}"
+    # the helper is described as setting the flags of the quick start, which now
+    # includes the volume: run.sh must mount it (test_docker_cpu_fallback.py checks)
+    assert "including the `unsloth-studio` volume" in text
+    repo = REPO_README.read_text(encoding = "utf-8")
+    assert "-v unsloth-studio:/opt/unsloth-studio" in repo
+    assert ".unsloth-studio-legacy/" in repo
+
+
+def _docker_sections(text: str) -> list[str]:
+    """Every `#### Docker` section in the README, not just the first one.
+
+    This used to take `text.index("#### Docker")` and read to the next `####`. The README
+    grew a second Docker heading above the one that carries the run command (a one-line
+    pointer in the install list), and the pins below then read a section that was never
+    meant to hold a `docker run` and failed on main. Which heading comes first is an
+    editing accident, so key on the content instead: the section that runs the image is
+    the one these assertions are about.
+    """
+    sections = []
+    start = text.find("#### Docker")
+    while start >= 0:
+        end = text.find("####", start + len("#### Docker"))
+        sections.append(text[start : end if end >= 0 else len(text)])
+        start = text.find("#### Docker", start + 1)
+    return sections
+
+
 def test_the_repo_readme_run_command_matches_the_image():
     text = REPO_README.read_text(encoding = "utf-8")
-    start = text.index("#### Docker")
-    section = text[start : text.index("####", start + 1)]
+    sections = _docker_sections(text)
+    assert sections, "the README no longer has a `#### Docker` section"
+    running = [s for s in sections if "docker run" in s]
+    # Exactly one, in both directions. Zero means the run command was dropped, which is the
+    # regression this test was written for and which picking by content would otherwise hide.
+    # More than one means two places tell the user how to start the image and only one of
+    # them is pinned here, which is how they drift apart.
+    assert len(running) == 1, (
+        f"expected exactly one `#### Docker` section carrying a `docker run`, found "
+        f"{len(running)} of {len(sections)} Docker sections. Pin the other one too or fold "
+        f"them together; a second unpinned run command is how the README goes stale."
+    )
+    section = running[0]
     assert "unsloth/unsloth:core" in section
     assert "/workspace/host" in section
     assert "--ipc=host" in section
+    # Across every Docker section, not only the one that runs the image: a stale port or path
+    # left behind in the short pointer misleads exactly as much as one in the full command.
     for stale in ("2222:22", "/workspace/work"):
-        assert stale not in section, f"the README run command still has {stale!r}"
+        for other in sections:
+            assert stale not in other, f"a README Docker section still has {stale!r}"
 
 
 @pytest.fixture(scope = "module")

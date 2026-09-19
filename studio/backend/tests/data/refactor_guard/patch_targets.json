@@ -35,13 +35,9 @@
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
-    "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py"
   ],
   "core.inference.chat_template_helpers.detect_think_prefill": [
-    "tests/test_mlx_inference_backend.py",
-    "tests/test_mlx_inference_backend.py",
-    "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",

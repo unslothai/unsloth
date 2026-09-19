@@ -39,9 +39,18 @@ def _infer_studio_home_from_venv() -> Path | None:
         ).is_file()
     except OSError:
         return None
-    if has_sentinel:
-        return candidate
-    return None
+    if not has_sentinel:
+        return None
+    # In the Docker image sys.prefix resolves to UNSLOTH_STUDIO_APP, which carries the same sentinels
+    # but is the container layer, not the volume: never adopt it as the home.
+    app_dir = os.environ.get("UNSLOTH_STUDIO_APP", "").strip()
+    if app_dir:
+        try:
+            if candidate == Path(app_dir).resolve():
+                return None
+        except (OSError, ValueError):
+            pass
+    return candidate
 
 
 def studio_root() -> Path:

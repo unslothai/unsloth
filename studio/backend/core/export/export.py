@@ -39,7 +39,7 @@ from utils.paths import (
     resolve_output_dir,
 )
 from core.inference import get_inference_backend
-from utils.paths.path_utils import drop_appledouble_metadata
+from utils.paths.path_utils import any_not_appledouble_metadata, drop_appledouble_metadata
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
@@ -47,7 +47,6 @@ _TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
     try:
         from peft import PeftModel, PeftModelForCausalLM
-        from transformers.modeling_utils import PushToHubMixin
         import torch
     except Exception as _torch_exc:
         _TORCH_IMPORT_ERROR = _torch_exc
@@ -437,6 +436,39 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 """
 
 
+# export_metadata.json is local bookkeeping whose base model can be a local path; the GGUF push
+# keeps it out of the repo too.
+_HUB_UPLOAD_IGNORE = ["export_metadata.json", "._*"]
+
+_STAGING_PREFIX = "unsloth-hub-upload-"
+
+
+def _staging_dir(export_parent):
+    """Stage a copy of an export where it fits: merge_and_overwrite_lora refuses a save its
+    destination cannot hold, and neither the temporary directory nor the export's own filesystem is
+    reliably the roomier, or even writable — only the export directory itself has to be.
+    """
+    roomiest = []
+    for parent in (Path(tempfile.gettempdir()), Path(export_parent)):
+        try:
+            roomiest.append((shutil.disk_usage(parent).free, parent))
+        except OSError:
+            continue
+    roomiest.sort(key = lambda candidate: -candidate[0])
+    for _, parent in roomiest:
+        try:
+            return tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX, dir = parent)
+        except OSError:
+            continue
+    return tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX)
+
+
+def _holds_checkpoint_weights(directory):
+    return Path(directory).is_dir() and any(
+        entry.suffix in (".safetensors", ".bin") for entry in Path(directory).iterdir()
+    )
+
+
 def _ensure_hub_repo_private(hf_api, repo_id):
     """Tighten an existing repo to private: create_repo sets `private` only at creation."""
     try:
@@ -452,9 +484,50 @@ def _ensure_hub_repo_private(hf_api, repo_id):
         raise RuntimeError(
             f"private=True was requested but {repo_id!r} could not be confirmed private "
             "(the token likely lacks `write:repo_settings`, or the repository belongs to "
-            "someone else). Refusing to upload rather than publish the GGUF files to a "
-            "public repository."
+            "someone else). Refusing to upload rather than publish to a public repository."
         ) from exception
+
+
+def _open_hub_repo(hf_api, repo_id, private):
+    """Create or reuse the repo we are about to upload into, private before anything lands.
+
+    Call this immediately before the upload, not earlier: it is what turns a failure after
+    this point into an empty repo.
+    """
+    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+    repo_id = getattr(repo_url, "repo_id", repo_id)
+    if private:
+        _ensure_hub_repo_private(hf_api, repo_id)
+    return repo_id
+
+
+def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
+    """Write the card the delegated push can no longer write for itself.
+
+    Unsloth's `upload_to_huggingface` only writes it when its own `create_repo(exist_ok=False)`
+    finds the repo absent, so opening the repo first silently costs a fresh push its card.
+    Best-effort, and an existing card is kept, exactly as the merged and base paths do.
+    """
+    try:
+        if hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
+            return
+        config = getattr(model, "config", None)
+        if config is None:
+            return
+        base_model = getattr(config, "_name_or_path", "unknown") or "unknown"
+        # method/extra reproduce what upload_to_huggingface passed for this path
+        # ("finetuned", "trl"): the template already carries the unsloth tag, so `extra`
+        # is where trl goes, and the heading already reads "Uploaded finetuned ... model".
+        content = MODEL_CARD.format(
+            username = repo_id.split("/")[0],
+            base_model = repo_id if os.path.isdir(base_model) else base_model,
+            model_type = getattr(config, "model_type", "llm"),
+            method = "",
+            extra = "trl",
+        )
+        ModelCard(content).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+    except Exception as exception:
+        logger.warning(f"Could not publish the model card: {exception}")
 
 
 class ExportBackend:
@@ -781,6 +854,7 @@ class ExportBackend:
         # save_pretrained_merged is a no-op merge for non-PEFT base models, so one path covers both.
 
         output_path: Optional[str] = None
+        save_dir_was_empty = False
         # Two backends: compressed-tensors (llm-compressor, NVIDIA-only) and portable torchao FP8/INT8.
         # The alias comes from compressed_method (the "all formats" dropdown) or the format_type label.
         _LABEL_TO_ALIAS = {
@@ -881,6 +955,12 @@ class ExportBackend:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
+                # Leftovers in a reused folder would be uploaded too, so only a fresh one is
+                # pushed as is. Finder metadata does not count; the upload drops it anyway.
+                save_dir_was_empty = not (
+                    Path(save_directory).is_dir()
+                    and any_not_appledouble_metadata(Path(save_directory).iterdir())
+                )
                 ensure_dir(Path(save_directory))
 
                 # No push, but the merge resolves the base repo and save.py turns None into
@@ -949,40 +1029,73 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
-                elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():
-                    # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
-                    # redo the expensive quantization.
-                    hf_api = HfApi(token = hf_token)
-                    repo_id = PushToHubMixin._create_repo(
-                        PushToHubMixin,
-                        repo_id = repo_id,
-                        private = private,
-                        token = hf_token,
-                    )
-                    content = MODEL_CARD.format(
-                        username = repo_id.split("/")[0],
-                        base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
-                        model_type = getattr(self.current_model.config, "model_type", "llm"),
-                        method = compressed_alias or format_type,
-                        extra = "unsloth",
-                    )
-                    ModelCard(content).push_to_hub(
-                        repo_id, token = hf_token, commit_message = "Unsloth Model Card"
-                    )
-                    hf_api.upload_folder(
-                        folder_path = output_path,
-                        repo_id = repo_id,
-                        repo_type = "model",
-                    )
                 else:
-                    hub_save_method = save_method if save_method is not None else "merged_16bit"
-                    self.current_model.push_to_hub_merged(
-                        repo_id,
-                        self.current_tokenizer,
-                        save_method = hub_save_method,
-                        token = hf_token,
-                        private = private,
-                    )
+                    uploaded = False
+                    if output_path and Path(output_path).is_dir():
+                        # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
+                        # redo the expensive merge and quantization.
+                        with contextlib.ExitStack() as stack:
+                            upload_dir = output_path
+                            if not (is_compressed or is_torchao or save_dir_was_empty):
+                                # A reused folder can hold leftovers, so upload a clean second save
+                                # instead.
+                                upload_dir = stack.enter_context(
+                                    _staging_dir(Path(output_path).parent)
+                                )
+                                self.current_model.save_pretrained_merged(
+                                    upload_dir,
+                                    self.current_tokenizer,
+                                    save_method = save_method,
+                                    **merged_token_kw,
+                                )
+                            # Whatever was built, only weights are worth a repo; without them the
+                            # merging push below runs instead, as it did before this was uploaded.
+                            if _holds_checkpoint_weights(upload_dir):
+                                hf_api = HfApi(token = hf_token)
+                                repo_url = hf_api.create_repo(
+                                    repo_id, private = private, exist_ok = True
+                                )
+                                repo_id = getattr(repo_url, "repo_id", repo_id)
+                                if private:
+                                    _ensure_hub_repo_private(hf_api, repo_id)
+                                hf_api.upload_folder(
+                                    folder_path = upload_dir,
+                                    repo_id = repo_id,
+                                    repo_type = "model",
+                                    ignore_patterns = _HUB_UPLOAD_IGNORE,
+                                )
+                                uploaded = True
+                    if uploaded:
+                        # Last and best-effort like the GGUF card; an existing card is kept, as
+                        # push_to_hub_merged does.
+                        try:
+                            if not hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
+                                base_model = getattr(
+                                    self.current_model.config, "_name_or_path", "unknown"
+                                )
+                                content = MODEL_CARD.format(
+                                    username = repo_id.split("/")[0],
+                                    base_model = repo_id if os.path.isdir(base_model) else base_model,
+                                    model_type = getattr(
+                                        self.current_model.config, "model_type", "llm"
+                                    ),
+                                    method = compressed_alias or format_type,
+                                    extra = "unsloth",
+                                )
+                                ModelCard(content).push_to_hub(
+                                    repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                                )
+                        except Exception as exception:
+                            logger.warning(f"Could not publish the model card: {exception}")
+                    else:
+                        hub_save_method = save_method if save_method is not None else "merged_16bit"
+                        self.current_model.push_to_hub_merged(
+                            repo_id,
+                            self.current_tokenizer,
+                            save_method = hub_save_method,
+                            token = hf_token,
+                            private = private,
+                        )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
             return True, "Model exported successfully", output_path
@@ -1076,12 +1189,10 @@ class ExportBackend:
                     )
 
                     hf_api = HfApi(token = hf_token)
-                    repo_id = PushToHubMixin._create_repo(
-                        PushToHubMixin,
-                        repo_id = repo_id,
-                        private = private,
-                        token = hf_token,
-                    )
+                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    repo_id = getattr(repo_url, "repo_id", repo_id)
+                    if private:
+                        _ensure_hub_repo_private(hf_api, repo_id)
                     username = repo_id.split("/")[0]
 
                     content = MODEL_CARD.format(
@@ -1558,17 +1669,18 @@ class ExportBackend:
 
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
 
+                # Needs a local save_directory so the conversion is not re-run.
+                if gguf and not (output_path and Path(output_path).is_dir()):
+                    return (
+                        False,
+                        "GGUF LoRA Hub upload requires a local save directory; set one and retry.",
+                        None,
+                    )
+
+                hf_api = HfApi(token = hf_token)
+
                 if gguf:
-                    # Needs a local save_directory so the conversion is not re-run.
-                    if not (output_path and Path(output_path).is_dir()):
-                        return (
-                            False,
-                            "GGUF LoRA Hub upload requires a local save directory; set one and "
-                            "retry.",
-                            None,
-                        )
-                    hf_api = HfApi(token = hf_token)
-                    hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    repo_id = _open_hub_repo(hf_api, repo_id, private)
                     hf_api.upload_folder(
                         folder_path = output_path,
                         repo_id = repo_id,
@@ -1576,16 +1688,22 @@ class ExportBackend:
                     )
                 elif _IS_MLX:
                     with tempfile.TemporaryDirectory() as tmp_dir:
+                        # Serialise first: opening the repo before this would leave an empty
+                        # one behind whenever the adapter or tokenizer fails to write.
                         self.current_model.save_lora_adapters(tmp_dir)
                         self.current_tokenizer.save_pretrained(tmp_dir)
-                        hf_api = HfApi(token = hf_token)
-                        hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                        repo_id = _open_hub_repo(hf_api, repo_id, private)
                         hf_api.upload_folder(
                             folder_path = tmp_dir,
                             repo_id = repo_id,
                             repo_type = "model",
                         )
                 else:
+                    # Opened here rather than left to push_to_hub: a repo that does not exist
+                    # yet is one another client can create public first, and `private` cannot
+                    # change an existing repo's visibility, so the adapter would land in it.
+                    repo_id = _open_hub_repo(hf_api, repo_id, private)
+                    _publish_unsloth_model_card(hf_api, repo_id, self.current_model, hf_token)
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
                     self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
                 logger.info(f"Adapter pushed successfully to {repo_id}")
