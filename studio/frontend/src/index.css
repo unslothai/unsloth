@@ -1441,24 +1441,28 @@ html[data-chat-font] .aui-root {
 	   Matched on the InfoHint itself so every field style is covered, including the shared
 	   chat slider. Two levels up is the field container; higher ancestors deliberately do
 	   not match. Opacity, not display, so revealing one never reflows its row. */
-	:is(.diffusion-surface, .hint-on-hover) [data-slot="info-hint"] {
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity 150ms;
-	}
-	/* :has(:focus-visible), not :focus-within: a select hands focus back to its trigger on
-	   close, which left the "i" up until something else was clicked. */
-	:is(.diffusion-surface, .hint-on-hover)
-		:is(*:hover, *:has(:focus-visible))
-		> [data-slot="info-hint"],
-	:is(.diffusion-surface, .hint-on-hover)
-		:is(*:hover, *:has(:focus-visible))
-		> *
-		> [data-slot="info-hint"],
-	:is(.diffusion-surface, .hint-on-hover)
-		[data-slot="info-hint"]:focus-visible {
-		opacity: 1;
-		pointer-events: auto;
+	/* Hover-capable pointers only. A tap is not hover and does not raise :focus-visible, so
+	   on a touch screen this would hide a control that has no other way to be reached. */
+	@media (hover: hover) {
+		:is(.diffusion-surface, .hint-on-hover) [data-slot="info-hint"] {
+			opacity: 0;
+			pointer-events: none;
+			transition: opacity 150ms;
+		}
+		/* :has(:focus-visible), not :focus-within: a select hands focus back to its trigger
+		   on close, which left the "i" up until something else was clicked. */
+		:is(.diffusion-surface, .hint-on-hover)
+			:is(*:hover, *:has(:focus-visible))
+			> [data-slot="info-hint"],
+		:is(.diffusion-surface, .hint-on-hover)
+			:is(*:hover, *:has(:focus-visible))
+			> *
+			> [data-slot="info-hint"],
+		:is(.diffusion-surface, .hint-on-hover)
+			[data-slot="info-hint"]:focus-visible {
+			opacity: 1;
+			pointer-events: auto;
+		}
 	}
 
 	/* Inline numeric input — used for slider values and Context Length.

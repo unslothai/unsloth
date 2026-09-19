@@ -49,26 +49,42 @@ function MemoryFigure({
   useLayoutEffect(() => {
     const button = buttonRef.current;
     const measurement = measureRef.current;
-    if (!button || !measurement) return;
+    const row = button?.parentElement;
+    if (!button || !measurement || !row) return;
     let active = true;
     const fit = () => {
       if (!active) return;
+      // Room is measured on the row, never on the pill. The pill sizes to the label it is
+      // showing, so measuring itself confirms whatever it picked first: once a narrow row
+      // forced a shorter label the pill shrank to match, and widening the panel resized
+      // nothing, so the full-precision figure never came back.
       const style = getComputedStyle(button);
-      // Fractional width, not the integer clientWidth. The pill sizes to the label it is
-      // showing, so a rounded-down measurement makes that label look too wide for the box
-      // it just set and the fit drops a candidate for nothing.
-      const width =
-        button.getBoundingClientRect().width -
-        Number.parseFloat(style.paddingLeft) -
+      const gutters =
+        Number.parseFloat(style.paddingLeft) +
         Number.parseFloat(style.paddingRight);
+      const rowStyle = getComputedStyle(row);
+      const gap = Number.parseFloat(rowStyle.columnGap) || 0;
+      const siblings = Array.from(row.children).filter(
+        (child) => child !== button,
+      );
+      const room =
+        row.clientWidth -
+        Number.parseFloat(rowStyle.paddingLeft) -
+        Number.parseFloat(rowStyle.paddingRight) -
+        gap * siblings.length -
+        siblings.reduce(
+          (total, child) => total + child.getBoundingClientRect().width,
+          0,
+        ) -
+        gutters;
       const index = Array.from(measurement.children).findIndex(
-        (child) => child.getBoundingClientRect().width <= width + 0.5,
+        (child) => child.getBoundingClientRect().width <= room + 0.5,
       );
       setDisplayIndex(index < 0 ? candidates.length - 1 : index);
     };
     fit();
     const observer = new ResizeObserver(fit);
-    observer.observe(button);
+    observer.observe(row);
     observer.observe(measurement);
     void document.fonts.ready.then(fit);
     return () => {
