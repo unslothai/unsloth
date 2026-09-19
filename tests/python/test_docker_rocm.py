@@ -507,7 +507,7 @@ def _entrypoint(
 
 
 @_posix_shell
-def _fake_rocm_torch(tmp_path, libnames):
+def _fake_rocm_torch(tmp_path, libnames, available = True):
     """A ROCm torch on a supported arch whose lib/ holds exactly `libnames`."""
     fake = tmp_path / "fake"
     (fake / "torch" / "cuda").mkdir(parents = True)
@@ -521,7 +521,7 @@ def _fake_rocm_torch(tmp_path, libnames):
     )
     (fake / "torch" / "cuda" / "__init__.py").write_text(
         "class _P:\n    gcnArchName = 'gfx1201'\n"
-        "def is_available(): return True\n"
+        f"def is_available(): return {available}\n"
         "def device_count(): return 1\n"
         "def get_device_name(i): return 'AMD Radeon AI PRO R9700'\n"
         "def get_device_properties(i): return _P()\n"
@@ -611,7 +611,7 @@ class TestRocmEntrypoint:
         assert "UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm" in err, err
         assert "unsloth/unsloth-rocm:latest" not in err, err
 
-    def _dxg_with_torch(self, tmp_path, libnames):
+    def _dxg_with_torch(self, tmp_path, libnames, available = True):
         lib = tmp_path / "dxglib"
         lib.mkdir()
         (lib / "librocdxg.so.1").write_text("")
@@ -619,9 +619,22 @@ class TestRocmEntrypoint:
             tmp_path,
             kfd = False,
             dxg = True,
-            python_body = _fake_rocm_torch(tmp_path, libnames),
+            python_body = _fake_rocm_torch(tmp_path, libnames, available),
             env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
         )
+
+    def test_dxg_torch_failure_gives_bridge_advice_not_amdgpu_advice(self, tmp_path):
+        """WSL has no host amdgpu stack, so the rocm-smi / dkms / rebuild-against-the-host
+        advice is wrong there; the bridge has its own two causes (measured: the libdxcore
+        mount, and the Windows driver)."""
+        rc, ran, err = self._dxg_with_torch(
+            tmp_path,
+            ["librocprofiler-register.so"],
+            available = False,
+        )
+        assert rc == 1 and not ran, err
+        assert "libdxcore" in err and "Windows AMD driver" in err, err
+        assert "dkms" not in err and "amdgpu driver has to be" not in err, err
 
     def test_dxg_refuses_a_torch_bundling_librocprofiler_sdk(self, tmp_path):
         """That library enumerates GPUs from a KFD topology WSL does not have, and aborts."""

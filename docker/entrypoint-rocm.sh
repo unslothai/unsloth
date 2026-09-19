@@ -198,13 +198,17 @@ image_rocm = os.environ.get("IMAGE_ROCM") or ".".join(hip_ver.split(".")[:2])
 print("ERROR: torch is a ROCm build but torch.cuda.is_available() is False: HIP could")
 print("not open the device the container was given.")
 print()
-
-
 if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
-    print("This container is on the WSL2 DXG bridge, so the host amdgpu driver advice")
-    print("below does not apply; check the Windows AMD driver instead (a current Adrenalin")
-    print("with ROCDXG support, as scripts/install_rocm_wsl_strixhalo.sh documents).")
-    print()
+    # WSL has no host amdgpu stack: the Linux driver advice below is wrong here.
+    print("This container is on the WSL2 DXG bridge, so the host amdgpu driver is not")
+    print("involved. Run rocminfo inside the container:")
+    print("  'Failed to load libdxcore.so': /usr/lib/wsl/lib is not mounted or not on")
+    print("    LD_LIBRARY_PATH (measured). Both come from")
+    print("      UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>")
+    print("  no GPU agent at all: update the Windows AMD driver (a current Adrenalin with")
+    print("    ROCm-on-WSL support, as scripts/install_rocm_wsl_strixhalo.sh documents).")
+    print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
+    sys.exit(1)
 print(f"This image was built against ROCm {image_rocm} (HIP {hip_ver}). The host's")
 print("amdgpu driver has to be at least as new. Check the host (NOT the container):")
 print("  rocm-smi --version   or   cat /opt/rocm/.info/version   or   dkms status")
