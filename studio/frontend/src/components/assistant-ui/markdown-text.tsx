@@ -72,6 +72,7 @@ import {
 } from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
 import { withMathBlockMarker } from "./math-block-marker";
+import { markdownBlockFallback } from "./markdown-block-fallback";
 import {
   MarkdownBlockBoundary,
   MarkdownBlockFallbackView,
@@ -602,15 +603,22 @@ function StreamdownBlockContent(props: BlockProps) {
   }
 
   /*
-     * THE STREAMING ROUTE, and the one that actually fires. `getCodeFence` needs the CLOSING fence, so a fence that
-     * is still arriving has no `codeFence` and falls all the way through to here rather than to `FenceBlock`. This
-     * bare `Block` is therefore what first asks for the highlighter chunk on a streamed reply, which is exactly when
-     * it fails. Left unguarded, the whole-block boundary catches that and latches with no reset, so the block never
-     * re-enters `FenceBlock` when its closing fence finally lands and the copy and download bar never mounts at all.
-     * Measured: with this unguarded, a streamed abort produced an identical document to the commit before the inner
-     * boundary existed, 0 copy and 0 download buttons on both. Guarding it keeps the failure inside the renderer
-     * boundary, so the completed block mounts `FenceBlock` normally and keeps its controls.
+     * `isIncomplete` is Streamdown's unclosed-fence flag and `getCodeFence` needs the close, so a block that is only an
+     * open fence renders as the plain shell until `FenceBlock` highlights it on close; re-rendering highlighted spans
+     * on every streamed chunk is what lagged (#10769). Everything else renders `Block` inside the renderer boundary,
+     * so a highlighter chunk that fails to load cannot latch the whole-block boundary.
      */
+  if (props.isIncomplete) {
+    const openFence = markdownBlockFallback(props.content);
+    if (openFence.fenced) {
+      return (
+        <StreamingFenceShell
+          languageToken={openFence.language}
+          source={openFence.text}
+        />
+      );
+    }
+  }
   return (
     <MarkdownRendererBoundary
       fallback={<MarkdownBlockFallbackView content={props.content} />}
@@ -618,6 +626,28 @@ function StreamdownBlockContent(props: BlockProps) {
       <Block {...blockProps} />
     </MarkdownRendererBoundary>
   );
+}
+
+// Still tokenized at the plugin's streaming cadence, only not rendered: otherwise the close tokenizes the whole
+// body in one task, which freezes WebKit for seconds on a large fence.
+function StreamingFenceShell({
+  languageToken,
+  source,
+}: {
+  languageToken: string | null;
+  source: string;
+}) {
+  useEffect(() => {
+    code.highlight(
+      {
+        code: trimTrailingNewlines(source),
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      },
+      () => {},
+    );
+  }, [source, languageToken]);
+  return <DeferredFenceShell language={languageToken} source={source} />;
 }
 
 /*
