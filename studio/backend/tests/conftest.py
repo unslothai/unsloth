@@ -1113,3 +1113,26 @@ def _process_shutdown_latch_is_clear():
         yield
     finally:
         _reopen()
+
+
+@pytest.fixture(autouse = True)
+def _drop_the_settings_memo_between_tests():
+    """Stop one test's app settings answering another test's read.
+
+    utils.openai_auto_switch_settings memoizes every setting it reads for _CACHE_TTL_S
+    (2 seconds) in a module-level dict, which is right on a request hot path and wrong
+    across tests: suites run far faster than the TTL, so a test that reads a setting hands
+    its value to whatever runs next, and only to the tests that happen to run inside the
+    window. That is not an ordering bug a fixed test order would catch; it is a clock.
+
+    It cost a day of #11241: a leaked auto-download flag turned the withheld-model tests'
+    404 into a fetch-and-load, which then died on their own backend double and surfaced as
+    `assert 500 == 404` in the l-r shard and nowhere else.
+    """
+    from utils import openai_auto_switch_settings as _settings
+
+    _settings._cache.clear()
+    try:
+        yield
+    finally:
+        _settings._cache.clear()

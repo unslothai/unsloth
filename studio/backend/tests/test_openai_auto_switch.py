@@ -6155,6 +6155,12 @@ def _wire_unloaded_chat(
 
     monkeypatch.setattr(inference_route, "_cached_local_catalog", _local_catalog)
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
+    # Auto-download decides whether a model this server does not have is FETCHED instead of
+    # refused, so every 404 below depends on it being off. It is not off by construction:
+    # get_stored_openai_auto_download_enabled reads a process-wide cache with a 2 second TTL,
+    # so a neighbouring test that read the setting hands this one its value and the refusal
+    # becomes a download. Pin it like every other input here.
+    monkeypatch.setattr(settings, "get_openai_auto_download_enabled", lambda: False)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: None)
     monkeypatch.setattr(
         resolver, "describe_local_miss", lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ())
@@ -11274,6 +11280,53 @@ def test_chat_absent_model_with_only_resolver_withheld_checkpoints(monkeypatch):
     assert status == 404
     assert "none of the downloaded models is a chat model" in detail
     assert "no models are downloaded yet" not in detail
+
+
+def test_the_settings_memo_is_cleared_around_every_test():
+    # Drives the autouse fixture directly rather than relying on two tests running in order:
+    # under xdist --dist loadgroup a neighbouring pair can land on different workers, so an
+    # ordering-based check would pass by luck. Both ends matter: clearing only on entry leaves
+    # the last test of a worker seeding the first of the next module.
+    import time
+
+    # pytest has already imported this directory's conftest; find it by the attribute rather
+    # than by module name, which differs between rootdirs (`tests.conftest` is the repo-root one).
+    import sys
+
+    fixture = next(
+        getattr(module, "_drop_the_settings_memo_between_tests")
+        for module in list(sys.modules.values())
+        if module is not None and hasattr(module, "_drop_the_settings_memo_between_tests")
+    )
+
+    key = (settings.OWNER.account_id, settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY)
+    run = fixture.__wrapped__()
+    settings._cache[key] = (time.monotonic(), True)
+    next(run)
+    assert settings._cache == {}, "the memo was not cleared before the test body"
+
+    settings._cache[key] = (time.monotonic(), True)
+    next(run, None)
+    assert settings._cache == {}, "the memo was not cleared after the test body"
+
+
+def test_withheld_refusal_survives_a_leaked_auto_download_flag(monkeypatch):
+    # The refusals above are only refusals while auto-download is off, and it is not off by
+    # construction: get_stored_openai_auto_download_enabled reads a 2-second process-wide memo,
+    # so a neighbouring test's read decides this one. Seed that memo the way a neighbour would
+    # and the answer must not move. Unpinned this returns a download error instead of the 404
+    # (locally a 503 with the Hub blocked, on CI a 500 when the load reaches the backend double),
+    # which is exactly how #11241 showed up in the l-r shard and nowhere else.
+    import time
+
+    _wire_withheld_chat(monkeypatch, objects = [], downloaded = ("org/has-auto-map",))
+    settings._cache[(settings.OWNER.account_id, settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY)] = (
+        time.monotonic(),
+        True,
+    )
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404, f"a leaked auto-download flag turned the refusal into a {status}"
+    assert "none of the downloaded models is a chat model" in detail
 
 
 def test_chat_withheld_model_does_not_send_the_caller_to_load_it(monkeypatch):
