@@ -40,7 +40,9 @@ def _enable_verbose_access_logs() -> None:
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
 
 
-# Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, sys.prefix, legacy ~/.unsloth/studio. Markers mirror install.ps1 / uninstall.ps1 and are matched as bytes.
+# Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, UNSLOTH_HOME/studio, sys.prefix,
+# legacy ~/.unsloth/studio. Keep this aligned with storage_roots.studio_root().
+# Shim markers mirror install.ps1 / uninstall.ps1 and are matched as bytes.
 _CMD_SHIM_MARKERS = (b"unsloth-studio-managed-launcher", b"from unsloth_cli import app")
 _CMD_SHIM_MAX_BYTES = 8192
 
@@ -76,6 +78,28 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             return Path(override).expanduser().resolve(), True
         except (OSError, ValueError):
             return Path(override).expanduser(), True
+    # Keeps the CLI on the same root as storage_roots.py; see test_unsloth_home_root_agreement.py.
+    master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if master:
+        try:
+            candidate = Path(master).expanduser().resolve() / "studio"
+        except (OSError, ValueError):
+            candidate = Path(master).expanduser() / "studio"
+        try:
+            legacy = (Path.home() / ".unsloth" / "studio").resolve()
+        except (OSError, ValueError):
+            legacy = Path.home() / ".unsloth" / "studio"
+        # install.sh and install.ps1 do not read UNSLOTH_HOME yet: they still place the venv and
+        # the launcher at the legacy root, while setup puts the managed runtimes under the
+        # master root. Preferring <master>/studio unconditionally therefore made a machine with
+        # UNSLOTH_HOME merely exported report "Unsloth Studio not set up" for an install that is
+        # right there. So the master root wins only when it HAS an install; otherwise the one
+        # that exists does. Once the installers learn the flag, <master>/studio is populated and
+        # this fallback stops being reachable.
+        if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
+            if _looks_like_installer_managed_studio_home(legacy):
+                return legacy, False
+        return candidate, candidate != legacy
     try:
         prefix = Path(sys.prefix).resolve()
         if prefix.name == "unsloth_studio":
@@ -90,25 +114,85 @@ def _resolve_studio_home() -> tuple[Path, bool]:
 
 STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
+MASTER_ROOT_NOTE = ".unsloth-master-root"
+
+
+def _recorded_master_root() -> Optional[Path]:
+    """The master root setup recorded in this Studio tree, or None.
+
+    Keep this aligned with storage_roots._recorded_master_root(); see
+    test_unsloth_home_root_agreement.py. `UNSLOTH_HOME=/mnt/portable unsloth studio update` puts
+    node, llama.cpp and whisper.cpp BESIDE studio/ and leaves nothing in a later environment. The
+    backend recovers that from the note, so a `unsloth studio update` that did not would hand
+    setup a plain Studio root, have it refresh the runtimes one level down at <master>/studio/,
+    and leave the backend still launching the stale trees at <master>/.
+
+    The recorded root must exist and THIS Studio directory must lie inside it, so a tree copied
+    from one master root to another does not send the update, or a removal, into the original
+    install. Containment, not an exact <root>/studio match: the flat layout names one directory
+    for both, and UNSLOTH_HOME=/root with UNSLOTH_STUDIO_HOME=/root/custom/studio is a root that
+    genuinely contains its Studio somewhere other than the default child. The backend and both
+    uninstallers apply exactly this rule, and a stricter one here would have the CLI decline a
+    note the backend accepts, which is the same split this function exists to close.
+    """
+    try:
+        recorded = (STUDIO_HOME / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not recorded:
+        return None
+    try:
+        master = Path(recorded).expanduser().resolve()
+        here = STUDIO_HOME.resolve()
+        if master.is_dir() and (here == master or master in here.parents):
+            return master
+    except (OSError, ValueError):
+        return None
+    return None
+
 
 def _ensure_studio_env_exported() -> None:
-    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots only, per
-    subcommand rather than at import, so unrelated importers see no env changes."""
-    if not _STUDIO_HOME_IS_CUSTOM:
+    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots, and for a master
+    root the resolver above declined, per subcommand rather than at import, so unrelated
+    importers see no env changes."""
+    # storage_roots.studio_root() honours UNSLOTH_HOME with no install check, so the fallback
+    # that keeps this CLI on an installed legacy root has to be told to the backend as well.
+    # Left unexported, `unsloth studio` runs the legacy venv while the backend inside it writes
+    # studio.db, auth and the pid file under <master>/studio, which is the split
+    # tests/test_unsloth_home_root_agreement.py exists to prevent. Exporting the root does not
+    # make it custom: the value equals the legacy path, so setup.sh's and setup.ps1's own
+    # comparisons keep their ownership flags false and the installers keep their licence to
+    # replace the tree without an owner marker.
+    # The note, when this run has no UNSLOTH_HOME of its own. Exported rather than merely read,
+    # because setup runs as a subprocess and would otherwise refresh the runtimes at
+    # <master>/studio/ while the backend kept launching the ones at <master>/.
+    if not (os.environ.get("UNSLOTH_HOME") or "").strip():
+        _recorded = _recorded_master_root()
+        if _recorded is not None:
+            os.environ["UNSLOTH_HOME"] = str(_recorded)
+    if not _STUDIO_HOME_IS_CUSTOM and not (os.environ.get("UNSLOTH_HOME") or "").strip():
         return
     # Truthy-check, not setdefault: a blank UNSLOTH_STUDIO_HOME= must not win.
-    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+    if not (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip():
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     try:
         _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
         _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
     except (OSError, ValueError):
         _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
-    if _is_legacy:
+    # The runtimes are siblings of studio/, at the master root, so STUDIO_HOME/llama.cpp is one
+    # level too deep. run.py keeps a non-blank value, so a wrong export here wins everywhere.
+    _master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if _master:
+        try:
+            _llama_dir = Path(_master).expanduser().resolve() / "llama.cpp"
+        except (OSError, ValueError):
+            _llama_dir = Path(_master).expanduser() / "llama.cpp"
+    elif _is_legacy:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
     else:
         _llama_dir = STUDIO_HOME / "llama.cpp"
-    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+    if not (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip():
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
 
 
