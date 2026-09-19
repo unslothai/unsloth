@@ -6088,10 +6088,11 @@ class TestFoldedCallerOverridesDoNotOutliveTheRun:
     def test_the_exit_path_removes_it(self):
         """Beside the torch overrides file, which is deleted on exit for the same reason."""
         tail = INSTALL_SRC[INSTALL_SRC.index("try {\n    Install-UnslothStudio @args") :]
-        assert (
-            "Remove-Item -LiteralPath $script:WoaSessionOverrides -Force -ErrorAction SilentlyContinue"
-            in tail
-        )
+        # Through the guarded helper: Remove-Item's -ErrorAction does not cover the terminating
+        # error the FileSystem provider raises for a path it cannot resolve (#11290), so an
+        # unguarded removal here would abort the rest of the sweep.
+        assert "Remove-UnslothTempFileQuietly -Path $script:WoaSessionOverrides" in tail
+        assert "Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile" in tail
         head = INSTALL_SRC[: INSTALL_SRC.index("try {\n    Install-UnslothStudio @args")]
         assert head.rstrip().endswith(
             "$script:WoaSessionOverrides = $null\n$script:TorchOverridesFile = $null"
