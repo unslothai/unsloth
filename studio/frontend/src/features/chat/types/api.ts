@@ -168,7 +168,6 @@ export interface GgufVariantDetail {
   /** The only missing artifact when the main GGUF is already cached. */
   pending_drafter_filename?: string | null;
   pending_drafter_size_bytes?: number;
-  shard_count?: number;
   downloaded?: boolean;
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
