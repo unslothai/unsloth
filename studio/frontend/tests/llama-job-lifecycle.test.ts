@@ -10,6 +10,7 @@ import {
   llamaReleaseChanged,
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
+  llamaUpdateSnapshotIsStale,
   llamaUpdateToastMessage,
   ownedLlamaSwitchOutcome,
 } from "../src/lib/llama-job-lifecycle.ts";
@@ -82,6 +83,53 @@ test("a completed update stays hidden when no update remains", () => {
       operation: "update",
     }),
     { applying: false, visible: false, running: false },
+  );
+});
+
+test("a late running poll for a finished job is stale", () => {
+  const startedAt = "2026-08-18T13:02:21Z";
+  assert.equal(
+    llamaUpdateSnapshotIsStale(
+      { state: "success", operation: "update", started_at: startedAt },
+      { state: "running", operation: "update", started_at: startedAt },
+    ),
+    true,
+  );
+  assert.equal(
+    llamaUpdateSnapshotIsStale(
+      { state: "error", operation: "update", started_at: startedAt },
+      { state: "running", operation: "update", started_at: startedAt },
+    ),
+    true,
+  );
+});
+
+test("a running poll is kept when it is a different job or the current one is still running", () => {
+  const startedAt = "2026-08-18T13:02:21Z";
+  assert.equal(
+    llamaUpdateSnapshotIsStale(
+      { state: "success", operation: "update", started_at: startedAt },
+      {
+        state: "running",
+        operation: "update",
+        started_at: "2026-08-18T14:00:00Z",
+      },
+    ),
+    false,
+  );
+  assert.equal(
+    llamaUpdateSnapshotIsStale(
+      { state: "running", operation: "update", started_at: startedAt },
+      { state: "running", operation: "update", started_at: startedAt },
+    ),
+    false,
+  );
+  assert.equal(
+    llamaUpdateSnapshotIsStale(
+      { state: "success", operation: "update", started_at: startedAt },
+      { state: "success", operation: "update", started_at: startedAt },
+    ),
+    false,
   );
 });
 
