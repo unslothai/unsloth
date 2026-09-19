@@ -8,9 +8,20 @@ def _load_formatter_builders():
     # unsloth_zoo / a GPU).
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
-    wanted = {"_parse_combined_prompt", "_create_formatter"}
+    wanted = {
+        "_ESCAPED_BRACES_RE",
+        "_column_names_in",
+        "_parse_combined_prompt",
+        "_create_formatter",
+    }
     funcs = [
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in wanted)
+        or (
+            isinstance(node, ast.Assign)
+            and any(getattr(target, "id", None) in wanted for target in node.targets)
+        )
     ]
     namespace = {"re": re}
     module = ast.Module(body = funcs, type_ignores = [])
@@ -97,9 +108,21 @@ def _load_to_sharegpt():
     # Same trick as above: pull to_sharegpt and the two helpers it calls out of the source without importing unsloth.
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
-    wanted = {"_parse_combined_prompt", "_create_formatter", "to_sharegpt"}
+    wanted = {
+        "_ESCAPED_BRACES_RE",
+        "_column_names_in",
+        "_parse_combined_prompt",
+        "_create_formatter",
+        "to_sharegpt",
+    }
     funcs = [
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in wanted)
+        or (
+            isinstance(node, ast.Assign)
+            and any(getattr(target, "id", None) in wanted for target in node.targets)
+        )
     ]
     namespace = {"re": re}
     module = ast.Module(body = funcs, type_ignores = [])
