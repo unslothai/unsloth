@@ -69,8 +69,10 @@ def oracle(tmp_path, monkeypatch):
     return upstream, tmp_path
 
 
-def _diff(snapshot_dir, strict):
-    return nv.cmd_colab_diff(argparse.Namespace(snapshot_dir = str(snapshot_dir), strict = strict))
+def _diff(snapshot_dir, strict, full = False):
+    return nv.cmd_colab_diff(
+        argparse.Namespace(snapshot_dir = str(snapshot_dir), strict = strict, full = full)
+    )
 
 
 def test_no_drift_is_clean(oracle):
@@ -109,6 +111,34 @@ def test_non_rule_oracles_never_fail_strict(oracle, capsys, name, drifted):
     out = capsys.readouterr().out
     assert "CHANGED" in out
     assert "::notice::" in out
+
+
+def test_a_capped_listing_says_how_to_see_the_rest(oracle, capsys):
+    """Every package in the pip oracle is rule-bearing, so an entry the cap elides is one a
+    reviewer may be deciding on. In the drift this was written for, transformers 5.15.0 ->
+    5.16.1 sat past the CHANGED cap and the output read as though it had not moved at all.
+    """
+    upstream, snapshot_dir = oracle
+    upstream["pip-freeze.gpu.txt"] = "".join(f"pkg{i}=={i}.0\n" for i in range(200)) + PIP
+
+    assert _diff(snapshot_dir, strict = False) == 0
+
+    capped = capsys.readouterr().out
+    assert "more new entries (--full to list them)" in capped, capped
+    assert capped.count("  NEW      ") == 50, capped
+
+
+def test_full_lists_every_drifted_entry(oracle, capsys):
+    upstream, snapshot_dir = oracle
+    upstream["pip-freeze.gpu.txt"] = "".join(f"pkg{i}=={i}.0\n" for i in range(200)) + PIP
+
+    assert _diff(snapshot_dir, strict = False, full = True) == 0
+
+    full = capsys.readouterr().out
+    assert "more new entries" not in full, full
+    assert full.count("  NEW      ") == 200, full
+    # The entry the cap would have hidden, by name rather than by count.
+    assert "NEW      pkg199==199.0" in full, full
 
 
 def test_strict_oracle_is_the_one_lint_pins_against(oracle):
