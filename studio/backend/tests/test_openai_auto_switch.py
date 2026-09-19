@@ -11329,6 +11329,92 @@ def test_withheld_refusal_survives_a_leaked_auto_download_flag(monkeypatch):
     assert "none of the downloaded models is a chat model" in detail
 
 
+def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
+    # Why the fixture beside this matters, pinned as behaviour rather than left as a story.
+    # The route reads llama_keepwarm's idle stash before it refuses anything and reloads
+    # exactly what the idle loop freed, which is deliberate: after an idle unload an alias or
+    # unknown name has to stay servable. It is only a problem when the stash belongs to a
+    # DIFFERENT TEST, because the request then loads a model this one never named -- on CI,
+    # against this file's own backend double, that surfaced as
+    # `'_B' object has no attribute 'load_model'` and `assert 500 == 404`.
+    #
+    # Asserted on which model the route went to load, not on the status: the status here is
+    # whatever the double happens to be missing, and the claim is about the diversion.
+    asked: list = []
+
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [
+            {"id": "org/A-GGUF"},
+            {"id": "tiny", "task": "automatic-speech-recognition"},
+        ],
+        downloaded = ("org/A-GGUF", "unsloth/whisper-tiny"),
+    )
+
+    def _load_model(config = None, **_kw):
+        asked.append(getattr(config, "model_name", None) or config)
+        raise _Reached()
+
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type(
+            "_B",
+            (),
+            {"active_model_name": None, "models": {}, "load_model": staticmethod(_load_model)},
+        )(),
+    )
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            inference_route.openai_chat_completions(_chat_request(model = "tiny"), object(), "tester")
+        )
+
+    assert any("Idle-GGUF" in str(one) for one in asked), (
+        "the stale stash did not divert the request, so this test no longer covers the leak "
+        f"the fixture exists to stop (asked: {asked})"
+    )
+
+
+def test_the_idle_reload_stash_is_cleared_around_every_test(tmp_path):
+    # Driven directly, for the reason written on the settings-memo twin above: under xdist
+    # --dist loadgroup an ordering-based check passes by luck. Both ends matter, since the
+    # leak is the LAST idle test in a worker seeding the first test of the next module.
+    #
+    # With a manifest naming REAL files, not an empty one: llama_keepwarm makes whoever takes
+    # the manifest responsible for unlinking its slots, so a fixture that assigns None drops
+    # the only reference to a saved snapshot and leaves the bytes on disk. An empty manifest
+    # cannot tell that apart from a clean-up that worked.
+    import sys
+
+    fixture = next(
+        getattr(module, "_drop_the_idle_reload_stash_between_tests")
+        for module in list(sys.modules.values())
+        if module is not None and hasattr(module, "_drop_the_idle_reload_stash_between_tests")
+    )
+
+    def _saved(name):
+        slot = tmp_path / name
+        slot.write_bytes(b"kv")
+        return {"dir": str(tmp_path), "slots": [{"id": 0, "filename": name, "n_saved": 42}]}, slot
+
+    run = fixture.__wrapped__()
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    kw._kv_resume, before = _saved("before.bin")
+    next(run)
+    assert kw._last_unloaded_model is None, "the stash was not cleared before the test body"
+    assert kw._kv_resume is None, "the KV manifest was not cleared before the test body"
+    assert not before.exists(), "the KV slot file outlived the manifest that named it"
+
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    kw._kv_resume, after = _saved("after.bin")
+    next(run, None)
+    assert kw._last_unloaded_model is None, "the stash was not cleared after the test body"
+    assert kw._kv_resume is None, "the KV manifest was not cleared after the test body"
+    assert not after.exists(), "the KV slot file outlived the manifest that named it"
+
+
 def test_chat_withheld_model_does_not_send_the_caller_to_load_it(monkeypatch):
     # One reason a checkpoint is withheld is a truthy model_file, which the MLX loaders
     # exec_module and the Studio consent gate does not cover, so the refusal must not point
