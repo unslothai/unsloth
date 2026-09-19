@@ -1213,6 +1213,15 @@ _cleanup_install_temporaries() {
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
     [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
     [ -n "${_ROCM_TAG_MEMO_DIR:-}" ] && rm -rf "$_ROCM_TAG_MEMO_DIR" 2>/dev/null || true
+    # The probe's ceiling is held by this shell, so a cancel during one would otherwise leave the
+    # candidate (and, under monitor mode, its whole group) running with nobody left to stop it.
+    if [ -n "${_UV_PROBE_TARGET:-}" ] && [ -n "${_UV_PROBE_PID:-}" ]; then
+        # Two seconds, not the ceiling's five: a cancel that waited that long on a binary
+        # ignoring TERM would read as an installer ignoring the cancel.
+        _uv_probe_terminate "$_UV_PROBE_TARGET" "$_UV_PROBE_PID" 2
+        _UV_PROBE_TARGET=""
+        _UV_PROBE_PID=""
+    fi
 }
 
 _on_install_exit() {
@@ -1246,6 +1255,8 @@ _UIP_STAGE=""
 _UIP_STAGE2=""
 _ROCM_TAG_MEMO_DIR=""
 _ROCM_TAG_MEMO=""
+_UV_PROBE_TARGET=""
+_UV_PROBE_PID=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
@@ -3233,13 +3244,83 @@ _uv_sha256() {
     fi
 }
 
-# Can a freshly downloaded binary run at all? Both ways it could hang are closed off: no stdin, so a build that prompts reads EOF, and a ceiling where `timeout` exists (stock macOS has none). A healthy uv answers in milliseconds, so only a binary we would refuse reaches the ceiling.
+# Liveness probe for a fresh binary, hang-proof: no stdin (a prompting build reads EOF) and a
+# ceiling, held by `timeout -k` where it exists and by a watchdog on stock macOS, which has none.
+_uv_signal_target() {
+    # bash reads a bare negative pid as a signal spec, dash refuses the `--` that fixes bash, and
+    # only a shell that made a process group produces a negative target: the sign picks the form.
+    case "$2" in
+        -*) kill "-$1" -- "$2" 2>/dev/null || : ;;
+        *)  kill "-$1" "$2" 2>/dev/null || : ;;
+    esac
+}
+
+# TERM, then KILL what ignored it, as `timeout -k` does where it exists.
+# $1 target (a group when one was made, else the pid), $2 pid to watch, $3 seconds of grace.
+_uv_probe_terminate() {
+    _upt_grace=0
+    _uv_signal_target TERM "$1"
+    while [ "$_upt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
+        sleep 1
+        _upt_grace=$((_upt_grace + 1))
+    done
+    # Only if it is still there: the loop also ends when TERM worked, and the KILL would go out
+    # anyway, to a number this shell no longer owns.
+    if kill -0 "$2" 2>/dev/null; then _uv_signal_target KILL "$1"; fi
+    unset _upt_grace
+}
+
 _uv_probe_exec() {
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
-    else
-        "$1" --version >/dev/null 2>&1 </dev/null
+    _upe_secs="${_UV_PROBE_SECONDS:-20}"
+    # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
+    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
+        timeout -k 5 "$_upe_secs" "$1" --version >/dev/null 2>&1 </dev/null
+        return $?
     fi
+    # Monitor mode gives the probe a process group of its own, so the signals below reach what IT
+    # started, as `timeout`'s do. Off again at once.
+    _upe_monitor=off
+    case "$-" in *m*) _upe_monitor=on ;; esac
+    [ "$_upe_monitor" = on ] || set -m 2>/dev/null || :
+    "$1" --version >/dev/null 2>&1 </dev/null &
+    _upe_pid=$!
+    [ "$_upe_monitor" = on ] || set +m 2>/dev/null || :
+    # The group only where it is provably not this shell's own, else the single pid as before.
+    # Parameter expansion, not `tr`: this branch has to hold on a bare PATH.
+    _upe_target="$_upe_pid"
+    if command -v ps >/dev/null 2>&1; then
+        _upe_pgid=$(ps -o pgid= -p "$_upe_pid" 2>/dev/null)
+        _upe_self=$(ps -o pgid= -p $$ 2>/dev/null)
+        _upe_pgid=${_upe_pgid##* }
+        _upe_self=${_upe_self##* }
+        case "$_upe_pgid$_upe_self" in
+            ''|*[!0-9]*) : ;;
+            *) [ "$_upe_pgid" = "$_upe_self" ] || _upe_target="-$_upe_pgid" ;;
+        esac
+    fi
+    # Published for _cleanup_install_temporaries: the installer's HUP/INT/TERM handlers run it,
+    # so a cancel during the wait kills the probe instead of orphaning it.
+    _UV_PROBE_TARGET="$_upe_target"
+    _UV_PROBE_PID="$_upe_pid"
+    _upe_waited=0
+    while kill -0 "$_upe_pid" 2>/dev/null; do
+        if [ "$_upe_waited" -ge "$_upe_secs" ]; then
+            _uv_probe_terminate "$_upe_target" "$_upe_pid" 5
+            wait "$_upe_pid" 2>/dev/null
+            _UV_PROBE_TARGET=""
+            _UV_PROBE_PID=""
+            unset _upe_pid _upe_waited _upe_target _upe_pgid _upe_self
+            return 124
+        fi
+        sleep 1
+        _upe_waited=$((_upe_waited + 1))
+    done
+    wait "$_upe_pid"
+    _upe_rc=$?
+    _UV_PROBE_TARGET=""
+    _UV_PROBE_PID=""
+    unset _upe_pid _upe_waited _upe_target _upe_pgid _upe_self
+    return $_upe_rc
 }
 
 _uv_install_pinned() {
