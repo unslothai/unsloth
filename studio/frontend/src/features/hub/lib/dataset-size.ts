@@ -272,6 +272,9 @@ const SNAPSHOT_WEIGHT_FILE_RE =
 const SNAPSHOT_NON_BIN_WEIGHT_FILE_RE =
   /\.(safetensors|pt|pth|ckpt|h5|msgpack|npz)$/i;
 const SNAPSHOT_BIN_WEIGHT_PREFIX_RE = /^(model|pytorch_model|adapter_model).*\.bin$/i;
+const ROOT_SAFETENSORS_RE = /^model([-_]\d+-of-\d+)?\.safetensors$/;
+const DUPLICATE_WEIGHT_FORMAT_RE =
+  /^(?:(?:original|metal|coreml)\/|(?:pytorch_model.*\.bin|tf_model.*\.h5|flax_model.*\.msgpack)$|(?:pytorch_model\.bin|tf_model\.h5|flax_model\.msgpack)\.index\.json$|rust_model\.ot$)/s;
 
 function basename(path: string): string {
   return path.split("/").pop() ?? path;
@@ -288,9 +291,14 @@ function shipsTransformersWeights(siblings: ModelSibling[]): boolean {
   });
 }
 
+function shipsRootSafetensors(siblings: ModelSibling[]): boolean {
+  return siblings.some((s) => ROOT_SAFETENSORS_RE.test(s.rfilename ?? ""));
+}
+
 function isSnapshotIgnored(
   filename: string,
   skipConsolidated: boolean,
+  skipDuplicateFormats: boolean,
 ): boolean {
   const lower = filename.toLowerCase();
   return (
@@ -300,7 +308,8 @@ function isSnapshotIgnored(
     lower.startsWith("openvino/") ||
     lower.startsWith("mlx/") ||
     lower.endsWith(".bin.index.json.bak") ||
-    (skipConsolidated && lower.startsWith("consolidated"))
+    (skipConsolidated && lower.startsWith("consolidated")) ||
+    (skipDuplicateFormats && DUPLICATE_WEIGHT_FORMAT_RE.test(filename))
   );
 }
 
@@ -334,12 +343,18 @@ export function fetchModelSize(
       const data = (await res.json()) as ModelInfoApiResponse;
       const siblings = data.siblings ?? [];
       const skipConsolidated = shipsTransformersWeights(siblings);
+      const skipDuplicateFormats = shipsRootSafetensors(siblings);
       let total = 0;
       let weights = 0;
       for (const s of siblings) {
         if (typeof s.size !== "number") continue;
         const filename = s.rfilename ?? "";
-        if (filename && isSnapshotIgnored(filename, skipConsolidated)) continue;
+        if (
+          filename &&
+          isSnapshotIgnored(filename, skipConsolidated, skipDuplicateFormats)
+        ) {
+          continue;
+        }
         total += s.size;
         if (filename && SNAPSHOT_WEIGHT_FILE_RE.test(filename)) {
           weights += s.size;

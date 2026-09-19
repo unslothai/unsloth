@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from fnmatch import fnmatchcase
 from typing import Iterable
 from utils.paths.path_utils import drop_shadowed_appledouble_names
@@ -17,6 +18,19 @@ SNAPSHOT_IGNORE_PATTERNS: tuple[str, ...] = (
     "*.bin.index.json.bak",
 )
 CONSOLIDATED_PATTERN = "consolidated*"
+DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
+    "original/*",
+    "metal/*",
+    "coreml/*",
+    "pytorch_model*.bin",
+    "pytorch_model.bin.index.json",
+    "tf_model*.h5",
+    "tf_model.h5.index.json",
+    "flax_model*.msgpack",
+    "flax_model.msgpack.index.json",
+    "rust_model.ot",
+)
+ROOT_SAFETENSORS_RE = re.compile(r"model([-_]\d+-of-\d+)?\.safetensors")
 SNAPSHOT_WEIGHT_EXTENSIONS = (
     ".safetensors",
     ".bin",
@@ -57,11 +71,17 @@ def repo_ships_transformers_weights(filenames: Iterable[str]) -> bool:
     return False
 
 
+def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
+    return any(ROOT_SAFETENSORS_RE.fullmatch(name) for name in filenames)
+
+
 def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list[str]:
     names = list(filenames)
     ignore = list(SNAPSHOT_IGNORE_PATTERNS)
     if repo_ships_transformers_weights(names):
         ignore.append(CONSOLIDATED_PATTERN)
+    if repo_ships_root_safetensors(names):
+        ignore.extend(DUPLICATE_WEIGHT_FORMAT_PATTERNS)
     return ignore
 
 
