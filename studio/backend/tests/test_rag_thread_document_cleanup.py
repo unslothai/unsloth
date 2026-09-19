@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
 import os
 import time
 from datetime import datetime, timezone
@@ -172,3 +173,154 @@ def test_thread_documents_go_without_sqlite_vec(client, monkeypatch):
     assert _document_ids(client) == set()
     assert _chunk_count("vecless") == 0
     assert not os.path.exists(path)
+
+
+def _add_message(client, thread_id, message_id):
+    response = client.put(
+        f"/api/chat/threads/{thread_id}/messages/{message_id}",
+        json = {"id": message_id, "threadId": thread_id, "role": "user", "createdAt": 1},
+    )
+    assert response.status_code == 200, response.text
+
+
+def _fork(client, thread_id, message_id, new_thread_id):
+    response = client.post(
+        f"/api/chat/threads/{thread_id}/fork",
+        json = {"messageId": message_id, "newThreadId": new_thread_id, "createdAt": 2},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _thread_documents(client, thread_id):
+    response = client.get(f"/api/rag/threads/{thread_id}/documents")
+    assert response.status_code == 200, response.text
+    return response.json()["documents"]
+
+
+def _search(client, thread_id, query, mode):
+    response = client.post(
+        "/api/rag/search", json = {"query": query, "thread_id": thread_id, "mode": mode}
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["results"]
+
+
+def test_forking_a_thread_copies_its_uploaded_documents(client):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    text = "victor whiskey xray " * 50
+    source = _upload(client, "source", "source.txt", text)
+
+    assert _fork(client, "source", "m1", "fork")["containerSnapshotWarning"] is None
+
+    documents = _thread_documents(client, "fork")
+    assert [(d["filename"], d["status"]) for d in documents] == [("source.txt", "completed")]
+    copy = documents[0]["id"]
+    assert copy != source
+    assert documents[0]["numChunks"] == _thread_documents(client, "source")[0]["numChunks"]
+    for mode in ("lexical", "dense"):
+        hits = _search(client, "fork", "victor whiskey xray", mode)
+        assert hits and {hit["documentId"] for hit in hits} == {copy}
+    assert _stored_path(copy) != _stored_path(source)
+    with open(_stored_path(copy), encoding = "utf-8") as copied:
+        assert copied.read() == text
+
+
+def test_a_forks_documents_are_independent_of_the_source_thread(client):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    _upload(client, "source", "source.txt", "yankee zulu alpha " * 50)
+    _fork(client, "source", "m1", "fork")
+    copy = _thread_documents(client, "fork")[0]["id"]
+    copy_path = _stored_path(copy)
+
+    _upload(client, "source", "later.txt", "bravo charlie delta " * 50)
+    assert [d["id"] for d in _thread_documents(client, "fork")] == [copy]
+
+    response = client.request("DELETE", "/api/chat/threads", json = {"ids": ["source"]})
+
+    assert response.status_code == 200, response.text
+    assert _document_ids(client) == {copy}
+    assert os.path.isfile(copy_path)
+    assert _search(client, "fork", "yankee zulu alpha", "dense")
+
+
+def test_a_fork_survives_documents_that_cannot_be_copied(client, monkeypatch):
+    from core.rag import conversation_archive
+
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    source = _upload(client, "source", "source.txt", "echo foxtrot golf " * 50)
+
+    def broken(conn, *args, **kwargs):
+        conn.execute("INSERT INTO chunks_fts(text, chunk_id, scope) VALUES('x', 'x', 'x')")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(conversation_archive.store, "copy_document", broken, raising = False)
+    before = set(os.listdir(os.path.dirname(_stored_path(source))))
+
+    warning = _fork(client, "source", "m1", "fork")["containerSnapshotWarning"]
+
+    assert "not copied" in (warning or "")
+
+    assert _thread_documents(client, "fork") == []
+    assert _document_ids(client) == {source}
+    assert set(os.listdir(os.path.dirname(_stored_path(source)))) == before
+    conn = rag_db.get_metadata_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE scope='x'").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def _cite(client, thread_id, message_id, document_id):
+    sources = [
+        {
+            "citationId": 1,
+            "chunkId": f"{document_id}:0",
+            "documentId": document_id,
+            "filename": "source.txt",
+        }
+    ]
+    part = {
+        "type": "tool-call",
+        "toolCallId": "call-1",
+        "toolName": "search_documents",
+        "args": {"query": "hotel"},
+        "result": "hotel india\n__RAG_SOURCES__:" + json.dumps(sources),
+    }
+    response = client.put(
+        f"/api/chat/threads/{thread_id}/messages/{message_id}",
+        json = {
+            "id": message_id,
+            "threadId": thread_id,
+            "parentId": "m1",
+            "role": "assistant",
+            "content": [part],
+            "createdAt": 2,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+def _cited(message):
+    result = message["content"][0]["result"]
+    return json.loads(result.split("__RAG_SOURCES__:", 1)[1])[0]
+
+
+def test_a_forks_copied_messages_cite_the_forks_documents(client):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    source = _upload(client, "source", "source.txt", "hotel india juliet " * 50)
+    _cite(client, "source", "m2", source)
+
+    forked = _fork(client, "source", "m2", "fork")
+
+    copy = _thread_documents(client, "fork")[0]["id"]
+    stored = client.get("/api/chat/threads/fork/messages").json()["messages"]
+    for messages in (forked["messages"], stored):
+        cited = _cited([m for m in messages if m["role"] == "assistant"][0])
+        assert (cited["documentId"], cited["chunkId"]) == (copy, f"{copy}:0")
+    parent = client.get("/api/chat/threads/source/messages/m2").json()
+    assert (_cited(parent)["documentId"], _cited(parent)["chunkId"]) == (source, f"{source}:0")
