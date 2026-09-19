@@ -175,6 +175,11 @@ def pytest_configure(config):
         "markers",
         "allow_network: let this test make non-loopback connections (see _no_outbound_network)",
     )
+    config.addinivalue_line(
+        "markers",
+        "stages_switch_waiter: this test leaves routes.inference._auto_switch_waiters populated "
+        "on purpose (see the autouse fixture in test_openai_auto_switch.py)",
+    )
 
 
 def pytest_addoption(parser):
@@ -286,6 +291,34 @@ def _confine_prequant_registration_memo():
     diffusion_prequant._SAFE_GLOBALS_REGISTERED = registered
     diffusion_prequant._RESOLVED_SAFE_GLOBALS.clear()
     diffusion_prequant._RESOLVED_SAFE_GLOBALS.update(resolved)
+
+
+@pytest.fixture(autouse = True)
+def _isolate_generation_state():
+    """Keep one test's account fences and active generations out of the next test.
+
+    ``state.active_generations`` keeps ``_ACTIVE`` and ``_FENCED`` on the module, so they are
+    process-global and survive a test. Retiring or deactivating an account fences it, and
+    staying fenced is the CORRECT end state for those tests, so none of them is at fault: what
+    was missing is the isolation, the same way a tmp dir is isolated rather than every test
+    being asked to clean up after itself.
+
+    Measured, not guessed: 15 tests across test_job_accounts.py, test_account_storage.py,
+    test_account_integration_wiring.py and test_account_retired_workspace_recreated.py end
+    with a fenced account. Whichever of them landed in an xdist worker ahead of
+    tests/multi_account/test_routing_invariance.py made its
+    ``assert active_generations._FENCED == set()`` fail with somebody else's account id, which
+    is why that test failed in CI and passed whenever it was run on its own.
+
+    Here, not per-suite, so no test can leak. Several files already call reset_for_tests()
+    around themselves; this makes that universal, and those stay as they are since resetting
+    twice costs nothing and the local call documents the intent at its own site.
+    """
+    from state import active_generations
+
+    active_generations.reset_for_tests()
+    yield
+    active_generations.reset_for_tests()
 
 
 @pytest.fixture(autouse = True)
@@ -884,7 +917,7 @@ def stub_embeddings(monkeypatch):
 
     from core.rag import config, embeddings
 
-    # Pin the backend: "auto" reprobes the hardware (nvidia-smi) on every use.
+    # Pin the backend: "auto" probes the hardware (nvidia-smi) for each backend it builds.
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     dim = 32
 
@@ -1080,3 +1113,26 @@ def _process_shutdown_latch_is_clear():
         yield
     finally:
         _reopen()
+
+
+@pytest.fixture(autouse = True)
+def _drop_the_settings_memo_between_tests():
+    """Stop one test's app settings answering another test's read.
+
+    utils.openai_auto_switch_settings memoizes every setting it reads for _CACHE_TTL_S
+    (2 seconds) in a module-level dict, which is right on a request hot path and wrong
+    across tests: suites run far faster than the TTL, so a test that reads a setting hands
+    its value to whatever runs next, and only to the tests that happen to run inside the
+    window. That is not an ordering bug a fixed test order would catch; it is a clock.
+
+    It cost a day of #11241: a leaked auto-download flag turned the withheld-model tests'
+    404 into a fetch-and-load, which then died on their own backend double and surfaced as
+    `assert 500 == 404` in the l-r shard and nowhere else.
+    """
+    from utils import openai_auto_switch_settings as _settings
+
+    _settings._cache.clear()
+    try:
+        yield
+    finally:
+        _settings._cache.clear()

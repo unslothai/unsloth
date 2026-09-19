@@ -502,7 +502,7 @@ def _macos_release_major() -> "int | None":
 
 # The pinned MLX versions publish macosx_14_0_arm64 wheels, no sdist and no cp39, so
 # macOS 13 and Python 3.9 have nothing to resolve to (`uv pip install --python-platform
-# aarch64-apple-darwin mlx==0.32.1`). Asked before the install, like
+# aarch64-apple-darwin mlx==0.32.2`). Asked before the install, like
 # _torchcodec_spec_is_installable: pip_install exits on failure, so trying would end an
 # install that today just comes up chat-only.
 _MLX_MIN_PYTHON = (3, 10)
@@ -3885,7 +3885,7 @@ def _deliberate_cpu_torch() -> bool:
     return _explicit_cpu_torch_index_pin() or _expected_torch_flavor_was_pinned("cpu")
 
 
-def _ensure_cuda_torch() -> None:
+def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
     Counterpart to _ensure_rocm_torch. A venv poisoned by the pre-fix KFD
@@ -3897,6 +3897,9 @@ def _ensure_cuda_torch() -> None:
     Also repairs a CUDA torch whose wheel family ships no kernels for the host's
     GPUs (a pre-Turing box that the driver-only ladder sent to cu128/cu130).
     Healthy CUDA torch and deliberate CPU-only torch are left untouched.
+
+    probe_only returns True where the repair would install and installs nothing, so the
+    fast-path escape that calls it cannot drift from what the repair actually does.
     """
     # Respect install.sh's backend: only "" (standalone update) or "cuda" force CUDA wheels.
     if _TORCH_BACKEND not in ("", "cuda"):
@@ -3932,6 +3935,8 @@ def _ensure_cuda_torch() -> None:
         # reinstall an already-installed torch, so reinstall from the pin (self-resolving).
         if not _cuda_pinned:
             return
+        if probe_only:
+            return True
         index_url = _detect_cuda_torch_index_url()
         _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
         _safe_print(
@@ -4018,6 +4023,8 @@ def _ensure_cuda_torch() -> None:
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
 
+    if probe_only:
+        return True
     if index_url is None:
         index_url = _detect_cuda_torch_index_url()
     _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
@@ -5179,6 +5186,21 @@ def _missing_torch_needs_dependency_pass() -> bool:
             ):
                 return True
     return False
+
+
+def _cuda_torch_needs_dependency_pass() -> bool:
+    """Return True when only the dependency pass can put CUDA torch back on this host.
+
+    The repair lives inside that pass, so an install whose GPU was hidden (or whose driver
+    was broken) at install time keeps its CPU wheel on every "up to date" update until the
+    package version happens to move. Answered by the repair in probe mode, so the two can
+    never disagree; Windows heals this at setup.ps1's stale-venv check and macOS has no
+    CUDA, and the repair already excludes both. Never installs, and fails closed.
+    """
+    try:
+        return bool(_ensure_cuda_torch(probe_only = True))
+    except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the fast path
+        return False
 
 
 def _amd_torch_needs_dependency_pass() -> bool:
@@ -6924,7 +6946,7 @@ def _uv_config_files() -> "list[tuple[Path, str]]":
     instead of discovering; UV_NO_CONFIG discovers nothing. `table` is the prefix the index
     keys sit under: "" for uv.toml, "tool.uv" for pyproject.toml.
     """
-    if os.environ.get("UV_NO_CONFIG", "").strip().lower() not in ("", "0", "false"):
+    if _uv_env_flag("UV_NO_CONFIG"):
         return []
     explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
     if explicit:
@@ -7064,12 +7086,67 @@ def _public_pypi_is_reachable() -> bool:
     return _pip_reaches_public_pypi()
 
 
-def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() not in ("", "0", "false")
+def _uv_env_flag(name: str) -> bool:
+    """uv's own boolish set, for every UV_* switch read out of the caller's environment.
+
+    Verified against uv 0.10.7, crates/uv-static/src/lib.rs
+    parse_boolish_environment_variable, which restates clap's str_to_bool: true is
+    y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive, and
+    anything else aborts uv rather than being guessed at.
+
+    `not in ("", "0", "false")`, which this used to be, read off, no, n and f as TRUE,
+    the exact opposite of uv's answer for them.
+
+    Stripped where uv is not: uv aborts on a padded value, so the resolve fails whatever
+    this returns, and stripping keeps the answer identical to setup.sh's
+    _uv_offline_requested and the two PowerShell Test-UvEnvFlag copies.
+    """
+    return os.environ.get(name, "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
+
+
+def _pip_env_flag(name: str) -> bool:
+    """pip's rule, kept separate on purpose.
+
+    PIP_* are pip's variables and uv never reads them, so uv's parser has no authority
+    over them. pip routes them through ConfigOptionParser._update_defaults -> strtobool
+    (pip/_internal/utils/misc.py): true is y, yes, t, true, on, 1; false is n, no, f,
+    false, off, 0; case-insensitive and unstripped, with anything else exiting pip on
+    "is not a valid value". An empty value never reaches strtobool, because
+    _get_ordered_configuration_items drops falsy values first.
+
+    The literals coincide with uv's today. They are restated rather than shared anyway,
+    so that the day either project changes its mind this is a one-function edit instead
+    of a silent behaviour change in the other resolver.
+    """
+    return os.environ.get(name, "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
+
+
+def _no_index_requested() -> bool:
+    """True when the operator asked us for no registry index. OUR convention, not uv's.
+
+    The distinction is not pedantic: for UV_NO_INDEX, uv 0.10.7 defines no such
+    environment variable. `--no-index` exists only as a command-line flag, it is absent from
+    `uv pip install --help`'s environment list beside UV_OFFLINE and UV_NO_CONFIG, and
+    grepping the 0.10.7 tree for the name returns nothing. uv ignores it however it is
+    spelled, so this is not a prediction about uv; it is us honouring a stated intent by
+    shaping the arguments we pass.
+
+    Read with uv's boolish set deliberately, not by inheritance: a caller sets this beside
+    UV_OFFLINE and UV_NO_CONFIG, which uv really does read, and one spelling across all
+    three is the point. It is a choice, and the test says so.
+
+    Deliberately NOT turned into a `--no-index` argument. That would make our behaviour and
+    uv's agree, which is the honest long-term answer, but it would also turn a resolve that
+    works today into one with no index at all: a behaviour change for existing users, and
+    its own change rather than part of a truthiness fix.
+    """
+    return _uv_env_flag("UV_NO_INDEX")
 
 
 def _uv_reaches_public_pypi() -> bool:
-    if _uv_is_offline() or _env_flag("UV_NO_INDEX"):
+    # Two different questions. UV_OFFLINE really does stop uv reaching a network;
+    # UV_NO_INDEX is ours and uv ignores it.
+    if _uv_is_offline() or _no_index_requested():
         return False
     extra_is_pypi = any(
         _url_is_public_pypi(u)
@@ -7100,7 +7177,7 @@ def _pip_reaches_public_pypi() -> bool:
     install. A `no-index` or an exclusive `index-url` set there replaces PyPI just as the
     environment does. Doubt (a `pip config` that cannot be read) keeps the skip.
     """
-    if _env_flag("PIP_NO_INDEX"):
+    if _pip_env_flag("PIP_NO_INDEX"):
         return False
     extra_is_pypi = any(
         _url_is_public_pypi(u) for u in os.environ.get("PIP_EXTRA_INDEX_URL", "").split()
@@ -8290,10 +8367,10 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
 
         # Every current caller also names these as positionals or via -r, but a
         # future one might not, and pip would then upgrade nothing.
-        # By canonical project name: `--upgrade-package mlx` beside `mlx==0.32.1` is one project,
+        # By canonical project name: `--upgrade-package mlx` beside `mlx==0.32.2` is one project,
         # and pip refuses a double requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<0.7.0) needs the
+            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.1) needs the
             # rest.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
@@ -8499,7 +8576,7 @@ def _uv_is_offline() -> bool:
     uv's own boolish set, as both setup scripts read it. `not in (0, false)` also read `off`
     and `no` as offline, declining repairs with a message saying the opposite.
     """
-    return os.environ.get("UV_OFFLINE", "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
+    return _uv_env_flag("UV_OFFLINE")
 
 
 def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
@@ -9188,9 +9265,41 @@ def _has_working_git() -> bool:
 
 # The MLX stack, one place; test_mlx_install.py compares it with utils/mlx_repair.py's
 # _MLX_INSTALL_SPECS.
-_MLX_PINS: tuple[str, ...] = ("mlx==0.32.1", "mlx-metal==0.32.1", "mlx-lm==0.31.3")
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<0.7.0"
+_MLX_PINS: tuple[str, ...] = ("mlx==0.32.2", "mlx-metal==0.32.2", "mlx-lm==0.31.3")
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.1"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
+
+
+def _mlx_vlm_spec_for_installed_zoo() -> str:
+    """_MLX_VLM_SPEC, intersected with the range the INSTALLED unsloth-zoo declares.
+
+    This step runs before the core phase, and on a fresh install (SKIP_STUDIO_BASE=1) the core
+    phase is skipped entirely, so the zoo install.sh already put down is the one that stays.
+    mlx-vlm 0.7.1 passes `cache` to gated_delta_update and a zoo predating that keyword does not
+    accept it, so admitting 0.7.1 beside such a zoo raises TypeError at the first Qwen3.5 VLM
+    training step, after mlx_stack_available() has cleared the chat-only gate. Reading what the
+    installed zoo itself declares keeps the two in step without naming a zoo version here, and it
+    widens on its own once a zoo declaring 0.7.1 is installed. Mirrors utils/mlx_repair.py's
+    _install_packages, which does the same for the unattended self-heal.
+    """
+    try:
+        from importlib.metadata import requires
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+    except ImportError:
+        return _MLX_VLM_SPEC
+    try:
+        declared = requires("unsloth_zoo") or ()
+    except Exception:  # noqa: BLE001 - not installed, or unreadable metadata
+        return _MLX_VLM_SPEC
+    for raw in declared:
+        try:
+            requirement = Requirement(raw)
+        except Exception:  # noqa: BLE001 - a requirement string packaging cannot parse
+            continue
+        if canonicalize_name(requirement.name) == "mlx-vlm" and str(requirement.specifier):
+            return f"{_MLX_VLM_SPEC},{requirement.specifier}"
+    return _MLX_VLM_SPEC
 
 
 def _mlx_stack_is_current() -> bool:
@@ -9207,7 +9316,14 @@ def _mlx_stack_is_current() -> bool:
         return False
     try:
         from packaging.requirements import Requirement
-        if not Requirement(_MLX_VLM_SPEC).specifier.contains(installed, prereleases = True):
+
+        # The narrowed spec, not the static one: with an older zoo beside an already-installed
+        # 0.7.1 the static range reads as satisfied and the step skips the very install that
+        # would put mlx-vlm back where the zoo can drive it.
+        if not Requirement(_mlx_vlm_spec_for_installed_zoo()).specifier.contains(
+            installed,
+            prereleases = True,
+        ):
             return False
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
         return False
@@ -9245,7 +9361,10 @@ def _mlx_closure_unmet() -> bool:
         _fd, _name = _tempfile.mkstemp(prefix = "unsloth-mlx-", suffix = ".txt", text = True)
         os.close(_fd)
         handle = Path(_name)
-        handle.write_text("\n".join([*_MLX_PINS, _MLX_VLM_SPEC]) + "\n", encoding = "utf-8")
+        handle.write_text(
+            "\n".join([*_MLX_PINS, _mlx_vlm_spec_for_installed_zoo()]) + "\n",
+            encoding = "utf-8",
+        )
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
         # An override REPLACES every requirement on the package it names, so the installed
         # version is the override's, not the one mlx-vlm's metadata asks for. Read raw, that
@@ -9297,7 +9416,8 @@ _MLX_IMPORTED_DEPENDENCIES = (
 def _mlx_health_fingerprint() -> dict:
     """What a recorded MLX verdict is only valid for."""
     return {
-        "pins": list(_MLX_PINS) + [_MLX_VLM_SPEC],
+        # The narrowed spec, so installing a different zoo invalidates a recorded verdict.
+        "pins": list(_MLX_PINS) + [_mlx_vlm_spec_for_installed_zoo()],
         "python": _installer_python_tag(),
         "mlx_vlm": _installed_distribution_version("mlx-vlm") or "",
         # Versions as installed; an older record without this key is probed once and rewritten.
@@ -10339,6 +10459,10 @@ def install_python_stack() -> int:
             base_total += 1  # torch flavor invariant (step 13w), Windows
     if IS_MAC_ARM and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
+        # The re-resolve after the core phase, which may have moved the unsloth-zoo whose
+        # declared mlx-vlm range the step above honoured. Same gate, so the slot is spent on
+        # every Apple Silicon run with torch, including the no-wheel branch.
+        base_total += 1  # MLX stack re-resolve
     if NO_TORCH and not skip_base:
         # no-torch runtime deps, which this build announces on its own slot inside the core
         # step rather than folding into it. Same gate as the step itself.
@@ -10459,6 +10583,9 @@ def install_python_stack() -> int:
     # and still needs MLX. Not on --no-torch: it declined the training stack. Pins stay
     # aligned with utils/mlx_repair.py and unsloth-zoo; UV_OVERRIDE (set at module load)
     # relaxes the mlx-vlm / mlx-lm transformers pin.
+    # None when the MLX step did not run at all, so the re-resolve after the core phase has
+    # nothing to compare against.
+    _mlx_vlm_spec_used: Optional[str] = None
     if IS_MAC_ARM and not NO_TORCH:
         # Both branches spend the slot, so the denominator does not depend on the host.
         if _mlx_pins_are_installable():
@@ -10481,8 +10608,9 @@ def install_python_stack() -> int:
                     # transitive dependency; _build_pip_cmd translates back for pip.
                     *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
                     *_MLX_PINS,
-                    _MLX_VLM_SPEC,
+                    _mlx_vlm_spec_for_installed_zoo(),
                 )
+            _mlx_vlm_spec_used = _mlx_vlm_spec_for_installed_zoo()
         else:
             _progress("MLX stack (skipped, no wheel for this macOS or Python)")
             _note(
@@ -10580,6 +10708,26 @@ def install_python_stack() -> int:
             unsloth_spec,
             "unsloth-zoo",
         )
+
+    # The MLX step ran BEFORE the core phase, so it honoured the mlx-vlm range the OLD
+    # unsloth-zoo declared. A normal update then upgrades the zoo, and without this the machine
+    # keeps the narrower stack indefinitely: the startup self-heal will not correct it either,
+    # since 0.6.x satisfies _MLX_MIN_VERSIONS. Re-resolve only when the declared range actually
+    # moved, so the common update pays a metadata read and nothing else.
+    if IS_MAC_ARM and not NO_TORCH:
+        _mlx_vlm_spec_now = _mlx_vlm_spec_for_installed_zoo()
+        if _mlx_vlm_spec_used is None or _mlx_vlm_spec_now == _mlx_vlm_spec_used:
+            _progress("MLX stack (zoo unchanged, skipped)")
+        else:
+            _progress("MLX stack (re-resolved for the new zoo)")
+            _record_step("mlx", "ran")
+            pip_install(
+                "Installing MLX stack for the upgraded unsloth-zoo",
+                "--no-cache-dir",
+                *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
+                *_MLX_PINS,
+                _mlx_vlm_spec_now,
+            )
 
     if not skip_base:
         base_requirements = _shared_base_requirements()
@@ -10721,9 +10869,9 @@ def install_python_stack() -> int:
     # )
 
     # 8. Unsloth dependencies
-    if not _skip_step(REQ_ROOT / "studio.txt", "studio deps", no_deps = False):
+    if not _skip_step(REQ_ROOT / "studio.txt", "Unsloth Studio deps", no_deps = False):
         pip_install(
-            "Installing studio dependencies",
+            "Installing Unsloth Studio dependencies",
             "--no-cache-dir",
             req = REQ_ROOT / "studio.txt",
         )
@@ -11158,6 +11306,9 @@ if __name__ == "__main__":
             f"probe={_TORCH_RUNTIME_PROBE!r}"
         )
         sys.exit(0 if _needs_pass else 1)
+    if sys.argv[1:] == ["--cuda-torch-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _cuda_torch_needs_dependency_pass() else 1)
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)

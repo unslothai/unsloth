@@ -58,6 +58,7 @@ import {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  followUpSubmitIntent,
   steeringInsertionIndex,
   cancelPreStreamRunForThreadIds,
   type ComposerSendShortcut,
@@ -168,6 +169,8 @@ import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-ac
 import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceInForeground,
+  shortcutMatchingEvent,
+  useKeyboardShortcutsStore,
   useShortcut,
   useSettingsDialogStore,
   isMacPlatform,
@@ -323,8 +326,6 @@ import {
   ChevronRightIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
-  CornerUpRightIcon,
-  FastForwardIcon,
   GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
@@ -368,6 +369,33 @@ import { useIsMobile } from "@/hooks/use-mobile";
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
 const PageDragContext = createContext(false);
+
+/** The follow-up each of the two chords names. */
+const FOLLOW_UP_SHORTCUTS = {
+  queueMessage: "queue",
+  steerMessage: "steer",
+} as const satisfies Record<string, ComposerFollowUpBehavior>;
+
+const FOLLOW_UP_SHORTCUT_IDS = Object.keys(
+  FOLLOW_UP_SHORTCUTS,
+) as (keyof typeof FOLLOW_UP_SHORTCUTS)[];
+
+/** The behaviour a bound queue or steer chord names, if this event fires one. */
+function followUpShortcutBehavior(event: {
+  code: string;
+  key?: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}): ComposerFollowUpBehavior | null {
+  const id = shortcutMatchingEvent(
+    useKeyboardShortcutsStore.getState().overrides,
+    FOLLOW_UP_SHORTCUT_IDS,
+    event,
+  );
+  return id ? FOLLOW_UP_SHORTCUTS[id] : null;
+}
 
 // Prompt queues live at module level so they survive Composer remounts,
 // including the first queued message that creates a new thread. Each chat gets
@@ -2563,7 +2591,16 @@ const Composer: FC<{
     (event: KeyboardEvent<HTMLTextAreaElement>, intent: ComposerSubmitIntent) => {
       const form = event.currentTarget.form;
       if (typeof form?.requestSubmit !== "function") return;
-      submitIntentRef.current = intent;
+      // A queue or steer chord bound onto an Enter combination lands here
+      // first, and preventDefault keeps it from ever reaching useShortcut. Run
+      // the behaviour it names, rather than the one the send chord implies.
+      const named = followUpShortcutBehavior(event);
+      submitIntentRef.current = named
+        ? followUpSubmitIntent(
+            useChatPreferencesStore.getState().followUpBehavior,
+            named,
+          )
+        : intent;
       try {
         form.requestSubmit();
       } finally {
@@ -4569,6 +4606,9 @@ const Composer: FC<{
         return;
       }
       clearStoredDraft();
+      // Stays synchronous: deferring lets the run state above go stale, and the
+      // send is then refused after the wait toast is already gone.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- see above
       sendReservedComposer();
     }
   }, [
@@ -4730,6 +4770,41 @@ const Composer: FC<{
       skipInTextFields: true,
       textFieldException: COMPOSER_INPUT_SELECTOR,
     },
+  );
+  // Same send as above, with the follow-up named rather than left to the
+  // preference. handleSubmit reads the intent ref, so ask it for the opposite
+  // whenever the preference is not already the behaviour wanted here.
+  const submitWithFollowUp = useCallback(
+    (behavior: ComposerFollowUpBehavior) => {
+      // No dictation branch: the recording bar replaces the composer, so the
+      // foreground gate below already turns these into a no-op there.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      submitIntentRef.current = followUpSubmitIntent(
+        useChatPreferencesStore.getState().followUpBehavior,
+        behavior,
+      );
+      try {
+        formRef.current?.requestSubmit();
+      } finally {
+        submitIntentRef.current = "default";
+      }
+    },
+    [],
+  );
+  const followUpShortcutOptions = {
+    enabled: chatActive && !disabled,
+    skipInTextFields: true,
+    textFieldException: COMPOSER_INPUT_SELECTOR,
+  };
+  useShortcut(
+    "queueMessage",
+    () => submitWithFollowUp("queue"),
+    followUpShortcutOptions,
+  );
+  useShortcut(
+    "steerMessage",
+    () => submitWithFollowUp("steer"),
+    followUpShortcutOptions,
   );
   const wasDictatingRef = useRef(false);
   useEffect(() => {
@@ -6126,6 +6201,8 @@ const ComposerToolsMenu: FC<{
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   // Shared gate so the menu row agrees with the RAG pill.
   const ragDisabled = useRagToolDisabled();
+  // The permission pill is hidden while recording, so the menu carries it then.
+  const isDictating = useAuiState((s) => s.composer.dictation != null);
   // Capability gating mirrors the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
@@ -6431,7 +6508,6 @@ const ComposerToolsMenu: FC<{
         ) : null}
       </DropdownMenuItem>
     ) : null,
-    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -6612,6 +6688,7 @@ const ComposerToolsMenu: FC<{
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
+        {isDictating ? <BypassPermissionsMenuItem /> : null}
         {pinnedPlusItems.map((id) => (
           <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
         ))}
@@ -6695,11 +6772,20 @@ const ComposerRightControls: FC<{
   menuSide,
   queueThreadIds,
 }) => {
+  const t = useT();
   const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
-  const followUpLabel = followUpBehavior === "queue" ? "Queue message" : "Steer response";
-  const followUpTooltip = `${followUpLabel} (${shortcutLabels.send}) · ${shortcutLabels.opposite} for the opposite`;
+  const followUpLabel = t(
+    followUpBehavior === "queue"
+      ? "promptQueue.queueButton"
+      : "promptQueue.steerButton",
+  );
+  const followUpTooltip = t("promptQueue.followUpTooltip", {
+    action: followUpLabel,
+    send: shortcutLabels.send,
+    opposite: shortcutLabels.opposite,
+  });
   const queueEntry = usePromptQueueUI((s) =>
     findPromptQueueEntry(s, queueThreadIds),
   );
@@ -6788,7 +6874,9 @@ const ComposerRightControls: FC<{
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
             tooltip={
-              pendingSend ? "Waiting for documents…" : `Send message (${shortcutLabels.send})`
+              pendingSend
+                ? "Waiting for documents…"
+                : t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
             }
             side="bottom"
             type="submit"
@@ -6799,7 +6887,7 @@ const ComposerRightControls: FC<{
             disabled={disabled || pendingSend}
             onClick={(event) => onSendClick?.(event)}
             className="aui-composer-send ml-1.5 size-9 rounded-full"
-            aria-label="Send message"
+            aria-label={t("promptQueue.sendLabel")}
           >
             {pendingSend ? (
               <Spinner className="size-[18px]" />
@@ -6822,7 +6910,8 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              <QueueResumeIcon />
+              {/* Solid glyph, so it is smaller than the stroked send arrow. */}
+              <QueueResumeIcon className="size-4" />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
@@ -6847,11 +6936,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label={followUpLabel}
             >
-              {followUpBehavior === "steer" ? (
-                <CornerUpRightIcon className="size-[21px] stroke-2" />
-              ) : (
-                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
-              )}
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
           )}
         </AuiIf>
@@ -6902,11 +6987,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send size-9 rounded-full"
               aria-label={followUpLabel}
             >
-              {followUpBehavior === "steer" ? (
-                <CornerUpRightIcon className="size-[21px] stroke-2" />
-              ) : (
-                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
-              )}
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
             )}
           </div>
@@ -7273,8 +7354,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
           className="h-7 shrink-0 gap-1.5 text-xs"
           onClick={handleContinue}
         >
-          <FastForwardIcon strokeWidth={1.75} className="size-3.5" />
-          Continue
+          <QueueResumeIcon className="size-3.5" />
+          Resume
         </Button>
       )}
     </div>

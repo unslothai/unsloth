@@ -221,11 +221,27 @@ pub async fn desktop_preflight(
     app: AppHandle,
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
+    update_state: tauri::State<'_, update::UpdateState>,
+    install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
     let started = Instant::now();
+    // A window reload re-runs this during our own install or update, and the
+    // installer phase does not hold the runtime gate. Checked on both sides of the
+    // probe: one that ends mid-probe still leaves a half-written reading.
+    let mutating = || {
+        install::is_install_running(install_state.inner())
+            || update::is_update_running(update_state.inner())
+            || update::is_repair_running(update_state.inner())
+    };
+    let mutating_before = mutating();
     let (result, adopted_watchdog_generation) =
         crate::preflight::desktop_preflight_result_with_state(state.inner()).await?;
+    let result = if mutating_before || mutating() {
+        crate::preflight::busy_managed_environment(result)
+    } else {
+        result
+    };
     diagnostics::record_preflight(&diagnostics, &result);
 
     info!(
@@ -443,6 +459,8 @@ struct BackendLiveness {
     /// holding the port. Silence from a closed port is death; silence from an accepted
     /// connection is a stall.
     probe_timed_out: bool,
+    /// An HTTP RESPONSE, whatever its status. Weaker than `alive`, which also requires the payload to name this service.
+    answered: bool,
 }
 
 /// Check if an Unsloth backend is running on the given port.
@@ -457,6 +475,48 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
             Ok(false)
         }
     }
+}
+
+/// Whether a process still holds the port. `check_health_inner` only returns `Ok` with
+/// `probe_timed_out: false`, so a stall arrives through the `Err` arm; a REFUSED connection
+/// is not a timeout.
+#[tauri::command]
+pub async fn check_backend_present(
+    state: tauri::State<'_, BackendState>,
+    port: u16,
+) -> Result<bool, String> {
+    // Silence does not say which side went quiet, so ownership of the port settles it.
+    let state = state.inner();
+    backend_presence(port, || we_manage_a_backend_on(state, port)).await
+}
+
+/// *we_manage_it* is called AFTER the probe: an ownership answer taken before it died would report an exited backend as running.
+async fn backend_presence(
+    port: u16,
+    we_manage_it: impl Fn() -> bool,
+) -> Result<bool, String> {
+    match check_health_inner(port, HEALTH_PROBE_TIMEOUT).await {
+        Ok(liveness) => Ok(backend_is_present(&liveness, we_manage_it())),
+        Err(e) => {
+            info!("Backend presence check on port {} failed: {}", port, e);
+            Ok(backend_is_present(
+                &liveness_from_probe_error(&e),
+                we_manage_it(),
+            ))
+        }
+    }
+}
+
+/// Whether this app's own backend handle names *port*. The handle outlives the process it names, so the owner is checked too.
+fn we_manage_a_backend_on(state: &BackendState, port: u16) -> bool {
+    // Handle and process state in one pass under the same lock, so they cannot disagree.
+    process::owned_backend_on_port_is_running(state, port)
+}
+
+/// The rule `check_backend_present` applies, as a value so the test for it can actually fail.
+fn backend_is_present(liveness: &BackendLiveness, we_manage_it: bool) -> bool {
+    // A healthy answer is presence whoever owns the port; a timeout or unhealthy reply counts only for a backend we manage.
+    liveness.alive || ((liveness.probe_timed_out || liveness.answered) && we_manage_it)
 }
 
 /// Probe the backend for process liveness.
@@ -487,13 +547,31 @@ async fn check_health_inner(
             continue;
         }
         if !resp.status().is_success() {
-            return Ok(BackendLiveness::default());
+            // Not healthy, but not silence either: something answered on that port.
+            return Ok(BackendLiveness {
+                answered: true,
+                ..BackendLiveness::default()
+            });
         }
-        json = Some(resp.json::<serde_json::Value>().await?);
+        json = match resp.json::<serde_json::Value>().await {
+            Ok(value) => Some(value),
+            Err(error) => {
+                // Propagating the error made presence indistinguishable from a refusal.
+                info!("Backend on port {} answered unparseable JSON: {}", port, error);
+                return Ok(BackendLiveness {
+                    answered: true,
+                    ..BackendLiveness::default()
+                });
+            }
+        };
         break;
     }
     let Some(json) = json else {
-        return Ok(BackendLiveness::default());
+        // Every path answered 404, which is still an answer.
+        return Ok(BackendLiveness {
+            answered: true,
+            ..BackendLiveness::default()
+        });
     };
 
     // Liveness answers "alive" and health answers "healthy". Accept either, so the fallback
@@ -546,6 +624,7 @@ async fn check_health_inner(
         warming_up: alive && (warming || (detecting && !deferred)),
         inference_active: alive && inference_active,
         probe_timed_out: false,
+        answered: true,
     })
 }
 
@@ -655,6 +734,8 @@ fn adopted_backend_liveness(
         // port a different Unsloth backend has taken over is excluded by `different_owner`,
         // since that one answered rather than fell silent.
         probe_timed_out: adopted_failure_is_a_stall(verified, served.alive, different_owner),
+        // The pre-probe got a reply out of this port, whatever the re-check then did.
+        answered: served.answered || served.alive,
     }
 }
 
@@ -713,6 +794,7 @@ pub async fn start_install(
     app: AppHandle,
     state: tauri::State<'_, install::InstallState>,
     backend_state: tauri::State<'_, BackendState>,
+    update_state: tauri::State<'_, update::UpdateState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     if has_owned_backend(&backend_state)? {
@@ -720,6 +802,10 @@ pub async fn start_install(
             "The Unsloth backend is still running. Stop it before starting installation."
                 .to_string(),
         );
+    }
+    // A repair's installer phase runs through run_install_for_repair, so one started here races it.
+    if update::is_repair_running(update_state.inner()) {
+        return Err("Cannot install while a repair is in progress.".to_string());
     }
     block_external_conflict(&[]).await?;
 
@@ -796,6 +882,10 @@ pub async fn start_backend_update(
         .unwrap_or(false)
     {
         return Err("Cannot update while installation is in progress.".to_string());
+    }
+    // A repair holds no child handle between its update and its installer: invisible to the above.
+    if update::is_repair_running(update_state.inner()) {
+        return Err("Cannot update while a repair is in progress.".to_string());
     }
 
     if update_state
@@ -879,13 +969,10 @@ pub async fn start_managed_repair(
         return Err("Cannot repair while installation is in progress.".to_string());
     }
 
-    if update_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("Repair is already running.".to_string());
-    }
+    // Taken before anything else and held to the end: the process handles below are empty
+    // while the backend stops and between the update child and the installer, and every
+    // duplicate call that slipped through there ran its own update and raced for the installer.
+    let _repair = update::RepairInFlight::claim(update_state.inner())?;
 
     let diagnostics_state = diagnostics.inner().clone();
 
@@ -1379,14 +1466,101 @@ mod tests {
             super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
                 .await
                 .unwrap(),
-            super::BackendLiveness::default()
+            super::BackendLiveness {
+                // It answered, and that is all `answered` says: not OUR backend.
+                answered: true,
+                ..super::BackendLiveness::default()
+            }
         );
+        assert!(!super::backend_is_present(
+            &super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+                .await
+                .unwrap(),
+            false
+        ));
     }
 
     #[test]
     fn the_probe_budget_fits_inside_one_watchdog_interval() {
         // A probe that outlives the interval would let the next tick start on top of it.
         assert!(super::HEALTH_PROBE_TIMEOUT < super::HEALTH_WATCHDOG_INTERVAL);
+    }
+
+    #[test]
+    fn the_frontend_retry_ladder_outlives_one_probe_budget() {
+        // #10520: the ladder lives in TypeScript and the budget here, so only this guard keeps them in step.
+        let src = include_str!("../../frontend/src/features/auth/api.ts").replace("\r\n", "\n");
+        let marker = "const TAURI_FETCH_RETRY_DELAYS_MS = [";
+        let start = src
+            .find(marker)
+            .expect("the Tauri fetch retry ladder moved; update this guard")
+            + marker.len();
+        let ladder = &src[start..];
+        let ladder = &ladder[..ladder.find(']').expect("unterminated retry ladder")];
+        let total_ms: u64 = ladder
+            .split(',')
+            .map(str::trim)
+            .filter(|delay| !delay.is_empty())
+            .map(|delay| {
+                delay
+                    .parse::<u64>()
+                    .expect("a retry delay stopped being a plain number of milliseconds")
+            })
+            .sum();
+        assert!(
+            total_ms >= super::HEALTH_PROBE_TIMEOUT.as_millis() as u64,
+            "the webview gives up after {total_ms}ms while one native liveness probe is \
+             allowed {}ms, so a backend the launcher still considers alive is reported to \
+             the user as not running",
+            super::HEALTH_PROBE_TIMEOUT.as_millis()
+        );
+        assert!(
+            src.contains("invoke<boolean>(\"check_backend_present\""),
+            "the transport-failure path no longer asks the native side before it tells the \
+             user to relaunch"
+        );
+        // And not the health command, which reports a spent budget as a refused connection.
+        assert!(
+            !src.contains("invoke<boolean>(\"check_health\""),
+            "the transport-failure path is back on check_health, which collapses a stalled \
+             probe onto \"not running\""
+        );
+    }
+
+    #[test]
+    fn a_stalled_probe_is_not_reported_as_an_absent_backend() {
+        // check_health answers `alive`, so a timeout and a closed port are the same answer.
+        let stalled = super::BackendLiveness {
+            alive: false,
+            probe_timed_out: true,
+            ..Default::default()
+        };
+        let closed = super::BackendLiveness::default();
+        let answered = super::BackendLiveness {
+            alive: true,
+            ..Default::default()
+        };
+
+        // Through the rule the command applies: an inlined copy asserts its own arithmetic.
+        assert!(!stalled.alive, "a stall is not an answer");
+        assert!(
+            super::backend_is_present(&stalled, true),
+            "a stalled probe must read as a backend that is still present"
+        );
+        assert!(
+            !super::backend_is_present(&stalled, false),
+            "a stall on a port this app does not manage proves nothing about our backend"
+        );
+        assert!(
+            !super::backend_is_present(&closed, true),
+            "a refused connection must still read as absent"
+        );
+        assert!(super::backend_is_present(&answered, false));
+        // And the health command must keep collapsing the stall for its own caller.
+        assert!(
+            !stalled.alive,
+            "check_health still reports a stall as not usable"
+        );
     }
 
     #[test]
@@ -1534,6 +1708,89 @@ mod tests {
         port
     }
 
+    /// A port that answers every request with *status* and *body*.
+    async fn answering_test_backend(status: &'static str, body: &'static str) -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("probe test needs a loopback port");
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = [0; 2048];
+                let Ok(_) = stream.read(&mut buffer).await else {
+                    return;
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn ownership_is_read_after_the_probe_not_before_it() {
+        // The closure answers "we manage it" only once the request reached the server, so true means it ran AFTER the probe.
+        let probe_arrived = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("probe test needs a loopback port");
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::clone(&probe_arrived);
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = [0; 2048];
+                let Ok(_) = stream.read(&mut buffer).await else {
+                    return;
+                };
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let asked = std::sync::Arc::clone(&probe_arrived);
+        assert_eq!(
+            super::backend_presence(port, move || asked.load(std::sync::atomic::Ordering::SeqCst))
+                .await,
+            Ok(true),
+            "ownership was read before the probe, so a backend that changed under it would \
+             still have been reported as running"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_managed_backend_that_answers_unhealthily_is_still_present() {
+        // A backend still building its app answers a non-2xx, collapsed onto the refused-connection default.
+        let port = answering_test_backend("503 Service Unavailable", "").await;
+        assert_eq!(
+            super::backend_presence(port, || true).await,
+            Ok(true),
+            "a managed backend answering 503 was reported absent"
+        );
+        assert_eq!(super::backend_presence(port, || false).await, Ok(false));
+    }
+
+    #[tokio::test]
+    async fn a_reply_this_build_cannot_parse_is_still_an_answer() {
+        // Propagating the parse error made presence indistinguishable from a refusal.
+        let port = answering_test_backend("200 OK", "not json at all").await;
+        assert_eq!(
+            super::backend_presence(port, || true).await,
+            Ok(true),
+            "a managed backend answering an unparseable body was reported absent"
+        );
+        assert_eq!(super::backend_presence(port, || false).await, Ok(false));
+
+        let liveness = super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+            .await
+            .expect("an answered probe is not a transport error");
+        assert!(!liveness.alive, "an unparseable reply is not a healthy backend");
+        assert!(liveness.answered, "the reply arrived, so the port is not silent");
+    }
+
     #[tokio::test]
     async fn a_port_that_accepts_and_never_answers_reads_as_a_stall() {
         // The premise of the busy budget: a saturated backend still holds its port open, so
@@ -1551,6 +1808,45 @@ mod tests {
             super::liveness_from_probe_error(&error).probe_timed_out,
             "a spent probe budget is not being classified as a stall, so a backend that is \
              merely busy gets the three-strike budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_backend_present_reports_a_stalled_port_as_present() {
+        // The bug lives in the `Err` arm, which a struct-level test cannot reach; costs HEALTH_PROBE_TIMEOUT in wall clock.
+        let port = stalling_test_backend().await;
+        assert_eq!(
+            super::backend_presence(port, || true).await,
+            Ok(true),
+            "a backend holding the port and not answering was reported absent, which is the \
+             relaunch prompt this command was added to prevent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_port_this_app_does_not_manage_is_not_our_backend() {
+        // With no backend of our own on that port there is nothing to wait for.
+        let port = stalling_test_backend().await;
+        assert_eq!(
+            super::backend_presence(port, || false).await,
+            Ok(false),
+            "a stalled port with no managed backend behind it was reported as present"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_backend_present_reports_a_closed_port_as_absent() {
+        // Classifying the error must not turn every failed probe into "present".
+        let port = {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
+        assert_eq!(
+            super::backend_presence(port, || true).await,
+            Ok(false),
+            "a closed port must still read as an absent backend"
         );
     }
 
@@ -1693,6 +1989,7 @@ mod tests {
             warming_up: false,
             inference_active: true,
             probe_timed_out: false,
+            answered: true,
         };
         let confirmed = super::adopted_backend_liveness(false, &served, false);
         assert!(
@@ -1714,6 +2011,7 @@ mod tests {
                 warming_up: false,
                 inference_active: false,
                 probe_timed_out: false,
+                answered: true,
             },
             false,
         );
@@ -1838,6 +2136,7 @@ mod tests {
                     warming_up: warming,
                     inference_active: busy,
                     probe_timed_out: false,
+                    answered: true,
                 },
                 Probe::TimedOut => {
                     elapsed += probe_budget;

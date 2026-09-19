@@ -31,7 +31,7 @@ import {
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
-  UserIcon,
+  UserCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
@@ -182,12 +182,11 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { id: "accounts", labelKey: "settings.tabs.accounts", icon: UserIcon },
   { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
   {
     id: "profile",
     labelKey: "settings.tabs.profile",
-    icon: UserIcon,
+    icon: UserCircleIcon,
   },
   {
     id: "appearance",
@@ -218,6 +217,12 @@ const TABS: TabDef[] = [
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
+  },
+  {
+    id: "accounts",
+    labelKey: "settings.tabs.accounts",
+    icon: UserCircleIcon,
+    badgeKey: "common.new",
   },
   {
     id: "agents",

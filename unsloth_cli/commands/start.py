@@ -2116,7 +2116,7 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS: dspark and dflash are the same DeepSeek V4 Flash drafter, but dflash/ is also a real family name, so only mtp/ and dspark/ count as a companion folder.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
@@ -2754,6 +2754,8 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
         "ANTHROPIC_AUTH_TOKEN": key,
         "ANTHROPIC_MODEL": model_id,
         "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+        # Per-tool countdown reminders change the system prefix on local models.
+        "CLAUDE_CODE_TOTAL_TOKENS_REMINDER": "off",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
         "CLAUDE_CODE_NO_FLICKER": "1",

@@ -771,7 +771,7 @@ _configure_uv_cache() {
         _UV_CACHE_MODE=isolated
         export UV_CACHE_DIR
         _uv_no_cache_requested || _record_uv_cache_choice
-        step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
+        step "uv cache" "forced Unsloth Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
         return 0
     fi
 
@@ -953,17 +953,17 @@ _configure_uv_cache() {
             ;;
         studio)
             if [ -n "$_uv_chosen_cache" ]; then
-                step "uv cache" "reusing this install's Studio cache ($UV_CACHE_DIR)"
+                step "uv cache" "reusing this install's Unsloth Studio cache ($UV_CACHE_DIR)"
             # Never about the directory we are falling back TO: the Studio cache is itself a
             # candidate now, so it can be the one refused, and naming it claims a fallback
             # that did not happen.
             elif [ "$_uv_scan_blocked" = true ] && [ "$_uv_blocked_cache" != "$UV_CACHE_DIR" ]; then
-                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_blocked_cache could not be read, so cached packages may download again" "$C_WARN"
+                step "uv cache" "using new Unsloth Studio-owned cache ($UV_CACHE_DIR); part of $_uv_blocked_cache could not be read, so cached packages may download again" "$C_WARN"
             # Warm and still here means the write probe refused it.
             elif [ -n "$_uv_warn_cache" ] && [ "$_uv_warn_cache" != "$UV_CACHE_DIR" ]; then
-                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_warn_cache is populated but not writable, so cached packages may download again" "$C_WARN"
+                step "uv cache" "using new Unsloth Studio-owned cache ($UV_CACHE_DIR); $_uv_warn_cache is populated but not writable, so cached packages may download again" "$C_WARN"
             else
-                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
+                step "uv cache" "using new Unsloth Studio-owned cache ($UV_CACHE_DIR)"
             fi
             ;;
     esac
@@ -5779,7 +5779,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.4}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.7}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -5787,9 +5787,12 @@ if [ "$_MIGRATED" = true ]; then
     substep "upgrading unsloth in migrated environment..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: --no-deps throughout (PyPI metadata still hard-deps torch).
+        # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo floor
+        # for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
+        # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.3"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.6"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -5804,7 +5807,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.3"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.6"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -6009,9 +6012,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     substep "installing unsloth (this may take a few minutes)..."
     _build_unsloth_torch_overrides
     if [ "$SKIP_TORCH" = true ]; then
+        # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.3"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.6"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -6030,7 +6034,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.3"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.6"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -6061,7 +6065,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.3" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.6" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -6315,27 +6319,111 @@ _path_has_dir() {
 }
 
 # fish reads none of the POSIX rc files, so an `export` line is a no-op for a fish user: the next session resolves neither uv nor the shim. conf.d is fish's own drop-in directory and fish_add_path is idempotent by design. ~/.config, not XDG_CONFIG_HOME, because that is where astral's installer put its own fish file.
+# Is a conda environment ACTIVE in this shell? Both variables, matching install.ps1: a hook
+# exporting only CONDA_DEFAULT_ENV still leaves the caller inside conda's PATH ordering.
+# Replace a line THIS installer wrote with the form the current run needs, in place. A
+# previous run outside conda persisted the PREPEND spelling, and the presence checks below
+# accept any spelling, so without this the prepend would survive for ever (#5871). Only an
+# exact whole-line match on what we write is touched, and the content is copied back into the
+# ORIGINAL file so a symlinked rc keeps its link, mode and owner. A file that cannot be
+# rewritten is a warning, never a failure.
+_unsloth_repoint_rc_line() {
+    [ -f "$1" ] || return 1
+    # OURS, not merely matching: a hand-written `export PATH="$HOME/.local/bin:$PATH"` is a
+    # line users have too, and demoting theirs would move that whole directory behind the
+    # rest of PATH for good. The `# Added by Unsloth` marker above the line is the ownership
+    # record, so a line without one is left alone.
+    _URRL_OLD="$2" awk '
+        $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { found = 1 }
+        { prev = $0 }
+        END { exit(found ? 0 : 1) }
+    ' "$1" 2>/dev/null || return 1
+    # Staged and renamed, because `cat tmp > file` truncates the profile first and an
+    # interrupt leaves wreckage. Onto the RESOLVED path: renaming over a chezmoi or stow
+    # symlink would replace it with a regular file. `readlink -f` is GNU-only, hence the walk.
+    _urrl_real="$1"
+    _urrl_hops=0
+    while [ -L "$_urrl_real" ] && [ "$_urrl_hops" -lt 40 ]; do
+        _urrl_hops=$((_urrl_hops + 1))
+        _urrl_target="$(readlink -- "$_urrl_real" 2>/dev/null)" || break
+        [ -n "$_urrl_target" ] || break
+        case "$_urrl_target" in
+            /*) _urrl_real="$_urrl_target" ;;
+            *) _urrl_real="$(dirname -- "$_urrl_real")/$_urrl_target" ;;
+        esac
+    done
+    [ -f "$_urrl_real" ] || return 1
+    _urrl_tmp="$_urrl_real.unsloth-tmp.$$"
+    # `cp -p` keeps the original's mode; without it the umask masks it and a 0644 .bashrc
+    # comes back 0600. ENVIRON, not `-v`: POSIX awk decodes backslash escapes in `-v`, so an
+    # escaped path arrived as something else and renamed an unchanged file.
+    if { cp -p -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
+        || cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null; } \
+        && _URRL_OLD="$2" _URRL_NEW="$3" awk '
+            $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { print ENVIRON["_URRL_NEW"]; prev = $0; next }
+            { print; prev = $0 }
+        ' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
+        && mv -f -- "$_urrl_tmp" "$_urrl_real" 2>/dev/null; then
+        return 0
+    fi
+    # The original is untouched on every failure above; only the staged copy needs removing.
+    rm -f -- "$_urrl_tmp" 2>/dev/null
+    return 1
+}
+
+_unsloth_conda_env_active() {
+    [ -n "${CONDA_PREFIX:-}" ] || [ -n "${CONDA_DEFAULT_ENV:-}" ]
+}
+
 _persist_fish_path_dir() {
-    _pfp_dir="$1"; _pfp_label="${2:-$1}"
+    _pfp_dir="$1"; _pfp_label="${2:-$1}"; _pfp_mode="${3:-}"
     [ -n "${HOME:-}" ] || return 0
     _pfp_dir_conf="$HOME/.config/fish/conf.d"
     mkdir -p "$_pfp_dir_conf" 2>/dev/null || return 0
     _pfp_file="$_pfp_dir_conf/unsloth.fish"
     # Single-quoted: an unquoted path with a space is two arguments to fish_add_path and neither exists. Inside fish single quotes only \\ and \' carry meaning.
     _pfp_quoted=$(printf '%s' "$_pfp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
-    # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it.
-    if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qxF "fish_add_path '$_pfp_quoted'"; then
+    # fish_add_path PREPENDS, and that ordering outlives the conda activation (#5871), so
+    # the conda arm appends. All three flags are load-bearing:
+    #   -a alone appends to $fish_user_paths, which fish prepends to PATH, so -P is what
+    #      makes it an append to PATH at all
+    #   -P edits $PATH for the session, which is right in conf.d: it is read alphabetically,
+    #      so conda.fish has already run
+    #   -m moves an entry already in PATH, which a bare `fish_add_path` from an older
+    #      install put there via the universal $fish_user_paths; without it the append is a
+    #      no-op and the stale prepend survives
+    # https://fishshell.com/docs/current/cmds/fish_add_path.html
+    _pfp_line="fish_add_path '$_pfp_quoted'"
+    if _unsloth_conda_env_active; then
+        _pfp_line="fish_add_path -a -P -m '$_pfp_quoted'"
+        # Every earlier spelling is a prepend as far as PATH is concerned -- the bare -a
+        # appends to $fish_user_paths, which fish itself puts in front of PATH -- so a line
+        # left by any previous run is repointed rather than accepted by the check below, and
+        # that includes the -a -P line without -m, which cannot move an entry already in PATH.
+        for _pfp_stale in "fish_add_path '$_pfp_quoted'" "fish_add_path -a '$_pfp_quoted'" \
+                          "fish_add_path -a -P '$_pfp_quoted'"; do
+            if _unsloth_repoint_rc_line "$_pfp_file" "$_pfp_stale" "$_pfp_line"; then
+                step "path" "moved $_pfp_label after the active conda environment in $_pfp_file"
+            fi
+        done
+    fi
+    [ "$_pfp_mode" = "repoint" ] && return 0
+    # The exact line we would write, not any occurrence of the directory: /opt/uv-old must
+    # not pass for /opt/uv. EVERY spelling counts as present, or a run outside conda adds a
+    # second line for a directory a run inside it already registered.
+    if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null \
+        | grep -qxF -e "fish_add_path '$_pfp_quoted'" -e "fish_add_path -a '$_pfp_quoted'" -e "fish_add_path -a -P '$_pfp_quoted'" -e "fish_add_path -a -P -m '$_pfp_quoted'"; then
         # Same single-redirect, warning-not-failure contract as the POSIX arm. 2>/dev/null comes FIRST: redirections apply left to right, so the other order prints the shell's own "Permission denied" before the redirect can silence it.
         if {
             echo "# Added by Unsloth installer"
-            echo "fish_add_path '$_pfp_quoted'"
+            echo "$_pfp_line"
         } 2>/dev/null >> "$_pfp_file"; then
             step "path" "added $_pfp_label to PATH in $_pfp_file"
         else
             step "path" "could not write $_pfp_file; add $_pfp_label to PATH yourself" "$C_WARN"
             substep "Unsloth is installed and works; only the PATH line is missing."
             substep "Add this to your fish config to get 'unsloth' in new shells:"
-            substep "  fish_add_path '$_pfp_quoted'"
+            substep "  $_pfp_line"
         fi
     fi
 }
@@ -6344,12 +6432,17 @@ _persist_fish_path_dir() {
 _PATH_LINE_RE='(^|[^[:alnum:]_])(PATH[[:space:]]*=|fish_add_path|pathmunge|path_helper)'
 
 # Put a directory on the PATH of the NEXT shell, not just this process. $1 the directory, $2 the rc-file literal (~/.local/bin keeps $HOME unexpanded, as it always has), $3 how to name it in the line we print, $4 the grep that says it is already there, $5 an explicit profile file or empty to pick one the way this installer always has.
+# $6 "repoint" asks for the repositioning pass ALONE: fix a line a previous run wrote and add
+# nothing. The callers below are guarded on whether the directory is already on the login PATH,
+# and it IS on it precisely because the previous run wrote the line, so the ordinary call is
+# skipped in exactly the case the repointing exists for.
 _persist_login_path_dir() {
     _plp_dir="$1"; _plp_literal="$2"; _plp_label="$3"; _plp_pattern="$4"; _plp_file="${5:-}"
+    _plp_mode="${6:-}"
     [ -n "${HOME:-}" ] || return 0
     # fish reads none of the POSIX rc files, so an `export` line there is a no-op for a fish user. conf.d is fish's own drop-in directory and fish_add_path is idempotent by design.
     if [ -z "$_plp_file" ] && [ "$(basename "${SHELL:-}")" = "fish" ]; then
-        _persist_fish_path_dir "$_plp_dir" "$_plp_label"
+        _persist_fish_path_dir "$_plp_dir" "$_plp_label" "$_plp_mode"
         return 0
     fi
     _SHELL_PROFILE="$_plp_file"
@@ -6366,6 +6459,31 @@ _persist_login_path_dir() {
         _SHELL_PROFILE="$HOME/.profile"
     fi
     [ -n "$_SHELL_PROFILE" ] || return 0
+    # A persisted PREPEND outlives the activation and leaves conda resolving out of our
+    # directory in every later shell (#5871). Inside one, write the same line as an APPEND;
+    # the grep below matches either spelling, so no second line is added. install.ps1 makes
+    # the same choice for the Windows registry.
+    _plp_line="export PATH=\"$_plp_literal:\$PATH\""
+    if _unsloth_conda_env_active; then
+        _plp_prepend="$_plp_line"
+        _plp_line="export PATH=\"\$PATH:$_plp_literal\""
+        # A prepend a previous run left behind is repositioned rather than accepted: the check
+        # below treats it as present and would add nothing, leaving our directory ahead of the
+        # active conda environment in every later shell.
+        if grep -qxF "$_plp_prepend" "$_SHELL_PROFILE" 2>/dev/null; then
+            if _unsloth_repoint_rc_line "$_SHELL_PROFILE" "$_plp_prepend" "$_plp_line"; then
+                step "path" "moved $_plp_label after the active conda environment in $_SHELL_PROFILE"
+            else
+                step "path" "could not reposition $_plp_label in $_SHELL_PROFILE" "$C_WARN"
+                substep "It is listed before conda, so conda resolves binaries out of it."
+                substep "Replace that line with:"
+                substep "  $_plp_line"
+            fi
+        fi
+    fi
+    # Repointing was the whole job for this call: adding a line the caller did not ask for
+    # would put an entry in the rc file of someone whose PATH comes from somewhere else.
+    [ "$_plp_mode" = "repoint" ] && return 0
     # Comments stripped first, then only lines that actually set PATH: a commented-out old export is not an active entry, and neither is `UV_CACHE=/opt/uv` or `PYTHONPATH=/opt/uv`. The name boundary is what keeps PYTHONPATH out. Taking any of them for a PATH entry leaves the next shell with no uv at all.
     if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
         | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
@@ -6373,17 +6491,25 @@ _persist_login_path_dir() {
         if {
             echo ''
             echo '# Added by Unsloth installer'
-            echo "export PATH=\"$_plp_literal:\$PATH\""
+            echo "$_plp_line"
         } 2>/dev/null >> "$_SHELL_PROFILE"; then
             step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
         else
             step "path" "could not write $_SHELL_PROFILE; add $_plp_label to PATH yourself" "$C_WARN"
             substep "Unsloth is installed and works; only the PATH line is missing."
             substep "Add this to your shell config to get 'unsloth' in new shells:"
-            substep "  export PATH=\"$_plp_literal:\$PATH\""
+            substep "  $_plp_line"
         fi
     fi
 }
+
+# Before the guard below, because that guard is satisfied by the very line that needs moving:
+# a previous run wrote the prepend, the shell that launched this installer evaluated it, and
+# the directory is therefore already on the login PATH. Repointing only, so a machine whose
+# PATH comes from somewhere else does not gain an rc line it never had.
+if _unsloth_conda_env_active && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
+    _persist_login_path_dir "$_LOCAL_BIN" '$HOME/.local/bin' "~/.local/bin" '\.local/bin' "" repoint
+fi
 
 if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_LOCAL_BIN"; then  # not on a new shell's PATH
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
@@ -6399,6 +6525,38 @@ fi
 if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] \
    && [ -z "${UV_NO_MODIFY_PATH:-}" ] && [ -z "${UV_UNMANAGED_INSTALL:-}" ] \
    && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
+    # Same repointing pass as the shim block, and ahead of the same guard for the same
+    # reason: the directory is on the login PATH because the previous run's prepend put it
+    # there. Computed here because the guard below owns the escaping.
+    if _unsloth_conda_env_active; then
+        _uv_repoint_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
+        # And the $HOME-relative spelling, because that is what the shim block above writes:
+        # the default uv destination IS ~/.local/bin, so a repoint built only from the
+        # expanded path could never match `export PATH="$HOME/.local/bin:$PATH"` and the
+        # line it was meant to move stayed in front of conda. The shim's own repoint pass
+        # reaches one profile, whichever is selected now, so a prepend a previous run left
+        # in .profile outlives a user who since acquired a .bashrc or changed shells; this
+        # loop already visits every startup file astral's installer wired, so it is where
+        # both spellings belong. $HOME is left unexpanded on purpose and only the rest of
+        # the path is escaped.
+        _uv_repoint_home_literal=""
+        case "$_UNSLOTH_UV_BIN_DIR" in
+            "$HOME"/*)
+                _uv_repoint_home_literal='$HOME'$(printf '%s' "${_UNSLOTH_UV_BIN_DIR#$HOME}" | sed 's/[\\"$`]/\\&/g')
+                ;;
+        esac
+        for _uv_prof in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                        "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+            [ -f "$_uv_prof" ] || continue
+            _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_repoint_literal" \
+                "$_UNSLOTH_UV_BIN_DIR" "" "$_uv_prof" repoint
+            if [ -n "$_uv_repoint_home_literal" ]; then
+                _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_repoint_home_literal" \
+                    "$_UNSLOTH_UV_BIN_DIR" "" "$_uv_prof" repoint
+            fi
+        done
+        _persist_fish_path_dir "$_UNSLOTH_UV_BIN_DIR" "" repoint
+    fi
     if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_UNSLOTH_UV_BIN_DIR"; then
         # The rc line is double-quoted, so a path holding $, ` or " would be expanded or terminated by the shell that reads it. The ~/.local/bin literal is exempt: its $HOME is meant to stay unexpanded.
         _uv_rc_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')

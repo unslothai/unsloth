@@ -187,6 +187,57 @@ function Exit-SetupFailure {
     exit $Code
 }
 
+# The interpreter this setup was launched from, when it lives inside $VenvDir; $null otherwise.
+# `unsloth studio update` names its own sys.executable as UNSLOTH_SETUP_HOST_PYTHON; the process
+# walk covers an older CLI and any wrapper that runs the venv's python.exe by hand. Windows keeps
+# a running image undeletable, so a stale-venv wipe issued from inside the venv guts Lib\ and
+# then fails on Scripts\python.exe: callers repair such an environment in place instead.
+function Get-SetupHostInterpreterInVenv {
+    param([Parameter(Mandatory = $true)][string]$VenvDir)
+    $root = $null
+    # Not a literal '\': off Windows GetFullPath returns '/' and '\' is an ordinary filename
+    # character, so a hardcoded one builds a prefix nothing matches. The pwsh tests run there.
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    try { $root = [System.IO.Path]::GetFullPath($VenvDir).TrimEnd('\', '/') + $sep } catch { return $null }
+    $inside = {
+        param([string]$Candidate)
+        if ([string]::IsNullOrWhiteSpace($Candidate)) { return $false }
+        try { $full = [System.IO.Path]::GetFullPath($Candidate) } catch { return $false }
+        if (-not $full.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        # A path, not a file, is not an interpreter that can be holding anything open. The hint
+        # below is an inherited environment variable and can outlive what it names -- a stale one
+        # pointing inside the venv would otherwise route a venv that genuinely needs rebuilding
+        # into an in-place repair it has no interpreter to perform. A live process's own
+        # ExecutablePath passes this trivially; an unreadable one reads as "not inside", which is
+        # the pre-existing rebuild.
+        return (Test-Path -LiteralPath $full -PathType Leaf)
+    }
+    if (& $inside $env:UNSLOTH_SETUP_HOST_PYTHON) { return $env:UNSLOTH_SETUP_HOST_PYTHON }
+    try {
+        $byPid = @{}
+        foreach ($row in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
+            $byPid[[int]$row.ProcessId] = $row
+        }
+        $cur = [int]$PID
+        # Bounded: ParentProcessId can name a reused id once the real parent is gone.
+        for ($hop = 0; $hop -lt 8 -and $byPid.ContainsKey($cur); $hop++) {
+            $row = $byPid[$cur]
+            if (& $inside $row.ExecutablePath) { return $row.ExecutablePath }
+            $parent = [int]$row.ParentProcessId
+            if ($parent -le 0 -or $parent -eq $cur) { break }
+            # A parent that started AFTER its child is not the parent: Windows reuses process ids
+            # once the real one has exited, and Microsoft's own Win32_Process guidance is to
+            # compare creation dates before trusting ParentProcessId. Unreadable dates on either
+            # side leave the hop alone rather than ending the walk, since the bound already caps it.
+            $parentRow = $byPid[$parent]
+            if ($parentRow -and $row.CreationDate -and $parentRow.CreationDate -and
+                $parentRow.CreationDate -gt $row.CreationDate) { break }
+            $cur = $parent
+        }
+    } catch { }
+    return $null
+}
+
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
@@ -215,10 +266,33 @@ function Refresh-Environment {
     }
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    # Merge: venv Scripts (if active) > Machine > User > current $env:Path. Dedup raw+expanded.
+    # Merge: venv Scripts (if active) > active conda > Machine > User > current $env:Path.
+    # Dedup raw+expanded.
     $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV 'Scripts' } else { $null }
+    # An activated conda environment lives ONLY in the process PATH, so rebuilding as
+    # machine + user + previous puts every conda entry behind the User PATH. Running this
+    # script directly shares the caller's process, so the demotion would outlive the setup.
+    # Mirrors install.ps1's Refresh-SessionPath; parity is asserted in
+    # tests/python/test_installer_conda_path_guard.py.
+    $condaFront = @()
+    if (Test-ActiveCondaEnvironment) {
+        $prefixes = Get-ActiveCondaPrefixes
+        if ($prefixes) {
+            foreach ($entry in ($env:Path -split ";")) {
+                if (Test-PathUnderCondaPrefix -Path $entry -Prefixes $prefixes) {
+                    $condaFront += $entry
+                }
+            }
+        } else {
+            # A hook that exports CONDA_DEFAULT_ENV and nothing that names a directory: which
+            # entries are conda's cannot be established, so the caller's PATH is kept whole
+            # and in front rather than reconstructed. Same reasoning as install.ps1.
+            $condaFront = @($env:Path)
+        }
+    }
     $sources = @()
     if ($venvScripts) { $sources += $venvScripts }
+    $sources += $condaFront
     $sources += @($machinePath, $userPath, $env:Path)
     $merged = ($sources | Where-Object { $_ }) -join ';'
     $seen = @{}
@@ -235,6 +309,75 @@ function Refresh-Environment {
     $env:Path = $unique -join ";"
 }
 
+# ── Helper: is a conda environment ACTIVE in this session? ──
+# Mirrors install.ps1. CONDA_PREFIX separates "conda is installed" from "we are inside one
+# of its environments".
+function Test-ActiveCondaEnvironment {
+    foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
+        if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
+    }
+    return $false
+}
+
+# Every directory the active conda installation owns: the environment itself, the stack of
+# environments it was activated on top of, and the base installation. Mirrors install.ps1.
+function Get-ActiveCondaPrefixes {
+    $prefixes = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($env:CONDA_PREFIX)) { $prefixes.Add($env:CONDA_PREFIX) }
+    # Enumerated from CONDA_SHLVL, not a fixed list: a hard-coded tail of three dropped
+    # everything past the fourth stacked environment and inverted its ordering. The ceiling
+    # stops a bad value spinning.
+    $levels = 0
+    if (-not [string]::IsNullOrWhiteSpace($env:CONDA_SHLVL)) {
+        [void][int]::TryParse($env:CONDA_SHLVL, [ref]$levels)
+    }
+    if ($levels -lt 1) { $levels = 1 }
+    if ($levels -gt 64) { $levels = 64 }
+    for ($level = 1; $level -le $levels; $level++) {
+        $value = [Environment]::GetEnvironmentVariable("CONDA_PREFIX_$level")
+        if (-not [string]::IsNullOrWhiteSpace($value)) { $prefixes.Add($value) }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:_CONDA_ROOT)) { $prefixes.Add($env:_CONDA_ROOT) }
+    if (-not [string]::IsNullOrWhiteSpace($env:CONDA_EXE)) {
+        # ...\<root>\Scripts\conda.exe -> ...\<root>. Regex rather than Split-Path, which is
+        # provider-aware and keeps backslashes on the non-Windows PowerShell the tests use.
+        $scripts = $env:CONDA_EXE -replace '[\\/][^\\/]*$', ''
+        $root = $scripts -replace '[\\/][^\\/]*$', ''
+        if ($root -and $root -ne $env:CONDA_EXE) { $prefixes.Add($root) }
+    }
+    return $prefixes
+}
+
+# Is $Path inside one of $Prefixes? On a directory boundary, so "C:\conda-backup" is not
+# dragged to the front along with "C:\conda".
+function Test-PathUnderCondaPrefix {
+    param([string]$Path, $Prefixes)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not $Prefixes) { return $false }
+    $candidate = [Environment]::ExpandEnvironmentVariables($Path).Trim().Trim('"').TrimEnd('\')
+    if (-not $candidate) { return $false }
+    foreach ($prefix in $Prefixes) {
+        $normalized = [Environment]::ExpandEnvironmentVariables($prefix).Trim().Trim('"').TrimEnd('\')
+        if (-not $normalized) { continue }
+        if ($candidate -ieq $normalized) { return $true }
+        if ($candidate.StartsWith($normalized + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+# The position a PERSISTENT PATH write may actually use: a prepend outlives the activation
+# it was made under and leaves our directory ahead of conda's own entries (#5871). Mirrors
+# install.ps1; parity is asserted in tests/python/test_installer_conda_path_guard.py.
+function Resolve-UserPathPosition {
+    param(
+        [ValidateSet('Append','Prepend')]
+        [string]$Position = 'Append'
+    )
+    if ($Position -eq 'Prepend' -and (Test-ActiveCondaEnvironment)) { return 'Append' }
+    return $Position
+}
+
 # Direct registry access preserves REG_EXPAND_SZ (dotnet/runtime#1442).
 function Add-ToUserPath {
     param(
@@ -243,6 +386,13 @@ function Add-ToUserPath {
         [string]$Position = 'Append'
     )
     if (Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue) { return $false }
+    # Every persistent PATH write goes through Resolve-UserPathPosition, so an active conda
+    # environment cannot be demoted by any call site.
+    # A downgraded request has to be able to MOVE an entry that a previous non-conda run left at the
+    # FRONT, not just decline to add one; see the same guard in install.ps1.
+    $requestedPosition = $Position
+    $Position = Resolve-UserPathPosition -Position $Position
+    $positionDowngraded = ($Position -ne $requestedPosition)
     try {
         $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
         try {
@@ -265,7 +415,8 @@ function Add-ToUserPath {
                 $kept.Add($entries[$i])
             }
             $alreadyPresent = $matchIndices.Count -gt 0
-            if ($alreadyPresent -and $Position -eq 'Append') { # Append: idempotent no-op
+            # Already at the back is still a no-op, caught by the $newPath -ceq $rawPath check below.
+            if ($alreadyPresent -and $Position -eq 'Append' -and -not $positionDowngraded) {
                 return $false
             }
             if ($alreadyPresent -and $Position -eq 'Prepend' -and # Prepend: no-op if already at front
@@ -421,16 +572,103 @@ function Get-PathDenialDetail {
     param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-    if (-not $item) { return "" }
-    # Non-filesystem providers do not expose FileSystemInfo attributes.
-    if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
-    if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
-    $target = $null
-    try { $target = $item.Target } catch { $target = $null }
-    # PS 5.1 exposes .Target as a collection; PS 7 as a string.
-    if ($target) { return " (it is a link to $(@($target) -join ', '))" }
-    return " (it is a link)"
+
+    # Read attributes through the filesystem API rather than Get-Item. Getting
+    # attributes needs only FILE_READ_ATTRIBUTES, which survives the ACLs that
+    # deny reading the directory itself, so Get-Item returns nothing in exactly
+    # the case this detail is meant to describe and the caller silently loses
+    # every hint below.
+    $attrs = $null
+    try { $attrs = [System.IO.File]::GetAttributes($Path) } catch { $attrs = $null }
+    if ($null -eq $attrs) { return "" }
+
+    # Ordered by how much each one changes the fix. takeown/icacls cannot help
+    # with any of the first three, so name them before falling back to ACLs.
+    # On a directory this attribute only means new descendants are encrypted
+    # by default, so listing it never needs the key and a denial there is an
+    # ACL. Only a file's own streams are unreadable without the certificate.
+    $isDirectory = ([int]$attrs -band [int][System.IO.FileAttributes]::Directory) -ne 0
+    if (-not $isDirectory -and ($attrs -band [System.IO.FileAttributes]::Encrypted)) {
+        return " (it is EFS-encrypted, so it stays unreadable even elevated unless the encrypting account or its recovery certificate is available)"
+    }
+    # Offline plus either recall attribute is a cloud placeholder, typically
+    # OneDrive Files On-Demand that cannot hydrate.
+    # RECALL_ON_OPEN (0x40000) and RECALL_ON_DATA_ACCESS (0x400000) are absent
+    # from the FileAttributes enum on Windows PowerShell 5.1, so test the bits.
+    $offline = ([int]$attrs -band [int][System.IO.FileAttributes]::Offline) -ne 0
+    $recall = ([int]$attrs -band (0x00040000 -bor 0x00400000)) -ne 0
+    if ($offline -or $recall) {
+        return " (it is a cloud placeholder, e.g. OneDrive Files On-Demand, that cannot be hydrated right now)"
+    }
+    if ($attrs -band [System.IO.FileAttributes]::ReparsePoint) {
+        $target = $null
+        try {
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+            if ($item -is [System.IO.FileSystemInfo]) { $target = $item.Target }
+        } catch { $target = $null }
+        # PS 5.1 exposes .Target as a collection; PS 7 as a string.
+        if ($target) { return " (it is a link to $(@($target) -join ', '))" }
+        return " (it is a link)"
+    }
+    return ""
+}
+
+# Which security software could be denying this path, as a possibility.
+#
+# Worth naming because takeown and icacls cannot clear a filter-driver block
+# and elevation does not either, so a user whose antivirus is holding the
+# folder is otherwise sent round the takeown loop for as long as they are
+# willing. Nothing readable from here attributes the specific denial though,
+# so this names the candidate and the log that settles it and never
+# contradicts the ACL advice it follows.
+#
+# Defender's Controlled folder access modes are 0 Disabled, 1 Enabled,
+# 2 AuditMode, 3 BlockDiskModificationOnly, 4 AuditDiskModificationOnly. Only
+# 1 gates file access; 3 and 4 are direct disk-sector writes rather than
+# files, so neither explains a denied folder.
+#
+# When Defender is not it, name whichever antivirus is registered and running
+# instead: third-party suites ship the same protected-folders feature under
+# their own product names, and the user cannot act on advice that does not say
+# which product to open. Which suite ships what is recorded in
+# tests/studio/test_installer_av_shapes.py and deliberately not repeated here,
+# because this file is scanned in full before a line of it runs and a comment
+# listing security products raises the score of the very file explaining it.
+# Nothing below hard-codes a product: it reads what SecurityCenter2 registered.
+#
+# Answers "" whenever it cannot tell, so a machine with no Defender module
+# and no SecurityCenter registration reads the same as one that says no.
+function Get-SecuritySoftwareNote {
+    $mode = $null
+    try {
+        if (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) {
+            $mode = [int](Get-MpPreference -ErrorAction Stop).EnableControlledFolderAccess
+        }
+    } catch { $mode = $null }
+    if ($mode -eq 1) {
+        return "Controlled folder access is ON here, and it gates writes to protected folders whatever your privileges are, so where it is the cause takeown and icacls will not clear it: Windows Defender Operational events 1123 and 1124 say whether it stopped this path, and Virus & threat protection > Ransomware protection > Allow an app is where to allow Unsloth"
+    }
+    # SecurityCenter2 is the registration every consumer antivirus makes, and
+    # it is absent on Server SKUs, so this stays best-effort. productState
+    # packs the running state in 0xF000: 0x1000 on, 0x2000 snoozed, 0 off.
+    # A product that is not running cannot be holding the folder and naming it
+    # sends the user to the wrong console; a state we cannot read proves
+    # nothing either way, so it is kept.
+    $others = @()
+    try {
+        $others = @(Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -ErrorAction Stop |
+            Where-Object { $state = $_.productState -as [uint32]; ($null -eq $state) -or (($state -band 0xF000) -eq 0x1000) } |
+            ForEach-Object { [string]$_.displayName } |
+            Where-Object { $_ -and $_ -notmatch "Windows Defender" -and $_ -notmatch "Microsoft Defender" })
+    } catch { $others = @() }
+    if ($others.Count -gt 0) {
+        $names = ($others | Select-Object -Unique) -join ", "
+        return "$names is running here, and its ransomware or protected-folder feature can deny a path whatever your privileges are. If takeown and icacls do not clear this, look in $names for a block on this folder, and add an exclusion for it and for Unsloth"
+    }
+    if ($mode -eq 2) {
+        return "Controlled folder access is in audit mode, so it is logging rather than blocking and is not the cause here; Windows Defender Operational events 1123 and 1124 name whatever it did stop"
+    }
+    return ""
 }
 
 # Print guidance; returns the failure reason as its only pipeline output.
@@ -459,6 +697,10 @@ function Write-PathAccessDenied {
     substep "takeown /F `"$Path`" /R /D Y" "Yellow"
     substep "icacls `"$Path`" /reset /T" "Yellow"
     substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+    # After the generic line, since this one either confirms it or rules it
+    # out, and an empty answer must leave the generic advice standing.
+    $securitySoftware = Get-SecuritySoftwareNote
+    if ($securitySoftware) { substep $securitySoftware "Yellow" }
     if ($UserSupplied) {
         return "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
     }
@@ -545,10 +787,87 @@ function Invoke-ManagedLlamaCppPreflight {
     Write-StudioLine ""
     # A denied custom home cannot be claimed as an Unsloth-managed cache.
     $homeIsCustom = Test-StudioHomeIsCustom
-    # Preserve user-supplied wording when either override names this tree.
+    # Preserve user-supplied wording when either override names this tree, or
+    # names a build inside it: moving or deleting this folder takes that build
+    # with it, and the later --with-llama-cpp-dir check then aborts on a path
+    # we made disappear.
     $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
-    $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
-        ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+    # Walking the ancestors beats comparing the two canonical strings: an
+    # override that does not exist yet cannot be resolved, so a prefix test
+    # would compare a resolved path against an unresolved one and miss.
+    $userSupplied = $false
+    if (-not [string]::IsNullOrWhiteSpace($suppliedDir)) {
+        $canonicalDir = [string](Get-CanonicalDir -Path $dir)
+        $probe = [string](Get-CanonicalDir -Path $suppliedDir)
+        while (-not [string]::IsNullOrWhiteSpace($probe)) {
+            if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {
+                $userSupplied = $true
+                break
+            }
+            $parent = ""
+            try { $parent = [string](Split-Path -Parent $probe) } catch { $parent = "" }
+            if ($parent -eq $probe) { break }
+            $probe = $parent
+        }
+    }
+
+    # Only the default branch below tells the user to delete this folder, so
+    # only that case may move it. A user-supplied build is not ours to touch,
+    # and an unreadable custom home cannot be confirmed as a managed cache.
+    # Renaming needs DELETE on the folder plus write on its parent, neither of
+    # which is read access, so this recovers denials that takeown and icacls
+    # do not: the folder is a managed cache that setup reinstalls anyway.
+    # Setup never makes this a link, so a link here is something the user
+    # arranged, pointing at a build we were not told about. Moving it would
+    # silently change which tree they run without touching the one they were
+    # protecting, so it is left alone and named in the guidance instead.
+    $isLink = $false
+    try {
+        $linkAttrs = [System.IO.File]::GetAttributes($dir)
+        $isLink = ([int]$linkAttrs -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0
+    } catch {
+        # Unreadable attributes prove nothing, and "proves nothing" must not
+        # mean "movable": fall through to the guidance rather than guess.
+        $isLink = $true
+    }
+    if (-not $userSupplied -and -not $homeIsCustom -and -not $isLink) {
+        $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
+        $moved = $false
+        try {
+            # [System.IO.Directory]::Move, not Move-Item. Move-Item falls back to
+            # copy-then-delete when the rename fails, which creates $asideDir and then
+            # dies on the unreadable contents, leaving a stray llama.cpp.denied-* folder
+            # beside the original on every run. Directory.Move is a bare rename: it
+            # either moves the tree or throws having created nothing.
+            # Measured on windows-latest, denying each shape on the folder itself:
+            #   (OI)(CI)(RX)  rename refused, Move-Item left a stray folder
+            #   (OI)(CI)(R)   rename refused, Move-Item left a stray folder
+            #   (RX)          rename refused, Move-Item left a stray folder
+            #   (DE)          rename SUCCEEDED, both ways
+            # So on Windows a read denial always refuses the rename (the open asks for
+            # SYNCHRONIZE, which every read deny removes) and this recovery cannot fire;
+            # denying DELETE, which sounds like the blocker, does not stop it. On POSIX
+            # the rename needs only write+execute on the parent, so the recovery is real
+            # there and is why this stays rather than being deleted.
+            [System.IO.Directory]::Move($dir, $asideDir)
+            $moved = $true
+        } catch {
+            # Expected when the denial covers the rename; fall through to guidance.
+            # Nothing to clean up: Directory.Move creates nothing when it throws.
+        }
+        if ($moved) {
+            step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
+            substep "Moved to $asideDir; it is a managed cache and setup reinstalls it" "Yellow"
+            substep "Delete the moved folder once access is restored, it is no longer used" "Yellow"
+            Write-StudioLine ""
+            return $null
+        }
+        # This runs before the install lock, so a second run can have moved
+        # the folder in between. Re-probe rather than report a denial for a
+        # path that is no longer there and stop an install that can proceed.
+        if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
+    }
+
     $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `
         -UserSupplied:$userSupplied -OwnershipUnverified:$homeIsCustom
     substep "Stopping here, before phase 1: nothing has been downloaded or installed" "Yellow"
@@ -2464,6 +2783,11 @@ $StageRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_STAGE_ROO
 $RuntimeRoot = if ($StageRoot) { $StageRoot } else { $StudioHome }
 $VenvDir = Join-Path $RuntimeRoot "unsloth_studio"
 $StudioOwnedMarker = ".unsloth-studio-owned"
+# Dropped into an environment this script has moved aside, so the sweep that removes such copies
+# can tell one it made from a directory that merely wears the same name. Written after the rename
+# and rewritten if the delete that follows fails, because a half-deleted copy can lose everything
+# else that identified it.
+$StudioStaleMarker = ".unsloth-studio-stale"
 # Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
 $NoTorchMarker = ".unsloth-no-torch"
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
@@ -2547,6 +2871,84 @@ function Invoke-NvidiaSmiBounded {
     }
 }
 
+# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
+# Every directory nvidia-smi might be in, in the order worth trying, filtered to the ones that
+# actually hold the binary. Callers still run their own Test-NvidiaSmiHasGpu over the result:
+# existing is not the same as answering.
+#
+# Only two locations were searched before, and each addition below is a host where a real NVIDIA
+# GPU was reported absent, which sends the installer to CPU-only PyTorch:
+#
+#   SysNative       From a 32-bit process "System32" is redirected to SysWOW64, which has no
+#                   nvidia-smi. SysNative is the alias that reaches the real System32.
+#   ProgramW64      In that same process $env:ProgramFiles is "Program Files (x86)".
+#                   ProgramW6432 is the 64-bit Program Files whatever the process bitness.
+#   x86             Not the driver's own location, but a machine that once had a 32-bit
+#                   toolkit can carry a working copy there.
+#   DriverStore     Where the driver package itself lives. Present on hosts where the copy
+#                   into System32 did not happen, which is the #9255 population.
+#
+# Nothing is removed. One ordering does change, and deliberately: the two call sites disagreed
+# with each other before, one trying System32 first and the other the NVSMI directory first, and
+# a single list cannot keep both. System32 wins, because that is where the current driver puts
+# its copy; NVSMI is the legacy location and a machine carrying both can have an older binary
+# there reporting an older CUDA version. This only affects a host that has both, and only in
+# which of two working binaries answers.
+function Get-NvidiaSmiCandidatePaths {
+    $dirs = @()
+    # Current driver locations first, in BOTH process bitnesses, before any legacy one.
+    # Both bitness spellings before $env:ProgramFiles, which in a 32-bit process is the x86 tree
+    # where a stale toolkit copy can sit and answer first.
+    if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
+    if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "SysNative") }
+    if ($env:ProgramW6432) { $dirs += (Join-Path $env:ProgramW6432 "NVIDIA Corporation\NVSMI") }
+    if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
+    $pfx86 = ${env:ProgramFiles(x86)}
+    if ($pfx86) { $dirs += (Join-Path $pfx86 "NVIDIA Corporation\NVSMI") }
+    # Bounded on purpose. FileRepository holds every driver package the machine has ever had.
+    #
+    # The bound is applied to directories that ACTUALLY HOLD the binary, not to the nv* matches.
+    # NVIDIA ships several packages whose names start nv (HD audio, the virtual audio device,
+    # the network service), so a host with eight of those newer than the display driver would
+    # otherwise spend the whole allowance on directories with no nvidia-smi in them and report
+    # the machine as having none. Test-Path is a file existence check, not a process spawn; the
+    # bound that matters is on the candidates handed back, since each of those costs a probe.
+    try {
+        $repos = @()
+        if ($env:SystemRoot) {
+            # Both spellings, same WOW64 reason as above. At most one resolves in any given process, so
+            # this is not a doubled scan.
+            $repos += (Join-Path $env:SystemRoot "System32\DriverStore\FileRepository")
+            $repos += (Join-Path $env:SystemRoot "SysNative\DriverStore\FileRepository")
+        }
+        $packages = @()
+        foreach ($repo in $repos) {
+            if (-not (Test-Path -LiteralPath $repo -PathType Container)) { continue }
+            $packages += @(Get-ChildItem -LiteralPath $repo -Directory -Filter "nv*" -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "nvidia-smi.exe") -PathType Leaf })
+        }
+        # The bound is on the whole DriverStore contribution rather than per root, so adding
+        # the second spelling cannot double the number of probes this hands back.
+        foreach ($dir in @($packages | Sort-Object LastWriteTime -Descending | Select-Object -First 8)) {
+            $dirs += $dir.FullName
+        }
+    } catch {}
+    $paths = @()
+    $seen = @{}
+    foreach ($dir in $dirs) {
+        if ([string]::IsNullOrWhiteSpace($dir)) { continue }
+        $candidate = Join-Path $dir "nvidia-smi.exe"
+        # Case-insensitive, because the same directory reached two ways must not be probed twice:
+        # each probe is a bounded process spawn with a wall-clock timeout behind it.
+        $key = $candidate.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $paths += $candidate }
+    }
+    return $paths
+}
+# ── END SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
+
 # A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row.
 # 124 is what Invoke-NvidiaSmiBounded reports when it had to kill the probe. Recorded so
 # the banner below can skip a second query: detection already waited out the full bound on
@@ -2572,21 +2974,83 @@ try {
     }
 } catch {}
 if (-not $HasNvidiaSmi) {
-    $nvSmiDefaults = @(
-        "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
-        "$env:SystemRoot\System32\nvidia-smi.exe"
-    )
-    foreach ($p in $nvSmiDefaults) {
-        if (Test-Path $p) {
-            try {
-                if (Test-NvidiaSmiHasGpu $p) {
-                    $HasNvidiaSmi = $true
-                    $NvidiaSmiExe = $p
-                    Write-StudioLine "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
-                    break
-                }
-            } catch {}
-        }
+    # Two passes, not one, and the reason is the ordering this change introduces. Listing a GPU is
+    # not the same as being able to report a CUDA version: a partially installed or stale utility
+    # can answer -L and still print a banner the version ladder cannot parse. Taking the first
+    # binary that merely lists a GPU could hand a newer-capable host an older CUDA family purely
+    # because of which directory is searched first. Prefer a candidate that answers BOTH, and
+    # settle for one that just lists a GPU only if none does.
+    #
+    # One deadline across the whole loop, not just the per-call one. Each candidate gets its own
+    # bounded runner, and on a host with a wedged driver every one of them waits out that bound
+    # before failing. The list is longer than it was, so what used to be two stalls could now be
+    # ten, and all of it is spent in front of the driver-library fallback that would have answered
+    # in milliseconds. The bound is on TIME rather than on the number of candidates because the
+    # cost being controlled is time: a machine where every probe answers at once still gets to
+    # try them all, and one where they hang stops early.
+    #
+    # Get-Date rather than a Stopwatch: Constrained Language Mode refuses the method calls, and
+    # this runs on hosts that enforce it.
+    # Enumerated BEFORE the clock starts. Discovery is Test-Path calls, but on a machine with a
+    # filesystem filter driver or slow storage it is not free, and charging it to the probe
+    # budget is how a slow disk turns into no GPU.
+    $smiCandidates = @(Get-NvidiaSmiCandidatePaths)
+    # Two budgets, because "stop early" means two different things here.
+    #
+    # The soft one applies ONLY once a usable answer is already in hand: there is a working
+    # nvidia-smi, and continuing just looks for a better CUDA banner. Giving that up costs at
+    # most a wheel family.
+    #
+    # The hard one is the only thing allowed to end the search with NOTHING found, because that
+    # outcome is CPU-only PyTorch on a machine with a GPU. The first version of this had a single
+    # budget and broke out of the loop after one slow failure, so a host whose System32 copy is
+    # broken and whose legacy NVSMI copy works lost its GPU entirely. That is strictly worse than
+    # the stall it was added to prevent.
+    $probeDeadline = (Get-Date).AddSeconds(30)
+    $probeHardDeadline = (Get-Date).AddSeconds(60)
+    $firstListing = $null
+    # Captured beside the path, because $script:NvidiaSmiWedged describes the LAST binary probed
+    # and the one this loop settles on can be an earlier one. Captured rather than assumed to be
+    # false: it is false today because a candidate only becomes $firstListing when its -L probe
+    # succeeded, and that is a property of Test-NvidiaSmiHasGpu rather than of this loop.
+    $firstListingWedged = $false
+    foreach ($p in $smiCandidates) {
+        # Only give up early when there is already something to fall back on.
+        if ($null -ne $firstListing -and (Get-Date) -gt $probeDeadline) { break }
+        # With nothing found, keep going to the hard bound. Reporting no GPU is the expensive
+        # answer, so it has to be the one that costs the most before it is reached.
+        if ((Get-Date) -gt $probeHardDeadline) { break }
+        try {
+            if (-not (Test-NvidiaSmiHasGpu $p)) { continue }
+            if (-not $firstListing) {
+                $firstListing = $p
+                $firstListingWedged = $script:NvidiaSmiWedged
+            }
+            # Rechecked here, not only at the top. The listing probe that just returned can have
+            # spent most of its own bound, and the banner probe below has a full bound of its
+            # own, so a candidate starting just inside the deadline could add nearly twice the
+            # per-probe timeout after it. There is already a usable answer in $firstListing at
+            # this point, so stopping costs at most a wheel family.
+            if ((Get-Date) -gt $probeDeadline) { break }
+            $banner = Invoke-NvidiaSmiBounded $p
+            if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
+                $HasNvidiaSmi = $true
+                $NvidiaSmiExe = $p
+                Write-StudioLine "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
+                break
+            }
+        } catch {}
+    }
+    if (-not $HasNvidiaSmi -and $firstListing) {
+        $HasNvidiaSmi = $true
+        $NvidiaSmiExe = $firstListing
+        # Restored for the binary actually selected. A later candidate that timed out leaves the
+        # flag set for ITS path, and the guard downstream reads the flag to decide whether to ask
+        # the selected binary for the name, the compute capability and the driver version. Left
+        # alone, a working nvidia-smi would be treated as wedged and all three queries skipped
+        # because a different binary elsewhere on the machine hung.
+        $script:NvidiaSmiWedged = $firstListingWedged
+        Write-StudioLine "   Found nvidia-smi at $(Split-Path $firstListing -Parent)" -ForegroundColor Gray
     }
 }
 if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
@@ -4255,6 +4719,23 @@ if ($NeedNodeForSetup) {
             Write-StudioLine $nodeOut -ForegroundColor DarkGray
             step "node" "install blocked by another active Unsloth install" "Red"
             Exit-SetupFailure "Node install is blocked by another active Unsloth install" 3
+        } elseif ($nodeExit -eq 4) {
+            # The Node cache could not be written. The generic advice below sends
+            # people to nodejs.org and their router; neither is the fix, and the
+            # same guidance the llama.cpp cache gets is the right one.
+            Write-StudioLine $nodeOut -ForegroundColor DarkGray
+            Write-StudioLine ""
+            # The install lock and the .staging root live in $NodeParent, so the
+            # refused object is not always $NodeDir, which in that case may not
+            # even exist. Deleting it cannot make a parent writable, and the
+            # parent holds more than Node, so it is never ours to offer up for
+            # deletion either. install_node_prebuilt.py classifies which it was.
+            if ($nodeOut -match "denied-scope: parent") {
+                Exit-PathAccessDenied -Path $NodeParent -Label "Node install parent directory" `
+                    -OwnershipUnverified
+            } else {
+                Exit-PathAccessDenied -Path $NodeDir -Label "Node install"
+            }
         } elseif ($nodeExit -ne 0) {
             Write-StudioLine $nodeOut -ForegroundColor DarkGray
             Write-StudioLine "[ERROR] Could not install an isolated Node automatically." -ForegroundColor Red
@@ -4887,12 +5368,73 @@ function Read-WoaUvTomlIndexKeys {
     return @{ NoIndex = $noIndex; DefaultIndex = $defaultIndex; ExtraIndexes = @($extras | Where-Object { $_ }) }
 }
 
+# uv's own boolish set, for every UV_* switch this script reads out of the caller's
+# environment. Verified against uv 0.10.7, crates/uv-static/src/lib.rs
+# parse_boolish_environment_variable, which restates clap's str_to_bool: true is
+# y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive, and
+# anything else aborts uv rather than being guessed at.
+#
+# `-notin @("", "0", "false")`, which each of these sites used to spell inline, read
+# off, no, n and f as TRUE, the exact opposite of uv's answer for them.
+#
+# Trimmed where uv is not: uv aborts on a padded value, so the resolve fails whatever
+# this returns, and trimming keeps the answer identical to setup.sh's
+# _uv_offline_requested and install_python_stack.py's _uv_env_flag, which is the
+# property worth having. ToLowerInvariant, not ToLower: a Turkish-locale host
+# lowercases "I" to a dotless i and would stop matching.
+#
+# install.ps1 carries the same function: the two scripts cannot dot-source each other
+# (install.ps1 is run straight off the wire by `irm | iex`, with no file and no sibling
+# on disk), so the parity is pinned by test instead.
+function Test-UvEnvFlag {
+    param([string]$Name)
+    $value = [string][Environment]::GetEnvironmentVariable($Name)
+    return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
+}
+
+# pip's rule, kept separate on purpose: PIP_NO_INDEX is pip's variable and uv never
+# reads it, so uv's parser has no authority over it. pip routes it through
+# ConfigOptionParser._update_defaults -> strtobool (pip/_internal/utils/misc.py): true
+# is y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive and
+# untrimmed, with anything else exiting pip on "is not a valid value". An empty value
+# never reaches strtobool, because _get_ordered_configuration_items drops falsy values
+# first, so PIP_NO_INDEX="" is simply not set.
+#
+# The literals coincide with uv's today. They are restated rather than shared anyway,
+# so that the day either project changes its mind this is a one-function edit instead
+# of a silent behaviour change in the other resolver.
+function Test-PipEnvFlag {
+    param([string]$Name)
+    $value = [string][Environment]::GetEnvironmentVariable($Name)
+    return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
+}
+
+# UV_NO_INDEX is OURS, not uv's, and the distinction is not pedantic: uv 0.10.7 defines
+# no such environment variable. `--no-index` exists only as a command-line flag, it is
+# absent from `uv pip install --help`'s environment list beside UV_OFFLINE and
+# UV_NO_CONFIG, and grepping the 0.10.7 tree for the name returns nothing. uv will
+# ignore it however it is spelled. So this is not "what uv was told"; it is the
+# operator telling US they want no registry index, and what we do about it is shape the
+# arguments we pass.
+#
+# Read with uv's boolish set deliberately, not by inheritance. A caller sets this
+# beside UV_OFFLINE and UV_NO_CONFIG, which uv really does read, and one spelling
+# across all three is the entire point. It is a choice, and the test says so.
+#
+# Deliberately NOT turned into a `--no-index` argument. That would make our behaviour
+# and uv's actually agree, which is the honest long-term answer, but it would also turn
+# a resolve that works today into one with no index at all. That is a behaviour change
+# for existing users and belongs in its own change, not riding along with a truthiness
+# fix.
+function Test-NoIndexRequested {
+    return (Test-UvEnvFlag "UV_NO_INDEX")
+}
+
 function Get-WoaUvConfigIndexPolicy {
     $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false; UnreadablePath = $null; ExtraIndexes = @() }
-    $noCfg = [string](Get-Item Env:UV_NO_CONFIG -ErrorAction SilentlyContinue).Value
-    if ($noCfg -and ($noCfg.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $result }
+    if (Test-UvEnvFlag "UV_NO_CONFIG") { return $result }
     $files = @()
-    $cfgFile = [string](Get-Item Env:UV_CONFIG_FILE -ErrorAction SilentlyContinue).Value
+    $cfgFile = [string][Environment]::GetEnvironmentVariable("UV_CONFIG_FILE")
     if ($cfgFile) {
         $files += @{ Path = $cfgFile; Top = "" }
     } else {
@@ -4930,7 +5472,7 @@ function Get-WoaUvConfigIndexPolicy {
 # True when uv's own config decides the indexes and we could not read it: fatal where the caller scrubs UV_* and sets UV_NO_CONFIG, because the trio index would be the only source left.
 function Test-WoaUvIndexPolicyUnreadable {
     foreach ($name in @("UV_NO_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL")) {
-        $v = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+        $v = [string][Environment]::GetEnvironmentVariable($name)
         if ($v -and $v.Trim()) { return $false }
     }
     return [bool](Get-WoaUvConfigIndexPolicy).Unreadable
@@ -4939,21 +5481,21 @@ function Test-WoaUvIndexPolicyUnreadable {
 function Get-WoaDependencyIndexArgs {
     param([string]$Resolver = "uv")
     $pip = ($Resolver -eq "pip")
-    $noIndexNames = if ($pip) { @("PIP_NO_INDEX") } else { @("UV_NO_INDEX") }
     $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
     $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-    foreach ($name in $noIndexNames) {
-        $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
-        if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return @() }
-    }
+    # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
+    # pip's and pip really reads it, so naming no index here matches what pip will
+    # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
+    $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
+    if ($noIndexRequested) { return @() }
     $default = $null
     foreach ($name in $defaultNames) {
-        $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+        $url = [string][Environment]::GetEnvironmentVariable($name)
         if ($url -and $url.Trim()) { $default = $url.Trim(); break }
     }
     $extras = @()
     foreach ($name in $extraNames) {
-        $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+        $list = [string][Environment]::GetEnvironmentVariable($name)
         foreach ($u in ($list -split '\s+' | Where-Object { $_ })) { $extras += $u }
     }
     if (-not $pip -and (-not $default -or -not $extras)) {
@@ -5641,6 +6183,70 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PreservedInstallerTorchTag = $installedTorchTag
     }
 
+    # A direct `unsloth studio update` has the installer-managed shape: the CLI is this script's
+    # parent and runs from the venv's own python.exe, so the wipe below left a venv with no
+    # unsloth_cli and a desktop whose update AND repair both start from it (#11247). Detected, not
+    # assumed: run by hand from a checkout there is no interpreter inside, and the rebuild stands.
+    # LAST of the direct-update escapes: this condition holds for EVERY stale direct update, so
+    # ahead of the narrower ones it consumes $shouldRebuild and they never fire. Ahead of the
+    # nvidia-smi guard specifically, $script:PreservedInstallerTorchTag goes unset and pairs with
+    # the $PinChangedForceReinstall below to force a CPU wheel over a working cu* venv (#9857).
+    if ($shouldRebuild -and -not $InstallerManagedSetup) {
+        $_hostPy = Get-SetupHostInterpreterInVenv -VenvDir $VenvDir
+        if ($_hostPy) {
+            substep "Environment does not match this host ($reason) -- reinstalling PyTorch in place." "Yellow"
+            substep "setup is running from $_hostPy, which cannot be replaced while it runs." "DarkGray"
+            $script:PinChangedForceReinstall = $true
+            $shouldRebuild = $false
+        }
+    }
+
+    # Outside the rebuild branch: an install that moved a venv aside, failed to delete the copy and
+    # thereafter only repairs in place would never reach a sweep that lived inside it.
+    # Validated like install.ps1's rollback sweep (Test-StudioVenvRollbackMustBePreserved), and then
+    # some, because this one deletes on runs that rebuild nothing and runs ahead of the custom-root
+    # guard: a NAME cannot be its whole authority, or the cost of a false positive is paid by a user
+    # who never had a stale venv. Five refusals: a root that does not show it is ours, anything
+    # outside the generated shape, a reparse point, a live owner (a concurrent setup's rescue copy,
+    # not litter), and a directory carrying no sign of an environment we moved aside.
+    $_venvParent = Split-Path -Parent $VenvDir
+    $_venvLeaf = Split-Path -Leaf $VenvDir
+    # Trailing -<n>: the rename below adds one when the destination is taken, as install.sh's
+    # _start_studio_venv_replacement does, so the sweep must recognise it or that copy is permanent.
+    $_staleShape = '^' + [regex]::Escape($_venvLeaf) + '\.stale-[0-9]{14}-([0-9]+)(?:-[0-9]+)?$'
+    # Hoisted out of the rebuild branch below, which asks the same question before its own delete.
+    $_studioRootIsOurs = (
+        -not $StudioHomeIsCustom -or
+        (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -or
+        (Test-UnslothCmdShimFile (Join-Path $StudioHome "bin\unsloth.cmd"))
+    )
+    # [regex]::Match, not $Matches: which operator fills it, and on which result, moves between
+    # Windows PowerShell 5.1 and 7.x, and a capture group decides what gets deleted here.
+    foreach ($_old in @(
+        if ($_studioRootIsOurs) { Get-ChildItem -LiteralPath $_venvParent -Directory -Force -ErrorAction SilentlyContinue }
+    )) {
+        $_staleMatch = [regex]::Match($_old.Name, $_staleShape)
+        if (-not $_staleMatch.Success) { continue }
+        if (($_old.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        $_ownerPid = 0
+        if (-not [int]::TryParse($_staleMatch.Groups[1].Value, [ref]$_ownerPid)) { continue }
+        if ($_ownerPid -ne $PID -and $null -ne (Get-Process -Id $_ownerPid -ErrorAction SilentlyContinue)) { continue }
+        # pyvenv.cfg is in every environment `python -m venv` and `uv venv` create, the owned
+        # marker is what install.ps1 and this script write into a root they adopt, and the stale
+        # marker is dropped by the rename below and rewritten whenever the delete after it fails.
+        $_looksMoved = $false
+        foreach ($_sign in @("pyvenv.cfg", $StudioOwnedMarker, $StudioStaleMarker)) {
+            if (Test-Path -LiteralPath (Join-Path $_old.FullName $_sign) -PathType Leaf) { $_looksMoved = $true; break }
+        }
+        if (-not $_looksMoved) {
+            substep "left $($_old.FullName) alone: it matches the stale-copy name but holds no environment." "DarkGray"
+            continue
+        }
+        Remove-Item -LiteralPath $_old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     if ($shouldRebuild) {
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         # why: mirror install.ps1 env-mode guard so an update against a custom
@@ -5649,23 +6255,43 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # The .cmd counts too, and for the same reason the uninstaller accepts it: a
         # policy's quarantine can take the unsigned .exe and leave a root that is still
         # ours. Content-checked, never by name -- this guard gates a recursive delete.
-        if (
-            $StudioHomeIsCustom -and
-            -not (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -and
-            -not (Test-UnslothCmdShimFile (Join-Path $StudioHome "bin\unsloth.cmd"))
-        ) {
+        if (-not $_studioRootIsOurs) {
             Write-StudioLine "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
             Exit-SetupFailure "$VenvDir is not an Unsloth Studio environment"
         }
+        # Moved aside, then deleted: a rename takes the whole tree or fails and leaves it intact,
+        # where Remove-Item -Recurse stops at the first locked file and leaves an environment that
+        # can neither start nor update itself. Deleting the copy is best-effort, swept next run.
+        # The pid joins the timestamp so two rebuilds in one second cannot collide on a name, and a
+        # taken name still takes a numeric suffix: one process can reach this twice inside a second,
+        # and a copy it left earlier may be on disk because its delete failed. Same shape, and the
+        # same reason, as install.sh's _start_studio_venv_replacement.
+        $_staleStamp = Get-Date -Format 'yyyyMMddHHmmss'
+        $_staleLeaf = "$_venvLeaf.stale-$_staleStamp-$PID"
+        $_staleTry = 0
+        while ((Test-Path -LiteralPath (Join-Path $_venvParent $_staleLeaf)) -and $_staleTry -lt 64) {
+            $_staleTry++
+            $_staleLeaf = "$_venvLeaf.stale-$_staleStamp-$PID-$_staleTry"
+        }
         try {
-            Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
+            Rename-Item -LiteralPath $VenvDir -NewName $_staleLeaf -ErrorAction Stop
         } catch {
-            Write-StudioLine "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
-            Write-StudioLine "           Close any running Unsloth/Python processes and re-run setup." -ForegroundColor Red
+            Write-StudioLine "   [ERROR] Could not move the stale venv aside: $($_.Exception.Message)" -ForegroundColor Red
+            Write-StudioLine "           The environment was left as it was. Close any running Unsloth/Python processes and re-run setup." -ForegroundColor Red
             Exit-SetupFailure "Could not remove the stale environment at $VenvDir"
+        }
+        $_staleDir = Join-Path $_venvParent $_staleLeaf
+        # Stamped before the delete and again after one fails: the sweep above refuses a copy that
+        # carries no sign of being an environment we moved, and a half-deleted one can have lost
+        # its pyvenv.cfg. Without the rewrite the litter this branch announces would be exactly the
+        # litter the next run declines to touch.
+        try { [System.IO.File]::WriteAllText((Join-Path $_staleDir $StudioStaleMarker), "") } catch {}
+        try {
+            Remove-Item -LiteralPath $_staleDir -Recurse -Force -ErrorAction Stop
+        } catch {
+            try { [System.IO.File]::WriteAllText((Join-Path $_staleDir $StudioStaleMarker), "") } catch {}
+            substep "Could not fully remove the old environment ($($_.Exception.Message)); left at $_staleDir for the next run to sweep." "Yellow"
         }
     }
 }
@@ -6176,9 +6802,10 @@ sys.exit(0 if install_manifest.verify_install(**deep)['ok'] else 1)
 
 # UV_OFFLINE is uv's own "no network" switch, and every install here goes through uv.
 function Test-UvOfflineRequested {
-    # uv's boolish parser (uv 0.10.7): y, yes, t, true, on, 1. Mirrors _uv_offline_requested.
-    $value = "$($env:UV_OFFLINE)".Trim()
-    return @('1', 't', 'true', 'y', 'yes', 'on') -contains $value.ToLowerInvariant()
+    # uv's boolish parser (uv 0.10.7). One reading of the set for the whole script, so a
+    # correction lands on every UV_* switch at once rather than on whichever site was
+    # remembered. Mirrors _uv_offline_requested in setup.sh.
+    return (Test-UvEnvFlag "UV_OFFLINE")
 }
 
 function Invoke-FastPathEscapes {
@@ -6974,16 +7601,16 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         if ($WinArm64Venv) {
             # The pins are exact and the index page carries no upload dates: a cutoff would reject them outright.
             foreach ($_woaCutoffName in @("UV_EXCLUDE_NEWER", "UV_EXCLUDE_NEWER_PACKAGE")) {
-                $_woaCutoffValue = [string](Get-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue).Value
+                $_woaCutoffValue = [string][Environment]::GetEnvironmentVariable($_woaCutoffName)
                 if ($_woaCutoffValue) {
                     $_woaCutoffSaved[$_woaCutoffName] = $_woaCutoffValue
                     Remove-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue
                     substep "windows on arm: $_woaCutoffName is not applied to the exact CUDA pins (the index carries no upload dates)."
                 }
             }
-            # --no-index ignores every registry index, the CUDA one included, and Fast-Install leaves UV_NO_INDEX alone. It yields for this one command: the trio from the CUDA index, dependencies from the wheelhouse.
-            $_woaNoIndexValue = [string](Get-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue).Value
-            if ($_woaNoIndexValue -and ($_woaNoIndexValue.Trim().ToLowerInvariant() -notin @("", "0", "false"))) {
+            # Our own UV_NO_INDEX convention (uv defines no such variable) means the operator wants no registry index, and we honour it by naming none. The CUDA trio is published nowhere else, so it yields for this one command: the trio from the CUDA index, dependencies from the wheelhouse. Saved and restored, because the rest of the run still reads it.
+            $_woaNoIndexValue = [string][Environment]::GetEnvironmentVariable("UV_NO_INDEX")
+            if (Test-NoIndexRequested) {
                 $_woaCutoffSaved["UV_NO_INDEX"] = $_woaNoIndexValue
                 Remove-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue
                 substep "windows on arm: UV_NO_INDEX yields for the CUDA trio, which only the selected index carries; its dependencies still come from the wheelhouse."
