@@ -2625,6 +2625,38 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
     return keys
 
 
+def _report_reviewed_sites(
+    active: list[Finding],
+    baseline: "dict[tuple[str, str, str, str], set[str] | None]",
+    baseline_path: "str | None",
+) -> None:
+    """Separate "this reviewed site changed" from "this site is new".
+
+    Both reach the report as an identical CRITICAL/HIGH line, and they need different
+    reviews: the first asks whether known metaprogramming moved, the second asks whether
+    something dangerous just appeared. Telling them apart is the difference between
+    reading three diffs and reading a file. The gate is unchanged -- every finding below
+    still fails the run; this only says which question to ask.
+    """
+    if not baseline or not active:
+        return
+    reviewed_sites = {(pkg, path, check) for pkg, path, check, _ in baseline}
+    moved = [f for f in active if (_norm_pkg(f.package), _relpath_in_package(f.filename), f.check) in reviewed_sites]
+    if not moved:
+        return
+    print(
+        f"\n  {len(moved)} of the {len(active)} finding(s) above are at a site already "
+        f"reviewed in {baseline_path}, under different evidence: the flagged code changed "
+        f"rather than a new site appearing."
+    )
+    for f in sorted(moved, key = lambda f: (f.package, _relpath_in_package(f.filename))):
+        print(f"    {f.severity}  {f.package}  {_relpath_in_package(f.filename)}  ({f.check})")
+    print(
+        "  Re-review those diffs and regenerate with --write-baseline. A site with no line "
+        "here is NEW and wants a full read of the file."
+    )
+
+
 def _write_baseline(
     path: str,
     findings: list[Finding],
@@ -2880,6 +2912,7 @@ def main() -> int:
     active, suppressed = _partition_baseline(all_findings, baseline)
 
     print_findings(active)
+    _report_reviewed_sites(active, baseline, baseline_path)
     if suppressed:
         crit_s = sum(1 for f in suppressed if f.severity == CRITICAL)
         high_s = sum(1 for f in suppressed if f.severity == HIGH)

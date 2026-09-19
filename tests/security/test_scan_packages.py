@@ -512,6 +512,21 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
             "unsloth_zoo/compiler.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
         ),
+        # Both approved for the first time alongside compiler.py, and both for the same
+        # reason it is on this list: the matched lines are ordinary metaprogramming that
+        # says nothing about the rest of the file. vllm_utils.py builds attribute paths
+        # out of checkpoint-supplied state dict keys and execs them; moe_utils.py execs a
+        # cached copy of itself, having first compared it byte for byte against the
+        # in-tree source. Approving either on evidence alone would let a later payload in
+        # the same file ride an unchanged match.
+        (
+            "unsloth_zoo/vllm_utils.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ),
+        (
+            "unsloth_zoo/temporary_patches/moe_utils.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ),
     }
     # The evidence hashes of the superseded compiler.py variants, which are already
     # in the baseline unpinned. These are frozen by construction: an evidence hash is
