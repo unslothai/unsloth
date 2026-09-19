@@ -2659,9 +2659,9 @@ def test_the_content_part_extractor_keeps_marker_text_and_hops_the_split(monkeyp
         assert "await _extract_content_parts_async(" in body, fn
         assert "= _extract_content_parts(" not in body, fn
     chat = inspect.getsource(inference_route.produce_openai_chat_completions)
-    # One stripping call in the chat path; the other two keep the tool images and never split.
+    # only the async extraction strips images; all three synchronous paths preserve them.
     assert chat.count("await _extract_content_parts_async(") == 1
-    assert chat.count("keep_tool_images = True") == 2
+    assert chat.count("keep_tool_images = True") == 3
 
 
 def test_the_note_counts_only_the_tools_pictures_in_a_mixed_turn():
@@ -2775,3 +2775,53 @@ def test_the_note_counts_a_result_the_allowance_left_nothing_of():
     out, payloads = mcp_images.promote_history_local(history, vision = True)
     assert len(payloads) == 1
     assert _first_note(out) == f"{mcp_images.DETACHED_IMAGE_TURN_TEXT} (1 of 9)"
+
+
+def test_local_replay_cap_keeps_caller_pixels_with_their_markers():
+    history = [
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "first"}]},
+        {"role": "assistant", "content": "noted"},
+    ]
+    for index in range(MAX_MODEL_IMAGES * 3):
+        history.extend(
+            [
+                {
+                    "role": "tool",
+                    "name": "mcp__test__image",
+                    "content": _envelope(str(index), _image()),
+                },
+                {"role": "assistant", "content": "noted"},
+            ]
+        )
+    history.append(
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "last"}]}
+    )
+    first, last = object(), object()
+
+    messages, pixels = mcp_images.promote_history_local(
+        history, vision = True, caller_images = [first, last]
+    )
+
+    assert len(pixels) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    assert pixels[0] is first
+    assert pixels[-1] is last
+    assert len(mcp_images.image_marker_parts(messages)) == len(pixels)
+    assert messages[0] is history[0]
+    assert messages[-1] is history[-1]
+
+
+def test_local_replay_does_not_add_a_second_image_to_an_attachment_turn():
+    attachment = object()
+    user = {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "compare"}]}
+    history = [
+        {"role": "tool", "name": "mcp__test__image", "content": _envelope("shot", _image())},
+        user,
+    ]
+
+    messages, pixels = mcp_images.promote_history_local(
+        history, vision = True, caller_images = [attachment]
+    )
+
+    assert pixels == [attachment]
+    assert messages[-1] is user
+    assert len(mcp_images.image_marker_parts(messages)) == 1

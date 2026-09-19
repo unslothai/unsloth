@@ -166,6 +166,86 @@ def _json_body(response):
     return json.loads(response.body if hasattr(response, "body") else response.content)
 
 
+@pytest.mark.parametrize("supports_tools", [False, True])
+def test_mcp_replay_preserves_multiple_caller_attachments(monkeypatch, supports_tools):
+    import base64
+    import io
+
+    from PIL import Image
+
+    def encoded(color):
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), color).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    def user(color, text):
+        return ChatMessage(
+            role = "user",
+            content = [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64," + encoded(color)},
+                },
+                {"type": "text", "text": text},
+            ],
+        )
+
+    backend = _ScriptedBackend(_fixed("done"))
+    backend.models["sf-model"].update(
+        is_vision = True,
+        chat_template_info = {
+            "template": _TOKENIZER_TEMPLATE_WITH_TOOLS,
+            "processor_template": _TOKENIZER_TEMPLATE_WITH_TOOLS,
+            "renders_image": True,
+            "accepts_multiple_images": True,
+        },
+    )
+    payload = _request(
+        messages = [
+            user("red", "Remember this image."),
+            ChatMessage(
+                role = "assistant",
+                content = "",
+                tool_calls = [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "mcp__test__image", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ChatMessage(
+                role = "tool",
+                tool_call_id = "call_1",
+                name = "mcp__test__image",
+                content = "[1 image returned]\n__MCP_IMAGES__:"
+                + json.dumps([{"mimeType": "image/png", "data": encoded("green")}]),
+            ),
+            ChatMessage(role = "assistant", content = "I have the tool image."),
+            user("blue", "Compare all three images."),
+        ],
+        enable_tools = False,
+        stream = False,
+    )
+
+    _call(payload, monkeypatch, backend, supports_tools = supports_tools)
+
+    [call] = backend.calls
+    colors = []
+    for image in call["images"]:
+        if isinstance(image, str):
+            image = Image.open(io.BytesIO(base64.b64decode(image)))
+        colors.append(image.getpixel((0, 0)))
+    assert colors == [(255, 0, 0), (0, 128, 0), (0, 0, 255)]
+    image_turns = [
+        message
+        for message in call["messages"]
+        if isinstance(message.get("content"), list)
+        and any(part.get("type") == "image" for part in message["content"])
+    ]
+    assert len(image_turns) == 3
+
+
 def _collect_sse(response):
     async def _run():
         return [c async for c in response.body_iterator]

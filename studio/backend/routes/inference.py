@@ -21593,8 +21593,7 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
         return None
     return (
         400,
-        f"Unsupported video URL scheme ('{head.split(':', 1)[0]}:'). "
-        "Send the clip as a data URI.",
+        f"Unsupported video URL scheme ('{head.split(':', 1)[0]}:'). Send the clip as a data URI.",
     )
 
 
@@ -22539,6 +22538,7 @@ async def _promote_local_mcp_images_async(
     *,
     vision: bool,
     decode_cache = None,
+    caller_images = (),
 ):
     """Rebuilding a replayed envelope decodes and re-encodes every picture in it.
     A permitted image runs to 40 megapixels, so that belongs off the shared loop --
@@ -22551,8 +22551,11 @@ async def _promote_local_mcp_images_async(
             messages,
             vision = vision,
             decode_cache = decode_cache,
+            caller_images = caller_images,
         )
-    return promote_mcp_history_images_local(messages, vision = vision, decode_cache = decode_cache)
+    return promote_mcp_history_images_local(
+        messages, vision = vision, decode_cache = decode_cache, caller_images = caller_images
+    )
 
 
 async def _build_external_messages_async(messages, supports_vision, **kwargs) -> list[dict]:
@@ -26613,7 +26616,9 @@ async def produce_openai_chat_completions(
     served_images: list[str] = []
     images: list = []
     if _serves_several_images(backend):
-        _, _msgs, _payloads = _extract_content_parts(payload.messages, structured = True)
+        _, _msgs, _payloads = _extract_content_parts(
+            payload.messages, structured = True, keep_tool_images = True
+        )
         _legacy_distinct = _legacy_image_is_distinct(payload)
         # A legacy image the messages do not carry joins the newest user turn, as GGUF splices it.
         if _legacy_distinct:
@@ -26699,6 +26704,7 @@ async def produce_openai_chat_completions(
         chat_messages,
         vision = bool(_sf_model_info.get("is_vision")),
         decode_cache = _sf_mcp_decode_cache,
+        caller_images = served_images,
     )
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     # Resolve the tool policy BEFORE the protocol is classified: the template
@@ -27569,12 +27575,19 @@ async def produce_openai_chat_completions(
         if served_images:
             # One pass over the conversation this renders, so markers and payloads stay in step.
             _sf_rebuilt, _sf_payloads = _conversation_with_image_markers(
-                _openai_messages_for_passthrough(payload, normalize_images = False)
+                _openai_messages_for_passthrough(
+                    payload, normalize_images = False, promote_mcp_images = False
+                )
             )
-            _sf_rebuilt_images: list = []
+            _sf_rebuilt, _sf_rebuilt_images = await _promote_local_mcp_images_async(
+                _sf_rebuilt,
+                vision = _sf_renders_image,
+                decode_cache = _sf_mcp_decode_cache,
+                caller_images = _sf_payloads,
+            )
             # The same pictures the extraction already decoded, unless the rebuild dropped one.
             gen_kwargs["images"] = await _decode_request_images(
-                backend, _sf_payloads, dict(zip(served_images, images)), reject = _reject
+                backend, _sf_rebuilt_images, dict(zip(served_images, images)), reject = _reject
             )
             gen_kwargs["messages"] = _set_or_prepend_system_message(
                 _structured_tool_history_for_local_template(_sf_rebuilt), system_prompt

@@ -973,10 +973,14 @@ def promote_history_local(
     *,
     vision: bool,
     decode_cache: "dict | None" = None,
+    caller_images: Sequence = (),
 ) -> tuple[list[dict], list[str]]:
     """The same, for backends that take the pixels beside the prompt: the turns
-    carry markers and the payloads come back with them."""
-    out, payloads, _promoted = _promote(messages, vision, local = True, decode_cache = decode_cache)
+    carry markers and the payloads come back with them. ``caller_images`` supplies
+    the pixels for existing markers, which retain their positions and survive trimming."""
+    out, payloads, _promoted = _promote(
+        messages, vision, local = True, decode_cache = decode_cache, caller_images = caller_images
+    )
     return out, payloads
 
 
@@ -1034,8 +1038,12 @@ def _promote(
     local: bool,
     reserve_for_caller: bool = False,
     decode_cache: "dict | None" = None,
+    caller_images: Sequence = (),
 ) -> tuple[list[dict], list[str], list[dict]]:
     out: list[dict] = []
+    caller_payloads = (
+        dict(zip(map(id, image_marker_parts(messages)), caller_images)) if caller_images else {}
+    )
     # Resolved once for the whole conversation, so the provenance gate below works on
     # every wire format rather than only the ones that happen to send ``name``.
     call_names = resolve_tool_names(messages)
@@ -1051,7 +1059,9 @@ def _promote(
     # re-encoded -- a permitted raster is 40 megapixels -- to be dropped whole.
     # Before promotion every image_url part in the list is the caller's own.
     _reserved = (
-        len(_all_image_url_parts(messages)) if vision and not local and reserve_for_caller else 0
+        len(caller_payloads)
+        if local
+        else (len(_all_image_url_parts(messages)) if vision and reserve_for_caller else 0)
     )
     eligible = (
         eligible_replay_images(
@@ -1084,6 +1094,13 @@ def _promote(
         lead = DETACHED_IMAGE_TURN_TEXT if interrupted[0] or len(pending) > 1 else IMAGE_TURN_TEXT
         interrupted[0] = False
         if local:
+            # the caller's attachment takes the single image slot on its turn.
+            if into is not None and any(
+                id(part) in caller_payloads for part in image_marker_parts([into])
+            ):
+                pending.clear()
+                returned_totals.clear()
+                return into
             encoded = png_payloads_per_result(pending, cache = decode_cache)
             pending.clear()
             returned_totals.clear()
@@ -1165,7 +1182,18 @@ def _promote(
     # A replay carries every image turn the conversation ever had; the cap has to
     # hold here too or the whole history is re-sent on every later turn.
     if local:
-        trim_image_turns(out, payloads)
+        protected = ()
+        if caller_payloads:
+            markers = image_marker_parts(out)
+            replay_payloads = dict(
+                zip((id(part) for part in markers if id(part) not in caller_payloads), payloads)
+            )
+            by_marker = {**replay_payloads, **caller_payloads}
+            payloads = [by_marker[id(part)] for part in markers]
+            protected = tuple(
+                index for index, part in enumerate(markers) if id(part) in caller_payloads
+            )
+        trim_image_turns(out, payloads, keep = protected)
     else:
         # The cap says attachments are never counted against it, which is right for
         # what THIS cap protects, and llama-server is bounded by its context window
