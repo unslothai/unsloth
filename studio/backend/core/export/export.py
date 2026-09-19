@@ -194,17 +194,6 @@ def _supports_kwarg(fn, name):
     )
 
 
-def _gguf_shard_export_supported(fn):
-    """True when the exporter explicitly implements GGUF shard-size control."""
-    import inspect
-
-    try:
-        params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return False
-    return _accepts_by_keyword(params, "gguf_shard_size")
-
-
 def _imatrix_export_supported(save_fn):
     """True when this build can apply an imatrix, not merely swallow the keyword: the MLX binding
     takes `**kwargs` and filters them, so only unsloth_zoo itself settles it."""
@@ -1237,14 +1226,12 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
-        gguf_shard_size: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export the model in GGUF format.
 
         ``quantization_method`` is a single GGUF quant method ("Q4_K_M") or a list of them; a list
         produces one GGUF per quant from a single model load, since unsloth save_to_gguf loops
-        internally. ``imatrix_file`` is an importance matrix path or boolean, and
-        ``gguf_shard_size`` caps the final full-precision GGUF shard size.
+        internally. ``imatrix_file`` is an importance matrix path or boolean.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
@@ -1261,21 +1248,6 @@ class ExportBackend:
             )
         # Truthiness, as above: a disabled imatrix must not reach an exporter without the kwarg.
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
-        shard_hooks = []
-        if save_directory:
-            shard_hooks.append(self.current_model.save_pretrained_gguf)
-        elif push_to_hub:
-            shard_hooks.append(self.current_model.push_to_hub_gguf)
-        if gguf_shard_size is not None and not all(
-            _gguf_shard_export_supported(hook) for hook in shard_hooks
-        ):
-            return (
-                False,
-                "This Unsloth build does not support GGUF shard-size control. "
-                "Upgrade unsloth and unsloth_zoo, or clear the shard-size option.",
-                None,
-            )
-        shard_kw = {"gguf_shard_size": gguf_shard_size} if gguf_shard_size is not None else {}
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
         # push shares and names token= itself.
         local_token_kw = (
@@ -1348,7 +1320,6 @@ class ExportBackend:
                         quantization_method = quant_method,
                         **imatrix_kw,
                         **local_token_kw,
-                        **shard_kw,
                     )
 
                     # Scan only the owned root; exact reported paths cover external outputs.
@@ -1533,7 +1504,6 @@ class ExportBackend:
                         token = hf_token,
                         private = private,
                         **imatrix_kw,
-                        **shard_kw,
                     )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 

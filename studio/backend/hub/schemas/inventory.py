@@ -35,7 +35,6 @@ class GgufVariantDetail(BaseModel):
     pending_drafter_size_bytes: int = Field(
         0, description = "Remote size of pending_drafter_filename"
     )
-    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     download_remaining_bytes: Optional[int] = Field(
         None,
         description = (
