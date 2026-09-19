@@ -671,6 +671,16 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
     return snapshot_is_loadable(snapshot, model_name)
 
 
+def active_hf_cache_loadable_snapshot(repo_id: str) -> Optional[Path]:
+    """Return a loadable snapshot from the active cache only, or None."""
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        snapshot = _snapshot_in_root(_expand_path(active_hf_hub_cache()), repo_id)
+    except Exception:
+        return None
+    return snapshot if snapshot is not None and snapshot_is_loadable(snapshot, repo_id) else None
+
+
 def snapshot_is_loadable(snapshot, model_name: str) -> bool:
     """``hf_cache_snapshot_is_loadable`` for a snapshot the caller already has. A caller that picked a specific directory has to have THAT one judged: the lookup above expands the ST alias within each cache root while an exact per-repo lookup walks the roots for one id, so with several roots configured the two can land on different snapshots and the verdict would belong to a directory nobody is going to load."""
     try:
