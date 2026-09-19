@@ -519,6 +519,8 @@ class UnslothTrainer:
 
             def on_train_begin(self, args, state, control, **kwargs):
                 trainer_ref.session_start_step = state.global_step
+                if state.global_step > 0:
+                    trainer_ref.training_start_time = time.time()
                 # on_log reports an empty status, else the UI stays on "Starting training...".
                 if trainer_ref.should_stop:
                     return

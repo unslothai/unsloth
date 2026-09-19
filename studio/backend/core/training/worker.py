@@ -4666,9 +4666,12 @@ def _create_embedding_progress_callback(
 
     class _EmbeddingProgressCallback(TrainerCallback):
         _start_step = 0
+        _training_start_time = training_start_time
 
         def on_train_begin(self, args, state, control, **kwargs):
             self._start_step = state.global_step
+            if state.global_step > 0:
+                self._training_start_time = time.time()
             # Progress events carry an empty status, else the parent keeps showing "Starting...".
             if should_stop():
                 return
@@ -4709,7 +4712,7 @@ def _create_embedding_progress_callback(
                 )
             current_step = state.global_step
 
-            elapsed = time.time() - training_start_time
+            elapsed = time.time() - self._training_start_time
             eta = session_eta_seconds(elapsed, current_step, self._start_step, total_steps)
 
             event_queue.put(
