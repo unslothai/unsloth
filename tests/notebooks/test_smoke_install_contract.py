@@ -442,3 +442,32 @@ def test_both_smoke_steps_stub_torchcodec_through_the_shared_helper():
         "a hand-rolled torchcodec stub is back in the workflow; its __spec__ is None and "
         "importlib.util.find_spec raises on it"
     )
+
+
+def test_every_helper_the_smoke_steps_import_is_a_path_trigger():
+    """A helper the job executes is part of the job. `tests/_torchcodec_stub.py` was added as a
+    shared stub and imported by both smoke steps while the workflow's `pull_request.paths`
+    still listed only its sibling, so a PR touching nothing else would have merged a broken
+    helper without the smoke matrix or this file ever running.
+
+    Derived from the steps rather than hand-listed, so the next shared helper is caught by
+    this test instead of by a silent green run.
+    """
+    shell = _shell(_job())
+    imported = set(re.findall(r"import\s+(_\w+)", shell))
+    assert imported, "no helper imports found in the smoke steps; this guard checks nothing"
+
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    # `on` is the YAML 1.1 boolean True once parsed, which is why this is not doc["on"].
+    triggers = doc[True] if True in doc else doc["on"]
+    paths = set(triggers["pull_request"]["paths"])
+
+    for helper in sorted(imported):
+        candidate = REPO / "tests" / f"{helper}.py"
+        if not candidate.is_file():
+            continue  # a stdlib or third-party name that merely starts with an underscore
+        entry = f"tests/{helper}.py"
+        assert entry in paths, (
+            f"{entry} is imported by a smoke step but is not in the workflow's "
+            f"pull_request.paths, so a PR changing only that file would not run this job"
+        )

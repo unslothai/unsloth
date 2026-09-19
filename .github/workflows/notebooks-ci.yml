@@ -31,7 +31,11 @@ on:
       - 'scripts/data/colab_os_info.gpu.txt'
       - 'scripts/data/colab_to_cpu_pin.json'
       - 'tests/notebooks/**'
+      # Every helper the smoke steps import, or a change to one of them merges without the
+      # matrix that runs it ever starting. test_smoke_install_contract.py derives this list
+      # from the steps themselves, so a new helper fails that test until it is listed here.
       - 'tests/_zoo_aggressive_cuda_spoof.py'
+      - 'tests/_torchcodec_stub.py'
       - '.github/workflows/notebooks-ci.yml'
   schedule:
     # Daily 06:17 UTC. Catches Colab preinstall bumps (the upstream image
