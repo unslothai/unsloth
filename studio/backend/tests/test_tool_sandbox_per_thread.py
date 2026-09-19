@@ -70,7 +70,7 @@ def test_project_chats_deliberately_share_one_workspace(workdir, monkeypatch, tm
     from core.inference import tools
 
     project_workspace = str(tmp_path / "project-ws")
-    monkeypatch.setattr(tools, "_get_project_workdir", lambda sid: project_workspace)
+    monkeypatch.setattr(tools, "_project_workdir_info_for", lambda sid: (project_workspace, False))
     assert tools._get_workdir("project-abc") == project_workspace
 
 

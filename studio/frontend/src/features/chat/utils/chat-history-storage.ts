@@ -882,6 +882,7 @@ export async function getStoredChatProject(
 
 export async function createStoredChatProject(
   name: string,
+  workspace?: { nativePathLease: string },
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -892,6 +893,8 @@ export async function createStoredChatProject(
     id: crypto.randomUUID(),
     name: trimmed,
     instructions: "",
+    workspaceKind: workspace ? "external" : "managed",
+    ...(workspace ? { nativePathLease: workspace.nativePathLease } : {}),
     archived: false,
     createdAt: now,
     updatedAt: now,
@@ -900,7 +903,7 @@ export async function createStoredChatProject(
 
 export async function updateStoredChatProject(
   projectId: string,
-  patch: Partial<ProjectRecord>,
+  patch: Partial<ProjectRecord> & { nativePathLease?: string },
 ): Promise<ProjectRecord> {
   return updateChatProject(projectId, {
     ...patch,

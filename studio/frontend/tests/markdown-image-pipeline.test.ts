@@ -24,7 +24,12 @@ function render(markdown: string, scope = context) {
 			urlTransform: safeMarkdownUrl,
 			components: {
 				img: ({ src }) => {
-					if (src) sources.push(markdownSandboxImageSrc(src, scope) ?? src);
+					// No rotated workspace session in these scopes: the project cases expect the
+				// `project-<id>` fallback, which is what a project that has never moved has.
+				if (src)
+					sources.push(
+						markdownSandboxImageSrc(src, { ...scope, workspaceSessionId: null }) ?? src,
+					);
 					return null;
 				},
 			},

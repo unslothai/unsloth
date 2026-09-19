@@ -1031,7 +1031,7 @@ export async function getChatProject(
 }
 
 export async function saveChatProject(
-  project: ProjectRecord,
+  project: ProjectRecord & { nativePathLease?: string },
 ): Promise<ProjectRecord> {
   const response = await authFetch("/api/chat/projects", {
     method: "POST",
@@ -1045,7 +1045,7 @@ export async function saveChatProject(
 
 export async function updateChatProject(
   projectId: string,
-  patch: Partial<ProjectRecord>,
+  patch: Partial<ProjectRecord> & { nativePathLease?: string },
 ): Promise<ProjectRecord> {
   const response = await authFetch(
     `/api/chat/projects/${encodeURIComponent(projectId)}`,

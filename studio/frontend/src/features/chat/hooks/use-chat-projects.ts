@@ -119,8 +119,11 @@ export function useChatProjects(): {
   return { projects, isLoading, hasLoaded };
 }
 
-export async function createChatProject(name: string): Promise<ProjectRecord> {
-  return createStoredChatProject(name);
+export async function createChatProject(
+  name: string,
+  workspace?: { nativePathLease: string },
+): Promise<ProjectRecord> {
+  return createStoredChatProject(name, workspace);
 }
 
 export async function renameChatProject(
@@ -137,6 +140,20 @@ export async function updateChatProjectInstructions(
   instructions: string,
 ): Promise<void> {
   await updateStoredChatProject(projectId, { instructions: instructions.trim() });
+}
+
+export async function setChatProjectWorkspace(
+  projectId: string,
+  workspace:
+    | { kind: "managed" }
+    | { kind: "external"; nativePathLease: string },
+): Promise<void> {
+  await updateStoredChatProject(projectId, {
+    workspaceKind: workspace.kind,
+    ...(workspace.kind === "external"
+      ? { nativePathLease: workspace.nativePathLease }
+      : {}),
+  });
 }
 
 export async function deleteChatProject(

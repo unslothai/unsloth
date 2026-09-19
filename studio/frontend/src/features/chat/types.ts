@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export type ModelType = "base" | "lora" | "model1" | "model2";
+export type ProjectWorkspaceKind = "managed" | "external";
 
 export type ChatView =
   | {
@@ -21,6 +22,10 @@ export interface ProjectRecord {
   name: string;
   instructions?: string;
   rootPath?: string | null;
+  workspacePath?: string | null;
+  workspaceSessionId?: string;
+  workspaceKind?: ProjectWorkspaceKind;
+  workspaceAvailable?: boolean;
   sandboxPath?: string | null;
   archived: boolean;
   createdAt: number;

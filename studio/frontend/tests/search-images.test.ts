@@ -618,21 +618,21 @@ test("an on-disk image survives sanitize as a path, and is rewritten before it r
   // while living under __LOCALID_Y3VK67e is still there -- which is also what the tool card above
   // this prose resolves from its envelope, so prose and card must never disagree.
   assert.equal(
-    markdownSandboxImageSrc(written, { threadId: "t-1", projectId: null }),
+    markdownSandboxImageSrc(written, { threadId: "t-1", projectId: null, workspaceSessionId: undefined }),
     "/api/inference/sandbox/__LOCALID_Y3VK67e/outputs/loss%20curve%20%231.png",
   );
   assert.equal(
-    markdownSandboxImageSrc(written, { threadId: "t-1", projectId: "p1" }),
+    markdownSandboxImageSrc(written, { threadId: "t-1", projectId: "p1", workspaceSessionId: undefined }),
     "/api/inference/sandbox/__LOCALID_Y3VK67e/outputs/loss%20curve%20%231.png",
   );
   // A bare path records nothing; only then does this chat's scope decide. `project-<id>` else
   // threadId, exactly as sandboxSessionIdFor resolves it for a tool call's own envelope.
   assert.equal(
-    markdownSandboxImageSrc("outputs/plot.png", { threadId: "t-1", projectId: "p1" }),
+    markdownSandboxImageSrc("outputs/plot.png", { threadId: "t-1", projectId: "p1", workspaceSessionId: undefined }),
     "/api/inference/sandbox/project-p1/outputs/plot.png",
   );
   assert.equal(
-    markdownSandboxImageSrc("outputs/plot.png", { threadId: "t-1", projectId: null }),
+    markdownSandboxImageSrc("outputs/plot.png", { threadId: "t-1", projectId: null, workspaceSessionId: undefined }),
     "/api/inference/sandbox/t-1/outputs/plot.png",
   );
   // The not-path-safe form records in the query instead of a path segment, and round-trips the same.
@@ -640,6 +640,7 @@ test("an on-disk image survives sanitize as a path, and is rewritten before it r
     markdownSandboxImageSrc("/api/inference/sandbox/_/plot.png?session=session%2Fid", {
       threadId: "t-1",
       projectId: null,
+      workspaceSessionId: undefined,
     }),
     "/api/inference/sandbox/_/plot.png?session=session%2Fid",
   );

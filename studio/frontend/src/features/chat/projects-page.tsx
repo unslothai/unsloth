@@ -42,15 +42,22 @@ import {
   usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
+import { useNativePathLeasesSupported } from "@/features/native-intents";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildProjectsTourSteps } from "./tour";
 import { NewProjectDialog } from "./components/new-project-dialog";
+import {
+  chooseProjectWorkspace,
+  revealProjectWorkspace,
+  switchToManagedWorkspace,
+} from "./utils/project-workspace-actions";
 import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
   Folder02Icon,
   FolderAddIcon,
+  FolderOpenIcon,
   PinIcon,
   PinOffIcon,
   Search01Icon,
@@ -85,7 +92,7 @@ const PROJECTS_PAGE_STEP = 12;
 // Visible count before the fit-to-height measurement runs.
 const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
-const PROJECTS_ROW_HEIGHT = 68;
+const PROJECTS_ROW_HEIGHT = 78;
 
 // Modified column, matching a file-list feel: Today / Yesterday / N days ago, then a short date
 // once it is over a week old.
@@ -117,6 +124,7 @@ function formatModified(ts: number): string {
 export function ProjectsPage() {
   const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
+  const nativePathLeasesSupported = useNativePathLeasesSupported();
   const { projects, hasLoaded } = useChatProjects();
 
   const [query, setQuery] = useState("");
@@ -138,6 +146,9 @@ export function ProjectsPage() {
   const [renaming, setRenaming] = useState<ProjectRecord | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
+  const [workspaceUpdatingId, setWorkspaceUpdatingId] = useState<string | null>(
+    null,
+  );
 
   const globalImportRef = useRef<HTMLInputElement>(null);
   const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
@@ -334,6 +345,19 @@ export function ProjectsPage() {
       toast.error("Failed to rename project", {
         description: err instanceof Error ? err.message : undefined,
       });
+    }
+  }
+
+  async function updateWorkspace(
+    project: ProjectRecord,
+    action: (projectId: string) => Promise<unknown>,
+  ) {
+    if (workspaceUpdatingId) return;
+    setWorkspaceUpdatingId(project.id);
+    try {
+      await action(project.id);
+    } finally {
+      setWorkspaceUpdatingId(null);
     }
   }
 
@@ -612,8 +636,24 @@ export function ProjectsPage() {
                   className="size-5"
                 />
               </span>
-              <span className="min-w-0 flex-1 truncate text-ui-15 font-semibold text-foreground">
-                {project.name}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-ui-15 font-semibold text-foreground">
+                  {project.name}
+                </span>
+                {project.workspaceKind === "external" ? (
+                  <span
+                    title={project.workspacePath ?? undefined}
+                    className={`block truncate text-xs ${
+                      project.workspaceAvailable === false
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {project.workspaceAvailable === false
+                      ? `Folder unavailable · ${project.workspacePath ?? "Unknown folder"}`
+                      : project.workspacePath}
+                  </span>
+                ) : null}
               </span>
               <span className="w-40 shrink-0 text-sm text-muted-foreground">
                 {formatModified(project.updatedAt)}
@@ -665,6 +705,55 @@ export function ProjectsPage() {
                       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                       <span>Rename</span>
                     </DropdownMenuItem>
+                    {isTauri && nativePathLeasesSupported ? (
+                      <>
+                        <DropdownMenuItem
+                          disabled={workspaceUpdatingId !== null}
+                          onSelect={() =>
+                            void updateWorkspace(project, chooseProjectWorkspace)
+                          }
+                        >
+                          <HugeiconsIcon
+                            icon={FolderAddIcon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>
+                            {project.workspaceKind === "external"
+                              ? "Change folder"
+                              : "Use existing folder"}
+                          </span>
+                        </DropdownMenuItem>
+                        {project.workspaceKind === "external" ? (
+                          <DropdownMenuItem
+                            disabled={workspaceUpdatingId !== null}
+                            onSelect={() =>
+                              void updateWorkspace(project, switchToManagedWorkspace)
+                            }
+                          >
+                            <HugeiconsIcon
+                              icon={Folder02Icon}
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                            <span>Use managed folder</span>
+                          </DropdownMenuItem>
+                        ) : null}
+                      </>
+                    ) : null}
+                    {isTauri ? (
+                      <DropdownMenuItem
+                        title="Open the folder this project's tool calls read and write"
+                        onSelect={() => void revealProjectWorkspace(project)}
+                      >
+                        <HugeiconsIcon
+                          icon={FolderOpenIcon}
+                          strokeWidth={1.75}
+                          className="size-icon"
+                        />
+                        <span>Open project folder</span>
+                      </DropdownMenuItem>
+                    ) : null}
                     <DropdownMenuItem
                       onSelect={(e) => {
                         e.stopPropagation();
