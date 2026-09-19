@@ -15,7 +15,10 @@ from typing import Optional
 import shutil
 import tempfile
 from utils.paths.path_utils import is_appledouble_metadata
-from .auth_safe import AuthSafeRedirectHandler, auth_safe_open
+from . import auth_safe
+
+AuthSafeRedirectHandler = auth_safe.AuthSafeRedirectHandler
+auth_safe_open = auth_safe.auth_safe_open
 
 
 logger = get_logger(__name__)
