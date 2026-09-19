@@ -735,6 +735,8 @@ export const ru = {
       },
       readAloud: {
         sectionTitle: "Чтение вслух",
+        languageLabel: "Язык озвучивания",
+        languageDescription: "Язык для синтеза речи",
         buttonLabel: "Кнопка чтения вслух",
         buttonDescription: "Показывать в ответах ассистента",
         engineLabel: "Движок TTS",

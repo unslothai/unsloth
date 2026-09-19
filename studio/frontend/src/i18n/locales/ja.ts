@@ -734,6 +734,8 @@ export const ja = {
       },
       readAloud: {
         sectionTitle: "読み上げ",
+        languageLabel: "読み上げ言語",
+        languageDescription: "音声合成に使用する言語",
         buttonLabel: "読み上げボタン",
         buttonDescription: "アシスタントの応答に表示します",
         engineLabel: "TTS エンジン",

@@ -729,6 +729,8 @@ export const ar = {
       },
       readAloud: {
         sectionTitle: "القراءة بصوت عالٍ",
+        languageLabel: "لغة القراءة بصوت عالٍ",
+        languageDescription: "اللغة المستخدمة للنطق",
         buttonLabel: "زر القراءة بصوت عالٍ",
         buttonDescription: "إظهاره في ردود المساعد",
         engineLabel: "محرك TTS",

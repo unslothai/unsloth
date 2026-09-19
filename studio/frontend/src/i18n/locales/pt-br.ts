@@ -736,6 +736,8 @@ export const ptBR = {
       },
       readAloud: {
         sectionTitle: "Leitura em voz alta",
+        languageLabel: "Idioma da leitura",
+        languageDescription: "Idioma usado na síntese de voz",
         buttonLabel: "Botão de leitura em voz alta",
         buttonDescription: "Exibe o botão nas respostas do assistente",
         engineLabel: "Mecanismo de TTS",

@@ -741,6 +741,8 @@ export const de = {
       },
       readAloud: {
         sectionTitle: "Vorlesen",
+        languageLabel: "Vorlesesprache",
+        languageDescription: "Sprache für die Sprachausgabe",
         buttonLabel: "Vorlesen-Schaltfläche",
         buttonDescription: "Bei Assistentenantworten anzeigen",
         engineLabel: "TTS-Engine",

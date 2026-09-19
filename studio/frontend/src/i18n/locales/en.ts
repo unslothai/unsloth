@@ -735,6 +735,8 @@ export const en = {
       },
       readAloud: {
         sectionTitle: "Read aloud",
+        languageLabel: "TTS language",
+        languageDescription: "Language to speak",
         buttonLabel: "Read aloud button",
         buttonDescription: "Show on assistant responses",
         engineLabel: "TTS engine",
