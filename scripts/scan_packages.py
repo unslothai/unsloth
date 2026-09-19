@@ -2632,7 +2632,9 @@ def _evidence_spans(evidence: str) -> list[str]:
     return canon.split("\n") if canon else []
 
 
-def _load_baseline_evidence(path: "str | None") -> "dict[tuple[str, str, str], list[tuple[str, list[str]]]]":
+def _load_baseline_evidence(
+    path: "str | None",
+) -> "dict[tuple[str, str, str], list[tuple[str, list[str]]]]":
     """Load the baseline's own evidence, grouped by site, as {(package, relpath, check): [(evidence_hash, spans)]}.
 
     `_load_baseline` deliberately reduces every entry to a key and its pins, which is all
@@ -2672,10 +2674,7 @@ def _span_delta(active_spans: list[str], baseline_spans: list[str]) -> tuple[int
     return sum(added.values()), sum(removed.values())
 
 
-def _classify_reviewed_site(
-    f: Finding,
-    entries: list[tuple[str, list[str]]],
-) -> tuple[str, str]:
+def _classify_reviewed_site(f: Finding, entries: list[tuple[str, list[str]]]) -> tuple[str, str]:
     """Say what actually differs between a reopened finding and the baseline entries at its site.
 
     Three cases reach the report identically and want different reviews:
@@ -2738,7 +2737,11 @@ def _report_reviewed_sites(
     for f in sorted(moved, key = lambda f: (f.package, _relpath_in_package(f.filename))):
         rel = _relpath_in_package(f.filename)
         entries = site_evidence.get((_norm_pkg(f.package), rel, f.check), [])
-        kind, why = _classify_reviewed_site(f, entries) if entries else ("unknown", "baseline entry carries no evidence")
+        kind, why = (
+            _classify_reviewed_site(f, entries)
+            if entries
+            else ("unknown", "baseline entry carries no evidence")
+        )
         verdicts.append(kind)
         print(f"    {f.severity}  {f.package}  {rel}  ({f.check})\n        {why}")
     if "added" in verdicts:

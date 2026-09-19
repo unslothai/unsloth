@@ -2764,7 +2764,9 @@ def _exec_entry(evidence, digest = None):
 
 
 def _exec_finding(evidence, digest = ""):
-    return sp.Finding(sp.HIGH, "unsloth-zoo", "unsloth_zoo/compiler.py", _EXEC_CHECK, evidence, digest)
+    return sp.Finding(
+        sp.HIGH, "unsloth-zoo", "unsloth_zoo/compiler.py", _EXEC_CHECK, evidence, digest
+    )
 
 
 def test_an_occurrence_added_to_a_reviewed_file_is_not_called_a_mere_change(tmp_path):
@@ -2810,6 +2812,10 @@ def test_a_site_that_was_never_reviewed_gets_no_line(tmp_path):
     report = _reviewed_site_report(
         tmp_path,
         [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
-        [sp.Finding(sp.HIGH, "unsloth-zoo", "unsloth_zoo/vllm_utils.py", _EXEC_CHECK, "L4: exec(new)")],
+        [
+            sp.Finding(
+                sp.HIGH, "unsloth-zoo", "unsloth_zoo/vllm_utils.py", _EXEC_CHECK, "L4: exec(new)"
+            )
+        ],
     )
     assert report.strip() == "", report
