@@ -238,3 +238,67 @@ def test_the_nightly_and_the_matrix_file_are_wired_into_the_trigger(name):
             continue
         for needed in (matrix_file, ".github/scripts/select_install_matrix.py"):
             assert needed in paths, f"{name}: {trigger} paths do not list {needed}"
+
+
+# The interrupt legs kill the installer once a marker appears in its log, and a leg whose
+# marker never appears asserts nothing: the installer runs to completion and the guard in
+# the workflow fails it. That is what happened when #11254 renamed the dependency phase
+# "studio deps" to "Unsloth Studio deps" for branding: the label is user-facing text, the
+# matrix file is the only other place that spells it, and nothing coupled the two, so the
+# workflow went red on main and on every pull request that ran it. A rename is cheap to
+# make and expensive to find this way, so the coupling is pinned here, in a CPU test, and
+# not in a ten-minute macOS leg.
+
+INSTALLER_SOURCES = (
+    "install.sh",
+    "install.ps1",
+    # Where the [TAURI:STEP] lines come from, and where several of the phases are named.
+    "studio/setup.sh",
+    "studio/setup.ps1",
+    "studio/install_python_stack.py",
+)
+
+
+# What the installer's logger prepends, not what any phase is named.
+_TAURI_TAG = re.compile(r"^\\\[TAURI:STEP\\\]\s*")
+
+
+def _installer_text() -> str:
+    return "\n".join((REPO / name).read_text(encoding = "utf-8", errors = "replace")
+                     for name in INSTALLER_SOURCES)
+
+
+def _markers(matrix_file: str) -> list[tuple[str, str, str]]:
+    out = []
+    for job, legs in _legs(matrix_file).items():
+        for leg in legs:
+            if "marker" in leg:
+                out.append((job, leg.get("label", "?"), leg["marker"]))
+    return out
+
+
+@pytest.mark.parametrize(
+    "job,label,marker",
+    _markers(".github/ci/interrupted-install-matrix.yml"),
+    ids = lambda v: str(v).replace(" ", "-"),
+)
+def test_every_interrupt_marker_is_text_the_installer_still_prints(job, label, marker):
+    """The marker is an ERE handed to `grep -qE` against the install log
+    (.github/scripts/interrupt-install.sh), so it is read the same way here.
+
+    The `[TAURI:STEP]` tag is put on the line by the installer's own logger, never by the
+    caller that names the phase, so it is checked once against the sources rather than
+    expected beside each phrase.
+    """
+    text = _installer_text()
+    phrase, tagged = _TAURI_TAG.subn("", marker)
+    if tagged:
+        assert "TAURI:STEP" in text, (
+            "no installer source emits a [TAURI:STEP] line at all, so every tagged "
+            "marker is unreachable"
+        )
+    assert re.search(phrase, text), (
+        f"{job}/{label}: no line in {', '.join(INSTALLER_SOURCES)} matches the marker "
+        f"{marker!r}, so the installer can never print it, the kill never lands and the "
+        f"leg fails having interrupted nothing. Rename the marker with the phase."
+    )
