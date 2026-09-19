@@ -467,15 +467,18 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   );
 }
 
+const loadDisplayedBranchMessages = (threadId: string) =>
+  loadConversationMessages(threadId, { includeSiblings: false });
+
 /** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
 export const buildConversationMarkdownForThread =
   createConversationMarkdownBuilder({
-    loadMessages: loadConversationMessages,
+    loadMessages: loadDisplayedBranchMessages,
     renderMessage: messageToMarkdown,
   });
 
 export const exportConversationMarkdown = createConversationMarkdownExporter({
-  loadMessages: loadConversationMessages,
+  loadMessages: loadDisplayedBranchMessages,
   renderMessage: messageToMarkdown,
   download: downloadBlob,
   exportTimestamp: exportTs,
@@ -492,6 +495,7 @@ async function saveConversationAsProjectSource(
 ): Promise<SaveSourceOutcome> {
   const messages = await loadConversationMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
+    includeSiblings: false,
   });
   if (!messages) return "skipped";
   const markdown = buildConversationMarkdown(
