@@ -507,7 +507,11 @@ def _entrypoint(
 
 
 @_posix_shell
-def _fake_rocm_torch(tmp_path, libnames, available = True):
+def _fake_rocm_torch(
+    tmp_path,
+    libnames,
+    available = True,
+):
     """A ROCm torch on a supported arch whose lib/ holds exactly `libnames`."""
     fake = tmp_path / "fake"
     (fake / "torch" / "cuda").mkdir(parents = True)
@@ -611,7 +615,12 @@ class TestRocmEntrypoint:
         assert "UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm" in err, err
         assert "unsloth/unsloth-rocm:latest" not in err, err
 
-    def _dxg_with_torch(self, tmp_path, libnames, available = True):
+    def _dxg_with_torch(
+        self,
+        tmp_path,
+        libnames,
+        available = True,
+    ):
         lib = tmp_path / "dxglib"
         lib.mkdir()
         (lib / "librocdxg.so.1").write_text("")
