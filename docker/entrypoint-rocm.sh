@@ -80,13 +80,14 @@ if [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]; then
 This looks like WSL2, where there is no /dev/kfd and the card is reached through
 librocdxg instead. The image cannot ship that library (its build needs Windows
 SDK headers), so it comes off the host, along with the libdxcore it dlopens from
-WSL's own lib directory. The bundled wrapper mounts both:
-  bash docker/run.sh --rocm <cmd>
+WSL's own lib directory. The bundled wrapper mounts both; name this image, since
+it defaults to the published one, which cannot use the bridge:
+  UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>
 Or by hand:
   docker run --device /dev/dxg \
     -v /opt/rocm/lib/librocdxg.so.1:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro \
     -v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro -e LD_LIBRARY_PATH=/usr/lib/wsl/lib \
-    <other-flags> unsloth/unsloth-rocm:latest <cmd>
+    <other-flags> unsloth-rocm:latest <cmd>
 
 To bypass this check (e.g. offline tooling), set UNSLOTH_SKIP_GPU_CHECK=1.
 MSG
@@ -113,8 +114,9 @@ The AMD GPU device node is missing. Likely causes:
        lsmod | grep amdgpu
      On Windows there is never one: the card is reached over WSL2's /dev/dxg,
      which only a docker engine running INSIDE your WSL distribution can pass
-     through (`bash docker/run.sh --rocm` does it). Docker Desktop's own engine
-     exposes neither node.
+     through, and only into a per-arch build of this image:
+       UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>
+     Docker Desktop's own engine exposes neither node.
 
 To bypass this check (e.g. offline tooling), set UNSLOTH_SKIP_GPU_CHECK=1.
 MSG
@@ -185,6 +187,7 @@ if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
         print("Two builds do work here: AMD's per-arch wheels, which bundle no rocprofiler")
         print("(Strix APUs and RDNA4: gfx1150/1151/1152/1200/1201, no RDNA3 yet),")
         print("  ROCM_GFX=<your gfx, e.g. gfx1201> bash docker/build.sh --rocm")
+        print("  UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>")
         print("or a torch before 2.12 from the same index, which ships only -register.so.")
         print("UNSLOTH_SKIP_GPU_CHECK=1 reaches the abort itself rather than avoiding it.")
         sys.exit(1)

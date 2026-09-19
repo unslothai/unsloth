@@ -606,6 +606,10 @@ class TestRocmEntrypoint:
         # mount it and put it on the search path, or hsa_init fails after this check.
         assert "-v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" in err, err
         assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in err, err
+        # run.sh defaults to the published image, which the bridge refuses: the
+        # recovery has to name the per-arch build, or it sends the user there
+        assert "UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm" in err, err
+        assert "unsloth/unsloth-rocm:latest" not in err, err
 
     def _dxg_with_torch(self, tmp_path, libnames):
         lib = tmp_path / "dxglib"
@@ -627,6 +631,7 @@ class TestRocmEntrypoint:
         )
         assert rc == 1 and not ran, err
         assert "librocprofiler-sdk.so" in err, err
+        assert "UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm" in err, err
 
     def test_dxg_accepts_a_torch_carrying_only_librocprofiler_register(self, tmp_path):
         """torch 2.11+rocm7.2 ships -register.so and runs on the bridge (measured on an
