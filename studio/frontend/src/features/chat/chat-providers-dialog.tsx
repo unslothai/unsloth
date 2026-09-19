@@ -249,6 +249,7 @@ export function ChatProvidersSettings({
   // first sync cannot pull them back into the form.
   const autoOpenedAddFormRef = useRef(false);
   const modelSelectionBaselineRef = useRef<string | null>(null);
+  const autoReloadBaselineRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
@@ -1001,6 +1002,8 @@ export function ChatProvidersSettings({
       existing.providerType === "llama_cpp" &&
       modelSelectionBaselineRef.current ===
         JSON.stringify([selectedModelIds, manualIds, availableModels]);
+    const preserveCurrentAutoReload =
+      autoReloadModels === autoReloadBaselineRef.current;
     const sessionEpoch = getAuthSessionEpoch();
     const isCurrent = () =>
       hasAuthToken() && getAuthSessionEpoch() === sessionEpoch;
@@ -1054,6 +1057,8 @@ export function ChatProvidersSettings({
         const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
           ? Date.parse(updated.updated_at)
           : Date.now();
+        const currentAutoReload = useExternalProvidersStore.getState().providers
+          .find((provider) => provider.id === editingProviderId)?.autoReloadModels;
         const editedProvider: ExternalProviderConfig = {
           ...existing,
           backendProviderType: updated.provider_type,
@@ -1065,7 +1070,11 @@ export function ChatProvidersSettings({
 
           hasApiKey: updated.has_api_key,
           autoReloadModels:
-            existing.providerType === "llama_cpp" ? autoReloadModels : undefined,
+            existing.providerType === "llama_cpp"
+              ? preserveCurrentAutoReload
+                ? currentAutoReload
+                : autoReloadModels
+              : undefined,
           isReasoningModel: supportsProviderReasoningToggle(
             existing.providerType,
           )
@@ -1175,6 +1184,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
     setAutoReloadModels(provider.autoReloadModels === true);
+    autoReloadBaselineRef.current = provider.autoReloadModels === true;
     // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under one would
     // fail every unrelated edit. The resolver already reads it as the floor.
     setMaxOutputTokensDraft(

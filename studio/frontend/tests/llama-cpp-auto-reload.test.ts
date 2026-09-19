@@ -48,9 +48,17 @@ test("monitor refreshes once per connection, retains selections, retries failure
   const originalWindow = globalThis.window;
   const originalStorage = globalThis.localStorage;
   const originalFetch = globalThis.fetch;
+  let storageListener: ((event: Partial<StorageEvent>) => void) | undefined;
   Object.defineProperty(globalThis, "window", {
     configurable: true,
-    value: { addEventListener() {}, removeEventListener() {} },
+    value: {
+      addEventListener(type: string, listener: typeof storageListener) {
+        if (type === "storage") storageListener = listener;
+      },
+      removeEventListener(type: string) {
+        if (type === "storage") storageListener = undefined;
+      },
+    },
   });
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -248,12 +256,26 @@ test("monitor refreshes once per connection, retains selections, retries failure
     healthy = true;
     await waitFor(() => !store.getState().providers[0].models.includes("stale-local-selection"));
     assert.equal(counts.saves, savesBeforeLocalSync, "a current server catalog only needs local reconciliation");
+    const preferenceKey = "unsloth_chat_external_providers";
+    const disabledProviders = store.getState().providers.map((item: typeof provider) => ({
+      ...item, autoReloadModels: false,
+    }));
+    const persisted = JSON.stringify(disabledProviders);
+    storage.set(preferenceKey, persisted);
+    assert.ok(storageListener);
+    storageListener({ key: preferenceKey, storageArea: localStorage });
+    assert.equal(store.getState().providers[0].autoReloadModels, false);
+    const probesBeforeStorageDisable = counts.probes;
+    await pause();
+    assert.equal(counts.probes, probesBeforeStorageDisable);
+    assert.equal(storage.get(preferenceKey), persisted, "cross-tab sync must not write back stale state");
     storage.delete("unsloth_auth_token");
     const beforeLogout = counts.probes;
     await pause();
     assert.equal(counts.probes, beforeLogout);
   } finally {
     stop();
+    assert.equal(storageListener, undefined, "stopping removes the storage listener");
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "window", {
       configurable: true,

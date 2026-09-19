@@ -9,7 +9,9 @@ import {
   updateProviderConfig,
 } from "./api/providers-api";
 import {
+  EXTERNAL_PROVIDERS_KEY,
   getExternalProviderApiKey,
+  loadExternalProviders,
   type ExternalProviderConfig,
 } from "./external-providers";
 import {
@@ -164,6 +166,29 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
     }
   }
 
+  function syncPreference(event: StorageEvent) {
+    if (
+      !authenticated() ||
+      event.storageArea !== localStorage ||
+      (event.key !== null && event.key !== EXTERNAL_PROVIDERS_KEY)
+    ) return;
+    const saved = new Map(
+      loadExternalProviders().map((provider) => [provider.id, provider]),
+    );
+    const state = useExternalProvidersStore.getState();
+    const providers = state.providers.map((provider) => {
+      if (provider.providerType !== "llama_cpp") return provider;
+      const autoReloadModels = saved.get(provider.id)?.autoReloadModels === true;
+      return provider.autoReloadModels === autoReloadModels
+        ? provider
+        : { ...provider, autoReloadModels };
+    });
+    if (providers.some((provider, index) => provider !== state.providers[index])) {
+      useExternalProvidersStore.setState({ providers });
+    }
+  }
+
+  window.addEventListener("storage", syncPreference);
   const unsubscribe = useExternalProvidersStore.subscribe(reconcile);
   reconcile();
   const timer = setInterval(() => {
@@ -177,6 +202,7 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
     stopped = true;
     clearInterval(timer);
     unsubscribe();
+    window.removeEventListener("storage", syncPreference);
     connections.clear();
   };
 }
