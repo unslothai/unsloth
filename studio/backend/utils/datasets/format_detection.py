@@ -245,7 +245,11 @@ def detect_custom_format_heuristic(dataset):
         "completion": 60,
     }
 
-    def has_keyword(col_name, keywords, apply_shadowing = True):
+    def has_keyword(
+        col_name,
+        keywords,
+        apply_shadowing = True,
+    ):
         """True if any keyword appears in the column name, ignoring a keyword that only
         matches inside a longer role word the name also carries ("text" in "context")."""
         col_lower = col_name.lower()
@@ -306,7 +310,13 @@ def detect_custom_format_heuristic(dataset):
         except:
             return 0
 
-    def score_column(col_name, keywords, role_type, num_candidates, apply_shadowing = True):
+    def score_column(
+        col_name,
+        keywords,
+        role_type,
+        num_candidates,
+        apply_shadowing = True,
+    ):
         """Score how likely a column is to be a given role."""
         if not has_keyword(col_name, keywords, apply_shadowing = apply_shadowing):
             return 0

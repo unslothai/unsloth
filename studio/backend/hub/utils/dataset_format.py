@@ -164,7 +164,11 @@ def detect_custom_format_heuristic(dataset):
         "completion": 60,
     }
 
-    def has_keyword(col_name, keywords, apply_shadowing = True):
+    def has_keyword(
+        col_name,
+        keywords,
+        apply_shadowing = True,
+    ):
         col_lower = col_name.lower()
         col_normalized = col_lower.replace("_", "").replace("-", "").replace(" ", "")
         for keyword in keywords:
@@ -201,7 +205,13 @@ def detect_custom_format_heuristic(dataset):
         except Exception:
             return 0
 
-    def score_column(col_name, keywords, role_type, num_candidates, apply_shadowing = True):
+    def score_column(
+        col_name,
+        keywords,
+        role_type,
+        num_candidates,
+        apply_shadowing = True,
+    ):
         if not has_keyword(col_name, keywords, apply_shadowing = apply_shadowing):
             return 0
         score = 10
