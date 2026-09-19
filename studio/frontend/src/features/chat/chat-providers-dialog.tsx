@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getAuthSessionEpoch, hasAuthToken } from "@/features/auth";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -79,10 +80,14 @@ import {
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
-import { useExternalProvidersStore } from "./stores/external-providers-store";
+import {
+  useExternalProvidersStore,
+  withProviderModelUpdate,
+} from "./stores/external-providers-store";
 import {
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
+  preserveConcurrentProviderUpdates,
   refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
@@ -273,6 +278,7 @@ export function ChatProvidersSettings({
     CUSTOM_PROVIDER_DISPLAY_NAME,
   );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
+  const [autoReloadModels, setAutoReloadModels] = useState(false);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -428,10 +434,11 @@ export function ChatProvidersSettings({
         setSyncingProviders(true);
       }
       let syncSucceeded = false;
+      const previousProviders = useExternalProvidersStore.getState().providers;
       try {
         const [registryRows, syncedProviders] = await Promise.all([
           listProviderRegistry(),
-          syncExternalProvidersFromBackend(providersRef.current),
+          syncExternalProvidersFromBackend(previousProviders),
         ]);
         if (!isMounted) return;
         syncSucceeded = true;
@@ -451,7 +458,9 @@ export function ChatProvidersSettings({
         });
         // Trust the backend response. An empty array means every connection was removed, often from
         // another tab; mirror that locally, else stale entries are un-removable here.
-        onProvidersChange(syncedProviders);
+        onProvidersChange(preserveConcurrentProviderUpdates(
+          syncedProviders, previousProviders, useExternalProvidersStore.getState().providers,
+        ));
         setProvidersReady(true);
         // An empty list never says what this page is for, so open the form instead. Reads the synced
         // response, not the local snapshot, so a stale empty list cannot flash the form at an
@@ -520,6 +529,7 @@ export function ChatProvidersSettings({
     setModelSearchQuery("");
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
+    setAutoReloadModels(false);
   }
 
   function openAddProvider() {
@@ -705,7 +715,7 @@ export function ChatProvidersSettings({
       }
       if (editingProviderId) {
         onProvidersChange(
-          providersRef.current.map((provider) =>
+          useExternalProvidersStore.getState().providers.map((provider) =>
             provider.id === editingProviderId
               ? { ...provider, availableModels: modelIds }
               : provider,
@@ -763,7 +773,7 @@ export function ChatProvidersSettings({
           : Date.now(),
       };
       const nextProviders = [
-        ...providersRef.current.filter((current) => current.id !== created.id),
+        ...useExternalProvidersStore.getState().providers.filter((current) => current.id !== created.id),
         provider,
       ];
       providersRef.current = nextProviders;
@@ -885,6 +895,8 @@ export function ChatProvidersSettings({
 
         authKind: created.auth_kind,
         authStatus: created.auth_status,
+        autoReloadModels:
+          uiProviderType === "llama_cpp" ? autoReloadModels : undefined,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
@@ -892,7 +904,7 @@ export function ChatProvidersSettings({
         updatedAt,
       };
       onProvidersChange([
-        ...providers.filter((p) => p.id !== created.id),
+        ...useExternalProvidersStore.getState().providers.filter((p) => p.id !== created.id),
         provider,
       ]);
       void refreshProviderModelCatalogs([provider]);
@@ -983,78 +995,87 @@ export function ChatProvidersSettings({
         return;
       }
     }
+    const sessionEpoch = getAuthSessionEpoch();
+    const isCurrent = () =>
+      hasAuthToken() && getAuthSessionEpoch() === sessionEpoch;
     setMutatingProvider(true);
-    try {
-      const baseUrl = parseBaseUrlForProvider(
-        baseUrlDraft,
-        isEditingCustomProvider,
-        existing.providerType,
-      );
-      const maxOutputTokens = supportsMaxOutputTokens
-        ? parseMaxOutputTokens(maxOutputTokensDraft)
-        : undefined;
-      const updated = await updateProviderConfig(editingProviderId, {
-        displayName: isEditingCustomProvider
-          ? customProviderName.trim() ||
-            customProviderDisplayName(existing.providerType)
-          : existing.name,
-        baseUrl,
-        models: modelsToSave,
-        availableModels: manualOnly
-          ? []
-          : pruneProviderModelIds(existing.providerType, availableModels),
-        maxOutputTokens,
-        ...(credentialEdit.action === "replace"
-          ? { apiKey: credentialEdit.apiKey }
-          : credentialEdit.action === "clear"
-            ? { clearApiKey: true }
-            : {}),
-      });
-
-      if (
-        credentialEdit.action === "replace" ||
-        credentialEdit.action === "clear"
-      ) {
-        removeExternalProviderApiKey(editingProviderId);
-      }
-      const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
-        ? Date.parse(updated.updated_at)
-        : Date.now();
-      const editedProvider: ExternalProviderConfig = {
-        ...existing,
-        backendProviderType: updated.provider_type,
-        name: updated.display_name,
-        baseUrl: updated.base_url ?? "",
-        models: modelsToSave,
-        availableModels: manualOnly
-          ? []
-          : pruneProviderModelIds(existing.providerType, availableModels),
-        maxOutputTokens: updated.max_output_tokens ?? undefined,
-
-        hasApiKey: updated.has_api_key,
-        isReasoningModel: supportsProviderReasoningToggle(
+    await withProviderModelUpdate(editingProviderId, async () => {
+      try {
+        if (!isCurrent()) return;
+        const baseUrl = parseBaseUrlForProvider(
+          baseUrlDraft,
+          isEditingCustomProvider,
           existing.providerType,
-        )
-          ? isReasoningModel
-          : undefined,
-        updatedAt,
-      };
-      onProvidersChange(
-        providers.map((provider) =>
-          provider.id === editingProviderId ? editedProvider : provider,
-        ),
-      );
-      void refreshProviderModelCatalogs([editedProvider]);
-      toast.success("Connection updated.");
-      resetForm();
-      autoOpenedAddFormRef.current = true;
-      setPage("list");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Failed to update connection: ${message}`);
-    } finally {
-      setMutatingProvider(false);
-    }
+        );
+        const maxOutputTokens = supportsMaxOutputTokens
+          ? parseMaxOutputTokens(maxOutputTokensDraft)
+          : undefined;
+        const updated = await updateProviderConfig(editingProviderId, {
+          displayName: isEditingCustomProvider
+            ? customProviderName.trim() ||
+              customProviderDisplayName(existing.providerType)
+            : existing.name,
+          baseUrl,
+          models: modelsToSave,
+          availableModels: manualOnly
+            ? []
+            : pruneProviderModelIds(existing.providerType, availableModels),
+          maxOutputTokens,
+          ...(credentialEdit.action === "replace"
+            ? { apiKey: credentialEdit.apiKey }
+            : credentialEdit.action === "clear"
+              ? { clearApiKey: true }
+              : {}),
+        });
+
+        if (!isCurrent()) return;
+        if (
+          credentialEdit.action === "replace" ||
+          credentialEdit.action === "clear"
+        ) {
+          removeExternalProviderApiKey(editingProviderId);
+        }
+        const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
+          ? Date.parse(updated.updated_at)
+          : Date.now();
+        const editedProvider: ExternalProviderConfig = {
+          ...existing,
+          backendProviderType: updated.provider_type,
+          name: updated.display_name,
+          baseUrl: updated.base_url ?? "",
+          models: modelsToSave,
+          availableModels: manualOnly
+            ? []
+            : pruneProviderModelIds(existing.providerType, availableModels),
+          maxOutputTokens: updated.max_output_tokens ?? undefined,
+
+          hasApiKey: updated.has_api_key,
+          autoReloadModels:
+            existing.providerType === "llama_cpp" ? autoReloadModels : undefined,
+          isReasoningModel: supportsProviderReasoningToggle(
+            existing.providerType,
+          )
+            ? isReasoningModel
+            : undefined,
+          updatedAt,
+        };
+        onProvidersChange(
+          useExternalProvidersStore.getState().providers.map((provider) =>
+            provider.id === editingProviderId ? editedProvider : provider,
+          ),
+        );
+        void refreshProviderModelCatalogs([editedProvider]);
+        toast.success("Connection updated.");
+        resetForm();
+        autoOpenedAddFormRef.current = true;
+        setPage("list");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        toast.error(`Failed to update connection: ${message}`);
+      } finally {
+        setMutatingProvider(false);
+      }
+    });
   }
 
   async function applyCodexSubscriptionModels(
@@ -1087,10 +1108,14 @@ export function ChatProvidersSettings({
     if (listed?.source === "reauthorization_required") {
       // The backend already marked the bundle; resync so the connect panel offers Reconnect
       // instead of leaving the connection looking healthy.
-      void syncExternalProvidersFromBackend(providersRef.current)
+      const previousProviders = useExternalProvidersStore.getState().providers;
+      void syncExternalProvidersFromBackend(previousProviders)
         .then((synced) => {
-          providersRef.current = synced;
-          onProvidersChange(synced);
+          const merged = preserveConcurrentProviderUpdates(
+            synced, previousProviders, useExternalProvidersStore.getState().providers,
+          );
+          providersRef.current = merged;
+          onProvidersChange(merged);
         })
         .catch(() => undefined);
     }
@@ -1134,6 +1159,7 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
+    setAutoReloadModels(provider.autoReloadModels === true);
     // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under one would
     // fail every unrelated edit. The resolver already reads it as the floor.
     setMaxOutputTokensDraft(
@@ -1244,7 +1270,7 @@ export function ChatProvidersSettings({
       await deleteProviderConfig(providerId);
       removeExternalProviderApiKey(providerId);
       onProvidersChange(
-        providers.filter((provider) => provider.id !== providerId),
+        useExternalProvidersStore.getState().providers.filter((provider) => provider.id !== providerId),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -1609,6 +1635,31 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
+              {providerType === "llama_cpp" ? (
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="provider-auto-reload-models"
+                      className="text-sm font-medium"
+                    >
+                      Reload models automatically on connect
+                    </Label>
+                    <p
+                      id="provider-auto-reload-models-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Refresh once on connect and after a disconnect while Studio is open.
+                      New model IDs are enabled automatically. Saved in this browser.
+                    </p>
+                  </div>
+                  <Switch
+                    id="provider-auto-reload-models"
+                    checked={autoReloadModels}
+                    onCheckedChange={setAutoReloadModels}
+                    aria-describedby="provider-auto-reload-models-help"
+                  />
+                </div>
+              ) : null}
               {showReasoningToggle ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
@@ -1665,7 +1716,11 @@ export function ChatProvidersSettings({
                 setModelsLoading(true);
                 let owned = true;
                 try {
-                  const synced = await syncExternalProvidersFromBackend(providersRef.current);
+                  const previousProviders = useExternalProvidersStore.getState().providers;
+                  const response = await syncExternalProvidersFromBackend(previousProviders);
+                  const synced = preserveConcurrentProviderUpdates(
+                    response, previousProviders, useExternalProvidersStore.getState().providers,
+                  );
                   providersRef.current = synced;
                   onProvidersChange(synced);
                   if (request !== codexCatalogRequestRef.current) {

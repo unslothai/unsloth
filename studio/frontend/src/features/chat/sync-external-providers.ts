@@ -177,6 +177,8 @@ export function mergeLocalProviderOptions(
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? (existing.isReasoningModel ?? synced.isReasoningModel)
       : undefined,
+    autoReloadModels:
+      providerType === "llama_cpp" ? existing.autoReloadModels === true : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof existing.openaiContainerTtlMinutes === "number" &&
@@ -187,6 +189,34 @@ export function mergeLocalProviderOptions(
 }
 
 
+
+export function preserveConcurrentProviderUpdates(
+  syncedProviders: ExternalProviderConfig[],
+  previousProviders: ExternalProviderConfig[],
+  currentProviders: ExternalProviderConfig[],
+): ExternalProviderConfig[] {
+  const previousById = new Map(
+    previousProviders.map((provider) => [provider.id, provider]),
+  );
+  const currentById = new Map(
+    currentProviders.map((provider) => [provider.id, provider]),
+  );
+  return syncedProviders.map((synced) => {
+    const previous = previousById.get(synced.id);
+    const current = currentById.get(synced.id);
+    const merged = mergeLocalProviderOptions(current, synced);
+    if (
+      !previous || !current ||
+      (previous.models === current.models &&
+        previous.availableModels === current.availableModels)
+    ) return merged;
+    return {
+      ...merged,
+      models: current.models,
+      availableModels: current.availableModels,
+    };
+  });
+}
 
 /** Merge enabled backend provider configs with local store state. */
 export async function syncExternalProvidersFromBackend(

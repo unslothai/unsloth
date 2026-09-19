@@ -31,3 +31,21 @@ export const useExternalProvidersStore = create<ExternalProvidersState>(
     },
   }),
 );
+
+const pendingModelUpdates = new Map<string, Promise<unknown>>();
+
+export async function withProviderModelUpdate<T>(
+  providerId: string,
+  update: () => Promise<T>,
+): Promise<T> {
+  const previous = pendingModelUpdates.get(providerId) ?? Promise.resolve();
+  const next = previous.catch(() => {}).then(update);
+  pendingModelUpdates.set(providerId, next);
+  try {
+    return await next;
+  } finally {
+    if (pendingModelUpdates.get(providerId) === next) {
+      pendingModelUpdates.delete(providerId);
+    }
+  }
+}
