@@ -54,10 +54,8 @@ function MemoryFigure({
     let active = true;
     const fit = () => {
       if (!active) return;
-      // Room is measured on the row, never on the pill, which sizes to the label it is
-      // showing and so would confirm whatever it picked first. Siblings are reserved at
-      // their content width for the same reason: the label gives way to the pill, so its
-      // rendered width is an effect of the figure rather than a constraint on it.
+      // Measured on the row, never on the pill or its label: both give way to the figure,
+      // so either would just confirm whatever the first pass picked.
       const style = getComputedStyle(button);
       const gutters =
         Number.parseFloat(style.paddingLeft) +
@@ -96,8 +94,7 @@ function MemoryFigure({
   }, [candidates]);
   return (
     <div className="flex min-h-8 min-w-0 items-center justify-between gap-3">
-      {/* No min-w-0: the label keeps its min-content floor, so a wide figure shortens
-          itself rather than collapsing the word next to it. */}
+      {/* No min-w-0: the label holds its width, so the figure shortens instead. */}
       <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
         {label}
       </span>
@@ -108,7 +105,7 @@ function MemoryFigure({
             ref={buttonRef}
             type="button"
             aria-label={`${label}: ${value}`}
-            className={`relative inline-flex h-8 w-auto min-w-[64px] max-w-full shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-black/[0.04] px-3 text-ui-13 font-medium leading-none tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 dark:bg-white/[0.05] ${tone ?? "text-nav-fg"}`}
+            className={`relative inline-flex h-8 w-auto min-w-[64px] max-w-full shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-black/[0.04] px-3.5 text-ui-13 font-medium leading-none tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 dark:bg-white/[0.05] ${tone ?? "text-nav-fg"}`}
           >
             <span aria-hidden="true" className="min-w-0 truncate">
               {candidates[displayIndex] ?? value}
@@ -240,7 +237,7 @@ export function MemoryEstimateRow({
         aria-expanded={expanded}
         aria-controls={contentId}
         aria-label={`Estimated Memory Usage: ${expanded ? "Hide" : "Show"} breakdown`}
-        className="group flex min-h-7 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        className="group flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <span className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">

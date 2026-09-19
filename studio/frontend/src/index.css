@@ -1472,8 +1472,7 @@ html[data-chat-font] .aui-root {
 	   an inline width that hugs the value. Hover/focus: very light bg
 	   fade-in, just enough to read as interactive without competing
 	   with the slider row's quiet aesthetic. */
-	/* Wider right gutter: the value is right-aligned on the panel's own edge. Matches the
-	   run-settings number fields. */
+	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
 	.panel-number-input {
 		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}

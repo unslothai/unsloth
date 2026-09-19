@@ -217,7 +217,7 @@ export function ParamSlider({
   }
   return (
     <div className="space-y-3.5">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex min-h-8 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             {label}
@@ -1320,7 +1320,7 @@ export function ChatSettingsPanel({
 
         {showPromptCachingControl && activeExternalProvider ? (
           <CollapsibleSection label="Provider" defaultOpen={true}>
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex min-h-8 items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                   Prompt caching
@@ -1343,7 +1343,7 @@ export function ChatSettingsPanel({
               />
             </div>
             {showPromptCacheTtlControl && promptCachingEnabled ? (
-              <div className="flex items-center justify-between gap-3 pt-3">
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-3.5">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Cache TTL
@@ -1367,7 +1367,7 @@ export function ChatSettingsPanel({
                   }}
                 >
                   <SelectTrigger
-                    className="panel-select-trigger h-8 w-[124px] shrink-0"
+                    className="panel-select-trigger h-8 shrink-0"
                     aria-label="Prompt cache TTL"
                   >
                     <SelectValue />
@@ -1380,7 +1380,7 @@ export function ChatSettingsPanel({
               </div>
             ) : null}
             {showFastModeControl ? (
-              <div className="flex items-center justify-between gap-3 pt-3">
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-3.5">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Fast mode
@@ -1536,7 +1536,7 @@ export function ChatSettingsPanel({
                       </SelectContent>
                     </Select>
                     {effectiveMinPMode(params) === "server-default" ? (
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-ui-11 text-muted-foreground">
                         Uses the server’s sampling settings.
                       </p>
                     ) : null}
@@ -1603,7 +1603,7 @@ export function ChatSettingsPanel({
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
             {showSeed ? (
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex min-h-8 items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Seed
@@ -1943,7 +1943,7 @@ function AutoHealToolCallsToggle() {
   );
 
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Auto-Healing Tool Calls
@@ -1954,7 +1954,7 @@ function AutoHealToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch"
+        className="panel-switch shrink-0"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
       />
@@ -1967,7 +1967,7 @@ function NudgeToolCallsToggle() {
   const setNudgeToolCalls = useChatRuntimeStore((s) => s.setNudgeToolCalls);
 
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Nudge Tool Calls
@@ -1978,7 +1978,7 @@ function NudgeToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch"
+        className="panel-switch shrink-0"
         checked={nudgeToolCalls}
         onCheckedChange={setNudgeToolCalls}
       />
@@ -1991,7 +1991,7 @@ function ConfirmToolCallsToggle() {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -2012,7 +2012,7 @@ function ConfirmToolCallsToggle() {
         ) : null}
       </div>
       <Switch
-        className="panel-switch"
+        className="panel-switch shrink-0"
         checked={permissionMode === "ask"}
         onCheckedChange={setConfirmToolCalls}
         disabled={permissionMode === "full"}

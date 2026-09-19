@@ -192,14 +192,13 @@ const CONTROL_SURFACE =
 const INPUT_WIDTH_CLASS = "w-[84px] shrink-0";
 // A select holds one of a known set of values, so it sizes to that value.
 const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
-// 14px each side optically, matching the numeric fields' right gutter. The chevron's stroke
-// fills 14 of its 24 viewBox units, so its 14px box carries ~3px of slack; pr-[11px] pays
-// that back and lands the stroke where the digits beside it sit.
+// 14px each side optically. The chevron's stroke fills 14 of its 24 viewBox units, so its
+// box carries ~3px of slack; pr-[11px] pays that back.
 const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${SELECT_WIDTH_CLASS} ${CONTROL_SURFACE} pl-3.5 pr-[11px] py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
-// Wider right gutter: the value is right-aligned, so that gutter is all that holds the
-// digits off the edge.
-const NUMBER_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} ${CONTROL_SURFACE} pl-3 pr-3.5 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
-const TEXT_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} min-w-0 ${CONTROL_SURFACE} pl-3 pr-3.5 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
+// Left-aligned like every other value here. These fields share one width, so reading from
+// the left puts their values on a single edge.
+const NUMBER_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} ${CONTROL_SURFACE} px-3.5 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
+const TEXT_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} min-w-0 ${CONTROL_SURFACE} px-3.5 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
 // Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
 const FOOTER_BUTTON_CLASS = "h-9 rounded-full text-ui-13 font-medium tracking-nav";
 
@@ -402,7 +401,7 @@ function ChatTemplateSetting({
           type="button"
           size="sm"
           variant="ghost"
-          className={`h-8 px-3 text-ui-13 ${CONTROL_SURFACE}`}
+          className={`h-8 px-3.5 text-ui-13 ${CONTROL_SURFACE}`}
           onClick={onEditTemplate}
         >
           {readOnly ? "View" : "Edit"}
@@ -683,7 +682,7 @@ function VramBudgetRow() {
   };
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
       <AdvancedGpuSlider
         label="VRAM Budget"
         value={percent}
@@ -1443,7 +1442,7 @@ function GgufAdvancedSettings({
             />
           </div>
           {batchBelowFloor && (
-            <p id={batchAdviceId} className="text-ui-12 text-muted-foreground">
+            <p id={batchAdviceId} className="text-ui-11 text-muted-foreground">
               Too small for llama-server, so the load will raise it to {batchFloor}.
               {config.nParallel != null && config.nParallel > 2
                 ? " It needs one output slot per parallel slot."
@@ -1492,7 +1491,7 @@ function GgufAdvancedSettings({
             />
           </div>
           {ubatchExceedsBatch && (
-            <p id={ubatchAdviceId} className="text-ui-12 text-muted-foreground">
+            <p id={ubatchAdviceId} className="text-ui-11 text-muted-foreground">
               Micro-batch is larger than the batch size, so llama.cpp will run at{" "}
               {effectiveBatch}. Raise the batch size to use {config.nUbatch}.
             </p>
@@ -1845,40 +1844,43 @@ function ExtraArgsRow({
           </div>
         </InfoHint>
       </div>
-      <div className="panel-text-surface h-20 w-full overflow-hidden corner-squircle">
-        <textarea
-          value={text}
-          onChange={(event) => commit(event.target.value)}
-          spellCheck={false}
-          placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
-          aria-label="Extra llama-server arguments"
-          aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
-          className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground"
-        />
-      </div>
-      {(tokenCount > 0 || diagnostics.length > 0) && (
-        <div id={adviceId} className="space-y-1">
-          {tokenCount > 0 && (
-            <p className="text-ui-11 text-muted-foreground">
-              {tokenCount === 1 ? "1 argument" : `${tokenCount} arguments`}
-            </p>
-          )}
-          {diagnostics.map((diagnostic) => (
-            <p
-              key={diagnostic.message}
-              className={
-                diagnostic.level === "error"
-                  ? "text-ui-11 text-red-500"
-                  : diagnostic.level === "warning"
-                    ? "text-ui-11 text-amber-500"
-                    : "text-ui-11 text-muted-foreground"
-              }
-            >
-              {diagnostic.message}
-            </p>
-          ))}
+      {/* Grouped so the notes sit 4px under the field, as advice does elsewhere. */}
+      <div className="space-y-1">
+        <div className="panel-text-surface h-20 w-full overflow-hidden corner-squircle">
+          <textarea
+            value={text}
+            onChange={(event) => commit(event.target.value)}
+            spellCheck={false}
+            placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
+            aria-label="Extra llama-server arguments"
+            aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
+            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground"
+          />
         </div>
-      )}
+        {(tokenCount > 0 || diagnostics.length > 0) && (
+          <div id={adviceId} className="space-y-1">
+            {tokenCount > 0 && (
+              <p className="text-ui-11 text-muted-foreground">
+                {tokenCount === 1 ? "1 argument" : `${tokenCount} arguments`}
+              </p>
+            )}
+            {diagnostics.map((diagnostic) => (
+              <p
+                key={diagnostic.message}
+                className={
+                  diagnostic.level === "error"
+                    ? "text-ui-11 text-red-500"
+                    : diagnostic.level === "warning"
+                      ? "text-ui-11 text-amber-500"
+                      : "text-ui-11 text-muted-foreground"
+                }
+              >
+                {diagnostic.message}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3204,53 +3206,56 @@ export function ModelConfigPage({
                   size={8}
                 />
               </div>
-              {nativeContextLength != null ? (
-                <div className="space-y-1.5">
-                  <Slider
-                    min={0}
-                    max={maxContext}
-                    step={128}
-                    value={[contextSliderValue]}
-                    onValueChange={([v]) => setContextSliderValue(v)}
-                    className="panel-slider"
-                    aria-label="Context Length"
-                    // Position 0 is Auto, not a zero-token context, so aria-valuenow alone reads as a length no
-                    // model has. The number is only spoken once one exists.
-                    thumbValueText={(v) =>
-                      v !== 0
-                        ? `${v.toLocaleString()} tokens`
-                        : activeLoadedContext != null
-                          ? `Auto, currently ${contextInputValue.toLocaleString()} tokens`
-                          : "Auto"
-                    }
-                  />
-                  <div className="flex justify-between text-ui-10 text-muted-foreground">
-                    <span>Auto</span>
-                    <span>{maxContext.toLocaleString()}</span>
+              {/* Grouped so the warning sits 4px under the slider, as advice does elsewhere. */}
+              <div className="space-y-1">
+                {nativeContextLength != null ? (
+                  <div className="space-y-1.5">
+                    <Slider
+                      min={0}
+                      max={maxContext}
+                      step={128}
+                      value={[contextSliderValue]}
+                      onValueChange={([v]) => setContextSliderValue(v)}
+                      className="panel-slider"
+                      aria-label="Context Length"
+                      // Position 0 is Auto, not a zero-token context, so aria-valuenow alone reads as a length no
+                      // model has. The number is only spoken once one exists.
+                      thumbValueText={(v) =>
+                        v !== 0
+                          ? `${v.toLocaleString()} tokens`
+                          : activeLoadedContext != null
+                            ? `Auto, currently ${contextInputValue.toLocaleString()} tokens`
+                            : "Auto"
+                      }
+                    />
+                    <div className="flex justify-between text-ui-10 text-muted-foreground">
+                      <span>Auto</span>
+                      <span>{maxContext.toLocaleString()}</span>
+                    </div>
                   </div>
-                </div>
-              ) : null}
-              {!contextIsAuto &&
-                isActiveModel &&
-                loadedMaxContextLength != null &&
-                contextValue > loadedMaxContextLength && (
-                  <p className="text-ui-11 text-amber-500">
-                    {isAppleUnifiedMemory ? (
-                      <>
-                        Exceeds what fits in unified memory (
-                        {loadedMaxContextLength.toLocaleString()} tokens). The
-                        GPU and the rest of the system share one pool here, so
-                        there is nothing to offload to.
-                      </>
-                    ) : (
-                      <>
-                        Exceeds estimated VRAM capacity (
-                        {loadedMaxContextLength.toLocaleString()} tokens). The
-                        model may use system RAM.
-                      </>
-                    )}
-                  </p>
-                )}
+                ) : null}
+                {!contextIsAuto &&
+                  isActiveModel &&
+                  loadedMaxContextLength != null &&
+                  contextValue > loadedMaxContextLength && (
+                    <p className="text-ui-11 text-amber-500">
+                      {isAppleUnifiedMemory ? (
+                        <>
+                          Exceeds what fits in unified memory (
+                          {loadedMaxContextLength.toLocaleString()} tokens). The
+                          GPU and the rest of the system share one pool here, so
+                          there is nothing to offload to.
+                        </>
+                      ) : (
+                        <>
+                          Exceeds estimated VRAM capacity (
+                          {loadedMaxContextLength.toLocaleString()} tokens). The
+                          model may use system RAM.
+                        </>
+                      )}
+                    </p>
+                  )}
+              </div>
             </div>
 
             {/* Above the block it reveals, so expanding never moves the switch. */}
