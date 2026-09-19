@@ -94,12 +94,26 @@ export function useApiMonitor({
   );
   // Mirrors `loadingDetails` outside React state so the guard sees same-tick writes.
   const inFlightDetails = useRef<Set<string>>(new Set());
+  const retainedEntryIds = useRef<Set<string>>(new Set());
+
+  const updateData = useCallback((next: ApiMonitorResponse): void => {
+    const ids = new Set(next.entries.map((entry) => entry.id));
+    retainedEntryIds.current = ids;
+    setData(next);
+    setDetails((previous) => {
+      const expired = Object.keys(previous).filter((id) => !ids.has(id));
+      if (expired.length === 0) return previous;
+      const retained = { ...previous };
+      for (const id of expired) delete retained[id];
+      return retained;
+    });
+  }, []);
 
   const load = useCallback(async (): Promise<void> => {
     setRefreshing(true);
     try {
       const next = await getApiMonitor();
-      setData(next);
+      updateData(next);
       setError(null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Monitor unavailable");
@@ -107,7 +121,7 @@ export function useApiMonitor({
       setRefreshing(false);
       setLoading(false);
     }
-  }, []);
+  }, [updateData]);
 
   useEffect(() => {
     if (paused) {
@@ -120,7 +134,7 @@ export function useApiMonitor({
       getApiMonitor()
         .then((next) => {
           if (cancelled) return;
-          setData(next);
+          updateData(next);
           setError(null);
         })
         .catch((err: unknown) => {
@@ -141,7 +155,7 @@ export function useApiMonitor({
         window.clearTimeout(timer);
       }
     };
-  }, [paused, intervalMs]);
+  }, [paused, intervalMs, updateData]);
 
   // Returns whether a fetch started: recording "fetched revision N" when the guard
   // refused would skip that revision once updated_at settles.
@@ -153,6 +167,7 @@ export function useApiMonitor({
     setLoadingDetails((prev) => new Set(prev).add(id));
     getApiMonitorEntry(id)
       .then((entry) => {
+        if (!retainedEntryIds.current.has(id)) return;
         setDetails((prev) => ({ ...prev, [id]: entry }));
       })
       .catch(() => {

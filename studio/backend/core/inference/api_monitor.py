@@ -32,7 +32,6 @@ TerminalCallback = Callable[[ApiUsageReceipt], None]
 
 
 _MAX_ENTRIES = 50
-_MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
 _MAX_STREAM_TOOL_CALLS = 64
@@ -374,7 +373,7 @@ class ApiMonitor:
             method = method,
             # str(): a raw JSON body can carry any type, and a non-string breaks the UI.
             model = str(model) if model else "default",
-            prompt = _trim(prompt, _MAX_PROMPT_CHARS),
+            prompt = prompt or "",
             status = "running",
             started_at = now,
             updated_at = now,
