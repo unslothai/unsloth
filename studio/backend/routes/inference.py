@@ -4784,7 +4784,13 @@ class _TrackedCancel:
         )
 
     @classmethod
-    def for_payload(cls, event: threading.Event, payload, *keys, backend = None):
+    def for_payload(
+        cls,
+        event: threading.Event,
+        payload,
+        *keys,
+        backend = None,
+    ):
         """Track the run against its request identity and serving backend."""
         return cls(
             event,
@@ -15291,7 +15297,12 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
     await _drain(time.monotonic() + budget * 4 / 5, discount_registered = False)
 
 
-async def _drain_and_recancel_before_teardown(*, force: bool, action: str, backend = None) -> None:
+async def _drain_and_recancel_before_teardown(
+    *,
+    force: bool,
+    action: str,
+    backend = None,
+) -> None:
     """Wait out inference the registry cannot see, then stop anything new.
 
     A request that passed the keep-warm middleware but has not reached its
@@ -19135,9 +19146,7 @@ async def generate_stream(
         # body never starts leaves nothing behind. Unregistered, this run passes /unload's 409 gate
         # (which runs no idle drain) and a forced swap has no event to signal. GenerateRequest
         # carries no thread_id: counted, not nameable.
-        _tracker = _TrackedCancel(
-            cancel_event, model = backend.active_model_name, backend = backend
-        )
+        _tracker = _TrackedCancel(cancel_event, model = backend.active_model_name, backend = backend)
         _tracker.__enter__()
         try:
             gen = backend.generate_chat_response(

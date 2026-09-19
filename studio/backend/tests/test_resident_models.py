@@ -404,11 +404,7 @@ def test_runtime_changed_secondary_reloads_in_place_without_duplicate(
     assert len(registry.slots_for_sweep()) == 2
 
 
-
-
-def test_additive_resident_load_does_not_wait_for_or_cancel_active_model(
-    residents, monkeypatch
-):
+def test_additive_resident_load_does_not_wait_for_or_cancel_active_model(residents, monkeypatch):
     """Loading B beside A never treats A's generation as a model swap."""
     import contextlib
 
@@ -456,7 +452,9 @@ def test_additive_resident_load_does_not_wait_for_or_cancel_active_model(
     )
     monkeypatch.setattr(inference_route, "_resolve_inherited_extra_args", lambda *_args: None)
     monkeypatch.setattr(inference_route, "_prepare_load_placement", _placement)
-    monkeypatch.setattr(inference_route, "_resolve_gguf_load_intent", lambda *_args, **_kwargs: intent)
+    monkeypatch.setattr(
+        inference_route, "_resolve_gguf_load_intent", lambda *_args, **_kwargs: intent
+    )
     monkeypatch.setattr(
         inference_route, "_guard_chat_load_against_training", lambda *_args, **_kwargs: None
     )
@@ -470,7 +468,9 @@ def test_additive_resident_load_does_not_wait_for_or_cancel_active_model(
     monkeypatch.setattr(inference_route, "release_chat_gpu_claim", lambda: True)
     monkeypatch.setattr(inference_route.api_monitor, "record_lifecycle", lambda **_kwargs: object())
     monkeypatch.setattr(inference_route.api_monitor, "fail_open", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("core.inference.llama_cpp.zero_vram_chat_load", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.zero_vram_chat_load", lambda *_args, **_kwargs: True
+    )
     monkeypatch.setattr(
         "core.inference.llama_cpp.chat_load_in_flight", lambda: contextlib.nullcontext()
     )
@@ -530,6 +530,7 @@ def test_additive_resident_load_does_not_wait_for_or_cancel_active_model(
 
     assert cancellations == [{"cancel": False}]
     assert a.is_loaded and a.unloads == 0
+
 
 def test_concurrent_open_and_drop_keeps_slot_ids_unique(residents, monkeypatch):
     registry, _ = residents
@@ -1131,7 +1132,6 @@ def test_unloading_a_named_secondary_leaves_the_active_model_serving(_unloadable
     assert registry.slot_for_backend(b) is None and slot_b.id is not None
 
 
-
 def test_unloading_secondary_ignores_active_resident_generation(residents, monkeypatch):
     """B's unload must not refuse or cancel a request that A serves."""
     import contextlib
@@ -1160,6 +1160,7 @@ def test_unloading_secondary_ignores_active_resident_generation(residents, monke
     assert not active_a.is_set()
     assert a.is_loaded and not b.is_loaded
     assert registry.active_backend() is a
+
 
 def test_stop_loading_cancels_fresh_secondary_without_unloading_active(_unloadable_world):
     from models.inference import UnloadRequest
