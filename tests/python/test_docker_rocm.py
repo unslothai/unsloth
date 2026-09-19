@@ -614,7 +614,16 @@ class TestRocmEntrypoint:
         out.write_text("")
         env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(out)}
         env.update({k: str(v) for k, v in wf["env"].items()})
-        env.update({"IN_UNSLOTH": "", "IN_ZOO": "", "IN_ROCM": "", "IN_INDEX": "", "IN_GFX": ""})
+        env.update(
+            {
+                "IN_UNSLOTH": "",
+                "IN_ZOO": "",
+                "IN_NOTEBOOKS": "",
+                "IN_ROCM": "",
+                "IN_INDEX": "",
+                "IN_GFX": "",
+            }
+        )
         env.update(inputs)
         proc = subprocess.run(
             ["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True
@@ -664,6 +673,67 @@ class TestRocmEntrypoint:
         assert "load_in_4bit = four_bit" in smoke and "ROCM_GFX=gfx906" in smoke
         entry = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
+        # The Studio venv is installed by install.sh with the index pinned, which
+        # skips the reroute that would notice gfx906, and the builder has no GPU
+        # to probe, so the arch has to be forwarded or the prebuilt wheel goes in.
+        studio = open(os.path.join(_DOCKER, "Dockerfile.studio-rocm"), encoding = "utf-8").read()
+        install = studio[
+            studio.index(". /etc/unsloth-rocm-build") : studio.index("bash install.sh --local")
+        ]
+        assert 'UNSLOTH_TORCH_INDEX_URL="${TORCH_INDEX_URL}"' in install
+        assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in install
+
+    def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
+        """docker/Dockerfile.studio-rocm is built by the same run as the base, on the
+        base by digest (a tag can already be a newer run's) with the refs the base
+        baked, and takes the base's tags with a -studio leaf under the same gates.
+        Neither tag set moves until both digests exist: a :latest that moved while the
+        Studio build then failed would leave :studio on the previous base."""
+        import yaml
+
+        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+        build = wf["jobs"]["build-studio"]
+        assert "build" in build["needs"] and "tag" not in build["needs"], build["needs"]
+        assert "build-studio" in wf["jobs"]["tag"]["needs"], wf["jobs"]["tag"]["needs"]
+        step = next(s for s in build["steps"] if s.get("id") == "build")
+        assert step["with"]["file"] == "./docker/Dockerfile.studio-rocm"
+        args = dict(ln.split("=", 1) for ln in step["with"]["build-args"].splitlines() if ln)
+        assert args["BASE_IMAGE"].endswith("@${{ needs.build.outputs.digest }}"), args
+        assert args["UNSLOTH_STUDIO_REF"] == "${{ needs.prepare.outputs.unsloth_ref }}"
+        assert args["UNSLOTH_STUDIO_ZOO_REF"] == "${{ needs.prepare.outputs.zoo_ref }}"
+        # the notebooks too: the layer is keyed on this string, so a mutable ref
+        # would be a cache hit on the next run and ship the old set
+        assert args["UNSLOTH_NOTEBOOKS_REF"] == "${{ needs.prepare.outputs.notebooks_commit }}"
+        prepare = wf["jobs"]["prepare"]
+        assert prepare["outputs"]["notebooks_commit"] == "${{ steps.notebooks.outputs.commit }}"
+        resolve = next(s for s in prepare["steps"] if s.get("id") == "notebooks")
+        assert "git ls-remote https://github.com/unslothai/notebooks" in resolve["run"]
+
+        def tag_lines(job):
+            meta = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == "meta")
+            return [ln for ln in meta["with"]["tags"].splitlines() if ln.strip()]
+
+        tag = wf["jobs"]["tag-studio"]
+        assert "build-studio" in tag["needs"] and "tag" in tag["needs"], tag["needs"]
+        studio, base = tag_lines("tag-studio"), tag_lines("tag")
+        assert len(studio) == len(base) == 5
+        for s_ln, b_ln in zip(studio, base):
+            assert "studio" in s_ln, s_ln
+            # the same enable= gate as the base line it mirrors
+            assert s_ln.split(",enable=", 1)[1:] == b_ln.split(",enable=", 1)[1:], (s_ln, b_ln)
+        # the page describes both images, so it syncs only once both moved
+        assert "tag-studio" in wf["jobs"]["hub-readme"]["needs"]
+
+    def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
+        """A dispatch that bakes another notebooks ref is an experiment like any
+        other override: :studio and :latest name the default build only."""
+        for ref in ("", "main"):
+            rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = ref)
+            assert rc == 0 and got["stable"] == "true", (ref, out)
+        rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = "some-branch")
+        assert rc == 0 and got["stable"] == "false", out
+        rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = "some-branch", IN_GFX = "gfx1151")
+        assert rc == 0 and got["gfx_tag"] == "false", out
 
     def test_the_gfx_tag_needs_every_other_input_at_its_default(self):
         """A feature-branch ref plus rocm_gfx=gfx1151 must not replace the public

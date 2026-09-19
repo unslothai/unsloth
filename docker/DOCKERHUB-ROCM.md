@@ -58,6 +58,7 @@ That runs a real 5-step LoRA on a 1B model and fails loudly if the GPU is not us
 | `sha-<commit>` | the same image, pinned to the commit it was built from |
 | `nightly` | the scheduled weekly build |
 | `gfx1150`, `gfx1151`, `gfx1152`, `gfx1200`, `gfx1201` | builds using AMD's per-architecture wheels, when published |
+| `studio` | `latest` plus Unsloth Studio's web UI on port 8000, JupyterLab with the Unsloth notebooks on port 8888 and key-only SSH, from [`docker/Dockerfile.studio-rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.studio-rocm). Every tag above has a `-studio` twin built on the same base |
 
 Pin a digest for anything reproducible. `latest` moves.
 
@@ -91,7 +92,16 @@ Discrete RDNA2, RDNA4 and CDNA cards are not covered by that testing.
 
 Included: PyTorch with ROCm, Unsloth, unsloth-zoo, transformers, TRL, PEFT, accelerate, bitsandbytes, triton-rocm, diffusers, timm.
 
-Not included, unlike `unsloth/unsloth`: Unsloth Studio and its web UI, JupyterLab, prebuilt llama.cpp and whisper.cpp, vLLM and xformers. This is a training image; GGUF tooling and the UI are CUDA-only for now.
+Not included in `latest`, unlike `unsloth/unsloth`: Unsloth Studio and its web UI, JupyterLab, prebuilt llama.cpp and whisper.cpp, vLLM and xformers. `latest` is a training image.
+
+The `studio` tag adds Unsloth Studio, JupyterLab with the Unsloth notebooks (the `AMD-*` set first), key-only SSH for cloud hosts and a CPU llama.cpp for GGUF chat, still without whisper.cpp, vLLM or xformers. Training, the notebooks and the UI use the GPU; GGUF chat runs on the CPU, since a ROCm llama.cpp bundle is per-architecture and would pin the image to one card. Studio's data (accounts, chats, outputs) lives at `/opt/unsloth-studio`, so mount a volume there to keep it, with `GPU_FLAGS` set as in the quick start:
+
+```bash
+docker run --rm $GPU_FLAGS --ipc=host -p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888 \
+  -v unsloth-studio-rocm:/opt/unsloth-studio \
+  -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
+  unsloth/unsloth-rocm:studio
+```
 
 ## Environment
 
@@ -110,4 +120,4 @@ The build's own record is in the image: `cat /etc/unsloth-rocm-build` reports th
 - Source and issues: [github.com/unslothai/unsloth](https://github.com/unslothai/unsloth)
 - Docker files: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker)
 - Documentation: [docs.unsloth.ai](https://docs.unsloth.ai)
-- Licences: the image is labelled `Apache-2.0 AND AGPL-3.0-only`. [Apache-2.0](https://github.com/unslothai/unsloth/blob/main/LICENSE) covers the repository and the training stack. The [AGPL-3.0](https://github.com/unslothai/unsloth/blob/main/studio/LICENSE.AGPL-3.0) half is there for the one AGPL file this image ships, `/workspace/smoke_test_rocm.py`, which carries an `AGPL-3.0-only` header; Unsloth Studio itself is not in this image.
+- Licences: the image is labelled `Apache-2.0 AND AGPL-3.0-only`. [Apache-2.0](https://github.com/unslothai/unsloth/blob/main/LICENSE) covers the repository and the training stack. The [AGPL-3.0](https://github.com/unslothai/unsloth/blob/main/studio/LICENSE.AGPL-3.0) half is there for the one AGPL file this image ships, `/workspace/smoke_test_rocm.py`, which carries an `AGPL-3.0-only` header; Unsloth Studio itself is only in the `studio` tag.
