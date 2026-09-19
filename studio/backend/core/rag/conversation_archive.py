@@ -2587,10 +2587,14 @@ def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[s
         documents = [dict(row) for row in rows if row["status"] == "completed"]
         for document in documents:
             copied.append(_copy_upload(document["stored_path"]))
+        conn.execute("BEGIN IMMEDIATE")
         for document, stored_path in zip(documents, copied):
+            source = store.get_document(conn, document["id"])
+            if source is None or source["status"] != "completed":
+                raise RuntimeError("Source document changed while its file was being copied")
             document_ids[document["id"]] = store.copy_document(
                 conn,
-                document,
+                source,
                 scope,
                 thread_id = thread_id,
                 stored_path = stored_path,

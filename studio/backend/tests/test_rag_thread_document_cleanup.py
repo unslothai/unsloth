@@ -339,6 +339,24 @@ def test_a_fork_copies_files_before_taking_the_rag_write_lock(client, monkeypatc
     assert writable == [True, True]
 
 
+def test_a_fork_warns_if_a_source_document_is_deleted_during_file_copy(client, monkeypatch):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    source = _upload(client, "source", "source.txt", "echo foxtrot golf " * 50)
+    copy_upload = ingestion._copy_upload
+
+    def copy_then_delete(path):
+        copied = copy_upload(path)
+        response = client.delete(f"/api/rag/documents/{source}")
+        assert response.status_code == 200, response.text
+        return copied
+
+    monkeypatch.setattr(ingestion, "_copy_upload", copy_then_delete)
+    warning = _fork(client, "source", "m1", "fork")["containerSnapshotWarning"]
+    assert "not copied" in (warning or "")
+    assert _thread_documents(client, "fork") == []
+
+
 def _cite(client, thread_id, message_id, document_id):
     sources = [
         {
