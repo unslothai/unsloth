@@ -979,7 +979,8 @@ function AdvancedSettingsToggle({
   onCheckedChange: (next: boolean) => void;
 }) {
   return (
-    <div className={ROW_CLASS}>
+    // Ruled off from the context controls above, matching the estimate row's divider.
+    <div className={`${ROW_CLASS} border-t border-border/60 pt-3.5`}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
           Advanced settings
