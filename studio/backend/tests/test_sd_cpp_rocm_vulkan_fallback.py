@@ -2344,27 +2344,13 @@ def test_a_video_render_failure_names_the_card_it_was_rendering_on(fake_settings
         video_mod._note_sd_cpp_accelerator_failure,
         raising = False,
     )
-    monkeypatch.setattr(
-        sd_cpp_backend, "selected_card_identity", lambda ordinal: f"Card {ordinal}@gfx1201"
-    )
     video_mod._note_sd_cpp_accelerator_failure(
         "/opt/sd/rocm/sd-cli",
         "ROCm error: CUBLAS_STATUS_INVALID_VALUE at hipblasSetStream",
-        gpu_ordinal = 1,
+        card = "Card 1@gfx1201",
     )
     assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card 1@gfx1201") is True
     assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card 0@gfx1201") is False
-
-
-def test_the_video_failure_handler_passes_the_cards_ordinal(fake_settings):
-    import inspect
-
-    from core.inference import video as video_mod
-
-    source = inspect.getsource(video_mod)
-    handler = source.rindex("_note_sd_cpp_accelerator_failure(")
-    window = source[handler : handler + 220]
-    assert "gpu_ordinal = state.gpu_ordinal" in window, window
 
 
 _CARD_A = "AMD Radeon RX 7900 XTX@gfx1100"

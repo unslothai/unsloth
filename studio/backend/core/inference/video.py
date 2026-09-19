@@ -889,13 +889,11 @@ def _note_sd_cpp_accelerator_failure(
     binary: Optional[str],
     output: str,
     *,
-    gpu_ordinal: Optional[int] = None,
+    card: Optional[str] = None,
 ) -> None:
     try:
-        from .sd_cpp_backend import note_accelerator_failure_from_output, selected_card_identity
-        note_accelerator_failure_from_output(
-            binary, output, source = "video", card = selected_card_identity(gpu_ordinal)
-        )
+        from .sd_cpp_backend import note_accelerator_failure_from_output
+        note_accelerator_failure_from_output(binary, output, source = "video", card = card)
     except Exception as exc:  # noqa: BLE001
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
 
@@ -2356,6 +2354,7 @@ class VideoBackend:
             # Pinned under the reader claim above, where this exact file answered --help with the H3 options. Taking it
             # at generation time instead would compare a replacement against itself.
             binary_identity = binary_identity,
+            selected_card = selected_card,
             files = SdCppModelFiles(
                 diffusion_model = str(resolved[0]),
                 llm = str(resolved[1]),
@@ -6637,7 +6636,7 @@ class VideoBackend:
                     # #9278: the build starts, then dies in hipBLAS mid-render.
                     if not cancel.is_set() and VIDEO_CANCELLED_MSG not in str(exc):
                         _note_sd_cpp_accelerator_failure(
-                            binary, str(exc), gpu_ordinal = state.gpu_ordinal
+                            binary, str(exc), card = getattr(runtime, "selected_card", None)
                         )
                     raise
                 if cancel.is_set():
