@@ -201,6 +201,7 @@ export function loadedContextFields(resp: {
   native_context_length?: number | null;
   max_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  mlx_context_budget?: number | null;
 } | null): {
   loadedContextLength: number | null;
   maxContextLength: number | null;
@@ -208,6 +209,7 @@ export function loadedContextFields(resp: {
   loadedIsGguf: boolean | null;
   loadedIsMlx: boolean | null;
   loadedContextEnforced: boolean | null;
+  loadedContextBudget: number | null;
 } {
   if (!resp) {
     return {
@@ -217,6 +219,7 @@ export function loadedContextFields(resp: {
       loadedIsGguf: null,
       loadedIsMlx: null,
       loadedContextEnforced: null,
+      loadedContextBudget: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
@@ -230,6 +233,7 @@ export function loadedContextFields(resp: {
       loadedIsGguf: false,
       loadedIsMlx: resp.is_mlx ?? null,
       loadedContextEnforced: null,
+      loadedContextBudget: null,
     };
   }
   return {
@@ -243,6 +247,8 @@ export function loadedContextFields(resp: {
     // llama.cpp allocates what it reports, so GGUF is enforced by construction.
     // Everything else answers for itself, or says nothing.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
+    // Set only where the limit refuses a request instead of bounding the cache.
+    loadedContextBudget: isGguf ? null : (resp.mlx_context_budget ?? null),
   };
 }
 

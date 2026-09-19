@@ -4301,39 +4301,221 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
         backend = MLXInferenceBackend()
         backend._model = model
         backend._is_vlm = False
-        quant, window, enforced = backend._resolve_kv_policy(
+        quant, window, enforced, budget = backend._resolve_kv_policy(
             False, kv_bits, requested, requested if served is unset else served
         )
-        return quant["kv_bits"], window, enforced
+        return quant["kv_bits"], window, enforced, budget
 
-    assert policy(honours, 4, 8192) == (None, 8192, True)  # enforceable pin outranks quant
-    # Auto yields to quantization, and a window that bounds nothing says so.
-    assert policy(honours, 4, 0, 262144) == (4, None, False)
-    assert policy(honours, None, 8192) == (None, 8192, True)
-    assert policy(honours, None, 0, 262144) == (None, 262144, True)  # nothing to yield to
+    assert policy(honours, 4, 8192) == (4, None, False, 8192)
+    assert policy(honours, 4, 0, 262144) == (4, None, False, None)
+    assert policy(honours, None, 8192) == (None, 8192, True, None)
+    assert policy(honours, None, 0, 262144) == (None, 262144, True, None)  # nothing to yield to
 
-    # An unenforceable pin spends nothing, and the verdict still travels to the API.
-    assert policy(owns, 4, 8192) == (4, None, False)
-    assert policy(owns, None, 8192) == (None, None, False)
+    assert policy(owns, 4, 8192) == (4, None, False, None)
+    assert policy(owns, None, 8192) == (None, None, False, None)
 
     # A window nobody could read bounds nothing rather than bounding at zero.
-    assert policy(honours, None, 0, None) == (None, None, False)  # unreadable
-    assert policy(honours, None, 0, 0) == (None, None, False)  # non-positive
+    assert policy(honours, None, 0, None) == (None, None, False, None)  # unreadable
+    assert policy(honours, None, 0, 0) == (None, None, False, None)  # non-positive
 
     # A shape the probe cannot judge is null, not a confirmed "not enforced".
     unreadable = SimpleNamespace(layers = [object()], make_cache = lambda: None)
-    assert policy(unreadable, None, 8192) == (None, None, None)
+    assert policy(unreadable, None, 8192) == (None, None, None, None)
+
+    # A budget caps every request, so on a vision model mlx-vlm's own later start is never reached:
+    # quantization starts at the first token, and the load does not claim the later start.
+    backend = MLXInferenceBackend()
+    backend._model = honours
+    budgeted, _, _, budget = backend._resolve_kv_policy(True, 4, 4096, 4096)
+    unpinned, _, _, _ = backend._resolve_kv_policy(True, 4, 0, 262144)
+    assert budget == 4096 and budgeted["note"] == "" and unpinned["note"]
+    backend._kv_quant, backend._kv_context_budget = budgeted, budget
+    assert backend._kv_quant_generate_kwargs() == {"kv_bits": 4, "quantized_kv_start": 0}
+    backend._kv_context_budget = None
+    assert backend._kv_quant_generate_kwargs() == {"kv_bits": 4}
 
 
-def test_quantization_is_refused_for_a_pinned_context_rather_than_raising_mid_stream():
-    """Left to mlx-lm this surfaces as NotImplementedError on the first generated token."""
-    from core.inference.mlx_inference import _kv_quant_status
+def _drive_vlm_generation(
+    backend,
+    monkeypatch,
+    image = None,
+    max_new_tokens = 1,
+    session = None,
+    video = None,
+):
+    import sys
+    import types
 
-    status = _kv_quant_status(4, None, False, context_pinned = True)
+    seen = {}
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "prompt"
+    )
 
-    assert status["kv_bits"] is None
-    assert status["eligibility"] == "refused"
-    assert "quantize a limited cache" in status["reason"]
+    def _stream(*_a, **kwargs):
+        seen.clear()
+        seen.update(kwargs)
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "prompt",
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+    backend._model = SimpleNamespace(config = {"model_type": "gemma3"})
+    backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    backend._is_vlm = True
+    monkeypatch.setattr(backend, "_release_vlm_snapshots", lambda: None)
+    monkeypatch.setattr(backend, "_vlm_prompt_cache_session", lambda *_a, **_k: session)
+    list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "hi"}],
+            image = image,
+            video = video,
+            max_new_tokens = max_new_tokens,
+        )
+    )
+    return seen
+
+
+def _stub_prepare_inputs(monkeypatch, per_medium = 520):
+    import sys
+    import types
+
+    seen = {}
+
+    def _prepare_inputs(
+        _processor,
+        *,
+        prompts,
+        images = None,
+        audio = None,
+        videos = None,
+        **_kwargs,
+    ):
+        media = [*(images or ()), *(audio or ()), *(videos or ())]
+        seen.clear()
+        seen.update(_kwargs)
+        return {"input_ids": SimpleNamespace(size = len(prompts.split()) + per_medium * len(media))}
+
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.prepare_inputs = _prepare_inputs
+    utils.seen = seen
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    return utils
+
+
+def _vision_backend(budget = 1024, window = 1024):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = SimpleNamespace(model_type = "qwen2_5_vl"))
+    backend._processor = object()
+    backend._is_vlm = True
+    backend._tokenizer = SimpleNamespace(encode = lambda text, **_k: [0] * len(text.split()))
+    backend._served_context = window
+    backend._kv_context_budget = budget
+    return backend
+
+
+def test_the_context_budget_counts_the_request_in_tokens_the_processor_would_produce(monkeypatch):
+    """Counted from the text alone the limit is no limit at all for a request carrying an image:
+    measured at 7 tokens against 582 for one 672x672 image on Qwen2.5-VL-3B."""
+    from core.inference import context_refusal
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    utils = _stub_prepare_inputs(monkeypatch)
+    backend = _vision_backend()
+    prompt = "placeholder describe this picture"
+
+    assert backend._count_prompt_tokens(prompt) == 4
+    assert backend._count_prompt_tokens(prompt, [object()]) == 524
+    assert backend._count_prompt_tokens(prompt, [object(), object()]) == 1044
+
+    backend._check_context_budget(prompt, 16)
+    backend._check_context_budget(prompt, 16, images = [object()])
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._check_context_budget(prompt, 16, images = [object(), object()])
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._check_context_budget(prompt, 16, audio = [object(), object()])
+    # A clip expands like the rest: counted from the placeholder alone the budget bounds nothing,
+    # and the cache it guards no longer rotates. The rate lookup needs a readable clip.
+    monkeypatch.setattr("core.inference.mlx_inference._video_frame_rate", lambda *_a: 1.5)
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._check_context_budget(prompt, 16, videos = ["a.mp4", "b.mp4"])
+    # A turn carrying both is counted for both, not for whichever kind is looked at first.
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._check_context_budget(prompt, 16, images = [object()], videos = ["a.mp4"])
+    # Sampled as generation samples it: a clip throttled to fit the frame budget decodes to fewer
+    # frames than the processor's own rate, and counting it at that rate refuses a request that fits.
+    backend._check_context_budget(prompt, 16, videos = ["a.mp4"])
+    assert utils.seen["fps"] == 1.5
+
+    sized = backend._generation_limit(prompt, None, images = [object()])
+    assert sized == 1024 - 524
+    backend._generation_limit(prompt, sized, images = [object()])
+    # Both decisions inside it read the media, not just the one that sized the allowance.
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._generation_limit(prompt, 16, images = [object(), object()])
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._generation_limit(prompt, 16, videos = ["a.mp4", "b.mp4"])
+
+    def _unpreparable(*_a, **_k):
+        raise RuntimeError("no processor")
+
+    utils.prepare_inputs = _unpreparable
+    assert backend._count_prompt_tokens(prompt, [object(), object()]) == 4
+    backend._check_context_budget(prompt, 16, images = [object(), object()])
+
+
+def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monkeypatch):
+    """The budget bounds a cache that no longer rotates, and the base64 the route sends expands to
+    nothing: counted from it the clip is worth its placeholder and the limit admits anything."""
+    import base64
+    import os
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    monkeypatch.setattr("core.inference.mlx_inference._mlx_vlm_decodes_video", lambda: True)
+    backend = MLXInferenceBackend()
+    seen = {}
+
+    def _limit(*_a, **kwargs):
+        seen.update(kwargs)
+        seen["on_disk"] = [os.path.exists(clip) for clip in kwargs.get("videos") or ()]
+        return 1
+
+    monkeypatch.setattr(backend, "_generation_limit", _limit)
+    clip = base64.b64encode(b"not a readable clip").decode()
+    # Everything past the limit needs a real decoder, which a stub path cannot carry: the failure
+    # that follows is the setup raising before the stream's own cleanup is entered.
+    with contextlib.suppress(Exception):
+        _drive_vlm_generation(backend, monkeypatch, video = clip)
+    assert seen["videos"] != [clip]
+    assert seen["on_disk"] == [True]
+    assert not os.path.exists(seen["videos"][0])
+
+
+def test_a_max_tokens_at_the_whole_window_is_the_chat_saying_no_cap(monkeypatch):
+    """The chat always sends Max Tokens and clamps the control to the context length, so a cap at
+    the window means "as much as fits" and must not be admitted as a request for that many."""
+    from core.inference import context_refusal
+
+    _stub_prepare_inputs(monkeypatch)
+    backend = _vision_backend()
+    prompt = "placeholder describe this picture"
+
+    assert backend._generation_limit(prompt, 1024) == 1024 - 4
+    assert backend._generation_limit(prompt, 1024, images = [object()]) == 1024 - 524
+    assert backend._generation_limit(prompt, 16) == 16
+    # Above the window it is a request rather than the spelling, and asking for more than fits is
+    # answered the way every other explicit limit is.
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        backend._generation_limit(prompt, 2048)
 
 
 def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
