@@ -1162,15 +1162,17 @@ def _drop_the_idle_reload_stash_between_tests():
     The two stash fields only. The counters beside them (_inflight, _pending, _last_active)
     are live-traffic bookkeeping, and zeroing those around every test would hide exactly the
     leak this is here to prevent.
+
+    Through _set_last_unloaded rather than by assigning the globals: the manifest names KV
+    slot files on disk, and llama_keepwarm makes whoever takes it responsible for deleting
+    them. Assigning None drops the only reference to a real snapshot and leaves the files
+    behind, so a suite that saves KV would accumulate them run after run. That call clears
+    both fields under the module lock and unlinks the slots on its way out.
     """
     from core.inference import llama_keepwarm as _keepwarm
 
-    def _clear():
-        _keepwarm._last_unloaded_model = None
-        _keepwarm._kv_resume = None
-
-    _clear()
+    _keepwarm._set_last_unloaded(None)
     try:
         yield
     finally:
-        _clear()
+        _keepwarm._set_last_unloaded(None)

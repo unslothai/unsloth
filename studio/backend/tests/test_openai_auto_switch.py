@@ -11377,10 +11377,15 @@ def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
     )
 
 
-def test_the_idle_reload_stash_is_cleared_around_every_test():
+def test_the_idle_reload_stash_is_cleared_around_every_test(tmp_path):
     # Driven directly, for the reason written on the settings-memo twin above: under xdist
     # --dist loadgroup an ordering-based check passes by luck. Both ends matter, since the
     # leak is the LAST idle test in a worker seeding the first test of the next module.
+    #
+    # With a manifest naming REAL files, not an empty one: llama_keepwarm makes whoever takes
+    # the manifest responsible for unlinking its slots, so a fixture that assigns None drops
+    # the only reference to a saved snapshot and leaves the bytes on disk. An empty manifest
+    # cannot tell that apart from a clean-up that worked.
     import sys
 
     fixture = next(
@@ -11389,18 +11394,25 @@ def test_the_idle_reload_stash_is_cleared_around_every_test():
         if module is not None and hasattr(module, "_drop_the_idle_reload_stash_between_tests")
     )
 
+    def _saved(name):
+        slot = tmp_path / name
+        slot.write_bytes(b"kv")
+        return {"dir": str(tmp_path), "slots": [{"id": 0, "filename": name, "n_saved": 42}]}, slot
+
     run = fixture.__wrapped__()
     kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
-    kw._kv_resume = {"dir": "/tmp/nope"}
+    kw._kv_resume, before = _saved("before.bin")
     next(run)
     assert kw._last_unloaded_model is None, "the stash was not cleared before the test body"
     assert kw._kv_resume is None, "the KV manifest was not cleared before the test body"
+    assert not before.exists(), "the KV slot file outlived the manifest that named it"
 
     kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
-    kw._kv_resume = {"dir": "/tmp/nope"}
+    kw._kv_resume, after = _saved("after.bin")
     next(run, None)
     assert kw._last_unloaded_model is None, "the stash was not cleared after the test body"
     assert kw._kv_resume is None, "the KV manifest was not cleared after the test body"
+    assert not after.exists(), "the KV slot file outlived the manifest that named it"
 
 
 def test_chat_withheld_model_does_not_send_the_caller_to_load_it(monkeypatch):
