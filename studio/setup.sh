@@ -96,6 +96,21 @@ _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
 }
 
+_filter_download_output() {
+    if _is_verbose; then
+        cat
+        return
+    fi
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "Downloading "*": "*"% ("*") at "*"/s"|"Downloading "*": "*" downloaded at "*"/s")
+                printf '%s\n' "$line"
+                ;;
+        esac
+    done
+}
+
 verbose_substep() {
     if _is_verbose; then
         substep "$1"
@@ -1674,8 +1689,8 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     fi
     _NODE_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee "$_NODE_LOG"
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee "$_NODE_LOG" | _filter_download_output
         _NODE_STATUS=${PIPESTATUS[0]}
     else
         "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >"$_NODE_LOG" 2>&1
@@ -4125,8 +4140,8 @@ else
     esac
     _PREBUILT_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG" | _filter_download_output
         _PREBUILT_STATUS=${PIPESTATUS[0]}
     else
         "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
@@ -4895,8 +4910,8 @@ else
     fi
     _WHISPER_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG"
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG" | _filter_download_output
         _WHISPER_STATUS=${PIPESTATUS[0]}
     else
         "${_WHISPER_CMD[@]}" >"$_WHISPER_LOG" 2>&1

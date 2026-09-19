@@ -43,6 +43,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+_STUDIO_DIR = str(Path(__file__).resolve().parent)
+if _STUDIO_DIR not in sys.path:
+    sys.path.insert(0, _STUDIO_DIR)
+
+from prebuilt_core import DownloadProgress  # noqa: E402
+
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
 except ImportError:
@@ -300,11 +306,23 @@ def download_file(url: str, destination: Path) -> None:
             ) as handle:
                 tmp_path = Path(handle.name)
                 with urllib.request.urlopen(request, timeout = 120) as response:
+                    content_length = response.headers.get("Content-Length")
+                    total_bytes = (
+                        int(content_length) if content_length and content_length.isdigit() else None
+                    )
+                    progress = DownloadProgress(f"Downloading {destination.name}", total_bytes)
+                    if _LOG_TO_STDOUT:
+                        progress.stream = sys.stdout
+                        progress.is_tty = progress.is_tty and sys.stdout.isatty()
+                    downloaded_bytes = 0
                     while True:
                         chunk = response.read(1024 * 1024)
                         if not chunk:
                             break
                         handle.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        progress.update(downloaded_bytes)
+                    progress.finish(downloaded_bytes)
                 handle.flush()
                 os.fsync(handle.fileno())
             if not tmp_path.exists() or tmp_path.stat().st_size == 0:
