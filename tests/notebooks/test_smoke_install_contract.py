@@ -287,9 +287,15 @@ def test_no_declared_distro_marker_survives_the_seed(tmp_path):
     pin whatever the package, so any survivor is a defect.
     """
     seeded = _run_seed(tmp_path)
-    declared = {name: rule["from"] for name, rule in _mapping().get("distro_dev_version", {}).items()}
-    stale = [pin for pin in seeded if pin.split("==", 1)[0] in declared
-             and pin.split("==", 1)[1] == declared[pin.split("==", 1)[0]]]
+    declared = {
+        name: rule["from"] for name, rule in _mapping().get("distro_dev_version", {}).items()
+    }
+    stale = [
+        pin
+        for pin in seeded
+        if pin.split("==", 1)[0] in declared
+        and pin.split("==", 1)[1] == declared[pin.split("==", 1)[0]]
+    ]
     assert not stale, (
         "these pins kept a version only the Colab image uses, and one of them fails the "
         f"resolve for all of them: {stale}"
