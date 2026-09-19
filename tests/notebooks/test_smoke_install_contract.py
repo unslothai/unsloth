@@ -456,12 +456,29 @@ def test_the_placeholder_survives_both_probes_transformers_makes(mode, expected)
     assert expected in printed, printed
 
 
+def _load_stub_helper():
+    """Load tests/_torchcodec_stub.py by path, without touching sys.path.
+
+    `sys.path.insert(0, REPO / "tests")` is process-wide and permanent, and `tests/` holds a
+    `utils/` package that then shadows studio/backend's `utils` for every test that runs
+    afterwards in the same worker. That is how this file turned
+    tests/test_studio_root_resilience.py red with
+    `ModuleNotFoundError: No module named 'utils.native_path_leases'` while being green itself.
+    """
+    import importlib.util
+
+    path = REPO / "tests" / "_torchcodec_stub.py"
+    spec = importlib.util.spec_from_file_location("_unsloth_torchcodec_stub_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_the_placeholder_version_stays_under_the_backend_floor():
     """load_audio resolves "auto" to torchcodec only at >= 0.3.0, so a placeholder claiming a
     newer version would be chosen as the decoder and then fail on the first real call. Below
     the floor it is visible, importable and never selected."""
-    sys.path.insert(0, str(REPO / "tests"))
-    import _torchcodec_stub  # noqa: PLC0415
+    _torchcodec_stub = _load_stub_helper()
 
     floor = (0, 3, 0)
     actual = tuple(int(part) for part in _torchcodec_stub.VERSION.split("."))
@@ -476,8 +493,7 @@ def test_the_placeholder_never_displaces_a_real_torchcodec():
     and shadowing a genuine install would be the opposite of what it is for."""
     import types
 
-    sys.path.insert(0, str(REPO / "tests"))
-    import _torchcodec_stub  # noqa: PLC0415
+    _torchcodec_stub = _load_stub_helper()
 
     real = types.ModuleType(_torchcodec_stub.NAME)
     saved = sys.modules.get(_torchcodec_stub.NAME)
@@ -534,3 +550,24 @@ def test_every_helper_the_smoke_steps_import_is_a_path_trigger():
             f"{entry} is imported by a smoke step but is not in the workflow's "
             f"pull_request.paths, so a PR changing only that file would not run this job"
         )
+
+
+def test_this_file_never_puts_the_tests_dir_on_sys_path():
+    """`tests/` holds a `utils/` package. Putting that directory on sys.path shadows
+    studio/backend's `utils` for every test that runs after it in the same worker, and the
+    casualty is some other file entirely: this one did exactly that and reddened
+    tests/test_studio_root_resilience.py with
+    `ModuleNotFoundError: No module named 'utils.native_path_leases'`.
+
+    Load helpers by path instead, which is what `_load_stub_helper` does.
+    """
+    _load_stub_helper()
+    tests_dir = str(REPO / "tests")
+    assert tests_dir not in sys.path, (
+        f"{tests_dir} is on sys.path; anything under it now shadows a top-level package of "
+        "the same name for the rest of this worker"
+    )
+    # Assembled rather than written out, so the needle does not match this line itself.
+    needle = "sys.path" + ".insert(0, str(REPO / " + chr(34) + "tests" + chr(34) + "))"
+    source = Path(__file__).read_text(encoding = "utf-8")
+    assert needle not in source, "a sys.path insert of the tests dir is back in this file"
