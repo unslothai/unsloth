@@ -9411,7 +9411,11 @@ exit 0
         if (-not $Path.Contains(" ")) { return @{ Path = $Path; Temporary = $false } }
         $short = $null
         try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($Path).ShortPath } catch { }
-        if ($short -and -not $short.Contains(" ")) { return @{ Path = $short; Temporary = $false } }
+        # Space-free is not sufficient: a volume can hand back an 8.3 name that does not resolve,
+        # and uv then fails to open the file it was pointed at (#11290).
+        if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -PathType Leaf)) {
+            return @{ Path = $short; Temporary = $false }
+        }
 
         # No 8.3 name: copy to a space-free directory instead. Several candidates, because %TEMP%
         # can carry the space itself (the #11012 case) and 8.3 creation is commonly disabled on
@@ -9437,7 +9441,9 @@ exit 0
             if ($dir.Contains(" ")) {
                 $dirShort = $null
                 try { $dirShort = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($dir).ShortPath } catch { }
-                if (-not $dirShort -or $dirShort.Contains(" ")) { continue }
+                # Space-free is not sufficient: an 8.3 name that does not resolve would be copied
+                # into and then handed to uv, which cannot open it (#11290).
+                if (-not $dirShort -or $dirShort.Contains(" ") -or -not (Test-Path -LiteralPath $dirShort -PathType Container)) { continue }
                 $dir = $dirShort
             }
             # Declared before the try so the catch can clean up a Copy-Item that failed partway
@@ -9478,6 +9484,21 @@ exit 0
         return $installed
     }
 
+    # Remove-Item's -ErrorAction does not cover every failure. For a path the FileSystem provider
+    # cannot resolve it raises a terminating PSArgumentException ("An object at the specified path
+    # ... does not exist"), which -ErrorAction SilentlyContinue cannot suppress, so an unguarded
+    # removal during a rollback aborts the rest of the cleanup it belongs to (#11290). Guard on
+    # existence and catch everything, so a missing or unresolvable temp path is never fatal. Used
+    # for the temp files whose names can come from an 8.3 alias.
+    function Remove-UnslothTempFileQuietly {
+        param([string]$Path)
+        if (-not $Path) { return }
+        try {
+            if (-not (Test-Path -LiteralPath $Path)) { return }
+            Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+        } catch { }
+    }
+
     # ── Freeze the trio: a released unsloth wheel can downgrade it. The caller removes it. ──
     function New-UnslothTorchOverridesFile {
         param([string]$PythonExe)
@@ -9515,7 +9536,7 @@ exit 0
         try {
             [System.IO.File]::WriteAllText($f, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
         } catch {
-            Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+            Remove-UnslothTempFileQuietly -Path $f
             $script:TorchOverridesFile = $null
             throw
         }
@@ -9523,11 +9544,18 @@ exit 0
         if ($f.Contains(" ")) {
             $short = $null
             try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($f).ShortPath } catch { }
-            if (-not $short -or $short.Contains(" ")) {
-                # No short name: skip the freeze rather than fail.
-                substep "[WARN] the torch overrides path has a space and no 8.3 short name;" "Yellow"
+            # Space-free is not sufficient. A volume can hand back an 8.3 name that does not resolve,
+            # and this path is then both uv's --overrides argument and the file the caller deletes:
+            # uv fails to open it, and Remove-Item raises a terminating PSArgumentException that
+            # -ErrorAction SilentlyContinue cannot suppress (#11290). Require a real file.
+            if (-not $short -or $short.Contains(" ") -or -not (Test-Path -LiteralPath $short -PathType Leaf)) {
+                # No usable short name: skip the freeze rather than fail.
+                substep "[WARN] the torch overrides path has a space and no usable 8.3 short name;" "Yellow"
                 substep "installing unsloth without freezing the installed PyTorch." "Yellow"
-                Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+                Remove-UnslothTempFileQuietly -Path $f
+                # Tracked above: clear it so the outer sweep is not handed a path this branch
+                # has already deleted.
+                $script:TorchOverridesFile = $null
                 return $null
             }
             $f = $short
@@ -9840,7 +9868,7 @@ exit 0
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
-                Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
@@ -9850,7 +9878,7 @@ exit 0
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" }
-                Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
@@ -10749,11 +10777,11 @@ try {
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
     # The generated overrides file copies the caller's UV_OVERRIDE contents; never leave it.
     if ($script:TorchOverridesFile) {
-        Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+        Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
         $script:TorchOverridesFile = $null
     }
     if ($script:WoaSessionOverrides) {
-        Remove-Item -LiteralPath $script:WoaSessionOverrides -Force -ErrorAction SilentlyContinue
+        Remove-UnslothTempFileQuietly -Path $script:WoaSessionOverrides
         $script:WoaSessionOverrides = $null
     }
 }

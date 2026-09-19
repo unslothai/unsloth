@@ -133,3 +133,20 @@ def test_the_helper_behaviour_suite_runs():
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _VERDICT in proc.stdout, proc.stdout
+
+
+def test_an_8dot3_alias_is_only_used_once_it_resolves():
+    """A space-free 8.3 name is not necessarily a name that resolves (issue #11290).
+
+    `GetShortPathName` / the FSO `ShortPath` property can hand back a short form that the
+    volume never actually created, so "contains no space" is not sufficient validation:
+    uv is then pointed at a file it cannot open, and the same alias is what the installer
+    later hands to Remove-Item. Require the alias to exist before it is used.
+    """
+    text = INSTALL_PS1.read_text(encoding = "utf-8")
+    body = text[text.index(f"function {HELPER}") :]
+    body = body[: body.index("\n    function ")]
+    assert re.search(r"-and \(Test-Path -LiteralPath \$short -PathType Leaf\)", body), (
+        f"{HELPER} accepts an 8.3 short path on 'contains no space' alone, so an alias that "
+        "does not resolve is handed to uv and later to Remove-Item"
+    )
