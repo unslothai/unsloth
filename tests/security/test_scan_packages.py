@@ -2780,7 +2780,7 @@ def test_an_occurrence_added_to_a_reviewed_file_is_not_called_a_mere_change(tmp_
         [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
         [_exec_finding("L10: exec(compile(src, path, 'exec'))\nL88: eval(user_supplied)")],
     )
-    assert "1 new matched line(s)" in report, report
+    assert "1 matched line(s) appended to a reviewed file, none gone" in report, report
     assert "read it as you would a new site" in report, report
 
 
@@ -2799,13 +2799,40 @@ def test_a_pin_miss_says_the_matched_code_is_unchanged(tmp_path):
     assert "new matched line(s)" not in report, report
 
 
-def test_an_edited_match_is_still_reported_as_an_edit(tmp_path):
+def test_a_rewritten_match_is_called_a_rewrite_and_not_a_new_occurrence(tmp_path):
     report = _reviewed_site_report(
         tmp_path,
         [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
         [_exec_finding("L10: exec(compile(src, path, 'exec'), module.__dict__)")],
     )
-    assert "1 new matched line(s) in a reviewed file, 1 gone" in report, report
+    assert "1 matched line(s) added and 1 gone: the flagged code was rewritten" in report, report
+    assert "appended" not in report, report
+
+
+def test_a_rewritten_match_still_asks_for_the_full_read(tmp_path):
+    """Deliberate, and the reason it is pinned: a multiset diff cannot separate "this line was
+    rewritten" from "one left, an unrelated one arrived", and both leave flagged code nobody has
+    read in its current form. Reserving the full read for strict additions would send
+    `exec(compile(src, path, "exec"))` -> `exec(payload)` -- an edit, by the diff -- down the
+    narrow "did known metaprogramming move" path, which is the review that misses it.
+    """
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [_exec_finding("L10: exec(payload)")],
+    )
+    assert "read it as you would a new site" in report, report
+
+
+def test_a_match_that_only_disappeared_does_not_ask_for_the_full_read(tmp_path):
+    """The other side of that choice: nothing flagged arrived, so there is nothing unread."""
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(one)\nL20: exec(two)")],
+        [_exec_finding("L10: exec(one)")],
+    )
+    assert "1 matched line(s) gone, none added" in report, report
+    assert "read it as you would a new site" not in report, report
 
 
 def test_a_site_that_was_never_reviewed_gets_no_line(tmp_path):

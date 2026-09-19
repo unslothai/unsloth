@@ -2696,8 +2696,15 @@ def _classify_reviewed_site(f: Finding, entries: list[tuple[str, list[str]]]) ->
         return ("pin", "same matched code, file digest outside the pin")
     best = min((_span_delta(spans, b) for _, b in entries), key = lambda d: (d[0] + d[1], d[0]))
     added, removed = best
+    if added and not removed:
+        return ("unread", f"{added} matched line(s) appended to a reviewed file, none gone")
     if added:
-        return ("added", f"{added} new matched line(s) in a reviewed file, {removed} gone")
+        # A multiset diff cannot tell "this line was rewritten" from "one went, an unrelated
+        # one arrived", and it does not need to: both leave matched code that was never read
+        # in its current form, which is the same position a new occurrence puts you in.
+        # Narrowing the full read to strict additions would route exec(compile(src, path,
+        # "exec")) -> exec(payload) -- an edit, by the diff -- to the "did it just move" path.
+        return ("unread", f"{added} matched line(s) added and {removed} gone: the flagged code was rewritten")
     if removed:
         return ("edited", f"{removed} matched line(s) gone, none added")
     return ("edited", "matched lines reordered")
@@ -2744,10 +2751,10 @@ def _report_reviewed_sites(
         )
         verdicts.append(kind)
         print(f"    {f.severity}  {f.package}  {rel}  ({f.check})\n        {why}")
-    if "added" in verdicts:
+    if "unread" in verdicts:
         print(
-            "  A site reporting new matched lines is a NEW occurrence inside an already "
-            "reviewed file: read it as you would a new site."
+            "  A site reporting added or rewritten matched lines carries flagged code that "
+            "was never reviewed in its current form: read it as you would a new site."
         )
     print(
         "  Re-review, then regenerate with --write-baseline. A finding with no line here "
