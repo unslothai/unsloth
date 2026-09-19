@@ -189,12 +189,13 @@ const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
 // One width for every typed field: a box that resized per keystroke would jump under the
 // caret. Narrow, so the label beside it is not clipped in a ~240px panel.
-const INPUT_WIDTH_CLASS = "w-[92px] shrink-0";
+const INPUT_WIDTH_CLASS = "w-[84px] shrink-0";
 // A select holds one of a known set of values, so it sizes to that value.
 const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
-// 12px each side optically. The chevron's stroke fills 14 of its 24 viewBox units, so its
-// 14px box carries ~3px of transparent slack; pr-[9px] pays that back.
-const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${SELECT_WIDTH_CLASS} ${CONTROL_SURFACE} pl-3 pr-[9px] py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
+// 14px each side optically, matching the numeric fields' right gutter. The chevron's stroke
+// fills 14 of its 24 viewBox units, so its 14px box carries ~3px of slack; pr-[11px] pays
+// that back and lands the stroke where the digits beside it sit.
+const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${SELECT_WIDTH_CLASS} ${CONTROL_SURFACE} pl-3.5 pr-[11px] py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
 // Wider right gutter: the value is right-aligned, so that gutter is all that holds the
 // digits off the edge.
 const NUMBER_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} ${CONTROL_SURFACE} pl-3 pr-3.5 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
