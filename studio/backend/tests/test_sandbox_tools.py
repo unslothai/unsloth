@@ -5,6 +5,7 @@
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -135,9 +136,832 @@ class TestUntrustedHostBlock:
     def test_untrusted_host_block_blocked(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
-    def test_dynamic_url_not_statically_blocked(self):
-        # Static AST can't resolve runtime URLs; bash blocklist is the fallback.
-        _ok('import requests; url = "https://example.com/"; requests.get(url)')
+    def test_runtime_url_not_statically_blocked(self):
+        # A URL only known at runtime cannot be checked against the allowlist, so it is not refused.
+        _ok("import requests; requests.get(input())")
+
+
+_H = "203.0.113.5"
+
+
+class TestNetworkTargetResolution:
+    """The allowlist applies to a host however the call spells it (#10397)."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f"import paramiko\nc = paramiko.SSHClient()\nc.connect(hostname='{_H}')",
+                id = "paramiko_hostname_keyword",
+            ),
+            pytest.param(
+                f"import paramiko\nh = '{_H}'\nc = paramiko.SSHClient()\nc.connect(h)",
+                id = "paramiko_host_bound_once",
+            ),
+            pytest.param(
+                f"from paramiko import SSHClient\nwith SSHClient() as c:\n    c.connect('{_H}', 22)",
+                id = "paramiko_from_import_with",
+            ),
+            pytest.param(
+                f"import paramiko\nparamiko.Transport(('{_H}', 22))", id = "paramiko_transport"
+            ),
+            pytest.param(
+                f"from fabric import Connection\nConnection('root@{_H}').run('id')",
+                id = "fabric_connection",
+            ),
+            pytest.param(
+                f"import asyncssh\nasyncssh.connect(host='{_H}')", id = "asyncssh_host_keyword"
+            ),
+            pytest.param(
+                f"import requests\nrequests.get(url='http://{_H}/')", id = "requests_url_keyword"
+            ),
+            pytest.param(
+                f"import requests\nrequests.request('GET', 'http://{_H}/')",
+                id = "requests_request_url",
+            ),
+            pytest.param(f"import requests as r\nr.get('http://{_H}/')", id = "module_alias"),
+            pytest.param(
+                f"import requests\nr = requests\nr.get(url='http://{_H}/')",
+                id = "module_assigned_alias",
+            ),
+            pytest.param(
+                f"import requests\nfetch = requests.get\nfetch('http://{_H}/')",
+                id = "function_assigned_alias",
+            ),
+            pytest.param(
+                f"import paramiko\nclient = paramiko.SSHClient()\nclient.connect(hostname='{_H}')",
+                id = "paramiko_client_name",
+            ),
+            pytest.param(
+                f"import paramiko\nclient = paramiko.SSHClient()\nssh = client\nssh.connect(hostname='{_H}')",
+                id = "paramiko_client_aliased",
+            ),
+            pytest.param(
+                f"import paramiko\nclient = paramiko.SSHClient()\ndef go():\n    client.connect(hostname='{_H}')",
+                id = "paramiko_module_client_in_function",
+            ),
+            pytest.param(
+                f"import paramiko\n(c := paramiko.SSHClient()).connect(hostname='{_H}')",
+                id = "paramiko_client_walrus",
+            ),
+            pytest.param(
+                "import paramiko\ndef outer():\n    client = paramiko.SSHClient()\n    def inner():\n"
+                f"        client.connect(hostname='{_H}')\n    inner()",
+                id = "paramiko_client_from_enclosing_function",
+            ),
+            pytest.param(
+                "import paramiko\nclient = paramiko.SSHClient()\n[None for client in ()]\n"
+                f"client.connect(hostname='{_H}')",
+                id = "comprehension_target_does_not_rebind",
+            ),
+            pytest.param(
+                "import paramiko\nclient = None\ndef setup():\n    global client\n    client = paramiko.SSHClient()\n"
+                f"def go():\n    client.connect(hostname='{_H}')",
+                id = "paramiko_global_client_after_none_placeholder",
+            ),
+            pytest.param(
+                f"import requests\ndef send():\n    fetch = requests.get\n    fetch('http://{_H}/')\n"
+                "def format_output():\n    fetch = print",
+                id = "function_alias_name_reused_in_other_function",
+            ),
+            # Python evaluates these in the scope around the function or comprehension, where r is still requests.
+            pytest.param(
+                f"import requests as r\ndef f(r=r.get('http://{_H}/')):\n    pass",
+                id = "default_argument_in_enclosing_scope",
+            ),
+            pytest.param(
+                f"import requests as r\n@r.get('http://{_H}/')\ndef f():\n    r = 1",
+                id = "decorator_in_enclosing_scope",
+            ),
+            pytest.param(
+                f"import requests as r\n[x for r in [r.get('http://{_H}/')]]",
+                id = "comprehension_first_iterable_in_enclosing_scope",
+            ),
+            pytest.param(
+                f"from urllib.request import Request, urlopen\nurlopen(Request('http://{_H}/'))",
+                id = "urlopen_request_object",
+            ),
+            pytest.param(f"from requests import get\nget('http://{_H}/')", id = "from_import"),
+            pytest.param(
+                f"import requests\nbase = 'http://{_H}'\nrequests.get(base + '/x')",
+                id = "concatenation",
+            ),
+            pytest.param(
+                f"import requests\nrequests.get(f'http://{_H}/{{input()}}')", id = "fstring_path"
+            ),
+            pytest.param(
+                f"import socket\nsocket.create_connection(address=('{_H}', 22))",
+                id = "socket_address_keyword",
+            ),
+            # A rebinding elsewhere cannot un-import the module the call already reaches.
+            pytest.param(
+                f"import requests as r\nr.get('http://{_H}/')\nr = object()",
+                id = "module_alias_rebound_after_call",
+            ),
+            pytest.param(
+                f"import requests\nfetch = requests.get\nfetch('http://{_H}/')\nfetch = print",
+                id = "function_alias_rebound_after_call",
+            ),
+            pytest.param(
+                f"import requests as r\nfor _ in range(2):\n    r.get('http://{_H}/')\n    r = object()",
+                id = "module_alias_rebound_in_loop",
+            ),
+            # The store that lands on a network call wins over a shadowing network import.
+            pytest.param(
+                f"import socket as r\nimport requests as r\nr.get('http://{_H}/')",
+                id = "alias_shadowed_by_other_network_module",
+            ),
+            pytest.param(
+                f"import urllib.request as n\nimport requests as n\nn.get('http://{_H}/')",
+                id = "alias_shadowed_by_unrelated_network_call",
+            ),
+            # A receiver that is a tracked client on any path is checked like a certain one.
+            pytest.param(
+                "import paramiko\ndef outer():\n    client = get_db()\n    def middle():\n        def inner():\n"
+                "            nonlocal client\n            client = paramiko.SSHClient()\n        inner()\n"
+                f"    middle()\n    client.connect(hostname='{_H}')",
+                id = "client_on_one_path_keyword_host",
+            ),
+            pytest.param(
+                "import paramiko\ndef outer():\n    client = paramiko.SSHClient()\n    def swap():\n"
+                "        nonlocal client\n        client = get_db()\n    swap()\n"
+                "    client.connect(host='localhost')",
+                id = "client_rebound_to_non_client_keyword_host",
+            ),
+            pytest.param(
+                f"import socket, ssl\ns = socket.socket()\ns = ssl.wrap_socket(s)\ns.connect(('{_H}', 443))",
+                id = "socket_rebound_through_ssl_wrapper",
+            ),
+            # Competing stores for the target may add a prompt, never drop the refusal.
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nrequests.get(url)\nurl = 'https://huggingface.co/'",
+                id = "url_variable_rebound_after_call",
+            ),
+            pytest.param(
+                f"import requests\ndef fetch(url):\n    if not url:\n        url = 'http://{_H}/'\n"
+                "    requests.get(url)",
+                id = "parameter_with_out_of_policy_fallback",
+            ),
+            # A class body runs top down, so this read sees the module value, not the later one.
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nclass C:\n    requests.get(url)\n"
+                "    url = 'https://pypi.org/'",
+                id = "class_body_read_before_local_store",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'https://pypi.org/'\nclass C:\n    url = 'http://{_H}/'\n"
+                "    requests.get(url)",
+                id = "class_body_read_after_local_store",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nclass C:\n    if False:\n"
+                "        url = 'https://pypi.org/'\n    requests.get(url)",
+                id = "conditional_class_store_keeps_module_binding",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nclass C:\n    for url in []:\n"
+                "        pass\n    requests.get(url)",
+                id = "class_loop_target_keeps_module_binding",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.request('GET', 'http://{_H}/')",
+                id = "urllib3_request_url_position",
+            ),
+            pytest.param(
+                f"from urllib3.util import connection\nconnection.create_connection(('{_H}', 80))",
+                id = "urllib3_util_connection",
+            ),
+            # The proxy is the socket destination, so it is checked like any other host.
+            pytest.param(
+                f"import urllib3\nurllib3.proxy_from_url('http://{_H}:3128/')"
+                ".request('GET', 'https://pypi.org/')",
+                id = "urllib3_proxy_from_url",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.ProxyManager(proxy_url='http://{_H}:3128/')",
+                id = "urllib3_proxy_manager_keyword",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.connection_from_url('http://{_H}/')",
+                id = "urllib3_connection_from_url",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.HTTPSConnectionPool(host='{_H}')",
+                id = "urllib3_connection_pool_host_keyword",
+            ),
+            # Unpacking carries the value to the matching target.
+            pytest.param(
+                f"import requests\nfetch, = (requests.get,)\nfetch('http://{_H}/')",
+                id = "single_element_unpack",
+            ),
+            pytest.param(
+                f"import requests\nfetch, *rest = requests.get, 1\nfetch('http://{_H}/')",
+                id = "unpack_before_splat",
+            ),
+            pytest.param(
+                f"import requests\n*rest, fetch = 1, requests.get\nfetch('http://{_H}/')",
+                id = "unpack_after_splat",
+            ),
+            pytest.param(
+                f"import requests\n(a, b), c = (requests.get, print), 1\na('http://{_H}/')",
+                id = "nested_unpack",
+            ),
+            pytest.param(
+                f"import paramiko\nc, = (paramiko.SSHClient(),)\nc.connect(hostname='{_H}')",
+                id = "client_unpack",
+            ),
+            # A session or pool sends through its own methods, so the instance is resolved too.
+            pytest.param(
+                f"import requests\ns = requests.Session()\ns.get('http://{_H}/')",
+                id = "requests_session_get",
+            ),
+            pytest.param(
+                f"import requests\nrequests.Session().get('http://{_H}/')",
+                id = "requests_session_inline",
+            ),
+            pytest.param(
+                f"import requests\ns = requests.Session()\ns.request('GET', 'http://{_H}/')",
+                id = "requests_session_request",
+            ),
+            pytest.param(
+                f"import httpx\nc = httpx.Client()\nc.post('http://{_H}/')",
+                id = "httpx_client_post",
+            ),
+            # `stream` takes the method first, unlike the verb methods next to it.
+            pytest.param(
+                f"import httpx\nc = httpx.AsyncClient()\nc.stream('GET', 'http://{_H}/')",
+                id = "httpx_client_stream_url_position",
+            ),
+            pytest.param(
+                f"import httpx\nhttpx.stream('GET', 'http://{_H}/')",
+                id = "httpx_module_stream_url_position",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.PoolManager().urlopen('GET', 'http://{_H}/')",
+                id = "urllib3_pool_manager_urlopen",
+            ),
+            # A base URL is where the client sends, even when the call passes a bare path.
+            pytest.param(
+                f"import httpx\nhttpx.Client(base_url='http://{_H}').get('/')",
+                id = "httpx_client_base_url",
+            ),
+            pytest.param(
+                f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
+                id = "aiohttp_session_base_url",
+            ),
+            # The encoded request helpers take the URL after the method, like `request`.
+            pytest.param(
+                f"import urllib3\nurllib3.PoolManager().request_encode_url('GET', 'http://{_H}/')",
+                id = "urllib3_request_encode_url",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.PoolManager().request_encode_body('POST', 'http://{_H}/')",
+                id = "urllib3_request_encode_body",
+            ),
+            # A proxy set on the session sends there, whatever the request URL says.
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f"s.proxies = {{'https': 'http://{_H}:8080'}}\ns.get('https://pypi.org/')",
+                id = "proxy_configured_on_the_session",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\ns = requests.Session()\n"
+                f"s.proxies = {{'https': 'http://{_H}'}}\ns.get('https://pypi.org/')",
+                id = "proxy_set_after_the_receiver_rebinding",
+            ),
+            # The client strips these before connecting, so the analysis has to as well.
+            pytest.param(
+                f'import requests\nrequests.get(" http://{_H}/")',
+                id = "url_with_leading_whitespace",
+            ),
+            pytest.param(
+                f'import requests\nrequests.get("ht\\ttp://{_H}/")',
+                id = "url_with_embedded_tab",
+            ),
+            # A proxy mapping mutated in place rather than replaced.
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f's.proxies.update({{"https": "http://{_H}:8080"}})\ns.get("https://pypi.org/")',
+                id = "proxy_mapping_updated",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f's.proxies["https"] = "http://{_H}:8080"\ns.get("https://pypi.org/")',
+                id = "proxy_mapping_subscript",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f's.proxies.update(http="http://{_H}:8080")\ns.get("http://pypi.org/")',
+                id = "proxy_mapping_updated_by_keyword",
+            ),
+            # A session held on an instance carries its proxy the same way.
+            pytest.param(
+                "import requests\nclass A:\n    def __init__(self):\n"
+                "        self.session = requests.Session()\n"
+                f'        self.session.proxies = {{"https": "http://{_H}:8080"}}\n'
+                '    def go(self):\n        self.session.get("https://pypi.org/")',
+                id = "proxy_on_a_session_held_on_self",
+            ),
+            # A client stored below more than one attribute resolves the same way.
+            pytest.param(
+                "import requests\nclass A:\n    def __init__(self):\n"
+                "        self.transport.session = requests.Session()\n"
+                f'    def go(self):\n        self.transport.session.get("http://{_H}/")',
+                id = "client_on_a_nested_attribute_path",
+            ),
+            # A URL factory reached through the module that defines it.
+            pytest.param(
+                f"import urllib3\nurllib3.connectionpool.connection_from_url('http://{_H}/')",
+                id = "canonical_connection_from_url",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.poolmanager.proxy_from_url('http://{_H}:8080/')",
+                id = "canonical_proxy_from_url",
+            ),
+            # A tracked client's bound connect is a listed call like any other.
+            pytest.param(
+                f"import socket\nc = socket.socket().connect\nc(('{_H}', 80))",
+                id = "bound_socket_connect_alias",
+            ),
+            pytest.param(
+                f"import paramiko\nc = paramiko.SSHClient().connect\nc(hostname='{_H}')",
+                id = "bound_ssh_connect_alias",
+            ),
+            pytest.param(
+                f"import socket\ns = socket.socket()\ns.connect_ex(('{_H}', 22))",
+                id = "socket_connect_ex",
+            ),
+            # A store below the read still counts where the read can come round again, or
+            # where the name is bound outside the body that reads it.
+            pytest.param(
+                f"import requests\nurl = 'https://pypi.org/'\ndef f():\n    requests.get(url)\n"
+                f"url = 'http://{_H}/'\nf()",
+                id = "outer_store_below_a_deferred_read",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'https://pypi.org/'\nwhile c:\n    requests.get(url)\n"
+                f"    url = 'http://{_H}/'",
+                id = "loop_rebinding_below_the_read",
+            ),
+            # A store whose own resolution hits a cycle must not hide the one that resolved.
+            pytest.param(
+                f"import requests\na = requests\nb = a\na = b\na.get('http://{_H}/')",
+                id = "alias_cycle_keeps_the_resolved_store",
+            ),
+            # A definition binds its name only after its header has been evaluated.
+            pytest.param(
+                f"import requests as fetch\ndef fetch(arg=fetch.get('http://{_H}/')):\n    pass",
+                id = "definition_shadowing_its_own_default",
+            ),
+            pytest.param(
+                f"import requests as fetch\nclass fetch(fetch.get('http://{_H}/')):\n    pass",
+                id = "class_shadowing_its_own_base",
+            ),
+            # A constant getattr on a tracked module names the call it selects.
+            pytest.param(
+                f"import requests\ngetattr(requests, 'get')('http://{_H}/')",
+                id = "constant_getattr_dispatch",
+            ),
+            pytest.param(
+                f"import requests\nf = getattr(requests, 'get')\nf('http://{_H}/')",
+                id = "constant_getattr_alias",
+            ),
+            # The lowercase session factory is the same client as the class.
+            pytest.param(
+                f"import requests\nrequests.session().get('http://{_H}/')",
+                id = "requests_session_factory_inline",
+            ),
+            pytest.param(
+                f"import requests\ns = requests.session()\ns.get('http://{_H}/')",
+                id = "requests_session_factory_name",
+            ),
+            pytest.param(
+                f"import aiohttp\naiohttp.request('GET', 'http://{_H}/')",
+                id = "aiohttp_module_request",
+            ),
+            # The raw connection classes take a host like the pools do.
+            pytest.param(
+                f"import urllib3\nurllib3.connection.HTTPConnection('{_H}').request('GET', '/')",
+                id = "urllib3_raw_connection",
+            ),
+            # A method's first parameter is the instance whatever it is named.
+            pytest.param(
+                "import requests\nclass A:\n    def __init__(self):\n        self.s = requests.Session()\n"
+                f"    def go(this):\n        this.s.get('http://{_H}/')",
+                id = "instance_attribute_through_renamed_receiver",
+            ),
+            pytest.param(
+                "import paramiko\nclass Base:\n    def __init__(me):\n        me.c = paramiko.SSHClient()\n"
+                f"class Sub(Base):\n    def go(self):\n        self.c.connect(hostname='{_H}')",
+                id = "inherited_attribute_through_renamed_receiver",
+            ),
+            # An opaque helper's name says nothing about what it returned, so the module name
+            # it was rebound over still stands.
+            pytest.param(
+                f"import requests as r\nrequests = identity(r)\nrequests.get('http://{_H}/')",
+                id = "module_rebound_through_opaque_helper",
+            ),
+            # A walrus callee is the callable it assigns.
+            pytest.param(
+                f"import requests\n(fetch := requests.get)('http://{_H}/')",
+                id = "walrus_callee",
+            ),
+            pytest.param(
+                f"import requests\n(session := requests.Session()).get('http://{_H}/')",
+                id = "walrus_client_receiver",
+            ),
+            # A swap resolves its right-hand side against the bindings it is replacing.
+            pytest.param(
+                f"import requests\nf = print\ng = requests.get\nf, g = g, f\nf('http://{_H}/')",
+                id = "swapped_alias",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'; requests.get(url)",
+                id = "store_and_read_on_one_line",
+            ),
+            # A subclass reads what its bases set on self.
+            pytest.param(
+                "import requests\nclass A:\n    def __init__(self):\n        self.s = requests.Session()\n"
+                f"class B(A):\n    pass\nclass C(B):\n    def go(self):\n        self.s.get('http://{_H}/')",
+                id = "inherited_session_two_levels",
+            ),
+            # A websocket is a connection like any other.
+            pytest.param(
+                f"import aiohttp\naiohttp.ClientSession().ws_connect('http://{_H}/')",
+                id = "aiohttp_ws_connect",
+            ),
+            # A client kept on an attribute sends just like one kept in a name.
+            pytest.param(
+                "import requests\nclass A:\n    def __init__(self):\n"
+                "        self.session = requests.Session()\n"
+                f"    def go(self):\n        self.session.get('http://{_H}/')",
+                id = "client_on_self_attribute",
+            ),
+            pytest.param(
+                f"import requests\nobj.session = requests.Session()\nobj.session.get('http://{_H}/')",
+                id = "client_on_module_attribute",
+            ),
+            # OPTIONS is a request verb like the rest.
+            pytest.param(
+                f"import requests\nrequests.Session().options(url='http://{_H}/')",
+                id = "session_options_keyword_url",
+            ),
+            pytest.param(
+                f"import requests\nrequests.options('http://{_H}/')",
+                id = "module_options",
+            ),
+            # An import from the defining module keeps that path, so the specs carry both.
+            pytest.param(
+                "from urllib3.poolmanager import PoolManager\n"
+                f"PoolManager().request(method='GET', url='http://{_H}/')",
+                id = "canonical_pool_manager",
+            ),
+            pytest.param(
+                "from urllib3.connectionpool import HTTPSConnectionPool\n"
+                f"HTTPSConnectionPool(host='{_H}')",
+                id = "canonical_connection_pool",
+            ),
+            pytest.param(
+                f"from requests.api import get\nget('http://{_H}/')",
+                id = "canonical_requests_api",
+            ),
+            pytest.param(
+                f"from aiohttp.client import ClientSession\nClientSession().get('http://{_H}/')",
+                id = "canonical_aiohttp_client",
+            ),
+            # A request built ahead of the call still carries its URL.
+            pytest.param(
+                f"import httpx\nc = httpx.Client()\nr = c.build_request('GET', 'http://{_H}/')\n"
+                "c.send(r)",
+                id = "httpx_client_send_built_request",
+            ),
+            pytest.param(
+                f"import httpx\nhttpx.Client().send(httpx.Request('GET', 'http://{_H}/'))",
+                id = "httpx_send_request_object",
+            ),
+            # An explicit proxy is the socket destination, not the request URL.
+            pytest.param(
+                "import requests\nrequests.get('https://pypi.org/', "
+                f"proxies={{'https': 'http://{_H}:8080'}})",
+                id = "requests_proxies_mapping",
+            ),
+            pytest.param(
+                f"import httpx\nhttpx.get('https://pypi.org/', proxy='http://{_H}:8080')",
+                id = "httpx_proxy_keyword",
+            ),
+            pytest.param(
+                f"import httpx\nhttpx.Client(proxy='http://{_H}:8080').get('https://pypi.org/')",
+                id = "httpx_client_proxy_keyword",
+            ),
+            # A parameter default is a value the name can hold.
+            pytest.param(
+                f"import requests\ndef fetch(f=requests.get):\n    f('http://{_H}/')\nfetch()",
+                id = "network_alias_as_parameter_default",
+            ),
+            pytest.param(
+                f"import requests\ndef fetch(*, f=requests.get):\n    f('http://{_H}/')\nfetch()",
+                id = "network_alias_as_keyword_only_default",
+            ),
+            # `f = f` builds on the earlier binding instead of replacing it.
+            pytest.param(
+                f"import requests\nf = requests.get\nf = f\nf('http://{_H}/')",
+                id = "self_assignment_keeps_the_alias",
+            ),
+            pytest.param(
+                f"import aiohttp\ns = aiohttp.ClientSession()\ns.get('http://{_H}/')",
+                id = "aiohttp_session_get",
+            ),
+            pytest.param(
+                f"import urllib3\nh = urllib3.PoolManager()\nh.request('GET', 'http://{_H}/')",
+                id = "urllib3_pool_manager_request",
+            ),
+            # A binding that may never happen supersedes nothing.
+            pytest.param(
+                f"import requests\nf = requests.get\nFalse and (f := print)\nf('http://{_H}/')",
+                id = "walrus_store_does_not_supersede",
+            ),
+            pytest.param(
+                f"import requests\nf = requests.get\nfor f in []:\n    pass\nf('http://{_H}/')",
+                id = "loop_target_does_not_supersede",
+            ),
+            # A store the read can still reach is not superseded, whatever the source order.
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nif flag:\n    url = 'https://pypi.org/'\n"
+                "requests.get(url)",
+                id = "branch_store_does_not_supersede",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nfor _ in x:\n    url = 'https://pypi.org/'\n"
+                "requests.get(url)",
+                id = "loop_store_does_not_supersede",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\ntry:\n    url = 'https://pypi.org/'\n"
+                "except ValueError:\n    requests.get(url)",
+                id = "try_body_store_does_not_supersede",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\ntry:\n    url = 'https://pypi.org/'\n"
+                "except ValueError:\n    requests.get(url)",
+                id = "finally_store_cannot_reach_the_handler",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'https://pypi.org/'\ndef f():\n    requests.get(url)\n"
+                f"url = 'http://{_H}/'\nf()",
+                id = "store_after_the_read_does_not_supersede",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nurl = 'https://pypi.org/'\nwhile c:\n"
+                f"    requests.get(url)\n    url = 'http://{_H}/'",
+                id = "loop_rebinding_survives_a_superseded_store",
+            ),
+            # A conditional produces one of its branches, so every branch is checked.
+            pytest.param(
+                f"import requests\nfetch = requests.get if flag else print\nfetch('http://{_H}/')",
+                id = "conditional_callee_alias",
+            ),
+            pytest.param(
+                f"import requests\n(requests.get if flag else print)('http://{_H}/')",
+                id = "conditional_callee_inline",
+            ),
+            pytest.param(
+                f"import paramiko\nclient = paramiko.SSHClient() if flag else get_db()\n"
+                f"client.connect(hostname='{_H}')",
+                id = "conditional_client",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/' if flag else 'https://pypi.org/'\n"
+                "requests.get(url)",
+                id = "conditional_url",
+            ),
+            pytest.param(
+                f"import requests, os\nurl = os.environ.get('U') or 'http://{_H}/'\n"
+                "requests.get(url)",
+                id = "or_default_url",
+            ),
+            # Competing aliases are checked under each signature, not just the first.
+            pytest.param(
+                f"import requests\nf = requests.get\nf = requests.request\nf('GET', 'http://{_H}/')",
+                id = "alias_stores_with_different_signatures",
+            ),
+            pytest.param(
+                f"import requests\nf = requests.request\nf = requests.get\nf('http://{_H}/')",
+                id = "alias_stores_with_different_signatures_reversed",
+            ),
+            pytest.param(
+                f"import paramiko\ndef go(obj):\n    obj.client = paramiko.SSHClient()\n"
+                f"    obj.client.connect(host='{_H}')",
+                id = "attribute_client_in_same_function",
+            ),
+            pytest.param(
+                f"import socket\nhost = '{_H}'\ns = socket.socket()\ns.connect((host, 22))\nhost = 'huggingface.co'",
+                id = "socket_tuple_host_rebound_after_call",
+            ),
+            pytest.param(
+                f"import urllib.request\nu = 'http://{_H}/'\n"
+                "urllib.request.urlopen(urllib.request.Request(u))\nu = 'https://pypi.org/'",
+                id = "request_url_variable_rebound_after_call",
+            ),
+        ],
+    )
+    def test_known_untrusted_host_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_metadata_host_by_keyword_blocked(self):
+        _blocked(
+            "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_metadata_host_as_proxy_blocked(self):
+        _blocked(
+            "import urllib3\nurllib3.proxy_from_url('http://169.254.169.254/')"
+            ".request('GET', 'https://pypi.org/')",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_branching_alias_chain_stays_linear(self):
+        """Alias resolution is memoized; re-expanding every store combination took minutes."""
+        code = (
+            "import requests\na0 = requests.get\n"
+            + "".join(f"a{i + 1} = a{i}\na{i + 1} = a{i}\n" for i in range(24))
+            + "a24('http://203.0.113.5/')"
+        )
+        started = time.monotonic()
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+        assert time.monotonic() - started < 5.0
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests\nrequests.get(url='https://huggingface.co/api/models')",
+            "import requests\nname = input()\nrequests.get(f'https://huggingface.co/api/models/{name}')",
+            "from requests import get\nget('https://pypi.org/simple/')",
+            "import urllib.request\nreq = urllib.request.Request('https://pypi.org/simple/', headers={})\nurllib.request.urlopen(req)",
+            "import requests as r\nr.get('https://huggingface.co/api/models')\nr = object()",
+            "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = 'https://huggingface.co/'",
+            # A straight-line store below the call has not run yet.
+            "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = input()",
+            "import requests\nurl = 'https://pypi.org/'\nrequests.get(url)\nurl = 'http://internal.example/'",
+            # A finally block always finishes before control passes the try.
+            "import requests\nurl = 'http://203.0.113.5/'\ntry:\n    pass\nfinally:\n"
+            "    url = 'https://pypi.org/'\nrequests.get(url)",
+            # Inside the body doing the reading, source order still holds.
+            "import requests\ndef f():\n    url = 'https://pypi.org/'\n    requests.get(url)\n"
+            "    url = 'http://203.0.113.5/'",
+            "import requests\nurl = 'https://pypi.org/'\nclass C:\n    requests.get(url)\n    url = 'http://203.0.113.5/'",
+            "import requests\nurl = 'http://203.0.113.5/'\nclass C:\n    url = 'https://pypi.org/'\n    requests.get(url)",
+            # urllib3's string helpers open no connection.
+            "from urllib3.util import parse_url\nparse_url('https://example.com/')",
+            "import urllib3\nurllib3.util.parse_url('https://example.com/')",
+            "import requests\nf = requests.get\nf = requests.request\nf('GET', 'https://pypi.org/simple/')",
+            "import requests\nfetch, = (requests.get,)\nfetch('https://pypi.org/simple/')",
+            "import requests\nurl = 'https://pypi.org/' if flag else 'https://huggingface.co/'\nrequests.get(url)",
+            "import requests\nfetch = requests.get if flag else requests.post\nfetch('https://pypi.org/')",
+            # An unconditional rebinding replaces the earlier value for every later read.
+            "import requests\nurl = 'http://203.0.113.5/'\nurl = 'https://pypi.org/'\nrequests.get(url)",
+            "import requests\nurl = 'http://203.0.113.5/'\nurl = 'https://pypi.org/'\nif x:\n    requests.get(url)",
+            "import requests\nurl = 'http://203.0.113.5/'\nurl = 'https://pypi.org/'\ndef f():\n    requests.get(url)\nf()",
+            "import requests\nf = requests.get\nf = print\nf('http://203.0.113.5/')",
+            # A short starred unpack has no matching source; it must not raise.
+            "import requests\nif False:\n    a, *b, c = ()\nprint('ok')",
+            # A session reaching an allowlisted host is as unremarkable as the module function.
+            "import requests\ns = requests.Session()\ns.get('https://pypi.org/simple/')",
+            "import requests\ns = requests.Session()\ns.close()",
+            "import httpx\nhttpx.Client().stream('GET', 'https://pypi.org/')",
+            "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
+            "import httpx\nhttpx.Client().get('https://pypi.org/x')",
+            "import requests\nrequests.options('https://pypi.org/')",
+            "import requests\na = requests\nb = a\na = b\na.get('https://pypi.org/')",
+            "import requests\ngetattr(requests, 'get')('https://pypi.org/')",
+            # An unrelated object's attribute is not dispatch into the network surface.
+            "obj = make()\ngetattr(obj, 'get')('http://203.0.113.5/')",
+            "import requests\ns = requests.session()\ns.get('https://pypi.org/')",
+            "import aiohttp\naiohttp.request('GET', 'https://pypi.org/')",
+            # An explicit None is a disabled proxy, not an unknown destination.
+            "import httpx\nhttpx.Client(proxy=None).get('https://pypi.org/')",
+            "import requests\nrequests.get('https://pypi.org/', proxies={'https': None})",
+            "import requests\ns = requests.Session()\ns.proxies = {'https': 'https://pypi.org'}\ns.get('https://pypi.org/')",
+            'import requests\nrequests.get(" https://pypi.org/")',
+            'import requests\ns = requests.Session()\ns.proxies.update({"https": "https://pypi.org"})\ns.get("https://pypi.org/")',
+            # An attribute replaced before the call, or set after it, cannot reach it.
+            "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5'}\n"
+            "s.proxies = {}\ns.get('https://pypi.org/')",
+            "import requests\ns = requests.Session()\ns.get('https://pypi.org/')\n"
+            "s.proxies = {'https': 'http://203.0.113.5'}",
+            # Rebinding the receiver throws away what was set on the previous object.
+            "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5'}\n"
+            "s = requests.Session()\ns.get('https://pypi.org/')",
+            # A receiver that is not the instance keeps its own identity.
+            "import requests\nclass A:\n    def __init__(self):\n        self.s = requests.Session()\n"
+            "    def go(self, other):\n        other.s.get('https://pypi.org/')",
+            # Adapter routing and request building open nothing.
+            "import requests\ns = requests.Session()\ns.mount('http://internal.example/', adapter)",
+            "import requests\ns = requests.Session()\ns.get_adapter('http://internal.example/')",
+            "import httpx\nc = httpx.Client()\nc.build_request('GET', 'http://internal.example/')",
+            "import requests\n(fetch := requests.get)('https://pypi.org/')",
+            "import requests\nurl = 'http://203.0.113.5/'; url = 'https://pypi.org/'; requests.get(url)",
+            "import aiohttp\naiohttp.ClientSession().ws_connect('https://pypi.org/')",
+            "import requests\nrequests.Session().post('https://huggingface.co/', json={'a': 1})",
+            # A base class that holds no client leaves the subclass receiver uninspected.
+            "import requests\nclass Base:\n    def __init__(self):\n        self.s = get_db()\n"
+            "class Sub(Base):\n    def go(self):\n        self.s.connect(host='localhost')",
+            "import requests\nclass A:\n    def __init__(self):\n        self.session = requests.Session()\n"
+            "    def go(self):\n        self.session.get('https://pypi.org/')",
+            "import httpx\nc = httpx.Client()\nc.send(c.build_request('GET', 'https://pypi.org/'))",
+            'import httpx\nhttpx.Client().send(httpx.Request("GET", "https://huggingface.co"))',
+            "import requests\nrequests.get('https://pypi.org/', proxies={'https': 'https://pypi.org'})",
+            "import requests\ns = requests.Session()\ns.headers.update({'a': 'b'})",
+            # Two functions with a same-named attribute receiver do not contaminate each other.
+            "import paramiko\ndef a(obj):\n    obj.client = paramiko.SSHClient()\n"
+            "def b(obj):\n    obj.client = get_db()\n    obj.client.connect(host='localhost')",
+        ],
+    )
+    def test_known_trusted_host_runs_without_prompt(self, code):
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import paramiko, sys\nc = paramiko.SSHClient()\nc.connect(sys.argv[1])",
+            "import paramiko\ndef deploy(host):\n    c = paramiko.SSHClient()\n    c.connect(hostname=host)",
+            "import paramiko\nclass Deploy:\n    def __init__(self):\n        self.client = paramiko.SSHClient()\n"
+            "    def run(self):\n        self.client.connect(self.host)",
+            "import paramiko\nclient = paramiko.SSHClient()\nssh = client\nssh.connect(hostname=input())",
+            "import requests\nfetch = requests.get\nfetch(input())",
+            "from fabric import Connection\nConnection(input()).run('id')",
+            "import requests\nrequests.get(input())",
+            "import requests\nsub = input()\nrequests.get(f'https://{sub}.huggingface.co/')",
+            "import socket\nwith socket.socket() as s:\n    s.connect((input(), 22))",
+            "import requests\nrequests.get(*[input()])",
+            "import requests\ns = requests.Session()\ns.get(input())",
+            "import httpx\nhttpx.Client(base_url=input()).get('/')",
+            "import httpx\nc = httpx.Client()\nc.send(r)",
+            "import requests\n(fetch := requests.get)(input())",
+            # A runtime attribute of a tracked module is a call we cannot name.
+            "import requests\ngetattr(requests, name)('http://203.0.113.5/')",
+            "import aiohttp\naiohttp.ClientSession().ws_connect(input())",
+            "import requests\nclass A:\n    def __init__(self):\n        self.session = requests.Session()\n"
+            "    def go(self):\n        self.session.get(input())",
+            "import requests\nrequests.get('https://pypi.org/', proxies={'https': input()})",
+            # A caller can override the default, so the unknown value survives beside it.
+            "import requests\ndef fetch(url='https://pypi.org/'):\n    requests.get(url)",
+            # A store with no value is an unknown host, so a known store cannot silence it.
+            "import requests\ndef fetch(url):\n    if not url:\n        url = 'https://pypi.org/'\n    requests.get(url)",
+            "import requests\nurl = 'https://pypi.org/'\nfor url in urls:\n    requests.get(url)",
+            "import requests\nurl = 'https://pypi.org/'\nurl += input()\nrequests.get(url)",
+            # Giving up past the alias-depth cap must ask, not wave the call through.
+            "import paramiko\nc0 = paramiko.SSHClient()\n"
+            + "".join(f"c{i + 1} = c{i}\n" for i in range(400))
+            + "c400.connect(hostname='203.0.113.5')",
+            "import requests\na0 = requests.get\n"
+            + "".join(f"a{i + 1} = a{i}\n" for i in range(300))
+            + "a300('http://203.0.113.5/')",
+            # The receiver is a client on one path, so the unknown host still asks.
+            "import paramiko\ndef outer():\n    client = get_db()\n    def swap():\n        nonlocal client\n"
+            "        client = paramiko.SSHClient()\n    swap()\n    client.connect(hostname=input())",
+        ],
+    )
+    def test_unresolved_host_runs_but_asks_in_auto_mode(self, code):
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import sqlite3\nsqlite3.connect(input())",
+            "import paramiko, sqlite3\nsqlite3.connect(input())",
+            # A database driver's host= is not an SSH or socket client's, so a local database stays reachable.
+            "import psycopg2\npsycopg2.connect(host='localhost', dbname='x')",
+            "import pymysql\npymysql.connect(host='192.168.1.10')",
+            "import mysql.connector\nmysql.connector.connect(host='127.0.0.1')",
+            "import paramiko, mysql.connector\nmysql.connector.connect(host='127.0.0.1')",
+            "import paramiko, psycopg2\npsycopg2.connect(host=input())",
+            "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+            "import requests\ns = requests.Session()",
+            "button.connect(handler)",
+            # Importing paramiko does not make every .connect an SSH client's.
+            "import paramiko\nbutton.connect(handler)",
+            "import paramiko\nclient.connect(host='localhost')",
+            # A client in one function or class does not make the same name or attribute elsewhere a client.
+            "import paramiko\ndef a():\n    client = paramiko.SSHClient()\ndef b(client):\n    client.connect(host='localhost')",
+            "import paramiko\ndef a():\n    client = paramiko.SSHClient()\ndef b():\n    client = get_db()\n"
+            "    client.connect(host='localhost')",
+            "import paramiko\nclass A:\n    def __init__(self):\n        self.client = paramiko.SSHClient()\n"
+            "class B:\n    def go(self):\n        self.client.connect(host='localhost')",
+            # A class body's names are not visible to its methods, and a loop target rebinds a name.
+            "import paramiko\nclass A:\n    client = paramiko.SSHClient()\n    def go(self):\n"
+            "        client.connect(host='localhost')",
+            "import paramiko\nfor client in things:\n    client.connect(host='localhost')",
+            # A receiver that holds a client on only some paths is not refused for an allowlisted host.
+            "import paramiko\nclient = get_db()\nif flag:\n    client = paramiko.SSHClient()\n"
+            "client.connect(hostname='pypi.org')",
+        ],
+    )
+    def test_non_connecting_calls_do_not_ask(self, code):
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
 
 
 class TestHostNormalization:
@@ -188,6 +1012,45 @@ class TestUploadDenylist:
                 'httpx.post("https://huggingface.co/api/repos/upload", '
                 'files={"f": open("x.bin", "rb")})',
                 id = "httpx_post_files_blocked",
+            ),
+            # Uploading through a session is the same upload as through the module function.
+            pytest.param(
+                "import requests\n"
+                'requests.Session().post("https://huggingface.co/", files={"x": open("r.txt")})',
+                id = "requests_session_post_files_blocked",
+            ),
+            pytest.param(
+                "import httpx\n"
+                'httpx.Client().post("https://huggingface.co/", files={"x": open("r.txt")})',
+                id = "httpx_client_post_files_blocked",
+            ),
+            pytest.param(
+                "import requests\n"
+                's = requests.session()\ns.post("https://huggingface.co/", files={"x": open("r.txt")})',
+                id = "requests_session_factory_post_files_blocked",
+            ),
+            pytest.param(
+                "import aiohttp\n"
+                'aiohttp.request("POST", "https://huggingface.co/x", data=open("artifact", "rb"))',
+                id = "aiohttp_request_data_open_handle_blocked",
+            ),
+            # A payload attached when the request is built is the same upload as an inline one.
+            pytest.param(
+                "import httpx\n"
+                'httpx.Client().send(httpx.Request("POST", "https://huggingface.co", '
+                'files={"f": open("artifact", "rb")}))',
+                id = "httpx_send_request_files_blocked",
+            ),
+            pytest.param(
+                "import httpx\nc = httpx.Client()\n"
+                'c.send(c.build_request("POST", "https://huggingface.co", files={"f": open("a", "rb")}))',
+                id = "httpx_send_build_request_files_blocked",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                's.send(s.prepare_request(requests.Request("POST", "https://huggingface.co", '
+                'files={"f": open("a", "rb")})))',
+                id = "requests_send_prepared_request_files_blocked",
             ),
         ],
     )

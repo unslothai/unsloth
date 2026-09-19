@@ -8364,7 +8364,11 @@ def _python_is_high_risk(code: str) -> bool:
         return False
     # _check_code_safety objecting means execution would be refused outright, so a confirmation first beats a silent
     # refusal.
-    if _check_code_safety(code) is not None:
+    safety_error, safety_info = _code_safety_report(code)
+    if safety_error is not None:
+        return True
+    # Unknown network targets require approval in auto mode.
+    if safety_info.get("unresolved_network_calls"):
         return True
     tree, _parse_error = _parse_python(code)
     if _parse_error is not None:
@@ -15781,50 +15785,190 @@ def _check_signal_escape_patterns(code: str):
     if visitor.imports_signal and not signal_tampering:
         warnings.append("Code imports 'signal' module - review manually for safety")
 
-    # Static host policy: block metadata hosts and any literal host outside the trusted allowlist; uploads blocked
-    # regardless of host. Dynamic hosts are caught by the bash blocklist.
+    # Block known disallowed targets and record unknown targets so auto mode asks.
+    # Upload checks are host-independent.
     network_calls: list[dict] = []
+    unresolved_network_calls: list[dict] = []
     sensitive_file_reads: list[dict] = []
+    # Network calls whose target argument we do not locate: constructors, session factories,
+    # request objects and whole modules. Everything whose target IS located lives in
+    # _NETWORK_TARGET_ARGS and is recognized from there, so it must not be repeated here.
     _NETWORK_FQ_PREFIXES = (
         "socket.socket",
-        "socket.create_connection",
-        "socket.getaddrinfo",
-        "urllib.request.urlopen",
-        "urllib.request.urlretrieve",
-        "urllib3.",
-        "requests.get",
-        "requests.post",
-        "requests.put",
-        "requests.delete",
-        "requests.patch",
-        "requests.head",
-        "requests.request",
         "requests.Session",
-        "http.client.HTTPConnection",
-        "http.client.HTTPSConnection",
-        "httpx.get",
-        "httpx.post",
-        "httpx.put",
-        "httpx.patch",
-        "httpx.delete",
-        "httpx.request",
+        "requests.sessions.Session",
+        # requests also exposes the session factory under a lowercase name.
+        "requests.session",
+        "requests.sessions.session",
+        "requests.api.session",
+        "requests.Request",
+        "requests.models.Request",
+        "httpx.Request",
+        "urllib3.PoolManager",
+        "urllib3.connection.",
+        "urllib3.connectionpool.",
+        "urllib3.poolmanager.",
+        "urllib3.contrib.",
+        "urllib3.util.connection.",
+    )
+    # Network target location: (positional index, keyword, target kind).
+    _HTTP_VERBS = ("get", "post", "put", "delete", "patch", "head", "options")
+    _NETWORK_TARGET_ARGS = {
+        "socket.create_connection": (0, "address", "host"),
+        "socket.getaddrinfo": (0, "host", "host"),
+        "urllib.request.urlopen": (0, "url", "url"),
+        "urllib.request.urlretrieve": (0, "url", "url"),
+        # `requests.api` and `httpx` are the modules the top-level verbs actually live in, and
+        # an explicit import of either keeps that path.
+        **{
+            f"{module}.{m}": (0, "url", "url")
+            for module in ("requests", "requests.api", "httpx")
+            for m in _HTTP_VERBS
+        },
+        **{
+            f"{module}.request": (1, "url", "url")
+            for module in ("requests", "requests.api", "httpx", "aiohttp", "aiohttp.client")
+        },
+        "urllib3.request": (1, "url", "url"),
+        # Each URL factory under the top-level name and under the module that defines it.
+        **{
+            f"{module}.{factory}": (0, "url", "url")
+            for factory, defined_in in (
+                ("connection_from_url", "urllib3.connectionpool"),
+                ("proxy_from_url", "urllib3.poolmanager"),
+            )
+            for module in ("urllib3", defined_in)
+        },
+        "urllib3.ProxyManager": (0, "proxy_url", "url"),
+        **{
+            f"{module}.{pool}": (0, "host", "host")
+            for module in ("urllib3", "urllib3.connectionpool")
+            for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
+        },
+        # The raw connection classes take the host the same way the pools do.
+        **{
+            f"urllib3.connection.{conn}": (0, "host", "host")
+            for conn in ("HTTPConnection", "HTTPSConnection")
+        },
+        "http.client.HTTPConnection": (0, "host", "host"),
+        "http.client.HTTPSConnection": (0, "host", "host"),
+        "paramiko.Transport": (0, "sock", "host"),
+        "paramiko.transport.Transport": (0, "sock", "host"),
+        "fabric.Connection": (0, "host", "host"),
+        "fabric.connection.Connection": (0, "host", "host"),
+        "asyncssh.connect": (0, "host", "host"),
+        "urllib3.util.connection.create_connection": (0, "address", "host"),
+        "urllib3.contrib.socks.SOCKSProxyManager": (0, "proxy_url", "url"),
+    }
+    # An instance resolves to its constructor and the method rides on top, so
+    # `requests.Session().get(url)` reads as `requests.Session.get`. Methods come from the real
+    # signatures: `Client.stream(method, url)` is not `Client.get(url)`, and pools have no verbs.
+    _VERB_CLIENTS = (
+        "requests.Session",
+        "requests.sessions.Session",
+        "requests.session",
+        "requests.sessions.session",
+        "requests.api.session",
         "httpx.Client",
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
+        "aiohttp.client.ClientSession",
     )
+    _POOL_CLIENTS = (
+        "urllib3.PoolManager",
+        "urllib3.ProxyManager",
+        "urllib3.poolmanager.PoolManager",
+        "urllib3.poolmanager.ProxyManager",
+    )
+    # Request objects built ahead of the call: where the URL sits in the builder.
+    _REQUEST_BUILDERS = {
+        "urllib.request.Request": (0, "url"),
+        "requests.Request": (1, "url"),
+        "requests.models.Request": (1, "url"),
+        "httpx.Request": (1, "url"),
+        "httpx.Client.build_request": (1, "url"),
+        "httpx.AsyncClient.build_request": (1, "url"),
+        "requests.Session.prepare_request": (0, "request"),
+    }
+    # An explicit proxy is the socket destination, whatever the request URL says.
+    _PROXY_KEYWORDS = ("proxy", "proxies")
+    _NETWORK_TARGET_ARGS.update(
+        {
+            **{
+                f"{client}.{method}": (0, "url", "url")
+                for client in _VERB_CLIENTS
+                for method in _HTTP_VERBS
+            },
+            **{
+                f"{client}.request": (1, "url", "url")
+                for client in (*_VERB_CLIENTS, *_POOL_CLIENTS)
+            },
+            **{
+                f"{client}.stream": (1, "url", "url")
+                for client in ("httpx.Client", "httpx.AsyncClient")
+            },
+            "httpx.stream": (1, "url", "url"),
+            # A client built on a base URL sends there even when the call passes a bare path.
+            **{f"{c}": (None, "base_url", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
+            "aiohttp.ClientSession": (0, "base_url", "url"),
+            **{
+                f"{c}.ws_connect": (0, "url", "url")
+                for c in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            },
+            **{f"{c}.send": (0, "request", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
+            **{
+                f"{client}.{method}": (1, "url", "url")
+                for client in _POOL_CLIENTS
+                for method in ("urlopen", "request_encode_url", "request_encode_body")
+            },
+            **{f"{client}.connection_from_url": (0, "url", "url") for client in _POOL_CLIENTS},
+            **{
+                f"{client}.send": (0, "request", "url")
+                for client in ("requests.Session", "requests.sessions.Session")
+            },
+        }
+    )
+    # Constructors whose instances open a connection through .connect(...).
+    _CONNECTING_CLIENT_FQ = frozenset(
+        {"socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient"}
+    )
+    _NETWORK_TARGET_ARGS.update(
+        {
+            "socket.socket.connect": (0, "address", "host"),
+            "socket.socket.connect_ex": (0, "address", "host"),
+            # paramiko names it `hostname`; the old receiver branch also accepted `host`.
+            **{
+                f"{client}.connect": (0, ("hostname", "host"), "host")
+                for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")
+            },
+        }
+    )
+    # Everything that owns a listed call. Used to tell `getattr(<owner>, name)` apart from an
+    # unrelated attribute lookup, and to decide whether modelling scopes is worth it at all.
+    _NETWORK_OWNERS = frozenset(
+        fq.rsplit(".", 1)[0]
+        for fq in (
+            *_NETWORK_TARGET_ARGS,
+            *_NETWORK_FQ_PREFIXES,
+            *_CONNECTING_CLIENT_FQ,
+            *_REQUEST_BUILDERS,
+        )
+        if "." in fq
+    )
+    _NETWORK_MODULE_ROOTS = frozenset(owner.split(".")[0] for owner in _NETWORK_OWNERS)
+    _UPLOAD_VERBS = ("post", "put", "patch", "delete", "request")
     _UPLOAD_HTTP_METHODS = (
-        "requests.post",
-        "requests.put",
-        "requests.patch",
-        "requests.delete",
-        "requests.request",
-        "httpx.post",
-        "httpx.put",
-        "httpx.patch",
-        "httpx.delete",
-        "httpx.request",
+        # Uploading through a session is the same upload as through the module function.
+        *(
+            f"{owner}.{verb}"
+            for owner in ("requests", "requests.api", "httpx", *_VERB_CLIENTS)
+            for verb in _UPLOAD_VERBS
+        ),
         "urllib.request.urlopen",
-        "urllib.request.Request",
+        "aiohttp.request",
+        "aiohttp.client.request",
+        # A payload attached when the request is built is the same upload as an inline one.
+        *_REQUEST_BUILDERS,
     )
     _UPLOAD_HF_FQ = (
         "huggingface_hub.upload_file",
@@ -16255,7 +16399,832 @@ def _check_signal_escape_patterns(code: str):
             return _HF_UPLOAD_PATH_VIOLATION
         return None
 
+    # Lazily model Python scopes for network-call resolution. Stores hold an AST value,
+    # ("import", dotted path), or None when unknown; attributes are tracked per class.
+    _SCOPE_NODES = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.Lambda,
+        ast.ClassDef,
+        ast.ListComp,
+        ast.SetComp,
+        ast.DictComp,
+        ast.GeneratorExp,
+    )
+    _FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    _COMPREHENSION_NODES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+    _ALIAS_DEPTH_CAP = 256
+    # `finalbody` is deliberately absent: a finally block always finishes before control
+    # passes the try, so its stores belong to the surrounding straight line.
+    _BLOCK_FIELDS = ("body", "orelse")
+    _ROOT_BLOCK = (0, "root")
+    _node_block: dict[int, tuple] = {}
+    _block_parent: dict[tuple, tuple | None] = {_ROOT_BLOCK: None}
+    _loop_blocks: set = set()
+    _UNRESOLVED_FQ = "<unresolved>"
+    _fq_cache: dict[int, list] = {}
+    _fq_active: set = set()
+    _scope_parent: dict[int, ast.AST | None] = {id(tree): None}
+    _node_scope: dict[int, ast.AST] = {}
+    _declared: dict[tuple[int, str], str] = {}
+    _raw_name_stores: list[tuple[ast.AST, str, object, tuple, object, bool]] = []
+    _name_stores: dict[tuple[int, str], list] = {}
+    _attr_stores: dict[tuple[int, str, str], list] = {}
+    _model_state: dict[str, bool] = {}
+
+    def _dotted(expr: ast.AST) -> "str | None":
+        """`self.session` for a plain name or attribute chain, else None."""
+        parts: list[str] = []
+        while isinstance(expr, ast.Attribute):
+            parts.insert(0, expr.attr)
+            expr = expr.value
+        if not isinstance(expr, ast.Name):
+            return None
+        return ".".join([expr.id, *parts])
+
+    def _receiver_key(path: str, scope: ast.AST | None) -> str:
+        """`self` is a convention, so a method's first parameter is the instance, whatever it
+        is called. Only the leading name is normalized; the rest of the path is literal."""
+        name, _, rest = path.partition(".")
+        current = scope
+        while current is not None and not isinstance(current, _FUNCTION_NODES):
+            current = _scope_parent.get(id(current))
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)) and isinstance(
+            _scope_parent.get(id(current)), ast.ClassDef
+        ):
+            positional = [*current.args.posonlyargs, *current.args.args]
+            if positional and positional[0].arg == name:
+                return f".{rest}" if rest else ""
+        return path
+
+    def _enclosing_class(scope: ast.AST | None) -> ast.AST | None:
+        while scope is not None and not isinstance(scope, ast.ClassDef):
+            scope = _scope_parent.get(id(scope))
+        return scope
+
+    def _store_scope(scope: ast.AST, name: str, binding: set) -> ast.AST:
+        declared = _declared.get((id(scope), name))
+        if declared == "global":
+            return tree
+        if declared == "nonlocal":
+            # nonlocal binds to the nearest enclosing function that defines the name.
+            outer = _scope_parent.get(id(scope))
+            nearest_function = None
+            while outer is not None and outer is not tree:
+                if isinstance(outer, _FUNCTION_NODES):
+                    nearest_function = nearest_function or outer
+                    if (id(outer), name) in binding:
+                        return outer
+                outer = _scope_parent.get(id(outer))
+            return nearest_function or tree
+        return scope
+
+    def _position(node: ast.AST) -> tuple:
+        return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+
+    def _end_position(node: ast.AST) -> tuple:
+        # A binding takes effect once the whole statement has run, which is what makes
+        # `f, g = g, f` resolve its right-hand side against the bindings it replaces.
+        return (
+            getattr(node, "end_lineno", None) or getattr(node, "lineno", 0),
+            getattr(node, "end_col_offset", None) or getattr(node, "col_offset", 0),
+        )
+
+    def _add_name_store(
+        scope: ast.AST,
+        name: str,
+        value,
+        at: ast.AST,
+        *,
+        certain: bool = True,
+        position = None,
+    ) -> None:
+        # Resolve scopes after collecting bindings so nonlocal can find its owner.
+        _raw_name_stores.append(
+            (scope, name, value, position or _position(at), _node_block.get(id(at)), certain)
+        )
+
+    def _first_splat(elts: list) -> int:
+        return next((i for i, e in enumerate(elts) if isinstance(e, ast.Starred)), len(elts))
+
+    def _record_store(
+        target: ast.AST,
+        value,
+        scope: ast.AST,
+        handled: set,
+        *,
+        certain: bool = True,
+        position = None,
+    ) -> None:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            sources = value.elts if isinstance(value, (ast.Tuple, ast.List)) else []
+            # Unpacking pairs from the left up to the first splat, and from the right after a
+            # splat on the target side. A splat in the sources makes every offset unknowable.
+            splat = _first_splat(target.elts)
+            head = min(splat, _first_splat(sources))
+            tail = splat < len(target.elts) and _first_splat(sources) == len(sources)
+            for index, elt in enumerate(target.elts):
+                # Too few sources is a runtime ValueError, not something to resolve, so those
+                # targets simply take no value.
+                from_end = len(sources) - len(target.elts) + index
+                if index < head:
+                    source = sources[index]
+                elif tail and index > splat and head <= from_end < len(sources):
+                    source = sources[from_end]
+                else:
+                    source = None
+                _record_store(elt, source, scope, handled, certain = certain, position = position)
+        elif isinstance(target, ast.Starred):
+            _record_store(target.value, None, scope, handled, certain = certain, position = position)
+        elif isinstance(target, ast.Name):
+            handled.add(id(target))
+            # `f = f`, `url = url + x`: the value is built from the earlier binding, so it adds
+            # to it rather than replacing it.
+            reads_itself = isinstance(value, ast.AST) and any(
+                isinstance(n, ast.Name) and n.id == target.id and isinstance(n.ctx, ast.Load)
+                for n in ast.walk(value)
+            )
+            _add_name_store(
+                scope,
+                target.id,
+                value,
+                target,
+                certain = certain and not reads_itself,
+                position = position,
+            )
+        elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Attribute):
+            # `s.proxies['https'] = url` adds a destination without replacing the mapping.
+            _record_store(target.value, value, scope, handled, certain = False, position = position)
+        elif isinstance(target, ast.Attribute):
+            handled.add(id(target))
+            path = _dotted(target.value)
+            if path is not None:
+                # Key on the class so sibling methods share `self.x`, else on the scope so two
+                # functions with a same-named local receiver stay apart.
+                owner = _enclosing_class(scope) or scope
+                receiver = _receiver_key(path, scope) if isinstance(owner, ast.ClassDef) else path
+                _attr_stores.setdefault((id(owner), receiver, target.attr), []).append(
+                    (
+                        value,
+                        position or _position(target),
+                        _node_block.get(id(target)),
+                        certain,
+                    )
+                )
+
+    def _evaluated_outside(node: ast.AST) -> list:
+        """Return child expressions evaluated in the enclosing scope."""
+        if isinstance(node, _FUNCTION_NODES):
+            args = node.args
+            outside = [*args.defaults, *(d for d in args.kw_defaults if d is not None)]
+            if not isinstance(node, ast.Lambda):
+                outside += [*node.decorator_list, node.returns]
+                for arg in [
+                    *args.posonlyargs,
+                    *args.args,
+                    *args.kwonlyargs,
+                    args.vararg,
+                    args.kwarg,
+                ]:
+                    if arg is not None:
+                        outside.append(arg.annotation)
+            return [n for n in outside if n is not None]
+        if isinstance(node, ast.ClassDef):
+            return [*node.decorator_list, *node.bases, *(kw.value for kw in node.keywords)]
+        if isinstance(node, _COMPREHENSION_NODES):
+            return [node.generators[0].iter]
+        return []
+
+    def _header_end(node: ast.AST) -> tuple:
+        # A definition binds its name only after its decorators, bases, defaults and
+        # annotations have been evaluated.
+        return max(
+            (_end_position(part) for part in _evaluated_outside(node)),
+            default = _position(node),
+        )
+
+    def _build_scope_model() -> None:
+        outer_scope_of: dict[int, ast.AST] = {}
+        pending: list = [(tree, tree, _ROOT_BLOCK)]
+        while pending:
+            node, scope, block = pending.pop()
+            scope = outer_scope_of.get(id(node), scope)
+            _node_scope[id(node)] = scope
+            _node_block[id(node)] = block
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                kind = "global" if isinstance(node, ast.Global) else "nonlocal"
+                for name in node.names:
+                    _declared[(id(scope), name)] = kind
+            inner = scope
+            if isinstance(node, _SCOPE_NODES):
+                _scope_parent[id(node)] = scope
+                inner = node
+                for part in _evaluated_outside(node):
+                    outer_scope_of[id(part)] = scope
+            for field, value in ast.iter_fields(node):
+                # Statements in a body run one after another, so they share a block. Anything
+                # else, an except handler included, may be skipped and starts its own.
+                child_block = block
+                if field in _BLOCK_FIELDS and isinstance(value, list):
+                    child_block = (id(node), field)
+                    _block_parent[child_block] = block
+                    if field == "body" and isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+                        _loop_blocks.add(child_block)
+                for child in value if isinstance(value, list) else [value]:
+                    if isinstance(child, ast.AST):
+                        pending.append((child, inner, child_block))
+        handled: set = set()
+        for node in _tree_nodes(tree):
+            scope = _node_scope.get(id(node), tree)
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    _record_store(target, node.value, scope, handled, position = _end_position(node))
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                _record_store(node.target, node.value, scope, handled, position = _end_position(node))
+            elif isinstance(node, ast.NamedExpr):
+                # A walrus inside a comprehension binds in the scope around it.
+                while isinstance(scope, _COMPREHENSION_NODES):
+                    scope = _scope_parent.get(id(scope)) or tree
+                # A walrus is an expression: `False and (f := print)` never binds.
+                _record_store(
+                    node.target,
+                    node.value,
+                    scope,
+                    handled,
+                    certain = False,
+                    position = _end_position(node),
+                )
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("update", "setdefault")
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr in _PROXY_KEYWORDS
+                and (node.args or node.keywords)
+            ):
+                # `s.proxies.update({...})` likewise adds to the mapping.
+                for value in [*node.args[-1:], *(kw.value for kw in node.keywords or [])]:
+                    _record_store(
+                        node.func.value,
+                        value,
+                        scope,
+                        handled,
+                        certain = False,
+                        position = _end_position(node),
+                    )
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        _record_store(
+                            item.optional_vars,
+                            item.context_expr,
+                            scope,
+                            handled,
+                            position = _end_position(item.context_expr),
+                        )
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".")[0]
+                    if alias.asname:
+                        _add_name_store(scope, alias.asname, ("import", alias.name), node)
+                    else:
+                        _add_name_store(scope, root, ("import", root), node)
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    value = (
+                        ("import", f"{node.module}.{alias.name}")
+                        if node.module and not node.level
+                        else None
+                    )
+                    _add_name_store(scope, alias.asname or alias.name, value, node)
+            elif isinstance(node, ast.ClassDef):
+                # The node itself, so `class Sub(Base)` can find Base's attribute stores.
+                _add_name_store(scope, node.name, node, node, position = _header_end(node))
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                _add_name_store(scope, node.name, None, node, position = _header_end(node))
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                _add_name_store(scope, node.name, None, node, certain = False)
+            elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+                _add_name_store(scope, node.name, None, node, certain = False)
+            elif isinstance(node, ast.MatchMapping) and node.rest:
+                _add_name_store(scope, node.rest, None, node, certain = False)
+            if isinstance(node, _FUNCTION_NODES):
+                args = node.args
+                positional = [*args.posonlyargs, *args.args]
+                defaults = dict(
+                    zip(positional[len(positional) - len(args.defaults) :], args.defaults)
+                )
+                defaults.update(
+                    {a: d for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None}
+                )
+                for arg in [*positional, *args.kwonlyargs, args.vararg, args.kwarg]:
+                    if arg is None:
+                        continue
+                    _add_name_store(node, arg.arg, None, arg)
+                    # A caller may override the default, so the default is an extra value the
+                    # parameter may hold, never a replacement for the unknown one.
+                    if arg in defaults:
+                        _add_name_store(node, arg.arg, defaults[arg], arg, certain = False)
+        # Loop and comprehension targets, `+=`, `del` and any other store not given a value above.
+        for node in _tree_nodes(tree):
+            if (
+                isinstance(node, (ast.Name, ast.Attribute))
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+                and id(node) not in handled
+            ):
+                # Loop targets, `+=` and `del`: a zero-iteration loop binds nothing, so none of
+                # these are guaranteed to have run by the time a later read happens.
+                _record_store(node, None, _node_scope.get(id(node), tree), handled, certain = False)
+        binding = {
+            (id(scope), name)
+            for scope, name, _value, _pos, _block, _certain in _raw_name_stores
+            if _declared.get((id(scope), name)) is None
+        }
+        for scope, name, value, pos, block, certain in _raw_name_stores:
+            key = (id(_store_scope(scope, name, binding)), name)
+            _name_stores.setdefault(key, []).append((value, pos, block, certain))
+
+    def _scope_model_ready() -> bool:
+        if "built" not in _model_state:
+            wanted = False
+            for n in _tree_nodes(tree):
+                if isinstance(n, ast.Import):
+                    wanted = any(a.name.split(".")[0] in _NETWORK_MODULE_ROOTS for a in n.names)
+                elif isinstance(n, ast.ImportFrom):
+                    wanted = (n.module or "").split(".")[0] in _NETWORK_MODULE_ROOTS
+                elif isinstance(n, ast.Call):
+                    wanted = isinstance(n.func, ast.Attribute) and n.func.attr == "connect"
+                if wanted:
+                    break
+            if wanted:
+                _build_scope_model()
+            _model_state["built"] = wanted
+        return _model_state["built"]
+
+    def _block_chain(block) -> set:
+        """Return this block and every block enclosing it."""
+        blocks = set()
+        while block is not None:
+            blocks.add(block)
+            block = _block_parent.get(block)
+        return blocks
+
+    def _blocks_around(node: ast.AST) -> set:
+        return _block_chain(_node_block.get(id(node)))
+
+    def _execution_scope(node: ast.AST):
+        """The body whose call decides when this node runs, or None at module or class level."""
+        scope = _node_scope.get(id(node))
+        while scope is not None and not isinstance(
+            scope, (*_FUNCTION_NODES, *_COMPREHENSION_NODES)
+        ):
+            scope = _scope_parent.get(id(scope))
+        return scope
+
+    def _reaching(stores: list, read: ast.Name, owner: ast.AST) -> list:
+        """Drop the stores a later one in the same straight line has already replaced."""
+        read_at = _position(read)
+        around = _blocks_around(read)
+        # A store below the read cannot have run yet, unless the read can come round again: a
+        # loop enclosing both, or a name bound outside the body doing the reading, since that
+        # body runs whenever it is called. Inside that body, source order still holds.
+        loops = around & _loop_blocks
+        execution = _execution_scope(read)
+        deferred = execution is not None and owner is not execution
+        reaches = [s for s in stores if deferred or s[1] < read_at or (_block_chain(s[2]) & loops)]
+        # A store in the same body, after this one and before the read, always runs in between,
+        # but only if it is guaranteed to bind at all. Branches, loop bodies and walrus
+        # expressions replace nothing. One pass per block, not one scan per store.
+        latest: dict = {}
+        for _value, pos, block, certain in reaches:
+            if certain and block in around and pos < read_at and pos > latest.get(block, (0, 0)):
+                latest[block] = pos
+        return [
+            value for value, pos, block, _certain in reaches if latest.get(block, (0, 0)) <= pos
+        ]
+
+    def _name_values(name: ast.Name) -> "list | None":
+        """Return the stores visible to this name read."""
+        if not _scope_model_ready():
+            return None
+        scope = _node_scope.get(id(name), tree)
+        if _declared.get((id(scope), name.id)) == "global":
+            stores = _name_stores.get((id(tree), name.id))
+            return None if stores is None else _reaching(stores, name, tree)
+        read_at = _position(name)
+        around = _blocks_around(name)
+        values: list = []
+        found = False
+        current: ast.AST | None = scope
+        while current is not None:
+            key = (id(current), name.id)
+            # Methods skip class-local names.
+            if key in _name_stores and (current is scope or not isinstance(current, ast.ClassDef)):
+                stores = _name_stores[key]
+                if isinstance(current, ast.ClassDef):
+                    # A class body runs top down, so a read before its first local store sees the
+                    # enclosing scope instead.
+                    stores = [s for s in stores if s[1] < read_at]
+                    if not stores:
+                        current = _scope_parent.get(id(current))
+                        continue
+                    values.extend(_reaching(stores, name, current))
+                    found = True
+                    # Only a class store that certainly ran hides the enclosing binding.
+                    if not any(cert and blk in around for _v, _p, blk, cert in stores):
+                        current = _scope_parent.get(id(current))
+                        continue
+                    break
+                values.extend(_reaching(stores, name, current))
+                found = True
+                break
+            current = _scope_parent.get(id(current))
+        return values if found else None
+
+    def _base_classes(cls: ast.ClassDef) -> list:
+        return [
+            value
+            for base in cls.bases
+            if isinstance(base, ast.Name)
+            for value in _name_values(base) or []
+            if isinstance(value, ast.ClassDef)
+        ]
+
+    def _latest_binding(name: str, scope: ast.AST, read: ast.AST):
+        """Position of the certain binding of `name` in effect at this read, if there is one."""
+        read_at = _position(read)
+        current: ast.AST | None = scope
+        while current is not None:
+            stores = _name_stores.get((id(current), name))
+            if stores is not None:
+                positions = [p for _v, p, _b, certain in stores if certain and p < read_at]
+                return max(positions, default = None)
+            current = _scope_parent.get(id(current))
+        return None
+
+    def _attr_values(expr: ast.Attribute) -> "list | None":
+        path = _dotted(expr.value)
+        if path is None:
+            return None
+        return _attr_values_for(_node_scope.get(id(expr), tree), path, expr.attr, expr)
+
+    def _attr_values_for(
+        scope: ast.AST, receiver_id: str, attr: str, read: ast.AST
+    ) -> "list | None":
+        """Return the stores an `obj.attr` receiver can hold here, nearest owning scope first."""
+        cls = _enclosing_class(scope)
+        if cls is not None:
+            # A subclass reads what its bases set on self, so walk the inheritance chain.
+            receiver = _receiver_key(receiver_id, scope)
+            values: list = []
+            pending, seen = [cls], {id(cls)}
+            while pending:
+                current = pending.pop(0)
+                stores = _attr_stores.get((id(current), receiver, attr)) or []
+                values.extend(_reaching(stores, read, current))
+                for base in _base_classes(current):
+                    if id(base) not in seen:
+                        seen.add(id(base))
+                        pending.append(base)
+            return values or None
+        current: ast.AST | None = scope
+        while current is not None:
+            stores = _attr_stores.get((id(current), receiver_id, attr))
+            if stores is not None:
+                # Rebinding the receiver throws away what was set on the previous object.
+                # Only a bare name can be rebound out from under its attributes.
+                bound_at = None if "." in receiver_id else _latest_binding(receiver_id, scope, read)
+                if bound_at is not None:
+                    stores = [store for store in stores if store[1] >= bound_at]
+                return _reaching(stores, read, current)
+            current = _scope_parent.get(id(current))
+        return None
+
+    def _alternatives(expr: ast.AST) -> list:
+        """Expand a conditional into the values it may produce."""
+        if isinstance(expr, ast.IfExp):
+            return [*_alternatives(expr.body), *_alternatives(expr.orelse)]
+        if isinstance(expr, ast.BoolOp):
+            return [alt for value in expr.values for alt in _alternatives(value)]
+        return [expr]
+
+    def _is_network_fq(fq: str) -> bool:
+        return bool(fq) and (
+            fq in _NETWORK_TARGET_ARGS
+            or fq in _CONNECTING_CLIENT_FQ
+            or fq in _REQUEST_BUILDERS
+            or any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
+        )
+
+    def _resolved_fqs(func: ast.AST, depth: int = 0) -> list:
+        """Return every fully qualified name this call target may resolve to."""
+        # Memoized per node: without it, aliases with several stores each re-expand every
+        # combination and a few hundred bytes of source cost minutes.
+        key = id(func)
+        if key in _fq_cache:
+            return _fq_cache[key]
+        # An alias cycle has no runtime value to reach, so it resolves to nothing. A chain past
+        # the cap, which is only there to keep the interpreter stack intact, is a callee we gave
+        # up on: it reports itself so the call asks instead of passing unexamined.
+        if depth > _ALIAS_DEPTH_CAP:
+            return [_UNRESOLVED_FQ]
+        if key in _fq_active:
+            return []
+        _fq_active.add(key)
+        try:
+            result = _resolve_fqs(func, depth)
+        finally:
+            _fq_active.discard(key)
+        _fq_cache[key] = result
+        return result
+
+    def _resolve_fqs(func: ast.AST, depth: int) -> list:
+        if isinstance(func, (ast.IfExp, ast.BoolOp)):
+            branches = [fq for alt in _alternatives(func) for fq in _resolved_fqs(alt, depth + 1)]
+            return list(dict.fromkeys(branches)) or [""]
+        parts: list[str] = []
+        # `(fetch := requests.get)(...)` is the callee it assigns.
+        cur = func
+        while isinstance(cur, ast.NamedExpr):
+            cur = cur.value
+        while isinstance(cur, ast.Attribute):
+            # `self.session.get(...)`: the client lives on the attribute, not in a name. The
+            # receiver may be a dotted path, which is what _record_store stores it under.
+            stores = _attr_values(cur) if _scope_model_ready() else None
+            attr_fqs = [
+                fq
+                for value in stores or []
+                if isinstance(value, ast.AST)
+                for fq in _resolved_fqs(value, depth + 1)
+            ]
+            network = [
+                fq for fq in (".".join([b, *parts]) for b in attr_fqs if b) if _is_network_fq(fq)
+            ]
+            if network:
+                return list(dict.fromkeys(network))
+            parts.insert(0, cur.attr)
+            cur = cur.value
+            while isinstance(cur, ast.NamedExpr):
+                cur = cur.value
+        if isinstance(cur, ast.Call) and "getattr" in _resolved_fqs(cur.func, depth + 1):
+            args = cur.args or []
+            owners = [b for b in _resolved_fqs(args[0], depth + 1) if b] if args else []
+            attr = args[1] if len(args) > 1 else None
+            if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+                dynamic = [
+                    fq
+                    for fq in (".".join([b, attr.value, *parts]) for b in owners)
+                    if _is_network_fq(fq)
+                ]
+                if dynamic:
+                    return list(dict.fromkeys(dynamic))
+            elif any(b in _NETWORK_OWNERS for b in owners):
+                # A runtime attribute of a tracked module is a call we cannot name, so ask.
+                return [_UNRESOLVED_FQ]
+        if isinstance(cur, ast.Call):
+            # An instance stands for the constructor that made it, but only when that lands on a
+            # known client: an opaque helper's name says nothing about what it returned.
+            instances = [
+                fq
+                for fq in (
+                    ".".join([base, *parts]) for base in _resolved_fqs(cur.func, depth + 1) if base
+                )
+                if _is_network_fq(fq)
+            ]
+            return list(dict.fromkeys(instances)) or [""]
+        if isinstance(cur, ast.Name):
+            bases: list[str] = []
+            gave_up = False
+            for value in _name_values(cur) or []:
+                if isinstance(value, tuple):
+                    bases.append(value[1])
+                    continue
+                for alt in _alternatives(value) if isinstance(value, ast.AST) else [value]:
+                    # Follow assigned module and function aliases.
+                    if isinstance(alt, (ast.Name, ast.Attribute, ast.IfExp, ast.BoolOp, ast.Call)):
+                        inner = _resolved_fqs(alt, depth + 1)
+                        gave_up = gave_up or _UNRESOLVED_FQ in inner
+                        found = [fq for fq in inner if fq != _UNRESOLVED_FQ]
+                        if isinstance(alt, ast.Call):
+                            # Same rule as above: a call result is only what its constructor
+                            # names when that is a known client.
+                            found = [fq for fq in found if _is_network_fq(".".join([fq, *parts]))]
+                        bases.extend(found or [""])
+                    else:
+                        bases.append("")
+            # Rebinding the name elsewhere does not undo the import this call can reach, so every
+            # store that lands on a network call is kept and checked. Picking one by module root
+            # would let `import socket as r` shadow `import requests as r`, and picking one
+            # network store would read the wrong argument when their signatures differ.
+            network = [
+                fq for fq in (".".join([b, *parts]) for b in bases if b) if _is_network_fq(fq)
+            ]
+            if gave_up:
+                network.append(_UNRESOLVED_FQ)
+            if network:
+                return list(dict.fromkeys(network))
+            # Every base that resolved, not only a unanimous one: a store whose own resolution
+            # hit a cycle contributes nothing, and it must not hide the store that did resolve.
+            resolved = list(dict.fromkeys(".".join([b, *parts]) for b in bases if b))
+            if resolved:
+                return resolved
+            parts.insert(0, cur.id)
+        return [".".join(parts)] if parts else [""]
+
+    def _bound_value(expr: ast.AST, seen: frozenset) -> "tuple[ast.AST, frozenset]":
+        """Resolve a name with one known store."""
+        while isinstance(expr, ast.Name):
+            values = _name_values(expr)
+            if not values or len(values) != 1 or not isinstance(values[0], ast.AST):
+                break
+            if id(values[0]) in seen:
+                break
+            seen = seen | {id(values[0])}
+            expr = values[0]
+        return expr, seen
+
+    def _static_prefix(
+        expr: ast.AST,
+        seen: frozenset = frozenset(),
+        *,
+        formatted: bool = False,
+    ) -> "tuple[str, bool] | None":
+        """Return a string's known prefix and whether it is complete."""
+        expr, seen = _bound_value(expr, seen)
+        if isinstance(expr, ast.Constant):
+            if isinstance(expr.value, str):
+                return expr.value, True
+            if formatted and isinstance(expr.value, int) and not isinstance(expr.value, bool):
+                return str(expr.value), True
+            return None
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            left = _static_prefix(expr.left, seen)
+            if left is None or not left[1]:
+                return left
+            right = _static_prefix(expr.right, seen)
+            if right is None:
+                return left[0], False
+            return left[0] + right[0], right[1]
+        if isinstance(expr, ast.JoinedStr):
+            text = ""
+            for value in expr.values:
+                formatted = isinstance(value, ast.FormattedValue)
+                if formatted:
+                    if value.conversion != -1 or value.format_spec is not None:
+                        return text, False
+                    value = value.value
+                piece = _static_prefix(value, seen, formatted = formatted)
+                if piece is None:
+                    return text, False
+                text += piece[0]
+                if not piece[1]:
+                    return text, False
+            return text, True
+        return None
+
+    def _target_hosts(
+        expr: ast.AST,
+        kind: str,
+        depth: int = 0,
+    ) -> list:
+        """Resolve a target to one (resolved, host) per store it may hold."""
+        if isinstance(expr, ast.Name) and depth <= 8:
+            values = _name_values(expr)
+            if values and len(values) > 1:
+                # A store with no value (parameter, loop target, import) is an unknown host, not
+                # an absent one, so it has to keep the call unresolved.
+                return [
+                    result
+                    for value in values
+                    for result in (
+                        _target_hosts(value, kind, depth + 1)
+                        if isinstance(value, ast.AST)
+                        else [(False, None)]
+                    )
+                ]
+        return _target_host(expr, kind, depth)
+
+    def _target_host(
+        expr: ast.AST,
+        kind: str,
+        depth: int = 0,
+    ) -> list:
+        """Resolve a URL, host string, or (host, port) target to [(resolved, host)]."""
+        expr, _seen = _bound_value(expr, frozenset())
+        if isinstance(expr, (ast.IfExp, ast.BoolOp)) and depth <= 8:
+            return [r for alt in _alternatives(expr) for r in _target_hosts(alt, kind, depth + 1)]
+        if kind == "url" and isinstance(expr, ast.Call):
+            # urlopen(Request(url, ...)) and client.send(build_request(m, url)) connect to the
+            # URL the request was built with.
+            builder = next(
+                (
+                    _REQUEST_BUILDERS[fq]
+                    for fq in _resolved_fqs(expr.func)
+                    if fq in _REQUEST_BUILDERS
+                ),
+                None,
+            )
+            if builder is not None:
+                present, inner = _call_target(expr, *builder)
+                if not present or inner is None:
+                    return [(False, None)]
+                return _target_hosts(inner, "url", depth + 1)
+        if isinstance(expr, ast.Dict) and depth <= 8:
+            if not expr.values:
+                return [(True, None)]
+            return [r for v in expr.values for r in _target_hosts(v, kind, depth + 1)]
+        if isinstance(expr, (ast.Tuple, ast.List)):
+            if not expr.elts:
+                return [(True, None)]
+            return _target_hosts(expr.elts[0], "host", depth + 1)
+        if isinstance(expr, ast.Constant) and expr.value is None:
+            # An explicit None is a disabled proxy or an absent target, not an unknown host.
+            return [(True, None)]
+        prefix = _static_prefix(expr)
+        if prefix is None:
+            return [(False, None)]
+        text, complete = prefix
+        # urlsplit drops tab and newline anywhere and ignores leading control characters, so
+        # `requests.get(" http://host/")` reaches the host. Parse what the client will send.
+        text = re.sub(r"[\t\r\n]", "", text).lstrip("\x00-\x20 ")
+        if kind == "url":
+            # A partial URL resolves only once its authority is closed off by a path, query or fragment.
+            m = re.match(r"^\w+://([^/?#]+)" if complete else r"^\w+://([^/?#]+)[/?#]", text)
+            if m:
+                return [(True, m.group(1))]
+            return [(True, None)] if complete else [(False, None)]
+        return [(True, text)] if complete else [(False, None)]
+
+    def _call_target(node: ast.Call, position, keyword) -> "tuple[bool, ast.AST | None]":
+        """Return the target argument; splats yield (True, None). A position of None is
+        keyword-only, and a tuple of keywords accepts any of them."""
+        names = (keyword,) if isinstance(keyword, str) else keyword
+        for kw in node.keywords or []:
+            if kw.arg in names:
+                return True, kw.value
+        args = node.args or []
+        if position is not None:
+            if any(isinstance(a, ast.Starred) for a in args[: position + 1]):
+                return True, None
+            if len(args) > position:
+                return True, args[position]
+        if any(kw.arg is None for kw in node.keywords or []):
+            return True, None
+        return False, None
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
+        def _check_host(self, node, host: str) -> None:
+            if _is_metadata_host(host):
+                network_calls.append(
+                    {
+                        "type": "metadata_host_blocked",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "Blocked: cloud-metadata host",
+                    }
+                )
+            elif not _is_trusted_host(host):
+                network_calls.append(
+                    {
+                        "type": "untrusted_host_blocked",
+                        "line": getattr(node, "lineno", -1),
+                        "description": (
+                            "Blocked: host not in sandbox allowlist; "
+                            "use an allowed informational source"
+                        ),
+                    }
+                )
+
+        def _check_target(self, node, targets: list, *, connects: bool) -> None:
+            results = []
+            for present, expr, kind in targets:
+                if not present:
+                    continue
+                results.extend([(False, None)] if expr is None else _target_hosts(expr, kind))
+            if not results:
+                return
+            # Competing signatures and stores may only add a prompt, never drop a refusal, so a
+            # host that is out of policy on any of them decides the call.
+            blocked = next(
+                (
+                    h
+                    for _resolved, h in results
+                    if h and (_is_metadata_host(h) or not _is_trusted_host(h))
+                ),
+                None,
+            )
+            if blocked:
+                self._check_host(node, blocked)
+            elif connects and not all(resolved for resolved, _h in results):
+                unresolved_network_calls.append(
+                    {
+                        "type": "unresolved_network_host",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "Network call to a host that is not statically known",
+                    }
+                )
+
         def visit_Call(self, node):
             parts: list[str] = []
             cur = node.func
@@ -16265,6 +17234,15 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
             fq = ".".join(parts) if parts else ""
+            net_fqs = _resolved_fqs(node.func)
+            if _UNRESOLVED_FQ in net_fqs:
+                unresolved_network_calls.append(
+                    {
+                        "type": "unresolved_network_host",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "Network call to a host that is not statically known",
+                    }
+                )
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
@@ -16278,40 +17256,23 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
-                a0 = node.args[0]
-                host_lit = None
-                if isinstance(a0, ast.Tuple) and a0.elts:
-                    e0 = a0.elts[0]
-                    if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                        host_lit = e0.value
-                elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
-                if host_lit:
-                    if _is_metadata_host(host_lit):
-                        network_calls.append(
-                            {
-                                "type": "metadata_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": "Blocked: cloud-metadata host",
-                            }
-                        )
-                    elif not _is_trusted_host(host_lit):
-                        network_calls.append(
-                            {
-                                "type": "untrusted_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": (
-                                    "Blocked: host not in sandbox allowlist; "
-                                    "use an allowed informational source"
-                                ),
-                            }
-                        )
+            # A tracked client's own .connect is in the target table and goes through the
+            # network branch below. Any other .connect keeps main's positional-literal check,
+            # which is what leaves database drivers alone.
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and not any(_is_network_fq(fq) for fq in net_fqs)
+                and node.args
+                and isinstance(node.args[0], (ast.Tuple, ast.Constant))
+            ):
+                self._check_target(node, [(True, node.args[0], "host")], connects = False)
 
-            if fq and any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
+            # _is_network_fq, not the prefixes alone: a name in the target table is a network
+            # call whether or not some prefix also happens to cover it.
+            if any(_is_network_fq(fq) for fq in net_fqs):
                 # 1) Upload-shape check (host-independent).
-                if _call_is_upload_shape(node, fq):
+                if any(_call_is_upload_shape(node, fq) for fq in net_fqs):
                     network_calls.append(
                         {
                             "type": "upload_blocked",
@@ -16320,42 +17281,37 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple).
-                host_arg = None
-                url_arg = None
-                if node.args:
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    elif isinstance(a0, ast.Tuple) and a0.elts:
-                        e0 = a0.elts[0]
-                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                            host_arg = e0.value
-                if url_arg and host_arg is None:
-                    m = re.match(r"^\w+://([^/?#]+)", url_arg)
-                    if m:
-                        host_arg = m.group(1)
-
-                if host_arg:
-                    if _is_metadata_host(host_arg):
-                        network_calls.append(
-                            {
-                                "type": "metadata_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": "Blocked: cloud-metadata host",
-                            }
+                # 2) Resolve the call's URL or host argument under every candidate signature.
+                specs = list(
+                    dict.fromkeys(
+                        _NETWORK_TARGET_ARGS[fq] for fq in net_fqs if fq in _NETWORK_TARGET_ARGS
+                    )
+                )
+                if specs:
+                    targets = [(*_call_target(node, pos, kw), kind) for pos, kw, kind in specs]
+                    targets += [
+                        (True, kw.value, "url")
+                        for kw in node.keywords or []
+                        if kw.arg in _PROXY_KEYWORDS
+                    ]
+                    # `s.proxies = {...}` before the call sends there just the same.
+                    receiver = (
+                        _dotted(node.func.value) if isinstance(node.func, ast.Attribute) else None
+                    )
+                    if receiver is not None:
+                        scope = _node_scope.get(id(node), tree)
+                        path = (
+                            _receiver_key(receiver, scope)
+                            if _enclosing_class(scope) is not None
+                            else receiver
                         )
-                    elif not _is_trusted_host(host_arg):
-                        network_calls.append(
-                            {
-                                "type": "untrusted_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": (
-                                    "Blocked: host not in sandbox allowlist; "
-                                    "use an allowed informational source"
-                                ),
-                            }
-                        )
+                        targets += [
+                            (True, value, "url")
+                            for attr in _PROXY_KEYWORDS
+                            for value in _attr_values_for(scope, path, attr, node) or []
+                            if isinstance(value, ast.AST)
+                        ]
+                    self._check_target(node, targets, connects = True)
 
             is_open_call = (
                 (isinstance(node.func, ast.Name) and node.func.id == "open")
@@ -16400,6 +17356,7 @@ def _check_signal_escape_patterns(code: str):
         "exception_catching": exception_catching,
         "shell_escapes": shell_escapes,
         "network_calls": network_calls,
+        "unresolved_network_calls": unresolved_network_calls,
         "sensitive_file_reads": sensitive_file_reads,
         "warnings": warnings,
     }
@@ -16408,12 +17365,17 @@ def _check_signal_escape_patterns(code: str):
 def _check_code_safety(code: str) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
     unsafe, or None if OK."""
+    return _code_safety_report(code)[0]
+
+
+def _code_safety_report(code: str) -> "tuple[str | None, dict]":
+    """Return the safety error and its analysis in one pass."""
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
         # Let SyntaxError from ast.parse through so the subprocess produces a normal Python traceback instead of a
         # misleading "unsafe code" message.
         if info.get("error"):
-            return None
+            return None, info
 
         reasons = [item.get("description", "") for item in info.get("signal_tampering", [])]
         shell_reasons = [item.get("description", "") for item in info.get("shell_escapes", [])]
@@ -16433,9 +17395,9 @@ def _check_code_safety(code: str) -> str | None:
             return (
                 f"Error: unsafe code detected ({'; '.join(all_reasons)}). "
                 f"Please remove unsafe patterns from your code."
-            )
+            ), info
 
-    return None
+    return None, info
 
 
 def _adopt_tool_pid(pid: "int | None") -> None:
