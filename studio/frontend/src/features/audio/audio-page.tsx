@@ -2697,6 +2697,7 @@ export function AudioPage({
                   }
                 >
                   <Textarea
+                    data-type-to-activate="prompt"
                     id="audio-prompt"
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
