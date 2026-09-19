@@ -875,6 +875,8 @@ def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:
         if get_chat_thread(thread_id) is None:
             conversation_archive.delete_thread_documents(thread_id)
             return False
+        if not document_ids and get_chat_thread(source_thread_id) is None:
+            return False
         remap_chat_thread_document_ids(thread_id, document_ids)
         return not missed
     except Exception:

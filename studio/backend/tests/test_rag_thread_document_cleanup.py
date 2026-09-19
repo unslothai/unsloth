@@ -377,6 +377,25 @@ def test_deleting_a_fork_during_file_copy_does_not_leave_orphan_documents(client
     assert set(os.listdir(upload_dir)) == before
 
 
+def test_a_fork_warns_if_the_source_is_deleted_before_document_lookup(client, monkeypatch):
+    from core.rag import conversation_archive
+
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    _upload(client, "source", "source.txt", "echo foxtrot golf " * 50)
+    copy_documents = conversation_archive.copy_thread_documents
+
+    def delete_then_copy(source_thread_id, thread_id):
+        response = client.request("DELETE", "/api/chat/threads", json = {"ids": ["source"]})
+        assert response.status_code == 200, response.text
+        return copy_documents(source_thread_id, thread_id)
+
+    monkeypatch.setattr(conversation_archive, "copy_thread_documents", delete_then_copy)
+    warning = _fork(client, "source", "m1", "fork")["containerSnapshotWarning"]
+    assert "not copied" in (warning or "")
+    assert _thread_documents(client, "fork") == []
+
+
 def _cite(client, thread_id, message_id, document_id):
     sources = [
         {
