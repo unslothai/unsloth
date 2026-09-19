@@ -10,11 +10,25 @@ quantized checkpoints ship a different chat template, so only detection from
 the actual template is reliable.
 """
 
+import random
+import re
+
+from .iterable import is_streaming_dataset
 from .model_mappings import (
     MODEL_TO_TEMPLATE_MAPPER,
     TEMPLATE_TO_RESPONSES_MAPPER,
     is_gpt_oss_model_name,
 )
+
+# unsloth_zoo's train_on_responses_only raises this when masking left nothing to
+# train on. Its text blames the markers, but max_seq_length truncation produces
+# the exact same condition (the marker is cut off before masking runs), so the
+# error is re-raised with a truncation-aware diagnosis when the evidence fits.
+_NO_TRAINING_SIGNAL_RE = re.compile(
+    "train_on_responses_only masked every label to -100.*was not found in any sample",
+    re.DOTALL,
+)
+_TRUNCATION_SAMPLE_SIZE = 100  # same cap as unsloth_zoo's truncation diagnosis
 
 
 def lookup_manual_markers(model_name):
@@ -26,6 +40,56 @@ def lookup_manual_markers(model_name):
     if markers:
         return template, markers["instruction"], markers["response"]
     return template, None, None
+
+
+def _masking_failed_with_truncation(exc, trainer):
+    """Return True when `exc` is the zoo's no-training-signal error and the
+    trainer's already-tokenized rows sit at the sequence cap, i.e. truncation
+    cut the response marker off before masking could find it."""
+    if not _NO_TRAINING_SIGNAL_RE.search(str(exc)):
+        return False
+    args = getattr(trainer, "args", None)
+    max_length = getattr(args, "max_length", None) or getattr(args, "max_seq_length", None)
+    if not max_length:
+        return False
+    dataset = getattr(trainer, "train_dataset", None)
+    if dataset is None or is_streaming_dataset(dataset):
+        return False
+    input_ids = dataset._data["input_ids"]
+    if len(input_ids) == 0:
+        return False
+    sample = random.sample(range(len(input_ids)), min(_TRUNCATION_SAMPLE_SIZE, len(input_ids)))
+    at_cap = sum(1 for i in sample if input_ids[i] is not None and len(input_ids[i]) >= max_length)
+    return at_cap / len(sample) >= 0.9
+
+
+def _truncation_error(exc, trainer):
+    """Re-raise the zoo's no-training-signal error with the truncation cause
+    named, so users are pointed at max_seq_length instead of the (correct)
+    markers."""
+    args = getattr(trainer, "args", None)
+    max_length = getattr(args, "max_length", None) or getattr(args, "max_seq_length", None)
+    raise ValueError(
+        f"{exc}\n\n"
+        f"Unsloth Studio: every sample was truncated at max_seq_length={max_length} "
+        "before the response marker could appear, so nothing was trainable. "
+        "This dataset has prompts longer than max_seq_length: raise "
+        "max_seq_length above your longest sample (GPU memory permitting), or "
+        "turn off 'Train on completions' to train on the full truncated "
+        "sequences instead."
+    ) from exc
+
+
+def _apply_with_truncation_diagnosis(trainer, train_fn, **kwargs):
+    """Call train_fn and, when the zoo's no-training-signal error fires, sample
+    rows to tell truncation (marker cut off by max_seq_length) apart from a
+    genuine marker/template mismatch, and raise the matching diagnosis."""
+    try:
+        return train_fn(trainer, **kwargs)
+    except ValueError as exc:
+        if _masking_failed_with_truncation(exc, trainer):
+            _truncation_error(exc, trainer)
+        raise
 
 
 def apply_completion_masking(
@@ -90,13 +154,14 @@ def apply_completion_masking(
             inner._unsloth_input_part = markers["instruction"]
             inner._unsloth_output_part = markers["response"]
             try:
-                trainer = train_fn(trainer, **kwargs)
+                trainer = _apply_with_truncation_diagnosis(trainer, train_fn, **kwargs)
             finally:
                 inner._unsloth_input_part = previous_instruction
                 inner._unsloth_output_part = previous_response
         else:
-            trainer = train_fn(
+            trainer = _apply_with_truncation_diagnosis(
                 trainer,
+                train_fn,
                 instruction_part = markers["instruction"],
                 response_part = markers["response"],
                 **kwargs,
@@ -119,7 +184,7 @@ def apply_completion_masking(
             response_part = markers["response"]
     if hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part"):
         # Markers preset on the tokenizer; zoo reuses them on a bare call.
-        trainer = train_fn(trainer, **kwargs)
+        trainer = _apply_with_truncation_diagnosis(trainer, train_fn, **kwargs)
         notify(
             "info",
             "Train on responses only configured via tokenizer preset markers",
@@ -139,8 +204,9 @@ def apply_completion_masking(
             f"falling back to the template table",
         )
     if auto_instruction and auto_response:
-        trainer = train_fn(
+        trainer = _apply_with_truncation_diagnosis(
             trainer,
+            train_fn,
             instruction_part = auto_instruction,
             response_part = auto_response,
             **kwargs,
@@ -152,8 +218,9 @@ def apply_completion_masking(
         return trainer, True
 
     if instruction_part and response_part:
-        trainer = train_fn(
+        trainer = _apply_with_truncation_diagnosis(
             trainer,
+            train_fn,
             instruction_part = instruction_part,
             response_part = response_part,
             **kwargs,
