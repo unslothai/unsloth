@@ -18,6 +18,15 @@
   var overlay = null;
   var retainedSnapshot = null;
   var removalTimer = null;
+  var accountStorageKey = "unsloth.browser-account.v1";
+  function readAccountMarker() {
+    try {
+      return localStorage.getItem(accountStorageKey);
+    } catch (error) {
+      return null;
+    }
+  }
+  var initialAccountMarker = readAccountMarker();
   // Appearance is inline custom properties on <html> plus these gate attributes, written by
   // theme-boot.js (mode and palette) and applyCustomizationToDocument in
   // src/features/settings/stores/appearance-custom-store.ts (the rest). Uncarried, the copy paints
@@ -658,6 +667,7 @@
 
   function saveSnapshot() {
     if (
+      readAccountMarker() !== initialAccountMarker ||
       document.documentElement.hasAttribute("data-reload-snapshot-private")
     ) {
       clearStoredSnapshot();

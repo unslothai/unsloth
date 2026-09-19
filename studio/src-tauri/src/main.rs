@@ -12,6 +12,8 @@ mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
 mod loopback_http;
+#[cfg(target_os = "macos")]
+mod macos_tray;
 mod native_backend_lease;
 mod native_clipboard;
 mod native_file_dialogs;
@@ -986,13 +988,12 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-/// Renderer-only activity, mirrored here for the same reason: Hub downloads, which the
-/// backend runs but only the frontend tracks, and the Tauri shell self-update, which
-/// `update::is_update_running` stops covering once `downloadAndInstall` takes over.
+/// renderer-owned downloads, shell updates and unsaved transcripts must also protect native quit.
 #[derive(Default)]
 pub struct RendererActivity {
     pub downloads: bool,
     pub shell_update: bool,
+    pub unsaved_transcript: bool,
 }
 
 pub type RendererActivityState = std::sync::Arc<std::sync::Mutex<RendererActivity>>;
@@ -1007,6 +1008,7 @@ fn apply_renderer_activity(state: &RendererActivityState, kind: &str, active: bo
         match kind {
             "downloads" => activity.downloads = active,
             "shell_update" => activity.shell_update = active,
+            "unsaved_transcript" => activity.unsaved_transcript = active,
             // An unknown kind is a renderer/Rust mismatch, never a reason to flip a flag.
             _ => {}
         }
@@ -1027,8 +1029,26 @@ fn current_renderer_activity(app: &tauri::AppHandle) -> RendererActivity {
         .map(|activity| RendererActivity {
             downloads: activity.downloads,
             shell_update: activity.shell_update,
+            unsaved_transcript: activity.unsaved_transcript,
         })
         .unwrap_or_default()
+}
+
+fn confirm_quit_with_unsaved_transcript(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    if !current_renderer_activity(app).unsaved_transcript {
+        return true;
+    }
+    app.dialog()
+        .message("A transcript could not be saved. Download a copy before quitting to keep it.")
+        .kind(MessageDialogKind::Warning)
+        .title("Unsaved transcript")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep open".to_string(),
+        ))
+        .blocking_show()
 }
 
 /// Ask before quitting mid shell update (true to proceed). request_quit only, as below.
@@ -1145,6 +1165,7 @@ fn quit_requires_confirmation(app: &tauri::AppHandle) -> bool {
     install_is_active(app)
         || update_active
         || renderer.shell_update
+        || renderer.unsaved_transcript
         || training_is_active(app)
         || renderer.downloads
 }
@@ -1512,6 +1533,7 @@ where
                             && confirm_quit_during_update(&app)
                             && confirm_quit_during_shell_update(&app)
                             && confirm_quit_during_training(&app)
+                            && confirm_quit_with_unsaved_transcript(&app)
                             && confirm_quit_during_downloads(&app)
                     },
                     || {
@@ -1710,10 +1732,18 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     app.manage(TrayServerToggle(toggle));
 
-    TrayIconBuilder::new()
+    // macOS renders tray images at 18 points. Embed the 36 px scale for crisp Retina output;
+    // template mode lets AppKit choose the correct monochrome color for the current menu bar.
+    #[cfg(target_os = "macos")]
+    let tray_icon = tauri::include_image!("./icons/tray-icon@2x.png");
+    #[cfg(not(target_os = "macos"))]
+    let tray_icon = app.default_window_icon().unwrap().clone();
+
+    let tray = TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("Unsloth")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
             "toggle" => {
@@ -1733,6 +1763,14 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .build(app)?;
+
+    #[cfg(target_os = "macos")]
+    if let Err(error) = macos_tray::install_appearance_observer(&tray) {
+        // The template icon remains visible and adaptive if native observation is unavailable.
+        warn!("Could not install the macOS tray appearance observer: {error}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    drop(tray);
 
     Ok(())
 }
@@ -1820,6 +1858,195 @@ fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+/// Mirror endpoints for the webview CSP: this process, plus any backend it adopts.
+fn configured_hf_endpoints() -> Vec<String> {
+    let mut raw: Vec<String> = ["HF_ENDPOINT", "HF_DATASETS_SERVER"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .collect();
+    // An adopted backend may have been started from a shell that set HF_ENDPOINT
+    // while this process was not; /api/health sends the frontend to that mirror.
+    raw.extend(desktop_backend_owner::recorded_hf_endpoints());
+    csp_sources_from(raw)
+}
+
+fn csp_sources_from(raw: Vec<String>) -> Vec<String> {
+    let mut sources: Vec<String> = Vec::new();
+    for value in raw {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            continue;
+        }
+        let with_scheme =
+            if value.contains("://") { value } else { format!("https://{value}") };
+        let trimmed = with_scheme.trim_end_matches('/');
+        let normalised = match split_scheme(trimmed) {
+            Some((scheme, rest)) => format!("{scheme}://{rest}"),
+            None => trimmed.to_string(),
+        };
+        if !is_usable_csp_source(&normalised) {
+            continue;
+        }
+        let source = csp_origin_of(&normalised);
+        if !sources.contains(&source) {
+            sources.push(source);
+        }
+    }
+    sources
+}
+
+/// Split "scheme://rest", scheme lowercased (RFC 3986 3.1).
+fn split_scheme(endpoint: &str) -> Option<(String, &str)> {
+    endpoint
+        .split_once("://")
+        .map(|(scheme, rest)| (scheme.to_ascii_lowercase(), rest))
+}
+
+/// Mirrors `utils/hf_endpoint.py::is_loopback_host`.
+fn is_loopback_host(authority: &str) -> bool {
+    let host = match authority.rsplit_once(':') {
+        Some((h, port)) if !authority.ends_with(']') && port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => authority,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    // Parsed, not string-matched: 0:0:0:0:0:0:0:1 is ::1, and 127.x.y.z all count.
+    matches!(host.parse::<std::net::IpAddr>(), Ok(ip) if ip.is_loopback())
+}
+
+/// Compress an IPv6 literal: a host-source is matched as a string (CSP3 6.7.2.5)
+/// and the browser sends the compressed form.
+fn canonical_authority(authority: &str) -> String {
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((host, tail)) => (host, tail),
+            None => return authority.to_string(),
+        },
+        None => return authority.to_string(),
+    };
+    match host.parse::<std::net::Ipv6Addr>() {
+        Ok(ip) => format!("[{ip}]{port}"),
+        Err(_) => authority.to_string(),
+    }
+}
+
+/// Reduce to scheme://host[:port]: a host-source with a path is matched EXACTLY
+/// unless the path ends in a solidus (CSP3 6.7.2.7).
+fn csp_origin_of(endpoint: &str) -> String {
+    match split_scheme(endpoint) {
+        Some((scheme, rest)) => {
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            format!("{scheme}://{}", canonical_authority(authority))
+        }
+        None => endpoint.to_string(),
+    }
+}
+
+/// Mirrors `utils/hf_endpoint.py::_sanitize`, so the webview policy and
+/// /api/health never disagree about what counts as configured.
+fn is_usable_csp_source(endpoint: &str) -> bool {
+    let (scheme, authority) = match split_scheme(endpoint) {
+        Some((scheme, rest)) if scheme == "http" || scheme == "https" => (scheme, rest),
+        _ => return false,
+    };
+    if endpoint
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, ';' | ',' | '\'' | '"' | '\\'))
+    {
+        return false;
+    }
+    // No IDNA encoder here, and latin-1 CSP headers on the backend.
+    if !endpoint.is_ascii() {
+        return false;
+    }
+    let host = authority
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    if host.is_empty() || host.contains('@') || authority.contains('?') || authority.contains('#') {
+        return false;
+    }
+    if host.contains('*') {
+        return false;
+    }
+    // Hub calls carry the user's token: http off-box puts it on the wire.
+    if scheme == "http" && !is_loopback_host(host) {
+        return false;
+    }
+    // "javascript:alert(1)" arrives as "https://javascript:alert(1)".
+    match host.rsplit_once(':') {
+        Some((_, port)) if !host.ends_with(']') => {
+            !port.is_empty() && port.chars().all(|c| c.is_ascii_digit())
+        }
+        _ => true,
+    }
+}
+
+/// Append to `connect-src`, skipping sources already listed. Matched on the
+/// directive's first token, so a hostname containing it cannot match.
+fn append_connect_sources(policy: &mut String, sources: &[String]) -> bool {
+    append_sources_to(policy, "connect-src", sources)
+}
+
+/// The same, for any directive. img-src and media-src carry a bare `https:`,
+/// which does not cover a plain-HTTP loopback mirror.
+fn append_sources_to(policy: &mut String, directive_name: &str, sources: &[String]) -> bool {
+    let mut appended = false;
+    let rebuilt: Vec<String> = policy
+        .split(';')
+        .map(|directive| directive.trim())
+        .filter(|directive| !directive.is_empty())
+        .map(|directive| {
+            let is_target = directive
+                .split_whitespace()
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case(directive_name));
+            if !is_target || appended {
+                return directive.to_string();
+            }
+            let existing: Vec<&str> = directive.split_whitespace().collect();
+            let mut tokens = existing.clone();
+            for source in sources {
+                if !existing.iter().any(|token| *token == source.as_str()) {
+                    tokens.push(source);
+                }
+            }
+            appended = true;
+            tokens.join(" ")
+        })
+        .collect();
+    if appended {
+        *policy = rebuilt.join("; ");
+    }
+    appended
+}
+
+/// tauri.conf.json's static CSP allows only the official Hub hosts. Tauri builds
+/// the header from the Context config on every asset request, so appending here
+/// covers the statically declared window too.
+fn extend_csp_with_hf_endpoints<R: tauri::Runtime>(context: &mut tauri::Context<R>) {
+    let endpoints = configured_hf_endpoints();
+    if endpoints.is_empty() {
+        return;
+    }
+    if let Some(tauri::utils::config::Csp::Policy(policy)) =
+        context.config_mut().app.security.csp.as_mut()
+    {
+        append_connect_sources(policy, &endpoints);
+        let assets: Vec<String> = endpoints
+            .iter()
+            .filter(|e| e.starts_with("http://"))
+            .cloned()
+            .collect();
+        if !assets.is_empty() {
+            append_sources_to(policy, "img-src", &assets);
+            append_sources_to(policy, "media-src", &assets);
+        }
+    }
+}
+
 fn main() {
     // Must precede any Xlib call: GTK3 never calls XInitThreads and this
     // process drives X from several threads. See x11_threads for the crash.
@@ -1849,7 +2076,8 @@ fn main() {
     }
     windows_job::initialize();
 
-    let context = tauri::generate_context!();
+    let mut context = tauri::generate_context!();
+    extend_csp_with_hf_endpoints(&mut context);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1897,6 +2125,8 @@ fn main() {
             commands::start_managed_server,
             commands::stop_server,
             commands::check_health,
+            commands::check_backend_present,
+            commands::check_backend_is_gone,
             commands::get_server_logs,
             commands::open_logs_dir,
             commands::open_models_dir,
@@ -1919,6 +2149,7 @@ fn main() {
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
             native_file_dialogs::save_native_file_from_url,
+            native_file_dialogs::download_logs_to_downloads,
             native_file_dialogs::pick_native_chat_import,
             native_file_dialogs::read_native_chat_import_chunk,
             native_file_dialogs::pick_native_training_config,
@@ -2028,6 +2259,9 @@ fn main() {
                 // roughly 18s on Windows, where those first two graceful waits are
                 // `#[cfg(unix)]` and go straight to the force kill, but the backend spends
                 // its liveness, shutdown and CTRL_BREAK budgets in series instead.
+                #[cfg(target_os = "macos")]
+                macos_tray::remove_appearance_observer();
+
                 cleanup_child_processes(app);
             }
             _ => {}
@@ -2062,6 +2296,160 @@ mod tests {
         file.flush().unwrap();
         assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "bbbbcccccccccc");
         assert_eq!(fs::read_to_string(&log_path).unwrap(), "dddd");
+    }
+
+    #[test]
+    fn connect_sources_appended_after_existing_directive() {
+        let mut policy = "default-src 'self'; connect-src 'self' https://huggingface.co; img-src 'self' data:".to_string();
+        assert!(append_connect_sources(
+            &mut policy,
+            &["https://hf-mirror.com".to_string(), "https://ds.example.com".to_string()],
+        ));
+        assert_eq!(
+            policy,
+            "default-src 'self'; connect-src 'self' https://huggingface.co https://hf-mirror.com https://ds.example.com; img-src 'self' data:",
+        );
+    }
+
+    #[test]
+    fn already_listed_sources_are_not_duplicated() {
+        let mut policy = "connect-src 'self' https://huggingface.co".to_string();
+        assert!(append_connect_sources(&mut policy, &["https://huggingface.co".to_string()]));
+        assert_eq!(policy, "connect-src 'self' https://huggingface.co");
+    }
+
+    #[test]
+    fn policy_without_connect_src_is_left_untouched() {
+        let mut policy = "default-src 'self'; img-src 'self' data:".to_string();
+        assert!(!append_connect_sources(&mut policy, &["https://hf-mirror.com".to_string()]));
+        assert_eq!(policy, "default-src 'self'; img-src 'self' data:");
+    }
+
+    #[test]
+    fn hostname_containing_directive_name_cannot_match() {
+        let mut policy = "connect-src 'self'; img-src connect-src.evil.com".to_string();
+        assert!(append_connect_sources(&mut policy, &["https://hf-mirror.com".to_string()]));
+        assert_eq!(policy, "connect-src 'self' https://hf-mirror.com; img-src connect-src.evil.com");
+    }
+
+    #[test]
+    fn a_path_prefixed_mirror_is_reduced_to_its_origin() {
+        assert_eq!(csp_origin_of("https://hub.internal/hf"), "https://hub.internal");
+        assert_eq!(
+            csp_origin_of("https://hub.internal:8443/hf/v2"),
+            "https://hub.internal:8443"
+        );
+        assert_eq!(csp_origin_of("https://hf-mirror.com"), "https://hf-mirror.com");
+        assert_eq!(csp_origin_of("http://localhost:8080"), "http://localhost:8080");
+    }
+
+    #[test]
+    fn a_plain_https_origin_is_a_usable_csp_source() {
+        assert!(is_usable_csp_source("https://hf-mirror.com"));
+        assert!(is_usable_csp_source("http://localhost:8080"));
+        assert!(is_usable_csp_source("https://hub.internal:8443/hf"));
+    }
+
+    #[test]
+    fn an_endpoint_that_could_forge_a_directive_is_rejected() {
+        for hostile in [
+            "https://hf-mirror.com; script-src *",
+            "https://hf-mirror.com *",
+            "https://hf-mirror.com\nscript-src *",
+            "https://hf-mirror.com\r\nscript-src *",
+            "https://hf-mirror.com\tfoo",
+            "https://hf-mirror.com,https://evil.com",
+            "https://hf-mirror.com'",
+        ] {
+            assert!(!is_usable_csp_source(hostile), "should reject {hostile:?}");
+        }
+    }
+
+    #[test]
+    fn a_non_http_or_hostless_endpoint_is_rejected() {
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,x",
+            "ftp://hf-mirror.com",
+            "https://",
+            "https://user:pass@hf-mirror.com",
+            "https://hf-mirror.com?x=1",
+            "https://hf-mirror.com#f",
+            "https://javascript:alert(1)",
+            "https://hf-mirror.com:",
+            "https://hf-mirror.com:80x",
+            "https://*",
+            "https://*.evil.com",
+        ] {
+            assert!(!is_usable_csp_source(bad), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn plain_http_is_loopback_only() {
+        assert!(is_usable_csp_source("http://127.0.0.1:9700"));
+        assert!(is_usable_csp_source("http://localhost:8080"));
+        assert!(is_usable_csp_source("http://127.1.2.3"));
+        assert!(!is_usable_csp_source("http://192.168.1.10:8080"));
+        assert!(!is_usable_csp_source("http://hf-mirror.com"));
+        assert!(!is_usable_csp_source("http://10.0.0.5:8080"));
+        assert!(is_usable_csp_source("https://192.168.1.10:8080"));
+        assert!(is_usable_csp_source("https://hf-mirror.com"));
+    }
+
+    #[test]
+    fn csp_sources_are_normalised_and_deduplicated() {
+        let sources = csp_sources_from(vec![
+            "https://hf-mirror.com".to_string(),
+            "HTTPS://hf-mirror.com/".to_string(),
+            "hf-mirror.com".to_string(),
+            "  ".to_string(),
+            "http://192.168.1.10".to_string(),
+            "https://ds.internal/hf".to_string(),
+        ]);
+        assert_eq!(sources, vec!["https://hf-mirror.com", "https://ds.internal"]);
+    }
+
+    #[test]
+    fn a_unicode_host_is_refused_and_its_punycode_form_is_not() {
+        assert!(!is_usable_csp_source("https://例子.测试"));
+        assert!(is_usable_csp_source("https://xn--fsqu00a.xn--0zwm56d"));
+    }
+
+    #[test]
+    fn every_ipv6_loopback_spelling_is_recognised_and_compressed() {
+        assert!(is_usable_csp_source("http://[0:0:0:0:0:0:0:1]:9700"));
+        assert!(is_usable_csp_source("http://[::1]:9700"));
+        assert!(is_usable_csp_source("http://127.9.9.9"));
+        assert!(!is_usable_csp_source("http://[2001:db8::1]:9700"));
+        assert_eq!(
+            csp_origin_of("http://[0:0:0:0:0:0:0:1]:9700"),
+            "http://[::1]:9700"
+        );
+        assert_eq!(csp_origin_of("http://[0:0:0:0:0:0:0:1]"), "http://[::1]");
+    }
+
+    #[test]
+    fn the_scheme_is_matched_case_insensitively() {
+        assert!(is_usable_csp_source("HTTPS://hf-mirror.com"));
+        assert!(is_usable_csp_source("Https://hf-mirror.com"));
+        assert!(is_usable_csp_source("HTTP://127.0.0.1:9700"));
+        assert!(!is_usable_csp_source("HTTP://hf-mirror.com"));
+        assert_eq!(csp_origin_of("HTTPS://hf-mirror.com/hf"), "https://hf-mirror.com");
+    }
+
+    #[test]
+    fn a_loopback_http_mirror_reaches_the_asset_directives_too() {
+        let mut policy = "connect-src 'self'; img-src 'self' data: https:; \
+media-src 'self' https:"
+            .to_string();
+        let assets = ["http://127.0.0.1:9700".to_string()];
+        assert!(append_sources_to(&mut policy, "img-src", &assets));
+        assert!(append_sources_to(&mut policy, "media-src", &assets));
+        assert!(policy.contains("img-src 'self' data: https: http://127.0.0.1:9700"));
+        assert!(policy.contains("media-src 'self' https: http://127.0.0.1:9700"));
+        assert!(policy.contains("connect-src 'self';"));
     }
 
     #[test]
@@ -2738,27 +3126,38 @@ mod tests {
         assert!(hardened.ends_with("\nTryExec=/plain/app"));
     }
 
-    fn renderer_activity(state: &RendererActivityState) -> (bool, bool) {
+    // One element per field of RendererActivity: a narrower tuple is how a kind ships
+    // untested while a test named "each kind" still passes.
+    fn renderer_activity(state: &RendererActivityState) -> (bool, bool, bool) {
         let activity = state
             .lock()
             .expect("the activity mutex must not be poisoned");
-        (activity.downloads, activity.shell_update)
+        (
+            activity.downloads,
+            activity.shell_update,
+            activity.unsaved_transcript,
+        )
     }
 
     #[test]
     fn renderer_activity_starts_clear_and_round_trips_each_kind() {
         let state = new_renderer_activity_state();
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
 
         apply_renderer_activity(&state, "downloads", true);
-        assert_eq!(renderer_activity(&state), (true, false));
+        assert_eq!(renderer_activity(&state), (true, false, false));
         apply_renderer_activity(&state, "downloads", false);
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
 
         apply_renderer_activity(&state, "shell_update", true);
-        assert_eq!(renderer_activity(&state), (false, true));
+        assert_eq!(renderer_activity(&state), (false, true, false));
         apply_renderer_activity(&state, "shell_update", false);
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
+
+        apply_renderer_activity(&state, "unsaved_transcript", true);
+        assert_eq!(renderer_activity(&state), (false, false, true));
+        apply_renderer_activity(&state, "unsaved_transcript", false);
+        assert_eq!(renderer_activity(&state), (false, false, false));
     }
 
     #[test]
@@ -2767,11 +3166,16 @@ mod tests {
 
         apply_renderer_activity(&state, "downloads", true);
         apply_renderer_activity(&state, "shell_update", true);
-        assert_eq!(renderer_activity(&state), (true, true));
+        apply_renderer_activity(&state, "unsaved_transcript", true);
+        assert_eq!(renderer_activity(&state), (true, true, true));
 
         // Downloads finishing must not clear an update that is still installing.
         apply_renderer_activity(&state, "downloads", false);
-        assert_eq!(renderer_activity(&state), (false, true));
+        assert_eq!(renderer_activity(&state), (false, true, true));
+
+        // Nor must a saved transcript clear either of the other two.
+        apply_renderer_activity(&state, "unsaved_transcript", false);
+        assert_eq!(renderer_activity(&state), (false, true, false));
     }
 
     #[test]
@@ -2783,7 +3187,8 @@ mod tests {
         apply_renderer_activity(&state, "training", true);
         apply_renderer_activity(&state, "", false);
         apply_renderer_activity(&state, "Downloads", true);
-        assert_eq!(renderer_activity(&state), (false, true));
+        apply_renderer_activity(&state, "unsaved-transcript", true);
+        assert_eq!(renderer_activity(&state), (false, true, false));
     }
 
     /// The three states the tray-toggle-server listener in use-tauri-backend.ts acts

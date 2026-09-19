@@ -1439,6 +1439,23 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error stopping the LAN listener: %s", e)
 
+    try:
+        from core.training.training import _training_backend
+        if _training_backend is not None:
+            _training_backend.stop_for_shutdown()
+    except Exception as e:
+        logger.warning("Error stopping the training run for shutdown: %s", e)
+
+    try:
+        # sys.modules: an install that never trained a diffusion LoRA does not import it here.
+        _diffusion = sys.modules.get("core.training.diffusion_training_service")
+        if _diffusion is not None and _diffusion._service is not None:
+            from core.training.training import _SHUTDOWN_STOP_TIMEOUT_S
+            if not _diffusion._service.stop_for_shutdown(_SHUTDOWN_STOP_TIMEOUT_S):
+                logger.warning("Shutdown: diffusion training did not finish saving in time")
+    except Exception as e:
+        logger.warning("Error stopping the diffusion training run for shutdown: %s", e)
+
     if server is not None:
         server.should_exit = True
 
@@ -2124,36 +2141,22 @@ def _terminal_password_gate(
         apply_change = _apply_change,
         out = sys.stderr,
         exposure = _exposure_phrase(tunnel_will_start = tunnel_will_start, host = host),
-        # Ctrl+C aborts a tunnel launch and only a tunnel launch; on a raw bind it
-        # declines the prompt and the launch continues, so the banner must not
-        # promise an abort that will not happen.
-        refusal_aborts = tunnel_will_start,
         # A raw bind must never block a launch that used to start. A detached pty
         # (`tmux new -d`, `docker run -dt`) passes every isatty and process-group
         # test yet nobody will ever type, so an undeadlined read waits forever and
-        # the socket never binds; no answer is handled below as a refusal and
-        # proceeds on the bootstrap deadline. The tunnel waits forever instead,
-        # failing closed.
+        # the socket never binds; only that unattended first-key timeout proceeds
+        # on the bootstrap deadline. Ctrl+C / EOF is an explicit refusal and
+        # always fails closed. The tunnel waits forever instead.
         first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
     )
-    if changed:
+    if changed is True:
         return True, True
-    if tunnel_will_start:
-        # Refusing to secure a launch about to publish a public URL aborts it,
-        # exactly as before.
+    if changed is False or tunnel_will_start:
+        # Ctrl+C / EOF is an explicit refusal for any reachable UI launch.
         return False, False
-    # A raw bind is different: it worked before the prompt existed, and aborting
-    # would turn Ctrl+C into "no Studio". docker/studio_run.sh execs
-    # `unsloth studio -H 0.0.0.0` and only supplies a password when the
-    # initial-password file is non-empty, so `docker run -it` on a fresh volume
-    # meets this prompt and aborting would stop a container that starts today.
-    # Warn and proceed at the protection level this launch already had.
-    #
     # Which is sometimes NO protection: UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 never
     # arms the deadline, so say what will actually happen rather than promise a
-    # shutdown -- that is the one sentence an operator acts on. Still proceed: the
-    # operator disabled the deadline and cancelled the prompt deliberately, and
-    # refusing to start would break the case above.
+    # shutdown -- that is the one sentence an operator acts on.
     deadline_arms = should_arm_bootstrap_timeout(
         host = host,
         secure = secure,
@@ -2669,6 +2672,11 @@ def run_server(
     # gate and socket bind (direct `python run.py`; the CLI applies it in its own parent).
     _apply_supplied_password(password)
 
+    # Per launch, not per process: an embedded host may call run_server() again with different
+    # flags, and UNSLOTH_API_ONLY above is never cleared once set.
+    app.state.api_only = api_only
+    app.state.suppress_bootstrap_injection = False
+
     # Never publish with the seeded default password active: prompt first (or warn / fail closed headless; see
     # _terminal_password_gate). Runs BEFORE the socket binds so a pre-gate listener cannot hand out the
     # injected credential.
@@ -2681,9 +2689,15 @@ def run_server(
         is_colab = _IS_COLAB,
     )
     if not _pw_proceed:
+        # A raw bind passed neither flag, so naming them is a no-op for it.
         print(
-            "Not starting Unsloth; set a new admin password first, or launch "
-            "without --secure/--cloudflare.",
+            "Not starting Unsloth; set a new admin password first, or pass one "
+            "non-interactively with --password / UNSLOTH_STUDIO_PASSWORD. "
+            + (
+                "Launch without --secure/--cloudflare to stay off the public internet."
+                if _launch_tunnel_managed
+                else "Launch with -H 127.0.0.1 to keep Unsloth off the network."
+            ),
             file = sys.stderr,
             flush = True,
         )
