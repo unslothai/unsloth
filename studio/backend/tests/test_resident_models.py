@@ -1557,7 +1557,9 @@ def test_a_stale_ollama_resident_stays_unlisted_when_a_sibling_answers_its_id(
     )
     monkeypatch.setattr(inference_route, "_ollama_public_id", lambda ref: "ollama/llama3:latest")
     monkeypatch.setattr(inference_route, "_resident_is_still_tagged", lambda ref, backend: False)
-    monkeypatch.setattr(inference_route, "_ollama_request_is_resident", lambda requested, backend: False)
+    monkeypatch.setattr(
+        inference_route, "_ollama_request_is_resident", lambda requested, backend: False
+    )
 
     # Stale on its own slot, yet answerable account-wide through the sibling.
     assert not inference_route._llama_backend_satisfies(stale, "ollama/llama3:latest")

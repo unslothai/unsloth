@@ -10111,9 +10111,7 @@ async def _maybe_auto_switch_model(
                 loaded_keys.add(advertised.lower())
             if ollama_target:
                 # The blobs, not the keys: an alias shares no spelling with the resident tag.
-                loaded_source = _blob_identity(
-                    getattr(target_backend, "_gguf_load_identity", None)
-                )
+                loaded_source = _blob_identity(getattr(target_backend, "_gguf_load_identity", None))
                 if not ollama_source_identity or loaded_source != ollama_source_identity:
                     return False
             elif loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
@@ -29261,10 +29259,9 @@ def _openai_model_objects() -> list[dict]:
         # (or an active MLX model) vouch for the id and keep the scanned row suppressed.
         # The loop yields loaded backends only, so the loaded gate upstream applies outside it.
         _resident_identifier = getattr(llama_backend, "model_identifier", None) or ""
-        _stale_ollama_resident = (
-            is_ollama_manifest_ref(_resident_identifier)
-            and not _llama_backend_satisfies(llama_backend, _llama_public_model_id(llama_backend))
-        )
+        _stale_ollama_resident = is_ollama_manifest_ref(
+            _resident_identifier
+        ) and not _llama_backend_satisfies(llama_backend, _llama_public_model_id(llama_backend))
         if _stale_ollama_resident:
             continue
         # Advertise the repo id an auto-switch load recorded, not the concrete
