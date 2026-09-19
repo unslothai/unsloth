@@ -267,9 +267,9 @@ def test_the_seed_still_pins_a_package_whose_marker_was_stripped():
         pytest.skip("the current snapshot carries no .devN pin to check")
     for name, ver in marked.items():
         assert name in seeded, f"{name} was dropped rather than having its marker stripped"
-        assert seeded[name] == ver.split(".dev")[0], (
-            f"{name} seeded as {seeded[name]}, expected {ver.split('.dev')[0]}"
-        )
+        assert (
+            seeded[name] == ver.split(".dev")[0]
+        ), f"{name} seeded as {seeded[name]}, expected {ver.split('.dev')[0]}"
 
 
 # --- the cache key has to represent what the job installs ----------------------------
