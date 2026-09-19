@@ -153,6 +153,57 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     return host == "api.openai.com" or host.endswith(".openai.azure.com")
 
 
+def _chat_completions_max_tokens_field(provider_type: str, base_url: str) -> str:
+    """Wire key for the output token budget on ``/v1/chat/completions``."""
+    if provider_type == "openai" or _is_openai_family_cloud(base_url):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
+def _set_chat_completions_max_tokens(
+    body: dict[str, Any], *, provider_type: str, base_url: str, max_tokens: Optional[int]
+) -> None:
+    if max_tokens is None:
+        return
+    body.pop("max_completion_tokens", None)
+    body.pop("max_tokens", None)
+    body[_chat_completions_max_tokens_field(provider_type, base_url)] = max_tokens
+
+
+def _should_retry_with_max_completion_tokens(
+    status_code: int, error_text: str, body: dict[str, Any]
+) -> bool:
+    """True when the upstream rejected ``max_tokens`` and documents ``max_completion_tokens``."""
+    if status_code != 400 or "max_tokens" not in body or "max_completion_tokens" in body:
+        return False
+    lowered = error_text.lower()
+    if "max_completion_tokens" not in lowered or "max_tokens" not in lowered:
+        return False
+    try:
+        parsed = _json.loads(error_text)
+    except Exception:
+        return True
+    if not isinstance(parsed, dict):
+        return True
+    err = parsed.get("error")
+    if not isinstance(err, dict):
+        return True
+    param = err.get("param")
+    code = err.get("code")
+    if param == "max_tokens" and code == "unsupported_parameter":
+        return True
+    message = err.get("message")
+    return isinstance(message, str) and "max_completion_tokens" in message.lower()
+
+
+def _rewrite_body_max_tokens_to_completion(body: dict[str, Any]) -> dict[str, Any]:
+    rewritten = dict(body)
+    budget = rewritten.pop("max_tokens", None)
+    if budget is not None:
+        rewritten["max_completion_tokens"] = budget
+    return rewritten
+
+
 # Claude Opus 4.7 and every Claude 5 family removed temperature/top_p/top_k, as did Mythos Preview; the API 400s with
 # "<param> is deprecated for this model" on a non-default value. `[a-z]+` family (not `[a-z0-9]+`) so legacy
 # version-first ids like `claude-3-5-sonnet-...` do not parse as major=5. Minor accepts `-` or `.` and is capped at
@@ -1420,12 +1471,12 @@ class ExternalProviderClient:
         # Only alongside stream=True: the field is rejected on a non-streaming request.
         if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
             body["stream_options"] = {"include_usage": True}
-        if max_tokens is not None:
-            # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens
-            if self.provider_type == "openai":
-                body["max_completion_tokens"] = max_tokens
-            else:
-                body["max_tokens"] = max_tokens
+        _set_chat_completions_max_tokens(
+            body,
+            provider_type = self.provider_type,
+            base_url = self.base_url,
+            max_tokens = max_tokens,
+        )
         if top_k is not None:
             body["top_k"] = top_k
         if min_p is not None:
@@ -1537,216 +1588,249 @@ class ExternalProviderClient:
             model,
         )
 
+        post_body = body
         try:
-            async with _client().stream(
-                "POST",
-                url,
-                json = body,
-                headers = self._auth_headers(),
-                timeout = self._stream_timeout,
-            ) as response:
-                if response.status_code != 200:
-                    error_body = await response.aread()
-                    error_text = error_body.decode("utf-8", errors = "replace")
-                    error_text = _friendly_provider_error_text(
-                        self.provider_type,
-                        response.status_code,
-                        error_text,
-                        model = model,
-                    )
-                    logger.error(
-                        "External provider returned %d: %s",
-                        response.status_code,
-                        error_text[:500],
-                    )
-                    yield _error_sse_line(
-                        response.status_code,
-                        error_text,
-                        self.provider_type,
-                        response.headers.get("Retry-After"),
-                    )
-                    return
+            for _max_tokens_attempt in range(2):
+                retry_max_completion_tokens = False
+                async with _client().stream(
+                    "POST",
+                    url,
+                    json = post_body,
+                    headers = self._auth_headers(),
+                    timeout = self._stream_timeout,
+                ) as response:
+                    if response.status_code != 200:
+                        error_body = await response.aread()
+                        error_text_raw = error_body.decode("utf-8", errors = "replace")
+                        if _max_tokens_attempt == 0 and _should_retry_with_max_completion_tokens(
+                            response.status_code,
+                            error_text_raw,
+                            post_body,
+                        ):
+                            post_body = _rewrite_body_max_tokens_to_completion(post_body)
+                            retry_max_completion_tokens = True
+                        else:
+                            error_text = _friendly_provider_error_text(
+                                self.provider_type,
+                                response.status_code,
+                                error_text_raw,
+                                model = model,
+                            )
+                            logger.error(
+                                "External provider returned %d: %s",
+                                response.status_code,
+                                error_text[:500],
+                            )
+                            yield _error_sse_line(
+                                response.status_code,
+                                error_text,
+                                self.provider_type,
+                                response.headers.get("Retry-After"),
+                            )
+                            return
 
-                # Manual __anext__ (not `async for`) so we can close the response BEFORE lines_gen, avoiding the
-                # httpcore 1.0 GeneratorExit -> RuntimeError path on Python 3.13.
-                lines_gen = response.aiter_lines().__aiter__()
-                # Diagnostic counters for the OAI-compat path; surface OpenRouter mid-stream errors otherwise
-                # invisible server-side.
-                event_counts: dict[str, int] = {}
-                chosen_model: Optional[str] = None
-                # OpenRouter has no web_search_call events -- citations arrive as url_citation annotations. Synthesise
-                # a tool_start/tool_end pair to match the OpenAI/Anthropic UX.
-                web_search_active = (
-                    self.provider_type == "openrouter"
-                    and not tool_choice_disabled
-                    and not _or_tool_choice_forced_function
-                    and bool(enabled_tools)
-                    and "web_search" in (enabled_tools or [])
-                )
-                web_search_tool_id = "openrouter_web_search"
-                web_search_citations: list[dict[str, str]] = []
-                web_search_tool_started = False
-                web_search_tool_ended = False
+                    if retry_max_completion_tokens:
+                        pass
+                    else:
+                        # Manual __anext__ (not `async for`) so we can close the response BEFORE lines_gen, avoiding the
+                        # httpcore 1.0 GeneratorExit -> RuntimeError path on Python 3.13.
+                        lines_gen = response.aiter_lines().__aiter__()
+                        # Diagnostic counters for the OAI-compat path; surface OpenRouter mid-stream errors otherwise
+                        # invisible server-side.
+                        event_counts: dict[str, int] = {}
+                        chosen_model: Optional[str] = None
+                        # OpenRouter has no web_search_call events -- citations arrive as url_citation annotations. Synthesise
+                        # a tool_start/tool_end pair to match the OpenAI/Anthropic UX.
+                        web_search_active = (
+                            self.provider_type == "openrouter"
+                            and not tool_choice_disabled
+                            and not _or_tool_choice_forced_function
+                            and bool(enabled_tools)
+                            and "web_search" in (enabled_tools or [])
+                        )
+                        web_search_tool_id = "openrouter_web_search"
+                        web_search_citations: list[dict[str, str]] = []
+                        web_search_tool_started = False
+                        web_search_tool_ended = False
 
-                def _emit_synthetic_tool_event(payload: dict[str, Any]) -> str:
-                    _stamp_server_tool_marker(payload)
-                    chunk = {
-                        "id": f"chatcmpl-{self.provider_type}-synthetic",
-                        "object": "chat.completion.chunk",
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {},
-                                "finish_reason": None,
+                        def _emit_synthetic_tool_event(payload: dict[str, Any]) -> str:
+                            _stamp_server_tool_marker(payload)
+                            chunk = {
+                                "id": f"chatcmpl-{self.provider_type}-synthetic",
+                                "object": "chat.completion.chunk",
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {},
+                                        "finish_reason": None,
+                                    }
+                                ],
+                                "_toolEvent": payload,
                             }
-                        ],
-                        "_toolEvent": payload,
-                    }
-                    return f"data: {_json.dumps(chunk)}"
+                            return f"data: {_json.dumps(chunk)}"
 
-                def _record_or_url_citation(payload: Any) -> None:
-                    if not isinstance(payload, dict):
-                        return
-                    if payload.get("type") != "url_citation":
-                        return
-                    # OpenRouter (and OpenAI Chat Completions web_search) nest the citation under url_citation; some
-                    # variants ship the fields flat on the annotation itself. Accept both.
-                    cit = payload.get("url_citation")
-                    if not isinstance(cit, dict):
-                        cit = payload
-                    url = cit.get("url", "") if isinstance(cit, dict) else ""
-                    if not url or not isinstance(url, str):
-                        return
-                    if any(c["url"] == url for c in web_search_citations):
-                        return
-                    title = cit.get("title") or url
-                    snippet = cit.get("content") or cit.get("snippet") or ""
-                    web_search_citations.append(
-                        {
-                            "url": url,
-                            "title": title,
-                            "snippet": snippet if isinstance(snippet, str) else "",
-                        }
-                    )
+                        def _record_or_url_citation(payload: Any) -> None:
+                            if not isinstance(payload, dict):
+                                return
+                            if payload.get("type") != "url_citation":
+                                return
+                            # OpenRouter (and OpenAI Chat Completions web_search) nest the citation under url_citation; some
+                            # variants ship the fields flat on the annotation itself. Accept both.
+                            cit = payload.get("url_citation")
+                            if not isinstance(cit, dict):
+                                cit = payload
+                            url = cit.get("url", "") if isinstance(cit, dict) else ""
+                            if not url or not isinstance(url, str):
+                                return
+                            if any(c["url"] == url for c in web_search_citations):
+                                return
+                            title = cit.get("title") or url
+                            snippet = cit.get("content") or cit.get("snippet") or ""
+                            web_search_citations.append(
+                                {
+                                    "url": url,
+                                    "title": title,
+                                    "snippet": snippet if isinstance(snippet, str) else "",
+                                }
+                            )
 
-                def _build_web_search_tool_end() -> str:
-                    blocks: list[str] = []
-                    for cit in web_search_citations:
-                        line = f"Title: {cit['title']}\nURL: {cit['url']}"
-                        if cit.get("snippet"):
-                            line += f"\nSnippet: {cit['snippet']}"
-                        blocks.append(line)
-                    return _emit_synthetic_tool_event(
-                        {
-                            "type": "tool_end",
-                            "tool_call_id": web_search_tool_id,
-                            "result": ("\n---\n".join(blocks) if blocks else "(search complete)"),
-                        }
-                    )
+                        def _build_web_search_tool_end() -> str:
+                            blocks: list[str] = []
+                            for cit in web_search_citations:
+                                line = f"Title: {cit['title']}\nURL: {cit['url']}"
+                                if cit.get("snippet"):
+                                    line += f"\nSnippet: {cit['snippet']}"
+                                blocks.append(line)
+                            return _emit_synthetic_tool_event(
+                                {
+                                    "type": "tool_end",
+                                    "tool_call_id": web_search_tool_id,
+                                    "result": (
+                                        "\n---\n".join(blocks) if blocks else "(search complete)"
+                                    ),
+                                }
+                            )
 
-                if web_search_active:
-                    yield _emit_synthetic_tool_event(
-                        {
-                            "type": "tool_start",
-                            "tool_name": "web_search",
-                            "tool_call_id": web_search_tool_id,
-                            "arguments": {},
-                        }
-                    )
-                    web_search_tool_started = True
+                        if web_search_active:
+                            yield _emit_synthetic_tool_event(
+                                {
+                                    "type": "tool_start",
+                                    "tool_name": "web_search",
+                                    "tool_call_id": web_search_tool_id,
+                                    "arguments": {},
+                                }
+                            )
+                            web_search_tool_started = True
 
-                try:
-                    while True:
                         try:
-                            line = await lines_gen.__anext__()
-                        except StopAsyncIteration:
-                            break
-                        if not line.strip():
-                            continue
-                        if line.startswith("data:"):
-                            data_str = line[len("data:") :].strip()
-                            if data_str == "[DONE]":
-                                event_counts["done"] = event_counts.get("done", 0) + 1
-                                # Emit synthetic tool_end with collected citations BEFORE forwarding [DONE], so the
-                                # tool card transitions to "complete" before the stream closes.
-                                if (
-                                    web_search_active
-                                    and web_search_tool_started
-                                    and not web_search_tool_ended
-                                ):
-                                    yield _build_web_search_tool_end()
-                                    web_search_tool_ended = True
-                            elif data_str:
+                            while True:
                                 try:
-                                    parsed = _json.loads(data_str)
-                                except Exception:
-                                    parsed = None
-                                if isinstance(parsed, dict):
-                                    # Mid-stream provider error event. OpenRouter in particular returns 200 then
-                                    # surfaces the failure as an SSE error event.
-                                    if "error" in parsed:
-                                        event_counts["error"] = event_counts.get("error", 0) + 1
-                                        logger.warning(
-                                            "%s SSE error event: %s",
-                                            self.provider_type,
-                                            parsed.get("error"),
-                                        )
-                                    else:
-                                        event_counts["delta"] = event_counts.get("delta", 0) + 1
-                                    # OpenRouter (and most OAI-compat providers) report the handling model in every
-                                    # chunk's `model` field. Latch the first non-empty value so the router-picked
-                                    # model surfaces in logs and reaches the proxy caller.
-                                    if chosen_model is None and isinstance(
-                                        parsed.get("model"), str
-                                    ):
-                                        chosen_model = parsed["model"]
-                                    # With web_search on, scan every chunk's delta and message objects for
-                                    # url_citation annotations. Different OpenRouter upstreams place them in different
-                                    # spots.
-                                    if web_search_active:
-                                        choices = parsed.get("choices") or []
-                                        if isinstance(choices, list):
-                                            for choice in choices:
-                                                if not isinstance(choice, dict):
-                                                    continue
-                                                for envelope in (
-                                                    choice.get("delta"),
-                                                    choice.get("message"),
-                                                ):
-                                                    if not isinstance(envelope, dict):
-                                                        continue
-                                                    for ann in envelope.get("annotations") or []:
-                                                        _record_or_url_citation(ann)
-                        # Verbatim relay, minus Unsloth's own UI control protocol: the frames this server writes to
-                        # paint tool cards ride the same stream, so an endpoint that echoes them forges a card for a
-                        # tool that never ran.
-                        relayed = sanitize_provider_sse_line(line)
-                        if relayed is None:
-                            continue
-                        yield relayed
-                    # Stream ended without [DONE] (some upstreams just close the connection). Emit tool_end so the
-                    # card does not stay in "running" forever.
-                    if web_search_active and web_search_tool_started and not web_search_tool_ended:
-                        yield _build_web_search_tool_end()
-                        web_search_tool_ended = True
-                except GeneratorExit:
-                    await response.aclose()  # set PoolByteStream._closed=True FIRST
-                    await lines_gen.aclose()  # now safe — aclose() is a no-op
-                    raise
-                finally:
-                    logger.info(
-                        "%s stream complete (model=%s, chosen=%s, "
-                        "web_search_requested=%s, citations=%s, events=%s)",
-                        self.provider_type,
-                        model,
-                        chosen_model,
-                        web_search_active,
-                        len(web_search_citations),
-                        event_counts,
-                    )
-                    await response.aclose()
-                    await lines_gen.aclose()
+                                    line = await lines_gen.__anext__()
+                                except StopAsyncIteration:
+                                    break
+                                if not line.strip():
+                                    continue
+                                if line.startswith("data:"):
+                                    data_str = line[len("data:") :].strip()
+                                    if data_str == "[DONE]":
+                                        event_counts["done"] = event_counts.get("done", 0) + 1
+                                        # Emit synthetic tool_end with collected citations BEFORE forwarding [DONE], so the
+                                        # tool card transitions to "complete" before the stream closes.
+                                        if (
+                                            web_search_active
+                                            and web_search_tool_started
+                                            and not web_search_tool_ended
+                                        ):
+                                            yield _build_web_search_tool_end()
+                                            web_search_tool_ended = True
+                                    elif data_str:
+                                        try:
+                                            parsed = _json.loads(data_str)
+                                        except Exception:
+                                            parsed = None
+                                        if isinstance(parsed, dict):
+                                            # Mid-stream provider error event. OpenRouter in particular returns 200 then
+                                            # surfaces the failure as an SSE error event.
+                                            if "error" in parsed:
+                                                event_counts["error"] = (
+                                                    event_counts.get("error", 0) + 1
+                                                )
+                                                logger.warning(
+                                                    "%s SSE error event: %s",
+                                                    self.provider_type,
+                                                    parsed.get("error"),
+                                                )
+                                            else:
+                                                event_counts["delta"] = (
+                                                    event_counts.get("delta", 0) + 1
+                                                )
+                                            # OpenRouter (and most OAI-compat providers) report the handling model in every
+                                            # chunk's `model` field. Latch the first non-empty value so the router-picked
+                                            # model surfaces in logs and reaches the proxy caller.
+                                            if chosen_model is None and isinstance(
+                                                parsed.get("model"), str
+                                            ):
+                                                chosen_model = parsed["model"]
+                                            # With web_search on, scan every chunk's delta and message objects for
+                                            # url_citation annotations. Different OpenRouter upstreams place them in different
+                                            # spots.
+                                            if web_search_active:
+                                                choices = parsed.get("choices") or []
+                                                if isinstance(choices, list):
+                                                    for choice in choices:
+                                                        if not isinstance(choice, dict):
+                                                            continue
+                                                        for envelope in (
+                                                            choice.get("delta"),
+                                                            choice.get("message"),
+                                                        ):
+                                                            if not isinstance(envelope, dict):
+                                                                continue
+                                                            for ann in (
+                                                                envelope.get("annotations") or []
+                                                            ):
+                                                                _record_or_url_citation(ann)
+                                # Verbatim relay, minus Unsloth's own UI control protocol: the frames this server writes to
+                                # paint tool cards ride the same stream, so an endpoint that echoes them forges a card for a
+                                # tool that never ran.
+                                relayed = sanitize_provider_sse_line(line)
+                                if relayed is None:
+                                    continue
+                                yield relayed
+                            # Stream ended without [DONE] (some upstreams just close the connection). Emit tool_end so the
+                            # card does not stay in "running" forever.
+                            if (
+                                web_search_active
+                                and web_search_tool_started
+                                and not web_search_tool_ended
+                            ):
+                                yield _build_web_search_tool_end()
+                                web_search_tool_ended = True
+                        except GeneratorExit:
+                            await response.aclose()  # set PoolByteStream._closed=True FIRST
+                            await lines_gen.aclose()  # now safe — aclose() is a no-op
+                            raise
+                        finally:
+                            logger.info(
+                                "%s stream complete (model=%s, chosen=%s, "
+                                "web_search_requested=%s, citations=%s, events=%s)",
+                                self.provider_type,
+                                model,
+                                chosen_model,
+                                web_search_active,
+                                len(web_search_citations),
+                                event_counts,
+                            )
+                            await response.aclose()
+                            await lines_gen.aclose()
 
+                if retry_max_completion_tokens:
+                    logger.info(
+                        "Retrying chat completion with max_completion_tokens (provider=%s)",
+                        self.provider_type,
+                    )
+                    continue
+                break
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
             yield _error_sse_line(
@@ -6394,18 +6478,34 @@ class ExternalProviderClient:
         }
         if top_p is not None:
             body["top_p"] = top_p
-        if max_tokens is not None:
-            if self.provider_type == "openai":
-                body["max_completion_tokens"] = max_tokens
-            else:
-                body["max_tokens"] = max_tokens
-
-        response = await _client().post(
-            f"{self.base_url}/chat/completions",
-            json = body,
-            headers = self._auth_headers(),
-            timeout = self._timeout,
+        post_body = body
+        _set_chat_completions_max_tokens(
+            post_body,
+            provider_type = self.provider_type,
+            base_url = self.base_url,
+            max_tokens = max_tokens,
         )
+
+        for _max_tokens_attempt in range(2):
+            response = await _client().post(
+                f"{self.base_url}/chat/completions",
+                json = post_body,
+                headers = self._auth_headers(),
+                timeout = self._timeout,
+            )
+            if _max_tokens_attempt == 0 and _should_retry_with_max_completion_tokens(
+                response.status_code,
+                response.text,
+                post_body,
+            ):
+                logger.info(
+                    "Upstream rejected max_tokens for %s; retrying with max_completion_tokens",
+                    model,
+                )
+                post_body = _rewrite_body_max_tokens_to_completion(post_body)
+                continue
+            response.raise_for_status()
+            return response.json()
         response.raise_for_status()
         return response.json()
 
