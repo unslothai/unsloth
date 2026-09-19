@@ -3169,6 +3169,67 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
+def _unsloth_train_if_needed(model):
+    """`Trainer.training_step` calls `model.train()` on every micro-step. On a PEFT-wrapped 9B
+    model that is a recursive walk over ~2k modules with a `__setattr__` each, several ms of
+    pure Python per micro-step while the GPU waits. The mode only has to be asserted once: skip
+    the walk when the root already reports training mode and we were the ones who set it. A root
+    `.eval()` (evaluation, `for_inference`) flips `model.training`, so the next call walks again.
+    """
+    if model.training and getattr(model, "_unsloth_train_mode_asserted", False):
+        return model
+    model.train()
+    try:
+        model._unsloth_train_mode_asserted = True
+    except Exception:
+        pass
+    return model
+
+
+def patch_fla_autotuner_fast_path():
+    """unsloth_zoo's `compile_fla_no_autotune` makes every fla Triton autotuner reuse its first
+    tuned config for every key (`_ReuseBestCache`). After that, fla's `CachedAutotuner.run` still
+    builds its own `AutotuneKey` (dict zips, dtype strings, JSON-able normalisation) and then
+    Triton's `Autotuner.run` builds a key a second time, on every launch, for a lookup whose answer
+    is always the same config. Linear-attention layers make thousands of such launches per optimizer
+    step. Once the config is settled, launch the kernel with it directly: same config, same kernel,
+    same numerics.
+    """
+    try:
+        import fla.ops.utils.cache as fla_cache
+    except Exception:
+        return
+    CachedAutotuner = getattr(fla_cache, "CachedAutotuner", None)
+    if CachedAutotuner is None or getattr(CachedAutotuner.run, "_unsloth_fast_path", False):
+        return
+    # FLA_CACHE_MODE=always re-reads the config files on every launch on purpose (a debug mode).
+    cache_mode = getattr(fla_cache, "FLA_CACHE_MODE", None)
+    if getattr(cache_mode, "value", None) == "always":
+        return
+    original_run = CachedAutotuner.run
+
+    @functools.wraps(original_run)
+    def run(self, *args, **kwargs):
+        cfg = getattr(self, "_unsloth_fixed_config", None)
+        if cfg is None:
+            cache = self.cache
+            if len(self.configs) == 1:
+                cfg = self.configs[0]
+            elif type(cache).__name__ == "_ReuseBestCache" and len(cache) > 0:
+                cfg = next(iter(cache.values()))
+            else:
+                return original_run(self, *args, **kwargs)
+            if cfg.pre_hook is not None:
+                return original_run(self, *args, **kwargs)
+            self._unsloth_fixed_config = cfg
+            self._unsloth_fixed_kwargs = cfg.all_kwargs()
+        self.best_config = cfg
+        return self.fn.run(*args, **kwargs, **self._unsloth_fixed_kwargs)
+
+    run._unsloth_fast_path = True
+    CachedAutotuner.run = run
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
@@ -3254,6 +3315,9 @@ def patch_gradient_accumulation_fix(Trainer):
         )
         function = function.replace("def training_step", "def _unsloth_training_step", 1)
 
+        # Skip the per-micro-step recursive `model.train()` walk once train mode is set.
+        function = function.replace("model.train()", "_unsloth_train_if_needed(model)", 1)
+
         # Fix 4.47.0 removing num_items_in_batch (huggingface/transformers#35121) and the case where it is nothing (huggingface/transformers#35207).
         function = function.replace(
             "if self.model_accepts_loss_kwargs:",
@@ -3330,6 +3394,8 @@ def patch_gradient_accumulation_fix(Trainer):
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
+
+    patch_fla_autotuner_fast_path()
 
 
 def _unsloth_compile_cache_leaves():
