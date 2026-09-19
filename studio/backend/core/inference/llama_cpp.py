@@ -3892,10 +3892,13 @@ _ASSUMED_MAX_VOCAB = 262144
 # Ceiling on the float32 activations a compute graph keeps per micro-batch token, for a
 # header that cannot be read: 4 * n_ff at n_ff = 65536, above Llama 3.1 405B's 53056.
 _ASSUMED_MAX_ACTIVATION_WIDTH = 262144
+# llama.cpp allocates KV cells in blocks of this size, so any context arithmetic
+# rounds up to it and a difference smaller than one block is rounding, not a decision.
+_KV_CELL_BLOCK = 256
 
 
 def _pad_kv_cells(cells: int) -> int:
-    return ((cells + 255) // 256) * 256
+    return ((cells + _KV_CELL_BLOCK - 1) // _KV_CELL_BLOCK) * _KV_CELL_BLOCK
 
 
 def _kv_cache_cell_layout(n_ctx: int, n_parallel: int, kv_unified: bool) -> tuple[int, int, int]:
@@ -3907,6 +3910,22 @@ def _kv_cache_cell_layout(n_ctx: int, n_parallel: int, kv_unified: bool) -> tupl
         return slots, streams, 0
     cells_per_stream = padded_ctx if kv_unified else _pad_kv_cells(padded_ctx // slots)
     return slots, streams, cells_per_stream
+
+
+def _launch_ctx_from_args(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Total ``-c`` on the argv that actually spawned, or None when there is none.
+
+    Read off the argv rather than Studio's pre-launch estimate so a pass-through
+    ``--ctx-size`` -- which last-wins over Studio's own ``-c`` -- is the value
+    reported, the same reason ``_last_spawn_cmd`` exists. ``-c 0`` is llama.cpp's
+    "pick one for me" and names no total, so it returns None alongside a malformed
+    flag: reporting either as a launch size would invent a number.
+    """
+    try:
+        override = parse_ctx_override(args)
+    except ValueError:
+        return None
+    return override if override and override > 0 else None
 
 
 def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
@@ -7326,6 +7345,11 @@ class LlamaCppBackend:
         # Total KV allocation context across all slots. _effective_context_length
         # becomes the per-slot request limit after /props reconciliation.
         self._kv_cache_context_total: Optional[int] = None
+        # Total -c the running child was launched with, and the per-slot context
+        # expected from it when --fit allocated less. Both are set by the runtime
+        # reconciliation, which is the only place that can tell them apart.
+        self._launch_context_length: Optional[int] = None
+        self._pre_fit_context_length: Optional[int] = None
         # True once a probe has completed; cleared on transient failure.
         self._is_audio: bool = False
         self._audio_type: Optional[str] = None
@@ -7553,6 +7577,25 @@ class LlamaCppBackend:
     def context_length(self) -> Optional[int]:
         """Return the effective context length the server is running at."""
         return self._effective_context_length or self._context_length
+
+    @property
+    def launch_context_length(self) -> Optional[int]:
+        """Total ``-c`` the running llama-server was launched with, or None.
+
+        ``context_length`` is the PER-SLOT window a single request may use;
+        this is the whole allocation that window was carved out of. They differ
+        under ``--parallel`` without ``--kv-unified``, and reporting only one of
+        them is what makes a slot split look like a failed load."""
+        return self._launch_context_length
+
+    @property
+    def pre_fit_context_length(self) -> Optional[int]:
+        """Per-slot context expected before ``--fit`` shrank it; None if it did not.
+
+        Set only when llama-server allocated LESS per slot than the launch total
+        implies, so a clean ``--parallel`` split -- where the smaller window is
+        the arithmetic, not a reduction -- is not reported as a fit."""
+        return self._pre_fit_context_length
 
     @property
     def effective_parallel_slots(self) -> int:
@@ -18082,6 +18125,8 @@ class LlamaCppBackend:
         self._effective_cache_types = ("f16", "f16")
         self._requested_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
+        self._launch_context_length = None
+        self._pre_fit_context_length = None
         # False means "confirmed to hold no VRAM" and makes the training coordinator skip
         # the unload, so it is claimed only for a zero-layer split.
         self._gpu_offload_active = not holds_no_gpu
@@ -30333,7 +30378,10 @@ class LlamaCppBackend:
                 self._has_video_input = False
                 # The explicit override, not the field fallback: only a flag after
                 # Studio's own -c can allocate past the fit, so it is the ceiling.
-                self._reconcile_effective_ctx_with_server(ctx_override or 0)
+                self._reconcile_effective_ctx_with_server(
+                    ctx_override or 0,
+                    launch_cmd = _last_spawn_cmd,
+                )
                 if self._kv_cache_context_total is not None:
                     self._n_ubatch = min(
                         self._n_ubatch,
@@ -31340,6 +31388,8 @@ class LlamaCppBackend:
             self._effective_cache_types = ("f16", "f16")
             self._requested_cache_types = ("f16", "f16")
             self._kv_cache_context_total = None
+            self._launch_context_length = None
+            self._pre_fit_context_length = None
             self._chat_template = None
             self._markup_tokens = []
             self._markup_profile = None
@@ -33594,7 +33644,100 @@ class LlamaCppBackend:
         n_ctx = settings.get("n_ctx")
         return int(n_ctx) if n_ctx else None
 
-    def _reconcile_effective_ctx_with_server(self, requested_n_ctx: int = 0) -> None:
+    _RUNTIME_N_CTX_STDOUT_RE = re.compile(r"new slot, n_ctx = (\d+)")
+
+    def _parse_runtime_n_ctx_from_stdout(self) -> Optional[int]:
+        """Per-slot ``n_ctx`` from llama-server's startup log.
+
+        Last resort for builds that answer neither probe endpoint. Snapshots the
+        list because the stdout reader thread appends to it concurrently.
+        """
+        for line in list(self._stdout_lines):
+            match = self._RUNTIME_N_CTX_STDOUT_RE.search(line)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _query_slots_n_ctx(self) -> Optional[int]:
+        """Per-slot context straight from ``/slots``, or None if unavailable.
+
+        ``trust_env=False`` keeps an ambient ``HTTP(S)_PROXY`` from hijacking the
+        loopback request; the auth header keeps an ``--api-key`` child from 401ing
+        it (neither endpoint is public in llama.cpp).
+        """
+        try:
+            resp = httpx.get(
+                f"{self.base_url}/slots",
+                headers = self._auth_headers,
+                timeout = 2.0,
+                trust_env = False,
+            )
+            if resp.status_code != 200:
+                return None
+            slots = resp.json()
+        except Exception as exc:
+            logger.debug("Runtime context probe via /slots failed: %s", exc)
+            return None
+        if not isinstance(slots, list) or not slots:
+            return None
+        slot = slots[0]
+        if not isinstance(slot, dict):
+            return None
+        n_ctx = slot.get("n_ctx")
+        return int(n_ctx) if isinstance(n_ctx, int) and n_ctx > 0 else None
+
+    def _probe_runtime_n_ctx(self) -> Optional[int]:
+        """Per-slot context llama-server actually allocated: ``/slots``, else
+        ``/props``, else the startup log.
+
+        ``/slots`` wins because ``/props``' ``default_generation_settings.n_ctx``
+        reports the total ``-c`` on builds where ``/slots`` reports the real
+        per-slot window -- publishing the total as per-slot is what lets clients
+        size past the real window and hit ``exceed_context_size_error`` 400s.
+        ``/slots`` is absent under ``--no-slots``, hence the chain.
+
+        ``_query_server_n_ctx`` is called first regardless of which source wins:
+        it records the declared modalities on the way past, and video input
+        depends on build flags and ffmpeg, neither visible from the GGUF.
+        """
+        props_n_ctx = self._query_server_n_ctx()
+        return self._query_slots_n_ctx() or props_n_ctx or self._parse_runtime_n_ctx_from_stdout()
+
+    def _record_launch_vs_per_slot_ctx(
+        self, launch_cmd: Optional[Iterable[str]], actual_n_ctx: Optional[int]
+    ) -> None:
+        """Record the launch total, and the --fit reduction the probe just revealed.
+
+        The launch total is the child's whole KV allocation; ``actual_n_ctx`` is
+        the share of it one request gets. Running the total back through
+        llama.cpp's own cell layout gives what a slot was EXPECTED to get, so a
+        shortfall against THAT is the fitter's doing -- whereas a plain
+        ``--parallel`` split, where the smaller window is just the division, is
+        left unreported rather than shown to the user as a failure to allocate.
+
+        The argv alone answers what was launched, so that half is recorded even
+        when the probe came back empty; only the comparison needs the server.
+        Both fields are rewritten on every reconciliation, including to None, so a
+        reload into a model that needed no fit cannot inherit the previous one's.
+        """
+        self._launch_context_length = _launch_ctx_from_args(launch_cmd)
+        self._pre_fit_context_length = None
+        launch_n_ctx = self._launch_context_length
+        if not launch_n_ctx or not actual_n_ctx:
+            return
+        _, _, expected_per_slot = _kv_cache_cell_layout(
+            launch_n_ctx,
+            self.effective_parallel_slots,
+            self._kv_cache_unified,
+        )
+        if expected_per_slot - actual_n_ctx >= _KV_CELL_BLOCK:
+            self._pre_fit_context_length = expected_per_slot
+
+    def _reconcile_effective_ctx_with_server(
+        self,
+        requested_n_ctx: int = 0,
+        launch_cmd: Optional[Iterable[str]] = None,
+    ) -> None:
         """Adopt the server's real ``n_ctx`` within an explicit requested ceiling.
 
         Keeps ``context_length`` (load response, status route, passthrough
@@ -33613,8 +33756,16 @@ class LlamaCppBackend:
         ``_max_context_length`` deliberately stays put: /props confirms what was
         ALLOCATED, not that it fits VRAM without spilling, so the "may use system
         RAM" warning is right and ``max_context_length < context_length`` is legal.
+
+        ``launch_cmd`` is the argv that actually spawned. It is what separates the
+        launch total from the per-slot window below, and the only reason the two
+        can be reported as distinct numbers rather than one ambiguous one.
         """
-        actual_n_ctx = self._query_server_n_ctx()
+        actual_n_ctx = self._probe_runtime_n_ctx()
+        # Before the bail-out: a probe that answered nothing does not make the argv
+        # any less readable, and leaving the previous load's total in place would
+        # report a window this server never had.
+        self._record_launch_vs_per_slot_ctx(launch_cmd, actual_n_ctx)
         if not actual_n_ctx or actual_n_ctx <= 0:
             return
         slots = 1 if self._kv_cache_unified else self.effective_parallel_slots

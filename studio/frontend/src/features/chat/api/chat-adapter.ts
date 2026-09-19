@@ -2298,6 +2298,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedContextLength",
   "maxContextLength",
   "nativeContextLength",
+  "launchContextLength",
+  "preFitContextLength",
   "loadedIsGguf",
   "loadedIsMlx",
   "modelRequiresTrustRemoteCode",
@@ -3213,8 +3215,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
+      // A background auto-load is never a reload of the resident server, so neither
+      // of the two below describes the candidate being loaded.
       customContextLength: config.customContextLength,
       loadedContextLength: null,
+      launchContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
       isMlx: isServedByMlx(

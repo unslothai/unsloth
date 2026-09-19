@@ -1005,6 +1005,7 @@ export function useChatModelRuntime() {
                 isGguf: residentIsGguf,
                 customContextLength,
                 loadedContextLength: live.loadedContextLength,
+                launchContextLength: live.launchContextLength,
                 currentCheckpoint: live.params.checkpoint,
                 activeGgufVariant: live.activeGgufVariant,
                 isMlx: isServedByMlx(
@@ -1394,6 +1395,9 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.customContextLength ??
             stateBeforeUnload.customContextLength;
           const loadContextLength = stateBeforeUnload.loadedContextLength;
+          // The TOTAL -c the resident server launched with. loadContextLength is one
+          // slot's share of it, and the reload request is sized in totals.
+          const loadLaunchContextLength = stateBeforeUnload.launchContextLength;
           const loadTensorParallel = targetIsDiffusion
             ? false
             : (pendingLoadConfig?.tensorParallel ??
@@ -1539,6 +1543,7 @@ export function useChatModelRuntime() {
                 isGguf,
                 customContextLength: validateCustomContextLength,
                 loadedContextLength: loadContextLength,
+                launchContextLength: loadLaunchContextLength,
                 currentCheckpoint,
                 activeGgufVariant: loadActiveGgufVariant,
                 isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
@@ -1772,6 +1777,7 @@ export function useChatModelRuntime() {
               isGguf,
               customContextLength: loadCustomContextLength,
               loadedContextLength: loadContextLength,
+              launchContextLength: loadLaunchContextLength,
               currentCheckpoint,
               activeGgufVariant: loadActiveGgufVariant,
               isMlx: targetIsMlx,

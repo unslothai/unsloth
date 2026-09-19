@@ -1161,6 +1161,24 @@ class _InferenceRuntimeFields(BaseModel):
             "to check, since a model with its own make_cache ignores the requested size."
         ),
     )
+    launch_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Total context llama-server was launched with, across every serving slot. "
+            "context_length is one slot's share of this and is the only value a single "
+            "request may be sized against; the two differ under --parallel without "
+            "--kv-unified. Null for backends that do not launch a child."
+        ),
+    )
+    pre_fit_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Per-slot context that was expected before llama-server's --fit step "
+            "reduced it, so clients can explain why context_length came back smaller "
+            "than asked. Null when nothing was reduced -- notably for a plain "
+            "--parallel split, where the smaller window is the division, not a fit."
+        ),
+    )
     supports_reasoning: bool = Field(
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",

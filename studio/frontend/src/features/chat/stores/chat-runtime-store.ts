@@ -2259,6 +2259,11 @@ type ChatRuntimeStore = {
   loadedContextLength: number | null;
   maxContextLength: number | null;
   nativeContextLength: number | null;
+  /** Total -c llama-server was launched with. loadedContextLength is one slot's share of
+   *  it, so the two differ under --parallel; null for anything with no child process. */
+  launchContextLength: number | null;
+  /** The per-slot context expected before --fit shrank it; null when nothing shrank. */
+  preFitContextLength: number | null;
   /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
    *  loadedContextLength is, so a context never arrives unattributed. */
   loadedIsGguf: boolean | null;
@@ -4077,6 +4082,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedContextLength: null,
   maxContextLength: null,
   nativeContextLength: null,
+  launchContextLength: null,
+  preFitContextLength: null,
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,

@@ -154,3 +154,49 @@ test("the header renders the bar on the window alone, with usage optional", () =
   assert.match(page, /used=\{contextUsage\?\.totalTokens \?\? null\}/);
 });
 
+
+// llama-server's --fit step can hand back a smaller per-slot window than the launch
+// asked for. Without saying so, the bar just shows a number nobody recognises.
+test("a --fit reduction is named beside the window it produced", () => {
+  const state = deriveContextUsageBar({
+    used: 4096,
+    total: 67584,
+    preFitTotal: 98304,
+  });
+  assert.ok(state);
+  assert.deepEqual(state.fitReduced, { from: 98304, to: 67584 });
+  // the bar itself still reports the window a request may actually use
+  assert.equal(state.face, "4.1k / 67.6k");
+});
+
+test("a window that was never reduced reports no fit", () => {
+  const state = deriveContextUsageBar({ used: 4096, total: 32768 });
+  assert.ok(state);
+  assert.equal(state.fitReduced, null);
+});
+
+// the backend only sets pre_fit when it shrank, but an equal value must not
+// render "reduced from 32,768 to 32,768"
+test("a pre-fit value that is not larger is not a reduction", () => {
+  const state = deriveContextUsageBar({
+    used: 4096,
+    total: 32768,
+    preFitTotal: 32768,
+  });
+  assert.ok(state);
+  assert.equal(state.fitReduced, null);
+});
+
+// The bar is JSX the runner cannot import, and TypeScript cannot catch a dropped
+// OPTIONAL prop: the component still compiles, the bar still renders, and the
+// --fit notice simply never appears. So assert the wiring at the source.
+test("the bar forwards the fit reduction into its state derivation", () => {
+  const bar = readSrc("features/chat/components/context-usage-bar.tsx");
+  // destructured from props AND passed on to deriveContextUsageBar
+  assert.equal(
+    bar.match(/\bpreFitTotal\b/g)?.length,
+    2,
+    "preFitTotal must be both destructured and forwarded",
+  );
+  assert.match(bar, /state\.fitReduced/);
+});
