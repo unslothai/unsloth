@@ -116,7 +116,6 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
-import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -2171,7 +2170,6 @@ export function SharedComposer({
         ) : null}
       </DropdownMenuItem>
     ) : null,
-    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
