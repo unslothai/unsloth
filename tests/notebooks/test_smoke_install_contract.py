@@ -307,9 +307,9 @@ def test_an_undeclared_dev_pin_is_left_alone_rather_than_guessed_at(tmp_path):
     """
     freeze = FREEZE.read_text(encoding = "utf-8") + "\nunsloth-not-a-real-pin==2.0.dev3\n"
     seeded = dict(pin.split("==", 1) for pin in _run_seed(tmp_path, freeze) if "==" in pin)
-    assert seeded.get("unsloth-not-a-real-pin") == "2.0.dev3", (
-        "an undeclared .devN pin was rewritten; only the mapping may decide that"
-    )
+    assert (
+        seeded.get("unsloth-not-a-real-pin") == "2.0.dev3"
+    ), "an undeclared .devN pin was rewritten; only the mapping may decide that"
 
 
 # --- the cache key has to represent what the job installs ----------------------------
