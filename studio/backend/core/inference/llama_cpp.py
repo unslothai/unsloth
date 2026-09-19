@@ -455,6 +455,12 @@ from core.inference.tool_call_parser import (
 )
 from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
 from core.inference.repetition_guard import is_repetition_dominated
+from core.inference.mcp_images import (
+    DETACHED_IMAGE_TURN_TEXT as MCP_DETACHED_IMAGE_TURN_TEXT,
+    IMAGE_TURN_TEXT as MCP_IMAGE_TURN_TEXT,
+    append_image_turn as append_mcp_image_turn,
+    mentions_images as mcp_images_mentioned_in,
+)
 from core.inference.tool_loop_controller import (
     _WORKSPACE_TOOLS,
     ToolLoopController,
@@ -33352,6 +33358,17 @@ class LlamaCppBackend:
         httpx.Client + auth headers for the stream's lifetime; raises
         RuntimeError on a non-200. Shared scaffold for the streaming consumers,
         which differ only in how they parse the SSE body."""
+        from core.inference.mcp_images import prepare_image_turn_boundaries
+
+        if "messages" in payload:
+            payload = {
+                **payload,
+                "messages": prepare_image_turn_boundaries(
+                    payload["messages"],
+                    getattr(self, "_chat_template_override", None)
+                    or getattr(self, "_chat_template", None),
+                ),
+            }
         stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
         with httpx.Client(
             timeout = stream_timeout,
@@ -34264,6 +34281,7 @@ class LlamaCppBackend:
         self,
         messages: list[dict],
         tools: list[dict],
+        replayed_image_parts: "tuple" = (),
         temperature: float = 0.6,
         top_p: float = 0.95,
         top_k: int = 20,
@@ -34805,6 +34823,13 @@ class LlamaCppBackend:
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
         iteration = -1
+        # Outside the loop: the cap is across the whole run, and a per-iteration list
+        # would only ever see the current batch, leaving every earlier iteration's
+        # images in the conversation untrimmed.
+        # Seeded with what promotion already put in the conversation, not empty. The cap
+        # is across the CONVERSATION, so a resumed chat whose history already carries the
+        # allowance would otherwise get a second one for this run and send both.
+        loop_mcp_image_parts: list = list(replayed_image_parts)
         while True:
             iteration += 1
             # Here rather than at each append: six sites grow the conversation and all of
@@ -36468,6 +36493,11 @@ class LlamaCppBackend:
                 # Which tools those no-ops were about, so the flush below can tell
                 # whether the trailing result belongs to the same tool.
                 deferred_noop_tools: set = set()
+                # Per result, so a parallel batch is not squeezed into one
+                # result's worth of images.
+                batch_mcp_images: list = []
+                # Where this batch's results start, for the image turn\'s wording.
+                batch_conversation_start = len(conversation)
 
                 # The text-path provisional card uses the parser's default id ("call_0");
                 # a Mistral-style call carries its own id and would open a duplicate. Reuse
@@ -37293,6 +37323,15 @@ class LlamaCppBackend:
                     _forced_choice_resolved = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
+                    # Parsed only for a result that carries them and a model that will
+                    # be shown them; the marker test first, so a text result never asks.
+                    _completion_images = (
+                        completion.mcp_images()
+                        if mcp_images_mentioned_in(completion.result or "") and self.is_vision
+                        else []
+                    )
+                    if _completion_images:
+                        batch_mcp_images.append(_completion_images)
                     if _compact_after_execution and decision.tool_call_id:
                         # The promise the gate made when it let this run. Applied here
                         # rather than on the next pass because the next pass may not
@@ -37438,6 +37477,26 @@ class LlamaCppBackend:
                         else:
                             conversation.append({"role": "user", "content": _limit_text})
                         _limit_notice_in_user_turn = True
+
+                if batch_mcp_images and self.is_vision:
+                    # One block after the whole batch. With a single result "the tool
+                    # call above" is exact; with several it names whichever ran last,
+                    # which may have returned no picture at all, so the block says so
+                    # instead -- the external loop's rule.
+                    _batch_results = sum(
+                        1
+                        for m in conversation[batch_conversation_start:]
+                        if isinstance(m, dict) and m.get("role") == "tool"
+                    )
+                    append_mcp_image_turn(
+                        conversation,
+                        batch_mcp_images,
+                        per_result = True,
+                        owned = loop_mcp_image_parts,
+                        lead = MCP_DETACHED_IMAGE_TURN_TEXT
+                        if _batch_results != 1
+                        else MCP_IMAGE_TURN_TEXT,
+                    )
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():
@@ -38448,7 +38507,13 @@ class LlamaCppBackend:
                     return len(tokens)
 
                 # 1. Try /apply-template to render the real chat prompt.
-                template_messages = list(messages) if messages else []
+                from core.inference.mcp_images import prepare_image_turn_boundaries
+
+                template_messages = prepare_image_turn_boundaries(
+                    list(messages) if messages else [],
+                    getattr(self, "_chat_template_override", None)
+                    or getattr(self, "_chat_template", None),
+                )
                 if system_text:
                     template_messages = [
                         {"role": "system", "content": system_text}
