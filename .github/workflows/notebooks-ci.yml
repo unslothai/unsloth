@@ -31,7 +31,11 @@ on:
       - 'scripts/data/colab_os_info.gpu.txt'
       - 'scripts/data/colab_to_cpu_pin.json'
       - 'tests/notebooks/**'
+      # Every helper the smoke steps import, or a change to one of them merges without the
+      # matrix that runs it ever starting. test_smoke_install_contract.py derives this list
+      # from the steps themselves, so a new helper fails that test until it is listed here.
       - 'tests/_zoo_aggressive_cuda_spoof.py'
+      - 'tests/_torchcodec_stub.py'
       - '.github/workflows/notebooks-ci.yml'
   schedule:
     # Daily 06:17 UTC. Catches Colab preinstall bumps (the upstream image
@@ -528,6 +532,7 @@ jobs:
           import json, re, sys
           mapping = json.load(open("unsloth/scripts/data/colab_to_cpu_pin.json"))
           rewrite = mapping["rewrite"]
+          dev_rewrite = mapping.get("distro_dev_version", {})
           skip = set(mapping["skip"])
           spoof = set(mapping["module_spoof"])
 
@@ -560,6 +565,17 @@ jobs:
               # Drop the local version (`+cu128`) whatever the package is; the CPU
               # index publishes the same version without it.
               ver = re.sub(r"[+\-].+$", "", ver)
+              # A .devN suffix can be a DISTRO build marker rather than a PyPI
+              # release: Ubuntu 24.04, which the image moved to in this rotation,
+              # ships Mako as 1.3.2.dev0 and PyPI has 1.3.2 and never had
+              # 1.3.2.dev0, so the pin failed the whole bulk resolve. Rewritten by
+              # exact (package, recorded version) from the mapping, never by
+              # pattern: .devN is also a real PEP 440 prerelease, and stripping it
+              # blindly would turn a genuine pkg==2.0.dev3 into the different
+              # release pkg==2.0. An unlisted one is left alone and fails loudly.
+              known = dev_rewrite.get(name)
+              if known and known["from"] == ver:
+                  ver = known["to"]
               (torch_pins if name in rewrite else rest).append(f"{name}=={ver}")
 
           open("/tmp/seed_torch.txt", "w").write("\n".join(torch_pins) + "\n")
@@ -735,10 +751,11 @@ jobs:
           awk '/^from unsloth import/ { print "import sys; sys.exit(0)"; exit } { print }' "$PY" > _smoke.py
           PYTHONPATH=unsloth/tests python -u - <<'PY'
           import _zoo_aggressive_cuda_spoof as _s; _s.apply()
-          # Stub torchcodec for cells that import it — no CPU wheel exists.
-          import sys, types
-          if "torchcodec" not in sys.modules:
-              sys.modules["torchcodec"] = types.ModuleType("torchcodec")
+          # Stub torchcodec for cells that import it — no CPU wheel exists. Through the
+          # shared helper, which installs a tiny placeholder DISTRIBUTION rather than poking
+          # sys.modules: transformers asks find_spec and then reads the distribution version
+          # at import time, and a sys.modules entry answers at most the first of those.
+          import _torchcodec_stub as _t; _t.install()
           exec(open("_smoke.py").read(), {"__name__": "__main__"})
           PY
 
@@ -746,9 +763,7 @@ jobs:
         timeout-minutes: 5
         run: |
           PYTHONPATH=unsloth/tests python -u - <<'PY'
-          import sys, types
-          if "torchcodec" not in sys.modules:
-              sys.modules["torchcodec"] = types.ModuleType("torchcodec")
+          import _torchcodec_stub as _t; _t.install()
           import _zoo_aggressive_cuda_spoof as _s; _s.apply()
           import unsloth, peft, torch, torchao, transformers, tokenizers
           print("OK: imports pass under CUDA spoof")
