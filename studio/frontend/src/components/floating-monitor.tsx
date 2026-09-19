@@ -9,6 +9,7 @@ import {
   useMonitorFrameStore,
   useMonitorOverlayStore,
 } from "@/features/settings";
+import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
@@ -460,16 +461,18 @@ function FloatingMonitorPanel({
     systemInfo.inference_gpu.backend !== systemInfo.gpu.backend
       ? systemInfo.inference_gpu
       : null;
+  const memoryDisplay = gpuMemoryDisplay(displayedGpu);
+  const inferenceDisplay = gpuMemoryDisplay(separateInferenceGpu);
   const inferenceVramTotal = separateInferenceGpu
-    ? aggregateGpuMemoryTotalGb(separateInferenceGpu.devices)
+    ? aggregateGpuMemoryTotalGb(inferenceDisplay.usageDevices)
     : 0;
-  const devices = displayedGpu?.devices ?? [];
+  const devices = memoryDisplay.usageDevices;
   const memoryTotals = gpuMemoryTotalsGb(devices);
   const vramTotal = memoryTotals.total;
   const hasSharedPool = memoryTotals.shared > 0;
   // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
   // readout. The host figure can still be known when no device's is (#7452).
-  const resolvedVramUsed = resolveGpuVramUsedGb(displayedGpu);
+  const resolvedVramUsed = resolveGpuVramUsedGb(memoryDisplay.usageGpu);
   const vramUsageKnown = resolvedVramUsed !== null;
   const vramUsed = resolvedVramUsed ?? 0;
   const vramPercent = clampPercent(
@@ -477,7 +480,9 @@ function FloatingMonitorPanel({
   );
   const unknownLabel = t("settings.resources.environment.unknown");
 
-  const hasGpu = (displayedGpu?.available ?? false) && devices.length > 0;
+  const hasGpu =
+    (displayedGpu?.available ?? false) &&
+    (displayedGpu?.devices.length ?? 0) > 0;
 
   // The container sits on the floating panel layer, above the bottom-right overlay stack. The stack
   // is anchored to that same corner and does not move for this monitor, so the two can overlap. The
@@ -574,7 +579,7 @@ function FloatingMonitorPanel({
               />
             </div>
 
-            {hasGpu && (
+            {hasGpu && devices.length > 0 && (
               <div className="space-y-1">
                 <div className="flex justify-between text-ui-11 font-medium font-mono">
                   <span className="truncate flex-1 pr-2">
@@ -610,18 +615,51 @@ function FloatingMonitorPanel({
                 />
               </div>
             )}
+            {hasGpu && memoryDisplay.sharedDevices.length > 0 && (
+              <div className="space-y-1 text-xs">
+                <div className="font-medium">
+                  {t("settings.resources.gpu.sharedWithSystemRam")}
+                </div>
+                <div className="font-mono text-muted-foreground">
+                  {t("settings.resources.gpu.estimatedAvailable", {
+                    value:
+                      memoryDisplay.sharedAvailableGb === null
+                        ? unknownLabel
+                        : formatGiB(memoryDisplay.sharedAvailableGb),
+                  })}
+                </div>
+              </div>
+            )}
             {separateInferenceGpu && (
-              <div className="flex justify-between gap-2 text-ui-11 font-mono">
-                <span className="text-muted-foreground">
+              <div className="space-y-1 border-t border-border/60 pt-2 text-ui-11">
+                <span className="block font-medium text-muted-foreground">
                   {t("settings.resources.gpu.ggufInference")}
                 </span>
-                <span className="uppercase text-foreground">
-                  {separateInferenceGpu.backend ?? "GPU"}
-                  {separateInferenceGpu.available
-                    ? inferenceVramTotal
-                      ? ` · ${formatGiB(inferenceVramTotal)}`
-                      : ""
-                    : ` · ${t("settings.resources.gpu.unavailable")}`}
+                <span className="block font-mono text-foreground">
+                  {separateInferenceGpu.backend?.toUpperCase() ?? "GPU"}
+                  {separateInferenceGpu.available ? (
+                    inferenceVramTotal ? (
+                      <span className="block">
+                        {t("settings.resources.gpu.vramUtilization")}:{" "}
+                        {formatGiB(inferenceVramTotal)}
+                      </span>
+                    ) : (
+                      ""
+                    )
+                  ) : (
+                    ` · ${t("settings.resources.gpu.unavailable")}`
+                  )}
+                  {separateInferenceGpu.available &&
+                    inferenceDisplay.sharedDevices.length > 0 && (
+                      <span className="block normal-case">
+                        {t("settings.resources.gpu.sharedEstimatedAvailable", {
+                          value:
+                            inferenceDisplay.sharedAvailableGb === null
+                              ? unknownLabel
+                              : formatGiB(inferenceDisplay.sharedAvailableGb),
+                        })}
+                      </span>
+                    )}
                 </span>
               </div>
             )}
