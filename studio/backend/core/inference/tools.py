@@ -9340,10 +9340,7 @@ def _software_safeguards_launch(plan, fault: str):
 
 
 def _prepare_tool_launch(plan):
-    """Allow auto fallback for unavailable backends or unexpected planner errors.
-
-    Unsafe workdirs and backend construction failures always refuse execution.
-    """
+    """Fallback only when capability assessment says the backend is unavailable."""
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
         if plan.preexec_fn is not None and prepared.preexec_fn is None:
@@ -9371,16 +9368,12 @@ def _prepare_tool_launch(plan):
             exc_info = True,
         )
         return _software_safeguards_launch(plan, "sandbox_became_unavailable")
-    except Exception as exc:  # noqa: BLE001 - auto falls back on unexpected planner errors
-        logger.warning("Sandbox planning failed, running with software safeguards", exc_info = True)
-        if plan.requested_mode == "required":
-            raise os_sandbox.SandboxUnavailableError(
-                f"OS_ISOLATION_UNAVAILABLE: the sandbox planner failed: {exc}",
-                remediation = os_sandbox.linux_unavailable_remediation()
-                if sys.platform == "linux"
-                else "This host cannot start an OS sandbox.",
-            ) from exc
-        return _software_safeguards_launch(plan, "sandbox_planner_error")
+    except Exception as exc:  # noqa: BLE001 - construction failures never buy a host replay
+        if plan.requested_mode == "full":
+            return _software_safeguards_launch(plan, "sandbox_planner_error")
+        raise os_sandbox.SandboxBuildError(
+            f"sandbox preparation failed without host fallback: {exc}"
+        ) from exc
 
 
 def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
@@ -16831,6 +16824,13 @@ def _cancel_watcher(
     short-circuit)."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
+            request_cancel = getattr(proc, "_unsloth_cancel", None)
+            if request_cancel is not None and request_cancel():
+                try:
+                    proc.wait(timeout = 5)
+                    return
+                except subprocess.TimeoutExpired:
+                    pass
             _killpg_captured(pgid)
             _kill_process_tree(proc)
             return
@@ -18319,12 +18319,13 @@ def _python_exec(
                     requested_mode = requested_mode,
                     timeout_seconds = timeout,
                     execution_kind = "python",
+                    cancel_event = cancel_event,
                 )
             )
-            _note_tool_execution(prepared.execution_record)
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
             )
+            _note_tool_execution(prepared.execution_record)
         else:
             popen_kwargs.update(cwd = workdir, env = safe_env)
             if sys.platform != "win32":
@@ -18350,6 +18351,10 @@ def _python_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        completion = os_sandbox.verify_prepared_completion(prepared, proc)
+        if completion is not None and completion.get("timedOut"):
+            timed_out = True
+        _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
@@ -18514,12 +18519,13 @@ def _bash_exec(
                     requested_mode = requested_mode,
                     timeout_seconds = timeout,
                     execution_kind = "terminal",
+                    cancel_event = cancel_event,
                 )
             )
-            _note_tool_execution(prepared.execution_record)
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
             )
+            _note_tool_execution(prepared.execution_record)
         else:
             popen_kwargs.update(cwd = workdir, env = safe_env)
             if sys.platform != "win32":
@@ -18544,6 +18550,10 @@ def _bash_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        completion = os_sandbox.verify_prepared_completion(prepared, proc)
+        if completion is not None and completion.get("timedOut"):
+            timed_out = True
+        _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:

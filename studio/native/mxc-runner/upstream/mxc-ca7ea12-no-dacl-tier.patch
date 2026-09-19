@@ -1,0 +1,192 @@
+diff --git a/src/backends/process_container/common/src/dispatcher.rs b/src/backends/process_container/common/src/dispatcher.rs
+index 04a1738..ab9bc40 100644
+--- a/src/backends/process_container/common/src/dispatcher.rs
++++ b/src/backends/process_container/common/src/dispatcher.rs
+@@ -744,6 +744,7 @@ pub fn spawn_with_fallback_and_capture(
+         }),
+         None => inner,
+     };
++    let process: Box<dyn SandboxProcess> = Box::new(TieredProcess { process, tier });
+ 
+     Ok(DispatchedProcess {
+         process,
+@@ -752,6 +753,64 @@ pub fn spawn_with_fallback_and_capture(
+     })
+ }
+ 
++/// Attaches the dispatcher-selected ProcessContainer tier to the live handle.
++/// Keeping this wrapper outside the DACL guard preserves the guard's
++/// child-before-ACL-restoration drop ordering.
++struct TieredProcess {
++    process: Box<dyn SandboxProcess>,
++    tier: IsolationTier,
++}
++
++impl SandboxProcess for TieredProcess {
++    fn isolation_tier(&self) -> Option<&'static str> {
++        Some(self.tier.as_str())
++    }
++
++    fn warnings(&self) -> Vec<String> {
++        self.process.warnings()
++    }
++
++    fn output_metadata(&self) -> Option<&wxc_common::models::SandboxOutputMetadata> {
++        self.process.output_metadata()
++    }
++
++    fn take_stdin(&mut self) -> Option<Box<dyn std::io::Write + Send>> {
++        self.process.take_stdin()
++    }
++
++    fn take_stdout(&mut self) -> Option<Box<dyn std::io::Read + Send>> {
++        self.process.take_stdout()
++    }
++
++    fn take_stderr(&mut self) -> Option<Box<dyn std::io::Read + Send>> {
++        self.process.take_stderr()
++    }
++
++    fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
++        self.process.try_wait()
++    }
++
++    fn id(&self) -> u32 {
++        self.process.id()
++    }
++
++    fn kill(&mut self) -> std::io::Result<()> {
++        self.process.kill()
++    }
++
++    fn wait(&mut self) -> std::io::Result<i32> {
++        self.process.wait()
++    }
++
++    fn stdout_closer(&self) -> Option<Box<dyn wxc_common::sandbox_process::StreamCloser>> {
++        self.process.stdout_closer()
++    }
++
++    fn stderr_closer(&self) -> Option<Box<dyn wxc_common::sandbox_process::StreamCloser>> {
++        self.process.stderr_closer()
++    }
++}
++
+ /// A streaming [`SandboxProcess`] paired with the [`DaclManager`] guard whose
+ /// `Drop` restores the host ACEs the DACL tier applied.
+ ///
+diff --git a/src/core/mxc-sdk/src/sandbox.rs b/src/core/mxc-sdk/src/sandbox.rs
+index de1413c..070081a 100644
+--- a/src/core/mxc-sdk/src/sandbox.rs
++++ b/src/core/mxc-sdk/src/sandbox.rs
+@@ -85,6 +85,12 @@ impl Sandbox {
+         self.inner.warnings()
+     }
+ 
++    /// Structured ProcessContainer isolation tier selected for this live
++    /// execution. Returns `None` for backends without tiered dispatch.
++    pub fn isolation_tier(&self) -> Option<&'static str> {
++        self.inner.isolation_tier()
++    }
++
+     /// Structured outputs available after a terminal wait completes.
+     pub fn output_metadata(&self) -> Option<&SandboxOutputMetadata> {
+         self.inner.output_metadata()
+diff --git a/src/core/mxc_engine/src/lib.rs b/src/core/mxc_engine/src/lib.rs
+index a082a8f..b251170 100644
+--- a/src/core/mxc_engine/src/lib.rs
++++ b/src/core/mxc_engine/src/lib.rs
+@@ -498,6 +498,10 @@ impl Drop for TelemetryProcess {
+ }
+ 
+ impl SandboxProcess for TelemetryProcess {
++    fn isolation_tier(&self) -> Option<&'static str> {
++        self.inner.isolation_tier()
++    }
++
+     /// Merged at the call rather than when this wrapper was built: the wrapped
+     /// process can report a cleanup failure long after that.
+     fn warnings(&self) -> Vec<String> {
+@@ -604,6 +608,10 @@ impl ProcessWithWarnings {
+ }
+ 
+ impl SandboxProcess for ProcessWithWarnings {
++    fn isolation_tier(&self) -> Option<&'static str> {
++        self.inner.isolation_tier()
++    }
++
+     /// Merged at the call rather than when this wrapper was built: the wrapped
+     /// process can report a cleanup failure long after that.
+     fn warnings(&self) -> Vec<String> {
+diff --git a/src/core/mxc_engine/src/policy.rs b/src/core/mxc_engine/src/policy.rs
+index 60fc2cb..c2222ae 100644
+--- a/src/core/mxc_engine/src/policy.rs
++++ b/src/core/mxc_engine/src/policy.rs
+@@ -663,6 +663,24 @@ pub struct SandboxRequest {
+ }
+ 
+ impl SandboxRequest {
++    /// Permit or refuse the ProcessContainer fallback that mutates host DACLs.
++    ///
++    /// The stable v0.8 contract defaults this consent to `true` for backwards
++    /// compatibility. Security-sensitive embedders should set it explicitly
++    /// before calling [`crate::spawn`]. The dispatcher consumes this typed
++    /// request field atomically with backend selection, before any workload is
++    /// spawned.
++    pub fn set_allow_dacl_mutation(&mut self, allow: bool) -> &mut Self {
++        self.inner.policy.fallback.allow_dacl_mutation = allow;
++        self
++    }
++
++    /// Return the effective ProcessContainer DACL-fallback consent carried by
++    /// this request.
++    pub fn allow_dacl_mutation(&self) -> bool {
++        self.inner.policy.fallback.allow_dacl_mutation
++    }
++
+     /// Override the working directory the sandboxed child starts in. Left unset,
+     /// it defaults to the policy's resolution.
+     pub fn set_working_directory(&mut self, working_directory: impl Into<String>) -> &mut Self {
+@@ -1758,6 +1776,23 @@ mod tests {
+         assert_eq!(request.inner.container_id, "test-container".to_string());
+     }
+ 
++    #[test]
++    fn request_level_dacl_fallback_setting_reaches_dispatch_policy() {
++        let policy = SandboxPolicy {
++            version: "0.8.0-alpha".to_string(),
++            filesystem: None,
++            network: None,
++            ui: None,
++            timeout_ms: None,
++        };
++        let mut request = build_request(&policy, TEST_COMMAND, None)
++            .expect("v0.8 request should build through the exact contract parser");
++        assert!(request.allow_dacl_mutation());
++        request.set_allow_dacl_mutation(false);
++        assert!(!request.allow_dacl_mutation());
++        assert!(!request.inner.policy.fallback.allow_dacl_mutation);
++    }
++
+     #[test]
+     fn build_request_maps_enumerate_paths_for_v0_9() {
+         let policy = SandboxPolicy {
+diff --git a/src/core/wxc_common/src/sandbox_process.rs b/src/core/wxc_common/src/sandbox_process.rs
+index 3cde623..f021e4f 100644
+--- a/src/core/wxc_common/src/sandbox_process.rs
++++ b/src/core/wxc_common/src/sandbox_process.rs
+@@ -68,6 +68,13 @@ use crate::validator::{validate_common, validate_network_policy_support, Network
+ ///   before touching the other can hang on output-heavy children. Taking only
+ ///   one stream (leaving the other for `wait()` to drain) is always safe.
+ pub trait SandboxProcess: Send {
++    /// Structured isolation tier selected for this live process, when the
++    /// backend has one. This is execution-associated evidence, not a host
++    /// capability ceiling.
++    fn isolation_tier(&self) -> Option<&'static str> {
++        None
++    }
++
+     /// Warnings associated with this sandbox, such as a policy that
+     /// intentionally relaxes containment, an unavailable telemetry route, or a
+     /// cleanup step that failed after the process exited.
+

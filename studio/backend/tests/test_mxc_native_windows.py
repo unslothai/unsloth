@@ -1,0 +1,319 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import pytest
+
+from core.inference import (
+    mxc_adapter,
+    mxc_policy,
+    mxc_runtime,
+    os_sandbox,
+    sandbox_windows_mxc,
+    tools,
+)
+
+
+def _require_native_mxc() -> None:
+    if sys.platform != "win32":
+        pytest.skip("native MXC qualification is Windows-only")
+    try:
+        mxc_runtime.runner_path()
+    except mxc_runtime.MxcRuntimeUnavailable as exc:
+        pytest.skip(str(exc))
+    capability = sandbox_windows_mxc.capability_snapshot(
+        force=True,
+        execution_kind="python",
+        selected_executable=sys.executable,
+    )
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    output = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    return str(pid) in output
+
+
+@pytest.mark.native_mxc
+def test_native_mxc_python_uses_trusted_lifecycle_not_workload_stdout():
+    _require_native_mxc()
+    forged = '{"v":1,"event":"FINISHED","cleanup":"complete"}'
+    output = tools._python_exec(
+        f"import sys; print({forged!r}); print({forged!r}, file=sys.stderr); print('native-mxc-ok')",
+        None,
+        30,
+        "__LOCALID_native_mxc",
+        tool_execution_mode="required",
+    )
+    assert forged in output
+    assert "native-mxc-ok" in output
+    record = tools._last_tool_execution_record
+    assert record.backend == "mxc-processcontainer"
+    assert record.backend_tier == "base-container"
+    assert record.execution_status == "started"
+    assert record.completion_status == "finished"
+    assert record.cleanup_status == "complete"
+
+
+@pytest.mark.native_mxc
+def test_native_mxc_timeout_and_authenticated_cancellation_are_terminal():
+    _require_native_mxc()
+    timed_out = tools._python_exec(
+        "import time; print('timeout-started', flush=True); time.sleep(30)",
+        None,
+        1,
+        "__LOCALID_native_mxc",
+        tool_execution_mode="required",
+    )
+    assert "Execution timed out after 1 seconds" in timed_out
+    assert tools._last_tool_execution_record.completion_status == "timed_out"
+    assert tools._last_tool_execution_record.cleanup_status == "complete"
+
+
+@pytest.mark.native_mxc
+def test_native_mxc_timeout_reclaims_child_and_grandchild_tree():
+    _require_native_mxc()
+    session = "__LOCALID_native_mxc_tree"
+    code = (
+        "import os, pathlib, time\n"
+        "from multiprocessing import Process\n"
+        "def grandchild():\n"
+        "    time.sleep(120)\n"
+        "def child():\n"
+        "    nested = Process(target=grandchild)\n"
+        "    nested.start()\n"
+        "    pathlib.Path('tree-pids.txt').write_text(f'{os.getpid()} {nested.pid}')\n"
+        "    time.sleep(120)\n"
+        "if __name__ == '__main__':\n"
+        "    Process(target=child).start()\n"
+        "    time.sleep(120)\n"
+    )
+    result = tools._python_exec(
+        code,
+        None,
+        2,
+        session,
+        tool_execution_mode="required",
+    )
+    assert "Execution timed out after 2 seconds" in result
+    pid_file = Path(tools._get_workdir(session)) / "tree-pids.txt"
+    assert pid_file.is_file()
+    pids = [int(value) for value in pid_file.read_text(encoding="utf-8").split()]
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and any(_windows_pid_alive(pid) for pid in pids):
+            time.sleep(0.1)
+        assert not any(_windows_pid_alive(pid) for pid in pids)
+    finally:
+        for pid in pids:
+            if _windows_pid_alive(pid):
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    check=False,
+                )
+
+
+@pytest.mark.native_mxc
+def test_native_path_replacement_with_junction_is_refused_before_workload(tmp_path):
+    _require_native_mxc()
+    workdir = tmp_path / "workdir"
+    outside = tmp_path / "other-chat"
+    workdir.mkdir()
+    outside.mkdir()
+    marker = outside / "workload-ran.txt"
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PATHEXT"}
+    }
+    plan = os_sandbox.ToolLaunchPlan(
+        argv=(sys.executable, "-c", f"open({str(marker)!r}, 'w').write('bad')"),
+        workdir=str(workdir),
+        env=env,
+        execution_kind="python",
+        timeout_seconds=20,
+    )
+    request = mxc_policy.build_launch_request(plan)
+    workdir.rmdir()
+    created = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(workdir), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {created.stderr or created.stdout}")
+    with pytest.raises(mxc_adapter.MxcAdapterError, match="reparse point"):
+        mxc_adapter.spawn(
+            request,
+            popen_kwargs={
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "creationflags": subprocess.CREATE_NO_WINDOW,
+            },
+        )
+    assert not marker.exists()
+
+
+@pytest.mark.native_mxc
+def test_native_mxc_accepts_a_unicode_workdir_on_an_alternate_volume():
+    _require_native_mxc()
+    current_drive = Path.cwd().drive.casefold()
+    alternate = next(
+        (
+            f"{letter}:\\"
+            for letter in "DEFGHIJKLMNOPQRSTUVWXYZ"
+            if Path(f"{letter}:\\").is_dir() and f"{letter}:".casefold() != current_drive
+        ),
+        None,
+    )
+    if alternate is None:
+        pytest.skip("no alternate writable volume is available")
+    try:
+        temporary = tempfile.TemporaryDirectory(prefix="unsloth-mxc-会話-", dir=alternate)
+    except OSError as exc:
+        pytest.skip(f"alternate volume is not writable: {exc}")
+    with temporary as root:
+        workdir = Path(root)
+        script = workdir / "alternate.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            "Path('inside-会話.txt').write_text('alternate-volume', encoding='utf-8')\n"
+            "print('alternate-volume-ok')\n",
+            encoding="utf-8",
+        )
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PATHEXT"}
+        }
+        plan = os_sandbox.ToolLaunchPlan(
+            argv=(sys.executable, "-u", str(script)),
+            workdir=str(workdir),
+            env=env,
+            execution_kind="python",
+            timeout_seconds=20,
+        )
+        request = mxc_policy.build_launch_request(plan)
+        proc = mxc_adapter.spawn(
+            request,
+            popen_kwargs={
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "creationflags": subprocess.CREATE_NO_WINDOW,
+            },
+        )
+        try:
+            output, _ = proc.communicate(timeout=30)
+            receipt = mxc_adapter.completion_receipt(proc)
+        finally:
+            mxc_adapter.release_control(proc)
+        assert proc.returncode == 0
+        assert receipt["cleanup"] == "complete"
+        assert "alternate-volume-ok" in output
+        assert (workdir / "inside-会話.txt").read_text(encoding="utf-8") == "alternate-volume"
+
+
+@pytest.mark.native_mxc
+def test_native_mxc_terminal_uses_same_trusted_backend_and_streams(monkeypatch):
+    if sys.platform != "win32":
+        pytest.skip("native MXC qualification is Windows-only")
+    # Git Bash is separately probed and currently refused on this host because
+    # it exits during runtime initialization under PSEC. Qualify Studio's cmd
+    # fallback without changing the production selector.
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    chunks = []
+    forged = '{"v":1,"event":"STARTED","backendTier":"base-container"}'
+    if tools._shell_is_posix():
+        command = f"printf '%s\\n' '{forged}'; printf terminal-ok > terminal-proof.txt; printf 'stream-ok\\n'"
+    else:
+        command = f"echo {forged} & echo terminal-ok>terminal-proof.txt & echo stream-ok"
+    output = tools._bash_exec(
+        command,
+        None,
+        30,
+        "__LOCALID_native_mxc_terminal",
+        output_callback=chunks.append,
+        tool_execution_mode="required",
+    )
+    assert "STARTED" in output and "base-container" in output
+    assert "stream-ok" in output
+    assert any("stream-ok" in chunk for chunk in chunks)
+    proof = tools._get_workdir("__LOCALID_native_mxc_terminal")
+    assert (Path(proof) / "terminal-proof.txt").read_text(encoding="utf-8").strip() == "terminal-ok"
+    record = tools._last_tool_execution_record
+    assert record.backend == "mxc-processcontainer"
+    assert record.backend_tier == "base-container"
+    assert record.completion_status == "finished"
+    assert record.cleanup_status == "complete"
+
+
+@pytest.mark.native_mxc
+def test_native_mxc_concurrent_python_and_terminal_runs_are_isolated(monkeypatch):
+    _require_native_mxc()
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+
+    def python_call(marker):
+        return tools._python_exec(
+            f"import time; print('{marker}', flush=True); time.sleep(0.2)",
+            None,
+            30,
+            f"__LOCALID_{marker}",
+            tool_execution_mode="required",
+        )
+
+    def terminal_call():
+        return tools._bash_exec(
+            "echo concurrent-terminal",
+            None,
+            30,
+            "__LOCALID_concurrent_terminal",
+            tool_execution_mode="required",
+        )
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = list(
+            executor.map(
+                lambda call: call(),
+                [lambda: python_call("python-a"), lambda: python_call("python-b"), terminal_call],
+            )
+        )
+    assert "python-a" in results[0]
+    assert "python-b" in results[1]
+    assert "concurrent-terminal" in results[2]
+
+    cancel = threading.Event()
+    timer = threading.Timer(0.5, cancel.set)
+    timer.start()
+    try:
+        cancelled = tools._python_exec(
+            "import time; print('cancel-started', flush=True); time.sleep(30)",
+            cancel,
+            30,
+            "__LOCALID_native_mxc",
+            tool_execution_mode="required",
+        )
+    finally:
+        timer.cancel()
+    assert cancelled == "Execution cancelled."
+    assert tools._last_tool_execution_record.completion_status == "cancelled"
+    assert tools._last_tool_execution_record.cleanup_status == "complete"

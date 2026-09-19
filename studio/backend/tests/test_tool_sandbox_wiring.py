@@ -404,16 +404,14 @@ def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
     assert holder.closed
 
 
-def test_auto_still_runs_when_the_planner_itself_breaks(monkeypatch):
+def test_auto_refuses_when_the_planner_itself_breaks(monkeypatch):
     def explode(plan):
         raise ImportError("no module named sandbox_linux")
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", explode)
-    tools._last_tool_execution_record = None
-    assert "5" in tools._python_exec("print(5)", None, 60, _SESSION)
-    record = tools._last_tool_execution_record
-    assert record.effective_mode == "software_safeguards"
-    assert "sandbox_planner_error" in record.limitations
+    out = tools._python_exec("print('SHOULD_NOT_RUN')", None, 60, _SESSION)
+    assert "SHOULD_NOT_RUN" not in out
+    assert "without host fallback" in out
 
 
 def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatch):
@@ -458,10 +456,10 @@ def test_required_still_refuses_when_the_planner_itself_breaks(monkeypatch):
         "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "required"
     )
     assert "SHOULD_NOT_RUN" not in out
-    assert "OS_ISOLATION_UNAVAILABLE" in out
+    assert "without host fallback" in out
 
 
-@pytest.mark.parametrize("platform", ["win32", "cygwin", "aix"])
+@pytest.mark.parametrize("platform", ["cygwin", "aix"])
 def test_a_platform_with_no_backend_gets_exactly_the_plan_it_handed_in(monkeypatch, platform):
     monkeypatch.setattr(sys, "platform", platform)
 
@@ -489,7 +487,7 @@ def test_a_platform_with_no_backend_gets_exactly_the_plan_it_handed_in(monkeypat
 
 
 def test_a_platform_with_no_backend_still_refuses_in_required(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "platform", "aix")
     with pytest.raises(SandboxUnavailableError):
         os_sandbox.prepare_tool_launch(
             ToolLaunchPlan(argv = ("prog",), workdir = "/work", env = {}, requested_mode = "required")
@@ -657,12 +655,16 @@ def test_a_backend_that_fails_at_launch_drops_the_cached_verdict(monkeypatch):
 
 def test_a_planner_os_error_refuses_rather_than_running_unisolated(monkeypatch):
     backend = importlib.import_module(
-        "core.inference.sandbox_linux"
-        if sys.platform == "linux"
-        else "core.inference.sandbox_macos"
+        "core.inference.sandbox_windows_mxc"
+        if sys.platform == "win32"
+        else (
+            "core.inference.sandbox_linux"
+            if sys.platform == "linux"
+            else "core.inference.sandbox_macos"
+        )
     )
 
-    def full_disk(plan):
+    def full_disk(plan, *_args):
         raise OSError(errno.ENOSPC, "No space left on device")
 
     # Through the real prepare_tool_launch, because the wrap that types this
