@@ -33357,6 +33357,17 @@ class LlamaCppBackend:
         httpx.Client + auth headers for the stream's lifetime; raises
         RuntimeError on a non-200. Shared scaffold for the streaming consumers,
         which differ only in how they parse the SSE body."""
+        from core.inference.mcp_images import prepare_image_turn_boundaries
+
+        if "messages" in payload:
+            payload = {
+                **payload,
+                "messages": prepare_image_turn_boundaries(
+                    payload["messages"],
+                    getattr(self, "_chat_template_override", None)
+                    or getattr(self, "_chat_template", None),
+                ),
+            }
         stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
         with httpx.Client(
             timeout = stream_timeout,
@@ -38412,7 +38423,13 @@ class LlamaCppBackend:
                     return len(tokens)
 
                 # 1. Try /apply-template to render the real chat prompt.
-                template_messages = list(messages) if messages else []
+                from core.inference.mcp_images import prepare_image_turn_boundaries
+
+                template_messages = prepare_image_turn_boundaries(
+                    list(messages) if messages else [],
+                    getattr(self, "_chat_template_override", None)
+                    or getattr(self, "_chat_template", None),
+                )
                 if system_text:
                     template_messages = [
                         {"role": "system", "content": system_text}

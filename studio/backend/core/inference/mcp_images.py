@@ -892,6 +892,29 @@ def is_synthetic_image_turn(message) -> bool:
     return bool(texts) and all(_is_image_turn_note(text) for text in texts)
 
 
+def prepare_image_turn_boundaries(messages: list, template: str | None) -> list:
+    """Balance inserted image turns for Ministral's tool-skipping alternation check."""
+    if not isinstance(template, str) or (
+        "conversation roles must alternate user and assistant roles except for tool calls and results."
+        not in template
+    ):
+        return messages
+    out = []
+    expects_user = True
+    changed = False
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            if not expects_user and is_synthetic_image_turn(message):
+                out.append({"role": "assistant", "content": "The tool returned image content."})
+                changed = True
+            expects_user = False
+        elif role == "assistant" and not message.get("tool_calls"):
+            expects_user = True
+        out.append(message)
+    return out if changed else messages
+
+
 def _with_attachment_markers(
     message: dict,
     markers: list[dict],
