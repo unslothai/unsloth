@@ -4,6 +4,7 @@
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   ggufVariantFromStorageKey,
+  isStandaloneGgufPath,
   modelIdFromStorageKey,
   modelStorageKey,
   normalizeGgufVariantIdentity,
@@ -1473,7 +1474,11 @@ export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
 ): ResolvedPerModelConfig {
-  const direct = resolveInitialConfig(modelId, ggufVariant);
+  // a standalone file's reported quant is a label; its settings are saved without a variant.
+  const direct = resolveInitialConfig(
+    modelId,
+    isStandaloneGgufPath(modelId) ? null : ggufVariant,
+  );
   if (direct.remembered) {
     return direct;
   }

@@ -81,6 +81,41 @@ test("the quant still separates two variants of one cached repo", () => {
   );
 });
 
+for (const modelId of [
+  "/home/u/.lmstudio/models/unsloth/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf",
+  String.raw`C:\Users\u\.lmstudio\models\unsloth\Qwen3-0.6B-GGUF\Qwen3-0.6B-Q4_K_M.gguf`,
+  "Qwen3-0.6B-Q4_K_M.gguf",
+]) {
+  test(`a resident standalone GGUF restores the settings saved by the picker: ${modelId}`, () => {
+    store.clear();
+    savePerModelConfig(modelId, null, {
+      ...config(2),
+      customContextLength: 4096,
+    });
+
+    const resolved = resolveResidentInitialConfig(modelId, "Q4_K_M");
+    assert.equal(resolved.remembered, true);
+    assert.equal(resolved.config.customContextLength, 4096);
+    assert.equal(resolved.config.nParallel, 2);
+  });
+}
+
+for (const modelId of [
+  "/home/u/.lmstudio/models/unsloth/Qwen3-0.6B-GGUF",
+  "org/model.gguf",
+]) {
+  test(`a model containing several GGUF variants keeps their settings separate: ${modelId}`, () => {
+    store.clear();
+    savePerModelConfig(modelId, null, config(8));
+    savePerModelConfig(modelId, "Q4_K_M", config(2));
+    savePerModelConfig(modelId, "Q8_0", config(4));
+
+    assert.equal(resolveResidentInitialConfig(modelId, "Q4_K_M").config.nParallel, 2);
+    assert.equal(resolveResidentInitialConfig(modelId, "Q8_0").config.nParallel, 4);
+    assert.equal(resolveResidentInitialConfig(modelId, "Q6_K").remembered, false);
+  });
+}
+
 test("a stem two models can share is never read as an alias", () => {
   store.clear();
   // A standalone GGUF is keyed by its own path; "Repo-Q4_K_M" is the stem both of these
