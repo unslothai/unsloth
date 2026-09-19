@@ -44,7 +44,10 @@ export type {
   ModelSelectorChangeMeta,
 } from "./components/model-selector";
 export { modelConfigInstanceKey } from "./model-config/config-signature";
-export { modelConfigDraftKey } from "./model-config/model-config-draft";
+export {
+  modelConfigDraftKey,
+  modelConfigEditorKey,
+} from "./model-config/model-config-draft";
 export {
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,
