@@ -417,6 +417,35 @@ def test_base_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp_p
     assert seen["uploaded"] == ["model.safetensors", "tokenizer.json"]
 
 
+def test_base_export_staging_failure_leaves_the_hub_untouched(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_stage_failure", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "old.gguf").write_bytes(b"GGUF")
+    save = backend.current_model.save_pretrained
+    saved_to = []
+
+    def fail_staging(directory):
+        saved_to.append(directory)
+        if len(saved_to) == 2:
+            raise OSError(28, "No space left on device")
+        save(directory)
+
+    monkeypatch.setattr(backend.current_model, "save_pretrained", fail_staging)
+    success, message, _output_path = backend.export_base_model(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+
+    assert success is False
+    assert "No space left on device" in message
+    assert len(saved_to) == 2
+    assert Path(export_dir, "model.safetensors").is_file()
+    assert not Path(saved_to[1]).exists()
+    assert calls == []
+
+
 class _LoraTokenizer(_Tokenizer):
     def __init__(self, calls):
         self.calls = calls

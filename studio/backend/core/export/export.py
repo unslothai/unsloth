@@ -1194,47 +1194,49 @@ class ExportBackend:
                         base_model_id or self.current_model.config._name_or_path or "unknown"
                     )
 
-                    hf_api = HfApi(token = hf_token)
-                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
-                    repo_id = getattr(repo_url, "repo_id", repo_id)
-                    if private:
-                        _ensure_hub_repo_private(hf_api, repo_id)
-                    username = repo_id.split("/")[0]
+                    with contextlib.ExitStack() as stack:
+                        upload_dir = save_directory
+                        if save_directory and not save_dir_was_empty:
+                            # A reused folder can hold leftovers, so upload a clean second save
+                            # instead.
+                            upload_dir = stack.enter_context(
+                                _staging_dir(Path(save_directory).parent)
+                            )
+                            self.current_model.save_pretrained(upload_dir)
+                            self.current_tokenizer.save_pretrained(upload_dir)
+                        hf_api = HfApi(token = hf_token)
+                        repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                        repo_id = getattr(repo_url, "repo_id", repo_id)
+                        if private:
+                            _ensure_hub_repo_private(hf_api, repo_id)
+                        username = repo_id.split("/")[0]
 
-                    content = MODEL_CARD.format(
-                        username = username,
-                        base_model = base_model,
-                        model_type = self.current_model.config.model_type,
-                        method = "",
-                        extra = "unsloth",
-                    )
-                    card = ModelCard(content)
-                    card.push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                        content = MODEL_CARD.format(
+                            username = username,
+                            base_model = base_model,
+                            model_type = self.current_model.config.model_type,
+                            method = "",
+                            extra = "unsloth",
+                        )
+                        card = ModelCard(content)
+                        card.push_to_hub(
+                            repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                        )
 
-                    if save_directory:
-                        with contextlib.ExitStack() as stack:
-                            upload_dir = save_directory
-                            if not save_dir_was_empty:
-                                # A reused folder can hold leftovers, so upload a clean second save
-                                # instead.
-                                upload_dir = stack.enter_context(
-                                    _staging_dir(Path(save_directory).parent)
-                                )
-                                self.current_model.save_pretrained(upload_dir)
-                                self.current_tokenizer.save_pretrained(upload_dir)
+                        if save_directory:
                             hf_api.upload_folder(
                                 folder_path = upload_dir,
                                 repo_id = repo_id,
                                 repo_type = "model",
                                 ignore_patterns = _HUB_UPLOAD_IGNORE,
                             )
-                        logger.info(f"Model pushed successfully to {repo_id}")
-                    else:
-                        return (
-                            False,
-                            "Local save directory required for Hub upload",
-                            None,
-                        )
+                            logger.info(f"Model pushed successfully to {repo_id}")
+                        else:
+                            return (
+                                False,
+                                "Local save directory required for Hub upload",
+                                None,
+                            )
 
             return True, "Model exported successfully", output_path
 
