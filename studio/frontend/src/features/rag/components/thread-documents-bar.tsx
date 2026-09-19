@@ -24,6 +24,7 @@ import {
   getStoredChatThread,
   isThreadIncognito,
 } from "@/features/chat";
+import { isChatThreadDeleted } from "@/features/chat/utils/chat-thread-tombstones";
 import {
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
@@ -50,6 +51,7 @@ import {
   type RagDocument,
   isLinkedFolderManaged,
 } from "../types/rag";
+import { materializeThreadScope } from "../utils/materialize-thread-scope";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -459,17 +461,18 @@ export function ThreadDocumentsBar({
 
   // Materialize the thread id on first use; ref-deduped so a double-click can't
   // start two threads. A thread switch gets separate work even if the prior request is pending.
-  const ensureThreadId = useCallback((): Promise<string> => {
-    if (effectiveThreadId) {
-      return requireStoredThread(effectiveThreadId).then(
-        () => effectiveThreadId,
-      );
-    }
+  const initializeThreadItem = useCallback((
+    clearGeneration: number,
+  ): Promise<string> => {
     const current = initPromiseRef.current;
     if (current) {
       return current;
     }
-    const clearGeneration = chatHistoryClearBoundary.capture();
+    // Captured by the caller, not here: on the recovery path this runs after an unbounded
+    // getChatThread round trip, so a clear arriving in that window would read as no clear.
+    if (chatHistoryClearBoundary.capture() !== clearGeneration) {
+      return Promise.reject(new Error("Chat history was cleared"));
+    }
     const generation = ++initGenerationRef.current;
     // Taken before the await: this composer can be abandoned while it runs, and
     // the choice under the shared key would then be the next composer's.
@@ -500,7 +503,23 @@ export function ThreadDocumentsBar({
     };
     pending.then(clear, clear);
     return pending;
-  }, [aui, effectiveThreadId]);
+  }, [aui]);
+
+  const ensureThreadId = useCallback((): Promise<string> => {
+    // Before anything can yield: a late initializer must not recreate a chat a Clear All
+    // removed while the stored-thread check was in flight (clear-all-chats.ts).
+    const clearGeneration = chatHistoryClearBoundary.capture();
+    return materializeThreadScope({
+      threadId: effectiveThreadId,
+      readCurrentThreadItem: () => {
+        const state = aui.threadListItem().getState();
+        return { id: state.id, remoteId: state.remoteId };
+      },
+      isThreadDeleted: isChatThreadDeleted,
+      requireStoredThread,
+      initialize: () => initializeThreadItem(clearGeneration),
+    });
+  }, [aui, effectiveThreadId, initializeThreadItem]);
 
   // One entry point for the picker and desktop drops: project files go straight
   // there, per-chat files materialize the thread first. The probe caches for 30s,
