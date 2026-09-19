@@ -1593,6 +1593,16 @@ export const ko = {
         images: "웹 검색 이미지 표시",
         imagesDescription:
           "검색 결과에 이미지를 포함합니다.",
+        provider: "Search provider",
+        providerDescription:
+          "DuckDuckGo is the default. Parallel runs searches through Parallel's free search API instead.",
+        duckduckgo: "DuckDuckGo",
+        parallel: "Parallel",
+        apiKey: "*** API key (optional)",
+        apiKeyDescription:
+          "Parallel works with no key. Add one for higher limits. Get a key at",
+        apiKeyLink: "platform.parallel.ai",
+        apiKeyPlaceholder: "Leave empty for free use",
       },
       artifacts: {
         title: "Canvas",

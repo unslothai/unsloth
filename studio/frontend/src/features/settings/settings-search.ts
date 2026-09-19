@@ -118,6 +118,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
     "settings.chat.webSearch.images",
+    "settings.chat.webSearch.provider",
+    "settings.chat.webSearch.apiKey",
     "settings.chat.modelDisclaimer",
     "settings.chat.projectsSection",
     "settings.chat.groups.menu.title",
