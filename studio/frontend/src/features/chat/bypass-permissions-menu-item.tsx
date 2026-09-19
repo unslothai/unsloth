@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ShieldBanIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,8 +14,47 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { FULL_ACCESS_WARNING } from "./permission-mode-select";
+import {
+  FULL_ACCESS_WARNING,
+  PermissionModeMenuItems,
+} from "./permission-mode-select";
+
+// Dictation-only "+" menu fallback: the composer pill is the normal control, but it is hidden
+// while recording, so this is the sole way to reach permission mode then.
+export function BypassPermissionsMenuItem() {
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const setBypassConfirmOpen = useChatRuntimeStore(
+    (s) => s.setBypassConfirmOpen,
+  );
+
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger
+        className={
+          permissionMode === "full" ? "text-bypass font-medium" : undefined
+        }
+      >
+        <HugeiconsIcon icon={ShieldBanIcon} strokeWidth={2} />
+        Tool permissions
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="unsloth-plus-menu w-[300px]">
+        <PermissionModeMenuItems
+          // Defer past Radix's menu-close focus restoration, or the dropdown grabs focus back
+          // and breaks the dialog's focus trap.
+          onRequestFullAccess={() =>
+            setTimeout(() => setBypassConfirmOpen(true), 0)
+          }
+        />
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+}
 
 // The danger-confirmation dialog. Mounted once at the chat-page root, not inside a Composer or the
 // menu, and driven by global store state, so it works for both the main and shared composers,
