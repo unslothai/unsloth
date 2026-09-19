@@ -2641,7 +2641,11 @@ def _report_reviewed_sites(
     if not baseline or not active:
         return
     reviewed_sites = {(pkg, path, check) for pkg, path, check, _ in baseline}
-    moved = [f for f in active if (_norm_pkg(f.package), _relpath_in_package(f.filename), f.check) in reviewed_sites]
+    moved = [
+        f
+        for f in active
+        if (_norm_pkg(f.package), _relpath_in_package(f.filename), f.check) in reviewed_sites
+    ]
     if not moved:
         return
     print(
