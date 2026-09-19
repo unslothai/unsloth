@@ -303,8 +303,16 @@ class TestResolvedCheckpointSafety(unittest.TestCase):
         with (
             patch.object(EL, "require_exllama"),
             patch.object(EL, "_resolve_local_dir", return_value = d),
-            patch.object(EL, "patch_transformers_exl3", side_effect = AssertionError("EXL3 patch must be skipped")),
-            patch.object(EL, "quantize_to_exl3", side_effect = AssertionError("native weights must not be re-quantized")),
+            patch.object(
+                EL,
+                "patch_transformers_exl3",
+                side_effect = AssertionError("EXL3 patch must be skipped"),
+            ),
+            patch.object(
+                EL,
+                "quantize_to_exl3",
+                side_effect = AssertionError("native weights must not be re-quantized"),
+            ),
         ):
             plan = EL.prepare_exl3_checkpoint(
                 "unsloth/example-bnb-4bit",
@@ -317,13 +325,13 @@ class TestResolvedCheckpointSafety(unittest.TestCase):
         self.assertEqual(plan.source_model, "unsloth/example-bnb-4bit")
 
     def test_explicit_exl3_request_rejects_native_quant_checkpoint(self):
-        d = self._mkdir(
-            {"quantization_config": {"quant_method": "gptq"}}
-        )
+        d = self._mkdir({"quantization_config": {"quant_method": "gptq"}})
         with (
             patch.object(EL, "require_exllama"),
             patch.object(EL, "_resolve_local_dir", return_value = d),
-            self.assertRaisesRegex(ValueError, "cannot quantize an existing non-EXL3 quantized checkpoint"),
+            self.assertRaisesRegex(
+                ValueError, "cannot quantize an existing non-EXL3 quantized checkpoint"
+            ),
         ):
             EL.prepare_exl3_checkpoint(
                 "org/example-gptq",

@@ -66,6 +66,7 @@ def _exl3_request_is_explicit(load_in_exl3, quantization_config):
     if quantization_config is None:
         return False
     from ..exllama.config import Exl3Config
+
     if isinstance(quantization_config, Exl3Config):
         return True
     if isinstance(quantization_config, dict):
