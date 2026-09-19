@@ -270,7 +270,7 @@ def _run_seed(tmp_path, freeze_text = None) -> list[str]:
     return pins + torch_pins
 
 
-def test_no_seeded_pin_asks_pypi_for_a_version_only_a_distro_has(tmp_path):
+def test_no_declared_distro_marker_survives_the_seed(tmp_path):
     """The freeze is a snapshot of an image, so it carries versions as the image labels them,
     and a distro build can label itself `.devN`. PyPI has no such release, and one unresolvable
     pin fails the whole bulk resolve: the Ubuntu 24.04 rotation brought in `Mako==1.3.2.dev0`
@@ -278,13 +278,25 @@ def test_no_seeded_pin_asks_pypi_for_a_version_only_a_distro_has(tmp_path):
 
         ERROR: No matching distribution found for mako==1.3.2.dev0
 
-    Run through the workflow's own seed script, so removing its rewrite fails this.
+    Scoped to the versions declared in `distro_dev_version`, not to `.devN` as a shape. A
+    published prerelease is a legitimate pin that the seed deliberately passes through -- see
+    test_an_undeclared_dev_pin_is_left_alone_rather_than_guessed_at -- so failing on every
+    `.devN` would contradict that and push a valid pin towards being rewritten or suppressed.
+
+    Local versions are different and stay a blanket check: the seed strips `+cu128` from every
+    pin whatever the package, so any survivor is a defect.
     """
-    offenders = [pin for pin in _run_seed(tmp_path) if ".dev" in pin or "+" in pin]
-    assert not offenders, (
-        "these pins would be sent to PyPI carrying a marker only the Colab image uses, and "
-        f"one of them fails the resolve for all of them: {offenders}"
+    seeded = _run_seed(tmp_path)
+    declared = {name: rule["from"] for name, rule in _mapping().get("distro_dev_version", {}).items()}
+    stale = [pin for pin in seeded if pin.split("==", 1)[0] in declared
+             and pin.split("==", 1)[1] == declared[pin.split("==", 1)[0]]]
+    assert not stale, (
+        "these pins kept a version only the Colab image uses, and one of them fails the "
+        f"resolve for all of them: {stale}"
     )
+
+    local = [pin for pin in seeded if "+" in pin]
+    assert not local, f"the seed left a local version on: {local}"
 
 
 def test_a_rewritten_pin_is_still_installed_at_the_published_version(tmp_path):
