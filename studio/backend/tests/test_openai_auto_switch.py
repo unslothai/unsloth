@@ -11359,13 +11359,17 @@ def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
         inference_route,
         "get_inference_backend",
         lambda: type(
-            "_B", (), {"active_model_name": None, "models": {}, "load_model": staticmethod(_load_model)}
+            "_B",
+            (),
+            {"active_model_name": None, "models": {}, "load_model": staticmethod(_load_model)},
         )(),
     )
     kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
 
     with pytest.raises(Exception):
-        asyncio.run(inference_route.openai_chat_completions(_chat_request(model = "tiny"), object(), "tester"))
+        asyncio.run(
+            inference_route.openai_chat_completions(_chat_request(model = "tiny"), object(), "tester")
+        )
 
     assert any("Idle-GGUF" in str(one) for one in asked), (
         "the stale stash did not divert the request, so this test no longer covers the leak "
