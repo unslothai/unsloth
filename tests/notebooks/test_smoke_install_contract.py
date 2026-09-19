@@ -19,7 +19,6 @@ Neither is noticeable otherwise: a leg over `timeout-minutes` is scored
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import re
