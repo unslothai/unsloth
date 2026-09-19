@@ -1668,6 +1668,7 @@ jobs:
               ('-setup.exe.sig', f'{windows_name}.exe.sig'),
               ('-setup.exe', f'{windows_name}.exe'),
               ('.dmg', f'{base_name}-MacOS.dmg'),
+              ('.deb.sig', f'{base_name}-Ubuntu.deb.sig'),
               ('.deb', f'{base_name}-Ubuntu.deb'),
           )
           staged = []
@@ -1837,6 +1838,7 @@ jobs:
               f'{base_name}-Linux.AppImage',
               f'{base_name}-Linux.AppImage.sig',
               f'{base_name}-Ubuntu.deb',
+              f'{base_name}-Ubuntu.deb.sig',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
               f'{base_name}-Windows-ARM64.exe',
@@ -1956,6 +1958,7 @@ jobs:
 
           darwin = entry('.app.tar.gz.sig')
           linux = entry('.AppImage.sig')
+          debian = entry('.deb.sig')
           # Both Windows bundles end in .exe.sig, and exactly_one() refuses an ambiguous
           # match, so name them in full. -Windows.exe.sig does not match -Windows-ARM64.exe.sig
           # under endswith, which is what keeps the two entries distinct.
@@ -1973,6 +1976,7 @@ jobs:
                   'darwin-aarch64-app': darwin,
                   'linux-x86_64': linux,
                   'linux-x86_64-appimage': linux,
+                  'linux-x86_64-deb': debian,
                   'windows-x86_64': windows,
                   'windows-x86_64-nsis': windows,
                   # Tauri asks for {os}-{arch}; without these an ARM64 install either
