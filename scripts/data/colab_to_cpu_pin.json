@@ -16,6 +16,14 @@
       "to_index_url": "https://download.pytorch.org/whl/cpu"
     }
   },
+  "_distro_dev_version_comment": "Pins the Colab image records with a .devN suffix because the DISTRO build carries that label, not because upstream published a prerelease. PyPI has no such release, and one unresolvable pin fails the bulk resolve for every pin. Keyed by exact (package, recorded version) so a genuine PEP 440 prerelease is never silently turned into the final release it is not: if the snapshot later records a different version for one of these, the pin is left alone and the resolve fails loudly, which is a human's call rather than a guess.",
+  "distro_dev_version": {
+    "mako": {
+      "from": "1.3.2.dev0",
+      "to": "1.3.2",
+      "why": "Ubuntu 24.04, which the image moved to in the 2026-09-19 rotation, ships Mako as the distro build labelled 1.3.2.dev0; PyPI has 1.3.2 and never had 1.3.2.dev0."
+    }
+  },
   "module_spoof": {
     "torchcodec": "no CPU wheel published; smoke job sys.modules-stubs torchcodec before importing unsloth"
   },
