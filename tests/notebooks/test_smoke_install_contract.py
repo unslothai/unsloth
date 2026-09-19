@@ -19,7 +19,9 @@ Neither is noticeable otherwise: a leg over `timeout-minutes` is scored
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -374,53 +376,115 @@ def test_the_skip_list_is_closed_under_the_freezes_dependencies():
 # --- the torchcodec placeholder --------------------------------------------------------
 
 
-def test_the_torchcodec_placeholder_answers_find_spec_instead_of_raising():
-    """`types.ModuleType(name)` leaves `__spec__` None, and importlib.util.find_spec RAISES on
-    a module sitting in sys.modules with no spec rather than returning None. transformers hits
-    exactly that probe while importing audio_utils (is_torchcodec_available ->
-    _is_package_available), which peft pulls in through BloomPreTrainedModel, so every leg of
-    the smoke matrix died on `import peft` with `ValueError: torchcodec.__spec__ is None`.
-    """
-    import importlib.util
-    import types
+def _probe_in_a_venv_without_torchcodec(mode: str) -> str:
+    """Run the two things transformers does at import time, in a subprocess whose sys.path has
+    no real torchcodec, and return what it printed.
 
+    A subprocess because the question is about interpreter state (sys.modules, sys.path,
+    distribution metadata) that a stub cannot be un-installed from cleanly, and because this
+    repo's own venv HAS torchcodec, which would answer both probes for the wrong reason.
+    """
+    import subprocess
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import importlib.metadata, importlib.util, sys
+        mode, tests_dir = sys.argv[1], sys.argv[2]
+        sys.path.insert(0, tests_dir)
+        if mode == "bare":
+            import types
+            sys.modules["torchcodec"] = types.ModuleType("torchcodec")
+        elif mode == "spec":
+            import importlib.machinery, types
+            m = types.ModuleType("torchcodec")
+            m.__spec__ = importlib.machinery.ModuleSpec("torchcodec", None)
+            sys.modules["torchcodec"] = m
+        elif mode == "dist":
+            import _torchcodec_stub as t
+            t.install()
+        # is_torchcodec_available() -> _is_package_available(name)[0]; transformers 5.16.1
+        # passes no return_version, so presence is decided by the spec alone.
+        try:
+            available = importlib.util.find_spec("torchcodec") is not None
+        except Exception as e:
+            print("AVAILABLE_RAISED", type(e).__name__); raise SystemExit(0)
+        print("AVAILABLE", available)
+        if available:
+            # audio_utils.py:61, at import time.
+            try:
+                print("VERSION", importlib.metadata.version("torchcodec"))
+            except Exception as e:
+                print("VERSION_RAISED", type(e).__name__)
+        """
+    )
+    # -S skips site-packages, so a real torchcodec on THIS interpreter cannot answer the
+    # probes for the wrong reason. That is what the runner looks like, and it lets the test
+    # run everywhere instead of skipping wherever the wheel happens to be installed.
+    out = subprocess.run(
+        [sys.executable, "-S", "-c", script, mode, str(REPO / "tests")],
+        capture_output = True,
+        text = True,
+        env = {"PATH": os.environ.get("PATH", ""), "PYTHONNOUSERSITE": "1"},
+        cwd = str(REPO),
+    )
+    return out.stdout
+
+
+@pytest.mark.parametrize(
+    "mode, expected",
+    [
+        # The shape on main: __spec__ is None and find_spec raises rather than returning None.
+        ("bare", "AVAILABLE_RAISED ValueError"),
+        # A hand-made ModuleSpec gets past find_spec and straight into the metadata lookup
+        # that audio_utils does at import time, which is the second failure and the reason
+        # the placeholder is a distribution rather than a sys.modules entry.
+        ("spec", "VERSION_RAISED PackageNotFoundError"),
+        # The placeholder: both probes answer.
+        ("dist", "VERSION 0.0.0"),
+    ],
+    ids = ["bare ModuleType", "ModuleType with a spec", "the placeholder distribution"],
+)
+def test_the_placeholder_survives_both_probes_transformers_makes(mode, expected):
+    """transformers asks two questions while importing audio_utils, and a stub has to answer
+    both. is_torchcodec_available() reads find_spec, and line 61 then reads the distribution
+    version. Answering only the first turns ValueError into PackageNotFoundError.
+    """
+    printed = _probe_in_a_venv_without_torchcodec(mode)
+    assert "AVAILABLE_RAISED ValueError" in printed or "AVAILABLE" in printed, (
+        f"the probe subprocess produced nothing usable for {mode!r}: {printed!r}"
+    )
+    assert expected in printed, printed
+
+
+def test_the_placeholder_version_stays_under_the_backend_floor():
+    """load_audio resolves "auto" to torchcodec only at >= 0.3.0, so a placeholder claiming a
+    newer version would be chosen as the decoder and then fail on the first real call. Below
+    the floor it is visible, importable and never selected."""
     sys.path.insert(0, str(REPO / "tests"))
     import _torchcodec_stub  # noqa: PLC0415
 
-    # The shape that broke, so the test states what it is defending against rather than
-    # asserting a spec exists for reasons a reader has to reconstruct.
-    bare = types.ModuleType(_torchcodec_stub.NAME)
-    assert bare.__spec__ is None
-    saved = sys.modules.get(_torchcodec_stub.NAME)
-    sys.modules[_torchcodec_stub.NAME] = bare
-    try:
-        with pytest.raises(ValueError, match = "__spec__ is None"):
-            importlib.util.find_spec(_torchcodec_stub.NAME)
-        del sys.modules[_torchcodec_stub.NAME]
-
-        _torchcodec_stub.install()
-        assert importlib.util.find_spec(_torchcodec_stub.NAME) is not None
-    finally:
-        if saved is None:
-            sys.modules.pop(_torchcodec_stub.NAME, None)
-        else:
-            sys.modules[_torchcodec_stub.NAME] = saved
+    floor = (0, 3, 0)
+    actual = tuple(int(part) for part in _torchcodec_stub.VERSION.split("."))
+    assert actual < floor, (
+        f"the placeholder claims {_torchcodec_stub.VERSION}, at or above transformers' "
+        "0.3.0 torchcodec floor, so load_audio(backend='auto') would select it"
+    )
 
 
 def test_the_placeholder_never_displaces_a_real_torchcodec():
-    """A machine that does have the wheel must keep it: the stub is for the CPU runner, and
-    overwriting a genuine module would be the opposite of what it is for."""
+    """A machine that does have the wheel must keep it: the placeholder is for the CPU runner,
+    and shadowing a genuine install would be the opposite of what it is for."""
     import types
 
     sys.path.insert(0, str(REPO / "tests"))
     import _torchcodec_stub  # noqa: PLC0415
 
     real = types.ModuleType(_torchcodec_stub.NAME)
-    real.__unsloth_real__ = True
     saved = sys.modules.get(_torchcodec_stub.NAME)
     sys.modules[_torchcodec_stub.NAME] = real
     try:
-        assert _torchcodec_stub.install() is real
+        assert _torchcodec_stub.install() is None, "it wrote a placeholder over a live module"
         assert sys.modules[_torchcodec_stub.NAME] is real
     finally:
         if saved is None:

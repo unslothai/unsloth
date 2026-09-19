@@ -740,9 +740,9 @@ jobs:
           PYTHONPATH=unsloth/tests python -u - <<'PY'
           import _zoo_aggressive_cuda_spoof as _s; _s.apply()
           # Stub torchcodec for cells that import it — no CPU wheel exists. Through the
-          # shared helper, which gives the placeholder a real __spec__: a bare ModuleType
-          # leaves __spec__ None, and importlib.util.find_spec RAISES on that rather than
-          # returning None, so transformers' is_torchcodec_available() blew up on import.
+          # shared helper, which installs a tiny placeholder DISTRIBUTION rather than poking
+          # sys.modules: transformers asks find_spec and then reads the distribution version
+          # at import time, and a sys.modules entry answers at most the first of those.
           import _torchcodec_stub as _t; _t.install()
           exec(open("_smoke.py").read(), {"__name__": "__main__"})
           PY
