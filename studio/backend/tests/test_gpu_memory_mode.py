@@ -309,15 +309,7 @@ def test_route_normalizes_explicit_extras_before_reload_dedupe():
         'request = request.model_copy(update = {"llama_extra_args": extra_llama_args})'
     )
     dedupe = load_impl.index("_reuse_loaded_gguf(")
-    assert (
-        preserve
-        < translate
-        < preserve_ts
-        < translate_ts
-        < strip
-        < normalize
-        < dedupe
-    )
+    assert preserve < translate < preserve_ts < translate_ts < strip < normalize < dedupe
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])

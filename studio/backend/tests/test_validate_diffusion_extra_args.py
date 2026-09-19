@@ -274,7 +274,14 @@ class TestValidateTranslatesManualTensorSplit(unittest.TestCase):
     the same way it promotes ``-ngl``, or it judges a near-even default while /load
     would have emitted the asymmetric MoE split (#11330)."""
 
-    def _validate(self, route, *, gpu_layers, extra_args, tensor_split = None):
+    def _validate(
+        self,
+        route,
+        *,
+        gpu_layers,
+        extra_args,
+        tensor_split = None,
+    ):
         seen: list = []
 
         def _capture(_config, request, **kwargs):
