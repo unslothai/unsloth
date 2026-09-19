@@ -71,7 +71,9 @@ def _probe(spoof_module: str) -> str:
         """
     )
     out = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True)
-    assert "PRE absent" in out.stdout, f"the probe never staged the absence: {out.stdout}\n{out.stderr}"
+    assert (
+        "PRE absent" in out.stdout
+    ), f"the probe never staged the absence: {out.stdout}\n{out.stderr}"
     return out.stdout
 
 
@@ -104,6 +106,6 @@ def test_the_spoof_leaves_a_real_raw_stream_alone():
         """
     )
     out = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True)
-    assert "VALUE 4242" in out.stdout, (
-        f"the spoof overwrote a raw-stream handle that was already there: {out.stdout}\n{out.stderr}"
-    )
+    assert (
+        "VALUE 4242" in out.stdout
+    ), f"the spoof overwrote a raw-stream handle that was already there: {out.stdout}\n{out.stderr}"
