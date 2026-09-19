@@ -18403,6 +18403,8 @@ def _python_exec(
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
@@ -18593,6 +18595,8 @@ def _bash_exec(
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)

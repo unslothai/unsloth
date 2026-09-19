@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +49,50 @@ def _windows_pid_alive(pid: int) -> bool:
         check=False,
     ).stdout
     return str(pid) in output
+
+
+def _wait_for_dead(pids: list[int], timeout: float = 8) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and any(_windows_pid_alive(pid) for pid in pids):
+        time.sleep(0.1)
+    assert not any(_windows_pid_alive(pid) for pid in pids)
+
+
+def _failure_injection_runner() -> Path:
+    runner = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "mxc-runner"
+        / "target"
+        / "failure-injection"
+        / "release"
+        / "unsloth-mxc-runner.exe"
+    )
+    if not runner.is_file():
+        pytest.skip("the test-only MXC failure-injection runner was not built")
+    return runner
+
+
+def _inject_runner_failure(monkeypatch, stage: str) -> None:
+    runner = _failure_injection_runner()
+
+    class Lease:
+        def __init__(self):
+            self.info = SimpleNamespace(path=runner)
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(mxc_runtime, "acquire_runtime", lambda: Lease())
+    real_popen = mxc_adapter.subprocess.Popen
+
+    def injecting_popen(*args, **kwargs):
+        if "env" in kwargs:
+            kwargs["env"] = dict(kwargs["env"])
+            kwargs["env"]["UNSLOTH_MXC_TEST_FAILURE"] = stage
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(mxc_adapter.subprocess, "Popen", injecting_popen)
 
 
 @pytest.mark.native_mxc
@@ -168,6 +214,41 @@ def test_native_path_replacement_with_junction_is_refused_before_workload(tmp_pa
                 "creationflags": subprocess.CREATE_NO_WINDOW,
             },
         )
+    assert not marker.exists()
+
+
+@pytest.mark.native_mxc
+def test_native_selected_runtime_replacement_is_refused_before_workload(tmp_path):
+    _require_native_mxc()
+    runtime = tmp_path / "selected-python.exe"
+    replacement = tmp_path / "replacement-python.exe"
+    shutil.copy2(sys.executable, runtime)
+    shutil.copy2(sys.executable, replacement)
+    marker = tmp_path / "runtime-replacement-ran.txt"
+    plan = os_sandbox.ToolLaunchPlan(
+        argv=(str(runtime), "-c", f"open({str(marker)!r}, 'w').write('bad')"),
+        workdir=str(tmp_path),
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PATHEXT"}
+        },
+        execution_kind="python",
+        timeout_seconds=20,
+    )
+    request = mxc_policy.build_launch_request(plan)
+    runtime.unlink()
+    replacement.rename(runtime)
+    with pytest.raises(mxc_adapter.MxcAdapterError, match="hashed Python identity") as raised:
+        mxc_adapter.spawn(
+            request,
+            popen_kwargs={
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "creationflags": subprocess.CREATE_NO_WINDOW,
+            },
+        )
+    assert raised.value.may_have_started is False
     assert not marker.exists()
 
 
@@ -317,3 +398,194 @@ def test_native_mxc_concurrent_python_and_terminal_runs_are_isolated(monkeypatch
     assert cancelled == "Execution cancelled."
     assert tools._last_tool_execution_record.completion_status == "cancelled"
     assert tools._last_tool_execution_record.cleanup_status == "complete"
+
+
+@pytest.mark.native_mxc
+def test_native_policy_mutation_is_rejected_by_rust_before_started(tmp_path):
+    _require_native_mxc()
+    marker = tmp_path / "policy-mutation-ran.txt"
+    plan = os_sandbox.ToolLaunchPlan(
+        argv=(sys.executable, "-c", f"open({str(marker)!r}, 'w').write('bad')"),
+        workdir=str(tmp_path),
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PATHEXT"}
+        },
+        execution_kind="python",
+        timeout_seconds=20,
+    )
+    request = mxc_policy.build_launch_request(plan)
+    request["timeoutMs"] += 1
+    with pytest.raises(mxc_adapter.MxcAdapterError) as raised:
+        mxc_adapter.spawn(
+            request,
+            popen_kwargs={
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "creationflags": subprocess.CREATE_NO_WINDOW,
+            },
+        )
+    assert raised.value.code == "policy_hash_mismatch"
+    assert raised.value.may_have_started is False
+    assert not marker.exists()
+
+
+@pytest.mark.native_mxc
+@pytest.mark.parametrize(
+    ("stage", "possible_start"),
+    [
+        ("after_policy_validation", False),
+        ("before_spawn", True),
+        ("after_spawn_before_started", True),
+    ],
+)
+def test_native_startup_crash_stages_never_replay_on_host(
+    tmp_path, monkeypatch, stage, possible_start
+):
+    _require_native_mxc()
+    _inject_runner_failure(monkeypatch, stage)
+    marker = tmp_path / f"{stage}.txt"
+    plan = os_sandbox.ToolLaunchPlan(
+        argv=(
+            sys.executable,
+            "-c",
+            f"import time; open({str(marker)!r}, 'w').write('ran'); time.sleep(30)",
+        ),
+        workdir=str(tmp_path),
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PATHEXT"}
+        },
+        execution_kind="python",
+        timeout_seconds=20,
+    )
+    request = mxc_policy.build_launch_request(plan)
+    with pytest.raises(mxc_adapter.MxcAdapterError) as raised:
+        mxc_adapter.spawn(
+            request,
+            popen_kwargs={
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "creationflags": subprocess.CREATE_NO_WINDOW,
+            },
+        )
+    assert raised.value.may_have_started is possible_start
+    if stage != "after_spawn_before_started":
+        assert not marker.exists()
+    if marker.exists():
+        assert marker.read_text(encoding="utf-8") == "ran"
+
+
+@pytest.mark.native_mxc
+def test_native_supervisor_crash_after_started_reclaims_child_tree(tmp_path, monkeypatch):
+    _require_native_mxc()
+    _inject_runner_failure(monkeypatch, "after_started")
+    pid_file = tmp_path / "crash-pids.txt"
+    script = tmp_path / "crash-tree.py"
+    script.write_text(
+        "import os, pathlib, subprocess, sys, time\n"
+        "grand = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(f'{{os.getpid()}} {{grand.pid}}')\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+    plan = os_sandbox.ToolLaunchPlan(
+        argv=(sys.executable, "-u", str(script)),
+        workdir=str(tmp_path),
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PATHEXT"}
+        },
+        execution_kind="python",
+        timeout_seconds=30,
+    )
+    proc = mxc_adapter.spawn(
+        mxc_policy.build_launch_request(plan),
+        popen_kwargs={
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "creationflags": subprocess.CREATE_NO_WINDOW,
+        },
+    )
+    try:
+        proc.wait(timeout=10)
+        with pytest.raises(mxc_adapter.MxcAdapterError) as raised:
+            mxc_adapter.completion_receipt(proc)
+        assert raised.value.may_have_started is True
+    finally:
+        mxc_adapter.release_control(proc)
+    if not pid_file.is_file():
+        pytest.fail("the after-STARTED workload did not create its descendant evidence")
+    pids = [int(value) for value in pid_file.read_text(encoding="utf-8").split()]
+    _wait_for_dead(pids)
+
+
+@pytest.mark.native_mxc
+def test_native_control_disconnect_after_started_reclaims_child_tree(tmp_path):
+    _require_native_mxc()
+    pid_file = tmp_path / "disconnect-pids.txt"
+    script = tmp_path / "disconnect-tree.py"
+    script.write_text(
+        "import os, pathlib, subprocess, sys, time\n"
+        "grand = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(f'{{os.getpid()}} {{grand.pid}}')\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+    plan = os_sandbox.ToolLaunchPlan(
+        argv=(sys.executable, "-u", str(script)),
+        workdir=str(tmp_path),
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PATHEXT"}
+        },
+        execution_kind="python",
+        timeout_seconds=30,
+    )
+    proc = mxc_adapter.spawn(
+        mxc_policy.build_launch_request(plan),
+        popen_kwargs={
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "creationflags": subprocess.CREATE_NO_WINDOW,
+        },
+    )
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not pid_file.is_file():
+        time.sleep(0.05)
+    assert pid_file.is_file()
+    pids = [int(value) for value in pid_file.read_text(encoding="utf-8").split()]
+    mxc_adapter.release_control(proc)
+    proc.wait(timeout=10)
+    _wait_for_dead(pids)
+
+
+@pytest.mark.native_mxc
+def test_native_cmd_timeout_reclaims_terminal_child_and_grandchild(monkeypatch):
+    _require_native_mxc()
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    session = "__LOCALID_native_mxc_cmd_tree"
+    workdir = Path(tools._get_workdir(session))
+    script = workdir / "terminal-tree.py"
+    script.write_text(
+        "import os, pathlib, subprocess, sys, time\n"
+        "grand = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        "pathlib.Path('terminal-pids.txt').write_text(f'{os.getpid()} {grand.pid}')\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+    command = "python terminal-tree.py"
+    result = tools._bash_exec(
+        command,
+        None,
+        2,
+        session,
+        tool_execution_mode="required",
+    )
+    assert "Execution timed out after 2 seconds" in result
+    pids = [int(value) for value in (workdir / "terminal-pids.txt").read_text().split()]
+    _wait_for_dead(pids)

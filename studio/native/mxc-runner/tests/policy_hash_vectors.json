@@ -1,0 +1,11 @@
+{
+  "cwd_change": "sha256:3c5220239b5f6c7a0aebdfcdf82ac4b849bf8c8377bdc7ba0d3ddd49e593ef03",
+  "dacl_change": "sha256:41a5d96b88dd70e5cb08d82f6a2a7e6a7a64238ab933724f161de14ac225c5f4",
+  "different_drive": "sha256:1ef2d02d82d38dc1aa1073af6e767f3190c17355f914be425397831e90977ff3",
+  "environment_change": "sha256:522f108694a243834c4d6817889a33652af366455a678ab2d128767bf1b416f1",
+  "executable_change": "sha256:b4d840e34900a41ea9f53585803ef70c43ed59858b9e7b92a409f229117251bd",
+  "filesystem_change": "sha256:315dc09b26cdb0084f8d920a115b9da3d412ee5f5b533c00e68a963b06504748",
+  "network_change": "sha256:c8f08f81c87eab3ba9d1a7d3b2fdb883971fbece0acb782c5f958e17dc2e1e02",
+  "python_unicode": "sha256:4888704ab385c83fe7233e9898f95337e412ec66a218211dbb9c9340a13e7d45",
+  "terminal_empty_optional": "sha256:3a6ead8f3d17f2acf58de8b228d7251c17c13098fbe8c9302a06cab77303e6eb"
+}

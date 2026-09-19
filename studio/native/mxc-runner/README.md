@@ -11,14 +11,18 @@ completion/cleanup receipt. Runtime installation/repair, host preparation, CUDA 
 frontend controls remain follow-up work.
 
 The dependency is pinned to MXC revision
-`ca7ea12ac6bd9f5420d6adecb37e32a8158da476` and schema `0.8.0-alpha`. Build on Windows with:
+`ca7ea12ac6bd9f5420d6adecb37e32a8158da476` and schema `0.8.0-alpha`. A packageable build must use the preparation tool, which verifies the upstream commit, approved patch SHA-256, complete post-patch Git tree, and patched Cargo lock before invoking Cargo:
 
 ```powershell
-cargo build --release --locked --features mxc-no-dacl-api
+python tools\prepare_build.py build --output target\reproducible-runtime
 ```
 
-Source checkouts may use `target/release/unsloth-mxc-runner.exe`. Packaged Studio builds must place
-the approved, digest-verified artifact at `bin/unsloth-mxc-runner.exe`; Studio never searches PATH.
+The output contains the runner and its canonical runtime manifest. Studio validates the runner digest,
+source identity, protocol, architecture, profile, MXC revision, patch/tree identities, and required
+admission API. Packaged Studio installs immutable directories under `bin/generations/`, selects one
+with an atomic pointer, and separately allowlists its manifest and runner digests. Source checkouts may
+use only `target/reproducible-runtime`; an arbitrary `target/release` executable or PATH entry is never
+selected and is not production-ready.
 
 ## Required upstream extension
 
@@ -36,5 +40,9 @@ live BaseContainer tier.
 
 The trusted lifecycle transport is a random, single-instance Windows named pipe with a protected
 owner/System DACL. Protocol authentication and workload stdout/stderr remain separate from it.
+
+`mxc-test-failure-injection` is a test-only Cargo feature. It reads failure stages only from the
+supervisor process environment and is excluded by the packaged feature allowlist; launch requests
+cannot enable it.
 
 MXC is an early preview and is not represented by this integration as a security boundary.

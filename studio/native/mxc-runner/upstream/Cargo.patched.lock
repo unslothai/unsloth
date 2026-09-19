@@ -70,7 +70,6 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "appcontainer_common"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "flatbuffers",
  "getrandom 0.2.17",
@@ -123,7 +122,6 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "bwrap_common"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "lxc_common",
  "nix",
@@ -530,7 +528,6 @@ dependencies = [
 [[package]]
 name = "learning_mode_core"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "same-file",
  "serde",
@@ -543,7 +540,6 @@ dependencies = [
 [[package]]
 name = "learning_mode_windows"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "learning_mode_core",
  "sha2",
@@ -589,7 +585,6 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 [[package]]
 name = "lxc_common"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "libc",
  "mxc_pty",
@@ -630,7 +625,6 @@ dependencies = [
 [[package]]
 name = "mxc-sdk"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "mxc_engine",
  "wxc_common",
@@ -639,7 +633,6 @@ dependencies = [
 [[package]]
 name = "mxc_build_common"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "winresource",
 ]
@@ -647,7 +640,6 @@ dependencies = [
 [[package]]
 name = "mxc_config_contract"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "serde",
  "serde_json",
@@ -657,7 +649,6 @@ dependencies = [
 [[package]]
 name = "mxc_engine"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "appcontainer_common",
  "bwrap_common",
@@ -678,7 +669,6 @@ dependencies = [
 [[package]]
 name = "mxc_pty"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "libc",
  "nix",
@@ -687,7 +677,6 @@ dependencies = [
 [[package]]
 name = "mxc_telemetry"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "tracelogging",
  "uuid",
@@ -765,7 +754,6 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "plm"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "anyhow",
  "chrono",
@@ -802,7 +790,6 @@ dependencies = [
 [[package]]
 name = "process_security_environment_spec"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "flatbuffers",
 ]
@@ -877,7 +864,6 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "seatbelt_common"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "libc",
  "wxc_common",
@@ -1436,7 +1422,6 @@ checksum = "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
 [[package]]
 name = "windows_sandbox_common"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "getrandom 0.2.17",
  "serde",
@@ -1448,7 +1433,6 @@ dependencies = [
 [[package]]
 name = "windows_sandbox_lifecycle"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "anyhow",
  "serde",
@@ -1506,7 +1490,6 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "wxc_common"
 version = "0.8.0"
-source = "git+https://github.com/microsoft/mxc.git?rev=ca7ea12ac6bd9f5420d6adecb37e32a8158da476#ca7ea12ac6bd9f5420d6adecb37e32a8158da476"
 dependencies = [
  "base64",
  "cidr",

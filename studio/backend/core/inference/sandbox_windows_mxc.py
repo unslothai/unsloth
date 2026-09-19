@@ -56,8 +56,10 @@ def capability_snapshot(
         cancel_event=cancel_event,
     )
     try:
-        identity = mxc_runtime.installation_identity()
+        runtime_info = mxc_runtime.selected_runtime()
+        identity = runtime_info.identity
     except Exception:
+        runtime_info = None
         identity = "missing"
     fingerprint = _capability_fingerprint(identity, execution_kind, selected_executable)
     return SandboxCapability(
@@ -71,6 +73,11 @@ def capability_snapshot(
             "mxc_preview_not_a_security_boundary",
             "effective_tier_requires_pinned_mxc_extension",
             "network_posture_requested_not_attested",
+            *(
+                ("development_runtime_not_packaged",)
+                if runtime_info and runtime_info.development
+                else ()
+            ),
         ),
         probe_generation=hashlib.sha256((fingerprint + str(available)).encode()).hexdigest(),
         environment_fingerprint=fingerprint,
@@ -84,6 +91,7 @@ def capability_snapshot(
 def prepare(plan, capability):
     try:
         request = mxc_policy.build_launch_request(plan)
+        runtime_info = mxc_runtime.selected_runtime()
     except Exception as exc:
         raise SandboxBuildError(f"Windows MXC policy construction failed: {exc}") from exc
     record = _record(
@@ -101,6 +109,9 @@ def prepare(plan, capability):
         network_policy="mxc_compatibility_requested_unverified",
         backend_tier="unknown",
         runtime_revision=mxc_runtime.MXC_REVISION,
+        runtime_generation=runtime_info.generation,
+        runtime_artifact_digest=f"sha256:{runtime_info.runner_sha256}",
+        runtime_api_revision=f"patch-sha256:{mxc_runtime.MXC_PATCH_SHA256}",
         schema_version=mxc_runtime.MXC_SCHEMA_VERSION,
         policy_hash=request["policyHash"],
         execution_status="planned",
@@ -128,6 +139,13 @@ def prepare(plan, capability):
                 )
             proc = mxc_adapter.spawn(request, cancel_event=plan.cancel_event, popen_kwargs=kwargs)
         except Exception as exc:
+            may_have_started = bool(getattr(exc, "may_have_started", False))
+            prepared.execution_record = replace(
+                prepared.execution_record,
+                execution_status="unknown_start" if may_have_started else "not_started",
+                completion_status="uncertain" if may_have_started else "not_started",
+                cleanup_status="uncertain" if may_have_started else "complete",
+            )
             mxc_probe.invalidate_cache()
             raise SandboxBuildError(
                 f"Windows MXC launch failed without host replay: {exc}"
@@ -136,6 +154,8 @@ def prepare(plan, capability):
         prepared.execution_record = replace(
             prepared.execution_record,
             backend_tier=str(getattr(proc, "_mxc_backend_tier", "unknown")),
+            runtime_generation=proc._mxc_runtime_info.generation,
+            runtime_artifact_digest=f"sha256:{proc._mxc_runtime_info.runner_sha256}",
         )
         prepared.cleanup_callbacks.append(lambda: mxc_adapter.release_control(proc))
         return proc
@@ -148,6 +168,12 @@ def verify_success(prepared, proc) -> dict:
     try:
         receipt = mxc_adapter.completion_receipt(proc)
     except Exception as exc:
+        if prepared.execution_record is not None:
+            prepared.execution_record = replace(
+                prepared.execution_record,
+                completion_status="uncertain",
+                cleanup_status="uncertain",
+            )
         mxc_probe.invalidate_cache()
         raise SandboxBuildError(f"MXC completion state is uncertain: {exc}") from exc
     prepared.execution_record = replace(

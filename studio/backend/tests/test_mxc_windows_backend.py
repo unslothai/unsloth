@@ -127,6 +127,18 @@ def test_dacl_refusal_after_successful_probe_is_never_replayed(monkeypatch, tmp_
     monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda **_kwargs: capability)
     monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: identity)
     monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_runtime,
+        "selected_runtime",
+        lambda: type(
+            "Runtime",
+            (),
+            {
+                "generation": "generation-test",
+                "runner_sha256": "0" * 64,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
         sandbox_windows_mxc.mxc_adapter,
         "spawn",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -269,6 +281,48 @@ def test_workdir_junction_escape_is_refused(monkeypatch, tmp_path):
     )
     with pytest.raises(mxc_policy.MxcPolicyError, match="reparse point"):
         mxc_policy.build_launch_request(plan)
+
+
+def test_workdir_hard_link_to_outside_object_is_refused(monkeypatch, tmp_path):
+    from core.inference import mxc_policy
+
+    workdir = tmp_path / "workdir"
+    outside = tmp_path / "other-chat"
+    workdir.mkdir()
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("secret", encoding="utf-8")
+    try:
+        os.link(secret, workdir / "linked-secret.txt")
+    except OSError as exc:
+        pytest.skip(f"hard-link creation unavailable: {exc}")
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    plan = os_sandbox.ToolLaunchPlan(
+        argv=(sys.executable, "-c", "print('never')"),
+        workdir=str(workdir),
+        env={},
+        execution_kind="python",
+    )
+    with pytest.raises(mxc_policy.MxcPolicyError, match="hard-linked"):
+        mxc_policy.build_launch_request(plan)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        r"\\server\share\workdir",
+        r"\\?\C:\workdir",
+        r"\\.\C:\workdir",
+        r"C:\workdir\file.txt:secret",
+        "C:\\workdir\\e\u0301",
+    ],
+)
+def test_unsupported_windows_path_namespaces_are_refused(monkeypatch, path):
+    from core.inference import mxc_policy
+
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    with pytest.raises(mxc_policy.MxcPolicyError, match="not supported"):
+        mxc_policy._safe_canonical_path(path, directory=True)
 
 
 @pytest.mark.parametrize(

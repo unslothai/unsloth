@@ -19,10 +19,18 @@ STARTUP_TIMEOUT_SECONDS = 45
 
 
 class MxcAdapterError(RuntimeError):
-    def __init__(self, message: str, *, stage: str, code: str = "mxc_error") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str,
+        code: str = "mxc_error",
+        may_have_started: bool = False,
+    ) -> None:
         super().__init__(message)
         self.stage = stage
         self.code = code
+        self.may_have_started = may_have_started
 
 
 def _validated_event(line: bytes, request: dict, token: str, expected: str) -> dict:
@@ -80,6 +88,7 @@ def spawn(request: dict, *, cancel_event=None, popen_kwargs: dict | None = None)
     proc = None
     connection = None
     writer = None
+    runtime_lease = None
     with mxc_pipe.PrivatePipeServer(buffer_size=MAX_CONTROL) as listener:
         request["controlPipe"] = listener.name
         encoded = (
@@ -102,12 +111,13 @@ def spawn(request: dict, *, cancel_event=None, popen_kwargs: dict | None = None)
                 )
 
         try:
+            runtime_lease = mxc_runtime.acquire_runtime()
             options = dict(popen_kwargs or {})
             options.pop("preexec_fn", None)
             options.pop("pass_fds", None)
             options.update(
                 stdin=subprocess.PIPE,
-                cwd=str(mxc_runtime.runner_path().parent),
+                cwd=str(runtime_lease.info.path.parent),
                 env={
                     key: value
                     for key, value in __import__("os").environ.items()
@@ -115,7 +125,7 @@ def spawn(request: dict, *, cancel_event=None, popen_kwargs: dict | None = None)
                 },
                 close_fds=True,
             )
-            proc = subprocess.Popen([str(mxc_runtime.runner_path())], **options)
+            proc = subprocess.Popen([str(runtime_lease.info.path)], **options)
 
             def send_request() -> None:
                 try:
@@ -169,6 +179,9 @@ def spawn(request: dict, *, cancel_event=None, popen_kwargs: dict | None = None)
             proc._mxc_control_pending = pending
             proc._mxc_request = request
             proc._mxc_backend_tier = "base-container"
+            proc._mxc_runtime_lease = runtime_lease
+            proc._mxc_runtime_info = runtime_lease.info
+            runtime_lease = None
             control_connection = connection
             cancel_lock = threading.Lock()
 
@@ -195,10 +208,15 @@ def spawn(request: dict, *, cancel_event=None, popen_kwargs: dict | None = None)
             proc._unsloth_cancel = cancel
             connection = None
             return proc
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, MxcAdapterError) and "event_index" in locals():
+                exc.may_have_started = exc.may_have_started or event_index >= 2
             if proc is not None:
                 _stop_helper(proc, connection)
                 connection = None
+            if runtime_lease is not None:
+                runtime_lease.release()
+                runtime_lease = None
             raise
         finally:
             if connection is not None:
@@ -210,7 +228,11 @@ def spawn(request: dict, *, cancel_event=None, popen_kwargs: dict | None = None)
 def completion_receipt(proc) -> dict:
     connection = getattr(proc, "_mxc_control_pipe", None)
     if connection is None or proc.poll() is None:
-        raise MxcAdapterError("MXC completion has no trusted receipt", stage="completion")
+        raise MxcAdapterError(
+            "MXC completion has no trusted receipt",
+            stage="completion",
+            may_have_started=True,
+        )
     data = getattr(proc, "_mxc_control_pending", b"")
     deadline = time.monotonic() + 1
     while True:
@@ -218,7 +240,9 @@ def completion_receipt(proc) -> dict:
         if chunk is None:
             if time.monotonic() >= deadline:
                 raise MxcAdapterError(
-                    "MXC control channel remained open after supervisor exit", stage="completion"
+                    "MXC control channel remained open after supervisor exit",
+                    stage="completion",
+                    may_have_started=True,
                 )
             time.sleep(0.01)
             continue
@@ -233,11 +257,15 @@ def completion_receipt(proc) -> dict:
         lines = data.splitlines()
         if len(lines) != 1:
             raise MxcAdapterError(
-                "MXC FINISHED receipt is missing or duplicated", stage="completion"
+                "MXC FINISHED receipt is missing or duplicated",
+                stage="completion",
+                may_have_started=True,
             )
         event = json.loads(lines[0])
     except (ValueError, UnicodeError) as exc:
-        raise MxcAdapterError("malformed MXC FINISHED receipt", stage="completion") from exc
+        raise MxcAdapterError(
+            "malformed MXC FINISHED receipt", stage="completion", may_have_started=True
+        ) from exc
     request = proc._mxc_request
     if (
         not isinstance(event, dict)
@@ -247,7 +275,9 @@ def completion_receipt(proc) -> dict:
         or event.get("backendTier") != getattr(proc, "_mxc_backend_tier", None)
         or not secrets.compare_digest(str(event.get("token", "")), request["token"])
     ):
-        raise MxcAdapterError("invalid MXC FINISHED receipt", stage="completion")
+        raise MxcAdapterError(
+            "invalid MXC FINISHED receipt", stage="completion", may_have_started=True
+        )
     return event
 
 
@@ -256,6 +286,10 @@ def release_control(proc) -> None:
     if connection is not None:
         proc._mxc_control_pipe = None
         connection.close()
+    runtime_lease = getattr(proc, "_mxc_runtime_lease", None)
+    if runtime_lease is not None:
+        proc._mxc_runtime_lease = None
+        runtime_lease.release()
 
 
 def abort(proc, *, grace_seconds: float = 5) -> None:
