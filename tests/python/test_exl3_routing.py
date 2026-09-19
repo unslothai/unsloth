@@ -2,6 +2,7 @@
 
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from unsloth.exllama import loader as EL
@@ -283,6 +284,63 @@ class TestNonExl3QuantOptOut(unittest.TestCase):
         d = self._mkdir({"config.json": {"architectures": ["LlamaForCausalLM"]}})
         with patch("unsloth.exllama.patcher.exllama_supports_arch", lambda p: True):
             self.assertTrue(self._route(d))
+
+
+class TestResolvedCheckpointSafety(unittest.TestCase):
+    def _mkdir(self, config):
+        d = tempfile.mkdtemp(prefix = "exl3_resolved_")
+        with open(os.path.join(d, "config.json"), "w", encoding = "utf-8") as f:
+            json.dump(config, f)
+        return d
+
+    def test_remote_snapshot_of_native_quant_checkpoint_skips_converter(self):
+        d = self._mkdir(
+            {
+                "architectures": ["LlamaForCausalLM"],
+                "quantization_config": {"quant_method": "bitsandbytes"},
+            }
+        )
+        with (
+            patch.object(EL, "require_exllama"),
+            patch.object(EL, "_resolve_local_dir", return_value = d),
+            patch.object(EL, "patch_transformers_exl3", side_effect = AssertionError("EXL3 patch must be skipped")),
+            patch.object(EL, "quantize_to_exl3", side_effect = AssertionError("native weights must not be re-quantized")),
+        ):
+            plan = EL.prepare_exl3_checkpoint(
+                "unsloth/example-bnb-4bit",
+                load_in_exl3 = True,
+                is_explicit = False,
+            )
+        self.assertIsNotNone(plan)
+        self.assertFalse(plan.is_exl3)
+        self.assertEqual(plan.checkpoint_dir, d)
+        self.assertEqual(plan.source_model, "unsloth/example-bnb-4bit")
+
+    def test_explicit_exl3_request_rejects_native_quant_checkpoint(self):
+        d = self._mkdir(
+            {"quantization_config": {"quant_method": "gptq"}}
+        )
+        with (
+            patch.object(EL, "require_exllama"),
+            patch.object(EL, "_resolve_local_dir", return_value = d),
+            self.assertRaisesRegex(ValueError, "cannot quantize an existing non-EXL3 quantized checkpoint"),
+        ):
+            EL.prepare_exl3_checkpoint(
+                "org/example-gptq",
+                load_in_exl3 = True,
+                is_explicit = True,
+            )
+
+    def test_source_reference_is_used_by_peft(self):
+        model = SimpleNamespace(
+            name_or_path = "/home/user/.cache/unsloth/exl3/model",
+            config = SimpleNamespace(_name_or_path = "/home/user/.cache/unsloth/exl3/model"),
+        )
+        result = EL.set_exl3_source_model_reference(model, "org/model")
+        self.assertIs(result, model)
+        self.assertEqual(model.name_or_path, "org/model")
+        self.assertEqual(model.config._name_or_path, "org/model")
+        self.assertEqual(model._unsloth_exl3_source_model, "org/model")
 
 
 if __name__ == "__main__":

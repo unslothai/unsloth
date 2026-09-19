@@ -23,6 +23,8 @@ from typing import Optional, Tuple
 from .config import Exl3Config, normalize_exl3_config
 from .patcher import (
     is_exl3_model_dir,
+    is_nonexl3_quantized_dir,
+    is_peft_adapter_dir,
     patch_transformers_exl3,
     read_exl3_bitrate,
 )
@@ -38,6 +40,26 @@ class Exl3LoadPlan:
     config: Exl3Config
     was_quantized: bool  # True if we ran a conversion, False if reused/prequant
     source_model: str  # original model id/path requested
+    is_exl3: bool = True  # False when the native checkpoint loader should be used
+
+
+def set_exl3_source_model_reference(model, source_model):
+    """Keep PEFT's saved base-model reference pointed at the requested source.
+
+    The EXL3 loader temporarily replaces ``model_name`` with a local cache
+    directory so Transformers can load the converted checkpoint. PEFT reads
+    ``model.name_or_path`` when it creates an adapter, so restore the original
+    source identity before callers add LoRA layers.
+    """
+    if not source_model:
+        return model
+    source = os.fspath(source_model)
+    model.name_or_path = source
+    config = getattr(model, "config", None)
+    if config is not None:
+        config._name_or_path = source
+    model._unsloth_exl3_source_model = source
+    return model
 
 
 def _looks_like_exl3_request(load_in_exl3, quantization_config) -> bool:
@@ -268,6 +290,34 @@ def prepare_exl3_checkpoint(
         trust_remote_code = trust_remote_code,
         local_files_only = local_files_only,
     )
+
+    # A Hub id can resolve to a checkpoint that was already quantized by
+    # bitsandbytes/GPTQ/AWQ/HQQ, or to a PEFT adapter repo. The initial routing
+    # decision cannot inspect those files until the snapshot exists locally.
+    # Never feed either form into the EXL3 converter. Implicit EXL3 routing
+    # returns a native-load plan; an explicit EXL3 request gets an actionable
+    # error instead of silently changing backends.
+    already_native = is_nonexl3_quantized_dir(local_dir)
+    is_adapter = is_peft_adapter_dir(local_dir)
+    if already_native or is_adapter:
+        explicit = (
+            is_explicit
+            if is_explicit is not None
+            else _looks_like_exl3_request(load_in_exl3, quantization_config)
+        )
+        if explicit:
+            kind = "non-EXL3 quantized checkpoint" if already_native else "PEFT adapter"
+            raise ValueError(
+                f"Unsloth: cannot quantize an existing {kind} with EXL3. "
+                "Load it with its native backend or provide an unquantized base model."
+            )
+        return Exl3LoadPlan(
+            checkpoint_dir = local_dir,
+            config = cfg,
+            was_quantized = False,
+            source_model = model_name,
+            is_exl3 = False,
+        )
 
     # Register the EXL3 quantizer with transformers up front.
     if not patch_transformers_exl3():

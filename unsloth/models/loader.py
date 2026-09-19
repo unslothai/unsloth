@@ -57,6 +57,25 @@ except:
     except:
         from huggingface_hub.utils._token import get_token
 import importlib.util
+
+
+def _exl3_request_is_explicit(load_in_exl3, quantization_config):
+    """Keep the caller's EXL3 intent separate from default-backend routing."""
+    if bool(load_in_exl3):
+        return True
+    if quantization_config is None:
+        return False
+    from ..exllama.config import Exl3Config
+    if isinstance(quantization_config, Exl3Config):
+        return True
+    if isinstance(quantization_config, dict):
+        method = quantization_config.get("quant_method", "")
+    else:
+        method = getattr(quantization_config, "quant_method", "")
+    method = getattr(method, "value", method)
+    return str(method).lower() == "exl3"
+
+
 from ..device_type import (
     is_hip,
     get_device_type,
@@ -426,14 +445,15 @@ class FastLanguageModel(FastLlamaModel):
             load_in_8bit = load_in_8bit,
         ):
             token = hf_login(token)
-            # Preserve an explicit request; default route signals True.
-            _effective_exl3 = load_in_exl3 if load_in_exl3 else True
             return FastModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
-                load_in_4bit = False,
-                load_in_8bit = False,
+                # Preserve the original quantization flags. EXL3 clears them
+                # after preparation; a snapshot-resolved native checkpoint
+                # needs them to continue through its normal backend.
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
                 load_in_16bit = load_in_16bit,
                 full_finetuning = full_finetuning,
                 token = token,
@@ -456,7 +476,7 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_fp8 = False,
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
                 text_only = text_only,
-                load_in_exl3 = _effective_exl3,
+                load_in_exl3 = load_in_exl3,
                 exl3_calibrate = exl3_calibrate,
                 *args,
                 **kwargs,
@@ -1254,6 +1274,7 @@ class FastModel(FastBaseModel):
         from ..exllama import should_use_exl3 as _should_use_exl3
 
         _exl3_plan = None
+        _exl3_active = False
         # Full finetuning is incompatible with EXL3's frozen quantized weights;
         # never route it through EXL3.
         if (not full_finetuning) and _should_use_exl3(
@@ -1282,26 +1303,31 @@ class FastModel(FastBaseModel):
                 local_files_only = kwargs.get("local_files_only", False),
                 devices = (os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() or "0"),
                 calibrate = exl3_calibrate,
-                # True intent (before the `or True`): lets prepare fall back to
-                # bnb for an unsupported-arch Hub id on the default route.
-                is_explicit = bool(load_in_exl3)
-                or str(getattr(quantization_config, "quant_method", "")).lower() == "exl3",
+                # Preserve implicit-vs-explicit intent for fallback decisions.
+                is_explicit = _exl3_request_is_explicit(load_in_exl3, quantization_config),
             )
         # A None plan means EXL3 was only the default backend but the arch is
         # unsupported - fall back to the normal bnb / 16-bit path.
         if _exl3_plan is not None:
-            # Load the prepared EXL3 checkpoint directly (bnb disabled).
             model_name = _exl3_plan.checkpoint_dir
             use_exact_model_name = True
-            load_in_4bit = False
-            load_in_8bit = False
-            load_in_fp8 = False
-            quantization_config = None
-            kwargs.pop("quantization_config", None)
-            # Disable grouped-GEMM MoE fusion so each expert stays an individual
-            # quantized layer. Restored after the load (try/finally below).
-            _exl3_prev_moe_grouped = os.environ.get("UNSLOTH_MOE_GROUPED")
-            os.environ["UNSLOTH_MOE_GROUPED"] = "0"
+            if _exl3_plan.is_exl3:
+                # Load the prepared EXL3 checkpoint directly (bnb disabled).
+                _exl3_active = True
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_fp8 = False
+                quantization_config = None
+                kwargs.pop("quantization_config", None)
+                # Disable grouped-GEMM MoE fusion so each expert stays an individual
+                # quantized layer. Restored after the load (try/finally below).
+                _exl3_prev_moe_grouped = os.environ.get("UNSLOTH_MOE_GROUPED")
+                os.environ["UNSLOTH_MOE_GROUPED"] = "0"
+            else:
+                # The snapshot already carries its native quantization metadata.
+                # Keep the native flags and let Transformers load that checkpoint
+                # directly; no EXL3 finalization or conversion is appropriate.
+                load_in_exl3 = False
 
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -2039,7 +2065,7 @@ class FastModel(FastBaseModel):
 
         finally:
             # Always restore UNSLOTH_MOE_GROUPED, even if the load raises.
-            if _exl3_plan is not None:
+            if _exl3_active:
                 if _exl3_prev_moe_grouped is None:
                     os.environ.pop("UNSLOTH_MOE_GROUPED", None)
                 else:
@@ -2048,7 +2074,7 @@ class FastModel(FastBaseModel):
         # Stamp EXL3 quant states onto the freshly loaded layers so Unsloth's
         # LoRA kernels recognize them as quantized and reconstruct via the
         # trellis kernel. No-op for non-EXL3 loads.
-        if _exl3_plan is not None:
+        if _exl3_active:
             from ..exllama import finalize_exl3_model, finalize_exl3_experts
 
             # Rebuild fused MoE experts before stamping quant states.
@@ -2247,6 +2273,9 @@ class FastModel(FastBaseModel):
         model = _exclude_rope_inv_freq_from_ddp(model)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if _exl3_active:
+            from ..exllama import set_exl3_source_model_reference
+            set_exl3_source_model_reference(model, _exl3_plan.source_model)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 

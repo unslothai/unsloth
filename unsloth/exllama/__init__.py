@@ -52,6 +52,7 @@ from .loader import (
     exl3_is_default_backend,
     resolve_exl3_config,
     prepare_exl3_checkpoint,
+    set_exl3_source_model_reference,
     finalize_exl3_model,
     finalize_exl3_experts,
 )
@@ -85,6 +86,7 @@ __all__ = [
     "exl3_is_default_backend",
     "resolve_exl3_config",
     "prepare_exl3_checkpoint",
+    "set_exl3_source_model_reference",
     "finalize_exl3_model",
     "finalize_exl3_experts",
     "reload_exl3_experts",
