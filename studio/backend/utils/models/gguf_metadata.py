@@ -1125,4 +1125,192 @@ def is_gguf_embedding_model(
     return any(_has_embedding_name_hint(value) for value in name_candidates)
 
 
+# Mainline llama.cpp Q2_0 layout (group 64). Prism ML's older Bonsai / ternary uploads used a
+# different Q2_0 packing; tensor data offsets in those GGUFs no longer match what gguf.cpp
+# computes, which surfaces as gguf_init_from_reader offset errors (#11259, ggml-org/llama.cpp#26337).
+_GGML_TYPE_Q2_0 = 42
+_GGML_TYPE_LAYOUT: Dict[int, Tuple[int, int]] = {
+    0: (1, 4),  # F32
+    1: (1, 2),  # F16
+    2: (32, 18),  # Q4_0
+    3: (32, 20),  # Q4_1
+    6: (32, 22),  # Q5_0
+    7: (32, 26),  # Q5_1
+    8: (32, 34),  # Q8_0
+    9: (32, 36),  # Q8_1
+    10: (256, 84),  # Q2_K
+    11: (256, 100),  # Q3_K
+    12: (256, 144),  # Q4_K
+    13: (256, 176),  # Q5_K
+    14: (256, 210),  # Q6_K
+    15: (256, 256),  # Q8_K
+    24: (1, 1),  # I8
+    25: (1, 2),  # I16
+    26: (1, 4),  # I32
+    27: (1, 8),  # I64
+    28: (1, 8),  # F64
+    30: (1, 2),  # BF16
+    34: (256, 66),  # TQ1_0
+    35: (256, 66),  # TQ2_0
+    39: (32, 17),  # MXFP4
+    40: (64, 36),  # NVFP4
+    41: (128, 18),  # Q1_0
+    _GGML_TYPE_Q2_0: (64, 18),  # Q2_0 (mainline group 64)
+}
+
+_Q2_OFFSET_MISMATCH_CACHE: Dict[_CacheKey, Optional[str]] = {}
+
+
+def _ggml_pad(size: int, alignment: int) -> int:
+    if alignment <= 1:
+        return size
+    return ((size + alignment - 1) // alignment) * alignment
+
+
+def _ggml_tensor_nbytes(ne: Tuple[int, int, int, int], ggml_type: int) -> Optional[int]:
+    layout = _GGML_TYPE_LAYOUT.get(ggml_type)
+    if layout is None:
+        return None
+    blck_size, type_size = layout
+    if any(n <= 0 for n in ne):
+        return 0
+    nb = [0, 0, 0, 0]
+    nb[0] = type_size
+    if blck_size == 1:
+        nb[1] = nb[0] * ne[0]
+        nb[2] = nb[1] * ne[1]
+        nb[3] = nb[2] * ne[2]
+        nbytes = type_size
+        for i in range(4):
+            nbytes += (ne[i] - 1) * nb[i]
+        return nbytes
+    nb[1] = nb[0] * (ne[0] // blck_size)
+    nb[2] = nb[1] * ne[1]
+    nb[3] = nb[2] * ne[2]
+    nbytes = ne[0] * nb[0] // blck_size
+    for i in range(1, 4):
+        nbytes += (ne[i] - 1) * nb[i]
+    return nbytes
+
+
+def prism_legacy_q2_gguf_user_message(*, tensor_name: Optional[str] = None) -> str:
+    """User-facing explanation when a GGUF uses Prism's legacy Q2_0 packing."""
+    where = f" (first mismatch at tensor '{tensor_name}')" if tensor_name else ""
+    return (
+        "This GGUF was built with Prism ML's older Q2_0 tensor packing (ternary "
+        f"Bonsai / some DSpark sidecars from prism-ml){where}. The installed llama.cpp "
+        "expects the mainline group-64 Q2_0 layout, so the file is not corrupt but "
+        "is not compatible with this runtime yet. From the same Hugging Face repo, "
+        "download a variant whose name includes Q2_g64 (for example "
+        "Ternary-Bonsai-27B-Q2_g64.gguf) instead of legacy Q2_0 uploads, and load "
+        "the main model weights rather than a *-dspark-* sidecar as the primary model. "
+        "Updating llama.cpp may help once Prism finishes migrating their files."
+    )
+
+
+def _parse_gguf_mainline_q2_offset_mismatch(path: str) -> Optional[str]:
+    """Return the first tensor name whose offset disagrees with mainline layout, when Q2_0 is present."""
+    alignment = 32
+    saw_q2_0 = False
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, tensor_count, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+
+            for _ in range(kv_count):
+                klen_bytes = f.read(8)
+                if len(klen_bytes) < 8:
+                    return None
+                klen = struct.unpack("<Q", klen_bytes)[0]
+                key_bytes = f.read(klen)
+                if len(key_bytes) < klen:
+                    return None
+                key = key_bytes.decode("utf-8", "replace")
+                vtype_bytes = f.read(4)
+                if len(vtype_bytes) < 4:
+                    return None
+                vtype = struct.unpack("<I", vtype_bytes)[0]
+                if key == "general.alignment" and vtype in (4, 10):
+                    width = 4 if vtype == 4 else 8
+                    raw = f.read(width)
+                    if len(raw) < width:
+                        return None
+                    alignment = int(struct.unpack("<I" if width == 4 else "<Q", raw)[0]) or 32
+                    continue
+                if not _skip_gguf_value(f, vtype):
+                    return None
+
+            running = 0
+            for _ in range(tensor_count):
+                nlen_bytes = f.read(8)
+                if len(nlen_bytes) < 8:
+                    return None
+                nlen = struct.unpack("<Q", nlen_bytes)[0]
+                if nlen > 1 << 20:
+                    return None
+                name_bytes = f.read(nlen)
+                ndim_bytes = f.read(4)
+                if len(name_bytes) < nlen or len(ndim_bytes) < 4:
+                    return None
+                name = name_bytes.decode("utf-8", "replace")
+                n_dimensions = struct.unpack("<I", ndim_bytes)[0]
+                if n_dimensions > 4:
+                    return None
+                dims = []
+                for _d in range(n_dimensions):
+                    dim_bytes = f.read(8)
+                    if len(dim_bytes) < 8:
+                        return None
+                    dims.append(struct.unpack("<Q", dim_bytes)[0])
+                while len(dims) < 4:
+                    dims.append(1)
+                type_bytes = f.read(4)
+                off_bytes = f.read(8)
+                if len(type_bytes) < 4 or len(off_bytes) < 8:
+                    return None
+                ggml_type = struct.unpack("<I", type_bytes)[0]
+                offset = struct.unpack("<Q", off_bytes)[0]
+                if ggml_type == _GGML_TYPE_Q2_0:
+                    saw_q2_0 = True
+                if offset != running:
+                    return name if saw_q2_0 else None
+                nbytes = _ggml_tensor_nbytes(
+                    (dims[0], dims[1], dims[2], dims[3]),
+                    ggml_type,
+                )
+                if nbytes is None:
+                    return None
+                running += _ggml_pad(nbytes, alignment)
+    except OSError as e:
+        logger.debug(f"_parse_gguf_mainline_q2_offset_mismatch: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"_parse_gguf_mainline_q2_offset_mismatch: parse failure on {path}: {e}")
+        return None
+    return None
+
+
+def gguf_mainline_q2_offset_mismatch(path: str) -> Optional[str]:
+    """Cached probe for Prism legacy Q2_0 GGUFs that mainline llama.cpp cannot load."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _Q2_OFFSET_MISMATCH_CACHE:
+            return _Q2_OFFSET_MISMATCH_CACHE[key]
+    result = _parse_gguf_mainline_q2_offset_mismatch(path)
+    with _CACHE_LOCK:
+        while len(_Q2_OFFSET_MISMATCH_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _Q2_OFFSET_MISMATCH_CACHE.pop(next(iter(_Q2_OFFSET_MISMATCH_CACHE)))
+            except StopIteration:
+                break
+        _Q2_OFFSET_MISMATCH_CACHE[key] = result
+    return result
+
+
 # Deliberately not re-exported: importing anything from THIS package runs utils.models.__init__, which pulls in model_config and therefore PyYAML, while core.inference.llama_cpp needs the verdict at import time. Import it from utils.gguf_archs.
