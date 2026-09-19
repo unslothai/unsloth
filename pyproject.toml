@@ -77,6 +77,9 @@ studio = [
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
+    # Windows MXC Preview release builds stage one immutable, manifest-bound
+    # x64 runtime package here. Source checkouts may omit the generated binary.
+    "native/mxc-runner/package/windows-x86_64/*",
 ]
 
 [tool.setuptools.packages.find]
@@ -1724,6 +1727,7 @@ markers = [
     "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
     "reads_real_pip_config: opts out of the hermetic pip config stub, for the few tests that drive that read themselves",
     "native_mxc: needs native Windows, the pinned runner, and a working MXC ProcessContainer backend",
+    "native_mxc_installed: needs native Windows and qualifies an installed trusted MXC generation",
 ]
 
 # Deselected by default, not deleted: CI runs them in their own leg with

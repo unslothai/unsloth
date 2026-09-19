@@ -73,6 +73,7 @@ def capability_snapshot(
             "mxc_preview_not_a_security_boundary",
             "effective_tier_requires_pinned_mxc_extension",
             "network_posture_requested_not_attested",
+            "nested_path_identity_not_atomic_with_mxc_grant_resolution",
             *(
                 ("development_runtime_not_packaged",)
                 if runtime_info and runtime_info.development

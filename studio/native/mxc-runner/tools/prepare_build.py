@@ -157,6 +157,50 @@ def _canonical_json(value: object) -> bytes:
     )
 
 
+def _runner_source_identity(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(
+        (root / "src").rglob("*"), key=lambda value: value.relative_to(root).as_posix()
+    ):
+        if path.is_file():
+            digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+    digest.update((root / "Cargo.toml").read_bytes())
+    return digest.hexdigest()
+
+
+def _stage_patched_runner(root: Path, prepared: Path, destination: Path) -> str:
+    shutil.copytree(root / "src", destination / "src")
+    if (root / "tests").is_dir():
+        shutil.copytree(root / "tests", destination / "tests")
+    shutil.copy2(root / "Cargo.toml", destination / "Cargo.toml")
+    shutil.copy2(root / "upstream" / "Cargo.patched.lock", destination / "Cargo.lock")
+    with (destination / "Cargo.toml").open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(
+            '\n[patch."https://github.com/microsoft/mxc.git"]\n'
+            f'mxc-sdk = {{ path = "{(prepared / "src/core/mxc-sdk").as_posix()}" }}\n'
+        )
+    return _runner_source_identity(root)
+
+
+def _build_environment(root: Path, prepared: Path, staged_runner: Path) -> tuple[dict, str]:
+    environment = dict(os.environ)
+    existing = environment.get("RUSTFLAGS", "").strip()
+    remap = (
+        f"--remap-path-prefix={staged_runner.as_posix()}=/unsloth-mxc-runner "
+        f"--remap-path-prefix={prepared.as_posix()}=/mxc"
+    )
+    environment["RUSTFLAGS"] = f"{existing} {remap}".strip()
+    environment.setdefault("SOURCE_DATE_EPOCH", "0")
+    runner_source_identity = _runner_source_identity(root)
+    environment["UNSLOTH_MXC_PATCH_SHA256"] = MXC_PATCH_SHA256
+    environment["UNSLOTH_MXC_PATCHED_TREE"] = MXC_PATCHED_TREE
+    environment["UNSLOTH_MXC_RUNNER_SOURCE"] = runner_source_identity
+    return environment, runner_source_identity
+
+
 def build_runner(
     *,
     source: str,
@@ -177,40 +221,8 @@ def build_runner(
     artifact_stage = work / "artifact"
     try:
         prepare_source(source=source, destination=prepared, root=root)
-        shutil.copytree(root / "src", staged_runner / "src")
-        shutil.copy2(root / "Cargo.toml", staged_runner / "Cargo.toml")
-        shutil.copy2(root / "upstream" / "Cargo.patched.lock", staged_runner / "Cargo.lock")
-        manifest_path = staged_runner / "Cargo.toml"
-        with manifest_path.open("a", encoding="utf-8", newline="\n") as stream:
-            stream.write(
-                '\n[patch."https://github.com/microsoft/mxc.git"]\n'
-                f'mxc-sdk = {{ path = "{(prepared / "src/core/mxc-sdk").as_posix()}" }}\n'
-            )
-
-        environment = dict(os.environ)
-        runner_prefix = staged_runner.as_posix()
-        source_prefix = prepared.as_posix()
-        existing = environment.get("RUSTFLAGS", "").strip()
-        remap = (
-            f"--remap-path-prefix={runner_prefix}=/unsloth-mxc-runner "
-            f"--remap-path-prefix={source_prefix}=/mxc"
-        )
-        environment["RUSTFLAGS"] = f"{existing} {remap}".strip()
-        environment.setdefault("SOURCE_DATE_EPOCH", "0")
-        runner_source = hashlib.sha256()
-        for path in sorted(
-            (root / "src").rglob("*"), key=lambda value: value.relative_to(root).as_posix()
-        ):
-            if path.is_file():
-                runner_source.update(path.relative_to(root).as_posix().encode("utf-8"))
-                runner_source.update(b"\0")
-                runner_source.update(path.read_bytes())
-                runner_source.update(b"\0")
-        runner_source.update((root / "Cargo.toml").read_bytes())
-        runner_source_identity = runner_source.hexdigest()
-        environment["UNSLOTH_MXC_PATCH_SHA256"] = MXC_PATCH_SHA256
-        environment["UNSLOTH_MXC_PATCHED_TREE"] = MXC_PATCHED_TREE
-        environment["UNSLOTH_MXC_RUNNER_SOURCE"] = runner_source_identity
+        _stage_patched_runner(root, prepared, staged_runner)
+        environment, runner_source_identity = _build_environment(root, prepared, staged_runner)
         _run(
             [
                 cargo,
@@ -268,6 +280,115 @@ def build_runner(
         shutil.rmtree(work, ignore_errors=True)
 
 
+def validate_prepared_runner(
+    *, prepared: Path, root: Path | None = None, cargo: str = "cargo"
+) -> None:
+    """Run tests and clippy against one exact already-patched MXC tree."""
+    root = (root or runner_root()).resolve()
+    prepared = prepared.resolve()
+    verify_build_inputs(root)
+    if not (prepared / ".git").exists():
+        raise PreparationError("the prepared MXC source is not a Git checkout")
+    revision = _run(["git", "rev-parse", "HEAD"], cwd=prepared)
+    if revision != MXC_REVISION:
+        raise PreparationError(
+            f"prepared MXC revision mismatch: expected {MXC_REVISION}, got {revision}"
+        )
+    with tempfile.TemporaryDirectory(prefix="unsloth-mxc-index-") as index_directory:
+        index_path = Path(index_directory) / "index"
+        index_environment = dict(os.environ)
+        index_environment["GIT_INDEX_FILE"] = os.fspath(index_path)
+        _run(["git", "read-tree", MXC_REVISION], cwd=prepared, env=index_environment)
+        _run(["git", "add", "--all"], cwd=prepared, env=index_environment)
+        tree = _run(["git", "write-tree"], cwd=prepared, env=index_environment)
+    if tree != MXC_PATCHED_TREE:
+        raise PreparationError(
+            f"patched MXC tree mismatch: expected {MXC_PATCHED_TREE}, got {tree}"
+        )
+
+    work = Path(tempfile.mkdtemp(prefix="unsloth-mxc-validate-"))
+    staged_runner = work / "runner"
+    try:
+        _stage_patched_runner(root, prepared, staged_runner)
+        environment, _ = _build_environment(root, prepared, staged_runner)
+        _run(
+            [cargo, "test", "--locked", "--features", FEATURES],
+            cwd=staged_runner,
+            env=environment,
+        )
+        _run(
+            [cargo, "clippy", "--locked", "--features", FEATURES, "--", "-D", "warnings"],
+            cwd=staged_runner,
+            env=environment,
+        )
+        _require_digest(staged_runner / "Cargo.lock", PATCHED_LOCK_SHA256, "validated Cargo.lock")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def package_artifact(*, artifact: Path, destination: Path) -> Path:
+    """Publish one built artifact with the application-owned digest allowlist."""
+    artifact = artifact.resolve()
+    destination = destination.resolve()
+    if destination.exists():
+        raise PreparationError(f"runtime package destination already exists: {destination}")
+    manifest_path = artifact / "runtime-manifest.json"
+    runner_path = artifact / "unsloth-mxc-runner.exe"
+    if not manifest_path.is_file() or not runner_path.is_file():
+        raise PreparationError("the runtime artifact is incomplete")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise PreparationError("the runtime artifact manifest is malformed") from exc
+    expected = {
+        "manifestVersion": RUNTIME_MANIFEST_VERSION,
+        "architecture": "x86_64",
+        "target": TARGET,
+        "protocolVersion": RUNNER_PROTOCOL_VERSION,
+        "profileId": PROFILE_ID,
+        "schemaVersion": MXC_SCHEMA_VERSION,
+        "mxcRevision": MXC_REVISION,
+        "mxcPatchSha256": MXC_PATCH_SHA256,
+        "mxcPatchedTree": MXC_PATCHED_TREE,
+        "cargoLockSha256": PATCHED_LOCK_SHA256,
+        "features": [FEATURES],
+    }
+    if not isinstance(manifest, dict) or any(manifest.get(k) != v for k, v in expected.items()):
+        raise PreparationError("the runtime artifact does not match the pinned MXC profile")
+    artifact_entry = manifest.get("artifacts", {}).get("runner")
+    runner_digest = sha256_file(runner_path)
+    if artifact_entry != {
+        "path": "unsloth-mxc-runner.exe",
+        "sha256": runner_digest,
+        "size": runner_path.stat().st_size,
+    }:
+        raise PreparationError("the runtime runner does not match its artifact manifest")
+    generation = manifest.get("generation")
+    if generation != f"mxc-{MXC_REVISION[:12]}-{runner_digest[:16]}":
+        raise PreparationError("the runtime artifact generation is not digest-bound")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
+    shutil.rmtree(stage)
+    try:
+        stage.mkdir()
+        shutil.copy2(runner_path, stage / runner_path.name)
+        shutil.copy2(manifest_path, stage / manifest_path.name)
+        package_trust = {
+            "manifestVersion": RUNTIME_MANIFEST_VERSION,
+            "architecture": "x86_64",
+            "generation": generation,
+            "manifestSha256": sha256_file(stage / manifest_path.name),
+            "runnerSha256": sha256_file(stage / runner_path.name),
+        }
+        (stage / "runtime-package.json").write_bytes(_canonical_json(package_trust) + b"\n")
+        os.replace(stage, destination)
+    except Exception:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+    return destination
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -281,6 +402,12 @@ def main() -> int:
     build_parser.add_argument("--source", default=MXC_REPOSITORY)
     build_parser.add_argument("--output", type=Path, required=True)
     build_parser.add_argument("--root", type=Path, default=runner_root())
+    package_parser = subparsers.add_parser("package")
+    package_parser.add_argument("--artifact", type=Path, required=True)
+    package_parser.add_argument("--destination", type=Path, required=True)
+    validate_parser = subparsers.add_parser("validate-prepared")
+    validate_parser.add_argument("--prepared", type=Path, required=True)
+    validate_parser.add_argument("--root", type=Path, default=runner_root())
     args = parser.parse_args()
     try:
         if args.command == "verify-inputs":
@@ -289,8 +416,12 @@ def main() -> int:
             prepare_source(
                 source=args.source, destination=args.destination, root=args.root.resolve()
             )
-        else:
+        elif args.command == "build":
             build_runner(source=args.source, output=args.output, root=args.root.resolve())
+        elif args.command == "package":
+            package_artifact(artifact=args.artifact, destination=args.destination)
+        else:
+            validate_prepared_runner(prepared=args.prepared, root=args.root.resolve())
     except PreparationError as exc:
         parser.exit(2, f"MXC preparation refused: {exc}\n")
     return 0

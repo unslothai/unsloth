@@ -7725,6 +7725,41 @@ substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
 
+# MXC Preview runtime lifecycle is deliberately separate from capability probing
+# and model execution. Release packaging places one approved x64 artifact beside
+# the installer; setup only asks the fixed lifecycle command to install/update it.
+# No host-policy preparation or elevation happens here.
+if ($stackExit -eq 0) {
+    $_mxcPackage = Join-Path $PSScriptRoot "native\mxc-runner\package\windows-x86_64\runtime-package.json"
+    $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_runtime.py"
+    if ((Test-Path -LiteralPath $_mxcPackage -PathType Leaf) -and
+        (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf)) {
+        substep "verifying the packaged Windows MXC Preview runtime..."
+        $_mxcStatusRaw = & python $_mxcInstaller verify --json 2>$null | Out-String
+        $_mxcStatusExit = $LASTEXITCODE
+        $_mxcState = ""
+        try { $_mxcState = ($_mxcStatusRaw | ConvertFrom-Json).state } catch { }
+        $_mxcOperation = if ($_mxcStatusExit -eq 0 -and $_mxcState -eq "ready") {
+            "update"
+        } elseif ($_mxcState -eq "not_installed") {
+            "install"
+        } else {
+            "repair"
+        }
+        $_mxcResult = & python $_mxcInstaller $_mxcOperation --json 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            substep "Windows MXC Preview runtime $_mxcOperation complete"
+        } else {
+            substep "[WARN] Windows MXC Preview runtime is unavailable; setup will continue without it." "Yellow"
+            if ($script:UnslothVerbose -and $_mxcResult) {
+                Write-StudioLine $_mxcResult.Trim() -ForegroundColor Yellow
+            }
+        }
+    } else {
+        substep "Windows MXC Preview runtime artifact is not bundled; capability remains unavailable." "Yellow"
+    }
+}
+
 # ── Intel XPU: bitsandbytes must carry XPU kernels ──
 # unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 for device_type "xpu" and only
 # bitsandbytes' XPU library exports those, so a wheel without it turns 4-bit QLoRA off. 0.48.2 is

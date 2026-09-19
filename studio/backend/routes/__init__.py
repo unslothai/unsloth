@@ -24,6 +24,7 @@ from routes.rag import router as rag_router
 from routes.research_runs import router as research_runs_router
 from routes.chat_generation_runs import router as chat_generation_runs_router
 from routes.youtube import router as youtube_router
+from routes.mxc_runtime import router as mxc_runtime_router
 
 __all__ = [
     "training_router",
@@ -46,6 +47,7 @@ __all__ = [
     "research_runs_router",
     "chat_generation_runs_router",
     "youtube_router",
+    "mxc_runtime_router",
 ]
 
 # Bind the re-export so the import-hoist verifier counts it as used.
@@ -56,4 +58,5 @@ _ = (
     research_runs_router,
     chat_generation_runs_router,
     youtube_router,
+    mxc_runtime_router,
 )

@@ -339,6 +339,7 @@ from routes import (
     video_router,
     video_openai_router,
     youtube_router,
+    mxc_runtime_router,
 )
 from routes.llama import router as llama_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
@@ -737,6 +738,23 @@ async def lifespan(app: FastAPI):
         start_sandbox_recovery()
     except Exception:  # noqa: BLE001
         pass
+
+    # Read-only startup diagnostics. Importing/probing MXC remains Windows-only,
+    # and startup never installs, repairs, downloads, or requests elevation.
+    if sys.platform == "win32":
+        try:
+            from dataclasses import asdict as _asdict
+            from core.inference.mxc_runtime import runtime_status as _mxc_runtime_status
+
+            _mxc_status = _mxc_runtime_status()
+            app.state.mxc_runtime_status = _asdict(_mxc_status)
+            app.state.mxc_runtime_status["state"] = _mxc_status.state.value
+        except Exception as exc:  # noqa: BLE001 -- optional Preview backend
+            app.state.mxc_runtime_status = {
+                "state": "corrupt",
+                "reason": str(exc),
+                "repair_requires_user_action": True,
+            }
 
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
@@ -1607,6 +1625,7 @@ app.include_router(providers_router, prefix = "/api/providers", tags = ["provide
 app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
 
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
+app.include_router(mxc_runtime_router, prefix = "/api/settings/mxc-runtime", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
