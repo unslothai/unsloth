@@ -268,6 +268,75 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         self.assertEqual(seen, [(request.gpu_layers, ["-ngl", "20"])])
 
 
+class TestValidateTranslatesManualTensorSplit(unittest.TestCase):
+    """Manual GPU memory strips ``-ts`` / ``--tensor-split`` because the first-class
+    ``tensor_split`` field owns it. /validate must promote the extras value first,
+    the same way it promotes ``-ngl``, or it judges a near-even default while /load
+    would have emitted the asymmetric MoE split (#11330)."""
+
+    def _validate(self, route, *, gpu_layers, extra_args, tensor_split = None):
+        seen: list = []
+
+        def _capture(_config, request, **kwargs):
+            seen.append(
+                (
+                    request.gpu_layers,
+                    request.tensor_split,
+                    kwargs.get("llama_extra_args"),
+                )
+            )
+
+        request = ValidateModelRequest(
+            model_path = "someone/moe-gguf",
+            llama_extra_args = extra_args,
+            gpu_memory_mode = "manual",
+            gpu_layers = gpu_layers,
+            tensor_split = tensor_split,
+        )
+        config = SimpleNamespace(
+            identifier = "someone/moe-gguf",
+            display_name = "moe-gguf",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            gguf_file = None,
+        )
+        with (
+            patch.object(
+                route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("someone/moe-gguf", "someone/moe-gguf", False),
+            ),
+            patch.object(route.ModelConfig, "from_identifier", return_value = config),
+            patch.object(route, "_resolve_inherited_extra_args", return_value = list(extra_args)),
+            patch.object(route, "_classify_diffusion_gguf", return_value = False),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value = True),
+            patch.object(route, "_guard_chat_load_against_training", new = _capture),
+        ):
+            asyncio.run(route.validate_model(request, current_subject = "test-user"))
+        return seen
+
+    def test_an_explicit_tensor_split_reaches_the_guard(self):
+        route = _load_route_module("inf_route_manual_ts_1")
+        seen = self._validate(
+            route,
+            gpu_layers = 49,
+            extra_args = ["-ts", "2.2,1", "-sm", "layer"],
+        )
+        self.assertEqual(seen, [(49, [2.2, 1.0], ["-sm", "layer"])])
+
+    def test_extras_override_a_first_class_tensor_split(self):
+        route = _load_route_module("inf_route_manual_ts_2")
+        seen = self._validate(
+            route,
+            gpu_layers = 49,
+            tensor_split = [1, 1],
+            extra_args = ["--tensor-split", "3,1"],
+        )
+        self.assertEqual(seen, [(49, [3.0, 1.0], [])])
+
+
 if __name__ == "__main__":
     unittest.main()
 

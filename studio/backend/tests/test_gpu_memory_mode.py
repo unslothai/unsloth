@@ -301,15 +301,23 @@ def test_route_normalizes_explicit_extras_before_reload_dedupe():
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     preserve = load_impl.index("_gpu_layers_override = parse_gpu_layers_override")
-    translate = load_impl.index(
-        'request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})'
-    )
+    translate = load_impl.index('_manual_updates["gpu_layers"] = _gpu_layers_override')
+    preserve_ts = load_impl.index("_tensor_split_override = parse_tensor_split_override")
+    translate_ts = load_impl.index('_manual_updates["tensor_split"] = _tensor_split_override')
     strip = load_impl.index("_stripped_explicit = strip_shadowing_flags")
     normalize = load_impl.index(
         'request = request.model_copy(update = {"llama_extra_args": extra_llama_args})'
     )
     dedupe = load_impl.index("_reuse_loaded_gguf(")
-    assert preserve < translate < strip < normalize < dedupe
+    assert (
+        preserve
+        < translate
+        < preserve_ts
+        < translate_ts
+        < strip
+        < normalize
+        < dedupe
+    )
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
