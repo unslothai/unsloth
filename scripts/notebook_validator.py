@@ -3850,11 +3850,15 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
         for k, v in removed[:cap_removed]:
             print(f"  REMOVED  {k} (was {v})")
         if len(removed) > cap_removed:
-            print(f"  ...and {len(removed) - cap_removed} more removed entries (--full to list them)")
+            print(
+                f"  ...and {len(removed) - cap_removed} more removed entries (--full to list them)"
+            )
         for k, old, ver in changed[:cap_changed]:
             print(f"  CHANGED  {k}: {old} -> {ver}")
         if len(changed) > cap_changed:
-            print(f"  ...and {len(changed) - cap_changed} more changed entries (--full to list them)")
+            print(
+                f"  ...and {len(changed) - cap_changed} more changed entries (--full to list them)"
+            )
     if strict_diff and args.strict:
         print(
             "\n::error::A rule-bearing Colab oracle drifted from its committed "

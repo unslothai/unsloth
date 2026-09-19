@@ -69,7 +69,11 @@ def oracle(tmp_path, monkeypatch):
     return upstream, tmp_path
 
 
-def _diff(snapshot_dir, strict, full = False):
+def _diff(
+    snapshot_dir,
+    strict,
+    full = False,
+):
     return nv.cmd_colab_diff(
         argparse.Namespace(snapshot_dir = str(snapshot_dir), strict = strict, full = full)
     )
