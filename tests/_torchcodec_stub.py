@@ -52,7 +52,11 @@ def install(target_dir: "str | Path | None" = None) -> "str | None":
         # replacing it would be the opposite of what this is for.
         return None
 
-    root = Path(target_dir) if target_dir else Path(tempfile.mkdtemp(prefix = "unsloth-torchcodec-stub-"))
+    root = (
+        Path(target_dir)
+        if target_dir
+        else Path(tempfile.mkdtemp(prefix = "unsloth-torchcodec-stub-"))
+    )
     package = root / NAME
     package.mkdir(parents = True, exist_ok = True)
     (package / "__init__.py").write_text(

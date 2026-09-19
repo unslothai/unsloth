@@ -451,9 +451,9 @@ def test_the_placeholder_survives_both_probes_transformers_makes(mode, expected)
     version. Answering only the first turns ValueError into PackageNotFoundError.
     """
     printed = _probe_in_a_venv_without_torchcodec(mode)
-    assert "AVAILABLE_RAISED ValueError" in printed or "AVAILABLE" in printed, (
-        f"the probe subprocess produced nothing usable for {mode!r}: {printed!r}"
-    )
+    assert (
+        "AVAILABLE_RAISED ValueError" in printed or "AVAILABLE" in printed
+    ), f"the probe subprocess produced nothing usable for {mode!r}: {printed!r}"
     assert expected in printed, printed
 
 
