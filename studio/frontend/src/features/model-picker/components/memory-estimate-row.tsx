@@ -54,12 +54,15 @@ function MemoryFigure({
     const fit = () => {
       if (!active) return;
       const style = getComputedStyle(button);
+      // Fractional width, not the integer clientWidth. The pill sizes to the label it is
+      // showing, so a rounded-down measurement makes that label look too wide for the box
+      // it just set and the fit drops a candidate for nothing.
       const width =
-        button.clientWidth -
+        button.getBoundingClientRect().width -
         Number.parseFloat(style.paddingLeft) -
         Number.parseFloat(style.paddingRight);
       const index = Array.from(measurement.children).findIndex(
-        (child) => child.getBoundingClientRect().width <= width,
+        (child) => child.getBoundingClientRect().width <= width + 0.5,
       );
       setDisplayIndex(index < 0 ? candidates.length - 1 : index);
     };
