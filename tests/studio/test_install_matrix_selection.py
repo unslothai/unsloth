@@ -249,23 +249,33 @@ def test_the_nightly_and_the_matrix_file_are_wired_into_the_trigger(name):
 # make and expensive to find this way, so the coupling is pinned here, in a CPU test, and
 # not in a ten-minute macOS leg.
 
-INSTALLER_SOURCES = (
-    "install.sh",
-    "install.ps1",
-    # Where the [TAURI:STEP] lines come from, and where several of the phases are named.
-    "studio/setup.sh",
-    "studio/setup.ps1",
-    "studio/install_python_stack.py",
-)
+# Per job, because the legs of one never run the installer of the other: a phrase renamed
+# only in install.ps1 leaves the Windows leg unreachable while install.sh still carries it,
+# and a single pooled text would call that green. install_python_stack.py is on both lists
+# because both installers run it.
+INSTALLER_SOURCES = {
+    "interrupt": (
+        "install.sh",
+        # Where the [TAURI:STEP] lines come from, and where several phases are named.
+        "studio/setup.sh",
+        "studio/install_python_stack.py",
+    ),
+    "interrupt_windows": (
+        "install.ps1",
+        "studio/setup.ps1",
+        "studio/install_python_stack.py",
+    ),
+}
 
 
 # What the installer's logger prepends, not what any phase is named.
 _TAURI_TAG = re.compile(r"^\\\[TAURI:STEP\\\]\s*")
 
 
-def _installer_text() -> str:
+def _installer_text(job: str) -> str:
     return "\n".join(
-        (REPO / name).read_text(encoding = "utf-8", errors = "replace") for name in INSTALLER_SOURCES
+        (REPO / name).read_text(encoding = "utf-8", errors = "replace")
+        for name in INSTALLER_SOURCES[job]
     )
 
 
@@ -291,15 +301,17 @@ def test_every_interrupt_marker_is_text_the_installer_still_prints(job, label, m
     caller that names the phase, so it is checked once against the sources rather than
     expected beside each phrase.
     """
-    text = _installer_text()
+    sources = INSTALLER_SOURCES[job]
+    text = _installer_text(job)
     phrase, tagged = _TAURI_TAG.subn("", marker)
     if tagged:
         assert "TAURI:STEP" in text, (
-            "no installer source emits a [TAURI:STEP] line at all, so every tagged "
-            "marker is unreachable"
+            f"{job}: none of {', '.join(sources)} emits a [TAURI:STEP] line, so every "
+            f"tagged marker on this job is unreachable"
         )
     assert re.search(phrase, text), (
-        f"{job}/{label}: no line in {', '.join(INSTALLER_SOURCES)} matches the marker "
-        f"{marker!r}, so the installer can never print it, the kill never lands and the "
-        f"leg fails having interrupted nothing. Rename the marker with the phase."
+        f"{job}/{label}: no line in {', '.join(sources)} matches the marker "
+        f"{marker!r}, so the installer this leg runs can never print it, the kill never "
+        f"lands and the leg fails having interrupted nothing. Rename the marker with "
+        f"the phase."
     )
