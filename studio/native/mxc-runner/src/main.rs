@@ -212,6 +212,14 @@ fn verify_policy_hash(request: &LaunchRequest) -> Result<(), String> {
     Ok(())
 }
 
+fn supervisor_exit_code(workload_exit_code: i32) -> i32 {
+    match workload_exit_code {
+        0 => 0,
+        1..=255 => workload_exit_code,
+        _ => 1,
+    }
+}
+
 fn send(stream: &mut File, request: &LaunchRequest, event: &str) -> io::Result<()> {
     send_full(
         stream, request, event, None, None, None, None, None, None, None,
@@ -1037,7 +1045,7 @@ fn main() {
     }
     inject_failure("after_finished_before_cleanup");
     drop(control);
-    std::process::exit(exit_code.clamp(0, 255));
+    std::process::exit(supervisor_exit_code(exit_code));
 }
 
 #[cfg(test)]
@@ -1156,6 +1164,14 @@ mod tests {
         assert!(constant_time_eq("same", "same"));
         assert!(!constant_time_eq("same", "different"));
         assert!(!constant_time_eq("same", "samf"));
+    }
+
+    #[test]
+    fn windows_status_failures_never_become_a_successful_supervisor_exit() {
+        assert_eq!(supervisor_exit_code(0), 0);
+        assert_eq!(supervisor_exit_code(124), 124);
+        assert_eq!(supervisor_exit_code(-1_073_741_502), 1);
+        assert_eq!(supervisor_exit_code(300), 1);
     }
 
     #[test]
