@@ -867,10 +867,13 @@ def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:
         from core.rag import conversation_archive
         from storage import rag_db
 
-        if rag_db.rag_available():
-            document_ids = conversation_archive.copy_thread_documents(source_thread_id, thread_id)
-            remap_chat_thread_document_ids(thread_id, document_ids)
-        return True
+        if not rag_db.rag_available():
+            return not conversation_archive.thread_has_documents(source_thread_id)
+        document_ids, missed = conversation_archive.copy_thread_documents(
+            source_thread_id, thread_id
+        )
+        remap_chat_thread_document_ids(thread_id, document_ids)
+        return not missed
     except Exception:
         logger.warning(
             "Could not copy the uploaded documents of %s to %s",

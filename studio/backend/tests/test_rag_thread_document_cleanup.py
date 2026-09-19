@@ -3,6 +3,7 @@
 
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 
@@ -272,6 +273,70 @@ def test_a_fork_survives_documents_that_cannot_be_copied(client, monkeypatch):
         assert conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE scope='x'").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_a_fork_warns_when_existing_documents_cannot_load_without_vec(client, monkeypatch):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    source = _upload(client, "source", "source.txt", "echo foxtrot golf " * 50)
+    with monkeypatch.context() as unavailable:
+        unavailable.setattr(rag_db, "rag_available", lambda: False)
+        warning = _fork(client, "source", "m1", "fork")["containerSnapshotWarning"]
+    assert "not copied" in (warning or "")
+    assert _thread_documents(client, "fork") == []
+    assert _document_ids(client) == {source}
+
+
+def test_a_fork_without_documents_needs_no_warning_without_vec(client, monkeypatch):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    monkeypatch.setattr(rag_db, "rag_available", lambda: False)
+    assert _fork(client, "source", "m1", "fork")["containerSnapshotWarning"] is None
+
+
+def test_a_fork_warns_when_an_upload_is_still_pending(client):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    conn = rag_db.get_connection()
+    try:
+        store.create_document(
+            conn,
+            scope = store.thread_scope("source"),
+            thread_id = "source",
+            filename = "pending.txt",
+            sha256 = "pending-upload",
+            status = "pending",
+        )
+    finally:
+        conn.close()
+    warning = _fork(client, "source", "m1", "fork")["containerSnapshotWarning"]
+    assert "not copied" in (warning or "")
+
+
+def test_a_fork_copies_files_before_taking_the_rag_write_lock(client, monkeypatch):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    for index in range(2):
+        _upload(client, "source", f"source{index}.txt", f"echo foxtrot golf {index} " * 50)
+    copy_upload = ingestion._copy_upload
+    writable = []
+
+    def copy_with_concurrent_writer(path):
+        conn = rag_db.get_metadata_connection()
+        try:
+            conn.execute("PRAGMA busy_timeout = 20")
+            conn.execute("BEGIN IMMEDIATE")
+            writable.append(True)
+        except sqlite3.OperationalError:
+            writable.append(False)
+        finally:
+            conn.rollback()
+            conn.close()
+        return copy_upload(path)
+
+    monkeypatch.setattr(ingestion, "_copy_upload", copy_with_concurrent_writer)
+    assert _fork(client, "source", "m1", "fork")["containerSnapshotWarning"] is None
+    assert writable == [True, True]
 
 
 def _cite(client, thread_id, message_id, document_id):
