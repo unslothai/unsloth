@@ -213,6 +213,65 @@ def test_the_known_unbuildable_pins_are_skipped():
     )
 
 
+def _seeded_pins() -> list[str]:
+    """The pins the seed step would hand pip, applying the same transformations it does."""
+    mapping = _mapping()
+    skip = set(mapping["skip"])
+    spoof = set(mapping["module_spoof"])
+    out = []
+    for line in FREEZE.read_text(encoding = "utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^([A-Za-z0-9._-]+)\s*==\s*(.+)$", line)
+        if not m:
+            continue
+        name, ver = m.group(1).lower(), m.group(2)
+        if name in skip or name in spoof:
+            continue
+        ver = re.sub(r"[+\-].+$", "", ver)
+        ver = re.sub(r"\.dev\d+$", "", ver)
+        out.append(f"{name}=={ver}")
+    return out
+
+
+def test_no_seeded_pin_asks_pypi_for_a_version_only_a_distro_has():
+    """The freeze is a snapshot of an image, so it carries versions as the image labels them,
+    and a distro build labels itself `.devN`. PyPI has no such release, and one unresolvable
+    pin fails the whole bulk resolve: the Ubuntu 24.04 rotation brought in `Mako==1.3.2.dev0`
+    and every leg of the matrix died on
+
+        ERROR: No matching distribution found for mako==1.3.2.dev0
+
+    The seed strips the marker to the base version, which PyPI does have. Local versions
+    (`+cu128`) are covered by the rewrite map and stripped the same way.
+    """
+    offenders = [pin for pin in _seeded_pins() if ".dev" in pin or "+" in pin]
+    assert not offenders, (
+        "these pins would be sent to PyPI carrying a marker only the Colab image uses, and "
+        f"one of them fails the resolve for all of them: {offenders}"
+    )
+
+
+def test_the_seed_still_pins_a_package_whose_marker_was_stripped():
+    """The strip must not become a skip: the image carries Mako, so the venv this job builds
+    has to carry it too, just at the version PyPI publishes."""
+    seeded = {pin.split("==")[0]: pin.split("==")[1] for pin in _seeded_pins()}
+    raw = dict(
+        re.match(r"^([A-Za-z0-9._-]+)\s*==\s*(.+)$", line.strip()).groups()
+        for line in FREEZE.read_text(encoding = "utf-8").splitlines()
+        if re.match(r"^([A-Za-z0-9._-]+)\s*==\s*(.+)$", line.strip())
+    )
+    marked = {name.lower(): ver for name, ver in raw.items() if ".dev" in ver}
+    if not marked:
+        pytest.skip("the current snapshot carries no .devN pin to check")
+    for name, ver in marked.items():
+        assert name in seeded, f"{name} was dropped rather than having its marker stripped"
+        assert seeded[name] == ver.split(".dev")[0], (
+            f"{name} seeded as {seeded[name]}, expected {ver.split('.dev')[0]}"
+        )
+
+
 # --- the cache key has to represent what the job installs ----------------------------
 
 
