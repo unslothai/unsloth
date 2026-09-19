@@ -15,8 +15,8 @@ It must count only what THIS request wrote. The payload runs several
 tool-driven assertions against one long-lived server, and a whole-file grep
 would let `assert_code_execution`'s call satisfy this one.
 
-And it must NOT fail on an empty result set. `_web_search` fans out through
-ddgs with no API key, so a provider rate-limiting a Kaggle egress IP is a fact
+And it must NOT fail on an empty result set. `_web_search` uses DuckDuckGo through
+ddgs with no API key, so DuckDuckGo rate-limiting a Kaggle egress IP is a fact
 about the day rather than a Studio defect, and failing on it would put a red in
 front of every PR that no reader could act on.
 """
