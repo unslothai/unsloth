@@ -187,8 +187,19 @@ const LABEL_CLASS_WRAP =
   "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
-const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
-const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
+// One width for every typed field: a box that resized per keystroke would jump under the
+// caret. Narrow, so the label beside it is not clipped in a ~240px panel.
+const INPUT_WIDTH_CLASS = "w-[92px] shrink-0";
+// A select holds one of a known set of values, so it sizes to that value.
+const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
+// One 12px gap three times over: before the value, between value and chevron, after it.
+const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 ${SELECT_WIDTH_CLASS} ${CONTROL_SURFACE} px-3 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
+// Wider right gutter: the value is right-aligned, so that gutter is all that holds the
+// digits off the edge.
+const NUMBER_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} ${CONTROL_SURFACE} pl-3 pr-3.5 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
+const TEXT_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} min-w-0 ${CONTROL_SURFACE} pl-3 pr-3.5 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
+// Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
+const FOOTER_BUTTON_CLASS = "h-9 rounded-full text-ui-13 font-medium tracking-nav";
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
@@ -444,6 +455,7 @@ function MaxSeqLengthSetting({
           derived={isMlx && !pinned}
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
+          fixedWidth={true}
           size={8}
         />
       </div>
@@ -507,6 +519,7 @@ function AdvancedGpuSlider({
           displayValue={displayValue}
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
+          fixedWidth={true}
           size={8}
           disabled={disabled}
         />
@@ -837,7 +850,7 @@ function GpuMemorySettings({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+            className={SELECT_TRIGGER_CLASS}
           >
             <SelectValue />
           </SelectTrigger>
@@ -1024,7 +1037,7 @@ function MlxAdvancedSettings({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+            className={SELECT_TRIGGER_CLASS}
           >
             <SelectValue />
           </SelectTrigger>
@@ -1115,7 +1128,7 @@ function LoadModeRow({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+            className={SELECT_TRIGGER_CLASS}
             aria-describedby={notice ? adviceId : undefined}
           >
             <SelectValue />
@@ -1211,7 +1224,7 @@ function GgufAdvancedSettings({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+            className={SELECT_TRIGGER_CLASS}
           >
             <SelectValue />
           </SelectTrigger>
@@ -1261,7 +1274,7 @@ function GgufAdvancedSettings({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+            className={SELECT_TRIGGER_CLASS}
           >
             <SelectValue />
           </SelectTrigger>
@@ -1333,7 +1346,7 @@ function GgufAdvancedSettings({
               animateRadius={false}
               icon={ChevronDownStandardIcon}
               iconClassName="size-3.5"
-              className={`w-[92px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+              className={SELECT_TRIGGER_CLASS}
             >
               <SelectValue />
             </SelectTrigger>
@@ -1580,7 +1593,7 @@ function GgufAdvancedSettings({
               }
             }}
             aria-label="Reasoning Budget Message"
-            className={`h-8 w-[180px] min-w-0 ${CONTROL_SURFACE} px-3 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`}
+            className={TEXT_INPUT_CLASS}
           />
         </div>
       )}
@@ -3102,14 +3115,16 @@ export function ModelConfigPage({
   };
 
   return (
-    <div className="flex flex-col">
+    <div className="hint-on-hover flex flex-col">
       {variant === "page" && showHeader && (
+        // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
+        // the same left edge as the rows below.
         <div className="flex items-center gap-2.5 pb-4">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="nav-icon-btn shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+              className="nav-icon-btn -ml-1.5 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
               aria-label="Back to model list"
             >
               <ChevronLeftIcon
@@ -3181,6 +3196,7 @@ export function ModelConfigPage({
                   displayValue={contextIsAuto ? "Auto" : undefined}
                   ariaLabel="Context Length"
                   className={NUMBER_INPUT_CLASS}
+                  fixedWidth={true}
                   size={8}
                 />
               </div>
@@ -3233,6 +3249,12 @@ export function ModelConfigPage({
                 )}
             </div>
 
+            {/* Above the block it reveals, so expanding never moves the switch. */}
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
+            />
+
             {showAdvanced && (
               <GgufAdvancedSettings
                 config={config}
@@ -3251,11 +3273,6 @@ export function ModelConfigPage({
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
               />
             )}
-
-            <AdvancedSettingsToggle
-              checked={showAdvanced}
-              onCheckedChange={toggleAdvanced}
-            />
           </>
         )}
         {!target.isGguf && (
@@ -3272,6 +3289,10 @@ export function ModelConfigPage({
               }
               onChange={(value) => update(contextPinPatch(value, targetIsMlx))}
             />
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
+            />
             {showAdvanced && (
               <MlxAdvancedSettings
                 config={config}
@@ -3282,10 +3303,6 @@ export function ModelConfigPage({
                 templateOutcome={chatTemplateOutcome}
               />
             )}
-            <AdvancedSettingsToggle
-              checked={showAdvanced}
-              onCheckedChange={toggleAdvanced}
-            />
           </>
         )}
       </div>
@@ -3318,15 +3335,15 @@ export function ModelConfigPage({
         <div
           className={
             variant === "sidebar"
-              ? "flex items-center justify-end gap-2"
+              ? "grid grid-cols-2 gap-3"
               : "flex shrink-0 items-center gap-2"
           }
         >
           <Button
             type="button"
-            variant="ghost"
+            variant="outline"
             size="sm"
-            className="h-8"
+            className={`${FOOTER_BUTTON_CLASS} text-muted-foreground${variant === "sidebar" ? " w-full" : ""}`}
             disabled={atDefault}
             onClick={() => {
               // Reset writes through setConfig, not update, so it marks the draft itself.
@@ -3347,7 +3364,7 @@ export function ModelConfigPage({
           <Button
             type="button"
             size="sm"
-            className="h-8"
+            className={`${FOOTER_BUTTON_CLASS}${variant === "sidebar" ? " w-full" : ""}`}
             disabled={
               stagedMetadataPending ||
               budgetSettling ||

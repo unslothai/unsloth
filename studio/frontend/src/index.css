@@ -1437,19 +1437,26 @@ html[data-chat-font] .aui-root {
 		);
 	}
 
-	/* Images and Video: a field's "i" only appears with the row it belongs to. Matched on the
-	   InfoHint itself so every field style is covered, including the shared chat slider.
-	   Two levels up is the field container; higher ancestors deliberately do not match. */
-	.diffusion-surface [data-slot="info-hint"] {
+	/* Images, Video and Run settings: a field's "i" only appears with the row it belongs to.
+	   Matched on the InfoHint itself so every field style is covered, including the shared
+	   chat slider. Two levels up is the field container; higher ancestors deliberately do
+	   not match. Opacity, not display, so revealing one never reflows its row. */
+	:is(.diffusion-surface, .hint-on-hover) [data-slot="info-hint"] {
 		opacity: 0;
 		pointer-events: none;
 		transition: opacity 150ms;
 	}
-	.diffusion-surface *:hover > [data-slot="info-hint"],
-	.diffusion-surface *:hover > * > [data-slot="info-hint"],
-	.diffusion-surface *:focus-within > [data-slot="info-hint"],
-	.diffusion-surface *:focus-within > * > [data-slot="info-hint"],
-	.diffusion-surface [data-slot="info-hint"]:focus-visible {
+	/* :has(:focus-visible), not :focus-within: a select hands focus back to its trigger on
+	   close, which left the "i" up until something else was clicked. */
+	:is(.diffusion-surface, .hint-on-hover)
+		:is(*:hover, *:has(:focus-visible))
+		> [data-slot="info-hint"],
+	:is(.diffusion-surface, .hint-on-hover)
+		:is(*:hover, *:has(:focus-visible))
+		> *
+		> [data-slot="info-hint"],
+	:is(.diffusion-surface, .hint-on-hover)
+		[data-slot="info-hint"]:focus-visible {
 		opacity: 1;
 		pointer-events: auto;
 	}
@@ -1461,8 +1468,10 @@ html[data-chat-font] .aui-root {
 	   an inline width that hugs the value. Hover/focus: very light bg
 	   fade-in, just enough to read as interactive without competing
 	   with the slider row's quiet aesthetic. */
+	/* Wider right gutter: the value is right-aligned on the panel's own edge. Matches the
+	   run-settings number fields. */
 	.panel-number-input {
-		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent px-2 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
+		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}
 	.dark .panel-number-input {
 		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
