@@ -26,6 +26,8 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 ### Response:
 {}"""
 
+_TEMPLATE_ERROR_COLUMN = "__chat_template_error"
+
 _CUSTOM_PROMPT_TEMPLATE_ERROR = (
     "custom_prompt_template is deprecated and unsupported because Unsloth Studio cannot persist a "
     "matching template for inference. Pass None to continue without a custom prompt template."
@@ -333,9 +335,12 @@ def apply_chat_template_to_dataset(
         if model_name:
             tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
 
+        streamed_failures = []
+
         def _format_chatml(examples):
             convos = examples[chat_column]
             texts = []
+            row_errors = []
 
             for convo in convos:
                 try:
@@ -350,12 +355,18 @@ def apply_chat_template_to_dataset(
                     text += eos_token
 
                     texts.append(text)
+                    row_errors.append("")
                 except Exception as e:
-                    if len(texts) == 0:
-                        warnings.append(f"Chat template failed: {e}")
                     texts.append("")
+                    row_errors.append(str(e) or type(e).__name__)
 
-            return {"text": texts}
+            return {"text": texts, _TEMPLATE_ERROR_COLUMN: row_errors}
+
+        def _keep_streamed_row(row_error):
+            if row_error and not streamed_failures:
+                streamed_failures.append(row_error)
+                logger.warning(f"Dropping rows whose chat template failed: {row_error}")
+            return not row_error
 
         try:
             is_iterable = is_streaming_dataset(dataset)
@@ -405,11 +416,41 @@ def apply_chat_template_to_dataset(
             if _tqdm_monitor_stop is not None:
                 _tqdm_monitor_stop.set()
 
+            dropped_rows_warning = None
+            if is_iterable:
+                formatted_dataset = formatted_dataset.filter(
+                    _keep_streamed_row, input_columns = [_TEMPLATE_ERROR_COLUMN]
+                ).remove_columns(_TEMPLATE_ERROR_COLUMN)
+            elif len(formatted_dataset):
+                row_errors = list(formatted_dataset[_TEMPLATE_ERROR_COLUMN])
+                failed = [row_error for row_error in row_errors if row_error]
+                if failed and len(failed) == len(row_errors):
+                    errors.append(
+                        f"Chat template failed on all {len(row_errors):,} rows: {failed[0]}"
+                    )
+                    return {
+                        "dataset": dataset,
+                        "success": False,
+                        "warnings": warnings,
+                        "errors": errors
+                    }
+                if failed:
+                    formatted_dataset = formatted_dataset.select(
+                        [i for i, row_error in enumerate(row_errors) if not row_error]
+                    )
+                    dropped_rows_warning = (
+                        f"Dropped {len(failed):,} of {len(row_errors):,} rows because the "
+                        f"chat template failed: {failed[0]}"
+                    )
+                    warnings.append(dropped_rows_warning)
+                formatted_dataset = formatted_dataset.remove_columns(_TEMPLATE_ERROR_COLUMN)
+
             return {
                 "dataset": formatted_dataset,
                 "success": True,
                 "warnings": warnings,
-                "errors": errors
+                "errors": errors,
+                "dropped_rows_warning": dropped_rows_warning,
             }
         except Exception as e:
             errors.append(f"Failed to format ChatML dataset: {e}")
