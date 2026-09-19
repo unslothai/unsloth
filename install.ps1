@@ -2673,6 +2673,129 @@ exit 1
         return $current
     }
 
+    # A Python to resolve paths with, found without installing one: this runs before the install
+    # lock, so Get-Command and Test-Path only. Path.resolve is GetFinalPathNameByHandleW on Windows
+    # and is what unsloth_cli/_studio_runtime_gate.py hashes, so both sides name the same lock.
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    $script:StudioEarlyPythonProbedWithoutVenv = $false
+
+    function Get-StudioEarlyPython {
+        # $VenvDir is assigned far below the first caller (--tauri), so a miss taken before it existed
+        # is probed again once it does. A hit, or a miss taken with it known, is final.
+        $venvDirValue = $null
+        try { $venvDirValue = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue } catch {}
+        $venvKnown = -not [string]::IsNullOrWhiteSpace($venvDirValue)
+        if ($script:StudioEarlyPythonProbed) {
+            if (-not ($script:StudioEarlyPythonProbedWithoutVenv -and $venvKnown -and
+                      [string]::IsNullOrWhiteSpace($script:StudioEarlyPython))) {
+                return $script:StudioEarlyPython
+            }
+        }
+        $script:StudioEarlyPythonProbed = $true
+        $script:StudioEarlyPythonProbedWithoutVenv = (-not $venvKnown)
+        # 0 restores the previous ladder, like UNSLOTH_NVIDIA_LIBRARY_PROBE.
+        if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $null }
+        $candidates = @()
+        if ($venvKnown) {
+            $candidates += (Join-Path $venvDirValue "Scripts\python.exe")
+            $candidates += (Join-Path $venvDirValue "bin/python3")
+        }
+        foreach ($name in @("python3", "python")) {
+            try {
+                foreach ($cmd in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                    if ($cmd -and $cmd.Source) { $candidates += $cmd.Source }
+                }
+            } catch {}
+        }
+        foreach ($candidate in $candidates) {
+            if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            # Probe the interpreter's own directory: $PSScriptRoot is empty under `irm | iex`.
+            $probeDir = [System.IO.Path]::GetDirectoryName($candidate)
+            if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
+            $probe = Invoke-StudioEarlyPython -Exe $candidate -Path $probeDir
+            if (-not [string]::IsNullOrWhiteSpace($probe)) {
+                $script:StudioEarlyPython = $candidate
+                return $candidate
+            }
+        }
+        return $null
+    }
+
+    # Path.resolve in a bounded child. $null on anything but a clean answer.
+    function Invoke-StudioEarlyPython {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Path,
+            [int]$TimeoutMs = 10000
+        )
+        # The gate's expression (_resolved_windows_path) but strict=True: identical for any path that
+        # resolves, while a loop or dangling link raises instead of coming back unresolved.
+        # Before 3.8 Windows resolve does not follow links, so an alias would be reported as exact.
+        $script = "import pathlib,sys" + [char]10 +
+                  "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
+                  "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
+        $proc = $null
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $Exe
+            # -S as well as -I: -I still imports site, so a sitecustomize could print or hang.
+            # ArgumentList is .NET Core only; Windows PowerShell 5.1 lacks it.
+            $argv = @("-I", "-S", "-c", $script, $Path)
+            if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
+                foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
+            } else {
+                # Quote for CommandLineToArgvW, doubling trailing backslashes so "C:\dir\" keeps its quote.
+                $psi.Arguments = (@($argv | ForEach-Object {
+                    '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
+                }) -join ' ')
+            }
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            # Otherwise 5.1 decodes with the console codepage and corrupts non-ASCII paths.
+            $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $stdout = $proc.StandardOutput.ReadToEndAsync()
+            $null = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutMs)) {
+                try { $proc.Kill() } catch {}
+                return $null
+            }
+            if ($proc.ExitCode -ne 0) { return $null }
+            # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
+            $answer = "$($stdout.Result)"
+            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+            if (-not (Test-Path -LiteralPath $answer)) { return $null }
+            return $answer
+        } catch {
+            return $null
+        } finally {
+            if ($proc) { try { $proc.Dispose() } catch {} }
+        }
+    }
+
+    # One child per distinct path: the process scan asks for the same image paths repeatedly.
+    # Misses are cached too.
+    $script:StudioPythonFinalPathCache = $null
+
+    function Get-StudioPythonFinalPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if ($null -eq $script:StudioPythonFinalPathCache) { $script:StudioPythonFinalPathCache = @{} }
+        if ($script:StudioPythonFinalPathCache.ContainsKey($Path)) {
+            return $script:StudioPythonFinalPathCache[$Path]
+        }
+        $exe = Get-StudioEarlyPython
+        # Not cached: the re-probe once $VenvDir is known may still find an interpreter.
+        if (-not $exe) { return $null }
+        $answer = Invoke-StudioEarlyPython -Exe $exe -Path $Path
+        $script:StudioPythonFinalPathCache[$Path] = $answer
+        return $answer
+    }
+
     # Exact = $true means the native resolver answered, so the string is what it
     # always was. Callers keying a lock on it use that to judge an inequality.
     function Resolve-StudioFinalPathInfo {
@@ -2714,6 +2837,11 @@ exit 1
                     Write-StudioLine "[WARN] Could not resolve a path with the native helper; continuing with the PowerShell resolver." -ForegroundColor Yellow
                 }
             }
+        }
+        if ([string]::IsNullOrEmpty($resolved)) {
+            # Only reached when the native rung gave up, so hosts that resolve natively are unchanged.
+            $resolved = Get-StudioPythonFinalPath -Path $existingPath
+            if (-not [string]::IsNullOrWhiteSpace($resolved)) { $exact = $true }
         }
         if ([string]::IsNullOrEmpty($resolved)) {
             $resolved = Get-StudioLexicalPath -Path $existingPath
