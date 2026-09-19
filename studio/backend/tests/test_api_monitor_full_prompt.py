@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import sys
+
 import pytest
 
+import core.inference.api_monitor as monitor_module
 from core.inference.api_monitor import ApiMonitor
 from utils.account_context import AccountContext, run_as
 
@@ -66,3 +69,61 @@ def test_full_prompt_follows_history_retention_and_clear():
     monitor.finish(running_id)
     monitor.clear(subject = "alice")
     assert monitor.snapshot(subject = "alice") == []
+
+
+@pytest.mark.parametrize("character", ["x", "🦥"])
+@pytest.mark.parametrize("terminal", [None, "finish", "fail"])
+def test_full_prompt_budget_preserves_rows_and_recent_details(monkeypatch, character, terminal):
+    prompt = character * 2000
+    monkeypatch.setattr(
+        monitor_module, "_MAX_PROMPT_BYTES", 2 * sys.getsizeof(prompt), raising = False
+    )
+    monitor = ApiMonitor()
+    ids = []
+    for _ in range(3):
+        entry_id = _start(monitor, prompt)
+        ids.append(entry_id)
+        if terminal == "finish":
+            monitor.finish(entry_id)
+        elif terminal == "fail":
+            monitor.fail(entry_id, "context limit")
+
+    oldest = monitor.get(ids[0], subject = "alice")
+    assert "prompt" not in oldest
+    assert oldest["prompt_truncated"] is True
+    assert len(oldest["prompt_preview"]) == 360
+    for entry_id in ids[1:]:
+        assert monitor.get(entry_id, subject = "alice")["prompt"] == prompt
+    assert len(monitor.snapshot(subject = "alice")) == 3
+    assert monitor.active_count(subject = "alice") == (3 if terminal is None else 0)
+
+
+def test_oversized_prompt_keeps_preview_without_evicting_smaller_details(monkeypatch):
+    prompt = "x" * 2000
+    monkeypatch.setattr(monitor_module, "_MAX_PROMPT_BYTES", sys.getsizeof(prompt), raising = False)
+    monitor = ApiMonitor()
+    retained = _start(monitor, prompt)
+    oversized = _start(monitor, prompt * 2)
+    monitor.set_reply(oversized, "reply remains available")
+
+    assert monitor.get(retained)["prompt"] == prompt
+    detail = monitor.get(oversized)
+    assert "prompt" not in detail
+    assert detail["prompt_truncated"] is True
+    assert detail["reply"] == "reply remains available"
+    assert len(detail["prompt_preview"]) == 360
+
+
+def test_eviction_releases_prompt_budget_for_new_requests(monkeypatch):
+    prompt = "x" * 2000
+    monkeypatch.setattr(monitor_module, "_MAX_PROMPT_BYTES", sys.getsizeof(prompt), raising = False)
+    monitor = ApiMonitor(max_entries = 1)
+    first = _start(monitor, prompt)
+    monitor.finish(first)
+    second = _start(monitor, prompt)
+    monitor.finish(second)
+    assert monitor.get(first) is None
+    assert monitor.get(second)["prompt"] == prompt
+    monitor.clear()
+    third = _start(monitor, prompt)
+    assert monitor.get(third)["prompt"] == prompt

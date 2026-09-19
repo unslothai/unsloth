@@ -16,6 +16,7 @@ import { type MonitorStats, computeStats } from "./stats";
 
 /** Poll cadence while live. Matches the settings console it replaces. */
 const POLL_INTERVAL_MS = 1500;
+const MAX_CACHED_PROMPT_CHARS = 64 * 1024 * 1024;
 
 export { computeStats };
 export type { MonitorStats };
@@ -168,7 +169,18 @@ export function useApiMonitor({
     getApiMonitorEntry(id)
       .then((entry) => {
         if (!retainedEntryIds.current.has(id)) return;
-        setDetails((prev) => ({ ...prev, [id]: entry }));
+        setDetails((prev) => {
+          const retained: Record<string, ApiMonitorEntry> = { [id]: entry };
+          let promptChars = entry.prompt?.length ?? 0;
+          for (const [cachedId, cached] of Object.entries(prev)) {
+            if (cachedId === id) continue;
+            const cachedChars = cached.prompt?.length ?? 0;
+            if (promptChars + cachedChars > MAX_CACHED_PROMPT_CHARS) continue;
+            retained[cachedId] = cached;
+            promptChars += cachedChars;
+          }
+          return retained;
+        });
       })
       .catch(() => {
         // Aged out of the ring buffer: drop the stale copy so the row previews show.
