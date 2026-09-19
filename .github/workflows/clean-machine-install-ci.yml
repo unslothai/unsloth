@@ -1148,20 +1148,32 @@ jobs:
           # not the one the interop process used, a Get-ChildItem that fails on a long path. Plant
           # one intermediate of each kind, require the search to find both, then remove them. If the
           # control does not fire the job fails as a broken detector rather than reporting a pass.
-          $controlDir = Join-Path $env:TEMP ('unsloth-compiler-control-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+          # The planted files carry a nonce in their NAME, and the control matches on the name.
+          # It used to match on the directory, `$_.FullName -like (Join-Path $controlDir '*')`,
+          # which compares two strings that need not spell the same directory the same way:
+          # %TEMP% on a hosted runner is the 8.3 form (C:\Users\RUNNER~1\...), and whether an
+          # enumerated FullName comes back short or long is not something this check should be
+          # betting on. A nonce in the filename is unique on its own, so nothing has to agree
+          # about paths.
+          $controlStamp = [guid]::NewGuid().ToString('N').Substring(0, 8)
+          $controlDir = Join-Path $env:TEMP ('unsloth-compiler-control-' + $controlStamp)
           New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
-          $controlFiles = @(
-            (Join-Path $controlDir 'control.cmdline'),
-            (Join-Path $controlDir 'control.rsp')
-          )
+          $controlNames = @("control-$controlStamp.cmdline", "control-$controlStamp.rsp")
+          $controlFiles = @($controlNames | ForEach-Object { Join-Path $controlDir $_ })
           foreach ($f in $controlFiles) { Set-Content -LiteralPath $f -Value '/noconfig /fullpaths' -Encoding ascii }
-          $controlSeen = @(
-            Get-ChildItem -LiteralPath $env:TEMP -Recurse -Include '*.cmdline', '*.rsp' -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -like (Join-Path $controlDir '*') }
+          $controlOnDisk = @($controlFiles | Where-Object { Test-Path -LiteralPath $_ })
+          $controlSweep = @(
+            Get-ChildItem -LiteralPath $env:TEMP -Recurse -Include '*.cmdline', '*.rsp' -ErrorAction SilentlyContinue
           )
+          $controlSeen = @($controlSweep | Where-Object { $controlNames -contains $_.Name })
           Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
           if ($controlSeen.Count -lt 2) {
+            # SAY WHICH HALF FAILED. This check exists because "the detector saw nothing" and
+            # "there was nothing to see" look identical, and the first version reproduced that
+            # very problem one level up: writing, sweeping and matching all fail as `0 of 2`.
+            # These three numbers separate them, so the next failure names its own cause.
             Write-Host "::error::the compiler-intermediate detector is broken: it found $($controlSeen.Count) of 2 planted files under $env:TEMP."
+            Write-Host "::error::wrote $($controlOnDisk.Count) of 2 control files; the %TEMP% sweep returned $($controlSweep.Count) intermediate(s) in total; planted under $controlDir looking for $($controlNames -join ', ')."
             Write-Host '::error::Not reporting this run as clean. A search that cannot see a file it just wrote cannot see one csc.exe wrote either.'
             exit 1
           }

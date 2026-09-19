@@ -11,6 +11,10 @@ export {
   usePinnedModelsStore,
 } from "./components/model-selector/pinned-models";
 export {
+  pinnedReasoningEffort,
+  useModelReasoningEffortStore,
+} from "./components/model-selector/model-reasoning-effort";
+export {
   hfModelFitsDevice,
   loadScopedGpu,
 } from "./components/model-selector/recommended-fit";

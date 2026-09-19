@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import unittest
+import types
 from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -224,9 +225,28 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
             },
         ]
 
+        # Two discrete cards. Stubbed rather than left to the host's own torch: the
+        # integrated-memory reconciliation reads props.total_memory for every CUDA row,
+        # so on a unified-memory machine (an RTX Spark N1X) a real 45.39 GiB pool was
+        # joined onto this fake 24 GiB row and the assertion below read the runner's
+        # hardware instead of the fixture.
+        _discrete = types.SimpleNamespace(
+            name = "NVIDIA RTX 4090",
+            total_memory = 24 * (1 << 30),
+            is_integrated = 0,
+            gcnArchName = "",
+        )
+
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "utils.hardware.hardware._torch_get_device_module",
+                return_value = (
+                    types.SimpleNamespace(get_device_properties = lambda ordinal: _discrete),
+                    "cuda",
+                ),
+            ),
             patch(
                 "utils.hardware.hardware._get_parent_visible_gpu_spec",
                 return_value = {"raw": "5,3", "numeric_ids": [5, 3]},

@@ -309,6 +309,7 @@ jobs:
           cd unsloth
           python -c "import trl; print('Resolved TRL', trl.__version__)"
           PYTHONPATH=. python -m pytest \
+            tests/version_compat/test_grpo_protected_tokens_guard.py \
             tests/version_compat/test_trl_grpo_fake_run.py \
             tests/version_compat/test_trl_fake_train_cpu.py \
             tests/version_compat/test_trl_padding_free_max_length.py \
@@ -329,6 +330,7 @@ jobs:
           cd unsloth
           python -c "import trl; print('Resolved TRL', trl.__version__)"
           PYTHONPATH=. python -m pytest \
+            tests/version_compat/test_grpo_protected_tokens_guard.py \
             tests/version_compat/test_trl_grpo_fake_run.py \
             tests/version_compat/test_trl_fake_train_cpu.py \
             tests/version_compat/test_trl_padding_free_max_length.py \

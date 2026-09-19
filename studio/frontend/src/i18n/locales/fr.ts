@@ -249,9 +249,19 @@ export const fr = {
   settings: {
     accounts: {
       title: "Comptes",
-      description: "Créez des comptes Studio privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
+      description: "Créez des comptes Unsloth privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
       username: "Nom d'utilisateur",
       create: "Créer un compte",
+      createDescription: "Partagez un code de configuration pour que la personne choisisse son propre mot de passe.",
+      actionsFor: "Gérer {username}",
+      actions: "Actions",
+      search: "Rechercher des comptes",
+      noResults: "Aucun compte correspondant",
+      created: "Créé le",
+      status: "Statut",
+      loginHint: "Connectez-vous en tant que {username} avec ce code comme mot de passe, puis choisissez un nouveau mot de passe.",
+      privateAccount: "Compte privé",
+      empty: "Aucun autre compte pour l'instant",
       setupCode: "Code de configuration",
       setupFor: "Code de configuration pour {username}",
       shownOnce: "Copiez ce code maintenant et transmettez-le au titulaire du compte. Il n'est affiché qu'ici et ne peut être utilisé qu'une seule fois dans les 60 minutes.",
@@ -261,13 +271,13 @@ export const fr = {
       copyFailed: "Impossible de copier. Sélectionnez et copiez le code de configuration ci-dessus.",
       dismiss: "Terminé",
       owner: "Propriétaire de l'installation",
-      active: "Actif",
-      inactive: "Inactif",
+      active: "Activé",
+      inactive: "Désactivé",
       regenerate: "Régénérer le code de configuration",
       resetTitle: "Réinitialiser le mot de passe de {username} ?",
       resetDescription: "Régénérer le code de configuration remplace le mot de passe de {username}, ferme ses sessions et révoque ses clés API. Donnez-lui le nouveau code pour qu'il choisisse à nouveau un mot de passe.",
       deactivate: "Désactiver",
-      reactivate: "Réactiver",
+      reactivate: "Activer",
       delete: "Supprimer le compte",
       deleteTitle: "Supprimer {username} ?",
       deleteDescription: "Cette action révoque les sessions de {username} et annule ses travaux en cours. Ses conversations, réglages, identifiants, envois, jeux de données, entraînements, sorties, exports, galeries, bacs à sable, projets et fichiers temporaires sont retirés. Les répertoires sont renommés à part, jamais supprimés. Recréer ce nom d'utilisateur démarre un nouveau compte sans aucune de ces données.",
@@ -304,9 +314,10 @@ export const fr = {
     },
     keyboardShortcuts: {
       title: "Raccourcis clavier",
-      description:
-        "Modifiez un raccourci, ou effacez-le pour libérer la combinaison pour le navigateur ou le système.",
       searchPlaceholder: "Rechercher des raccourcis…",
+      keystrokePlaceholder: "Appuyez sur un raccourci pour rechercher",
+      searchByKeystrokes: "Rechercher par frappe",
+      searchByName: "Rechercher par nom",
       noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
       recording: "Appuyez sur les touches…",
@@ -503,6 +514,14 @@ export const fr = {
           label: "Envoyer le message",
           description: "Envoyer le contenu de la zone de saisie",
         },
+        queueMessage: {
+          label: "Mettre le message en file",
+          description: "Envoyer le brouillon à la fin de la file",
+        },
+        steerMessage: {
+          label: "Réorienter la réponse",
+          description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
+        },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
           description: "Parcourir les niveaux d’effort de raisonnement",
@@ -569,7 +588,7 @@ export const fr = {
       openLogsFolderFailed: "Le dossier des journaux n'a pas pu être ouvert.",
       exportFailed: "Les journaux n'ont pas pu être téléchargés.",
       exportTooOld: "Le backend Unsloth en cours d'exécution est trop ancien pour exporter les journaux. Mettez-le à jour et redémarrez-le.",
-      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Studio connectée. Une clé d'API ne suffit pas.",
+      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Unsloth connectée. Une clé d'API ne suffit pas.",
       keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {
@@ -883,6 +902,9 @@ export const fr = {
         showLoadedModels: "Indicateur des modèles chargés",
         showLoadedModelsDescription:
           "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
+        showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
       },
       startup: {
         sectionTitle: "Démarrage",
@@ -1997,7 +2019,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
+          "L’application est connectée à un serveur Studio déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",

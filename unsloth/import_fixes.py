@@ -1636,6 +1636,17 @@ def _disable_xet_on_already_imported_huggingface_hub():
     return tuple(patched)
 
 
+def _hf_xet_module_is_real(module):
+    """False for the empty namespace package an incomplete hf_xet directory produces.
+
+    A namespace package imports cleanly and defines nothing, so it satisfies neither
+    `import hf_xet` nor huggingface_hub's `from hf_xet import PyXetDownloadInfo, download_files`.
+    Its __file__ is None, which every genuinely installed package (extension modules included)
+    sets, so that is the whole test.
+    """
+    return getattr(module, "__file__", None) is not None
+
+
 def fix_broken_hf_xet_wheel():
     """Route Hugging Face downloads over plain HTTPS when hf_xet is installed but unimportable."""
     explicit = os.environ.get("HF_HUB_DISABLE_XET", "").strip()
@@ -1646,8 +1657,14 @@ def fix_broken_hf_xet_wheel():
         if explicit.upper() in _HF_HUB_ENV_TRUE_VALUES:
             _disable_xet_on_already_imported_huggingface_hub()
         return
-    if "hf_xet" in sys.modules:
-        return  # already imported, so it works; also makes repeat calls free
+    cached = sys.modules.get("hf_xet", None)
+    if cached is not None:
+        # Already imported, so it works, and repeat calls stay free. Unless it is the namespace
+        # shell: huggingface_hub's own `from hf_xet import ...` leaves that cached even though the
+        # symbols it wanted were missing, so a cached module is not proof of a working one.
+        if _hf_xet_module_is_real(cached):
+            return
+        sys.modules.pop("hf_xet", None)
     try:
         if importlib.util.find_spec("huggingface_hub") is None:
             return
@@ -1673,9 +1690,17 @@ def fix_broken_hf_xet_wheel():
 
     # Confirm the suspicion by importing. If it imports after all, we misread the metadata and Xet
     # stays on. Only reached for an already-suspect install, so a healthy one never pays for it.
+    #
+    # Importing the package is not enough on its own: an hf_xet/ directory with no __init__.py and
+    # no extension in it is a NAMESPACE package, which imports fine and defines nothing, while
+    # huggingface_hub does `from hf_xet import PyXetDownloadInfo, download_files` and fails. So the
+    # module has to carry real code, which a namespace package never does (its __file__ is None).
     try:
-        importlib.import_module("hf_xet")
-        return
+        module = importlib.import_module("hf_xet")
+        if _hf_xet_module_is_real(module):
+            return
+        sys.modules.pop("hf_xet", None)
+        failure = "ImportError: hf_xet resolves to an empty namespace package, which defines none of the symbols huggingface_hub imports"
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
 

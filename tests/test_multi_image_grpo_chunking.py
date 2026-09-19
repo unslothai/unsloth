@@ -6,9 +6,22 @@ from __future__ import annotations
 import math
 import os
 import re
+import pytest
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
+
+
+def _zoo_vision_helpers(*names):
+    """The multi image helpers ship with unsloth_zoo. An unsloth_zoo installed from before
+    they landed has none of them, and the static gates in this file already prove this repo
+    asks for them and fails loudly without them, so behaviour that can only be driven
+    through the zoo is skipped rather than reported as this repo being broken."""
+    zoo = pytest.importorskip("unsloth_zoo.rl_replacements")
+    missing = [name for name in names if not hasattr(zoo, name)]
+    if missing:
+        pytest.skip(f"the installed unsloth_zoo has no {', '.join(missing)}")
+    return tuple(getattr(zoo, name) for name in names)
 
 
 def _read_source() -> str:
@@ -16,48 +29,71 @@ def _read_source() -> str:
         return fh.read()
 
 
-# Per-chunk slicing fixes (cum_rows, cum_imgs, axes)
-
-
-def test_cum_rows_materialized_on_cpu():
+def test_source_reads_the_shared_key_tuple():
     src = _read_source()
-    idx = src.find("cum_rows = torch.cat")
-    assert idx != -1, "cum_rows assignment must exist"
-    window = src[idx : idx + 400]
-    assert "rows_per_sample.cumsum(0)" in window
-    assert ").cpu()" in window, "cum_rows must be moved to CPU once via .cpu() after construction"
+    assert "grpo_get_vision_inputs" in src
+    assert "grpo_vision_chunks" in src
+    assert "pixel_values_chunks" not in src
+    assert "image_grid_thw_chunks" not in src
 
 
-def test_cum_imgs_slice_indices_use_item():
-    src = _read_source()
-    assert "cum_imgs[start].item()" in src
-    assert "cum_imgs[end].item()" in src
+def test_grid_model_slices_rows_by_patch_and_grid_by_image():
+    import torch
+
+    (grpo_vision_chunks,) = _zoo_vision_helpers("grpo_vision_chunks")
+
+    num_images = [2, 1, 3, 1]
+    grid = torch.tensor([[1, 2, 2]] * sum(num_images))  # 4 patch rows per image
+    rows = int(grid.prod(dim = -1).sum())
+    vision = {
+        "pixel_values": torch.arange(rows).reshape(rows, 1).float(),
+        "image_grid_thw": grid,
+        "num_images": num_images,
+    }
+    chunks = grpo_vision_chunks(vision, total_samples = 4, batch_size = 2)
+    assert len(chunks) == 2
+    # samples 0 and 1 hold images 0 to 2, so patch rows 0 to 11
+    assert chunks[0]["pixel_values"].shape[0] == 12
+    assert chunks[0]["image_grid_thw"].shape[0] == 3
+    assert chunks[1]["pixel_values"].shape[0] == 16
+    assert chunks[1]["image_grid_thw"].shape[0] == 4
+    assert torch.equal(chunks[1]["pixel_values"], vision["pixel_values"][12:])
 
 
-def test_image_sizes_image_axis_branch_present():
-    src = _read_source()
-    assert "image_sizes[img_start:img_end]" in src
-    assert "_image_sizes_n" in src and "total_images" in src
+def test_image_sizes_follows_the_image_axis_when_it_is_per_image():
+    import torch
+
+    (grpo_vision_chunks,) = _zoo_vision_helpers("grpo_vision_chunks")
+
+    vision = {
+        "pixel_values": torch.zeros(12, 1),
+        "image_grid_thw": torch.tensor([[1, 2, 2]] * 3),
+        "image_sizes": torch.tensor([[10, 10], [20, 20], [30, 30]]),
+        "num_images": [2, 1],
+    }
+    chunks = grpo_vision_chunks(vision, total_samples = 2, batch_size = 1)
+    assert chunks[0]["image_sizes"].tolist() == [[10, 10], [20, 20]]
+    assert chunks[1]["image_sizes"].tolist() == [[30, 30]]
 
 
-def test_pixel_attention_mask_three_way_check_present():
-    src = _read_source()
-    assert "pixel_attention_mask[img_start:img_end]" in src
-    assert "pixel_attention_mask[start_pixel_idx:end_pixel_idx]" in src
-    assert "pixel_attention_mask[start:end]" in src
-    assert "image_grid_thw.shape[0]" in src
+def test_pixel_attention_mask_axis_is_chosen_per_shape():
+    import torch
 
+    (grpo_vision_chunks,) = _zoo_vision_helpers("grpo_vision_chunks")
 
-def test_image_sizes_chunked_after_branch_decision():
-    src = _read_source()
-    pattern = re.compile(
-        r"attention_mask_chunks\.append\(attention_mask\[start:end\]\)\s*\n\s*"
-        r"image_sizes_chunks\.append\(slice_sample_axis\(image_sizes,\s*start,\s*end\)\)",
-    )
-    assert pattern.search(src) is None, (
-        "image_sizes_chunks must not be appended unconditionally on the "
-        "sample axis above the if/else; the axis is chosen per branch"
-    )
+    base = {
+        "pixel_values": torch.zeros(12, 1),
+        "image_grid_thw": torch.tensor([[1, 2, 2]] * 3),
+        "num_images": [2, 1],
+    }
+    # one mask row per image: image axis
+    per_image = grpo_vision_chunks({**base, "pixel_attention_mask": torch.zeros(3, 4)}, 2, 1)
+    assert per_image[0]["pixel_attention_mask"].shape[0] == 2
+    assert per_image[1]["pixel_attention_mask"].shape[0] == 1
+    # one mask row per patch row: patch axis
+    per_row = grpo_vision_chunks({**base, "pixel_attention_mask": torch.zeros(12, 4)}, 2, 1)
+    assert per_row[0]["pixel_attention_mask"].shape[0] == 8
+    assert per_row[1]["pixel_attention_mask"].shape[0] == 4
 
 
 # Behavioral simulation of chunk math

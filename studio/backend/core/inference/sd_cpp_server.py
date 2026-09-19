@@ -270,7 +270,7 @@ class SdCppServer:
                 # sd-server after the step-7 sweep has taken its snapshot.
                 if is_process_shutting_down():
                     self._spawn_error = RuntimeError(
-                        "Studio is shutting down; not starting sd-server"
+                        "Unsloth is shutting down; not starting sd-server"
                     )
                     spawned.set()
                     return
@@ -316,7 +316,7 @@ class SdCppServer:
                         )
                     self._process = None
                     self._spawn_error = RuntimeError(
-                        "Studio is shutting down; not starting sd-server"
+                        "Unsloth is shutting down; not starting sd-server"
                     )
                     spawned.set()
                     return

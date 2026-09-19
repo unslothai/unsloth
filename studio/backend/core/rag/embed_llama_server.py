@@ -868,7 +868,7 @@ class LlamaServerBackend:
         # encode still resolving or downloading its model as the app quits would
         # otherwise Popen a server after terminate_all had taken its snapshot.
         if is_process_shutting_down():
-            raise RuntimeError("Studio is shutting down; not starting the embed server")
+            raise RuntimeError("Unsloth is shutting down; not starting the embed server")
         proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -891,7 +891,7 @@ class LlamaServerBackend:
         if is_process_shutting_down():
             logger.info("shutdown began during the spawn; killing the new embed server")
             self._kill_process()
-            raise RuntimeError("Studio is shutting down; not starting the embed server")
+            raise RuntimeError("Unsloth is shutting down; not starting the embed server")
         self._port = port
         self._stdout_thread = account_thread(
             target = self._drain_stdout,

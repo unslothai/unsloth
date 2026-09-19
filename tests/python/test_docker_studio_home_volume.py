@@ -27,6 +27,14 @@ STUDIO_DF = DOCKER / "Dockerfile.studio"
 ENTRYPOINT = DOCKER / "entrypoint.sh"
 LEGACY = ".unsloth-studio-legacy"
 
+# The actionable half of the "nothing to restore" refusal, quoted from studio_home.sh. Kept as a
+# named constant because it is asserted twice: once against the script's source, so a copy edit
+# fails naming the file and the line to change, and once against the stderr an actual run
+# produces, so a script that no longer reaches that branch cannot pass on the source check alone.
+# #11254 changed this sentence ("the Studio code" -> "the Unsloth Studio code") and left the
+# expectation behind, which failed as an opaque runtime mismatch in Repo tests (CPU, python).
+RESTORE_NEEDS_APP_HINT = "run --restore under an image that has the Unsloth Studio code in"
+
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
 
 
@@ -200,8 +208,20 @@ def test_restore_without_a_legacy_dir_or_an_app_dir_says_which_image_to_use(tmp_
     shutil.rmtree(app)
     res = _link(app, home, "--restore")
     assert res.returncode == 1
-    assert "run --restore under an image that has the Studio code" in res.stderr
+    assert RESTORE_NEEDS_APP_HINT in res.stderr
     assert (home / "src").is_symlink()
+
+
+def test_the_restore_hint_this_file_expects_is_the_one_the_script_prints() -> None:
+    """Catch a copy edit at the source, not as a mismatch in someone else's run.
+
+    The test above compares against stderr, so when the wording moves it fails with two long
+    strings and no indication that the fix is one line of shell. This names the file.
+    """
+    assert RESTORE_NEEDS_APP_HINT in LINKER.read_text(encoding = "utf-8"), (
+        f"{LINKER.relative_to(REPO)} no longer prints {RESTORE_NEEDS_APP_HINT!r}. If the wording "
+        f"changed on purpose, update RESTORE_NEEDS_APP_HINT here to match."
+    )
 
 
 def test_keep_legacy_0_deletes_instead(tmp_path):

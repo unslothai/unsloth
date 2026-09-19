@@ -1139,7 +1139,7 @@ class TestInstallUvCacheRootParity:
                 "preserving custom UV_CACHE_DIR",
                 "reusing existing shared cache",
                 "avoid duplicate Torch/CUDA downloads",
-                "using new Studio-owned cache",
+                "using new Unsloth Studio-owned cache",
                 "already-cached packages may download again",
                 "so cached packages may download again",
             ):

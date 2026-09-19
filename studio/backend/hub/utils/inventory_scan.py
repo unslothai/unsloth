@@ -12,7 +12,7 @@ import re
 import stat
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Awaitable, Callable, Hashable, NamedTuple, Optional, TypeVar
 
@@ -239,8 +239,10 @@ def _read_refs_by_commit(refs_dir: Path) -> Optional[dict[str, set[str]]]:
     return refs_by_commit
 
 
-def _recover_repo_dropped_by_scan(repo_dir: Path) -> Optional[_RecoveredRepoInfo]:
-    """Recover readable revisions from a repo omitted by ``scan_cache_dir``. Dangling refs, broken snapshot links and stray snapshot files can hide an otherwise usable repo, so skip those bad entries and rebuild a read-only row from the intact files. None when nothing remains or the on-disk state does not explain the omission."""
+def _recover_repo_dropped_by_scan(
+    repo_dir: Path, *, scan_failed: bool = False
+) -> Optional[_RecoveredRepoInfo]:
+    """Recover readable revisions omitted by ``scan_cache_dir``, skipping bad entries. When the entire scan failed, include intact repos because upstream returned no inventory."""
     identity = _hf_repo_identity(repo_dir.name)
     if identity is None:
         return None
@@ -314,7 +316,7 @@ def _recover_repo_dropped_by_scan(repo_dir: Path) -> Optional[_RecoveredRepoInfo
     if not revisions:
         return None
     # Nothing here explains why upstream omitted the repo.
-    if not dangling and not skipped:
+    if not scan_failed and not dangling and not skipped:
         return None
     try:
         repo_stats = repo_dir.stat()
@@ -336,7 +338,12 @@ def _recover_repo_dropped_by_scan(repo_dir: Path) -> Optional[_RecoveredRepoInfo
     )
 
 
-def _with_repos_dropped_by_scan(scan, cache_root: Path):
+def _with_repos_dropped_by_scan(
+    scan,
+    cache_root: Path,
+    *,
+    scan_failed: bool = False,
+):
     """Add back the repos ``scan_cache_dir`` dropped over one bad entry."""
     try:
         repo_dirs = sorted(entry for entry in cache_root.iterdir() if "--" in entry.name)
@@ -354,7 +361,7 @@ def _with_repos_dropped_by_scan(scan, cache_root: Path):
         try:
             if str(repo_dir.resolve(strict = False)) in scanned:
                 continue
-            entry = _recover_repo_dropped_by_scan(repo_dir)
+            entry = _recover_repo_dropped_by_scan(repo_dir, scan_failed = scan_failed)
         except (OSError, RuntimeError, ValueError):
             continue
         if entry is None:
@@ -362,7 +369,11 @@ def _with_repos_dropped_by_scan(scan, cache_root: Path):
         logger.info(
             "Recovered HF cache repo %s hidden by %s (%d revision(s) on disk)",
             entry.repo_id,
-            "a dangling ref" if _repo_has_a_dangling_ref(repo_dir) else "an unreadable entry",
+            "a failed cache scan"
+            if scan_failed
+            else (
+                "a dangling ref" if _repo_has_a_dangling_ref(repo_dir) else "an unreadable entry"
+            ),
             len(entry.revisions),
         )
         recovered.append(entry)
@@ -382,7 +393,7 @@ def _with_repos_dropped_by_scan(scan, cache_root: Path):
 
 
 def _compute_all_hf_cache_scans() -> list:
-    from huggingface_hub import scan_cache_dir
+    from huggingface_hub import HFCacheInfo, scan_cache_dir
 
     scans: list = []
     for cache_root in hf_cache_roots():
@@ -392,6 +403,22 @@ def _compute_all_hf_cache_scans() -> list:
             if getattr(scan, "warnings", None):
                 scan = _with_repos_dropped_by_scan(scan, cache_root)
             scans.append(scan)
+        except OSError as exc:
+            # HF catches CorruptedCacheException per repo, but filesystem errors can abort
+            # the entire root (e.g. Windows cannot stat a Linux-created reparse point).
+            # Reuse our read-only recovery walk, including intact repos that HF never reached.
+            logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
+            empty_fields = dict(size_on_disk = 0, repos = frozenset(), warnings = [])
+            # huggingface_hub 1.x added this required field; older versions lack it.
+            if any(field.name == "incomplete_files" for field in fields(HFCacheInfo)):
+                empty_fields["incomplete_files"] = frozenset()
+            recovered = _with_repos_dropped_by_scan(
+                HFCacheInfo(**empty_fields),
+                cache_root,
+                scan_failed = True,
+            )
+            if recovered.repos:
+                scans.append(recovered)
         except Exception as exc:
             logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
     return scans

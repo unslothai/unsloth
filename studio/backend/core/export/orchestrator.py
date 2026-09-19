@@ -235,7 +235,7 @@ class ExportOrchestrator:
         # sweep has taken its snapshot, and the worker adopted below would then outlive
         # Studio holding the model in memory.
         if is_process_shutting_down():
-            raise RuntimeError("Studio is shutting down; not starting an export subprocess")
+            raise RuntimeError("Unsloth is shutting down; not starting an export subprocess")
 
         with (
             child_environment_for_spawn(cache_env),
@@ -295,7 +295,7 @@ class ExportOrchestrator:
                         "export worker (pid %s) survived the reap; leaving it adopted",
                         _spawned_proc.pid,
                     )
-            raise RuntimeError("Studio is shutting down; not starting an export subprocess")
+            raise RuntimeError("Unsloth is shutting down; not starting an export subprocess")
         logger.info("Export subprocess started (pid=%s)", _spawned_proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:

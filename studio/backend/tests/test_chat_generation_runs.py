@@ -456,7 +456,7 @@ def test_an_uncancelled_run_still_reconciles_as_interrupted(chat_home):
 
     run = runs_db.get_run("run-1", "alice")
     assert (run["status"], run["finishReason"]) == ("failed", "interrupted")
-    assert run["error"] == "Studio restarted during generation"
+    assert run["error"] == "Unsloth restarted during generation"
     assert runs_db.list_events("run-1")[-1]["payload"]["interrupted"] is True
 
 

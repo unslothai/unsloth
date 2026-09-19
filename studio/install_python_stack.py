@@ -10869,9 +10869,9 @@ def install_python_stack() -> int:
     # )
 
     # 8. Unsloth dependencies
-    if not _skip_step(REQ_ROOT / "studio.txt", "studio deps", no_deps = False):
+    if not _skip_step(REQ_ROOT / "studio.txt", "Unsloth Studio deps", no_deps = False):
         pip_install(
-            "Installing studio dependencies",
+            "Installing Unsloth Studio dependencies",
             "--no-cache-dir",
             req = REQ_ROOT / "studio.txt",
         )

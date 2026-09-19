@@ -1183,15 +1183,100 @@ async def get_gguf_variants_answer(
                 default_variant = default_variant,
             )
 
-        def _with_state_partials(response: GgufVariantsResponse) -> GgufVariantsResponse:
-            """Add quants known only from download state. A sibling cancelled
-            before any file landed has no snapshot entry, so a listing built
-            from the cache alone reads as if it were never asked for, and the
-            row loses its resume."""
+        def _with_state_partials(
+            response: GgufVariantsResponse, snapshot_dir: Optional[Path]
+        ) -> GgufVariantsResponse:
+            """Reconcile cache rows with download state and add state-only quants.
+
+            Main GGUF completeness is only an intermediate readiness signal: a
+            same-quant manifest can still require a missing companion, and an
+            applicable cancellation marker remains authoritative until the
+            download lifecycle clears it.  Preserve the real cache row while
+            overlaying that positive state; state-only quants keep the existing
+            synthetic-row fallback.
+            """
             state = _quants_from_state(repo_id, hub_cache)
             if state is None:
                 return response
-            listed = {v.quant.lower() for v in response.variants if v.quant}
+
+            state_by_quant = {v.quant.lower(): v for v in state[0] if v.quant}
+            listed: set[str] = set()
+            variants: list[GgufVariantDetail] = []
+            changed = False
+            repo_signal_applies = hf_cache_scan.repo_signal_applies_to_snapshot(
+                repo_cache_dir,
+                snapshot_dir,
+            )
+            complete_here = (
+                {quant.lower() for quant in (_complete_quants_under(str(snapshot_dir)) or ())}
+                if snapshot_dir is not None
+                else set()
+            )
+
+            for detail in response.variants:
+                key = detail.quant.lower() if detail.quant else ""
+                if key:
+                    listed.add(key)
+                state_variant = state_by_quant.get(key)
+                if state_variant is None:
+                    variants.append(detail)
+                    continue
+                try:
+                    is_partial = hf_cache_scan.is_variant_partial(
+                        repo_id,
+                        detail.quant,
+                        snapshot_dir,
+                        repo_cache_dir = repo_cache_dir,
+                        # a ready row absent here comes from a complete sibling snapshot.
+                        repo_signal_applies = (
+                            repo_signal_applies if key in complete_here else not detail.downloaded
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "State-based partial check failed for %s/%s: %s",
+                        repo_id,
+                        detail.quant,
+                        e,
+                    )
+                    variants.append(detail)
+                    continue
+                if not is_partial:
+                    variants.append(detail)
+                    continue
+
+                state_download_size = int(
+                    state_variant.download_size_bytes or state_variant.size_bytes or 0
+                )
+                detail = detail.model_copy(
+                    update = {
+                        "download_size_bytes": (
+                            state_download_size
+                            if state_download_size > 0
+                            else detail.download_size_bytes
+                        ),
+                        "download_remaining_bytes": variant_remaining_bytes_from_state(
+                            repo_id,
+                            detail.quant,
+                            repo_cache_dir,
+                        ),
+                        "downloaded": False,
+                        "partial": True,
+                        "partial_transport": _partial_transport_for_variant(
+                            repo_id,
+                            detail.quant,
+                            repo_cache_dir,
+                        ),
+                        "partial_resumable": _partial_resumable_for_variant(
+                            repo_id,
+                            detail.quant,
+                            repo_cache_dir,
+                        ),
+                    }
+                )
+                changed = True
+                variants.append(detail)
+
             extra = [
                 GgufVariantDetail(
                     filename = v.filename,
@@ -1218,9 +1303,18 @@ async def get_gguf_variants_answer(
                 for v in state[0]
                 if v.quant and v.quant.lower() not in listed
             ]
-            if not extra:
+            if not (changed or extra):
                 return response
-            return response.model_copy(update = {"variants": [*response.variants, *extra]})
+            variants.extend(extra)
+            ready = [v for v in variants if v.downloaded and not v.partial]
+            best = pick_best_gguf(_default_variant_candidates(ready or variants))
+            default_variant = gguf_variant_key(best) if best else None
+            return response.model_copy(
+                update = {
+                    "variants": variants,
+                    "default_variant": default_variant,
+                }
+            )
 
         # Load-path parity: from_identifier resolves existence-first, so a marker-less relative name that
         # exists here is a local model, not a Hub id, and a direct .gguf file loads without the metadata
@@ -1319,7 +1413,8 @@ async def get_gguf_variants_answer(
             return _with_state_partials(
                 _local_response(
                     repo_id, variants, has_vision, _complete_quants_under(str(snapshot_scope))
-                )
+                ),
+                snapshot_scope,
             )
 
         local_only = prefer_local_cache or offline
@@ -1341,7 +1436,8 @@ async def get_gguf_variants_answer(
                 answered_from[0] = str(snapshot)
                 # The lister leaves torn quants in: they stay listed for management, but not ready.
                 return _with_state_partials(
-                    _local_response(repo_id, variants, has_vision, complete)
+                    _local_response(repo_id, variants, has_vision, complete),
+                    snapshot,
                 )
             if local_path and is_local_path(local_path):
                 variants, has_vision = list_local_gguf_variants(local_path)
@@ -1390,7 +1486,8 @@ async def get_gguf_variants_answer(
                 # Same reason as the local_only branch above: an unreachable Hub is exactly when a resume has
                 # nowhere else to surface, so state partials are included.
                 return _with_state_partials(
-                    _local_response(repo_id, variants, has_vision, complete)
+                    _local_response(repo_id, variants, has_vision, complete),
+                    snapshot,
                 )
             partial = _quants_from_state(repo_id, hub_cache)
             if partial is not None:
@@ -1727,6 +1824,29 @@ async def get_gguf_variants_answer(
                             repo_cache_dir,
                         ),
                     )
+
+        # A complete main with an unstarted companion has no partial signal. Keep it visible
+        # unless the existing readiness check says it can load.
+        for variant in partial_scan_variants:
+            if variant.quant in partial_quants:
+                continue
+            requirement = requirements_by_quant.get(variant.quant.lower())
+            if requirement is None or _is_fully_downloaded(variant):
+                continue
+            if not (
+                _filenames_cached(requirement.main_filenames, requirement.main_size_bytes)
+                or _quant_and_companions_ready(variant.quant.lower(), variant.size_bytes, ())
+            ):
+                continue
+            partial_quants.add(variant.quant)
+            partial_quant_transports.setdefault(
+                variant.quant,
+                _partial_transport_for_variant(
+                    repo_id,
+                    variant.quant,
+                    repo_cache_dir,
+                ),
+            )
 
         local_blobs_by_quant = (
             _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)

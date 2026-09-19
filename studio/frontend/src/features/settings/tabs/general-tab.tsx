@@ -30,7 +30,9 @@ import {
 } from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
+  setShowWhisperUpdateBanner,
   useShowLlamaUpdateBanner,
+  useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
@@ -150,6 +152,7 @@ const PREFS_KEYS: string[] = [
   "tour:studio:v1",
   // Update notifications
   "unsloth_show_llama_update_banner",
+  "unsloth_show_whisper_update_banner",
   "unsloth_monitor_overlay",
   LOADED_MODELS_PREFERENCE_KEYS.show,
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
@@ -187,6 +190,7 @@ export function GeneralTab() {
     (s) => s.persistenceError,
   );
   const showLlamaUpdates = useShowLlamaUpdateBanner();
+  const showWhisperUpdates = useShowWhisperUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -609,6 +613,17 @@ export function GeneralTab() {
           <Switch
             checked={showLlamaUpdates}
             onCheckedChange={setShowLlamaUpdateBanner}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.showWhisperUpdates")}
+          description={t(
+            "settings.general.notifications.showWhisperUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showWhisperUpdates}
+            onCheckedChange={setShowWhisperUpdateBanner}
           />
         </SettingsRow>
       </SettingsSection>

@@ -77,7 +77,7 @@ def _print_nvml_agreement() -> None:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "studio" / "backend"))
         from core.inference.llama_cpp import LlamaCppBackend as backend
     except Exception as e:  # noqa: BLE001 -- diagnostic, never fatal
-        print(f"could not import the Studio backend to cross-check NVML: {e}\n")
+        print(f"could not import the Unsloth backend to cross-check NVML: {e}\n")
         return
     try:
         nvml = backend._probe_nvml_nvlink_topology()
@@ -87,7 +87,7 @@ def _print_nvml_agreement() -> None:
         return
     print("=== NVML vs nvidia-smi topo -m ===")
     if nvml is None:
-        print("NVML gave no verdict here; Studio would use `nvidia-smi topo -m`.\n")
+        print("NVML gave no verdict here; Unsloth would use `nvidia-smi topo -m`.\n")
         return
     if topo is None:
         print("`nvidia-smi topo -m` gave no verdict; nothing to compare against.\n")
@@ -109,7 +109,7 @@ def _print_nvml_agreement() -> None:
         print(
             f"{sorted(topo_yes - nvml_yes)} are NVLink to topo -m but not to NVML.\n"
             "This is the conservative direction: by default NVML answers first, so "
-            "Studio\nwould not enable P2P for them. Setting "
+            "Unsloth\nwould not enable P2P for them. Setting "
             "UNSLOTH_P2P_TOPO_CROSSCHECK=1 makes topo -m\nwin any disagreement, which "
             "would enable them instead."
         )

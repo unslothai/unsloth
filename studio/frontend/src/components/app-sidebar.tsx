@@ -110,7 +110,7 @@ import {
   LayoutAlignLeftIcon,
   Settings02Icon,
   Sun03Icon,
-  UserIcon,
+  UserCircleIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -261,7 +261,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   "profile" | "appearance" | "resources" | "chat" | "connections",
   { icon: typeof ZapIcon; labelKey: TranslationKey }
 > = {
-  profile: { icon: UserIcon, labelKey: "settings.tabs.profile" },
+  profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: Message01Icon, labelKey: "settings.tabs.chat" },

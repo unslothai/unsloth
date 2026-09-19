@@ -437,7 +437,7 @@ def _login_failure_detail() -> str:
     if policy.installation_is_multi_user():
         return (
             "Incorrect username, password or setup code. Ask the installation owner to reset "
-            f"the account, by running this on the Studio host: {_reset_password_command()} "
+            f"the account, by running this on the Unsloth Studio host: {_reset_password_command()} "
             "--username <name>"
         )
     return (

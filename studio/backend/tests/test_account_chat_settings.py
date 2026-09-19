@@ -87,7 +87,7 @@ def client(monkeypatch):
         return 0, []
 
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
-    monkeypatch.setattr(chat_history, "_remove_conversation_archives", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda *args, **kwargs: None)
     with TestClient(app) as test_client:
         yield test_client
 

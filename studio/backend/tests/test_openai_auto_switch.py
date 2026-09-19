@@ -47,6 +47,68 @@ import routes.models as model_routes
 import state.tool_policy as _tp
 
 
+@pytest.fixture(autouse = True)
+def _auto_switch_waiters_are_not_carried_between_tests(request, monkeypatch):
+    """Restore ``_auto_switch_waiters`` around every test, and fail the test that dirties it.
+
+    It is a module-level dict in routes.inference, so a test that registers a waiting request
+    and does not unregister it leaves that entry behind for every later test in the same xdist
+    worker. It matters beyond tidiness because ``_switch_waiter_count()`` sums every key rather
+    than reading one, so a single stranded entry inflates the count for the whole worker and
+    ``_wait_for_model_switch_idle`` sees waiters that do not exist.
+
+    Two jobs, deliberately. Restoring keeps the next test starting from a known state. Raising
+    names the test that left the residue instead of the unrelated one that trips over it later,
+    which is the whole difficulty with this class of bug: the failure surfaces nowhere near its
+    cause.
+
+    The two halves have different proofs, and one of them has none. Removing the marker from a
+    staging test makes that test fail, so the detection half is covered. Removing the restore
+    changes nothing any test here can observe: the growth check is per-test, so a carried-over
+    entry only harms files that run LATER in the same worker, and which files share a worker is
+    decided by xdist at run time. A cleanliness assertion in a second file would pass vacuously
+    whenever the two land in different processes, which is worse than no test at all, so the
+    restore is kept as a defensive measure and is deliberately left unproven.
+
+    ``monkeypatch`` is requested, and not because this fixture patches anything. It is what
+    fixes the teardown ORDER. ``_wire()`` rebinds the registry with
+    ``monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})``, so the entry a test
+    stages goes into a temporary dict, and whichever of the two fixtures tears down second sees
+    the original one restored and nothing amiss. Depending on ``monkeypatch`` here makes this
+    fixture set up after it and therefore tear down before it, so the read below lands on the
+    dict the test actually wrote to. That ordering held incidentally without the dependency,
+    which is exactly the reason to state it: a guard that works by accident stops working
+    silently.
+
+    Three tests stage a waiting request on purpose, with ``_note_switch_waiter(key, 1)`` and no
+    matching -1, because that is the honest way to set the condition up. They carry
+    ``@pytest.mark.stages_switch_waiter`` to say so, which is checked here rather than inferred
+    from a name, so a new leak cannot arrive silently by resembling them.
+    """
+    before = dict(inference_route._auto_switch_waiters)
+    try:
+        yield
+    finally:
+        after = dict(inference_route._auto_switch_waiters)
+        inference_route._auto_switch_waiters.clear()
+        inference_route._auto_switch_waiters.update(before)
+    # Only counts that GREW. A test that clears the dict, or decrements a key it did not add,
+    # is tidying up after somebody else and must not be blamed for it: several tests here reset
+    # the registry as part of their own setup, and flagging any difference at all turned every
+    # one of them into a failure the moment another file in the same worker left an entry
+    # behind. Growth is the only direction that inflates _switch_waiter_count() for the tests
+    # that follow.
+    leaked = {key: count for key, count in after.items() if count > before.get(key, 0)}
+    if leaked and request.node.get_closest_marker("stages_switch_waiter") is None:
+        raise AssertionError(
+            "this test left routes.inference._auto_switch_waiters dirty: "
+            f"{leaked!r} (registry went {before!r} -> {after!r}). _switch_waiter_count() sums "
+            "every key, so the entry inflates the waiter count for every later test in this "
+            "xdist worker. Unregister it, or mark the test @pytest.mark.stages_switch_waiter "
+            "if the residue is the point."
+        )
+
+
 async def _boom(*a, **k):
     raise _Reached()
 
@@ -2645,17 +2707,21 @@ def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch
     )
     entered = threading.Event()
     release = threading.Event()
+    scan_thread: dict[str, int] = {}
 
     def _slow_companion_scan(_load_path, *, repo_level = False):
         assert repo_level is True
+        scan_thread["ident"] = threading.get_ident()
         entered.set()
-        release.wait(1.0)
+        release.wait(5.0)
         return ()
 
     monkeypatch.setattr(resolver, "local_gguf_companion_roots", _slow_companion_scan)
 
     async def _drive():
-        started = time.monotonic()
+        # The thread the loop runs on, captured from inside the coroutine so it is the loop's
+        # own thread and not whatever asyncio.run was called from.
+        loop_thread = threading.get_ident()
         task = asyncio.create_task(
             inference_route._maybe_auto_switch_model(
                 "org/Vision-GGUF",
@@ -2663,14 +2729,32 @@ def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch
                 "tester",
             )
         )
-        assert await asyncio.to_thread(entered.wait, 2.0)
-        loop_was_responsive = time.monotonic() - started < 0.5
+        assert await asyncio.to_thread(entered.wait, 10.0), "the companion scan never started"
         release.set()
         await task
-        assert loop_was_responsive
+        return loop_thread
 
-    asyncio.run(_drive())
+    loop_thread = asyncio.run(_drive())
     assert len(recorder.calls) == 1
+
+    # The question is whether the scan ran OFF the event loop, and that is a fact about which
+    # thread executed it, not about how long anything took.
+    #
+    # This row used to assert `time.monotonic() - started < 0.5` as a proxy for the loop staying
+    # responsive. That is only a proxy: the elapsed time it measures includes dispatching
+    # `asyncio.to_thread(entered.wait, ...)` through the default executor, so a runner that is
+    # merely busy blows the 0.5s budget while the loop is behaving perfectly. It failed that way
+    # on main in Backend CI (Python 3.13, l-r), `assert loop_was_responsive`, on a shard that
+    # took 565s against a 371s baseline.
+    #
+    # routes.inference awaits this through `asyncio.to_thread(local_gguf_companion_roots, ...)`,
+    # so running on another thread IS the mechanism the wall clock was standing in for, and
+    # asserting it directly cannot be defeated by a slow machine.
+    assert scan_thread.get("ident") is not None, "the companion scan never ran"
+    assert scan_thread["ident"] != loop_thread, (
+        "the companion scan ran on the event loop thread, so it blocks every other request "
+        "for as long as it takes to walk the cache"
+    )
 
 
 def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
@@ -2960,6 +3044,7 @@ def test_streaming_responses_uses_advertised_id_helper():
     assert 'public_model_id(getattr(llama_backend, "model_identifier"' not in src
 
 
+@pytest.mark.stages_switch_waiter
 def test_concurrent_same_target_requests_load_once(monkeypatch):
     # Two concurrent requests for the same unloaded model must load once, not each
     # 409 the other. Simulate the second request already waiting (registered) while
@@ -2973,6 +3058,7 @@ def test_concurrent_same_target_requests_load_once(monkeypatch):
     assert len(rec.calls) == 1
 
 
+@pytest.mark.stages_switch_waiter
 def test_queued_different_target_does_not_deadlock_current_swap(monkeypatch):
     # A concurrent request already queued for another target is not generating,
     # so it must not prevent the current serialized swap from proceeding.
@@ -3110,6 +3196,7 @@ def test_pending_same_target_request_does_not_block_swap(monkeypatch):
     assert len(rec.calls) == 1
 
 
+@pytest.mark.stages_switch_waiter
 def test_swap_waits_until_concurrent_request_finishes_resolving(monkeypatch):
     # The real middleware counts a concurrent same-model request as in-flight
     # before it resolves and registers a target waiter. Treat it as active until
@@ -6068,6 +6155,12 @@ def _wire_unloaded_chat(
 
     monkeypatch.setattr(inference_route, "_cached_local_catalog", _local_catalog)
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
+    # Auto-download decides whether a model this server does not have is FETCHED instead of
+    # refused, so every 404 below depends on it being off. It is not off by construction:
+    # get_stored_openai_auto_download_enabled reads a process-wide cache with a 2 second TTL,
+    # so a neighbouring test that read the setting hands this one its value and the refusal
+    # becomes a download. Pin it like every other input here.
+    monkeypatch.setattr(settings, "get_openai_auto_download_enabled", lambda: False)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: None)
     monkeypatch.setattr(
         resolver, "describe_local_miss", lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ())
@@ -11187,6 +11280,139 @@ def test_chat_absent_model_with_only_resolver_withheld_checkpoints(monkeypatch):
     assert status == 404
     assert "none of the downloaded models is a chat model" in detail
     assert "no models are downloaded yet" not in detail
+
+
+def test_the_settings_memo_is_cleared_around_every_test():
+    # Drives the autouse fixture directly rather than relying on two tests running in order:
+    # under xdist --dist loadgroup a neighbouring pair can land on different workers, so an
+    # ordering-based check would pass by luck. Both ends matter: clearing only on entry leaves
+    # the last test of a worker seeding the first of the next module.
+    import time
+
+    # pytest has already imported this directory's conftest; find it by the attribute rather
+    # than by module name, which differs between rootdirs (`tests.conftest` is the repo-root one).
+    import sys
+
+    fixture = next(
+        getattr(module, "_drop_the_settings_memo_between_tests")
+        for module in list(sys.modules.values())
+        if module is not None and hasattr(module, "_drop_the_settings_memo_between_tests")
+    )
+
+    key = (settings.OWNER.account_id, settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY)
+    run = fixture.__wrapped__()
+    settings._cache[key] = (time.monotonic(), True)
+    next(run)
+    assert settings._cache == {}, "the memo was not cleared before the test body"
+
+    settings._cache[key] = (time.monotonic(), True)
+    next(run, None)
+    assert settings._cache == {}, "the memo was not cleared after the test body"
+
+
+def test_withheld_refusal_survives_a_leaked_auto_download_flag(monkeypatch):
+    # The refusals above are only refusals while auto-download is off, and it is not off by
+    # construction: get_stored_openai_auto_download_enabled reads a 2-second process-wide memo,
+    # so a neighbouring test's read decides this one. Seed that memo the way a neighbour would
+    # and the answer must not move. Unpinned this returns a download error instead of the 404
+    # (locally a 503 with the Hub blocked, on CI a 500 when the load reaches the backend double),
+    # which is exactly how #11241 showed up in the l-r shard and nowhere else.
+    import time
+
+    _wire_withheld_chat(monkeypatch, objects = [], downloaded = ("org/has-auto-map",))
+    settings._cache[(settings.OWNER.account_id, settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY)] = (
+        time.monotonic(),
+        True,
+    )
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404, f"a leaked auto-download flag turned the refusal into a {status}"
+    assert "none of the downloaded models is a chat model" in detail
+
+
+def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
+    # Why the fixture beside this matters, pinned as behaviour rather than left as a story.
+    # The route reads llama_keepwarm's idle stash before it refuses anything and reloads
+    # exactly what the idle loop freed, which is deliberate: after an idle unload an alias or
+    # unknown name has to stay servable. It is only a problem when the stash belongs to a
+    # DIFFERENT TEST, because the request then loads a model this one never named -- on CI,
+    # against this file's own backend double, that surfaced as
+    # `'_B' object has no attribute 'load_model'` and `assert 500 == 404`.
+    #
+    # Asserted on which model the route went to load, not on the status: the status here is
+    # whatever the double happens to be missing, and the claim is about the diversion.
+    asked: list = []
+
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [
+            {"id": "org/A-GGUF"},
+            {"id": "tiny", "task": "automatic-speech-recognition"},
+        ],
+        downloaded = ("org/A-GGUF", "unsloth/whisper-tiny"),
+    )
+
+    def _load_model(config = None, **_kw):
+        asked.append(getattr(config, "model_name", None) or config)
+        raise _Reached()
+
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type(
+            "_B",
+            (),
+            {"active_model_name": None, "models": {}, "load_model": staticmethod(_load_model)},
+        )(),
+    )
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            inference_route.openai_chat_completions(_chat_request(model = "tiny"), object(), "tester")
+        )
+
+    assert any("Idle-GGUF" in str(one) for one in asked), (
+        "the stale stash did not divert the request, so this test no longer covers the leak "
+        f"the fixture exists to stop (asked: {asked})"
+    )
+
+
+def test_the_idle_reload_stash_is_cleared_around_every_test(tmp_path):
+    # Driven directly, for the reason written on the settings-memo twin above: under xdist
+    # --dist loadgroup an ordering-based check passes by luck. Both ends matter, since the
+    # leak is the LAST idle test in a worker seeding the first test of the next module.
+    #
+    # With a manifest naming REAL files, not an empty one: llama_keepwarm makes whoever takes
+    # the manifest responsible for unlinking its slots, so a fixture that assigns None drops
+    # the only reference to a saved snapshot and leaves the bytes on disk. An empty manifest
+    # cannot tell that apart from a clean-up that worked.
+    import sys
+
+    fixture = next(
+        getattr(module, "_drop_the_idle_reload_stash_between_tests")
+        for module in list(sys.modules.values())
+        if module is not None and hasattr(module, "_drop_the_idle_reload_stash_between_tests")
+    )
+
+    def _saved(name):
+        slot = tmp_path / name
+        slot.write_bytes(b"kv")
+        return {"dir": str(tmp_path), "slots": [{"id": 0, "filename": name, "n_saved": 42}]}, slot
+
+    run = fixture.__wrapped__()
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    kw._kv_resume, before = _saved("before.bin")
+    next(run)
+    assert kw._last_unloaded_model is None, "the stash was not cleared before the test body"
+    assert kw._kv_resume is None, "the KV manifest was not cleared before the test body"
+    assert not before.exists(), "the KV slot file outlived the manifest that named it"
+
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    kw._kv_resume, after = _saved("after.bin")
+    next(run, None)
+    assert kw._last_unloaded_model is None, "the stash was not cleared after the test body"
+    assert kw._kv_resume is None, "the KV manifest was not cleared after the test body"
+    assert not after.exists(), "the KV slot file outlived the manifest that named it"
 
 
 def test_chat_withheld_model_does_not_send_the_caller_to_load_it(monkeypatch):

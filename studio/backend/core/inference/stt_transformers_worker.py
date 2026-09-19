@@ -337,7 +337,9 @@ class WhisperWorker:
         # cancel_pending_loads only reaches the chat /load attempts, so without this a
         # quit during an STT load starts a worker the step-7 sweep has already passed.
         if is_process_shutting_down():
-            raise SttWorkerSpawnError("Studio is shutting down; not starting the dictation worker.")
+            raise SttWorkerSpawnError(
+                "Unsloth is shutting down; not starting the dictation worker."
+            )
         cache_env = get_hf_cache_paths().child_env({})
         try:
             with (
@@ -390,7 +392,9 @@ class WhisperWorker:
                 pass
             self._process = None
             self._close_queues()
-            raise SttWorkerSpawnError("Studio is shutting down; not starting the dictation worker.")
+            raise SttWorkerSpawnError(
+                "Unsloth is shutting down; not starting the dictation worker."
+            )
         logger.info(
             "STT worker started (pid=%s) for %s on %s", _spawned_proc.pid, snapshot_path, device
         )

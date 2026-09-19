@@ -280,6 +280,7 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "cairo",
     "mojo",
     "gd",
+    "sqf",
     // Shells
     "sh",
     "bash",

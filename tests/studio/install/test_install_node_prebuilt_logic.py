@@ -928,6 +928,8 @@ def test_a_denial_without_a_filename_still_exits_denied(capsys, tmp_path):
     )
     # Nothing to classify, so the caller keeps its default and is told no lie.
     assert M.DENIED_SCOPE_MARKER not in "".join(capsys.readouterr())
+
+
 # The recorded runtime check: the 110 MB interpreter start it saves per run.
 def _real_node_tree(root: Path, host) -> None:
     """The two files existing_install_matches spawns, as real bytes on disk.

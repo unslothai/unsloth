@@ -67,7 +67,12 @@ def test_start_gives_the_model_preflight_only_the_callers_token(
     backend = _Backend()
     probed = []
 
-    def _probe(model_name, hf_token):
+    def _probe(
+        model_name,
+        hf_token,
+        load_in_4bit = True,
+        is_embedding = False,
+    ):
         probed.append(hf_token)
         return None
 
@@ -166,7 +171,7 @@ def test_snapshot_cached_during_the_metadata_probe_is_authorized(
     monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
     monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: False)
 
-    def denied(*args):
+    def denied(*args, **kwargs):
         raise tr._hf_preflight_error(422, "hf_model_access_denied", "Denied")
 
     monkeypatch.setattr(tr, "_remote_untrainable_model_format", denied)
@@ -433,7 +438,7 @@ def test_private_cached_model_requires_caller_authorization(
     monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
     monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: False)
 
-    def denied(*args):
+    def denied(*args, **kwargs):
         raise tr._hf_preflight_error(422, "hf_model_access_denied", "Denied")
 
     monkeypatch.setattr(

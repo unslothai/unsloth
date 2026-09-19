@@ -122,6 +122,7 @@ HARNESS = """
 // Fixtures the sliced builder reads through. Everything below the PRELUDE marker is
 // copied verbatim out of studio/frontend/src/features/chat/api/chat-adapter.ts.
 const state: any = {
+  models: [],
   params: { systemPrompt: "", systemVariables: "" },
   artifactsEnabled: false,
   supportsTools: false,

@@ -6,6 +6,10 @@ import {
   type NativeIntent,
 } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
+import {
+  isBackendDownForDesktopUpdate,
+  isSilencedDesktopUpdateFailure,
+} from "@/lib/desktop-update-activity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PROJECT_SOURCES_CHANGED_EVENT,
@@ -280,6 +284,7 @@ export function useRagDocuments(
   const refresh = useCallback(
     async (opts?: { quiet?: boolean; silentErrors?: boolean }) => {
       if (!scopeKey) return true;
+      const downWhenIssued = isBackendDownForDesktopUpdate();
       const requestId = ++refreshSeq.current;
       refreshInFlight.current = true;
       if (!opts?.quiet) setLoading(true);
@@ -310,6 +315,8 @@ export function useRagDocuments(
         // A superseded failure describes a scope no longer shown, and a host
         // without RAG 503s every one of these: no toast per composer opened.
         if (refreshSeq.current !== requestId) return true;
+        // The indexing poll keeps running under the update screen.
+        if (isSilencedDesktopUpdateFailure(err, downWhenIssued)) return false;
         if (
           !opts?.silentErrors &&
           !useRagAvailabilityStore.getState().isUnavailable()

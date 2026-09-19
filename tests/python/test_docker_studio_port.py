@@ -126,7 +126,7 @@ def test_the_ready_summary_and_its_health_probe_use_the_port(tmp_path: Path):
     )
     res = subprocess.run(["bash", str(PASSWORD)], capture_output = True, text = True, env = e, timeout = 60)
     assert res.returncode == 0, res.stderr
-    assert "Studio      http://localhost:9000" in res.stdout, res.stdout
+    assert "Unsloth     http://localhost:9000" in res.stdout, res.stdout
     assert "http://127.0.0.1:9000/api/health" in log.read_text(encoding = "utf-8")
 
 

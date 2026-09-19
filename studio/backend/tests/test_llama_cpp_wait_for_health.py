@@ -1713,8 +1713,25 @@ class TestHealthWaitMeasuresStalls:
         with open(model, "wb") as f:
             for _ in range(512):
                 f.write(os.urandom(64 << 10))
+        # A longer stall window than its siblings use, and the asymmetry is the reason.
+        #
+        # _made_startup_progress measures CPU as MIN_CPU_FRACTION * elapsed, so a CPU-driven
+        # child that loses the scheduler needs proportionally less CPU to still count as
+        # progressing: the tests above are starvation-proof by construction. Page faults are
+        # compared against a flat MIN_PAGE_FAULTS, so the same starvation lowers the count
+        # without lowering the bar, and this is the only test where faults are the sole signal
+        # because the other two are deliberately disabled above.
+        #
+        # At the 0.6s the others use, one window where this child is not scheduled ends the
+        # wait. Reproduced on a 2-CPU cpuset against 8 competing busy loops: 2 failures in 12
+        # runs, both `assert ok is True` at this line, which is the shape seen in Backend CI
+        # (Python 3.13, l-r) where 18,747 tests share four workers.
+        #
+        # 1.5s keeps the claim intact rather than widening it. Without page-fault progress the
+        # wait still dies at 1.5s, well before the 2.5s health flip, so the test still fails if
+        # the signal stops working; it only stops failing when the machine is busy.
         b, ok, elapsed = self._wait_on_child(
-            monkeypatch, [self._MMAP_WORKER, str(model), "3.0"], healthy_after = 2.5
+            monkeypatch, [self._MMAP_WORKER, str(model), "3.0"], healthy_after = 2.5, timeout = 1.5
         )
         assert ok is True
         assert elapsed >= 2.5

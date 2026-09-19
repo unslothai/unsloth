@@ -15,6 +15,7 @@ import {
   isAcceptableBinding,
   isBrowserReservedBinding,
   isShortcutId,
+  keystrokeMatchesBinding,
   matchesBinding,
   parseBinding,
 } from "../src/features/settings/lib/keyboard-shortcuts.ts";
@@ -26,6 +27,7 @@ import {
   resolveAllBindings,
   resolveBinding,
   resolveBindings,
+  shortcutMatchingEvent,
   shortcutOwningBinding,
 } from "../src/features/settings/stores/keyboard-shortcuts-store.ts";
 import { SETTINGS_TABS } from "../src/features/settings/stores/settings-dialog-store.ts";
@@ -1514,6 +1516,20 @@ test("every action has a useShortcut call site", async () => {
   }
 });
 
+// The call-site test above accepts the numbered slots on the template alone, so a
+// shorter RECENT_SLOT_NUMBERS would leave the trailing rows showing a chord with
+// nothing behind it. Tie the loop to what the registry declares.
+test("the Recents loop registers every numbered slot the registry declares", () => {
+  const slots = /const RECENT_SLOT_NUMBERS = \[([\d, ]+)\] as const;/.exec(APP_SIDEBAR);
+  assert.ok(slots, "RECENT_SLOT_NUMBERS is no longer a literal list");
+  assert.deepEqual(
+    slots[1].split(",").map((n) => `goToRecentChat${n.trim()}`),
+    SHORTCUT_DEFS.map((def) => def.id).filter((id) =>
+      id.startsWith("goToRecentChat"),
+    ),
+  );
+});
+
 // Holding a chord past the OS repeat delay resends it. A toggle would land
 // wherever the user let go, and an archive would run once per repeat.
 test("auto-repeat only reaches the actions that walk a list", async () => {
@@ -1864,4 +1880,239 @@ test("the logout row is not offered on the desktop build", async () => {
     ["logOut"],
   );
   assert.match(KEYBOARD_SHORTCUTS_TAB, /!\(isTauri && def\.webOnly\)/);
+});
+
+// The composer's own keydown runs before the window listener and calls
+// preventDefault, which useShortcut treats as "already handled". A queue or
+// steer chord bound onto an Enter combination would therefore submit with the
+// send preference's intent instead of the behaviour it names, so the composer
+// looks the chord up itself.
+const FOLLOW_UP_IDS = ["queueMessage", "steerMessage"] as const;
+
+/** Mod+Enter as it arrives on each platform: Cmd on macOS, Ctrl elsewhere. */
+const modEnterOn = (mac: boolean) => ({
+  code: "Enter",
+  metaKey: mac,
+  ctrlKey: !mac,
+  shiftKey: false,
+  altKey: false,
+});
+
+test("an Enter chord bound to queue or steer is recognised in the composer", () => {
+  for (const mac of [true, false]) {
+    const modEnter = modEnterOn(mac);
+    assert.equal(shortcutMatchingEvent({}, FOLLOW_UP_IDS, modEnter, mac), null);
+    assert.equal(
+      shortcutMatchingEvent(
+        { queueMessage: { primary: "Mod+Enter" } },
+        FOLLOW_UP_IDS,
+        modEnter,
+        mac,
+      ),
+      "queueMessage",
+    );
+    // A different chord is not this one: the composer keeps its own intent.
+    assert.equal(
+      shortcutMatchingEvent(
+        { queueMessage: { primary: "Mod+Enter" } },
+        FOLLOW_UP_IDS,
+        { ...modEnter, shiftKey: true },
+        mac,
+      ),
+      null,
+    );
+    // Shared with an action the registry ranks higher, so that one runs and
+    // this row is shadowed, the same rule useShortcut applies.
+    assert.equal(
+      shortcutMatchingEvent(
+        {
+          newChat: { primary: "Mod+Enter" },
+          queueMessage: { primary: "Mod+Enter" },
+        },
+        FOLLOW_UP_IDS,
+        modEnter,
+        mac,
+      ),
+      null,
+    );
+  }
+});
+
+test("the composer submits an Enter-bound chord with the named behavior", async () => {
+  const { composerFollowUpBehavior, followUpSubmitIntent } = await import(
+    "../src/features/chat/utils/composer-preferences.ts"
+  );
+  // ⌘⏎ with the send preference on Enter is the "opposite" chord, so a steer
+  // user pressing it would queue. Bound to Queue message it has to queue for
+  // both, and bound to Steer response it has to steer for both.
+  for (const preference of ["queue", "steer"] as const) {
+    for (const [id, behavior] of [
+      ["queueMessage", "queue"],
+      ["steerMessage", "steer"],
+    ] as const) {
+      const named = shortcutMatchingEvent(
+        { [id]: { primary: "Mod+Enter" } },
+        FOLLOW_UP_IDS,
+        modEnterOn(true),
+        true,
+      );
+      assert.equal(named, id);
+      assert.equal(
+        composerFollowUpBehavior(
+          preference,
+          followUpSubmitIntent(preference, behavior),
+        ),
+        behavior,
+        `${preference} preference, ${id} chord`,
+      );
+    }
+  }
+  // The composer path has to consult the chord before it uses the intent the
+  // send preference produced.
+  const submitOnKey = THREAD.slice(THREAD.indexOf("const submitOnKey = useCallback("));
+  const body = submitOnKey.slice(0, submitOnKey.indexOf("\n  );"));
+  assert.match(body, /const named = followUpShortcutBehavior\(event\);/);
+  assert.match(body, /submitIntentRef\.current = named\n?\s*\?/);
+});
+
+// Compare hides the thread composer and puts SharedComposer on screen, so a
+// composer chord registered in only one of them is dead in the other mode.
+test("the follow-up chords are registered in both composers", async () => {
+  const shared = await readSrcAsync("features/chat/shared-composer.tsx");
+  for (const id of FOLLOW_UP_IDS) {
+    assert.match(
+      THREAD,
+      new RegExp(`useShortcut\\(\\s*\n?\\s*"${id}"`),
+      `thread.tsx does not register ${id}`,
+    );
+    assert.match(
+      shared,
+      new RegExp(`useShortcut\\(\\s*\n?\\s*"${id}"`),
+      `shared-composer.tsx does not register ${id}`,
+    );
+  }
+  // The reason the second registration is needed rather than optional.
+  assert.match(CHAT_PAGE, /<Thread hideComposer=\{true\}/);
+});
+
+/** Searching the list by chord: the press narrows, it does not have to be exact. */
+function chord(value: string) {
+  const parsed = parseBinding(value);
+  assert.ok(parsed, `unparsable test binding ${value}`);
+  return parsed;
+}
+
+test("a keystroke search matches the chord it names", () => {
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Shift+KeyO")),
+    true,
+  );
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Shift+KeyN")),
+    false,
+    "a different key is a different chord",
+  );
+});
+
+test("a keystroke search widens as modifiers come off", () => {
+  // Bare O finds every chord on O, which is what makes the key alone a useful search.
+  for (const bound of ["Mod+Shift+KeyO", "Mod+Alt+KeyO", "Mod+Alt+Shift+KeyO"]) {
+    assert.equal(
+      keystrokeMatchesBinding(chord("KeyO"), chord(bound)),
+      true,
+      bound,
+    );
+  }
+  // ⇧⌘O keeps the ones carrying both, and drops ⌥⌘O.
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Alt+Shift+KeyO")),
+    true,
+  );
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Alt+KeyO")),
+    false,
+  );
+});
+
+test("a keystroke search never matches a chord missing a modifier it holds", () => {
+  for (const pressed of ["Mod+KeyB", "Ctrl+KeyB", "Alt+KeyB", "Shift+KeyB"]) {
+    assert.equal(
+      keystrokeMatchesBinding(chord(pressed), chord("KeyB")),
+      false,
+      pressed,
+    );
+  }
+});
+
+test("the matcher finds every shipped default by its own chord and bare key", async () => {
+  for (const def of SHORTCUT_DEFS) {
+    for (const slot of SHORTCUT_SLOTS) {
+      for (const mac of [true, false]) {
+        const value = defaultBindingFor(def, slot, mac);
+        if (!value) continue;
+        const bound = chord(value);
+        assert.equal(
+          keystrokeMatchesBinding(bound, bound),
+          true,
+          `${def.id}.${slot} does not find itself`,
+        );
+        assert.equal(
+          keystrokeMatchesBinding({ ...bound, mod: false, ctrl: false, shift: false, alt: false }, bound),
+          true,
+          `${def.id}.${slot} is not found by its bare key`,
+        );
+      }
+    }
+  }
+});
+
+test("the shortcuts tab arms the keystroke search ahead of Radix and the registry", async () => {
+  const src = await readFile(
+    new URL(
+      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // Capture phase, or the dialog's Escape closes it before the box sees the key.
+  assert.match(
+    src,
+    /window\.addEventListener\("keydown", onKeyDown, \{ capture: true \}\)/,
+  );
+  // Keys read through bindingFromEvent, which carries the fallback for an engine
+  // reporting no code. Off event.code, Tab and Escape would not be recognised there.
+  const listener = src.slice(
+    src.indexOf("if (!byKeystroke || recording) return;"),
+  );
+  assert.doesNotMatch(listener, /event\.code\s*===/);
+  assert.match(listener, /const binding = bindingFromEvent\(event\);/);
+  assert.match(listener, /binding\.code === "Escape"/);
+  // The recorder owns the keyboard while it runs.
+  assert.match(src, /if \(!byKeystroke \|\| recording\) return;/);
+});
+
+/**
+ * Bare Escape is the one shipped default the chord box will not take as a query: it is
+ * what backs out of the box. The recorder can free Escape because it swallows keys for a
+ * single chord, while this mode persists, so a focused box would eat the dialog's own
+ * dismiss for as long as it is on. The row stays reachable by name, where the query
+ * matches the cap label too.
+ */
+test("the chord box keeps bare Escape, and the name search still finds that row", () => {
+  const decline = SHORTCUT_DEFS.find((def) => def.id === "declineToolRequest");
+  assert.ok(decline);
+  assert.equal(defaultBindingFor(decline, "primary", true), "Escape");
+  // What the name search matches on, since the label is part of its haystack.
+  const escape = parseBinding("Escape");
+  assert.ok(escape);
+  assert.equal(formatBindingLabel(escape, true), "Esc");
+  assert.ok(formatBindingLabel(escape, true).toLowerCase().includes("esc"));
+  // The branch that reserves it, and the modifier that is left searchable.
+  assert.match(
+    KEYBOARD_SHORTCUTS_TAB,
+    /binding\.code === "Escape" && bare && !binding\.shift/,
+  );
+  const shiftEscape = parseBinding("Shift+Escape");
+  assert.ok(shiftEscape);
+  assert.equal(shiftEscape.shift, true);
 });

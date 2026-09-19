@@ -150,110 +150,13 @@ def _class_const(source: str, name: str) -> str:
 _COMMENT_SPAN = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
 
 
-def _without_comments(source: str) -> str:
-    """`source` with every comment blanked, each index left where it was.
-
-    Blanked rather than removed so that the offsets the scanners hand around
-    stay valid. Both forms, and before any scan, for two reasons. Prose is not
-    code: an apostrophe in `// notes don't shrink` would open a string literal
-    that never closes, and a `}` written in a block comment would unbalance the
-    tag. Prose is not classes either: the comment beside these very rules says
-    "shrink-0 keeps the compact card at its natural height", so in block form
-    it would satisfy the assertion that the class is there after the class
-    itself had been deleted.
-    """
-    out = list(source)
-    index = 0
-    while index < len(source):
-        char = source[index]
-        # A literal first: `bg-[url(https://example.com/a.svg)]` is a class, and
-        # blanking from its `//` would eat the rest of the line and its quote.
-        if char in _QUOTES:
-            index = _skip_literal(source, index)
-            continue
-        if source.startswith("//", index):
-            end = source.find("\n", index)
-            end = len(source) if end == -1 else end
-        elif source.startswith("/*", index):
-            end = source.find("*/", index)
-            assert end != -1, "unterminated block comment"
-            end += 2
-        else:
-            index += 1
-            continue
-        for blank in range(index, end):
-            if out[blank] != "\n":
-                out[blank] = " "
-        index = end
-    return "".join(out)
-
-
-def _skip_literal(source: str, at: int) -> int:
-    """The index just past the string or template literal opening at `at`."""
-    quote = source[at]
-    index = at + 1
-    while index < len(source):
-        if source[index] == "\\":
-            index += 2
-            continue
-        if source[index] == quote:
-            return index + 1
-        index += 1
-    raise AssertionError(f"unterminated {quote} literal")
-
-
-def _tag_end(source: str, start: int, at: int) -> int | None:
-    """The end of the tag opening at `start`, if `at` is one of its attributes.
-
-    `None` when it is not, which is how a `<` that opens no tag is rejected.
-    Brackets and string literals are tracked, so the `>` of an inline arrow
-    (`onClick={() => go()}`) does not end the tag early and a comparison inside
-    an attribute expression (`disabled={count < limit}`) runs out of depth.
-    """
-    depth = 0
-    index = start + 1
-    reached = False
-    while index < len(source):
-        if index == at:
-            reached = depth == 0
-        char = source[index]
-        if char in _QUOTES:
-            index = _skip_literal(source, index)
-            continue
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
-            if depth < 0:
-                return None
-        elif char == ">" and depth == 0:
-            return index if reached else None
-        index += 1
-    return None
-
-
-def _opening_tag(source: str, at: int) -> tuple[int, int]:
-    """The bounds of the JSX opening tag whose attributes include index `at`.
-
-    Not simply the nearest `<` before it: an attribute expression may hold one
-    of its own, as `disabled={count < limit}` does, and starting the scan there
-    runs into an unmatched brace. Candidates are tried from the nearest
-    outwards and one is accepted only if the tag it opens actually reaches `at`
-    with the tag still open and at depth zero.
-
-    Both ends are returned so that attributes can be searched over the whole
-    tag rather than the part before some other attribute, which is an order
-    dependency of exactly the kind this file is being fixed for.
-    """
-    start = at
-    while True:
-        try:
-            start = source.rindex("<", 0, start)
-        except ValueError:
-            raise AssertionError("no JSX opening tag encloses this attribute") from None
-        end = _tag_end(source, start, at)
-        if end is not None:
-            return start, end
+# Moved to tests/_shared/jsx_tags.py so tests/studio/test_overlay_layering.py reads rails with
+# the same bracket- and literal-aware scanner instead of a private rfind("<")/find(">") pair.
+from jsx_tags import (  # noqa: E402
+    opening_tag as _opening_tag,
+    skip_literal as _skip_literal,
+    without_comments as _without_comments,
+)
 
 
 def _class_on_testid(source: str, testid: str) -> str:
@@ -1773,22 +1676,102 @@ def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
     ), f"min-h-0 lets the rail squeeze the {card} card past its floor"
 
 
+RAIL_TESTID = "overlay-rail"
+
+
 def _corner_rails(provider: str) -> list[str]:
     """The class strings of the bottom-right overlay rails.
 
-    Matched on the corner they are pinned to, which is the thing under test.
-    The rail is anchored in CSS, so that corner is spelled in its classes.
+    Anchored on ``data-testid`` rather than on a run of the rail's own classes. The old
+    matcher spelled the corner INTO the pattern - `bottom-0 right-4` - so #11260 moving the
+    rail flush to the edge (`right-0`, with the inset paid as inline px padding) made it
+    match nothing, and four tests across two files failed at once while reporting a missing
+    rail rather than a changed one. The corner is a CLAIM these tests make, so it belongs in
+    an assertion, not in the thing that finds the element to assert about. Same reasoning as
+    _class_on_testid, which this file already grew for exactly this failure.
     """
-    return re.findall(r'"pointer-events-none fixed bottom-0 right-4 ([^"]*)"', provider)
+    return [_class_value(tag, RAIL_TESTID) for tag in _rail_openings(provider)]
+
+
+def _rail_openings(provider: str) -> list[str]:
+    """The opening tag of each rail, comments already blanked."""
+    clean = _without_comments(provider)
+    tags = []
+    at = clean.find(f'data-testid="{RAIL_TESTID}"')
+    while at != -1:
+        start, end = _opening_tag(clean, at)
+        tags.append(clean[start:end])
+        at = clean.find(f'data-testid="{RAIL_TESTID}"', end)
+    return tags
+
+
+# Anything that sets padding, in either of Tailwind's two spellings. The utility family
+# (p-, px-, ps-, ...) and the arbitrary-property form, which Tailwind 4 emits with
+# !important and which starts with "[" once _split_variants has taken the marker off, so a
+# pattern anchored on "p" never sees it. The side letter is optional and a "-" must follow
+# it either way, which is what keeps pointer-events-none, peer-* and place-items-* out.
+_PADS = re.compile(r"p[xytblrse]?-|\[padding[-:]")
+
+
+def _rail_class_tokens(tag: str) -> list[str]:
+    """Every class token the rail's className CAN render, conditionals included.
+
+    _class_value answers what renders in EVERY state, which is what a positive guarantee
+    needs and exactly wrong for a prohibition: `cn("...", compact && "!pl-0")` renders that
+    override whenever compact is true, and an always-rendered reader never sees it. So this
+    one reads the literals out of the whole expression on purpose. The two are not
+    interchangeable, and the asymmetry is the point: "must always have X" and "must never
+    have Y" cannot be answered by the same set.
+    """
+    key = "className="
+    at = tag.index(key) + len(key)
+    if tag[at] == '"':
+        expression = tag[at : _skip_literal(tag, at)]
+    else:
+        expression = tag[at + 1 : _balanced(tag, at) - 1]
+
+    tokens: list[str] = []
+    i = 0
+    while i < len(expression):
+        if expression[i] in _QUOTES:
+            end = _skip_literal(expression, i)
+            tokens += expression[i + 1 : end - 1].split()
+            i = end
+        else:
+            i += 1
+    return tokens
+
+
+def _rail_padding(tag: str) -> dict[str, str]:
+    """This rail's padding properties mapped to the constant each one is set from.
+
+    The property-to-constant binding, not merely the presence of some STACK_ name: setting
+    paddingLeft from STACK_CARD_INSET_RIGHT renders a 16px left gutter while the 22px floor
+    below still reads a 28px constant nothing applies, and the shadow clips anyway.
+    """
+    return {
+        prop: const
+        for prop, const in re.findall(r"\b(padding(?:Top|Bottom|Left|Right)): (\w+)", tag)
+    }
+
+
+def _rail_style_px(provider: str, name: str) -> int:
+    """The px value of one of the rail's spacing constants, read from its definition."""
+    found = re.search(rf"^const {name} = (\d+);", provider, re.MULTILINE)
+    assert found, f"{name} is gone from provider.tsx, so the rail's spacing is unreadable"
+    return int(found.group(1))
 
 
 def _capped_rails(provider: str) -> int:
-    """How many of those rails cap themselves to the viewport, in CSS.
+    """How many of those rails cap themselves to the viewport.
 
-    2rem for the cards' band, less the 24px shadow gutter the rail adds around
-    them, so the gutter is not spent on the cards. See overlay-shadow-gutter.
+    The cap is the full viewport and the gutters are paid out of it, as inline px padding,
+    so the cards keep the band they had. Reading the class alone stopped being enough when
+    #11260 moved the gutters out of the class and into the style, so this reads both.
     """
-    return sum(1 for rail in _corner_rails(provider) if "max-h-[calc(100dvh_-_8px)]" in rail)
+    # _only_under and not a substring: `md:max-h-[100dvh]` contains the utility while leaving
+    # every smaller viewport uncapped, which is the spill this test exists to prevent.
+    return sum(1 for rail in _corner_rails(provider) if _only_under(rail, "max-h-[100dvh]"))
 
 
 def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():
@@ -1892,6 +1875,85 @@ def test_the_overlay_stack_fits_the_viewport():
     # rail scrolls. Without this the overflow lands below the bottom of the
     # screen with no way to reach it.
     assert provider.count("overflow-y-auto") >= stacks, "a capped stack spills its cards"
+
+
+def test_both_rails_are_still_pinned_to_the_bottom_right_corner():
+    """The corner, asserted rather than assumed by the matcher.
+
+    _corner_rails finds rails by testid now, so it would happily return a rail that had
+    wandered to the top left. This is the claim the old regex used to make implicitly, kept
+    explicit and kept failing for the right reason: it names the rail that moved.
+    """
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    rails = _corner_rails(provider)
+    assert len(rails) == 2, f"expected the browser and desktop rails, found {len(rails)}"
+    for rail in rails:
+        # _only_under and not _applies: a positive layout guarantee has to hold everywhere, and
+        # _applies is satisfied by a gated `md:fixed`, under whose breakpoint the rail would not
+        # be in the corner at all. This file's own matcher tests spell that rule out.
+        # The old class-anchored matcher required this as part of its pattern, and finding the
+        # rail by testid instead dropped it silently. It is a behaviour contract, not styling:
+        # the rail spans its cap with 28px of transparent shadow gutter and a scroll region,
+        # and the cards inside opt back in with pointer-events-auto (the download panel does
+        # so by name). Without the container rule those transparent bands swallow clicks meant
+        # for the UI behind them.
+        assert _only_under(
+            rail, "pointer-events-none"
+        ), f"the rail stopped passing clicks through: {rail!r}"
+        assert _only_under(rail, "fixed"), f"the rail is no longer always viewport-fixed: {rail!r}"
+        assert _only_under(rail, "bottom-0"), f"the rail can leave the bottom edge: {rail!r}"
+        assert _only_under(rail, "right-0"), f"the rail can leave the right edge: {rail!r}"
+
+
+def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
+    """#11260's actual claim, which no class can carry any more.
+
+    The rail caps at the whole viewport and pays its shadow gutters as inline px padding, so
+    the band left for the cards is 100dvh less the two block gutters - the same band they had
+    when the cap was written as calc(100dvh - 8px) and the gutter was 4px a side. px and not a
+    spacing utility because those are rem and would scale the rail off its corner with the
+    user's type size, which is the bug the comment above them is about.
+    """
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    top = _rail_style_px(provider, "STACK_SHADOW_GUTTER_TOP")
+    bottom = _rail_style_px(provider, "STACK_SHADOW_GUTTER_BOTTOM")
+    left = _rail_style_px(provider, "STACK_SHADOW_GUTTER_LEFT")
+    inset = _rail_style_px(provider, "STACK_CARD_INSET_RIGHT")
+
+    assert top and bottom and left and inset, "a rail gutter went to zero, so shadows clip"
+    # The deepest card shadow is 0 8px 28px -6px: 22px left of the card and 14px above it.
+    assert left >= 22, f"the left gutter {left}px is inside the card shadow's 22px reach"
+    assert top >= 14, f"the top gutter {top}px is inside the card shadow's 14px reach"
+    expected = {
+        "paddingTop": "STACK_SHADOW_GUTTER_TOP",
+        "paddingBottom": "STACK_SHADOW_GUTTER_BOTTOM",
+        "paddingLeft": "STACK_SHADOW_GUTTER_LEFT",
+        "paddingRight": "STACK_CARD_INSET_RIGHT",
+    }
+    openings = _rail_openings(provider)
+    assert len(openings) == 2, f"expected the browser and desktop rails, found {len(openings)}"
+    for tag in openings:
+        # The exact binding, per rail. Counting STACK_ names would let paddingLeft be set from
+        # STACK_CARD_INSET_RIGHT: two constants, two rails, count still 2, and the floors above
+        # would go on vouching for a 28px value nothing applies while 16px clips the shadow.
+        assert (
+            _rail_padding(tag) == expected
+        ), f"a rail's padding is not bound to its own constant: {_rail_padding(tag)}"
+    # No padding utility at all, in any spelling. The rail's padding comes from the inline
+    # px style above, and ANY Tailwind padding class is either rem-scaled (walking the rail
+    # off its corner with the user's type size, #8082) or, with !important, an outright
+    # override of the inline declaration. Enumerating the spellings is how this went wrong
+    # three times: the first form missed `!px-3`, the second `px-2.5` and `!pr-[0px]`, the
+    # third the logical `ps-`/`pe-` pair this repo also uses. Matching the property rather
+    # than its value ends that; `pointer-events-none` and `peer-*` do not match, since the
+    # side letter is optional and a `-` has to follow it either way.
+    for tag in _rail_openings(provider):
+        for token in _rail_class_tokens(tag):
+            utility = _split_variants(token)[1]
+            assert not _PADS.match(utility), (
+                f"the rail carries the padding utility {token!r}; its padding is the inline "
+                f"px style, and a class here is rem-scaled or !important-overrides it (#8082)"
+            )
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():

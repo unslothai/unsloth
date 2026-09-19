@@ -40,6 +40,15 @@ import {
   useState,
 } from "react";
 
+/** A caller-supplied entry. Rendered under the pin and above cache/update, so delete stays last. */
+export interface ModelRowMenuItem {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  onSelect: () => void;
+  disabled?: boolean;
+}
+
 interface ModelRowMenuPin {
   pinned: boolean;
   /** Menu item labels, e.g. "Pin quant to the top" / "Unpin quant". */
@@ -83,6 +92,7 @@ export function ModelRowMenu({
   iconClassName,
   cachePath,
   pin,
+  items,
   update,
   del,
 }: {
@@ -92,6 +102,8 @@ export function ModelRowMenu({
   /** Enables "Reveal in Finder" for cached repos. */
   cachePath?: ModelRowMenuCachePath;
   pin?: ModelRowMenuPin;
+  /** Extra entries for actions this menu has no shape of its own for. */
+  items?: readonly ModelRowMenuItem[];
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
 }) {
@@ -171,7 +183,7 @@ export function ModelRowMenu({
     });
   }, [cachePathRepoId, cachePathVariant]);
 
-  if (!pin && !update && !del && !cachePath) return null;
+  if (!pin && !update && !del && !cachePath && !items?.length) return null;
 
   return (
     <>
@@ -215,6 +227,19 @@ export function ModelRowMenu({
               <span>{pin.pinned ? pin.unpinLabel : pin.pinLabel}</span>
             </DropdownMenuItem>
           )}
+          {items?.map((item) => (
+            <DropdownMenuItem
+              key={item.key}
+              disabled={item.disabled}
+              onSelect={(e) => {
+                e.stopPropagation();
+                item.onSelect();
+              }}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </DropdownMenuItem>
+          ))}
           {cachePath && (
             <DropdownMenuItem
               onSelect={(e) => {
@@ -244,7 +269,9 @@ export function ModelRowMenu({
           )}
           {del && (
             <>
-              {(cachePath || pin || update) && <DropdownMenuSeparator />}
+              {(cachePath || pin || update || items?.length) && (
+                <DropdownMenuSeparator />
+              )}
               <DropdownMenuItem
                 variant="destructive"
                 disabled={del.disabled}

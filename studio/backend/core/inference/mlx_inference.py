@@ -44,6 +44,12 @@ from core.inference.chat_template_helpers import (
     trailing_assistant_text,
     vlm_prompt_issue as _vlm_prompt_issue,
 )
+from core.inference.mcp_images import (
+    image_marker_parts,
+    pixels_in_marker_order,
+    top_up_image_markers,
+    trim_image_turns,
+)
 from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
 
@@ -616,6 +622,14 @@ def _mlx_fused_moe_gate_up(model):
 
 def _mlx_fused_decode_conv_silu(model):
     return _mlx_optional_fusion("fused_decode_conv_silu", model)
+
+
+def _mlx_fused_residual_norm(model):
+    return _mlx_optional_fusion("fused_residual_norm", model)
+
+
+def _mlx_fused_moe_router(model):
+    return _mlx_optional_fusion("fused_moe_router", model)
 
 
 def _vlm_generation_context():
@@ -3209,6 +3223,8 @@ class MLXInferenceBackend:
         messages,
         system_prompt = "",
         image = None,
+        images = None,
+        image_ordinal = None,
         temperature = 0.7,
         top_p = 0.9,
         top_k = 40,
@@ -3232,8 +3248,6 @@ class MLXInferenceBackend:
         # cannot tell that the wrappers below still have to survive decoding.
         tool_protocol_active = None,
         video = None,
-        *,
-        images = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -3246,19 +3260,17 @@ class MLXInferenceBackend:
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
-        images = list(images) if images else ([image] if image is not None else [])
-        if len(images) > 1 and not self._multi_image_marker:
-            raise ValueError(
-                f"'{self.active_model_name}' takes one image per request: its chat template does "
-                f"not mark {len(images)} images separately."
-            )
+        full_messages = self._with_system_prompt(messages, system_prompt)
 
+        # History first, the attachment last: MLX binds pixels to markers in order.
+        attached = list(images or []) + ([image] if image is not None else [])
         # Shared with the transformers vision path so both render the same turns (#10092).
-        if self._is_vlm and (images or video is not None):
+        if self._is_vlm and (attached or video is not None):
             # Processor templates want part lists, the tokenizer fallback wants strings.
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
             )
+
             _renders_via_processor = (
                 self._processor is not None
                 and _chat_render_target(self._processor) is self._processor
@@ -3267,16 +3279,41 @@ class MLXInferenceBackend:
                 messages,
                 system_prompt = system_prompt,
                 structured_content = _renders_via_processor,
-                image = len(images or ()),
+                image = len(attached),
                 video = video is not None,
             )
-        else:
-            full_messages = self._with_system_prompt(messages, system_prompt)
+            # That helper leaves a conversation that already carries markers alone,
+            # which is right for a retry but not for replayed MCP pictures: those
+            # markers are not the attachment's, and the render would be one short
+            # for two pixels.
+            _prior_markers = image_marker_parts(full_messages)
+            full_messages = top_up_image_markers(
+                full_messages, len(attached), ordinal = image_ordinal
+            )
+            if image is not None:
+                # Read off the conversation: the attachment's turn can precede a
+                # replayed picture, and pixels bind to markers in document order.
+                attached = pixels_in_marker_order(
+                    full_messages, _prior_markers, list(images or []), image
+                )
+            if len(attached) > 1 and not self._multi_image_marker:
+                # The template marks one image, so replayed pictures cannot each have their
+                # own. Serve the caller's attachment, or else the newest picture, with its marker.
+                keep = next(
+                    (i for i, one in enumerate(attached) if one is image), len(attached) - 1
+                )
+                logger.info(
+                    "Serving 1 of %d images: '%s' marks one image per request.",
+                    len(attached),
+                    self.active_model_name,
+                )
+                full_messages = list(full_messages)
+                trim_image_turns(full_messages, attached, limit = 1, keep = (keep,))
 
         if self._is_vlm:
             stream = self._generate_vlm(
                 full_messages,
-                images,
+                attached,
                 temperature,
                 top_p,
                 top_k,
@@ -3458,6 +3495,8 @@ class MLXInferenceBackend:
             _temporary_mlx_adapter_state(self._model, _adapter_state),
             _mlx_fused_moe_gate_up(self._model),
             _mlx_fused_decode_conv_silu(self._model),
+            _mlx_fused_residual_norm(self._model),
+            _mlx_fused_moe_router(self._model),
         ):
             (
                 gen_prompt,
@@ -3915,6 +3954,8 @@ class MLXInferenceBackend:
                     self._release_vlm_snapshots()
                 generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
                 generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
+                generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
+                generation_scope.enter_context(_mlx_fused_moe_router(self._model))
                 final_response = None
                 clip_path = None
                 try:
@@ -4104,6 +4145,8 @@ class MLXInferenceBackend:
             self._release_vlm_snapshots()
             generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
             generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
+            generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
+            generation_scope.enter_context(_mlx_fused_moe_router(self._model))
             final_response = None
             try:
                 with closing(

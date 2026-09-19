@@ -1,12 +1,12 @@
 ---
 name: skill-creator
-description: Create a reusable Agent Skill when the user wants Studio to learn a repeatable workflow or set of instructions.
+description: Create a reusable Agent Skill when the user wants Unsloth Studio to learn a repeatable workflow or set of instructions.
 allowed-tools: create_skill
 ---
 
 # Create an Agent Skill
 
-Use this skill when the user asks to create, save, or teach Studio a reusable workflow.
+Use this skill when the user asks to create, save, or teach Unsloth Studio a reusable workflow.
 
 1. Identify the narrow task the skill should handle and when it should activate.
 2. Ask only for missing details that materially change the workflow.

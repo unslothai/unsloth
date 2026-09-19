@@ -168,7 +168,7 @@ export function OpenAICodexConnect({
 
   const visibleError = error || (flow?.status === "error" ? flow.message || "Authorization failed." : "");
   return (
-    <section className="space-y-3 rounded-[8px] border border-border/70 bg-background/45 p-4">
+    <section className="space-y-3 rounded-lg border border-border/70 bg-background/45 p-4">
       <div>
         <p className="text-sm font-medium">ChatGPT subscription</p>
         <p className="text-xs text-muted-foreground">

@@ -107,14 +107,14 @@ def is_imatrix_filename(path: str) -> bool:
 
 
 # dspark and dflash are the same DeepSeek V4 Flash drafter: the folder it ships in and the architecture it reports.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 
 # Directories only: mtp/ and dspark/ are always a publisher's companion folder, while dflash/ is a family name a user picks for real weights.
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4) and the ``dspark/`` drafters (DeepSeek V4 Flash). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, or by an exact parent dir for ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
+    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash) and the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, or by an exact parent dir for ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False

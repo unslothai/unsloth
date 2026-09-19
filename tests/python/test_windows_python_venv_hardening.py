@@ -764,13 +764,13 @@ try {{
             "use --isolated-uv-cache to isolate"
         ),
         "studio": (
-            f"using new Studio-owned cache ({studio}); part of {shared} could not be "
+            f"using new Unsloth Studio-owned cache ({studio}); part of {shared} could not be "
             "read, so cached packages may download again"
             if default_state == "denied-bucket"
-            else f"using new Studio-owned cache ({studio})"
+            else f"using new Unsloth Studio-owned cache ({studio})"
         ),
         "isolated": (
-            f"forced Studio cache isolation ({studio}); already-cached packages may download again"
+            f"forced Unsloth Studio cache isolation ({studio}); already-cached packages may download again"
         ),
     }[expected_mode]
 

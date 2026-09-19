@@ -187,7 +187,6 @@ export default function FindBar({
   }, [focusToken, restoreSelection]);
 
   const searching = query.length > 0;
-  const empty = !queryPending && searching && count === 0;
   // A pending query has no count of its own yet, so the settled one's zero must not disable the
   // walk: `stepWhenSettled` queues the press and runs it once the count arrives.
   const canStep = searching && (count > 0 || queryPending);
@@ -226,10 +225,9 @@ export default function FindBar({
         spellCheck={false}
         autoComplete="off"
         autoCorrect="off"
-        className={cn(
-          "min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground",
-          empty && "text-destructive",
-        )}
+        // The query keeps its colour with no matches: the 0/0 counter beside it
+        // already says so, and recolouring the text reads as a typing error.
+        className="min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground"
       />
       <span
         aria-live="polite"

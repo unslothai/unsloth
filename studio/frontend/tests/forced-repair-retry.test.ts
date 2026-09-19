@@ -66,6 +66,7 @@ function runRetry(status: string, forced: boolean): Run {
     setElevationPackages: noop,
     setIsExternalServer: noop,
     stopExternalServerPoll: noop,
+    stopManagedEnvironmentWait: noop,
   };
   const keys = Object.keys(scope);
   new Function(
