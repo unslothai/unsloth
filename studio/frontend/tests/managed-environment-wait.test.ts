@@ -81,6 +81,8 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
     MANAGED_ENVIRONMENT_WAIT_POLLS: POLL_LIMIT,
     SERVER_STARTUP_MESSAGE: "Nearly done...",
     authFailureRef: { current: authFailure },
+    // Fresh per harness: left true, the hook's single-flight guard returns before the probe.
+    preflightInFlightRef: { current: false },
     environmentWaitRef: { current: null as unknown },
     environmentWaitPollsRef,
     statusRef: { current: "checking" },
