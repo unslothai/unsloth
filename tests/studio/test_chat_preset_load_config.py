@@ -617,7 +617,9 @@ def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     for field in ("reasoningBudget", "reasoningBudgetMessage"):
         assert any(_selector_reads(text, field) for text in selectors), (
             f"no useChatRuntimeStore selector returns a value derived from {field}, so a "
-            "change to it does not re-render the component whose memos capture it"
+            "change to it does not re-render the component whose memos capture it. If one "
+            "does, it is spelled outside what _selector_reads reads (see its docstring): "
+            f"write it as `(s) => s.{field}` or a ternary over it"
         )
         for memo in capturing:
             assert field in dependency_lists[memo], (
