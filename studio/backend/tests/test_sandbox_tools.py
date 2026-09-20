@@ -4686,3 +4686,70 @@ class TestShadowedModules:
     def test_the_imported_module_is_still_the_environment(self, code):
         # An import of the name is how you get the real module, so it is not a shadow.
         _blocked(code, expect_phrase = "Blocked: request target is read")
+
+
+class TestJoinsBelongToTheirOwnScope:
+    """An if / else inside a function says nothing about a module-level name."""
+
+    def test_a_join_in_a_function_does_not_answer_for_module_level(self):
+        _blocked(
+            f'import requests\nurl = "{_METADATA_URL}"\ndef helper():\n    if flag:\n'
+            '        url = "https://huggingface.co/a"\n    else:\n'
+            '        url = "https://huggingface.co/b"\n'
+            'if other:\n    url = "https://huggingface.co/c"\nrequests.get(url)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_join_in_the_name_s_own_scope_still_replaces_it_ok(self):
+        _ok(
+            f'import requests\nurl = "{_METADATA_URL}"\nif flag:\n'
+            '    url = "https://huggingface.co/a"\nelse:\n'
+            '    url = "https://huggingface.co/b"\nrequests.get(url)'
+        )
+
+
+class TestDuckTypedReadersAndReaders:
+    """A method name is not a guarantee. The receiver settles what it is."""
+
+    def test_a_local_class_with_a_getenv_is_not_the_environment_ok(self):
+        _ok(
+            "import requests\n"
+            "class os:\n"
+            "    @staticmethod\n"
+            "    def getenv(key):\n"
+            '        return "https://huggingface.co/x"\n'
+            'requests.get(os.getenv("K"))'
+        )
+
+    def test_the_imported_getenv_is_still_the_environment(self):
+        _blocked(
+            'import os, requests\nrequests.get(os.getenv("K"))',
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_a_custom_read_text_is_not_a_file_read_ok(self):
+        _ok(
+            "import requests\n"
+            "class Blob:\n"
+            "    def read_text(self):\n"
+            '        return "https://huggingface.co/x"\n'
+            "requests.get(Blob().read_text())"
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "from pathlib import Path\nimport requests\n"
+                'requests.get(Path("t.txt").read_text())',
+                id = "inline_path",
+            ),
+            pytest.param(
+                "from pathlib import Path\nimport requests\n"
+                'p = Path("t.txt")\nrequests.get(p.read_text())',
+                id = "bound_path",
+            ),
+        ],
+    )
+    def test_a_real_path_read_is_still_a_file_read(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")

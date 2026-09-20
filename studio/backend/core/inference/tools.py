@@ -16893,8 +16893,10 @@ def _check_signal_escape_patterns(code: str):
 
         def collect(self, tree) -> "_NameBindings":
             self._mark_conditional_bindings(tree)
-            self._mark_exhaustive_joins(tree)
             scoped = list(self._walk_scoped(tree))
+            # After the walk, not before: joins are keyed by scope, and the scope map is what the
+            # walk builds. Keyed too early they all read as module level.
+            self._mark_exhaustive_joins(tree)
             self._raw_mode = True
             self._scan_bindings(scoped)
             self._raw_mode = False
@@ -17520,9 +17522,8 @@ def _check_signal_escape_patterns(code: str):
             return True
         if not isinstance(func, ast.Attribute) or func.attr not in _FILE_READ_METHODS:
             return False
-        if func.attr in ("read_text", "read_bytes"):
-            # pathlib only, and only a path has them.
-            return True
+        # `read_text` reads like pathlib, but Python is duck typed and the name is not reserved,
+        # so the receiver settles it here as it does for `read`.
         return _is_a_file_receiver(func.value)
 
     def _calls_an_external_reader(call: ast.Call, bindings) -> bool:
@@ -17545,9 +17546,19 @@ def _check_signal_escape_patterns(code: str):
             if len(values) != 1 or values[0] is None:
                 return False
             func = values[0]
-        return isinstance(func, ast.Attribute) and (
-            _reads_an_external_source_through_an_alias(func, bindings)
-            or f"{_written_fq(func)}" in _EXTERNAL_SOURCE_FQ
+        if not isinstance(func, ast.Attribute):
+            return False
+        if _reads_an_external_source_through_an_alias(func, bindings):
+            return True
+        written = _written_fq(func)
+        if written not in _EXTERNAL_SOURCE_FQ:
+            return False
+        # The written name only means the module while the source has not defined one of its own.
+        root = func
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        return isinstance(root, ast.Name) and _names_the_real_module(
+            root, written.split(".")[0], bindings
         )
 
     def _reads_an_external_source_through_an_alias(node: ast.AST, bindings) -> bool:
