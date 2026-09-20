@@ -657,18 +657,20 @@ def test_the_rocm_installer_bails_on_the_same_arch(stack, monkeypatch):
     assert installed["ran"] is False
 
 
-def _gpu_summary_branch(resolved: str, request: str) -> str:
+def _gpu_summary_branch(resolved: str, request: str, pinned: bool = False) -> str:
     """Which arm the GPU detection summary takes, given the index the resolution left."""
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
     head = next(
-        (
-            l
-            for l in lines
-            if l.startswith("if _has_usable_nvidia_gpu && ! _torch_index_url_is_rocm")
-        ),
+        (l for l in lines if l.startswith("if _has_usable_nvidia_gpu && ")),
         "if _nvidia_gpu_wins_over_amd; then",
     )
+    # The condition spans a continuation; take the rest of it verbatim.
+    if head.rstrip().endswith("\\"):
+        _at = lines.index(head)
+        while lines[_at].rstrip().endswith("\\"):
+            _at += 1
+            head = head.rstrip().rstrip("\\") + " " + lines[_at].strip()
     tail = next(
         (l for l in lines if l.startswith("elif _torch_index_url_is_rocm")),
         'elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then',
@@ -682,6 +684,7 @@ def _gpu_summary_branch(resolved: str, request: str) -> str:
             "_has_usable_nvidia_gpu() { return 0; }",
             "_has_amd_rocm_gpu() { return 0; }",
             f"TORCH_INDEX_URL={resolved!r}",
+            f"_torch_index_pinned={'true' if pinned else 'false'}",
             # export, not a VAR=VAL command prefix: a prefix applies to that one command and
             # leaves the variable unset for everything after it, so the request would never
             # be in effect and the first case below would pass without the fix.
@@ -696,6 +699,26 @@ def _gpu_summary_branch(resolved: str, request: str) -> str:
         ]
     )
     return _bash(script)
+
+
+def test_a_pinned_rocm_index_still_reports_the_nvidia_card():
+    """A pin names a wheel family, not a card. An NVIDIA host pinned to a ROCm index has no AMD
+    card to describe, so reading the resolved index alone hid the NVIDIA identity behind an
+    "AMD ROCm" banner for hardware the machine does not have."""
+    assert (
+        _gpu_summary_branch(
+            "https://download.pytorch.org/whl/rocm7.2", "", pinned = True
+        )
+        == "nvidia"
+    )
+
+
+def test_an_unpinned_rocm_resolution_still_reports_amd():
+    """The control: the exemption is the pin, not the index. The same URL reached by resolution
+    still reports the card its wheels are for."""
+    assert (
+        _gpu_summary_branch("https://download.pytorch.org/whl/rocm7.2", "") == "amd"
+    )
 
 
 def test_the_summary_reports_cuda_after_the_cuda_restore():

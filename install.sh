@@ -6242,8 +6242,11 @@ tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
 # Asked of the RESOLVED index, not the predicate that chose it: after the CUDA restore the
 # request is still set and an AMD card still present, so the predicate says "AMD wins" while
-# CUDA wheels are what gets installed.
-if _has_usable_nvidia_gpu && ! _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
+# CUDA wheels are what gets installed. A PIN is exempt, because it names a wheel family rather
+# than a card: on an NVIDIA host pinned to a ROCm index there is no AMD card to describe, and
+# hiding the NVIDIA identity behind it reported hardware the machine does not have.
+if _has_usable_nvidia_gpu && \
+   { [ "$_torch_index_pinned" = true ] || ! _torch_index_url_is_rocm "$TORCH_INDEX_URL"; }; then
     _nv_banner_fields
     if [ -n "$_nv_name" ] && [ -n "$_nv_sm" ]; then
         step "gpu" "$_nv_name ($_nv_sm)"
