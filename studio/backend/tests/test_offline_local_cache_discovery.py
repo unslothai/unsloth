@@ -510,6 +510,12 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
     # anonymously and withholds it from the tokenless offline caller.
     assert "not _config_json_already_cached(model_name, revision)" in config_read
     assert "if not _this_file_was_already_here(rel):" in inspect.getsource(picker_module)
+    # Same rule on the preview: the record sits BELOW the prefer-local branches, which read
+    # the cache or 404 without a round trip.
+    preview = inspect.getsource(formatting.check_format_response)
+    assert preview.index("_LOCAL_CACHE_MISS_ERROR_CODE") < preview.index(
+        "note_repo_fetched_with_a_request_token"
+    ), "a cache-only preview records a fetch it never made"
 
 
 def test_every_credentialed_fetch_is_recorded_not_only_a_foreign_one(monkeypatch, writes):
@@ -883,6 +889,53 @@ def test_a_credentialed_config_read_records_only_what_it_could_fetch(
     _stub_autoconfig(monkeypatch)
 
     model_config_module.load_model_config(ON_DISK, token = "hf_a_one_off")
+
+    assert recorded == expected
+
+
+@pytest.mark.parametrize(
+    "prefer_local_cache, expected",
+    [(True, []), (False, [("hf_a_one_off", "acme/ds", "dataset")])],
+    ids = ["a cache-only preview records nothing", "a preview that may fetch is recorded"],
+)
+def test_a_dataset_preview_records_only_where_it_could_fetch(
+    monkeypatch, prefer_local_cache, expected
+):
+    """`prefer_local_cache` reads the datasets cache or 404s, never the network. Recording it
+    relabels a dataset the cache may have held anonymously, and the tokenless offline caller
+    that path exists for is then refused."""
+    import contextlib
+
+    from hub.services.datasets import formatting
+    from hub.schemas.datasets import CheckFormatRequest
+
+    recorded: list = []
+    monkeypatch.setattr(
+        formatting,
+        "note_repo_fetched_with_a_request_token",
+        lambda token, repo, kind: recorded.append((token, repo, kind)),
+    )
+    monkeypatch.setattr(formatting, "refuse_unauthorized_dataset_preview", lambda *_a, **_k: None)
+
+    class _NoHub:
+        def list_repo_files(self, *_a, **_k):
+            raise RuntimeError("no network in this test")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *_a, **_k: _NoHub())
+    monkeypatch.setattr(
+        "datasets.load_dataset",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no network in this test")),
+    )
+
+    # Whatever the branch does after recording is another test's subject: the network is
+    # stubbed off, so both legs end in an error and only the ledger is read here.
+    with contextlib.suppress(Exception):
+        formatting.check_format_response(
+            CheckFormatRequest(
+                dataset_name = "acme/ds", prefer_local_cache = prefer_local_cache
+            ),
+            "hf_a_one_off",
+        )
 
     assert recorded == expected
 

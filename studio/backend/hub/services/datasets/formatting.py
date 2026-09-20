@@ -430,10 +430,6 @@ def check_format_response(
         else:
             from datasets import Dataset, load_dataset
 
-            # A preview materialises rows in the datasets cache, possibly under a one-off token
-            # saved nowhere; unrecorded, a later tokenless caller reads "none needed one".
-            note_repo_fetched_with_a_request_token(hf_token, request.dataset_name, "dataset")
-
             # Tier 1: list_repo_files → load only the first data file
             cached_preview = (
                 _load_any_cached_hf_preview_slice(request, PREVIEW_SIZE, hf_token)
@@ -452,6 +448,14 @@ def check_format_response(
                 )
             else:
                 preview_slice = None
+
+                # Here, not above the cache reader: a preview materialises rows in the
+                # datasets cache, possibly under a one-off token saved nowhere, and
+                # unrecorded a later tokenless caller reads "none needed one". A
+                # prefer-local request reaches neither branch below, so recording it
+                # there would relabel an anonymously cached dataset as credentialed and
+                # refuse the offline caller this path exists for.
+                note_repo_fetched_with_a_request_token(hf_token, request.dataset_name, "dataset")
 
                 try:
                     from huggingface_hub import HfApi
