@@ -219,7 +219,7 @@ export function ExportPage() {
   });
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
-  const [imatrixPath, setImatrixPath] = useState("");
+  const [customImatrix, setCustomImatrix] = useState({ sourceKey: "", path: "" });
   // Merged precision: one or more MERGED_FORMATS values exported in one run; seeded like exportMethod.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
     const s = useExportRuntimeStore.getState();
@@ -592,6 +592,13 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
+  const imatrixSourceKey = JSON.stringify([
+    sourceTab,
+    sourceMode === "checkpoint" ? selectedModelIdx : null,
+    selectedExportSource,
+  ]);
+  const imatrixPath =
+    customImatrix.sourceKey === imatrixSourceKey ? customImatrix.path : "";
   const baseDefaultSaveDirectory = useMemo(() => {
     const relative = buildRelativeSaveDirectory(
       exportMethod,
@@ -1716,7 +1723,12 @@ export function ExportPage() {
                               aria-describedby="export-imatrix-path-help"
                               placeholder="./imatrix.gguf"
                               value={imatrixPath}
-                              onChange={(e) => setImatrixPath(e.target.value)}
+                              onChange={(e) =>
+                                setCustomImatrix({
+                                  sourceKey: imatrixSourceKey,
+                                  path: e.target.value,
+                                })
+                              }
                             />
                           </InputGroup>
                           <p
