@@ -1927,3 +1927,30 @@ class TestSymlinkModeCrossesFilesystemsFreely:
     def test_symlink_mode_skips_the_off_volume_path(self, path, test):
         text = path.read_text(encoding = "utf-8")
         assert test in text, f"{path.name} treats symlink mode as if uv were copying"
+
+
+class TestTheSizeEstimateAsksWhatWouldBeFreed:
+    """A venv whose wheels are hardlinked to a cache that outlives the install shares those
+    blocks, so deleting it frees none of them. st_nlink answers that directly, and for every
+    reason the sharing might exist, which the current run's cache and link modes cannot: they
+    describe this run, and the tree was built by a previous one (#11313)."""
+
+    def test_the_shell_counts_only_unlinked_blocks(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        helper = text.split("_dir_size_kb() {", 1)[1].split("\n}\n", 1)[0]
+        assert "-links 1" in helper, "the estimate bills blocks a discard would not free"
+        assert "du -sk" in helper, "the fallback for a find without -links was dropped"
+
+    def test_the_device_lookup_follows_the_link(self):
+        # stat reports the link's own device without -L, so a symlinked cache or studio home
+        # answers for the wrong filesystem in either direction.
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        helper = text.split("_path_device_id() {", 1)[1].split("\n}\n", 1)[0]
+        assert "stat -L -c %d" in helper and "stat -L -f %d" in helper
+
+    def test_the_windows_limit_is_written_down(self):
+        # Not fixed there: a link count per file is GetFileInformationByHandle and a P/Invoke per
+        # file. Over-counting costs a line of advice, never an install, but it must be stated.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        before = text.split("function Get-StudioTreeSizeBytes", 1)[0][-900:]
+        assert "hardlinked" in before and "Known limit" in before

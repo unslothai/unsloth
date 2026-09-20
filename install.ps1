@@ -2889,6 +2889,13 @@ exit 1
         } catch { return $null }
     }
 
+    # Known limit, and the reason it is a limit rather than a bug: this sums every file, so a
+    # tree whose wheels are hardlinked to a cache that outlives the install is billed for blocks
+    # a discard would not free, and the warning can then recommend an opt-out that reclaims
+    # little. install.sh asks st_nlink instead and counts only what the tree owns; the same
+    # question on Windows needs a link count per file, which is GetFileInformationByHandle and a
+    # P/Invoke per file in a tree with tens of thousands of them. Over-counting errs towards a
+    # line of advice, never towards a failed install, so it stays until it is worth that cost.
     function Get-StudioTreeSizeBytes {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }

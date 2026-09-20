@@ -685,6 +685,38 @@ _ROLLBACK_COSTS_FULL_SIZE=true"
 # inodes in full, which is exactly how this warning would recommend an opt-out that does nothing.
 space_case "short on space, but the cache is on this filesystem" "echo 524288" no
 
+echo "=== the size estimate counts only what the tree would actually free (#11313) ==="
+# A venv hardlinked to a cache that survives the install shares those blocks: deleting the venv
+# frees none of them, so a figure that bills them recommends an opt-out that reclaims nothing.
+SIZE_DIR="$WORK/size"
+mkdir -p "$SIZE_DIR/cache" "$SIZE_DIR/venv"
+# 512 KiB each, so the numbers are visible in KiB whatever the block size.
+dd if=/dev/zero of="$SIZE_DIR/cache/wheel.bin" bs=1024 count=512 2>/dev/null
+dd if=/dev/zero of="$SIZE_DIR/venv/own.bin" bs=1024 count=512 2>/dev/null
+ln "$SIZE_DIR/cache/wheel.bin" "$SIZE_DIR/venv/linked.bin"
+SIZE_HARNESS="$SIZE_DIR/harness.sh"
+{
+    printf '%s\n' 'set -e'
+    printf '%s\n' 'substep() { :; }'
+    printf '%s\n' 'C_WARN=""'
+    printf "STUDIO_HOME='%s'\n" "$SIZE_DIR"
+    printf "VENV_DIR='%s/venv'\n" "$SIZE_DIR"
+    printf '%s\n' "$ROLLBACK_BLOCK"
+    printf '%s\n' '_dir_size_kb "$VENV_DIR"'
+} > "$SIZE_HARNESS"
+SIZE_KB=$(dash "$SIZE_HARNESS" 2>/dev/null | tail -n 1)
+# The venv holds 1 MiB of files but owns only 512 KiB of blocks.
+if [ -n "$SIZE_KB" ] && [ "$SIZE_KB" -lt 900 ] 2>/dev/null; then
+    ok "a file hardlinked to a surviving cache is not counted ($SIZE_KB KiB)"
+else
+    bad "the estimate billed shared blocks ($SIZE_KB KiB, expected under 900)"
+fi
+if [ -n "$SIZE_KB" ] && [ "$SIZE_KB" -ge 400 ] 2>/dev/null; then
+    ok "and the blocks it does own still are"
+else
+    bad "the estimate lost the tree's own blocks ($SIZE_KB KiB)"
+fi
+
 echo "=== a discard that could not delete says so instead of reporting success (#11313) ==="
 # rm -rf exempts a missing path from its exit status, not a real unlink failure: an immutable
 # entry, a busy mount point, a sticky-bit parent. Shadowing rm is how that is reached portably.

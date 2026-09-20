@@ -1143,6 +1143,20 @@ _start_studio_venv_replacement() {
 # du/df in KiB, printing nothing when the answer is not available: an estimate this warning cannot make is a warning it does not print.
 _dir_size_kb() {  # dir
     [ -d "$1" ] || return 0
+    # Blocks only THIS tree owns, which is the question the warning is really asking: will removing it give the space back. A venv whose wheels are hardlinked to a cache that outlives the install shares those blocks with it, so deleting the tree frees none of them, while `du` over the tree alone bills every one and would recommend an opt-out that reclaims nothing. st_nlink answers it directly and answers it for every reason the sharing might exist, this run's cache mode included, which the mode flags cannot: they describe THIS run, and the tree was built by a previous one.
+    if find "$1" -maxdepth 0 -links 1 >/dev/null 2>&1; then
+        # Nothing unique is a real answer (everything is shared), not a reason to fall back.
+        if [ -z "$(find "$1" -type f -links 1 -print 2>/dev/null | head -n 1)" ]; then
+            echo 0
+            return 0
+        fi
+        # xargs may split into several du runs, so sum the totals rather than taking the last.
+        find "$1" -type f -links 1 -print0 2>/dev/null \
+            | xargs -0 du -ck 2>/dev/null \
+            | awk '$2 == "total" { total += $1 } END { if (total) print total }'
+        return 0
+    fi
+    # No -links support: the whole-tree figure, which over-counts shared blocks and so can warn where a discard would free little. That is the direction that costs a line of advice rather than an install.
     du -sk "$1" 2>/dev/null | awk 'NR == 1 { print $1 }'
 }
 
@@ -1173,7 +1187,8 @@ _same_volume() {  # a b
 }
 
 _path_device_id() {  # path that exists
-    stat -c %d "$1" 2>/dev/null || stat -f %d "$1" 2>/dev/null
+    # -L: stat reports the LINK's device without it, so a UV_CACHE_DIR that is a symlink beside the studio home pointing at another filesystem would answer with the studio home's device, and a symlinked STUDIO_HOME the other way round. The question is where the bytes land, which is the target.
+    stat -L -c %d "$1" 2>/dev/null || stat -L -f %d "$1" 2>/dev/null
 }
 
 # One line, before the move, naming both figures and the opt-out. Warn only: du over a tree full of hardlinks already counts shared blocks once, so the estimate is conservative, and a wrong guess must never stop an install that would have fitted.
