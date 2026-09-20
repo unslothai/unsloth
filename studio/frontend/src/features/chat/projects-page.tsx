@@ -201,6 +201,10 @@ export function ProjectsPage() {
       timer = setTimeout(() => {
         timer = null;
         const open = openProjectIdsRef.current;
+        // A closed project's load may still be in flight; its answer must not refill the cache.
+        for (const [id, seq] of loadSeqRef.current) {
+          if (!open.has(id)) loadSeqRef.current.set(id, seq + 1);
+        }
         setProjectChats((prev) => {
           const kept: typeof prev = {};
           for (const id of open) if (prev[id] !== undefined) kept[id] = prev[id];

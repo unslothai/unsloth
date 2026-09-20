@@ -24,6 +24,8 @@ test("a project row opens its chats in place", () => {
   // Debounced, since streaming fires the event per chunk, and open rows reload in place.
   assert.match(PAGE, /timer = setTimeout\(\(\) => \{[\s\S]*?for \(const id of open\) loadProjectChats\(id, true\);\n\s*\}, PROJECT_CHATS_REFRESH_DEBOUNCE_MS\);/);
   assert.match(PAGE, /if \(!silent\) \{\n\s*setProjectChats\(\(prev\) => \(\{ \.\.\.prev, \[projectId\]: "loading" \}\)\);/);
+  // A closed project's pending load is invalidated with its cache entry.
+  assert.match(PAGE, /for \(const \[id, seq\] of loadSeqRef\.current\) \{\n\s*if \(!open\.has\(id\)\) loadSeqRef\.current\.set\(id, seq \+ 1\);/);
   // A response a newer request overtook is dropped.
   assert.match(PAGE, /if \(loadSeqRef\.current\.get\(projectId\) !== seq\) return;\n\s*setProjectChats/);
   // Grouped as the sidebar groups them, newest first, and a row with none says so.
