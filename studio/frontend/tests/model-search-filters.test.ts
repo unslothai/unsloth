@@ -11,6 +11,12 @@ import {
   parameterRange,
 } from "../src/features/hub/lib/model-search-filters.ts";
 
+async function collect<T>(iterator: AsyncIterable<T>): Promise<T[]> {
+  const result: T[] = [];
+  for await (const value of iterator) result.push(value);
+  return result;
+}
+
 async function* listing(models: unknown[]) {
   yield* models;
 }
@@ -67,7 +73,7 @@ test("combined filters use actual parameters, GGUF context, and verified organiz
     { name: "verified/short", safetensors: { total: 2e9 } },
   ];
   const requests: string[] = [];
-  const output = await Array.fromAsync(
+  const output = await collect(
     filterModelListing(
       listing(rows),
       {
@@ -88,7 +94,7 @@ test("combined filters use actual parameters, GGUF context, and verified organiz
     ),
   );
   assert.deepEqual(
-    output.filter(Boolean).map((m: any) => m.name),
+    output.filter(Boolean).map((m) => (m as { name: string }).name),
     ["verified/model", "verified/model-GGUF"],
   );
   assert.equal(output.length, rows.length);
@@ -108,7 +114,7 @@ test("unfiltered searches neither drop models nor fetch metadata", async () => {
     { name: "user/other", gguf: { total: 1 } },
   ];
   assert.deepEqual(
-    await Array.fromAsync(filterModelListing(listing(rows), {}, noFetch)),
+    await collect(filterModelListing(listing(rows), {}, noFetch)),
     rows,
   );
 });
@@ -116,13 +122,13 @@ test("unfiltered searches neither drop models nor fetch metadata", async () => {
 test("missing or inaccessible config is excluded while service errors propagate", async () => {
   const rows = [{ name: "user/gated", safetensors: { total: 2e9 } }];
   assert.deepEqual(
-    await Array.fromAsync(
+    await collect(
       filterModelListing(listing(rows), { minContext: 1 }, async () => null),
     ),
     [null],
   );
   await assert.rejects(
-    Array.fromAsync(
+    collect(
       filterModelListing(listing(rows), { minContext: 1 }, async () => {
         throw new Error("HTTP 429");
       }),
@@ -138,8 +144,8 @@ test("a sparse result remains reachable beyond the pagination scan budget", asyn
   }));
   const iter = filterModelListing(listing(rows), { maxParams: 8e9 }, noFetch);
   for (let i = 0; i < 192; i++) assert.equal((await iter.next()).value, null);
-  const rest = await Array.fromAsync(iter);
-  assert.equal((rest.filter(Boolean)[0] as any).name, "user/199");
+  const rest = await collect(iter);
+  assert.equal((rest.filter(Boolean)[0] as { name: string }).name, "user/199");
 });
 
 test("metadata work is bounded and cancellation closes the source iterator", async () => {
