@@ -17204,8 +17204,10 @@ def _check_signal_escape_patterns(code: str):
             root = root.value
         if not isinstance(root, ast.Name):
             return False
-        if _bindings.values_for(root.id, root):
-            # Assigned somewhere, so the import is not what this name holds.
+        if _bindings.is_bound(root.id, root):
+            # The source gave this name a meaning of its own, so the import is not what it holds.
+            # A parameter and a class both bind it without ever recording a value, which is why
+            # this asks the binding table rather than the values.
             return False
         if _any_prefix_was_rebound(node):
             # An attribute below the module was replaced, so what hangs off it is not the module's.

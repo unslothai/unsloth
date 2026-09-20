@@ -4743,3 +4743,38 @@ class TestShadowsHappenWhereTheyAreWritten:
             "import sys, requests\nrequests.get(sys.argv[1])",
             expect_phrase = "Blocked: request target is read",
         )
+
+
+class TestConnectorNamesMustBeImports:
+    """A reserved connector name only exempts a call when it is the module that was imported."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\ndef go(sqlite3):\n    sqlite3.connect("169.254.169.254", 80)',
+                id = "parameter",
+            ),
+            pytest.param(
+                'class sqlite3:\n    pass\nsqlite3.connect("evil.example", 25)', id = "class"
+            ),
+            pytest.param(
+                'def sqlite3():\n    pass\nsqlite3.connect("evil.example", 25)', id = "function"
+            ),
+        ],
+    )
+    def test_a_name_bound_without_a_value_is_not_the_module(self, code):
+        # A parameter, a class and a def all bind the name without recording a value, so asking
+        # what it holds is not enough: the question is whether the source bound it at all.
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param('import sqlite3\nsqlite3.connect("state.db")', id = "import"),
+            pytest.param('import sqlite3 as db\ndb.connect("state.db")', id = "aliased_import"),
+            pytest.param('import duckdb\nduckdb.connect("warehouse.duckdb")', id = "duckdb"),
+        ],
+    )
+    def test_the_imported_connector_is_still_exempt_ok(self, code):
+        _ok(code)
