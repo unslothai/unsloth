@@ -43,7 +43,14 @@ def test_the_driver_still_reads_a_catalog_by_locale():
     ), f"{DRIVER.name} no longer reads api.messages[locale]; this guard is stale"
 
 
-def test_every_catalog_read_sits_behind_the_undefined_check():
+def test_every_catalog_read_sits_behind_the_check_that_gives_up():
+    """Measured against the LAST guard, the one that throws, not the first.
+
+    The first `=== undefined` check only decides whether to retry: a read placed
+    between it and the give-up still dereferences a catalog that failed twice, and
+    still produces the original unhelpful TypeError. What every read has to be after
+    is the point where a still-missing catalog stops the driver.
+    """
     source = _source()
     guards = [match.start() for match in _GUARD.finditer(source)]
     assert guards, (
@@ -51,17 +58,22 @@ def test_every_catalog_read_sits_behind_the_undefined_check():
         f"so a catalog that fails to load reports a TypeError from inside an eval "
         f"instead of naming the locale"
     )
-    first_guard = min(guards)
+    gives_up = source.index("catalog never loaded")
+    assert max(guards) < gives_up, (
+        f"{DRIVER.name}: the last `=== undefined` check is at {max(guards)}, after the "
+        f"give-up at {gives_up}; the throw must be what a failed check reaches"
+    )
     reads = [
         match.start()
         for match in _CATALOG_READ.finditer(source)
         if not _GUARD.match(source, match.start())
     ]
     assert reads, f"{DRIVER.name}: no unguarded-looking read found; this guard is stale"
-    assert min(reads) > first_guard, (
-        f"{DRIVER.name} reads api.messages[locale] at offset {min(reads)}, before the "
-        f"first `=== undefined` check at {first_guard}: a catalog that failed to load "
-        f"is read as undefined there"
+    early = [offset for offset in reads if offset < gives_up]
+    assert not early, (
+        f"{DRIVER.name} reads api.messages[locale] at {early}, before the give-up at "
+        f"{gives_up}: a catalog that failed both attempts is read as undefined there, "
+        f"which is the TypeError this guard exists to keep out"
     )
 
 
