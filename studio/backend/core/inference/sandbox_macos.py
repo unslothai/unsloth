@@ -254,6 +254,28 @@ def _within(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
+def _within_any(path: str, roots: "tuple[str, ...]") -> bool:
+    """``_within`` across every spelling both sides can have.
+
+    On macOS /var, /tmp and /etc are symlinks into /private, so the same
+    directory has two names and which one a caller holds depends on where it
+    came from: a session workdir arrives resolved, a configured Studio home
+    does not. A plain prefix compare says they are unrelated, and the
+    consequence is not a missing grant but an active denial, because the deny
+    rules are emitted in BOTH spellings while the restore list was built from
+    one. Observed on macos-15: with the Studio home under /var/folders the
+    sandboxed interpreter could not open its own script and every tool call
+    returned "Operation not permitted".
+    """
+    candidates = _sbpl_spellings(path)
+    return any(
+        _within(candidate, root_spelling)
+        for candidate in candidates
+        for root in roots
+        for root_spelling in _sbpl_spellings(root)
+    )
+
+
 def _rule(operations: str, filters: list[str]) -> str:
     """A filterless rule is UNCONDITIONAL, so ``(allow file-write* )`` grants the
     whole filesystem. Every rule meant to be unconditional is written literally,
@@ -531,7 +553,7 @@ def _studio_state_rules(
     needed = tuple(
         path
         for path in (*runtime_paths, *developer_paths, workdir, private_tmp)
-        if path and any(_within(path, root) for root in state)
+        if path and _within_any(path, state)
     )
     # file-read-DATA, not file-read*. The workdir lives UNDER the Studio root
     # on a default install, so denying read* also denies stat on the

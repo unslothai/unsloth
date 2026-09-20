@@ -944,3 +944,27 @@ def test_a_hard_link_to_a_readable_file_cannot_be_created_in_the_workdir(tmp_pat
         "so a tool can write to that file through the alias"
     )
     assert not (workdir / "alias").exists()
+
+
+def test_a_workdir_spelled_differently_from_the_studio_home_is_still_readable(monkeypatch, tmp_path):
+    """The deny rules are emitted in every spelling a path has, so the restore
+    list has to be built the same way. It was not. On macOS /var, /tmp and /etc
+    are symlinks into /private, a session workdir arrives resolved and a
+    configured Studio home does not, and with the home under /var/folders the
+    sandboxed interpreter could not open its own script: every tool call came
+    back Operation not permitted. Reproduced here with a symlink, which is the
+    same shape without needing a Darwin kernel."""
+    real_home = tmp_path / "private" / "studio-home"
+    workdir = real_home / "sandbox" / "_default"
+    workdir.mkdir(parents = True)
+    (tmp_path / "alias").symlink_to(tmp_path / "private")
+    aliased_home = tmp_path / "alias" / "studio-home"
+
+    monkeypatch.setattr(backend, "studio_state_roots", lambda: (str(aliased_home),))
+
+    rules = backend._studio_state_rules((), (), str(workdir.resolve()), "")
+
+    assert rules, "the state deny was not emitted, so this test proves nothing"
+    restored = [rule for rule in rules if rule.startswith("(allow")]
+    assert restored, "the workdir under the Studio home was never restored"
+    assert any(str(workdir.resolve()) in rule for rule in restored)
