@@ -46,6 +46,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/uninstall.ps1",
     "studio/install_llama_prebuilt.py",
     "studio/install_manifest.py",
+    "studio/install_mxc_prebuilt.py",
     "studio/install_node_prebuilt.py",
     "studio/install_python_stack.py",
     "studio/install_sd_cpp_prebuilt.py",
