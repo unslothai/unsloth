@@ -502,12 +502,32 @@ _ABSOLUTE_PATH_RE = re.compile(
 )
 
 
+# A path written as a URI. The lookbehind above refuses the leading slash of `file:///home/...`
+# because it follows `:` and `/`, which is exactly what keeps `https://huggingface.co/...` intact,
+# so the filesystem schemes are matched separately rather than by loosening it. The optional drive
+# letter is the Windows form `file:///C:/Users/...`, whose `:` is a component terminator.
+_FILE_URI_RE = re.compile(
+    r"(?<![\w.-])(?:file|filesystem):/{2,3}(?:localhost)?/?(?:[A-Za-z]:[\\/])?"
+    r"(?:" + _PATH_COMPONENT + r"[\\/])*" + _PATH_COMPONENT
+)
+
+
+# Only the scheme and its authority slashes: the path's own leading slash stays, or what is left
+# reads as relative and `short_path_for_log` returns it whole.
+_FILE_URI_PREFIX_RE = re.compile(r"^(?:file|filesystem)://(?:localhost)?")
+
+
 def scrub_paths(text: Any) -> str:
     """Shorten every absolute path inside a log message. Not a security control: the log is local."""
     # str(), not _as_text: the usual argument is an exception, whose message is the whole point.
     message = text if isinstance(text, str) else ("" if text is None else str(text))
     if not message:
         return ""
+    # The scheme comes off first: `short_path_for_log` judges "absolute" on the first character,
+    # and `file:` is not one, so it would hand the whole URI back unshortened.
+    message = _FILE_URI_RE.sub(
+        lambda match: short_path_for_log(_FILE_URI_PREFIX_RE.sub("", match.group(0))), message
+    )
     return _ABSOLUTE_PATH_RE.sub(lambda match: short_path_for_log(match.group(0)), message)
 
 
@@ -534,6 +554,7 @@ def redact_paths_in_text(text: Any) -> str:
     message = text if isinstance(text, str) else ("" if text is None else str(text))
     if not message:
         return ""
+    message = _FILE_URI_RE.sub(_REDACTED_PATH, message)
     return _REDACTED_TAIL_RE.sub(_REDACTED_PATH, _ABSOLUTE_PATH_RE.sub(_REDACTED_PATH, message))
 
 

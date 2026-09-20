@@ -226,10 +226,45 @@ def test_the_leak_detector_finds_what_it_is_for(payload, roots, leaks):
             "Skipping /srv/Program Files/models--x: denied",
             "Skipping .../Program Files/models--x: denied",
         ),
+        # A path written as a URI. The rule that keeps `https://` intact refuses the leading
+        # slash here too, so these are matched by their scheme instead.
+        (
+            f"cannot open file://{REPO_DIR}/blobs/abc",
+            "cannot open .../blobs/abc",
+        ),
+        (
+            "cannot open file:///C:/Users/operator/models--x/config.json",
+            "cannot open .../models--x/config.json",
+        ),
     ],
 )
 def test_log_messages_lose_the_layout_and_keep_the_meaning(message, expected):
     assert scrub_paths(message) == expected
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        f"OSError: cannot read file://{REPO_DIR}/blobs/abc",
+        f"file://localhost{REPO_DIR}/config.json missing",
+        "load failed for file:///C:/Users/operator/models--x/model.gguf",
+    ],
+)
+def test_a_path_written_as_a_uri_is_redacted_like_any_other(message):
+    """An exception that formats its filename as a URI went out whole: the lookbehind that
+    protects `https://` refuses the URI's own first slash, so nothing matched and the retained
+    error text an API-key caller reads carried the host path."""
+    redacted = redact_paths_in_text(message)
+    assert HOST_ROOT not in redacted and "Users/operator" not in redacted, redacted
+    assert "<path>" in redacted
+
+    # BOUNDARY. Web URLs, and a bare scheme with no path, are left alone.
+    for kept in (
+        "see https://huggingface.co/api/models and http://localhost:8000/v1",
+        "file:// nothing here",
+        "ratio 3/4",
+    ):
+        assert redact_paths_in_text(kept) == kept
 
 
 @pytest.mark.parametrize(

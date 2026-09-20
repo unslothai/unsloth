@@ -449,14 +449,6 @@ def check_format_response(
             else:
                 preview_slice = None
 
-                # Here, not above the cache reader: a preview materialises rows in the
-                # datasets cache, possibly under a one-off token saved nowhere, and
-                # unrecorded a later tokenless caller reads "none needed one". A
-                # prefer-local request reaches neither branch below, so recording it
-                # there would relabel an anonymously cached dataset as credentialed and
-                # refuse the offline caller this path exists for.
-                note_repo_fetched_with_a_request_token(hf_token, request.dataset_name, "dataset")
-
                 try:
                     from huggingface_hub import HfApi
 
@@ -485,6 +477,15 @@ def check_format_response(
                             "token": hf_token,
                         }
 
+                        # Recorded against the call that can materialise rows, not against
+                        # the listing above it: a preview writes into the datasets cache,
+                        # possibly under a one-off token saved nowhere, and unrecorded a
+                        # later tokenless caller reads "none needed one". Recording before
+                        # `list_repo_files` meant a 404 or an outage left a record for a
+                        # fetch that never happened, and the first record stands.
+                        note_repo_fetched_with_a_request_token(
+                            hf_token, request.dataset_name, "dataset"
+                        )
                         streamed_ds = load_dataset(**load_kwargs)
                         rows = list(islice(streamed_ds, PREVIEW_SIZE))
                         if rows:
@@ -508,6 +509,10 @@ def check_format_response(
                     if request.subset:
                         load_kwargs["name"] = request.subset
 
+                    # Tier 2 reaches the network on its own, whether or not tier 1 ran.
+                    note_repo_fetched_with_a_request_token(
+                        hf_token, request.dataset_name, "dataset"
+                    )
                     streamed_ds = load_dataset(**load_kwargs)
 
                     rows = list(islice(streamed_ds, PREVIEW_SIZE))

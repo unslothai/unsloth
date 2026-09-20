@@ -524,8 +524,8 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
         (inspect.getsource(download_lifecycle), "(hf_token, repo_id, repo_type)", "proc = spawn()"),
         (
             inspect.getsource(formatting.check_format_response),
-            "(hf_token, request.dataset_name",
-            "load_dataset(",
+            "(\n                            hf_token, request.dataset_name",
+            "load_dataset(**load_kwargs)",
         ),
         (inspect.getsource(picker_module), "(hf_token, resolved", "path = hf_hub_download("),
     ):
@@ -547,6 +547,14 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
     assert preview.index("_LOCAL_CACHE_MISS_ERROR_CODE") < preview.index(
         "note_repo_fetched_with_a_request_token"
     ), "a cache-only preview records a fetch it never made"
+    # And below the listing call: `list_repo_files` fetches nothing into the cache, so a 404 or
+    # an outage there used to leave a record for a fetch that never happened, which the
+    # first-writer rule then keeps forever.
+    assert preview.index("list_repo_files") < preview.index(
+        "note_repo_fetched_with_a_request_token"
+    ), "a failed listing records a fetch that never started"
+    # Both download call sites, since tier 2 reaches the network whether or not tier 1 ran.
+    assert preview.count("note_repo_fetched_with_a_request_token") == 2
 
 
 def test_every_credentialed_fetch_is_recorded_not_only_a_foreign_one(monkeypatch, writes):
