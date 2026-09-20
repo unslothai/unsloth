@@ -3117,3 +3117,70 @@ class TestComprehensionIterableAndAliasOrder:
     )
     def test_a_call_after_the_rebind_is_not_the_alias_ok(self, code):
         _ok(code)
+
+
+class TestContextManagersWalrusesAndTheVersionFloor:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f'import requests\nwith requests.Session() as s:\n    s.get("{_METADATA_URL}")',
+                id = "requests_session",
+            ),
+            pytest.param(
+                f'import httpx\nwith httpx.Client() as s:\n    s.get("{_METADATA_URL}")',
+                id = "httpx_client",
+            ),
+            pytest.param(
+                "import aiohttp\nasync def go():\n    async with aiohttp.ClientSession() as s:\n"
+                f'        await s.get("{_METADATA_URL}")',
+                id = "aiohttp_async_with",
+            ),
+        ],
+    )
+    def test_a_context_managed_client_is_policed_blocked(self, code):
+        # Each of these hands back the object itself, so the name still holds the session.
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_a_context_managed_client_to_an_allowed_host_ok(self):
+        _ok(
+            "import requests\nwith requests.Session() as s:\n"
+            '    s.get("https://huggingface.co/api/models")'
+        )
+
+    def test_a_walrus_in_a_comprehension_binds_outside_it_ok(self):
+        # Python binds it in the containing scope, so the outer literal is no longer the value and
+        # nothing may vouch for the call.
+        _ok(
+            'import requests\nu = "https://huggingface.co/"\n'
+            f'[(u := "{_METADATA_URL}") for _ in [0]]\nrequests.get(u)'
+        )
+
+    def test_a_walrus_outside_a_comprehension_still_resolves_blocked(self):
+        _blocked(
+            f'import requests\nif (u := "{_METADATA_URL}"):\n    requests.get(u)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_the_analysis_runs_where_match_is_not_in_the_ast(self, monkeypatch):
+        # match arrived in 3.10 and the package floor is 3.9, where ast has no MatchAs.
+        import ast as ast_module
+
+        for name in ("MatchAs", "MatchStar", "MatchMapping"):
+            monkeypatch.delattr(ast_module, name, raising = False)
+        import importlib
+
+        import core.inference.tools as tools_module
+
+        reloaded = importlib.reload(tools_module)
+        try:
+            assert reloaded._check_code_safety('import requests\nrequests.get("https://hf.co")') is None
+            assert "cloud-metadata host" in (
+                reloaded._check_code_safety(
+                    f'import requests as r\nr.get("{_METADATA_URL}")'
+                )
+                or ""
+            )
+        finally:
+            monkeypatch.undo()
+            importlib.reload(reloaded)

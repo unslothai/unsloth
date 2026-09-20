@@ -16092,6 +16092,16 @@ def _check_signal_escape_patterns(code: str):
     # Depth alone does not bound the work: `s2 = s1 + s1` doubles the graph per level, so a shallow
     # file can still cost seconds. One budget per top-level resolution, spent by every step.
     _MAX_RESOLVE_STEPS = 4000
+    # match was added in 3.10 and the project floor is 3.9, where these classes do not exist.
+    # An empty tuple makes the isinstance below simply False.
+    _MATCH_CAPTURES = tuple(
+        node
+        for node in (getattr(ast, "MatchAs", None), getattr(ast, "MatchStar", None))
+        if node is not None
+    )
+    _MATCH_MAPPINGS = tuple(
+        node for node in (getattr(ast, "MatchMapping", None),) if node is not None
+    )
     _resolve_budget = [_MAX_RESOLVE_STEPS]
 
     def _takes_a_url_argument(fq: str) -> bool:
@@ -16178,6 +16188,7 @@ def _check_signal_escape_patterns(code: str):
             self._scope_of: dict[int, object] = {}
             self._scope_parent: dict[object, object] = {}
             self._class_scopes: set = set()
+            self._comprehension_scopes: set = set()
             # (scope, name) -> the scope that name really binds in, for global / nonlocal.
             self._redirect: dict = {}
             # (scope, name) -> [(position, is_alias)], so a call before a rebind still resolves.
@@ -16266,6 +16277,10 @@ def _check_signal_escape_patterns(code: str):
                     self._scope_parent[inner] = scope
                     if isinstance(node, ast.ClassDef):
                         self._class_scopes.add(inner)
+                    elif isinstance(
+                        node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+                    ):
+                        self._comprehension_scopes.add(inner)
                 for child, child_scope in self._children_with_scope(node, scope, inner):
                     stack.append((child, child_scope))
                 yield node, scope
@@ -16402,9 +16417,9 @@ def _check_signal_escape_patterns(code: str):
                         elif node.module in _NET_MODULES:
                             self._record_alias(self.funcs, (scope, local), fq)
             for node, scope in scoped:
-                if isinstance(node, (ast.MatchAs, ast.MatchStar)):
+                if _MATCH_CAPTURES and isinstance(node, _MATCH_CAPTURES):
                     self._mark(node.name, scope, node)
-                elif isinstance(node, ast.MatchMapping):
+                elif _MATCH_MAPPINGS and isinstance(node, _MATCH_MAPPINGS):
                     self._mark(node.rest, scope, node)
                 elif type(node).__name__ == "TypeAlias":  # 3.12+, absent on the floor
                     self._mark(getattr(getattr(node, "name", None), "id", None), scope)
@@ -16413,7 +16428,12 @@ def _check_signal_escape_patterns(code: str):
                         self._bind(target, node.value, scope)
                 elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
                     if node.value is not None:
-                        self._bind(node.target, node.value, scope)
+                        target_scope = scope
+                        if isinstance(node, ast.NamedExpr):
+                            # An assignment expression inside a comprehension binds outside it.
+                            while target_scope in self._comprehension_scopes:
+                                target_scope = self._scope_parent.get(target_scope)
+                        self._bind(node.target, node.value, target_scope)
                 elif isinstance(node, ast.AugAssign):
                     self._bind(node.target, None, scope)
                 elif isinstance(node, (ast.For, ast.AsyncFor)):
@@ -16425,11 +16445,13 @@ def _check_signal_escape_patterns(code: str):
                         # `with socket.socket() as s` hands back the socket itself, so the name is
                         # still a socket receiver; anything else binds a value we cannot name.
                         held = node.context_expr
-                        socket_held = (
-                            isinstance(held, ast.Call)
-                            and _canonical_fq(held.func, self) in _SOCKET_FACTORY_FQ
+                        # requests.Session, httpx.Client, aiohttp.ClientSession and socket all
+                        # hand back the object itself, so the name still holds it.
+                        keeps_itself = isinstance(held, ast.Call) and (
+                            _canonical_fq(held.func, self) in _SOCKET_FACTORY_FQ
+                            or _canonical_fq(held.func, self) in _SESSION_FACTORY_FQ
                         )
-                        self._bind(node.optional_vars, held if socket_held else None, scope)
+                        self._bind(node.optional_vars, held if keeps_itself else None, scope)
                 elif isinstance(node, ast.Delete):
                     # The name is gone at runtime; whatever a later lookup finds is not this value.
                     for target in node.targets:
