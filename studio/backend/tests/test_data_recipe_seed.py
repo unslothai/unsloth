@@ -443,10 +443,11 @@ _GSM8K_FILES = [
 @pytest.mark.parametrize(
     ("files", "split", "subset", "expected"),
     [
-        (_GSM8K_FILES, "train", None, "datasets/org/repo/main/train-*.parquet"),
+        # No card: the loader reads every train-named file as one split.
+        (_GSM8K_FILES, "train", None, "datasets/org/repo/**/train-*.parquet"),
         (_GSM8K_FILES, "test", "main", "datasets/org/repo/main/test-*.parquet"),
         (_GSM8K_FILES, "train", "socratic", "datasets/org/repo/socratic/train-*.parquet"),
-        (_GSM8K_FILES, "train", "default", "datasets/org/repo/main/train-*.parquet"),
+        (_GSM8K_FILES, "train", "default", "datasets/org/repo/**/train-*.parquet"),
         (
             ["data/test-00000-of-00001.parquet", "data/train-00000-of-00002.parquet"],
             "train",
@@ -946,6 +947,34 @@ def test_seed_hf_path_never_widens_a_declared_split_over_another(monkeypatch, tm
     assert sorted(matched) == ["data/ax.parquet", "data/cx.parquet"]
 
 
+def test_seed_hf_path_keeps_shards_whose_folders_also_hold_other_splits(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = [
+        "a/train-0.parquet",
+        "a/test-0.parquet",
+        "b/train-1.parquet",
+        "b/test-1.parquet",
+    ]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train")
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert sorted(matched) == ["a/train-0.parquet", "b/train-1.parquet"]
+
+
+def test_seed_hf_path_drops_the_mixed_json_glob_beside_a_compressed_file(monkeypatch, tmp_path):
+    """*.json* is run over the whole repo, so a a.json.gz would be read too."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/a.json", "data/b.jsonl"]
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "data/*"}]}]
+
+    resolved = seed_route._resolve_seed_hf_path(
+        "org/repo", files, "train", None, configs, [*files, "data/a.json.gz"]
+    )
+
+    assert resolved == "datasets/org/repo/data/*.json"
+
+
 def test_seed_hf_path_keeps_both_extensions_of_one_builder(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["data/a.json", "data/b.jsonl"]
@@ -1047,8 +1076,8 @@ def test_seed_hf_path_keeps_shards_spread_over_sibling_folders(monkeypatch, tmp_
     assert resolved == "datasets/org/repo/**/train-*.parquet"
 
 
-def test_seed_hf_path_leaves_sibling_configs_alone(monkeypatch, tmp_path):
-    """Folders holding a whole split each are configs, not shards of one split."""
+def test_seed_hf_path_reads_sibling_folders_as_one_split_without_a_card(monkeypatch, tmp_path):
+    """Without a card there are no configs, so every train file is the train split."""
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = [
         "main/train-0.parquet",
@@ -1057,16 +1086,22 @@ def test_seed_hf_path_leaves_sibling_configs_alone(monkeypatch, tmp_path):
         "socratic/test-0.parquet",
     ]
 
-    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train")
-
-    assert resolved == "datasets/org/repo/main/train-*.parquet"
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train")
+        == "datasets/org/repo/**/train-*.parquet"
+    )
+    # Ask for one of them and only that one is read.
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", "socratic")
+        == "datasets/org/repo/socratic/train-*.parquet"
+    )
 
 
 def test_seed_preview_file_follows_the_config_data_dir(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["en/train.parquet", "fr/train.parquet"]
     configs = [{"config_name": "french", "data_dir": "fr"}]
-    monkeypatch.setattr(seed_route, "_list_hf_data_files", lambda **kwargs: files)
+    monkeypatch.setattr(seed_route, "_list_hf_repo_files", lambda **kwargs: files)
     monkeypatch.setattr(seed_route, "_list_hf_dataset_configs", lambda **kwargs: configs)
     monkeypatch.setattr(
         seed_route, "refuse_unauthorized_dataset_preview", lambda *args, **kwargs: None

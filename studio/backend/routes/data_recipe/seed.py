@@ -109,7 +109,12 @@ def _normalize_optional_text(value: str | None) -> str | None:
     return trimmed if trimmed else None
 
 
-def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
+def _list_hf_repo_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
+    """Every file in the repo, including the ones no builder reads.
+
+    A glob is run by the reader over all of them, so a pattern has to be judged
+    against the whole listing even where only the data files can be loaded.
+    """
     try:
         from huggingface_hub import HfApi
         from huggingface_hub.utils import HfHubHTTPError
@@ -117,10 +122,14 @@ def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
         return []
     try:
         api = HfApi(token = token)
-        repo_files = api.list_repo_files(dataset_name, repo_type = "dataset", token = token)
-        return [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
+        return api.list_repo_files(dataset_name, repo_type = "dataset", token = token)
     except (HfHubHTTPError, OSError, ValueError):
         return []
+
+
+def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
+    repo_files = _list_hf_repo_files(dataset_name = dataset_name, token = token)
+    return [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
 
 
 def _list_hf_dataset_configs(*, dataset_name: str, token: HfTokenArg) -> list[dict[str, Any]]:
@@ -498,16 +507,28 @@ def _of_suffix(paths: list[str], suffix: str) -> list[str]:
     return [p for p in paths if Path(p).suffix.lower() in group]
 
 
-def _extension_glob(paths: list[str], suffix: str) -> str:
+def _extension_glob(paths: list[str], suffix: str, repo_files: list[str]) -> str:
     """What the pattern should end in to keep every file this builder reads.
 
     A split declared over both .json and .jsonl cannot be named by one of them
     without dropping the other, so the shared start of the two ends the glob.
+    That glob is open at the end, and the reader runs it over the whole repo
+    rather than over the data files listed here, so a a.json.gz sitting beside
+    them would be read as well: where the repo holds one, the split is named by
+    the one extension that won instead.
     """
-    used = {Path(path).suffix.lower() for path in paths} & set(_builder_exts(suffix))
+    group = set(_builder_exts(suffix))
+    used = {Path(path).suffix.lower() for path in paths} & group
     if len(used) < 2:
         return suffix
-    return f"{os.path.commonprefix(sorted(used))}*"
+    stem = os.path.commonprefix(sorted(used))
+    matcher = re.compile(rf"{re.escape(stem)}[^/]*\Z", re.IGNORECASE)
+    if any(
+        Path(path).suffix.lower() not in group and matcher.search(Path(path).name)
+        for path in repo_files
+    ):
+        return suffix
+    return f"{stem}*"
 
 
 def _common_name_prefix(paths: list[str]) -> str:
@@ -633,6 +654,7 @@ def _resolve_seed_hf_path(
     split: str = DEFAULT_SPLIT,
     subset: str | None = None,
     configs: list[dict[str, Any]] | None = None,
+    repo_files: list[str] | None = None,
 ) -> str | None:
     declared = _declared_split_patterns(configs or [], split, subset)
     declared_files = _files_under_patterns(declared, data_files)
@@ -641,7 +663,12 @@ def _resolve_seed_hf_path(
     if declared_files:
         suffix = _dominant_suffix(declared_files)
         declared_files = _of_suffix(declared_files, suffix)
-        suffix = _extension_glob(declared_files, suffix)
+        exact = suffix
+        suffix = _extension_glob(declared_files, suffix, repo_files or data_files)
+        if suffix == exact:
+            # The builder's other extension cannot be named safely, so it is the
+            # winning one alone, as `load_dataset` would read it.
+            declared_files = [f for f in declared_files if Path(f).suffix.lower() == exact.lower()]
         pattern = ""
         if len(declared) == 1:
             pattern = _with_data_extension(declared[0], suffix)
@@ -706,13 +733,10 @@ def _resolve_seed_hf_path(
         # A split sharded over sibling folders, as a/train-0.parquet beside
         # b/train-1.parquet, cannot be written under the one folder its chosen
         # file sits in, so the pattern is anchored at the folder they share and
-        # walks down from there. Sibling folders that hold splits of their own
-        # are configs rather than shards of this one (main beside socratic), and
-        # reaching into those would read another config, so they stay out.
-        outside = [f for f in data_files if Path(f).parent.as_posix() != parent]
-        spread = any(f in wanted for f in outside) and not any(
-            _carries_another_split(f, split_lower) for f in outside
-        )
+        # walks down from there. Without a card the loader reads those as one
+        # split whatever else the folders hold, and a requested subset has
+        # already narrowed `scoped`, so a neighbour cannot pull the answer wide.
+        spread = any(Path(f).parent.as_posix() != parent for f in wanted)
         root = _common_parent(sorted(wanted | {selected})) if spread else parent
         stem = Path(selected).name[: -len(suffix)]
         for candidate in _candidate_patterns(stem, suffix, split_lower):
@@ -935,7 +959,8 @@ def inspect_seed_dataset(
         ) from exc
 
     preview_rows: list[dict[str, Any]] = []
-    data_files = _list_hf_data_files(dataset_name = dataset_name, token = token)
+    repo_files = _list_hf_repo_files(dataset_name = dataset_name, token = token)
+    data_files = [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
     configs = _list_hf_dataset_configs(dataset_name = dataset_name, token = token)
 
     # Preview the same files the recipe will read, so the rows on screen are not
@@ -998,7 +1023,9 @@ def inspect_seed_dataset(
     if not data_files:
         resolved_path = f"datasets/{dataset_name}/**/*.parquet"
     else:
-        resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split, subset, configs)
+        resolved_path = _resolve_seed_hf_path(
+            dataset_name, data_files, split, subset, configs, repo_files
+        )
         if not resolved_path:
             raise HTTPException(status_code = 422, detail = "unable to resolve seed dataset path")
 
