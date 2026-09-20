@@ -26,6 +26,15 @@ import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Sequence
 
+# Same bootstrap as prebuilt_core.py: today only sd_cpp_backend.py prepares the path.
+if __package__:
+    from .backend.utils.auth_safe import auth_safe_open
+else:
+    _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _STUDIO_DIR not in sys.path:
+        sys.path.insert(0, _STUDIO_DIR)
+    from backend.utils.auth_safe import auth_safe_open
+
 # Default source: the Unsloth mirror's CPU/Apple prebuilts (override with UNSLOTH_SD_CPP_REPO). GPU hosts run diffusers, so only CPU/Apple assets are needed.
 DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
@@ -237,7 +246,7 @@ def _fetch_release(
         req = urllib.request.Request(url, headers = {"Accept": "application/vnd.github+json"})
         if token:
             req.add_header("Authorization", f"Bearer {token}")
-        with urllib.request.urlopen(req, timeout = timeout) as resp:  # noqa: S310 (fixed https host)
+        with auth_safe_open(req, timeout = timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     base = f"https://api.github.com/repos/{repo}/releases"

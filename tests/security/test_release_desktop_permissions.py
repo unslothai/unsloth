@@ -81,7 +81,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
         for step in build["steps"]
         if step.get("uses", "").startswith("tauri-apps/tauri-action@")
     ]
-    assert len(tauri_steps) == 3
+    assert len(tauri_steps) == 4
     for step in tauri_steps:
         assert "GITHUB_TOKEN" not in step.get("env", {})
         assert not {"releaseId", "tagName", "releaseName"} & step.get("with", {}).keys()

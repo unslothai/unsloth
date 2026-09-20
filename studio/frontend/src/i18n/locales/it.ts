@@ -129,6 +129,8 @@ export const it = {
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Nessuna chat",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
