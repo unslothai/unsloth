@@ -216,6 +216,15 @@ def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
     return (
         index > 0
         and tokens[index - 1] == "coproc"
+        # ...and that `coproc` has to be the keyword, which it is only at command position: in `echo coproc JOB if rm
+        # -f x` the same three words are arguments echo prints, and reading them as a boundary blocked a line that
+        # runs nothing.
+        and (
+            index == 1
+            or _looks_like_separator(tokens[index - 2])
+            or tokens[index - 2] in _SHELL_KEYWORDS_AS_SEP
+            or _ASSIGNMENT_RE.match(tokens[index - 2]) is not None
+        )
         and index + 1 < len(tokens)
         and tokens[index + 1] in _COPROC_COMPOUND_STARTERS
         and _COPROC_NAME_RE.match(tokens[index]) is not None

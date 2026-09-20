@@ -900,6 +900,11 @@ class TestBashBlocklistPosition:
             pytest.param("echo 'coproc rm'", id = "quoted_coproc_payload_allowed"),
             # A real coprocess whose command is harmless does not become blocked by its own arguments.
             pytest.param("coproc echo rm", id = "coproc_benign_command_blocked_arg_allowed"),
+            # The optional-name rule needs the same guard: these three words are arguments echo prints.
+            pytest.param(
+                "echo coproc JOB if rm -f victim; then :; fi",
+                id = "coproc_name_shape_as_args_allowed",
+            ),
             pytest.param("> out.log echo hi", id = "spaced_redirection_benign_allowed"),
             # A substitution that IS the redirection target names a file; nothing runs.
             pytest.param("> $(date).log echo hi", id = "subst_as_redirection_target_allowed"),
@@ -1137,6 +1142,16 @@ class TestBashBlocklistPosition:
                 "rm", "coproc JOB if rm -f victim; then :; fi", id = "coproc_named_if_blocked"
             ),
             pytest.param("rm", "coproc JOB { rm -rf victim; }", id = "coproc_named_group_blocked"),
+            pytest.param(
+                "rm",
+                "x=1; coproc JOB if rm -f victim; then :; fi",
+                id = "coproc_named_after_sep_blocked",
+            ),
+            pytest.param(
+                "rm",
+                "FOO=bar coproc JOB if rm -f victim; then :; fi",
+                id = "coproc_named_after_assign_blocked",
+            ),
             pytest.param(
                 "rm",
                 "coproc JOB for f in x; do rm -f victim; done",
