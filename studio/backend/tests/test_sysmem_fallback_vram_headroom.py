@@ -98,8 +98,7 @@ class TestMonotonicity:
     @pytest.mark.parametrize("total", CARD_SIZES_MIB)
     def test_budget_never_decreases_as_fraction_rises(self, total, sysmem_fallback):
         budgets = [
-            _vram_usable_mib(total, total, f, sysmem_fallback = sysmem_fallback)
-            for f in FRACTIONS
+            _vram_usable_mib(total, total, f, sysmem_fallback = sysmem_fallback) for f in FRACTIONS
         ]
         for lower, higher in zip(budgets, budgets[1:]):
             assert higher >= lower - 1e-9
@@ -121,9 +120,7 @@ class TestMonotonicity:
         # The floor only ever overrides upward. A user asking for a bigger margin
         # than the floor must still get it.
         t = 8 * GIB
-        assert _vram_usable_mib(t, t, 0.80, sysmem_fallback = True) == pytest.approx(
-            t - 0.20 * t
-        )
+        assert _vram_usable_mib(t, t, 0.80, sysmem_fallback = True) == pytest.approx(t - 0.20 * t)
 
 
 class TestPooledIsNotChargedTwice:
@@ -173,10 +170,10 @@ class TestRiskClassifier:
     @pytest.mark.parametrize(
         "backends",
         [
-            frozenset({"hip", "base"}),      # ROCm: different vendor, different mechanism
-            frozenset({"vulkan", "base"}),   # Vulkan does not allocate through CUDA
-            frozenset({"cpu", "base"}),      # no GPU backend at all
-            frozenset(),                     # unreadable lib dir
+            frozenset({"hip", "base"}),  # ROCm: different vendor, different mechanism
+            frozenset({"vulkan", "base"}),  # Vulkan does not allocate through CUDA
+            frozenset({"cpu", "base"}),  # no GPU backend at all
+            frozenset(),  # unreadable lib dir
         ],
     )
     def test_false_on_windows_without_cuda(self, monkeypatch, backends):
@@ -204,9 +201,7 @@ class TestRiskClassifier:
         def _boom(binary = None):
             raise OSError("lib dir vanished mid-load")
 
-        monkeypatch.setattr(
-            LlamaCppBackend, "_installed_ggml_backends", staticmethod(_boom)
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_installed_ggml_backends", staticmethod(_boom))
         # An advisory must never be what fails a model load.
         assert LlamaCppBackend._sysmem_fallback_risk() is False
 
@@ -221,9 +216,7 @@ class TestRiskClassifier:
                 raise OSError("transient")
             return frozenset({"cuda"})
 
-        monkeypatch.setattr(
-            LlamaCppBackend, "_installed_ggml_backends", staticmethod(_flaky)
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_installed_ggml_backends", staticmethod(_flaky))
         assert LlamaCppBackend._sysmem_fallback_risk() is False
         assert LlamaCppBackend._sysmem_fallback_risk() is True
 
@@ -239,9 +232,7 @@ class TestRiskClassifier:
             staticmethod(lambda binary = None: table[binary]),
         )
         assert LlamaCppBackend._sysmem_fallback_risk("C:\\cuda-build\\llama-server.exe") is True
-        assert (
-            LlamaCppBackend._sysmem_fallback_risk("C:\\vulkan-build\\llama-server.exe") is False
-        )
+        assert LlamaCppBackend._sysmem_fallback_risk("C:\\vulkan-build\\llama-server.exe") is False
 
     def test_second_call_does_not_relist_the_directory(self, monkeypatch):
         # The planner asks once per candidate GPU subset; that must not be a syscall each.
@@ -252,9 +243,7 @@ class TestRiskClassifier:
             calls["n"] += 1
             return frozenset({"cuda"})
 
-        monkeypatch.setattr(
-            LlamaCppBackend, "_installed_ggml_backends", staticmethod(_counted)
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_installed_ggml_backends", staticmethod(_counted))
         for _ in range(5):
             assert LlamaCppBackend._sysmem_fallback_risk() is True
         assert calls["n"] == 1

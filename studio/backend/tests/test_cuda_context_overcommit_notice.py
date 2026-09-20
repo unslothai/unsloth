@@ -58,8 +58,8 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 # Reuse the GGUF builder rather than duplicating a second one that can drift.
 from test_kv_cache_estimation import _backend_from_gguf  # noqa: E402
 
-GIB = 1024 ** 3
-MIB = 1024 ** 2
+GIB = 1024**3
+MIB = 1024**2
 
 # Qwen3-VL-8B-Instruct, read out of the real GGUF's metadata.
 QWEN3VL_8B = {
@@ -74,9 +74,9 @@ QWEN3VL_8B = {
 
 # Measured on the reporter's configuration, and on ours.
 REPORTED_CTX = 65536
-MEASURED_KV_MIB = 9216.0          # the single allocation llama-server asks for
-WEIGHTS_BYTES = int(4.80 * GIB)   # UD-Q4_K_XL on disk
-MMPROJ_BYTES = int(1.40 * GIB)    # mmproj-F16, loaded because -ngl 99 puts it on GPU
+MEASURED_KV_MIB = 9216.0  # the single allocation llama-server asks for
+WEIGHTS_BYTES = int(4.80 * GIB)  # UD-Q4_K_XL on disk
+MMPROJ_BYTES = int(1.40 * GIB)  # mmproj-F16, loaded because -ngl 99 puts it on GPU
 CARD_16GIB_MIB = 16.0 * 1024
 
 
@@ -90,9 +90,9 @@ class TestKVEstimateAgainstHardware:
 
     def test_kv_cache_estimate_matches_measured_allocation(self, backend):
         kv = backend._estimate_kv_cache_bytes(REPORTED_CTX, None)
-        assert kv / MIB == pytest.approx(MEASURED_KV_MIB, abs = 0.5), (
-            f"expected the measured {MEASURED_KV_MIB} MiB allocation, got {kv / MIB:.1f} MiB"
-        )
+        assert kv / MIB == pytest.approx(
+            MEASURED_KV_MIB, abs = 0.5
+        ), f"expected the measured {MEASURED_KV_MIB} MiB allocation, got {kv / MIB:.1f} MiB"
         # Stated the other way, because 9.00 GiB exactly is the fact worth pinning.
         assert kv / GIB == pytest.approx(9.0, abs = 0.01)
 
@@ -126,9 +126,9 @@ class TestSixteenGibBudget:
         )
         footprint_mib = footprint / MIB
         # Even the whole card, with no reserve at all, is not enough.
-        assert footprint_mib > CARD_16GIB_MIB, (
-            f"footprint {footprint_mib:.0f} MiB should exceed a {CARD_16GIB_MIB:.0f} MiB card"
-        )
+        assert (
+            footprint_mib > CARD_16GIB_MIB
+        ), f"footprint {footprint_mib:.0f} MiB should exceed a {CARD_16GIB_MIB:.0f} MiB card"
         # But only just: ~74 MiB, under half a percent. That near-miss is the whole
         # character of this bug. It is why the reporter could inspect memory and
         # conclude there was no overflow, and why on Windows the driver can absorb it
@@ -184,9 +184,7 @@ class TestOvercommitNotice:
     """The advisory itself: when it speaks, when it stays quiet, and what it says."""
 
     def test_silent_when_the_context_fits(self):
-        assert (
-            LlamaCppBackend._cuda_context_overcommit_notice(8192, 65536, None) is None
-        )
+        assert LlamaCppBackend._cuda_context_overcommit_notice(8192, 65536, None) is None
 
     def test_silent_without_a_measured_ceiling(self):
         """No ceiling means no fit maths ran; _unmeasured_context_notice owns that case."""
@@ -194,9 +192,7 @@ class TestOvercommitNotice:
         assert LlamaCppBackend._cuda_context_overcommit_notice(0, 65536, None) is None
 
     def test_silent_at_exactly_the_ceiling(self):
-        assert (
-            LlamaCppBackend._cuda_context_overcommit_notice(32768, 32768, None) is None
-        )
+        assert LlamaCppBackend._cuda_context_overcommit_notice(32768, 32768, None) is None
 
     def test_reports_both_numbers(self):
         msg = LlamaCppBackend._cuda_context_overcommit_notice(65536, 32768, None)
@@ -205,9 +201,7 @@ class TestOvercommitNotice:
 
     def test_windows_names_the_driver_behaviour_and_the_setting(self):
         """On Windows the whole point is that nothing else will tell the user."""
-        msg = LlamaCppBackend._cuda_context_overcommit_notice(
-            65536, 32768, None, windows = True
-        )
+        msg = LlamaCppBackend._cuda_context_overcommit_notice(65536, 32768, None, windows = True)
         assert "system memory" in msg
         assert "Sysmem Fallback Policy" in msg
         assert "Prefer No Sysmem Fallback" in msg
@@ -218,18 +212,14 @@ class TestOvercommitNotice:
         """There is no vendor signal in this helper's scope, so the NVIDIA-only fix must
         be labelled. An AMD or Intel owner sent to the NVIDIA Control Panel is being given
         a wrong instruction, not just an unhelpful one."""
-        msg = LlamaCppBackend._cuda_context_overcommit_notice(
-            65536, 32768, None, windows = True
-        )
+        msg = LlamaCppBackend._cuda_context_overcommit_notice(65536, 32768, None, windows = True)
         idx = msg.index("NVIDIA Control Panel")
-        assert "On NVIDIA GPUs" in msg[:idx], (
-            "the NVIDIA Control Panel instruction must be qualified before it is given"
-        )
+        assert (
+            "On NVIDIA GPUs" in msg[:idx]
+        ), "the NVIDIA Control Panel instruction must be qualified before it is given"
 
     def test_non_windows_describes_cpu_offload_instead(self):
-        msg = LlamaCppBackend._cuda_context_overcommit_notice(
-            65536, 32768, None, windows = False
-        )
+        msg = LlamaCppBackend._cuda_context_overcommit_notice(65536, 32768, None, windows = False)
         assert "moved to the CPU" in msg
         assert "Sysmem" not in msg, "the Windows-only remedy must not leak to other platforms"
 

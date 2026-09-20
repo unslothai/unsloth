@@ -14620,9 +14620,7 @@ class LlamaCppBackend:
             self._last_load_warning = message
 
     def _arm_residency_check(
-        self,
-        floor_bytes: Optional[int],
-        gpu_indices: Optional[Iterable[int]],
+        self, floor_bytes: Optional[int], gpu_indices: Optional[Iterable[int]]
     ) -> None:
         """Record what a full-GPU pin promised, for _verify_vram_residency to test.
 
@@ -14686,7 +14684,7 @@ class LlamaCppBackend:
         try:
             result = subprocess.run(
                 [
-                    "powershell",          # 5.1 Desktop; pwsh is not present on Windows
+                    "powershell",  # 5.1 Desktop; pwsh is not present on Windows
                     "-NoProfile",
                     "-NonInteractive",
                     "-Command",
@@ -14724,9 +14722,7 @@ class LlamaCppBackend:
 
     @classmethod
     def _shared_usage_growth_bytes(
-        cls,
-        before: Optional[dict[str, int]],
-        after: Optional[dict[str, int]],
+        cls, before: Optional[dict[str, int]], after: Optional[dict[str, int]]
     ) -> Optional[int]:
         """How much shared memory one adapter gained across the spawn, or None.
 
@@ -14902,9 +14898,7 @@ class LlamaCppBackend:
             logger.debug(f"Shared GPU memory read failed: {e}")
             spilled = None
         direct_hit = (
-            spilled is not None
-            and spilled >= _SHARED_USAGE_DELTA_MIN_BYTES
-            and shortfall > 0
+            spilled is not None and spilled >= _SHARED_USAGE_DELTA_MIN_BYTES and shortfall > 0
         )
         # FALLBACK: no usable counter reading, so infer from the device delta alone.
         # Much blunter, hence the far larger floor.
@@ -15557,9 +15551,7 @@ class LlamaCppBackend:
             "fp16",
             "",
         ):
-            kv_hint = (
-                " Setting the KV cache to q8_0 makes this context fit without shortening it."
-            )
+            kv_hint = " Setting the KV cache to q8_0 makes this context fit without shortening it."
         if windows:
             # The remedy is NVIDIA's and is named as such: this helper has no vendor
             # signal in scope, and sending an AMD or Intel owner to the NVIDIA Control
@@ -21405,9 +21397,7 @@ class LlamaCppBackend:
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
             return max(
                 0.0,
-                _vram_usable_mib(
-                    free_mib, t, _tp_frac, sysmem_fallback = _tp_sysmem_fallback
-                ),
+                _vram_usable_mib(free_mib, t, _tp_frac, sysmem_fallback = _tp_sysmem_fallback),
             )
 
         # Drop GPUs whose usable budget can't hold the per-device compute-graph
@@ -21612,9 +21602,7 @@ class LlamaCppBackend:
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
             return max(
                 0.0,
-                _vram_usable_mib(
-                    free_mib, t, _tp_frac, sysmem_fallback = _tp_sysmem_fallback
-                ),
+                _vram_usable_mib(free_mib, t, _tp_frac, sysmem_fallback = _tp_sysmem_fallback),
             )
 
         free_by_idx = {idx: free for idx, free in gpus}
@@ -25869,13 +25857,10 @@ class LlamaCppBackend:
                                             usable_fraction = _pin_fraction,
                                             total_by_idx = total_by_idx,
                                             per_device_overhead_bytes = (
-                                                _pipeline_overhead_bytes
-                                                + _cc_bytes(effective_ctx)
+                                                _pipeline_overhead_bytes + _cc_bytes(effective_ctx)
                                             ),
                                             min_gpus = _layer_min_gpus,
-                                            split_extra_bytes = _cc_split_extra(
-                                                effective_ctx
-                                            ),
+                                            split_extra_bytes = _cc_split_extra(effective_ctx),
                                         )
                                         _q8_fits = not _q8_use_fit
                                 _cuda_ctx_notice = self._cuda_context_overcommit_notice(

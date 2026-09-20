@@ -30,7 +30,7 @@ if _BACKEND_DIR not in sys.path:
 from core.inference import llama_cpp as mod
 from core.inference.llama_cpp import LlamaCppBackend
 
-GIB = 1024 ** 3
+GIB = 1024**3
 MIB = 1024 * 1024
 
 # The reported case: weights + f16 KV at -c 65536, the two terms that must be resident.
@@ -92,11 +92,11 @@ class _Backend:
 
     @staticmethod
     def _nvml_library():
-        return object()          # NVIDIA present
+        return object()  # NVIDIA present
 
     @staticmethod
     def _integrated_cuda_gpu_ids():
-        return set()             # discrete card
+        return set()  # discrete card
 
 
 @pytest.fixture
@@ -147,10 +147,8 @@ def test_small_shortfall_is_tolerated(on_windows):
 def test_sub_gib_shortfall_is_tolerated(on_windows):
     """Both thresholds must trip. A small model 900 MiB short stays quiet."""
     floor = 3 * GIB
-    used_mib = (floor - 900 * MIB) / MIB      # 29% short, but under the 1 GiB floor
-    backend = _Backend(
-        [(0, 8192.0 - used_mib, 8192)], baseline_rows = ((0, 8192.0, 8192),)
-    )
+    used_mib = (floor - 900 * MIB) / MIB  # 29% short, but under the 1 GiB floor
+    backend = _Backend([(0, 8192.0 - used_mib, 8192)], baseline_rows = ((0, 8192.0, 8192),))
     backend._arm_residency_check(floor, [0])
     backend._sample_residency_baseline(PIN_ARGV)
     assert backend._verify_vram_residency() is None
@@ -167,7 +165,7 @@ def test_baseline_is_taken_after_a_replaced_model_is_torn_down(on_windows):
     used_mib = QWEN3_VL_8B_FLOOR / MIB
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
-        baseline_rows = ((0, 16384.0, 16384),),      # post-teardown: card is free
+        baseline_rows = ((0, 16384.0, 16384),),  # post-teardown: card is free
     )
     # Plan-time reading, 8 GiB still held by the outgoing model. Passed to arm, and
     # deliberately ignored by it.
@@ -200,11 +198,11 @@ def test_the_74_mib_case_the_inferred_floor_could_never_see(on_windows):
     orders of magnitude under the 1 GiB inferred floor, so the device-delta path is
     structurally blind to it. The direct counter is not.
     """
-    used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 74          # 74 MiB short of the floor
+    used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 74  # 74 MiB short of the floor
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
         baseline_shared = _shared(120),
-        shared = _shared(120 + 74),                    # the spill, as Windows reports it
+        shared = _shared(120 + 74),  # the spill, as Windows reports it
     )
     _arm(backend)
     message = backend._verify_vram_residency()
@@ -215,7 +213,7 @@ def test_the_74_mib_case_the_inferred_floor_could_never_see(on_windows):
 def test_the_inferred_path_alone_is_blind_to_it(on_windows):
     """Same load, counter unavailable. Documents the sensitivity that is given up."""
     used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 74
-    backend = _Backend([(0, 16384.0 - used_mib, 16384)])   # no counter readings
+    backend = _Backend([(0, 16384.0 - used_mib, 16384)])  # no counter readings
     _arm(backend)
     assert backend._verify_vram_residency() is None
 
@@ -226,7 +224,7 @@ def test_shared_growth_below_the_counter_threshold_is_tolerated(on_windows):
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
         baseline_shared = _shared(120),
-        shared = _shared(140),                         # +20 MiB
+        shared = _shared(140),  # +20 MiB
     )
     _arm(backend)
     assert backend._verify_vram_residency() is None
@@ -239,7 +237,7 @@ def test_another_app_growing_shared_memory_is_not_our_spill(on_windows):
     growth belongs to some other application. Reporting here would blame this load for a
     browser opening a tab.
     """
-    used_mib = QWEN3_VL_8B_FLOOR / MIB                 # fully resident
+    used_mib = QWEN3_VL_8B_FLOOR / MIB  # fully resident
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
         baseline_shared = _shared(120),
@@ -257,11 +255,11 @@ def test_growth_on_two_adapters_is_ambiguous_and_falls_back(on_windows):
     delta still decides, and here it is a real multi-GiB shortfall, so this still reports
     -- via the fallback, not the counter.
     """
-    used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 4096        # 4 GiB short
+    used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 4096  # 4 GiB short
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
         baseline_shared = _shared(120, igpu_mib = 64),
-        shared = _shared(2120, igpu_mib = 1064),       # +2000 and +1000 MiB
+        shared = _shared(2120, igpu_mib = 1064),  # +2000 and +1000 MiB
     )
     _arm(backend)
     assert backend._verify_vram_residency() is not None
@@ -292,7 +290,7 @@ def test_the_fit_on_retry_disarms_the_check(on_windows):
     That is a shortfall by design. Measuring the retry against the original pin's floor
     would report a spill on every single one of them.
     """
-    used_mib = 4096.0                                   # fitter left most of it on CPU
+    used_mib = 4096.0  # fitter left most of it on CPU
     backend = _Backend([(0, 16384.0 - used_mib, 16384)])
     backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0])
     retry_argv = ["llama-server", "-m", "x.gguf", "-ngl", "-1", "--fit", "on"]
@@ -386,7 +384,7 @@ def test_disarms_without_a_baseline_for_every_pinned_card(on_windows):
     """A partial sum under-counts and would read as a spill."""
     backend = _Backend([(0, 100.0, 16384)], baseline_rows = ((0, 16384.0, 16384),))
     backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0, 1])
-    backend._sample_residency_baseline(PIN_ARGV)          # card 1 never reported
+    backend._sample_residency_baseline(PIN_ARGV)  # card 1 never reported
     assert backend._pin_resident_floor_bytes is None
     assert backend._verify_vram_residency() is None
 
@@ -432,15 +430,13 @@ def test_start_spawns_no_thread_when_unarmed(on_windows, monkeypatch):
     def _probe_threads():
         return [n for n in started if n == "vram-residency-check"]
 
-    backend = _Backend([(0, 1.0, 16384)])        # never armed
+    backend = _Backend([(0, 1.0, 16384)])  # never armed
     backend._start_residency_check()
     assert _probe_threads() == [], "an unarmed load still spawned the probe thread"
 
     _arm(backend)
     backend._start_residency_check()
-    assert _probe_threads() == ["vram-residency-check"], (
-        "an armed load did not spawn the probe"
-    )
+    assert _probe_threads() == ["vram-residency-check"], "an armed load did not spawn the probe"
 
 
 class _NeverStarts:
