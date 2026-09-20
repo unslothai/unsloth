@@ -4815,3 +4815,49 @@ class TestReaderChainsFailClosed:
             '    return "https://huggingface.co/x"\n'
             "requests.get(reader())"
         )
+
+
+class TestInlineWalrusTargets:
+    """`requests.get(u := "...")` evaluates to the value it binds, so that value is the target."""
+
+    def test_a_metadata_host_bound_inline_is_blocked(self):
+        _blocked(
+            f'import requests\nrequests.get(u := "{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_untrusted_host_bound_inline_is_refused(self):
+        _blocked(
+            'import requests\nrequests.get(u := "https://evil.example/x")',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_an_allowed_host_bound_inline_keeps_working_ok(self):
+        _ok('import requests\nrequests.get(u := "https://huggingface.co/api/models")')
+
+
+class TestAugmentedAssignments:
+    """`u += x` builds on what u held rather than replacing it, and x is somewhere the value came
+    from."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param('import requests\nu = ""\nu += input()\nrequests.get(u)', id = "input"),
+            pytest.param(
+                'import os, requests\nu = ""\nu += os.environ["TARGET"]\nrequests.get(u)',
+                id = "environment",
+            ),
+        ],
+    )
+    def test_an_external_value_added_to_a_name_is_refused(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")
+
+    def test_the_value_added_to_does_not_disappear(self):
+        _blocked(
+            f'import requests\nu = "{_METADATA_URL}"\nu += "x"\nrequests.get(u)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_building_an_allowed_url_this_way_keeps_working_ok(self):
+        _ok('import requests\nu = "https://huggingface.co"\nu += "/api/models"\nrequests.get(u)')

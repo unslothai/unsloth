@@ -16336,6 +16336,7 @@ def _check_signal_escape_patterns(code: str):
             self._value_positions: dict = {}
             self._conditional_suites: list = []
             self._loop_suites: list = []
+            self._augmented_positions: set = set()
             self._value_spans: dict = {}
             # Names imported twice: no order-independent answer, so no alias at all.
             self._ambiguous_aliases: set = set()
@@ -16655,6 +16656,10 @@ def _check_signal_escape_patterns(code: str):
                 return []
             start = 0
             for index, (position, _value) in enumerate(before):
+                # `u += x` builds on what u already held, so it does not replace it: the old
+                # value is still one the call can reach through the new one.
+                if position in self._augmented_positions:
+                    continue
                 if not self._is_conditional_for(position, where):
                     start = index
             # An if / else that assigns the name on both paths replaces whatever came before it.
@@ -16749,7 +16754,13 @@ def _check_signal_escape_patterns(code: str):
                         (self._position(node), is_alias)
                     )
 
-        def _bind(self, target, value, scope) -> None:
+        def _bind(
+            self,
+            target,
+            value,
+            scope,
+            came_from = None,
+        ) -> None:
             if isinstance(target, ast.Name) and self._raw_mode:
                 self._raw_bound.add((scope, target.id))
                 return
@@ -16768,8 +16779,9 @@ def _check_signal_escape_patterns(code: str):
                 self._value_positions.setdefault((scope, target.id), []).append(
                     (self._position(target), value)
                 )
-                if value is not None:
-                    self.all_values.setdefault((scope, target.id), []).append(value)
+                for source in (value, came_from):
+                    if source is not None:
+                        self.all_values.setdefault((scope, target.id), []).append(source)
                 return
             # Only a Name, or a Name inside a tuple / list / star target, is rebound. `d[u] = 1` and
             # `obj.u = 1` read `u` and `obj`, they do not rebind them, so counting those names would
@@ -16802,7 +16814,12 @@ def _check_signal_escape_patterns(code: str):
                                 target_scope = self._scope_parent.get(target_scope)
                         self._bind(node.target, node.value, target_scope)
                 elif isinstance(node, ast.AugAssign):
-                    self._bind(node.target, None, scope)
+                    # The value is the old one combined with this expression, which is not a
+                    # string this analysis can name. It stays unresolvable, so nothing here
+                    # vouches for a host, but the right side is still somewhere the value came
+                    # from: `u += input()` reads the outside as plainly as `u = input()` does.
+                    self._bind(node.target, None, scope, came_from = node.value)
+                    self._augmented_positions.add(self._position(node.target))
                 elif isinstance(node, (ast.For, ast.AsyncFor)):
                     self._bind(node.target, None, scope)
                 elif isinstance(node, ast.comprehension):
@@ -16953,6 +16970,9 @@ def _check_signal_escape_patterns(code: str):
             _resolve_exhausted[0] = True
             return "", False
         _resolve_budget[0] -= 1
+        if isinstance(node, ast.NamedExpr):
+            # `requests.get(u := "...")` evaluates to the value it binds.
+            return _static_str_prefix(node.value, bindings, seen, depth + 1)
         if isinstance(node, ast.Constant):
             return (node.value, True) if isinstance(node.value, str) else ("", False)
         if isinstance(node, ast.JoinedStr):
