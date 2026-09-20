@@ -214,3 +214,22 @@ test("automatic comparison failure restores its own first-pane write", async () 
     "Manual right",
   );
 });
+
+test("queued refresh keeps the model selected when it was requested", async () => {
+  const automatic = adapter().generateTitle("chat", state.messages);
+  await started;
+  const refreshing = refreshChatTitle({
+    id: "chat",
+    type: "single",
+    title: "New Chat",
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  state.model = "external::next::next-model";
+  state.providers = [
+    { id: "next", providerType: "openai", baseUrl: "", hasApiKey: true },
+  ];
+  release();
+  await Promise.all([automatic, refreshing]);
+  assert.equal(state.requests[0].model, "local-model");
+});
