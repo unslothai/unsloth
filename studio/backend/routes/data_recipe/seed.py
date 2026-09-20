@@ -135,6 +135,36 @@ def _list_hf_dataset_configs(*, dataset_name: str, token: HfTokenArg) -> list[di
     return [config for config in (configs or []) if isinstance(config, dict)]
 
 
+def _as_pattern_list(paths: Any) -> list[str]:
+    if isinstance(paths, str):
+        return [paths]
+    if isinstance(paths, list):
+        return [path for path in paths if isinstance(path, str)]
+    return []
+
+
+def _patterns_for_split(data_files: Any, split_lower: str) -> list[str]:
+    """Every shape a card may use for `data_files`, as hub/services/datasets does.
+
+    A bare string or list of strings is the shorthand for the train split.
+    """
+    if isinstance(data_files, str):
+        return [data_files] if split_lower == DEFAULT_SPLIT else []
+    if isinstance(data_files, dict):
+        for name, paths in data_files.items():
+            if str(name).lower() == split_lower:
+                return _as_pattern_list(paths)
+        return []
+    if isinstance(data_files, list):
+        bare = [entry for entry in data_files if isinstance(entry, str)]
+        if bare and split_lower == DEFAULT_SPLIT:
+            return bare
+        for entry in data_files:
+            if isinstance(entry, dict) and str(entry.get("split") or "").lower() == split_lower:
+                return _as_pattern_list(entry.get("path"))
+    return []
+
+
 def _declared_split_patterns(
     configs: list[dict[str, Any]],
     split: str = DEFAULT_SPLIT,
@@ -143,32 +173,48 @@ def _declared_split_patterns(
     """The globs the card declares for this split, under the named config."""
     wanted = (subset or "default").lower()
     for config in configs:
-        name = str(config.get("config_name") or "default")
-        if name.lower() != wanted:
-            continue
-        for entry in config.get("data_files") or []:
-            if (
-                not isinstance(entry, dict)
-                or str(entry.get("split") or "").lower() != split.lower()
-            ):
-                continue
-            path = entry.get("path")
-            if isinstance(path, str):
-                return [path]
-            if isinstance(path, list):
-                return [p for p in path if isinstance(p, str)]
+        if str(config.get("config_name") or "default").lower() == wanted:
+            return _patterns_for_split(config.get("data_files"), split.lower())
     return []
 
 
-def _pattern_prefix(pattern: str) -> str:
-    """The literal part of a glob, up to its first wildcard."""
-    cut = min((i for i in (pattern.find(c) for c in "*?[") if i >= 0), default = len(pattern))
-    return pattern[:cut]
+def _glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """A card glob as a regex: `*` stops at a folder boundary, `**` crosses it.
+
+    Matching on the literal prefix instead would let `data/train-*.parquet` claim
+    `data/train-notes.json`, which the recipe path then never reads.
+    """
+    parts: list[str] = []
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "*" and pattern[i + 1 : i + 2] == "*":
+            parts.append(".*")
+            i += 3 if pattern[i + 2 : i + 3] == "/" else 2
+            continue
+        if char == "*":
+            parts.append("[^/]*")
+        elif char == "?":
+            parts.append("[^/]")
+        else:
+            parts.append(re.escape(char))
+        i += 1
+    return re.compile("".join(parts) + r"\Z")
 
 
 def _files_under_patterns(patterns: list[str], data_files: list[str]) -> list[str]:
-    prefixes = [_pattern_prefix(p) for p in patterns]
-    return [f for f in data_files if any(f.startswith(prefix) for prefix in prefixes)]
+    matchers = [_glob_to_regex(pattern) for pattern in patterns]
+    return [f for f in data_files if any(m.match(f) for m in matchers)]
+
+
+def _common_parent(paths: list[str]) -> str:
+    parts = [Path(path).parent.as_posix().split("/") for path in paths]
+    shared: list[str] = []
+    for segments in zip(*parts):
+        if len(set(segments)) != 1 or segments[0] == ".":
+            break
+        shared.append(segments[0])
+    return "/".join(shared)
 
 
 def _split_rank(path: str, split_lower: str) -> int:
@@ -230,12 +276,20 @@ def _resolve_seed_hf_path(
 ) -> str | None:
     declared = _declared_split_patterns(configs or [], split, subset)
     declared_files = _files_under_patterns(declared, data_files)
-    # The card's own mapping beats any guess from the folder names, but only when it
-    # resolves to a single glob over files that are really there.
-    if len(declared) == 1 and declared_files:
-        pattern = declared[0]
-        if Path(pattern).suffix.lower() not in DATA_EXTS:
-            pattern = f"{pattern}{Path(declared_files[0]).suffix}"
+    # The card's own mapping beats any guess from the folder names, as long as it
+    # resolves to files that are really there.
+    if declared_files:
+        suffix = Path(sorted(declared_files)[0]).suffix
+        if len(declared) == 1:
+            pattern = declared[0]
+            if Path(pattern).suffix.lower() not in DATA_EXTS:
+                pattern = f"{pattern}{suffix}"
+        else:
+            # A split spread over several declared globs cannot be written as one
+            # glob. Cover the folder holding all of them: reading a neighbour is
+            # recoverable, dropping half the split is not.
+            parent = _common_parent(declared_files)
+            pattern = f"{parent}/**/*{suffix}" if parent else f"**/*{suffix}"
         return f"datasets/{dataset_name}/{pattern}"
 
     selected = _select_best_file(declared_files or data_files, split, subset)

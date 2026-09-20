@@ -536,6 +536,54 @@ def test_seed_hf_path_ignores_a_card_mapping_pointing_at_nothing(monkeypatch, tm
     assert resolved == "datasets/org/repo/main/train-*.parquet"
 
 
+@pytest.mark.parametrize(
+    "data_files",
+    [
+        "mapped/train-00000.parquet",
+        ["mapped/train-00000.parquet"],
+        {"train": "mapped/train-*.parquet"},
+        [{"split": "train", "path": "mapped/train-*.parquet"}],
+    ],
+)
+def test_seed_hf_path_reads_every_card_data_files_shape(monkeypatch, tmp_path, data_files):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["mapped/train-00000.parquet", "other/train-00000.parquet"]
+    configs = [{"config_name": "unrelated", "data_files": data_files}]
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", "unrelated", configs)
+    assert resolved.startswith("datasets/org/repo/mapped/")
+
+
+def test_seed_hf_path_covers_a_split_declared_across_two_folders(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["sets/a/train-0.parquet", "sets/b/train-0.parquet", "other/test-0.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_files": [
+                {"split": "train", "path": ["sets/a/train-*.parquet", "sets/b/train-*.parquet"]}
+            ],
+        }
+    ]
+    # One glob cannot name two folders, so cover the folder holding both rather
+    # than dropping one of them.
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+        == "datasets/org/repo/sets/**/*.parquet"
+    )
+
+
+def test_seed_declared_files_match_the_glob_not_its_prefix(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/train-notes.json", "data/train-00000-of-00002.parquet"]
+    assert seed_route._files_under_patterns(["data/train-*.parquet"], files) == [
+        "data/train-00000-of-00002.parquet"
+    ]
+    assert seed_route._files_under_patterns(["data/*/x.parquet"], ["data/a/b/x.parquet"]) == []
+    assert seed_route._files_under_patterns(["data/**/x.parquet"], ["data/a/b/x.parquet"]) == [
+        "data/a/b/x.parquet"
+    ]
+
+
 def test_seed_hf_path_widens_when_one_split_uses_several_name_forms(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = [
