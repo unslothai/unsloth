@@ -553,6 +553,47 @@ def test_seed_hf_path_reads_every_card_data_files_shape(monkeypatch, tmp_path, d
     assert resolved.startswith("datasets/org/repo/mapped/")
 
 
+@pytest.mark.parametrize(
+    ("configs", "expected"),
+    [
+        # A card with one config uses it whatever it is called.
+        (
+            [{"config_name": "plain_text", "data_files": [{"split": "train", "path": "pt/train-*"}]}],
+            "datasets/org/repo/pt/train-*.parquet",
+        ),
+        # Another config can be flagged as the default one.
+        (
+            [
+                {"config_name": "a", "data_files": [{"split": "train", "path": "a/train-*"}]},
+                {
+                    "config_name": "b",
+                    "default": True,
+                    "data_files": [{"split": "train", "path": "pt/train-*"}],
+                },
+            ],
+            "datasets/org/repo/pt/train-*.parquet",
+        ),
+    ],
+)
+def test_seed_hf_path_finds_the_default_config_without_a_subset(
+    monkeypatch, tmp_path, configs, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["pt/train-0.parquet", "a/train-0.parquet"]
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs) == expected
+
+
+def test_seed_card_globs_keep_their_character_classes(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/train-2-of-9.parquet", "data/train-7-of-9.parquet"]
+    assert seed_route._files_under_patterns(["data/train-[0-4]*.parquet"], files) == [
+        "data/train-2-of-9.parquet"
+    ]
+    assert seed_route._files_under_patterns(["data/[!x]*.parquet"], files) == files
+    # An unclosed bracket is a literal, not a syntax error.
+    assert seed_route._files_under_patterns(["a[b.parquet"], ["a[b.parquet"]) == ["a[b.parquet"]
+
+
 def test_seed_hf_path_covers_a_split_declared_across_two_folders(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["sets/a/train-0.parquet", "sets/b/train-0.parquet", "other/test-0.parquet"]

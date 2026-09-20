@@ -68,6 +68,7 @@ def _chunking() -> Any:
 
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
+DEFAULT_CONFIG = "default"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = LazyPath(seed_uploads_root)
@@ -171,11 +172,33 @@ def _declared_split_patterns(
     subset: str | None = None,
 ) -> list[str]:
     """The globs the card declares for this split, under the named config."""
-    wanted = (subset or "default").lower()
-    for config in configs:
-        if str(config.get("config_name") or "default").lower() == wanted:
-            return _patterns_for_split(config.get("data_files"), split.lower())
-    return []
+    config = _pick_config(configs, subset)
+    if config is None:
+        return []
+    return _patterns_for_split(config.get("data_files"), split.lower())
+
+
+def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str, Any] | None:
+    """The config a bare request lands on, the way the Hub resolves it.
+
+    Without a subset the answer is not always the one literally called `default`:
+    a card may flag another config as the default, and a card with a single
+    config uses it whatever its name (imdb ships only `plain_text`).
+    """
+    if subset:
+        wanted = subset.lower()
+        return next(
+            (c for c in configs if str(c.get("config_name") or "").lower() == wanted), None
+        )
+    flagged = next((c for c in configs if c.get("default") is True), None)
+    if flagged is not None:
+        return flagged
+    if len(configs) == 1:
+        return configs[0]
+    return next(
+        (c for c in configs if str(c.get("config_name") or "default").lower() == DEFAULT_CONFIG),
+        None,
+    )
 
 
 def _glob_to_regex(pattern: str) -> re.Pattern[str]:
@@ -196,10 +219,29 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
             parts.append("[^/]*")
         elif char == "?":
             parts.append("[^/]")
+        elif char == "[":
+            end = _class_end(pattern, i)
+            if end < 0:
+                parts.append(r"\[")
+            else:
+                body = pattern[i + 1 : end].replace("\\", "\\\\")
+                parts.append(f"[{'^' + body[1:] if body[:1] == '!' else body}]")
+                i = end
         else:
             parts.append(re.escape(char))
         i += 1
     return re.compile("".join(parts) + r"\Z")
+
+
+def _class_end(pattern: str, start: int) -> int:
+    """Index of the `]` closing the class opened at `start`, or -1 if unclosed."""
+    i = start + 1
+    if pattern[i : i + 1] in ("!", "^"):
+        i += 1
+    if pattern[i : i + 1] == "]":
+        i += 1
+    closing = pattern.find("]", i)
+    return closing if closing > start else -1
 
 
 def _files_under_patterns(patterns: list[str], data_files: list[str]) -> list[str]:
