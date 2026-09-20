@@ -459,6 +459,9 @@ try {
     # copies and keeping it costs their full size.
     $prevCache = Join-Path $StudioHome "prev-cache"
     [System.IO.Directory]::CreateDirectory($prevCache) | Out-Null
+    # With something in it: an empty cache shares nothing, which the emptied-in-place case below
+    # asserts, so a bare directory would not be the "still here" fixture this check needs.
+    [System.IO.File]::WriteAllText((Join-Path $prevCache "wheel"), "x")
     $script:StudioUvMarkerPrevious = $prevCache
     Check "a previous cache still here, on this volume, reads as shared" (
         -not (Test-StudioPreviousCacheIsGone))
@@ -471,7 +474,41 @@ try {
     Check "no previous marker is not a reason to warn" (-not (Test-StudioPreviousCacheIsGone))
     $script:StudioUvMarkerPrevious = "   "
     Check "and neither is a blank one" (-not (Test-StudioPreviousCacheIsGone))
+    # uv cache clean empties the directory and leaves it standing, and an empty cache shares
+    # nothing with the tree that was built against it.
+    $script:StudioUvMarkerPrevious = $prevCache
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath (Join-Path $prevCache "wheel") -Force -ErrorAction SilentlyContinue
+    Check "a previous cache emptied in place reads as gone" (Test-StudioPreviousCacheIsGone)
     Microsoft.PowerShell.Management\Remove-Item -LiteralPath $prevCache -Recurse -Force -ErrorAction SilentlyContinue
+    # Left pointing at a path that no longer exists, every later scenario would read as "the tree
+    # owns its blocks" and warn.
+    $script:StudioUvMarkerPrevious = $null
+
+    Write-Host "what the previous run recorded beats what this one can infer"
+    # The marker only says where the cache was, never whether anything was linked into it. A run
+    # under UV_LINK_MODE=copy or --no-cache leaves a tree that owns every block beside a cache
+    # that is still present and still on this volume, which reads as sharing and suppresses the
+    # warning. The stamp is that run's own verdict, written beside the tree it built.
+    $stampTree = Join-Path $StudioHome "stamped-tree"
+    [System.IO.Directory]::CreateDirectory($stampTree) | Out-Null
+    Check "no stamp is no answer, not a wrong one" (
+        $null -eq (Test-StudioTreeOwnsItsBlocks -Path $stampTree))
+    $script:StudioRollbackCostsFullSize = $true
+    Write-StudioVenvCacheShareStamp -VenvPath $stampTree
+    Check "a run that owned its blocks says so" (
+        $true -eq (Test-StudioTreeOwnsItsBlocks -Path $stampTree))
+    $script:StudioRollbackCostsFullSize = $false
+    Write-StudioVenvCacheShareStamp -VenvPath $stampTree
+    Check "and a run that shared them says that instead" (
+        $false -eq (Test-StudioTreeOwnsItsBlocks -Path $stampTree))
+    [System.IO.File]::WriteAllText((Join-Path $stampTree (Get-StudioVenvShareStampName)), "something else")
+    Check "an unreadable value is no answer either" (
+        $null -eq (Test-StudioTreeOwnsItsBlocks -Path $stampTree))
+    Check "a tree that is not there is no answer either" (
+        $null -eq (Test-StudioTreeOwnsItsBlocks -Path (Join-Path $StudioHome "never-existed")))
+    Check "writing a stamp into a tree that is not there is not an error" (
+        $null -eq (Write-StudioVenvCacheShareStamp -VenvPath (Join-Path $StudioHome "never-existed")))
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $stampTree -Recurse -Force -ErrorAction SilentlyContinue
 
     Write-Host "the warning and the discard message both tell the truth under --no-rollback"
     # Two things Start-StudioVenvRollback gets wrong if it is written without them, and install.sh
@@ -511,6 +548,25 @@ try {
     Check "a co-located cache does not warn about space the rollback does not take" (
         $joined -notmatch 'needs about')
     Check "and the rollback copy is still kept" ($script:StudioVenvRollbackActive)
+    foreach ($c in @(Get-ChildItem -LiteralPath $StudioHome -Directory -Filter "unsloth_studio.rollback.*" -ErrorAction SilentlyContinue)) {
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # Same co-located cache, same quiet inference, but the tree itself says it was built without
+    # linking. The whole point of the stamp is that this run warns where the one above did not.
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir (Get-StudioVenvShareStampName)), "owned")
+    Reset-RollbackState $VenvDir
+    $script:StudioNoRollback = $false
+    $script:StudioRollbackCostsFullSize = $false
+    $script:StudioUvMarkerPrevious = $StudioHome
+    $script:said = @()
+    Start-StudioVenvRollback -ExistingDir $VenvDir
+    $joined = ($script:said -join "`n")
+    Check "a tree that recorded no linking warns despite a co-located cache" (
+        $joined -match 'needs about')
+    $script:StudioUvMarkerPrevious = $null
     foreach ($c in @(Get-ChildItem -LiteralPath $StudioHome -Directory -Filter "unsloth_studio.rollback.*" -ErrorAction SilentlyContinue)) {
         Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }

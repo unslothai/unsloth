@@ -7205,8 +7205,62 @@ exit 0
         try {
             $previous = ([string]$previous).Trim()
             if (-not (Test-StudioPathPresent -Path $previous)) { return $true }
+            # Still a directory, but uv cache clean empties it and leaves it standing, and an
+            # empty cache shares nothing. Any entry counts: naming uv's internal layout here
+            # would rot the moment it changes, and the question is only "is anything left".
+            $hasContent = $null
+            try {
+                $hasContent = $null -ne (Get-ChildItem -LiteralPath $previous -Force `
+                    -ErrorAction SilentlyContinue | Select-Object -First 1)
+            } catch { $hasContent = $null }
+            if ($false -eq $hasContent) { return $true }
             return (-not (Test-StudioSameVolume -PathA $previous -PathB $StudioHome))
         } catch { return $false }
+    }
+
+    # What the run that BUILT a tree knew about its own linking, written beside the tree at the
+    # moment it was committed. The next run reads it back rather than re-deriving it: a cache
+    # path that still exists says nothing about whether the files in it were ever linked to, so
+    # UV_LINK_MODE=copy or --no-cache would otherwise look like sharing and suppress the warning.
+    # Absent means an environment from before this stamp existed, or one whose commit could not
+    # write it, and the marker comparison answers those. install.sh needs no equivalent: st_nlink
+    # measures the same thing exactly and after the fact, which is strictly better where it is
+    # available. Windows has no per-file link count without a P/Invoke, and fsutil hardlink list
+    # is documented as requiring elevation the installer does not have and must not ask for.
+    # A function rather than a script variable so anything that extracts these helpers by
+    # following the call graph picks the name up with them.
+    function Get-StudioVenvShareStampName { return ".unsloth-cache-linked" }
+
+    function Write-StudioVenvCacheShareStamp {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$VenvPath)
+        if ([string]::IsNullOrWhiteSpace($VenvPath)) { return }
+        try {
+            if (-not (Test-Path -LiteralPath $VenvPath -PathType Container -ErrorAction SilentlyContinue)) { return }
+            $stamp = Join-Path $VenvPath (Get-StudioVenvShareStampName)
+            # The run that is committing has already decided this for itself.
+            $value = if ($script:StudioRollbackCostsFullSize) { "owned" } else { "shared" }
+            Remove-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue
+            if ($null -ne (Get-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue)) { return }
+            Set-Content -LiteralPath $stamp -Value $value -Encoding utf8 -ErrorAction SilentlyContinue
+        } catch { }
+    }
+
+    # $true owns its blocks, $false shares them, $null nothing recorded. Three states on purpose:
+    # the caller must be able to tell "measured as sharing" from "no measurement", because only
+    # the second should fall through to the marker comparison.
+    function Test-StudioTreeOwnsItsBlocks {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        try {
+            $stamp = Join-Path $Path (Get-StudioVenvShareStampName)
+            if (-not (Test-Path -LiteralPath $stamp -PathType Leaf -ErrorAction SilentlyContinue)) { return $null }
+            $value = Get-Content -LiteralPath $stamp -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ($null -eq $value) { return $null }
+            $value = ([string]$value).Trim().ToLowerInvariant()
+            if ($value -eq "owned") { return $true }
+            if ($value -eq "shared") { return $false }
+            return $null
+        } catch { return $null }
     }
 
     function Write-StudioRollbackSpaceWarning {
@@ -7303,8 +7357,11 @@ exit 0
         # precedes the rename, and nothing it can raise is worth failing an install that would
         # otherwise have proceeded.
         try {
-            $script:StudioRollbackCostsFullSize =
-                $script:StudioRollbackCostsFullSize -or (Test-StudioPreviousCacheIsGone)
+            # Recorded beats inferred: the stamp is what the run that built this tree knew about
+            # its own linking. Only when there is none does the marker comparison get a say.
+            $owns = Test-StudioTreeOwnsItsBlocks -Path $ExistingDir
+            if ($null -eq $owns) { $owns = Test-StudioPreviousCacheIsGone }
+            $script:StudioRollbackCostsFullSize = $script:StudioRollbackCostsFullSize -or $owns
             if ((-not $script:StudioNoRollback) -and $script:StudioRollbackCostsFullSize) {
                 Write-StudioRollbackSpaceWarning -ExistingDir $ExistingDir
             }
@@ -7554,6 +7611,9 @@ exit 0
         # and still commits.
         $script:StudioInstallCommitted = $true
         $script:StudioUvMarkerSaved = $false
+        # After the commit flag, never before it: this is a note for the NEXT run and nothing it
+        # can do is worth disturbing a commit that has already succeeded.
+        try { Write-StudioVenvCacheShareStamp -VenvPath $VenvDir } catch { }
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         # The replacement is committed. Disable restoration before deleting the

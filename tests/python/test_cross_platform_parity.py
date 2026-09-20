@@ -1968,3 +1968,30 @@ class TestWindowsJudgesTheTreeNotTheRun:
         assert (
             "Test-StudioPreviousCacheIsGone" in before
         ), "the rollback warning still decides from this run's cache mode alone"
+
+    def test_a_cache_emptied_in_place_counts_as_gone(self):
+        """`uv cache clean` empties the directory and leaves it standing, so existence alone
+        reads an empty cache as one the old tree still shares blocks with."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        body = text.split("function Test-StudioPreviousCacheIsGone", 1)[1].split("\n    }", 1)[0]
+        assert "Get-ChildItem" in body, "the helper never looks inside the cache it found"
+
+    def test_the_building_run_records_what_it_knew(self):
+        """A cache path says where the cache was, never whether anything was linked into it.
+        UV_LINK_MODE=copy leaves a tree that owns every block beside a cache that is present and
+        co-located, which no amount of inspecting that path can distinguish from sharing."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "function Write-StudioVenvCacheShareStamp" in text
+        assert "function Test-StudioTreeOwnsItsBlocks" in text
+        commit = text.split("$script:StudioInstallCommitted = $true", 1)[1][:600]
+        assert (
+            "Write-StudioVenvCacheShareStamp" in commit
+        ), "the commit does not record this run's verdict for the next one"
+
+    def test_the_recorded_verdict_outranks_the_inferred_one(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        before = text.split("if ((-not $script:StudioNoRollback) -and", 1)[0][-900:]
+        owns = before.rfind("Test-StudioTreeOwnsItsBlocks")
+        marker = before.rfind("Test-StudioPreviousCacheIsGone")
+        assert owns != -1, "the gate never reads the stamp"
+        assert owns < marker, "the inferred answer is consulted before the recorded one"
