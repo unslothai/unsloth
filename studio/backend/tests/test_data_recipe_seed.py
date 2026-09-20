@@ -957,6 +957,17 @@ def test_seed_hf_path_keeps_both_extensions_of_one_builder(monkeypatch, tmp_path
     assert resolved == "datasets/org/repo/data/*.json*"
 
 
+def test_seed_hf_path_counts_json_and_jsonl_as_two_extensions(monkeypatch, tmp_path):
+    """`load.infer_module_for_data_files_list` votes per extension, parquet on ties."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/a.json", "data/b.jsonl", "data/c.parquet"]
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "data/*"}]}]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    assert resolved == "datasets/org/repo/data/*.parquet"
+
+
 def test_seed_hf_path_keeps_shards_spread_over_sibling_folders(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["a/train-0.parquet", "b/train-1.parquet", "a/test-0.parquet"]

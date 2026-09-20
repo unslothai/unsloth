@@ -464,16 +464,18 @@ def _dominant_suffix(paths: list[str]) -> str:
     # The same window the loader infers from, so a split whose formats change
     # past it is read as the loader reads it rather than as the whole listing.
     for path in sorted(voting)[:_MAX_MODULE_INFERENCE_FILES]:
-        # By builder, not by extension: .json and .jsonl are one builder to the
-        # loader, so a split written in both is one format, not two.
-        builder = _builder_exts(Path(path).suffix.lower())[0]
-        counts[builder] = counts.get(builder, 0) + 1
+        # One vote per extension, as `load.infer_module_for_data_files_list`
+        # counts them: .json and .jsonl share a builder, but they are still two
+        # extensions, so neither lends the other its votes before the tie-break.
+        suffix = Path(path).suffix.lower()
+        counts[suffix] = counts.get(suffix, 0) + 1
     if not counts:
         return ""
     best = max(
         counts,
         key = lambda s: (counts[s], -DATA_EXTS.index(s) if s in DATA_EXTS else -99),
     )
+    # The builder only widens once its extension has won on its own votes.
     group = _builder_exts(best)
     return next(Path(p).suffix for p in paths if Path(p).suffix.lower() in group)
 
