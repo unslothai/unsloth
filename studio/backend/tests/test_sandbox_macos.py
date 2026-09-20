@@ -823,7 +823,7 @@ def test_studio_state_under_an_optional_read_root_is_denied(monkeypatch, tmp_pat
     rules = sandbox_macos._studio_state_rules((), (), str(tmp_path / "work"), str(tmp_path / "tmp"))
 
     assert rules, "no rule was emitted for a Studio home inside a read root"
-    assert rules[0].startswith("(deny file-read*")
+    assert rules[0].startswith("(deny file-read-data")
     assert str(state) in rules[0]
 
 
@@ -845,3 +845,32 @@ def test_the_runtime_inside_a_custom_studio_home_is_restored(monkeypatch, tmp_pa
     assert len(rules) == 2, "the runtime under the Studio home was not restored"
     assert rules[1].startswith("(allow file-read*")
     assert str(venv) in rules[1]
+
+
+def test_the_studio_state_deny_keeps_path_traversal_working(monkeypatch, tmp_path):
+    """The workdir lives under the Studio root on a default install.
+
+    Denying file-read* on the state root also denies stat on the directories
+    leading to the workdir, and os.makedirs then decides an existing ancestor
+    is missing and tries to create it, which fails with EPERM. Observed on
+    macos-15: test_python_exec_mnt_data_open_is_remapped_into_workdir failed
+    that way and did not fail at the merge base.
+    """
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "studio"
+    (state / "auth").mkdir(parents = True)
+    workdir = state / "sandbox" / "_default"
+    workdir.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules(
+        (), (), str(workdir), str(tmp_path / "tmp"))
+
+    assert rules[0].startswith("(deny file-read-data"), rules[0][:60]
+    # Stat is not denied, so path traversal to the workdir still works.
+    assert "file-read-metadata" not in rules[0]
+    assert "file-test-existence" not in rules[0]
+    # Reading a file, and listing a directory, both remain denied.
+    assert "file-read-data" in rules[0]
+    assert str(state) in rules[0]

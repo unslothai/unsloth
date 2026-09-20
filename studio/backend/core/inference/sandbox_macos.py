@@ -532,7 +532,15 @@ def _studio_state_rules(
         for path in (*runtime_paths, *developer_paths, workdir, private_tmp)
         if path and any(_within(path, root) for root in state)
     )
-    rules = [_rule("deny file-read* file-test-existence file-map-executable", _path_filters(state))]
+    # file-read-DATA, not file-read*. The workdir lives UNDER the Studio root
+    # on a default install, so denying read* also denies stat on the
+    # directories leading to it; os.makedirs then decides an existing ancestor
+    # is missing, tries to create it and fails with EPERM. Observed on
+    # macos-15, where test_python_exec_mnt_data_open_is_remapped_into_workdir
+    # failed that way and passed at the merge base. A directory entry existing
+    # is not the secret. auth.db's contents are, and reading a file or listing
+    # a directory is file-read-data, which stays denied.
+    rules = [_rule("deny file-read-data file-map-executable", _path_filters(state))]
     if needed:
         rules.append(
             _rule("allow file-read* file-test-existence file-map-executable", _path_filters(needed))
