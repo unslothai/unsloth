@@ -1551,6 +1551,6 @@ class TestOffVolumeCacheNoticeParity:
         # Keeping the old environment only costs its own size across a filesystem boundary:
         # within one, uv hardlinks every wheel, so the tree shares its blocks with the cache.
         text = path.read_text(encoding = "utf-8")
-        assert text.count(flag) >= 2, (
-            f"{path.name} should set {flag} at the notice and read it at the rollback warning"
-        )
+        assert (
+            text.count(flag) >= 2
+        ), f"{path.name} should set {flag} at the notice and read it at the rollback warning"
