@@ -526,7 +526,11 @@ def _name_initials(paths: list[str]) -> str:
     return "".join(initials)
 
 
-def _staged_split_files(data_files: list[str], labels: tuple[str, ...]) -> set[str]:
+def _staged_split_files(
+    data_files: list[str],
+    labels: tuple[str, ...],
+    scope: str = "",
+) -> set[str]:
     """This split's shards, when the repo is laid out the way the loader looks first.
 
     Split inference is staged, and the sharded data names come first: once
@@ -535,11 +539,15 @@ def _staged_split_files(data_files: list[str], labels: tuple[str, ...]) -> set[s
     Widening over one of those would read data the split, and the preview beside
     it, both leave out.
     """
-    grouped = _sharded_splits([PurePosixPath(path) for path in data_files])
+    # The loader reads a config's files relative to its `data_dir`, and the
+    # sharded names it looks for start at `data/`, so the scope comes off first.
+    prefix = f"{scope}/" if scope else ""
+    inside = [path[len(prefix) :] for path in data_files if path.startswith(prefix)]
+    grouped = _sharded_splits([PurePosixPath(path) for path in inside])
     if not grouped:
         return set()
     staged = {
-        path.as_posix()
+        f"{prefix}{path.as_posix()}"
         for split, paths in grouped.items()
         if split.lower() in labels
         for path in paths
@@ -565,7 +573,7 @@ def _widened_declared_pattern(
     split_lower: str,
     suffix: str,
     *,
-    allow_partial: bool = True,
+    fallback_glob: bool = False,
 ) -> str:
     """One glob covering several declared ones, keeping the split out of it if it can.
 
@@ -607,20 +615,16 @@ def _widened_declared_pattern(
     # names itself, so there is always something to fall back to that reads only
     # what the card declared.
     candidates += sorted(wanted)
-    clean, covered = "", 0
     for candidate in candidates:
-        matched = set(_files_under_patterns([candidate], data_files))
-        if matched == wanted:
+        if set(_files_under_patterns([candidate], data_files)) == wanted:
             return candidate
-        # Second best is the widest that stays inside the declaration: the card
-        # says the neighbours are another split, so reading them would be the
-        # very mix-up the split is being resolved to avoid.
-        if allow_partial and matched <= wanted and len(matched) > covered:
-            clean, covered = candidate, len(matched)
-    # A card says outright which files are in the split, so reading a neighbour
-    # would contradict it. A guess from the file names does not, and there
-    # dropping half the split is the worse of the two.
-    return clean or f"{base}/*{suffix}"
+    # Nothing names these files and only these files: train aa and bb beside
+    # test ab and ba cannot be told apart by any class a glob can carry. A card
+    # says outright which files are in the split, so a pattern that reads a
+    # neighbour contradicts it and one that drops a shard truncates it; the
+    # caller refuses the dataset rather than quietly doing either. A guess from
+    # the file names says no such thing, so there the folder is still covered.
+    return f"{base}/*{suffix}" if fallback_glob else ""
 
 
 def _resolve_seed_hf_path(
@@ -647,7 +651,9 @@ def _resolve_seed_hf_path(
             _files_under_patterns([pattern], data_files)
         ):
             pattern = _widened_declared_pattern(declared_files, data_files, split.lower(), suffix)
-        return f"datasets/{dataset_name}/{pattern}"
+        # An unrepresentable mapping is refused, not approximated: the endpoint
+        # answers 422 and the recipe is never pointed at the wrong rows.
+        return f"datasets/{dataset_name}/{pattern}" if pattern else None
 
     # Without a card mapping the subset is only a label on the files. Narrow to
     # the ones carrying it first, so the pattern is checked against those alone
@@ -665,7 +671,7 @@ def _resolve_seed_hf_path(
     # The loader looks at the sharded names first and stops there, so when the
     # repo has them the request is for those files, whatever else carries the
     # split in its name.
-    staged = _staged_split_files(scoped, labels)
+    staged = _staged_split_files(scoped, labels, folder)
     selected = _select_best_file(sorted(staged) or scoped, split)
     if not selected:
         return None
@@ -723,7 +729,7 @@ def _resolve_seed_hf_path(
         neighbours = [f for f in data_files if f.startswith(prefix) and f not in wanted]
         if len(wanted) > 1 and all(_carries_another_split(f, split_lower) for f in neighbours):
             widened = _widened_declared_pattern(
-                sorted(wanted), data_files, split_lower, suffix, allow_partial = False
+                sorted(wanted), data_files, split_lower, suffix, fallback_glob = True
             )
             return f"datasets/{dataset_name}/{widened}"
     return f"{base}/**/*{ext}"

@@ -956,6 +956,38 @@ def test_seed_hf_path_keeps_both_extensions_of_one_builder(monkeypatch, tmp_path
     assert resolved == "datasets/org/repo/data/*.json*"
 
 
+def test_seed_hf_path_finds_sharded_names_under_a_config_data_dir(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = [
+        "scope/data/train-00000-of-00001.parquet",
+        "scope/data/test-00000-of-00001.parquet",
+        "scope/extras/train-extra.parquet",
+    ]
+    configs = [{"config_name": "scoped", "data_dir": "scope"}]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", "scoped", configs)
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert matched == ["scope/data/train-00000-of-00001.parquet"]
+
+
+def test_seed_hf_path_refuses_a_declared_split_no_glob_can_name(monkeypatch, tmp_path):
+    """aa and bb cannot be told from ab and ba by any class a glob can carry."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/aa.parquet", "data/ab.parquet", "data/ba.parquet", "data/bb.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_files": [
+                {"split": "train", "path": ["data/aa.parquet", "data/bb.parquet"]},
+                {"split": "test", "path": ["data/ab.parquet", "data/ba.parquet"]},
+            ],
+        }
+    ]
+
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs) is None
+
+
 def test_seed_hf_path_stops_at_the_sharded_names_the_loader_reads_first(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = [
