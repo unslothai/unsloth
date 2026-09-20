@@ -1789,3 +1789,41 @@ class TestFreeSpaceIsNeverServedFromTheCache:
         assert "-Fresh" not in helper, (
             "the identity comparison re-queries WMI, which the cache exists to avoid"
         )
+
+
+class TestVolumeLookupRefusesToGuess:
+    """Get-StudioFinalPath strips the \\\\?\\ prefix unconditionally and deliberately, so a volume
+    with no drive letter comes back as Volume{GUID}\\..., which is not rooted. GetFullPath would
+    anchor that to the current directory and match a volume that has nothing to do with the
+    install, which is worse than answering nothing (#11313)."""
+
+    def test_the_matcher_rejects_an_unrooted_path(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Select-StudioVolumeForPath", 1)[1].split(
+            "function Get-StudioVolumeList", 1
+        )[0]
+        assert "IsPathRooted" in helper, "the matcher anchors an unrooted path to the CWD"
+
+    def test_the_resolver_keeps_the_caller_path_when_resolution_is_unrooted(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Resolve-StudioVolumeQueryPath", 1)[1].split("\n    }", 1)[0]
+        assert "IsPathRooted" in helper, (
+            "the resolver hands on an unrooted result instead of the caller's own path"
+        )
+
+
+class TestRemovalIsConfirmedWithLinkAwareSemantics:
+    """Test-Path follows a Windows directory reparse point, so a dangling one that could not be
+    unlinked reads as absent and the retry helper reports a removal that did not happen. Its
+    callers act on that: the --no-rollback discard clears the rollback state and says the
+    environment is gone (#11313)."""
+
+    def test_the_retry_helper_uses_the_link_aware_check(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Remove-StudioVenvTreeWithRetry", 1)[1].split(
+            "\n    function ", 1
+        )[0]
+        assert "Test-StudioPathPresent" in helper, (
+            "the retry helper confirms removal with Test-Path, which a dangling link fools"
+        )
+        assert "if (-not (Test-Path -LiteralPath $Path))" not in helper

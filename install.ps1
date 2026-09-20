@@ -2786,6 +2786,9 @@ exit 1
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
               [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Volumes)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        # Unrooted means GetFullPath would anchor it to the current directory and invent a match
+        # on whichever volume that happens to be. No answer is the honest one.
+        if (-not [System.IO.Path]::IsPathRooted($Path)) { return $null }
         $full = [System.IO.Path]::GetFullPath($Path)
         # Name carries a trailing separator and GetFullPath does not, so a path that IS the mount
         # point (UNSLOTH_STUDIO_HOME set to C:\studio itself, the natural way to use one) would
@@ -2810,7 +2813,16 @@ exit 1
     # a resolver that cannot answer from costing the caller its measurement entirely.
     function Resolve-StudioVolumeQueryPath {
         param([Parameter(Mandatory = $true)][string]$Path)
-        try { return (Get-StudioFinalPath -Path $Path) } catch { return $Path }
+        try {
+            $final = Get-StudioFinalPath -Path $Path
+            # Get-StudioFinalPath strips \\?\ unconditionally and deliberately, so a volume with
+            # no drive letter comes back as Volume{GUID}\..., which is NOT rooted. GetFullPath
+            # would then resolve it against the current directory and hand the matcher a path on
+            # some unrelated volume, which is worse than not knowing. Keep the caller's own path
+            # in that case; it is the one the rest of the installer uses.
+            if ($final -and [System.IO.Path]::IsPathRooted($final)) { return $final }
+            return $Path
+        } catch { return $Path }
     }
 
     # Bounded and cached, for the reason Invoke-BoundedVideoControllerScan already documents: a
@@ -7332,7 +7344,11 @@ exit 0
             } catch {
                 $lastError = $_.Exception.Message
             }
-            if (-not (Test-Path -LiteralPath $Path)) { return $true }
+            # Test-StudioPathPresent, not Test-Path: Test-Path follows a directory reparse
+            # point, so a dangling one that could not be unlinked reads as absent and this
+            # would report a removal that did not happen. Its callers act on that -- the
+            # --no-rollback discard clears the rollback state and says the environment is gone.
+            if (-not (Test-StudioPathPresent -Path $Path)) { return $true }
             if ($attempt -lt 3) { Start-Sleep -Milliseconds (250 * $attempt) }
         }
         Write-StudioLine "[WARN] Could not remove $Label at $Path" -ForegroundColor Yellow

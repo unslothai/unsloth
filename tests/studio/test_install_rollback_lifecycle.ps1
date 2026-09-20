@@ -363,6 +363,11 @@ try {
         (Select-StudioVolumeForPath -Path $otherPath -Volumes $vols).DeviceID -eq "other")
     Check "a path under neither falls to the root volume" (
         (Select-StudioVolumeForPath -Path $elsePath -Volumes $vols).DeviceID -eq "root")
+    # A volume with no drive letter resolves to Volume{GUID}\..., which is not rooted; anchoring
+    # that to the current directory would match whatever volume the installer happens to be run
+    # from. No answer is the honest one.
+    Check "an unrooted path matches no volume at all" (
+        $null -eq (Select-StudioVolumeForPath -Path "Volume{00000000-0000-0000-0000-000000000000}" -Volumes $vols))
     Check "nothing to choose from is not an error" (
         $null -eq (Select-StudioVolumeForPath -Path $mountPath -Volumes @()))
     Check "an empty path chooses nothing" (
@@ -490,6 +495,30 @@ try {
     Check "a discard that could not delete never aborts the install" (-not $discardThrew)
     Check "a discard that could not delete does not claim success" (
         $joined -notmatch 'discarded \(--no-rollback\)')
+    # A dangling directory reparse point that cannot be unlinked: Test-Path follows the link and
+    # calls it absent, so the retry helper would report a removal that did not happen and the
+    # discard above would clear the rollback state and say the environment was gone.
+    $danglingRoot = Join-Path $StudioHome "dangling"
+    [System.IO.Directory]::CreateDirectory($danglingRoot) | Out-Null
+    $danglingTarget = Join-Path $danglingRoot "gone"
+    [System.IO.Directory]::CreateDirectory($danglingTarget) | Out-Null
+    $danglingLink = Join-Path $danglingRoot "link"
+    $danglingMade = $true
+    try { New-Item -ItemType SymbolicLink -Path $danglingLink -Target $danglingTarget -ErrorAction Stop | Out-Null }
+    catch { $danglingMade = $false }
+    if ($danglingMade) {
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $danglingTarget -Recurse -Force
+        # Only the first half is checkable here: measured on this host, Test-Path does NOT follow
+        # a dangling symlink on Linux and answers True, so the divergence the retry helper guards
+        # against is a Windows directory reparse point and is not reproduced anywhere available.
+        # What holds on every platform is that the helper the retry now uses sees the link.
+        Check "a dangling link is reported as present" (Test-StudioPathPresent -Path $danglingLink)
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $danglingLink -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "  SKIP  this host will not create a symbolic link"
+    }
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $danglingRoot -Recurse -Force -ErrorAction SilentlyContinue
+
     Check "a discard that could not delete names the path left on disk" (
         $joined -match [regex]::Escape($StudioHome) -and $joined -match 'unsloth_studio\.rollback\.')
     $script:StudioNoRollback = $false
