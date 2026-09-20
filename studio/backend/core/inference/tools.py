@@ -11442,10 +11442,15 @@ def _project_generation_in_flight(project_id: str) -> bool:
     try:
         from state import active_generations
         from storage.studio_db import project_thread_ids
+        from utils.account_context import current_account_id
 
-        if project_id in set(active_generations.active_project_ids()):
+        # Scoped to the acting account: project and thread ids are client-supplied and
+        # stored per account, so asking the registry about every account lets another
+        # account's generation in a same-named project refuse this one's folder change.
+        account_id = current_account_id()
+        if project_id in set(active_generations.active_project_ids(account_id)):
             return True
-        running = set(active_generations.active_thread_ids())
+        running = set(active_generations.active_thread_ids(account_id))
         if not running:
             return False
         return any(thread_id in running for thread_id in project_thread_ids(project_id))
