@@ -250,7 +250,8 @@ async function loadConversationMessages(
   if (!hasParentIds) return raw;
   // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
   const storedIds = new Set(raw.map((m) => m.id));
-  const headId = liveBranch
+  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
+  const headId = liveBranch?.length
     ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
     : undefined;
   return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
@@ -467,15 +468,21 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   );
 }
 
+// One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
+const loadDisplayedBranchMessages = (
+  threadId: string,
+  options: { emptyMessage?: string } = {},
+) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
+
 /** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
 export const buildConversationMarkdownForThread =
   createConversationMarkdownBuilder({
-    loadMessages: loadConversationMessages,
+    loadMessages: loadDisplayedBranchMessages,
     renderMessage: messageToMarkdown,
   });
 
 export const exportConversationMarkdown = createConversationMarkdownExporter({
-  loadMessages: loadConversationMessages,
+  loadMessages: loadDisplayedBranchMessages,
   renderMessage: messageToMarkdown,
   download: downloadBlob,
   exportTimestamp: exportTs,
@@ -490,7 +497,7 @@ async function saveConversationAsProjectSource(
   projectId: string,
   title: string,
 ): Promise<SaveSourceOutcome> {
-  const messages = await loadConversationMessages(threadId, {
+  const messages = await loadDisplayedBranchMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
   });
   if (!messages) return "skipped";

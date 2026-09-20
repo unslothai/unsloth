@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import fnmatch
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -159,6 +161,9 @@ def _stage_assets(tmp_path: Path) -> None:
     for name, payload in (
         ("Unsloth-Desktop-MacOS.dmg", b"disk image"),
         ("Unsloth-Desktop-Ubuntu.deb", b"package"),
+        ("Unsloth-Desktop-Ubuntu.deb.sig", signature),
+        ("Unsloth-Desktop-Ubuntu-ARM64.deb", b"arm64 package"),
+        ("Unsloth-Desktop-Ubuntu-ARM64.deb.sig", signature),
         ("Unsloth-Desktop-ARM64.app.tar.gz", b"mac updater"),
         ("Unsloth-Desktop-ARM64.app.tar.gz.sig", signature),
         ("Unsloth-Desktop-Linux.AppImage", b"linux updater"),
@@ -176,9 +181,15 @@ def _run_create_release(
     tmp_path: Path,
     *,
     invalid_signature = False,
+    missing_debian_signature = False,
+    missing_debian_arm64_signature = False,
     **kwargs,
 ):
     _stage_assets(tmp_path)
+    if missing_debian_signature:
+        (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Ubuntu.deb.sig").unlink()
+    if missing_debian_arm64_signature:
+        (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Ubuntu-ARM64.deb.sig").unlink()
     if invalid_signature:
         (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Linux.AppImage.sig").write_text(
             "Tauri signer diagnostic, not a signature\n", encoding = "utf-8"
@@ -318,6 +329,96 @@ def test_publish_rejects_signer_diagnostics_as_updater_signatures(tmp_path):
     assert not [line for line in commands if line.startswith("gh release create")]
 
 
+def test_linux_release_stages_the_debian_signature(tmp_path):
+    bundles = tmp_path / "bundles"
+    bundles.mkdir()
+    files = []
+    for suffix in ("deb", "deb.sig", "AppImage", "AppImage.sig"):
+        path = bundles / f"Unsloth_0.1.50_amd64.{suffix}"
+        path.write_text(suffix, encoding = "utf-8")
+        files.append(str(path))
+    result, _ = _run_step(
+        _workflow(),
+        "build",
+        "Stage release assets",
+        tmp_path,
+        extra_env = {"ARTIFACT_PATHS": json.dumps(files), "MATRIX_ARTIFACT": "linux"},
+    )
+    assert result.returncode == 0, result.stderr
+    staged = tmp_path / "desktop-release-assets"
+    assert (staged / "Unsloth-Desktop-Ubuntu.deb.sig").read_text() == "deb.sig"
+    assert (staged / "Unsloth-Desktop-Linux.AppImage.sig").read_text() == "AppImage.sig"
+
+
+def test_a_missing_debian_signature_prevents_manifest_publication(tmp_path):
+    result, _ = _run_create_release(_workflow(), tmp_path, missing_debian_signature = True)
+    assert result.returncode != 0
+    # Named in full since the arm64 leg ships a .deb.sig too.
+    assert "Expected exactly one -Ubuntu.deb.sig updater asset" in result.stderr
+
+
+def test_a_missing_debian_arm64_signature_prevents_manifest_publication(tmp_path):
+    result, _ = _run_create_release(_workflow(), tmp_path, missing_debian_arm64_signature = True)
+    assert result.returncode != 0
+    assert "Expected exactly one -Ubuntu-ARM64.deb.sig updater asset" in result.stderr
+
+
+def test_the_two_linux_legs_never_stage_the_same_asset_name(tmp_path):
+    """Both Linux legs bundle a deb and its signature.
+
+    publish-release merges every leg's artifact into one flat directory, so a shared name
+    is an overwrite rather than a clash: x64 users would get the arm64 signature and their
+    in-app update would fail verification, with nothing red anywhere.
+    """
+    staged = {}
+    for artifact, arch in (("linux-x64", "amd64"), ("linux-arm64", "arm64")):
+        leg = tmp_path / artifact
+        leg.mkdir()
+        bundles = leg / "bundles"
+        bundles.mkdir()
+        files = []
+        for suffix in ("deb", "deb.sig"):
+            path = bundles / f"Unsloth_0.1.50_{arch}.{suffix}"
+            path.write_text(f"{arch}.{suffix}", encoding = "utf-8")
+            files.append(str(path))
+        result, _ = _run_step(
+            _workflow(),
+            "build",
+            "Stage release assets",
+            leg,
+            extra_env = {"ARTIFACT_PATHS": json.dumps(files), "MATRIX_ARTIFACT": artifact},
+        )
+        assert result.returncode == 0, result.stderr
+        staged[artifact] = {
+            path.name: path.read_text(encoding = "utf-8")
+            for path in (leg / "desktop-release-assets").iterdir()
+        }
+
+    assert set(staged["linux-x64"]) == {
+        "Unsloth-Desktop-Ubuntu.deb",
+        "Unsloth-Desktop-Ubuntu.deb.sig",
+    }
+    assert set(staged["linux-arm64"]) == {
+        "Unsloth-Desktop-Ubuntu-ARM64.deb",
+        "Unsloth-Desktop-Ubuntu-ARM64.deb.sig",
+    }
+    assert not set(staged["linux-x64"]) & set(staged["linux-arm64"])
+    assert staged["linux-arm64"]["Unsloth-Desktop-Ubuntu-ARM64.deb.sig"] == "arm64.deb.sig"
+
+
+def test_the_updater_manifest_points_linux_arm64_at_its_own_bundle(tmp_path):
+    """An arm64 deb install must never be offered the amd64 package."""
+    result, _ = _run_create_release(_workflow(), tmp_path)
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((tmp_path / "latest.json").read_text(encoding = "utf-8"))
+    platforms = manifest["platforms"]
+    for key in ("linux-aarch64", "linux-aarch64-deb"):
+        assert platforms[key]["url"].endswith("Unsloth-Desktop-Ubuntu-ARM64.deb"), key
+    for key in ("linux-x86_64", "linux-x86_64-appimage"):
+        assert platforms[key]["url"].endswith("Unsloth-Desktop-Linux.AppImage"), key
+    assert platforms["linux-x86_64-deb"]["url"].endswith("Unsloth-Desktop-Ubuntu.deb")
+
+
 def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     workflow = _workflow()
     result, commands = _run_create_release(workflow, tmp_path)
@@ -334,6 +435,13 @@ def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     latest = tmp_path / "latest.json"
     assert latest.is_file()
     metadata = yaml.safe_load(latest.read_text(encoding = "utf-8"))
+    platforms = metadata["platforms"]
+    debian = platforms["linux-x86_64-deb"]
+    assert debian["url"].endswith("/Unsloth-Desktop-Ubuntu.deb")
+    signature = tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Ubuntu.deb.sig"
+    assert debian["signature"] == signature.read_text().strip()
+    assert platforms["linux-x86_64-appimage"]["url"].endswith(".AppImage")
+    assert platforms["linux-x86_64"] == platforms["linux-x86_64-appimage"]
     for platform in metadata["platforms"].values():
         decoded = base64.b64decode(platform["signature"], validate = True)
         assert decoded.startswith(b"untrusted comment:")
@@ -752,3 +860,95 @@ def test_asr_audit_events_are_reported_as_runner_activity_only():
     assert (
         "not attributable" in report or "not a finding against it" in report
     ), "the ASR warning reads as a verdict on the bundle, which is never executed"
+
+
+def test_linux_arm64_deb_has_a_native_build_and_blocks_publication_on_failure():
+    workflow = _workflow()
+    legs = workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
+    arm64 = [leg for leg in legs if leg.get("artifact") == "linux-arm64"]
+    assert len(arm64) == 1
+    assert arm64[0]["platform"] == "ubuntu-24.04-arm"
+    build = _step(workflow, "build", "Build Linux ARM64 package")
+    assert build["if"] == "matrix.platform == 'ubuntu-24.04-arm'"
+    assert build["with"]["args"] == "-v --bundles deb"
+    assert "TAURI_SIGNING_PRIVATE_KEY" in build["env"]
+    wait = _step(workflow, "publish-release", "Wait for the build matrix")["run"]
+    assert f"'Build {arm64[0]['label']}'" in wait
+
+
+def test_linux_deb_architectures_stage_distinct_assets_and_validate_together(tmp_path):
+    workflow = _workflow()
+    _stage_assets(tmp_path)
+    arm64_asset = tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Ubuntu-ARM64.deb"
+    arm64_asset.unlink(missing_ok = True)
+    for artifact, arch, target in (
+        ("linux-x64", "amd64", "Unsloth-Desktop-Ubuntu.deb"),
+        ("linux-arm64", "arm64", "Unsloth-Desktop-Ubuntu-ARM64.deb"),
+    ):
+        source = tmp_path / f"Unsloth_0.1.50_{arch}.deb"
+        source.write_bytes(arch.encode())
+        destination = tmp_path / "desktop-release-assets" / target
+        destination.unlink(missing_ok = True)
+        result, _ = _run_step(
+            workflow,
+            "build",
+            "Stage release assets",
+            tmp_path,
+            extra_env = {"ARTIFACT_PATHS": json.dumps([str(source)]), "MATRIX_ARTIFACT": artifact},
+        )
+        assert result.returncode == 0, result.stderr
+        assert destination.read_bytes() == arch.encode()
+    result, _ = _run_step(workflow, "publish-release", "Validate release asset set", tmp_path)
+    assert result.returncode == 0, result.stderr
+    arm64_asset.unlink()
+    result, _ = _run_step(workflow, "publish-release", "Validate release asset set", tmp_path)
+    assert result.returncode != 0
+    assert "Unsloth-Desktop-Ubuntu-ARM64.deb" in result.stderr
+
+
+def test_linux_clean_machine_downloads_only_the_runner_architecture(tmp_path):
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/desktop-app-clean-machine-ci.yml").read_text(
+            encoding = "utf-8"
+        )
+    )
+    job = workflow["jobs"]["linux"]
+    assert job["runs-on"] == "${{ matrix.os }}"
+    legs = job["strategy"]["matrix"]["include"]
+    assert {leg["arch"] for leg in legs if leg["kind"] == "deb"} == {"x64", "arm64"}
+    download = _step(workflow, "linux", "Download the shipped bundle")
+    original = download["run"]
+    for leg in legs:
+        download["run"] = original.replace("${{ matrix.asset }}", leg["asset"])
+        result, commands = _run_step(
+            workflow,
+            "linux",
+            "Download the shipped bundle",
+            tmp_path,
+            target_has_desktop_assets = True,
+            extra_env = {"REL_TAG": RELEASE_TAG, "REL_REPO": "unslothai/unsloth"},
+        )
+        assert result.returncode == 0, result.stderr
+        expected = (
+            "Unsloth-Desktop-Ubuntu-ARM64.deb"
+            if leg["arch"] == "arm64"
+            else (
+                "Unsloth-Desktop-Ubuntu.deb"
+                if leg["kind"] == "deb"
+                else "Unsloth-Desktop-Linux.AppImage"
+            )
+        )
+        command = next(
+            command for command in commands if command.startswith("gh release download ")
+        )
+        arguments = shlex.split(command)
+        pattern = arguments[arguments.index("--pattern") + 1]
+        for prefix in ("Unsloth-Desktop-", "Unsloth-Desktop-0_1_803_beta-"):
+            assets = [
+                prefix + suffix for suffix in ("Ubuntu.deb", "Ubuntu-ARM64.deb", "Linux.AppImage")
+            ]
+            assert fnmatch.filter(assets, pattern) == [
+                prefix + expected.removeprefix("Unsloth-Desktop-")
+            ]
+        if leg["arch"] == "arm64":
+            assert leg["os"] == "ubuntu-24.04-arm"
