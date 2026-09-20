@@ -986,7 +986,7 @@ def test_the_file_hold_closes_with_a_full_width_handle(monkeypatch):
 
     from core.inference import mxc_pins
 
-    handle = 0x7FF6_1234_5678          # wider than 32 bits
+    handle = 0x7FF6_1234_5678  # wider than 32 bits
     closed = []
     recorded = {}
 
