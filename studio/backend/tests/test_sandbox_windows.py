@@ -933,3 +933,37 @@ def test_the_helper_hold_is_released_even_when_the_prompt_is_never_answered(
 
     assert len(released) == 2, "a hold survived a step that timed out"
     assert all(result["exit"] is None for result in results.values())
+
+
+def test_the_probe_does_not_run_an_executor_swapped_after_hashing(tmp_path, monkeypatch):
+    """available() hashes the file and then reopens the pathname to run
+    --probe. prepare()'s hold starts only after available() returns, so a
+    same-user process swapping the file in between would have the replacement
+    run directly on the host, outside MXC."""
+    from core.inference import mxc_pins
+
+    executor = tmp_path / "wxc-exec.exe"
+    executor.write_bytes(b"the pinned executor")
+    _pin(monkeypatch, str(executor))
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sandbox_windows, "executable_path", lambda: str(executor))
+
+    ran = []
+    def record(argv, **kwargs):
+        ran.append(argv)
+        raise AssertionError("the probe should not have run")
+
+    monkeypatch.setattr(sandbox_windows.subprocess, "run", record)
+    # Swapped between executable_path()'s hash and the probe.
+    def swap_then_hold(path):
+        executor.write_bytes(b"swapped before the probe")
+        return None
+
+    monkeypatch.setattr(sandbox_windows, "_hold_executor", swap_then_hold)
+
+    ok, reason = sandbox_windows.available()
+
+    assert ok is False
+    assert "changed after it was verified" in reason
+    assert ran == [], "the swapped executor was run"

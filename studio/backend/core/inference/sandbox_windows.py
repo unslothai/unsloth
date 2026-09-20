@@ -183,7 +183,21 @@ def available() -> tuple[bool, str]:
             "with UNSLOTH_WINDOWS_SANDBOX_PREVIEW=1, or install it directly "
             "with: python studio/install_mxc_runtime.py"
         )
+    # Held and re-checked across the probe too. executable_path() hashes the
+    # file and then this reopens the PATHNAME, and a same-user process can
+    # swap it in between, at which point the replacement runs --probe directly
+    # on the host, outside MXC. prepare()'s hold starts after this returns and
+    # does nothing for this invocation.
     try:
+        hold = _hold_executor(executor)
+    except SandboxUnavailableError as exc:
+        return False, str(exc)
+    try:
+        if not mxc_pins.matches_pin(executor, mxc_pins.EXECUTOR_SHA256):
+            return False, (
+                "the MXC sandbox executor changed after it was verified; "
+                "refusing to run it"
+            )
         probe = subprocess.run(
             [executor, "--probe"],
             capture_output = True,
@@ -192,6 +206,9 @@ def available() -> tuple[bool, str]:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"the MXC executor could not be run: {exc}"
+    finally:
+        if hold is not None:
+            hold.close()
     if probe.returncode != 0:
         detail = probe.stderr.decode(errors = "replace").strip()[:300]
         return False, f"the MXC host probe failed (exit {probe.returncode}): {detail}"
