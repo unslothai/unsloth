@@ -264,13 +264,9 @@ def test_local_and_adapter_loads_are_untouched(mapper, hub_cache, overrides):
 
 
 def test_load_model_hands_the_verdict_to_both_loaders():
-    """Everything above tests the verdict; this tests that anyone receives it.
-
-    Dropping the two keyword arguments restores the download in full and leaves every
-    other test in this file passing, so the wiring needs an assertion of its own. A
-    real ``load_model`` call cannot make it here (no weights, no network, no unsloth),
-    so read the call sites instead: both loaders take the name
-    ``_load_cached_repo_as_named`` was assigned to, inside ``load_model``.
+    """Dropping the two keyword arguments restores the download and leaves every other
+    test here passing, so the wiring needs its own assertion. A real ``load_model`` call
+    cannot run here (no weights, no network, no unsloth), so read the call sites.
     """
     import ast
 
