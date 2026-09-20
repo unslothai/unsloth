@@ -163,6 +163,23 @@ def test_cached_swap_target_keeps_the_swap(mapper, hub_cache, load_in_4bit):
     assert _load_cached_repo_as_named(_config(), load_in_4bit) is False
 
 
+@pytest.mark.parametrize("load_in_4bit", [True, False])
+def test_cached_swap_target_in_another_case_keeps_the_swap(mapper, hub_cache, load_in_4bit):
+    # The mapper lowercases its targets; the Hub, and Studio's own downloads, do not.
+    _cache_repo(hub_cache, UPSTREAM)
+    _cache_repo(hub_cache, (PREQUANT if load_in_4bit else UNSLOTH_16BIT).upper())
+
+    assert _load_cached_repo_as_named(_config(), load_in_4bit) is False
+
+
+def test_a_differently_cased_target_short_a_shard_still_loads_as_named(mapper, hub_cache):
+    # Matching the case is not enough on its own: the copy still has to be loadable.
+    _cache_repo(hub_cache, UPSTREAM)
+    _cache_repo(hub_cache, PREQUANT.upper(), missing_shard = True)
+
+    assert _load_cached_repo_as_named(_config(), True) is True
+
+
 def test_without_bitsandbytes_the_16bit_target_decides(mapper, hub_cache):
     # The loader drops 4-bit here, so an unusable cached prequant does not count.
     mapper.loader.ALLOW_BITSANDBYTES = False

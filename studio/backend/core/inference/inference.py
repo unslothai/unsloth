@@ -107,9 +107,16 @@ def _load_cached_repo_as_named(config: ModelConfig, load_in_4bit: bool) -> bool:
         return False
     if not target or target.lower() == name:
         return False
-    from utils.utils import active_hf_cache_loadable_snapshot
+    from utils.utils import (
+        active_hf_cache_holds_repo_in_any_case,
+        active_hf_cache_loadable_snapshot,
+    )
 
-    if active_hf_cache_loadable_snapshot(target) is not None:
+    # The mapper lowercases its targets while the Hub reports, and anything that fetched
+    # one by its canonical id stored, a different spelling. Cache directories are case
+    # sensitive, so the swap target has to be looked up in any case or a cached Unsloth
+    # copy reads as absent and we quantize the upstream weights on top of it.
+    if active_hf_cache_holds_repo_in_any_case(target):
         return False
     snapshot = active_hf_cache_loadable_snapshot(config.path)
     if snapshot is None:
