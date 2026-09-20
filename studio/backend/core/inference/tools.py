@@ -16074,6 +16074,12 @@ def _check_signal_escape_patterns(code: str):
             "http",
             "http.client",
             "aiohttp",
+            # The submodules that hold those packages' public API. Tracking their aliases is what
+            # lets a call through one of them be canonicalised back to the package.
+            "requests.api",
+            "httpx._api",
+            "httpx._client",
+            "urllib3._request_methods",
         }
     )
     # Modules whose aliases are tracked. The network ones so a renamed import is still policed, and

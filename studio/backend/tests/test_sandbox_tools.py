@@ -5111,3 +5111,24 @@ class TestApiSubmodules:
 
     def test_an_allowed_host_through_a_submodule_keeps_working_ok(self):
         _ok('from requests import api as r\nr.get("https://huggingface.co/api/models")')
+
+
+class TestApiSubmoduleImports:
+    """Canonicalising a submodule call only helps once the import that named it is tracked."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(f'import requests.api as r\nr.get("{_METADATA_URL}")', id = "import_as"),
+            pytest.param(
+                f'from requests.api import get as fetch\nfetch("{_METADATA_URL}")',
+                id = "from_import_aliased",
+            ),
+            pytest.param(f'from requests.api import get\nget("{_METADATA_URL}")', id = "from_import"),
+        ],
+    )
+    def test_an_import_of_the_submodule_is_tracked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_an_allowed_host_through_the_submodule_keeps_working_ok(self):
+        _ok('import requests.api as r\nr.get("https://huggingface.co/api/models")')
