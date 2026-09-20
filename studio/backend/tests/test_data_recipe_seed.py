@@ -1179,6 +1179,27 @@ def test_seed_glob_reads_a_caret_in_a_class_literally(monkeypatch, tmp_path, pat
     assert seed_route._files_under_patterns([pattern], ["a.parquet", "b.parquet"]) == expected
 
 
+def test_seed_hf_path_keeps_a_dunder_file_a_card_declared(monkeypatch, tmp_path):
+    """The loader skips a __folder, not a file whose name happens to start that way."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/__train.json", "data/train.json"]
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "data/*"}]}]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert sorted(matched) == ["data/__train.json", "data/train.json"]
+
+
+def test_seed_config_named_Default_is_not_the_implicit_default(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+
+    assert (
+        seed_route._pick_config([{"config_name": "Default"}, {"config_name": "other"}], None)
+        is None
+    )
+
+
 def test_seed_hf_path_unions_an_exact_and_a_qualified_split_folder(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["train/0.parquet", "sets/train_a/1.parquet", "sets/test_b/2.parquet"]

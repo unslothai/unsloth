@@ -273,8 +273,10 @@ def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str,
         return flagged
     if len(configs) == 1:
         return configs[0]
+    # Exactly `default`: `datasets` does not recognise Default or DEFAULT as the
+    # implicit one, it asks for a config name instead.
     return next(
-        (c for c in configs if str(c.get("config_name") or "default").lower() == DEFAULT_CONFIG),
+        (c for c in configs if str(c.get("config_name") or DEFAULT_CONFIG) == DEFAULT_CONFIG),
         None,
     )
 
@@ -351,20 +353,21 @@ def _hidden_to_the_loader(path: str, pattern: str) -> bool:
     pattern does not carry itself, so `**/*` never reaches .backup/ or
     __pycache__/ (`data_files._is_unrequested_hidden_file_or_is_inside_unrequested_hidden_dir`).
     """
-    for prefix in (".", "__"):
-        in_path = [
-            part
-            for part in PurePosixPath(path).parts
-            if part.startswith(prefix) and set(part) != {"."}
-        ]
-        in_pattern = [
-            part
-            for part in PurePosixPath(pattern).parts
-            if part.startswith(prefix) and set(part) != {"."}
-        ]
+    # A dot counts anywhere, a dunder only in a folder: `datasets` reads the
+    # whole path for hidden parts but only the parents for a special directory,
+    # so data/__train.json is a file it loads.
+    for prefix, parts in ((".", "parts"), ("__", "parent_parts")):
+        in_path = _marked_parts(path, prefix, parts)
+        in_pattern = _marked_parts(pattern, prefix, parts)
         if len(in_path) != len(in_pattern):
             return True
     return False
+
+
+def _marked_parts(path: str, prefix: str, which: str) -> list[str]:
+    parsed = PurePosixPath(path)
+    parts = parsed.parts if which == "parts" else parsed.parent.parts
+    return [part for part in parts if part.startswith(prefix) and set(part) != {"."}]
 
 
 def _files_under_patterns(
