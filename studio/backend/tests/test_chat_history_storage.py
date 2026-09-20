@@ -2530,10 +2530,18 @@ def test_another_accounts_generation_does_not_block_this_folder_change(
 
     project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(first))
     thread_id = f"thread-of-{project['id']}"
-    studio_db.upsert_chat_thread({
-        "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
-        "projectId": project["id"], "archived": 0, "createdAt": 1, "updatedAt": 1,
-    })
+    studio_db.upsert_chat_thread(
+        {
+            "id": thread_id,
+            "title": "t",
+            "modelType": "gguf",
+            "modelId": "m",
+            "projectId": project["id"],
+            "archived": 0,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
 
     # Somebody else is generating, in their own account, in a project that happens
     # to carry the same id.
@@ -2541,7 +2549,9 @@ def test_another_accounts_generation_does_not_block_this_folder_change(
     token = bind_account(stranger)
     try:
         registration = active_generations.ActiveGeneration(
-            threading.Event(), thread_id = thread_id, run_id = "their-run",
+            threading.Event(),
+            thread_id = thread_id,
+            run_id = "their-run",
         )
         registration.__enter__()
     finally:
@@ -2551,7 +2561,8 @@ def test_another_accounts_generation_does_not_block_this_folder_change(
         changed, _ = tools.update_project_workspace_when_idle(
             project["id"],
             lambda: studio_db.set_chat_project_workspace(
-                project["id"], external_workspace_path = str(second)),
+                project["id"], external_workspace_path = str(second)
+            ),
         )
         assert changed, "another account's generation refused this account's folder change"
     finally:
