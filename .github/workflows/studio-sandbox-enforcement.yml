@@ -1,0 +1,169 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Measures what the tool sandbox actually enforces, per OS, against a real
+# kernel. The unit suites cover the policy we GENERATE; nothing in them can
+# tell you whether the host honours it.
+#
+# Every job here FAILS when the sandbox cannot be built. That is the whole
+# point of the file. Backend CI installs bubblewrap on ubuntu-24.04 and then
+# reports "bubblewrap cannot build a sandbox here; confinement tests will
+# skip", because apparmor-profiles on 24.04 does not ship
+# /etc/apparmor.d/bwrap-userns-restrict at that path, apparmor_parser finds
+# nothing, and the `|| true` swallows it. The run goes green at 13,165 passed
+# with every confinement test skipped. A suite that is green because it tested
+# nothing is worse than a red one.
+#
+# So Linux runs on ubuntu-22.04, which predates
+# kernel.apparmor_restrict_unprivileged_userns and where an ordinary
+# unprivileged user really can create the namespace bwrap needs. That is also
+# the launch path a desktop user takes, which a privileged container is not.
+
+name: Sandbox enforcement
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/core/inference/os_sandbox.py'
+      - 'studio/backend/core/inference/sandbox_*.py'
+      - 'studio/backend/core/inference/tools.py'
+      - 'studio/backend/tests/sandbox_enforcement_probe.py'
+      - 'studio/install_mxc_runtime.py'
+      - '.github/workflows/studio-sandbox-enforcement.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  linux:
+    name: Linux bubblewrap confinement
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install bubblewrap
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends bubblewrap
+
+      - name: Require a working sandbox before measuring anything
+        run: |
+          bwrap --version
+          if ! bwrap --ro-bind / / --unshare-user true; then
+            echo "::error::bubblewrap cannot build a sandbox on this runner, so a pass here would be vacuous"
+            exit 1
+          fi
+          echo "bubblewrap builds a sandbox as $(id -un), uid $(id -u)"
+
+      - name: Install backend dependencies
+        run: python -m pip install --quiet structlog pydantic
+
+      - name: Measure confinement
+        working-directory: studio/backend
+        run: python tests/sandbox_enforcement_probe.py
+
+      - name: Sandbox unit suites
+        working-directory: studio/backend
+        run: python -m pytest tests/test_sandbox_linux.py tests/test_sandbox_probe.py -q
+
+  macos:
+    name: macOS Seatbelt confinement
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Require sandbox-exec before measuring anything
+        run: |
+          ls -l /usr/bin/sandbox-exec
+          sw_vers
+          uname -m
+
+      - name: Install backend dependencies
+        run: python -m pip install --quiet structlog pydantic
+
+      - name: Measure confinement
+        working-directory: studio/backend
+        run: python tests/sandbox_enforcement_probe.py
+
+      - name: Sandbox unit suites
+        working-directory: studio/backend
+        run: python -m pytest tests/test_sandbox_macos.py tests/test_sandbox_probe.py -q
+
+  windows:
+    name: Windows MXC confinement
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-2025 is build 26100, the same kernel as 24H2 and the floor
+        # MXC supports. windows-11-arm covers the other architecture we ship a
+        # binary for.
+        os: [windows-2025, windows-11-arm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Record the host build, because the enforcing tier depends on it
+        shell: pwsh
+        run: |
+          [System.Environment]::OSVersion.Version
+          (Get-CimInstance Win32_OperatingSystem).Caption
+
+      - name: Install the pinned MXC executor, without Node
+        shell: pwsh
+        run: |
+          python studio/install_mxc_runtime.py --dest "$env:RUNNER_TEMP\mxc"
+          "UNSLOTH_MXC_EXEC=$env:RUNNER_TEMP\mxc\wxc-exec.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Verify the executor runs and reports host capability
+        shell: pwsh
+        run: |
+          & "$env:UNSLOTH_MXC_EXEC" --version
+          & "$env:UNSLOTH_MXC_EXEC" --probe
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "the MXC host probe failed, so confinement here would be unmeasurable"
+            exit 1
+          }
+
+      - name: Confirm the argv splice this backend depends on
+        shell: pwsh
+        run: |
+          # build_policy() emits no process.commandLine and relies on MXC
+          # rendering the argv after `--`. lxc-exec on Linux rejects trailing
+          # arguments, so this must be proven on Windows rather than assumed.
+          $policy = '{"version":"0.8.0-alpha","containerId":"unsloth-splice-check","containment":"processcontainer","process":{}}'
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($policy)
+          $b64 = [Convert]::ToBase64String($bytes)
+          & "$env:UNSLOTH_MXC_EXEC" --config-base64 $b64 -- cmd /c "echo SPLICED_ARGV_OK"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "wxc-exec did not accept the argv splice; the backend must render commandLine instead"
+            exit 1
+          }
+
+      - name: Install backend dependencies
+        run: python -m pip install --quiet structlog pydantic
+
+      - name: Measure confinement
+        shell: pwsh
+        working-directory: studio/backend
+        env:
+          UNSLOTH_WINDOWS_SANDBOX_PREVIEW: '1'
+        run: python tests/sandbox_enforcement_probe.py
+
+      - name: Sandbox unit suites
+        working-directory: studio/backend
+        run: python -m pytest tests/test_sandbox_windows.py tests/test_sandbox_probe.py -q
