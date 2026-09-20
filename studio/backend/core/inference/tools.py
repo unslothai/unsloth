@@ -18354,7 +18354,7 @@ def _python_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
-        if prepared is not None and prepared.backend == "mxc-processcontainer":
+        if prepared is not None:
             proc._unsloth_completion_reason = (
                 "timed_out"
                 if timed_out
@@ -18428,6 +18428,8 @@ def _python_exec(
         # Private mounts and descriptors, released on every exit path.
         if prepared is not None:
             prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -18566,7 +18568,7 @@ def _bash_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
-        if prepared is not None and prepared.backend == "mxc-processcontainer":
+        if prepared is not None:
             proc._unsloth_completion_reason = (
                 "timed_out"
                 if timed_out
@@ -18628,6 +18630,8 @@ def _bash_exec(
         # Private mounts and descriptors, released on every exit path.
         if prepared is not None:
             prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if _scratch_name:
             with _scratch_lock:

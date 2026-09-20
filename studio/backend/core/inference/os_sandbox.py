@@ -664,7 +664,25 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
 
 
 def verify_prepared_completion(prepared: PreparedSandboxLaunch, proc) -> dict | None:
-    if prepared.backend != "mxc-processcontainer":
+    if prepared.backend == "mxc-processcontainer":
+        from .sandbox_windows_mxc import verify_success
+
+        return verify_success(prepared, proc)
+    reason = getattr(proc, "_unsloth_completion_reason", None)
+    if prepared.execution_record is None or reason not in {"finished", "timed_out", "cancelled"}:
         return None
-    from .sandbox_windows_mxc import verify_success
-    return verify_success(prepared, proc)
+    prepared.execution_record = replace(
+        prepared.execution_record,
+        execution_status = "completed",
+        completion_status = reason,
+    )
+    return {"timedOut": reason == "timed_out", "cancelled": reason == "cancelled"}
+
+
+def finalize_prepared_cleanup(prepared: PreparedSandboxLaunch) -> None:
+    if prepared.backend == "mxc-processcontainer" or prepared.execution_record is None:
+        return
+    prepared.execution_record = replace(
+        prepared.execution_record,
+        cleanup_status = "uncertain" if prepared.cleanup_diagnostics else "complete",
+    )

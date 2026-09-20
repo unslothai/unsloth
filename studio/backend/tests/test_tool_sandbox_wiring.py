@@ -120,6 +120,9 @@ def test_disable_sandbox_still_means_full_access():
     assert record.requested_mode == "full"
     assert record.effective_mode == "full"
     assert record.limitations == ("security_restrictions_disabled",)
+    assert record.execution_status == "completed"
+    assert record.completion_status == "finished"
+    assert record.cleanup_status == "complete"
 
 
 def test_full_access_is_not_turned_into_a_refusal_by_a_stale_required():
