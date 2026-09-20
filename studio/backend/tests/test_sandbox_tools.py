@@ -3724,3 +3724,70 @@ class TestTheWorkBudgetIsNotAWayThrough:
     def test_a_long_chain_of_literals_still_costs_nothing_ok(self):
         chain = "".join(f"a{i} = a{i - 1}\n" for i in range(1, 5000))
         _ok('import requests\na0 = "https://huggingface.co"\n' + chain + "requests.get(a4999)")
+
+
+class TestTheExemptionNeedsARealImport:
+    """A reserved name only exempts a call when it is the module that was imported."""
+
+    def test_a_module_assigned_to_a_reserved_name_is_not_exempt(self):
+        _blocked(
+            'import smtplib\nsqlite3 = smtplib\nsqlite3.SMTP().connect("169.254.169.254", 80)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_second_reserved_module_name_does_not_help_either(self):
+        _blocked(
+            'import ftplib\nduckdb = ftplib\nduckdb.FTP().connect("evil.example", 21)',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_the_imported_module_itself_is_still_exempt_ok(self):
+        _ok('import sqlite3 as db\ndb.connect("state.db")')
+
+
+class TestExpandedConnectionKeywords:
+    """A `**` mapping overrides the DSN, so it is read rather than skipped."""
+
+    def test_a_literal_expansion_naming_a_metadata_host_is_blocked(self):
+        _blocked(
+            'import psycopg2\npsycopg2.connect("dbname=app", **{"host": "169.254.169.254"})',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_literal_expansion_naming_an_untrusted_host_is_refused(self):
+        _blocked(
+            'import psycopg2\npsycopg2.connect("dbname=app", **{"host": "evil.example"})',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_an_expansion_read_from_the_environment_is_refused(self):
+        _blocked(
+            'import os, psycopg2\npsycopg2.connect("dbname=app", **os.environ)',
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_an_ordinary_expansion_keeps_working_ok(self):
+        _ok('import psycopg2\nopts = {"dbname": "app"}\npsycopg2.connect("dbname=app", **opts)')
+
+
+class TestLongChainsResolveRatherThanLapse:
+    """A chain of plain assignments is not nesting, so it must not reach the nesting limit."""
+
+    @pytest.mark.parametrize("links", [24, 500])
+    def test_a_blocked_literal_survives_a_long_chain(self, links):
+        chain = "".join(f"a{i} = a{i - 1}\n" for i in range(1, links + 1))
+        _blocked(
+            f'import requests\na0 = "{_METADATA_URL}"\n' + chain + f"requests.get(a{links})",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_long_session_alias_chain_is_still_a_session(self):
+        chain = "".join(f"s{i} = s{i - 1}\n" for i in range(1, 26))
+        _blocked(
+            "import requests\ns0 = requests.Session()\n" + chain + f's25.get("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_long_chain_of_allowed_literals_keeps_working_ok(self):
+        chain = "".join(f"a{i} = a{i - 1}\n" for i in range(1, 500))
+        _ok('import requests\na0 = "https://huggingface.co/api/models"\n' + chain + "requests.get(a499)")

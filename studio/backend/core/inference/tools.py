@@ -16150,6 +16150,9 @@ def _check_signal_escape_patterns(code: str):
     # Depth alone does not bound the work: `s2 = s1 + s1` doubles the graph per level, so a shallow
     # file can still cost seconds. One budget per top-level resolution, spent by every step.
     _MAX_RESOLVE_STEPS = 4000
+    # Name-to-name links are followed iteratively and cost one dictionary lookup each, so they are
+    # bounded well above any plausible source file rather than by the nesting limit.
+    _MAX_BINDING_LINKS = 100_000
     # match was added in 3.10 and the project floor is 3.9, where these classes do not exist.
     # An empty tuple makes the isinstance below simply False.
     _MATCH_CAPTURES = tuple(
@@ -16662,7 +16665,10 @@ def _check_signal_escape_patterns(code: str):
                 self.strings[(scope, name)] = value
             # `client = s` holds the same session, and a one-line alias must not take the call out
             # of the policy. Repeat until the chain stops growing.
-            for _ in range(_MAX_RESOLVE_DEPTH):
+            # To a fixed point, not a fixed number of passes: each pass either classifies at
+            # least one more name or stops, so the candidate count bounds the work and a chain of
+            # twenty-five aliases resolves the same as a chain of two.
+            for _ in range(len(self._candidates) + 1):
                 grew = False
                 for (scope, name), value in self._candidates.items():
                     key = (scope, name)
@@ -16750,12 +16756,23 @@ def _check_signal_escape_patterns(code: str):
                     return _static_str_prefix(inner, bindings, seen, depth + 1)
             return "", False
         if isinstance(node, ast.Name):
-            if node.id in seen:
-                return "", False
-            bound = bindings.string_for(node.id, node)
-            if bound is None:
-                return "", False
-            return _static_str_prefix(bound, bindings, seen | {node.id}, depth + 1)
+            # `a1 = a0` repeated is a chain, not nesting, so following it iteratively keeps the
+            # depth limit measuring real structure (sums, f-strings). Spending depth here would
+            # make the limit itself the way past the policy: a blocked literal handed along
+            # twenty-five assignments would simply stop resolving.
+            names = set(seen)
+            current = node
+            links = 0
+            while isinstance(current, ast.Name):
+                links += 1
+                if current.id in names or links > _MAX_BINDING_LINKS:
+                    return "", False
+                names.add(current.id)
+                bound = bindings.string_for(current.id, current)
+                if bound is None:
+                    return "", False
+                current = bound
+            return _static_str_prefix(current, bindings, frozenset(names), depth + 1)
         return "", False
 
     def _host_from_url_node(node, bindings) -> "tuple[str | None, bool]":
@@ -16806,9 +16823,32 @@ def _check_signal_escape_patterns(code: str):
         match = _DSN_HOST_RE.search(text)
         return match.group(1) if match else None
 
+    def _expanded_host_arguments(node: ast.Call) -> "tuple[list, bool]":
+        """Host values hidden in a `**` expansion, and whether any expansion could not be read.
+        `connect("dbname = app", **{"host": metadata})` overrides the DSN, so the mapping has to
+        be looked at rather than skipped."""
+        found = []
+        opaque = False
+        for kw in node.keywords or []:
+            if kw.arg is not None:
+                continue
+            if isinstance(kw.value, ast.Dict):
+                for key, value in zip(kw.value.keys, kw.value.values):
+                    if (
+                        isinstance(key, ast.Constant)
+                        and isinstance(key.value, str)
+                        and key.value.lower() in ("host", "server")
+                    ):
+                        found.append(value)
+                continue
+            opaque = True
+        return found, opaque
+
     def _remote_database_host(node: ast.Call) -> "str | None":
         """The host a `connect` on a database client names, when it names one at all."""
+        expanded, _opaque = _expanded_host_arguments(node)
         candidates = [kw.value for kw in node.keywords or [] if kw.arg in ("host", "server")]
+        candidates += expanded
         candidates += list(node.args[:1])
         for candidate in candidates:
             text, complete = _static_str_prefix(candidate, _bindings)
@@ -16822,23 +16862,35 @@ def _check_signal_escape_patterns(code: str):
                 return host
         return None
 
+    def _names_a_local_client_module(node) -> bool:
+        """Whether *node* is a reference to one of the local-client modules as imported. A name
+        that was assigned rather than imported answers for its value, not for its spelling:
+        `sqlite3 = smtplib` is the smtplib module wearing a reserved name."""
+        root = node
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return False
+        if _bindings.values_for(root.id, root):
+            # Assigned somewhere, so the import is not what this name holds.
+            return False
+        imported = _bindings.alias_for(_bindings.modules, root.id, root)
+        return (imported or root.id).split(".")[0] in _LOCAL_CONNECT_OWNERS
+
     def _opens_a_local_resource(receiver) -> bool:
         """Whether a `connect` receiver is one of the local-resource clients. Judged on where the
         value came from, never on the name: `sqlite3 = smtplib.SMTP()` spells a reserved head and
         still opens a socket, so a name that holds a value is answered by that value."""
         if isinstance(receiver, ast.Call):
-            return _canonical_fq(receiver.func, _bindings).split(".")[0] in _LOCAL_CONNECT_OWNERS
+            return _names_a_local_client_module(receiver.func)
         if isinstance(receiver, ast.Name):
             values = _bindings.values_for(receiver.id, receiver)
             if values:
                 # Every value it can hold has to be local, and a value we cannot name is not.
                 return all(_opens_a_local_resource(value) for value in values)
-            # Bound by nothing assignable: an imported module. Read through the import, so
-            # `import sqlite3 as db` is the same client under a different name.
-            imported = _bindings.alias_for(_bindings.modules, receiver.id, receiver)
-            return (imported or receiver.id).split(".")[0] in _LOCAL_CONNECT_OWNERS
+            return _names_a_local_client_module(receiver)
         if isinstance(receiver, ast.Attribute):
-            return _written_fq(receiver).split(".")[0] in _LOCAL_CONNECT_OWNERS
+            return _names_a_local_client_module(receiver)
         return False
 
     _external_memo: set = set()
@@ -17256,6 +17308,23 @@ def _check_signal_escape_patterns(code: str):
                 database_host = _remote_database_host(node)
                 if database_host:
                     _screen_host(database_host, node)
+                else:
+                    _expanded, opaque = _expanded_host_arguments(node)
+                    if opaque and any(
+                        _externally_sourced(kw.value, _bindings)
+                        for kw in node.keywords or []
+                        if kw.arg is None
+                    ):
+                        network_calls.append(
+                            {
+                                "type": "opaque_url_blocked",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    "Blocked: request target is read from the environment or "
+                                    "input; use a literal URL on an allowed informational source"
+                                ),
+                            }
+                        )
 
             if (
                 isinstance(node.func, ast.Attribute)
