@@ -13,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Callable, Literal
@@ -198,6 +199,16 @@ WORKDIR_SCAN_SECONDS = 5.0
 # workdir's; a cache too big to check in it is simply not shared.
 CACHE_SCAN_ENTRIES = 50_000
 CACHE_SCAN_SECONDS = 3.0
+# How much longer than its own budget a scan is given to come back before the
+# caller stops waiting. Small: it only covers the walk noticing its deadline and
+# returning, so a scan that is merely slow still reports its own message.
+_SCAN_JOIN_GRACE_SECONDS = 0.5
+
+# The scratch directory tools.py creates inside the workdir and points TMPDIR
+# at. Defined here because both sides need the same spelling: tools.py creates
+# it, and the scan below has to know which entries under the workdir Studio
+# itself owns.
+TOOL_TEMP_DIRNAME = "unsloth-tmp"
 
 
 class _ScanBudgetExceeded(Exception):
@@ -265,6 +276,118 @@ def _host_channel_hazard(root: str, max_entries: int, seconds: float) -> str | N
     return None
 
 
+_scan_lock = threading.Lock()
+_scan_pending: dict[str, threading.Thread] = {}
+
+
+def _hazard_within_wall_clock(root: str, max_entries: int, seconds: float) -> str | None:
+    """``_host_channel_hazard`` with a deadline that holds even when it cannot.
+
+    The walk checks the clock between entries, which is only a deadline while
+    the walk is running. ``os.walk``'s own ``scandir`` and the ``lstat`` per
+    entry are uninterruptible, so a stalled NFS or FUSE mount under the workdir
+    blocks inside a single syscall and the budget is never consulted again: the
+    tool call hangs for the mount's timeout, not for five seconds. Running the
+    walk on a worker makes the budget a wall-clock one.
+
+    Raises ``_ScanBudgetExceeded`` when the walk did not come back in time, so a
+    wedged mount reads as an unfinished scan rather than as a clean one. The
+    worker is left to finish on its own; it holds no lock and owns nothing, and
+    a second one is not started for the same root while the first is stuck.
+    """
+    with _scan_lock:
+        pending = _scan_pending.get(root)
+        if pending is not None:
+            if pending.is_alive():
+                raise _ScanBudgetExceeded(
+                    "was still being checked for host channels when a previous "
+                    "launch gave up (a wedged mount?)"
+                )
+            del _scan_pending[root]
+
+        answer: list[str | None] = []
+        budget: list[str] = []
+
+        def inspect() -> None:
+            try:
+                answer.append(_host_channel_hazard(root, max_entries, seconds))
+            except _ScanBudgetExceeded as exc:
+                budget.append(str(exc))
+            except Exception as exc:  # noqa: BLE001 - reported, never raised at the caller
+                budget.append(f"could not be checked for host channels: {exc}")
+
+        worker = threading.Thread(target = inspect, name = "unsloth-workdir-scan", daemon = True)
+        # Registered under the lock, or a concurrent caller replaces a worker
+        # that has not started yet and both walks run.
+        _scan_pending[root] = worker
+        worker.start()
+
+    worker.join(seconds + _SCAN_JOIN_GRACE_SECONDS)
+    with _scan_lock:
+        # By identity: another caller may already have replaced the entry.
+        if not worker.is_alive() and _scan_pending.get(root) is worker:
+            del _scan_pending[root]
+    if budget:
+        raise _ScanBudgetExceeded(budget[0])
+    if not answer:
+        raise _ScanBudgetExceeded(
+            f"did not finish its host-channel check within {seconds:.0f}s (a wedged mount?)"
+        )
+    return answer[0]
+
+
+def clear_stale_tool_ipc(workdir: str) -> tuple[str, ...]:
+    """Remove sockets and FIFOs left behind in Studio's own scratch directory.
+
+    A socket under the workdir is a genuine hazard and stays fatal, with one
+    exception this handles. ``<workdir>/unsloth-tmp`` is created by Studio, is
+    the child's TMPDIR, and nothing else writes there: a tool that used
+    multiprocessing, torch.distributed or any AF_UNIX server and was killed or
+    timed out leaves its listener behind. The next launch then finds a socket,
+    refuses, and since the scan is also what must run before a tool can delete
+    anything, every later Python and Terminal call in that chat is refused with
+    no way back. One `Ctrl+C` bricked the session.
+
+    Unlinking is not a way past the check. It removes the entry rather than
+    accepting it, so whatever the file was, it is gone before the walk runs and
+    no sandboxed process can reach it; a hard link to a host socket loses its
+    link here too. Anything that will not unlink is left alone and the scan
+    still refuses it. Sockets and FIFOs only: a device node or a nested mount in
+    there is not something a crashed tool leaves, and it stays fatal.
+
+    Returns what was removed, for the log.
+    """
+    scratch = os.path.join(workdir, TOOL_TEMP_DIRNAME)
+    removed: list[str] = []
+    try:
+        if not os.path.isdir(scratch) or os.path.islink(scratch):
+            return ()
+        for base, dirs, names in os.walk(scratch, followlinks = False):
+            dirs[:] = [name for name in dirs if not os.path.ismount(os.path.join(base, name))]
+            for name in names:
+                path = os.path.join(base, name)
+                try:
+                    mode = os.lstat(path).st_mode
+                except OSError:
+                    continue
+                if not (stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode)):
+                    continue
+                try:
+                    os.unlink(path)
+                except OSError:
+                    continue
+                removed.append(path)
+    except OSError:
+        return tuple(removed)
+    if removed:
+        logger.info(
+            "Removed %d stale IPC endpoint(s) left in the tool scratch directory: %s",
+            len(removed),
+            ", ".join(removed[:5]),
+        )
+    return tuple(removed)
+
+
 def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
     """The writable session workdir. A hazard here fails the call.
 
@@ -276,10 +399,14 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
     user was left with no working tool rather than with a weaker boundary. The
     sandbox is still built, and the record says the workdir was not fully
     inspected. Genuine findings above remain fatal, so a planted socket or an
-    external hard link still stops the launch.
+    external hard link still stops the launch, with the one exception cleared
+    by ``clear_stale_tool_ipc`` first: Studio's own scratch directory, where a
+    killed tool's leftover listener is removed rather than held against the
+    next call.
     """
+    clear_stale_tool_ipc(workdir)
     try:
-        hazard = _host_channel_hazard(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+        hazard = _hazard_within_wall_clock(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
     except _ScanBudgetExceeded as exc:
         logger.warning("The session workdir %s: %s", workdir, exc)
         return (WORKDIR_SCAN_INCOMPLETE,)
@@ -430,18 +557,18 @@ def model_library_roots() -> tuple[str, ...]:
     except Exception:  # noqa: BLE001 - never fail a launch over the approval gate
         return ()
     state = studio_state_roots()
+    forbidden = _never_a_model_library()
     kept: list[str] = []
     for path in candidates:
         if not path or not os.path.isabs(path):
             continue
         real = os.path.realpath(path)
-        if real == os.sep or not os.path.isdir(real):
+        # A registered folder that IS a filesystem root, a home, the parent of
+        # every home, or a system directory is a misconfiguration, and granting
+        # it would undo the rest of the profile.
+        if _is_filesystem_root(real) or not os.path.isdir(real):
             continue
-        home = os.path.realpath(os.path.expanduser("~"))
-        # A registered folder that IS a home, a system directory, or that holds
-        # Studio's own state is a misconfiguration, and binding it would undo
-        # the rest of the profile.
-        if real == home or real in _NEVER_A_MODEL_LIBRARY:
+        if os.path.normcase(real) in forbidden:
             continue
         if any(_paths_overlap(real, root) for root in state):
             continue
@@ -450,9 +577,61 @@ def model_library_roots() -> tuple[str, ...]:
     return tuple(kept)
 
 
-_NEVER_A_MODEL_LIBRARY = frozenset(
-    ("/", "/etc", "/usr", "/var", "/opt", "/bin", "/lib", "/home", "/Users", "/root", "/tmp")
+def _is_filesystem_root(path: str, pathmod: Any = None) -> bool:
+    """Whether *path* is the top of a filesystem.
+
+    Not ``path == os.sep``. That is true of POSIX ``/`` and of nothing on
+    Windows, where a drive root is ``C:\\`` and a share root is
+    ``\\\\server\\share\\``: a folder registered as ``C:\\``, which is what
+    "scan my whole drive for models" produces, passed the check and granted the
+    entire system drive. ``dirname`` is its own parent at exactly the roots, on
+    every platform.
+
+    ``pathmod`` is a parameter for the same reason ``_path_from_file_url``
+    takes ``is_windows``: the Windows rule has to be exercisable from any host.
+    """
+    return (pathmod or os.path).dirname(path) == path
+
+
+# POSIX system directories. The Windows equivalents are not spelled here
+# because they are not fixed: the system drive can be any letter and Program
+# Files can be redirected, so they are read from the environment below.
+_NEVER_A_MODEL_LIBRARY = (
+    "/", "/etc", "/usr", "/var", "/opt", "/bin", "/lib", "/home", "/Users", "/root", "/tmp",
 )
+
+_WINDOWS_SYSTEM_VARS = (
+    "SystemRoot",
+    "windir",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "ProgramData",
+    "PUBLIC",
+)
+
+
+def _never_a_model_library() -> frozenset[str]:
+    """Normcased real paths no registered folder may grant, root included.
+
+    The user's home is here, and so is its parent: ``/home`` and ``/Users``
+    were listed literally, but the Windows parent is ``C:\\Users`` under
+    whichever drive Windows was installed on, and deriving it from the home
+    covers every platform without a table. Windows system directories come
+    from the environment for the same reason.
+    """
+    paths = list(_NEVER_A_MODEL_LIBRARY)
+    try:
+        home = os.path.realpath(os.path.expanduser("~"))
+    except OSError:
+        home = ""
+    if home:
+        paths.extend((home, os.path.dirname(home)))
+    for name in _WINDOWS_SYSTEM_VARS:
+        value = (os.environ.get(name) or "").strip()
+        if value and os.path.isabs(value):
+            paths.append(os.path.realpath(value))
+    return frozenset(os.path.normcase(path) for path in paths if path)
 
 
 def _paths_overlap(first: str, second: str) -> bool:

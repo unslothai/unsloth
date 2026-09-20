@@ -8841,7 +8841,10 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
 
 # not dot-named: the walks skip dot-dirs, which would hide a model's /tmp write. not "tmp": too common in a workspace,
 # and adopting one is what broke the walks.
-_SANDBOX_TEMP_DIRNAME = "unsloth-tmp"
+# One spelling, shared with os_sandbox: the workdir scan has to know which
+# entries under the workdir Studio itself owns, and a name that drifted between
+# the two would quietly turn the scan's exemption into a no-op.
+_SANDBOX_TEMP_DIRNAME = os_sandbox.TOOL_TEMP_DIRNAME
 
 
 def _sandbox_temp_dir(workdir: str) -> str:

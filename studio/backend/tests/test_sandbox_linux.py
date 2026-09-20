@@ -1992,3 +1992,153 @@ def test_a_model_folder_that_is_a_system_directory_is_refused(monkeypatch):
     )
 
     assert os_sandbox.model_library_roots() == ()
+
+
+def _bind_unix_socket(path):
+    """Create a bound AF_UNIX socket at *path*.
+
+    Bound from inside the parent directory: sun_path is 108 bytes, and a
+    pytest tmp_path is long enough on its own to overrun it.
+    """
+    import socket
+
+    here = os.getcwd()
+    os.chdir(os.path.dirname(path))
+    try:
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            listener.bind(os.path.basename(path))
+        finally:
+            listener.close()
+    finally:
+        os.chdir(here)
+
+
+def test_a_stale_tool_socket_does_not_brick_the_session(tmp_path):
+    """A crashed tool's leftover listener must not end the chat.
+
+    `<workdir>/unsloth-tmp` is Studio's own scratch directory and the child's
+    TMPDIR. A tool that used multiprocessing and was killed leaves an AF_UNIX
+    listener there; the scan then refused every later call, and the scan is
+    also what has to run before a tool could delete it.
+    """
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME / "pymp-abc"
+    scratch.mkdir(parents = True)
+    _bind_unix_socket(str(scratch / "listener-0"))
+    assert (scratch / "listener-0").exists(), "the stale socket was not created"
+
+    assert os_sandbox.scan_workdir_for_host_channels(str(workdir)) == ()
+    assert not (scratch / "listener-0").exists(), "the stale socket was left in place"
+
+
+def test_a_socket_outside_the_scratch_directory_still_fails_the_call(tmp_path):
+    """The sweep is an exemption for one Studio-owned directory, not a way past
+    the check: a socket anywhere else in the workdir is still fatal."""
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    _bind_unix_socket(str(workdir / "planted"))
+
+    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "device or IPC node"):
+        os_sandbox.scan_workdir_for_host_channels(str(workdir))
+
+
+def test_a_scratch_entry_that_cannot_be_removed_still_fails_the_call(tmp_path):
+    """Fails closed: what the sweep could not unlink is still a finding."""
+    from core.inference import os_sandbox
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the directory permissions this test relies on")
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(parents = True)
+    _bind_unix_socket(str(scratch / "listener-0"))
+    os.chmod(scratch, 0o500)
+    try:
+        with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "device or IPC node"):
+            os_sandbox.scan_workdir_for_host_channels(str(workdir))
+    finally:
+        os.chmod(scratch, 0o700)
+
+
+def test_a_workdir_scan_that_blocks_is_given_up_on_rather_than_waited_out(monkeypatch, tmp_path):
+    """The budget is checked between entries, which is only a deadline while the
+    walk is running. A stalled NFS or FUSE mount blocks inside one uninterruptible
+    scandir, and the call hung for the mount's timeout instead of five seconds."""
+    import threading
+    import time
+
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    released = threading.Event()
+
+    def wedged(root, max_entries, seconds):
+        released.wait(8)
+        return None
+
+    monkeypatch.setattr(os_sandbox, "_host_channel_hazard", wedged)
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_SECONDS", 0.3)
+
+    started = time.monotonic()
+    try:
+        limitations = os_sandbox.scan_workdir_for_host_channels(str(workdir))
+        waited = time.monotonic() - started
+    finally:
+        released.set()
+
+    assert limitations == (os_sandbox.WORKDIR_SCAN_INCOMPLETE,)
+    assert waited < 5, f"the caller waited {waited:.1f}s on a wedged scan"
+
+
+def test_a_windows_drive_root_is_not_a_model_library():
+    """`C:\\` is not os.sep, so the filesystem-root check missed it and a folder
+    registered as the whole system drive was granted read access."""
+    import ntpath
+    import posixpath
+
+    from core.inference import os_sandbox
+
+    assert os_sandbox._is_filesystem_root("C:\\", ntpath)
+    assert os_sandbox._is_filesystem_root("\\\\server\\share\\", ntpath)
+    assert not os_sandbox._is_filesystem_root("C:\\Models", ntpath)
+    assert os_sandbox._is_filesystem_root("/", posixpath)
+    assert not os_sandbox._is_filesystem_root("/models", posixpath)
+
+
+def test_a_windows_system_directory_is_not_a_model_library(monkeypatch, tmp_path):
+    """The Windows system directories are not fixed paths, so they are read from
+    the environment rather than spelled in a POSIX-only table."""
+    from core.inference import os_sandbox, tool_path_approval
+
+    windows = tmp_path / "Windows"
+    windows.mkdir()
+    monkeypatch.setenv("SystemRoot", str(windows))
+    monkeypatch.setattr(tool_path_approval, "_scan_folder_roots", lambda: (str(windows),))
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.well_known_model_dirs", lambda: (), raising = False,
+    )
+
+    assert os_sandbox.model_library_roots() == ()
+
+
+def test_the_directory_holding_every_home_is_not_a_model_library(monkeypatch, tmp_path):
+    """/home and /Users were listed literally; the Windows equivalent is
+    C:\\Users under whichever drive Windows was installed on."""
+    from core.inference import os_sandbox, tool_path_approval
+
+    homes = tmp_path / "homes"
+    (homes / "someone").mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(homes / "someone"))
+    monkeypatch.setattr(tool_path_approval, "_scan_folder_roots", lambda: (str(homes),))
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.well_known_model_dirs", lambda: (), raising = False,
+    )
+
+    assert os_sandbox.model_library_roots() == ()
