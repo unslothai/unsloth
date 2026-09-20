@@ -2896,6 +2896,19 @@ def _forced_rocm_route_is_viable() -> bool:
             # here approved a swap that branch declines, after the CUDA repair had stood down.
             _torch_ran, _torch_imp, _torch_ver, _, _ = _probe_torch_runtime()
             _installed_ver = (_torch_ver or "").lower() if (_torch_ran and _torch_imp) else ""
+            # Already on a ROCm build, so the swap this request asks for has happened. Every
+            # arm below asks whether _ensure_rocm_torch would install SOMETHING, and once the
+            # authorised wheel is in place the honest answer is no -- which read as "no route"
+            # and handed _ensure_cuda_torch a healthy ROCm install to overwrite, for
+            # _ensure_rocm_torch to swap back on the next run. That multi-GB round trip on
+            # every `studio update` is what this stand-down exists to prevent, so viability
+            # here has to be a property of the HOST, not of what is currently installed.
+            # Measured on gfx950 with an unreadable ROCm version, where
+            # _rocm_torch_family_needs_repair is the only arm carrying the chain and it flips
+            # the moment the install succeeds. The host test is still applied, so a ROCm wheel
+            # sitting on a card no index serves is still not a route.
+            if "rocm" in _installed_ver or "hip" in _installed_ver:
+                return _gfx_route_on_host(_target, _host_codes or [_target])
             if (
                 _explicit_rocm_torch_index_url() is None
                 and not _inferred
@@ -5889,8 +5902,16 @@ def _ensure_rocm_torch() -> None:
     ):
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
+            # The same bare arch _amd_arch_index_url resolved the URL from. Stripping the
+            # feature suffix there is what OPENS this branch for a value like
+            # "gfx1151:xnack-", the spelling rocminfo prints and users copy into
+            # UNSLOTH_ROCM_GFX_ARCH; a table still keyed on the raw string then misses and
+            # installs unpinned torch/torchvision/torchaudio, losing the ABI bound this
+            # dict exists to hold. Same reason _hsa_spoof_contradicts is asked in bare form:
+            # against "gfx1151:xnack-" an HSA override naming gfx1151 reads as a spoof.
+            _bare_gfx = (_inferred_linux_gfx or "").strip().lower().split(":")[0]
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
-                _inferred_linux_gfx, ("torch", "torchvision", "torchaudio")
+                _bare_gfx, ("torch", "torchvision", "torchaudio")
             )
             _safe_print(
                 f"   {_inferred_linux_gfx} inferred (ROCm runtime not visible) -- "
@@ -5915,8 +5936,8 @@ def _ensure_rocm_torch() -> None:
             # _inferred_linux_gfx code objects alone, and a spoof naming another arch has ROCr
             # hand them a device none of it matches (#7331). The install is already committed
             # to that arch, so declining here only guarantees it is unusable.
-            if _hsa_spoof_contradicts(_inferred_linux_gfx):
-                _clear_confirmed_hsa_spoof(_inferred_linux_gfx)
+            if _hsa_spoof_contradicts(_bare_gfx):
+                _clear_confirmed_hsa_spoof(_bare_gfx)
 
     # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
     # MI50 / Radeon VII path; it must win over the Strix probe-order detection

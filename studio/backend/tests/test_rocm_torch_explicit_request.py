@@ -2881,3 +2881,192 @@ def test_the_documented_strix_declaration_still_routes(stack, monkeypatch):
     assert (
         _declared_on_physical(stack, monkeypatch, declared = "gfx1100", physical = ["gfx1151"]) is True
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The request must not authorise a swap it withdraws the moment the swap happens.
+
+
+def _viability_across_the_install(stack, monkeypatch, gfx, installed):
+    """_forced_rocm_route_is_viable() on one unchanging host, asked twice: once with the CUDA
+    wheel still installed, once with the ROCm wheel the request asked for in its place.
+
+    The ROCm version is deliberately unreadable, which is the arm that consults the installed
+    build at all. Nothing about the MACHINE differs between the two calls.
+    """
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_mask, raising = False)
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda *a, **k: [gfx])
+    monkeypatch.setattr(stack, "_detect_amd_gfx_codes", lambda *a, **k: [gfx])
+    monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda *a, **k: [gfx])
+    monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_detect_rocm_version", lambda *a, **k: None)
+    for _pin in (
+        "_explicit_rocm_torch_index_url",
+        "_explicit_cuda_torch_index_url",
+        "_explicit_cpu_torch_index_url",
+        "_explicit_torch_index_url",
+    ):
+        monkeypatch.setattr(stack, _pin, lambda: None)
+    monkeypatch.setattr(
+        stack, "_probe_torch_runtime", lambda *a, **k: (True, True, installed, "", "")
+    )
+    return stack._forced_rocm_route_is_viable()
+
+
+def test_the_route_is_still_viable_once_the_wheel_it_authorised_is_installed(stack, monkeypatch):
+    """Measured on gfx950 with an unreadable ROCm version, the one shape where
+    _rocm_torch_family_needs_repair is the only arm carrying the chain.
+
+    Viability decided whether _ensure_cuda_torch stands down. Every arm asks whether
+    _ensure_rocm_torch would install SOMETHING, and after a successful swap the answer is
+    legitimately no -- so the predicate flipped to False, the CUDA repair stopped standing
+    down and force-reinstalled CUDA over the healthy ROCm build, and _ensure_rocm_torch
+    swapped back on the next run. A multi-GB round trip on every `studio update`, and the
+    user's AMD card is on CUDA torch for half of them.
+    """
+    before = _viability_across_the_install(stack, monkeypatch, "gfx950", "2.9.0+cu128")
+    after = _viability_across_the_install(stack, monkeypatch, "gfx950", "2.11.0+rocm7.1")
+    assert before is True, "the request never authorised the swap, so there is nothing to keep"
+    assert after is True, "the request withdrew the route its own install created"
+
+
+def test_an_installed_rocm_build_on_an_unroutable_card_is_still_not_a_route(stack, monkeypatch):
+    """The control on the rule above: "ROCm is already installed" must not become a blanket
+    yes. gfx1010 (RDNA 1) has no index at all, so a ROCm wheel sitting on it is a wheel with
+    no kernels and the CUDA repair must still run."""
+    assert (
+        _viability_across_the_install(stack, monkeypatch, "gfx1010", "2.11.0+rocm7.1") is False
+    )
+
+
+def test_the_cuda_repair_still_stands_down_after_the_swap(stack, monkeypatch):
+    """The consequence, at the caller. Same host, ROCm already installed, no backend exported
+    (a standalone `studio update`): _ensure_cuda_torch must not reach a CUDA install."""
+    calls = []
+    monkeypatch.setattr(stack, "pip_install", lambda *a, **k: calls.append(a[:1]))
+    monkeypatch.setattr(stack, "pip_install_try", lambda *a, **k: calls.append(a[:1]))
+    monkeypatch.delenv("UNSLOTH_TORCH_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+    _viability_across_the_install(stack, monkeypatch, "gfx950", "2.11.0+rocm7.1")
+    stack._ensure_cuda_torch()
+    assert not calls, f"the CUDA repair overwrote the requested ROCm build: {calls}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A feature suffix must not change which pins the install gets.
+
+
+def _inferred_install_args(stack, monkeypatch, arch):
+    """The pip arguments _ensure_rocm_torch uses on its inferred-arch branch for ``arch``."""
+    calls = []
+    monkeypatch.setattr(stack, "pip_install", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(stack, "pip_install_try", lambda *a, **k: calls.append(a))
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", arch)
+    monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: False)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: False)
+    monkeypatch.setattr(stack, "_probe_torch_runtime", lambda *a, **k: (True, True, "2.9.0", "", ""))
+    monkeypatch.setattr(stack, "_detect_rocm_version", lambda *a, **k: None)
+    for _pin in ("_explicit_rocm_torch_index_url", "_explicit_torch_index_url"):
+        monkeypatch.setattr(stack, _pin, lambda: None)
+    stack._ensure_rocm_torch()
+    return [a for a in (calls[0] if calls else ()) if isinstance(a, str) and a.startswith("torch")]
+
+
+@pytest.mark.parametrize(
+    "bare,suffixed",
+    [("gfx1151", "gfx1151:xnack-"), ("gfx1200", "gfx1200:sramecc+:xnack-")],
+)
+def test_a_suffixed_arch_installs_the_same_pins_as_the_bare_one(
+    stack, monkeypatch, bare, suffixed
+):
+    """gcnArchName is what rocminfo prints and what users copy into UNSLOTH_ROCM_GFX_ARCH.
+
+    Stripping the suffix in _amd_arch_index_url is what opens the inferred-arch branch for
+    that spelling; the package table two lines down was still keyed on the raw string, so it
+    missed and installed unpinned torch/torchvision/torchaudio -- losing the ABI bound the
+    table exists to hold, on a host the bare spelling pins correctly.
+    """
+    assert _inferred_install_args(stack, monkeypatch, suffixed) == _inferred_install_args(
+        stack, monkeypatch, bare
+    )
+
+
+def test_the_suffixed_arch_reaches_that_branch_at_all(stack, monkeypatch):
+    """The control: the assertion above is only worth anything if the suffixed spelling
+    actually installs something. An arch that never reached the branch would compare two
+    empty lists and pass."""
+    assert _inferred_install_args(stack, monkeypatch, "gfx1151:xnack-")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The two halves must read one mask string the same way.
+
+
+def test_an_escaped_mask_is_not_decoded_into_an_ordinal(stack):
+    """`awk -v vis=...` ESCAPE-PROCESSES its operand, so a literal four-character \\061
+    arrived inside awk as the ordinal 1 and the shell half selected the second card. The
+    Python twin rejects the same string at int(), so the two halves disagreed about which
+    device the runtime exposes -- and this feature is built on them agreeing."""
+    script = "\n".join(
+        [_shell_function("_amd_mask_survivors"), 'printf "%s" "$(_amd_mask_survivors "$1" "$2")"']
+    )
+    out = subprocess.run(
+        ["bash", "-c", script, "_", "gfx1010\ngfx1100", "\\061"],
+        capture_output = True,
+        text = True,
+        env = _clean_env(),
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "", f"an escaped ordinal resolved a device: {out.stdout!r}"
+    # And the twin's answer on the same string, which is what it has to agree with.
+    os.environ["HIP_VISIBLE_DEVICES"] = "\\061"
+    try:
+        assert stack._hip_layer_mask_names_a_device(2) is False
+    finally:
+        os.environ.pop("HIP_VISIBLE_DEVICES", None)
+
+
+def test_a_plain_ordinal_still_selects_its_device(stack):
+    """The control: the rule above must reject the ESCAPE, not every mask."""
+    script = "\n".join(
+        [_shell_function("_amd_mask_survivors"), 'printf "%s" "$(_amd_mask_survivors "$1" "$2")"']
+    )
+    out = subprocess.run(
+        ["bash", "-c", script, "_", "gfx1010\ngfx1100", "1"],
+        capture_output = True,
+        text = True,
+        env = _clean_env(),
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "gfx1100", out.stdout
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The miscomputing-arch gate must not inherit a target from an earlier call.
+
+
+def test_the_index_selector_does_not_inherit_a_previous_target(stack):
+    """_AMD_REQUEST_TARGET_GFX is cleared by the helper that sets it, and that helper runs
+    only when NVIDIA is detected AND the request is set. Every other route reaches the
+    Van Gogh gate with whatever an earlier direct call left in the shell, and the CUDA
+    restore calls the selector a second time from exactly such a shell. A stale gfx1100/probe
+    pair cleared the gate on a gfx1033 host -- the one arch measured to compute wrong.
+    """
+    selector = _shell_function("get_torch_index_url")
+    assert '_AMD_REQUEST_TARGET_GFX=""' in selector.splitlines()[1] or any(
+        line.strip() == '_AMD_REQUEST_TARGET_GFX=""' for line in selector.splitlines()[:12]
+    ), "the selector must clear the published target on entry"
+    assert any(
+        line.strip() == '_AMD_REQUEST_TARGET_SOURCE=""' for line in selector.splitlines()[:12]
+    ), "the selector must clear the target SOURCE on entry too"

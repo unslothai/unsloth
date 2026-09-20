@@ -3937,7 +3937,13 @@ _amd_visible_masks_select_no_gpu() {
 # (ROCR-Runtime, core/inc/amd_filter_device.h), so ROCR_VISIBLE_DEVICES=0,0 exposes ONE
 # device. clr documents no such rule, so the HIP layer does not get one.
 _amd_mask_survivors() {
-    printf '%s\n' "$1" | awk -v vis="$2" -v layer="${3:-}" '
+    # The mask arrives through the environment, not `awk -v`: an assignment operand is
+    # ESCAPE-PROCESSED before awk ever sees it, so HIP_VISIBLE_DEVICES='\061' becomes the
+    # ordinal 1 and this half approved a device the Python twin declines
+    # (_hip_layer_mask_names_a_device rejects it at int()). The two halves have to read one
+    # string the same way. ENVIRON is passed verbatim.
+    printf '%s\n' "$1" | _ams_vis="$2" _ams_layer="${3:-}" awk '
+        BEGIN { vis = ENVIRON["_ams_vis"]; layer = ENVIRON["_ams_layer"] }
         NF { vals[n++] = $0 }
         END {
             count = split(vis, want, ",")
@@ -4842,9 +4848,6 @@ _probe_amd_gfx_arch() {
     printf '%s\n' "$_pg"
 }
 
-# Pair each rocminfo GPU gfx id with its marketing name instead of the CPU-first global name
-# (#7307). Blank names keep device ordinals; no GPU keeps the old fallback.
-# Keep in sync with studio/setup.sh.
 # One gfx per GPU in ROCr enumeration order, which is the order a mask indexes.
 # _probe_amd_gfx_arch cannot serve: rocminfo names a target in BOTH "Name:" and "ISA Info", so
 # a flat grep returns two rows per card. amd-smi is excluded separately, enumerating in KFD
@@ -5032,6 +5035,15 @@ _detect_rocm_version_tag() {
 # On CPU-only machines this returns the cpu index, avoiding the solver
 # dead-end where --torch-backend=auto resolves to unsloth==2024.8.
 get_torch_index_url() {
+    # Clear the published target on ENTRY, not only inside the helper that sets it: the
+    # miscomputing-arch gate below reads these, and the helper runs only when NVIDIA is
+    # detected AND the request is set. Every other route reaches the gate with whatever an
+    # earlier direct call left in this shell -- and the CUDA restore calls this function a
+    # second time, from a shell where the reroute conditions have already populated them.
+    # A stale gfx1100/probe pair clears the Van Gogh gate on a gfx1033 host, which is the one
+    # arch measured to compute wrong, so it fails closed here rather than inheriting.
+    _AMD_REQUEST_TARGET_GFX=""
+    _AMD_REQUEST_TARGET_SOURCE=""
     _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
     _base="${_base%/}"
     # An explicit override skips ALL GPU probing: the URL is verbatim, _FAMILY is its leaf.
@@ -6291,15 +6303,6 @@ _TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_ra
 tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
 
-# amd-smi enumerates in discovery order over its KFD view, while the masks index HIP/ROCr
-# order derived from the KFD node id. The two disagree on real hardware (MI350X SPX/NPS1) and
-# _gfx becomes --rocm-gfx, so an untranslated ordinal fetches a prebuilt for another card's
-# arch. `amd-smi list -e` is AMD's published map (HIP_ID, ROCm 6.4.0+).
-# Keep in sync with studio/setup.sh.
-# One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves
-# of one device. Was: arch indexed, name always adapter 0's -- and on amd-smi 6.1.1, which
-# has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from.
-# Keep in sync with studio/setup.sh.
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
 # Asked of the RESOLVED index, not of the predicate that chose it: after the CUDA restore
 # the request is still set and an AMD card still present, so the predicate says "AMD wins"
