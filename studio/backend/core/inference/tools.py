@@ -16089,6 +16089,10 @@ def _check_signal_escape_patterns(code: str):
     # source can be thousands deep; the budget keeps that a "cannot resolve" answer rather than a
     # RecursionError out of a tool call.
     _MAX_RESOLVE_DEPTH = 24
+    # Depth alone does not bound the work: `s2 = s1 + s1` doubles the graph per level, so a shallow
+    # file can still cost seconds. One budget per top-level resolution, spent by every step.
+    _MAX_RESOLVE_STEPS = 4000
+    _resolve_budget = [_MAX_RESOLVE_STEPS]
 
     def _takes_a_url_argument(fq: str) -> bool:
         """True when the call takes the target URL as an argument. Constructors that take no URL
@@ -16174,23 +16178,80 @@ def _check_signal_escape_patterns(code: str):
             self._scope_of: dict[int, object] = {}
             self._scope_parent: dict[object, object] = {}
             self._class_scopes: set = set()
+            # (scope, name) -> the scope that name really binds in, for global / nonlocal.
+            self._redirect: dict = {}
+
+        @staticmethod
+        def _parameters(args) -> list:
+            return [
+                a
+                for a in (
+                    list(getattr(args, "posonlyargs", []))
+                    + list(args.args)
+                    + list(args.kwonlyargs)
+                    + [args.vararg, args.kwarg]
+                )
+                if a is not None
+            ]
+
+        def _children_with_scope(self, node, scope, inner) -> list:
+            """Children paired with the scope each is EVALUATED in. Defaults, decorators, bases and
+            annotations run in the enclosing scope, before the function body exists, so a local of
+            the same name must not answer for them."""
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                args = node.args
+                outer = list(getattr(node, "decorator_list", []))
+                outer += [d for d in args.defaults if d is not None]
+                outer += [d for d in (args.kw_defaults or []) if d is not None]
+                if getattr(node, "returns", None) is not None:
+                    outer.append(node.returns)
+                body = node.body if isinstance(node.body, list) else [node.body]
+                pairs = [(child, scope) for child in outer]
+                pairs += [(child, inner) for child in body]
+                pairs += [(param, inner) for param in self._parameters(args)]
+                return pairs
+            if isinstance(node, ast.ClassDef):
+                outer = list(node.decorator_list) + list(node.bases)
+                outer += [kw.value for kw in node.keywords]
+                return [(child, scope) for child in outer] + [
+                    (child, inner) for child in node.body
+                ]
+            if isinstance(node, ast.arg):
+                # The parameter name belongs to the function; its annotation is evaluated outside.
+                if node.annotation is None:
+                    return []
+                return [(node.annotation, self._scope_parent.get(scope, None))]
+            return [(child, inner) for child in ast.iter_child_nodes(node)]
 
         def _walk_scoped(self, root):
-            """Every node with the scope it sits in: None for module level, else id(def node)."""
+            """Every node with the scope it sits in: None for module level, else id(def node).
+
+            A comprehension carries its own scope in Python 3, so its target rebinds nothing
+            outside it."""
             stack = [(root, None)]
             while stack:
                 node, scope = stack.pop()
                 self._scope_of[id(node)] = scope
                 inner = scope
                 if isinstance(
-                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+                    node,
+                    (
+                        ast.FunctionDef,
+                        ast.AsyncFunctionDef,
+                        ast.Lambda,
+                        ast.ClassDef,
+                        ast.ListComp,
+                        ast.SetComp,
+                        ast.DictComp,
+                        ast.GeneratorExp,
+                    ),
                 ):
                     inner = id(node)
                     self._scope_parent[inner] = scope
                     if isinstance(node, ast.ClassDef):
                         self._class_scopes.add(inner)
-                for child in ast.iter_child_nodes(node):
-                    stack.append((child, inner))
+                for child, child_scope in self._children_with_scope(node, scope, inner):
+                    stack.append((child, child_scope))
                 yield node, scope
 
         def _chain(self, node) -> list:
@@ -16243,11 +16304,14 @@ def _check_signal_escape_patterns(code: str):
 
         def _mark(self, name: "str | None", scope) -> None:
             if name:
+                scope = self._redirect.get((scope, name), scope)
                 key = (scope, name)
                 self._counts[key] = self._counts.get(key, 0) + 1
 
         def _bind(self, target, value, scope) -> None:
             if isinstance(target, ast.Name):
+                # `global u` makes an assignment here a write to the module's u, not a local one.
+                scope = self._redirect.get((scope, target.id), scope)
                 self._mark(target.id, scope)
                 self._candidates.setdefault((scope, target.id), value)
                 if value is not None:
@@ -16264,6 +16328,13 @@ def _check_signal_escape_patterns(code: str):
 
         def collect(self, tree) -> "_NameBindings":
             scoped = list(self._walk_scoped(tree))
+            for node, scope in scoped:
+                if isinstance(node, ast.Global):
+                    for name in node.names:
+                        self._redirect[(scope, name)] = None
+                elif isinstance(node, ast.Nonlocal):
+                    for name in node.names:
+                        self._redirect[(scope, name)] = self._scope_parent.get(scope)
             for node, scope in scoped:
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -16315,9 +16386,7 @@ def _check_signal_escape_patterns(code: str):
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     self._mark(node.name, scope)
                 elif isinstance(node, (ast.Global, ast.Nonlocal)):
-                    for name in node.names:
-                        self._mark(name, scope)
-                        self._mark(name, None)
+                    pass  # a declaration, not a binding; collected in the first pass
             # An alias entry is only good while the name means one thing in its own scope. `import
             # requests as r` followed by `import socket as r`, or by an assignment to `r`, leaves
             # whichever the walk reached last, and ast.walk order is not specified, so drop both.
@@ -16371,6 +16440,11 @@ def _check_signal_escape_patterns(code: str):
         across siblings it would make ``x + x`` unresolvable. ``depth`` bounds a binding chain."""
         if depth > _MAX_RESOLVE_DEPTH:
             return "", False
+        if depth == 0:
+            _resolve_budget[0] = _MAX_RESOLVE_STEPS
+        elif _resolve_budget[0] <= 0:
+            return "", False
+        _resolve_budget[0] -= 1
         if isinstance(node, ast.Constant):
             return (node.value, True) if isinstance(node.value, str) else ("", False)
         if isinstance(node, ast.JoinedStr):
@@ -16447,11 +16521,14 @@ def _check_signal_escape_patterns(code: str):
                 return _canonical_fq(bound.func, _bindings) in _SOCKET_FACTORY_FQ
         return False
 
+    _external_memo: set = set()
+
     def _externally_sourced(
         node,
         bindings,
         seen = frozenset(),
         depth = 0,
+        memo = _external_memo,
     ) -> bool:
         """Whether *node* takes its value from outside the program: env, stdin, argv, a file read.
         Bindings are followed, so `u = os.environ["T"]` reads the same as the expression inline.
@@ -16461,6 +16538,16 @@ def _check_signal_escape_patterns(code: str):
         came from the same source file; only an external one lets the host be chosen off-source."""
         if depth > _MAX_RESOLVE_DEPTH or node is None:
             return False
+        if depth == 0:
+            _resolve_budget[0] = _MAX_RESOLVE_STEPS
+            memo.clear()
+        elif _resolve_budget[0] <= 0:
+            return False
+        _resolve_budget[0] -= 1
+        if id(node) in memo:
+            # Already explored on another path; a second walk cannot find a source the first missed.
+            return False
+        memo.add(id(node))
         if _reads_env_or_secret(node):
             return True
         for sub in ast.walk(node):

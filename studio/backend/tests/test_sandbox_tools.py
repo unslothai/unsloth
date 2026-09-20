@@ -3020,3 +3020,53 @@ class TestSessionAliasesAndShadowedAliases:
             f'import requests as client\nclient.get("{_METADATA_URL}")',
             expect_phrase = "Blocked: cloud-metadata host",
         )
+
+
+class TestScopeEdgesAndWorkBudget:
+    def test_a_default_expression_runs_in_the_enclosing_scope_blocked(self):
+        # Defaults are evaluated at def time, before the body exists, so a local of the same name
+        # cannot vouch for them.
+        _blocked(
+            'import os, requests\nurl = os.environ["TARGET"]\n'
+            'def f(x = requests.get(url)):\n    url = "https://huggingface.co/"\n    return x',
+            expect_phrase = "Blocked: request target is read from the environment or input",
+        )
+
+    def test_a_default_expression_resolves_the_enclosing_binding_blocked(self):
+        _blocked(
+            f'import requests\nurl = "{_METADATA_URL}"\ndef deco(fn):\n    return fn\n'
+            '@deco\ndef g(y = requests.get(url)):\n    url = "https://huggingface.co/"',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_global_declaration_is_not_a_rebinding_blocked(self):
+        # `global u` declares, it does not write, so the one module binding stays resolvable.
+        _blocked(
+            f'import requests\nu = "{_METADATA_URL}"\ndef unused():\n    global u\n'
+            "requests.get(u)",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_comprehension_target_does_not_rebind_the_outer_name_blocked(self):
+        # In Python 3 a comprehension has its own scope, so [r for r in ()] leaves the alias alone.
+        _blocked(
+            f'import requests as r\n[r for r in ()]\nr.get("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_resolution_is_bounded_on_a_doubling_binding_graph(self):
+        # s2 = s1 + s1 doubles the work per level: depth alone is not a budget.
+        import time
+
+        chain = "".join(f"s{i} = s{i - 1} + s{i - 1}\n" for i in range(1, 25))
+        code = "import requests\ns0 = 'x'\n" + chain + "requests.get(s24)"
+        started = time.perf_counter()
+        _check_code_safety(code)
+        assert time.perf_counter() - started < 2.0
+
+    def test_an_external_source_is_still_found_through_a_long_chain(self):
+        chain = "".join(f"v{i} = v{i - 1}\n" for i in range(1, 21))
+        _blocked(
+            "import os, requests\nv0 = os.environ['TARGET']\n" + chain + "requests.get(v20)",
+            expect_phrase = "Blocked: request target is read from the environment or input",
+        )
