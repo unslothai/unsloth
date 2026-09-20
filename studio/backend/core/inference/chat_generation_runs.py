@@ -494,15 +494,19 @@ class ChatGenerationSupervisor:
             return True
         cancel_event = threading.Event()
         # Durable marker read by state.tool_approvals.wait_tool_decision: a confirm-mode ("ask") call
-        # parked mid-run must wait for the returning session (resolved by approval_id) rather than auto-
-        # deny on the 3600s ceiling. In-memory only — a backend restart still loses the slot. Parking
-        # does not renew the progress lease, so an approval nobody answers is released by the lease
-        # sweeper, not by a ceiling: once the run's progress has aged past the lease timeout,
-        # reconcile_runs settles it as interrupted and supervisor.cancel() sets THIS event — which
-        # wait_tool_decision polls at 500ms, so it returns deny, pops its own _pending slot, and the
-        # producer unwinding balances the InferenceActivityReservation below. An abandoned park
-        # therefore holds its reservation for one lease window (default 1200s), exactly as a
-        # non-durable run already does.
+        # parked mid-run waits for the returning session (resolved by approval_id) instead of the
+        # 3600s ceiling a browser-owned run uses. In-memory only, so a backend restart still loses
+        # the slot. Two things end an abandoned park, whichever comes first:
+        #   1. the park ceiling itself, UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S, default 300s. The gate
+        #      denies, the model is told the call was declined and adapts, and the run carries on. A
+        #      user who returns after that finds the call already refused, not still waiting.
+        #   2. the lease sweeper, for a producer wedged before it ever reaches the gate. Parking does
+        #      not renew the progress lease, so once progress has aged past the lease timeout
+        #      reconcile_runs settles the run as interrupted and supervisor.cancel() sets THIS event,
+        #      which wait_tool_decision polls at 500ms.
+        # Either way the waiter returns deny, pops its own _pending slot, and the producer unwinding
+        # balances the InferenceActivityReservation below. So the reservation is held for at most the
+        # park ceiling, well inside the lease window (default 1200s) a non-durable run already costs.
         cancel_event.durable = True
         activity = InferenceActivityReservation()
         activity.reserve()

@@ -328,3 +328,62 @@ def test_durable_park_denies_at_park_timeout(monkeypatch):
     time.sleep(0.6)
     assert w.join(timeout = 3.0) == "deny", "the park timeout must release an unanswered approval"
     assert _wait_until(lambda: not _has_pending(aid)), "the slot must be popped on timeout"
+
+
+# ── The park ceiling is configuration, and configuration must not be able to kill the backend ──
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("30", 30.0),
+        ("0", 0.0),
+        ("0.5", 0.5),
+        ("  45  ", 45.0),
+        # Anything unparseable, out of range, or nonsensical falls back rather than raising: this
+        # module is imported on the chat path, so a typo here would otherwise take the backend down
+        # at startup, and a stuck approval is the lesser failure.
+        ("5m", 300.0),
+        ("", 300.0),
+        ("   ", 300.0),
+        ("none", 300.0),
+        ("-1", 300.0),
+        ("nan", 300.0),
+        ("inf", 300.0),
+    ],
+)
+def test_the_park_ceiling_reads_the_env_without_ever_raising(monkeypatch, value, expected):
+    monkeypatch.setenv("UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S", value)
+    assert tool_approvals._park_timeout_from_env() == expected
+
+
+def test_an_unset_park_ceiling_is_the_documented_default(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S", raising = False)
+    assert tool_approvals._park_timeout_from_env() == 300.0
+    assert tool_approvals._PARK_TIMEOUT_DEFAULT_S == 300.0
+
+
+def test_a_zero_ceiling_denies_at_the_first_poll_not_before_it(monkeypatch):
+    """The loop waits before it checks, so 0 is "autonomous", not "instant": a decision landing
+    inside the first 500ms still wins. The comment on _PARK_TIMEOUT_DEFAULT_S says so; this pins it,
+    because a reader who takes "denies immediately" literally would call the opposite a bug."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.0)
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    time.sleep(0.05)
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+def test_a_returning_session_past_the_ceiling_cannot_resolve_its_own_approval(monkeypatch):
+    """What the user actually experiences at the ceiling: the call is already refused, and the
+    Approve they press on return has nothing left to resolve (the route turns this into a 404)."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    assert w.join(timeout = 3.0) == "deny"
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is False

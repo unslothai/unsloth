@@ -19,9 +19,41 @@ from typing import Optional
 _DECISION_TIMEOUT = 3600.0
 
 # How long a durable (parked) approval waits for a human before denying and letting the agent continue.
-# 0 denies immediately (fully autonomous). Default is generous enough for "grab your phone" but short
-# enough that an unattended agentic loop doesn't stall for the full lease window.
-_PARK_TIMEOUT_S = float(os.environ.get("UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S", "300"))
+# Default is generous enough for "grab your phone" but short enough that an unattended agentic loop
+# doesn't stall for the full lease window. 0 denies at the first poll, so a decision that lands inside
+# that first 500ms still wins; it is "autonomous", not "instant".
+_PARK_TIMEOUT_DEFAULT_S = 300.0
+
+
+def _park_timeout_from_env() -> float:
+    """Read the park ceiling once, at import, tolerating a value nobody can parse.
+
+    Read here rather than per wait so one run cannot change ceiling mid-flight. A typo must not be
+    fatal: this module is imported on the chat path, so raising would take the backend down at
+    startup over an environment variable, and a stuck approval is the lesser failure. A negative or
+    non-finite value would disable the ceiling silently, so both fall back too.
+    """
+    raw = os.environ.get("UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S")
+    if raw is None or not raw.strip():
+        return _PARK_TIMEOUT_DEFAULT_S
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        print(
+            f"[unsloth] UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S={raw!r} is not a number; "
+            f"using {_PARK_TIMEOUT_DEFAULT_S:g}s",
+        )
+        return _PARK_TIMEOUT_DEFAULT_S
+    if value != value or value in (float("inf"), float("-inf")) or value < 0:
+        print(
+            f"[unsloth] UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S={raw!r} is out of range; "
+            f"using {_PARK_TIMEOUT_DEFAULT_S:g}s",
+        )
+        return _PARK_TIMEOUT_DEFAULT_S
+    return value
+
+
+_PARK_TIMEOUT_S = _park_timeout_from_env()
 
 # Fed to the model as the tool result when the user denies a call, so it can adapt instead of the turn ending abruptly.
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
