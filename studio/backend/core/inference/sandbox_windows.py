@@ -381,7 +381,9 @@ def _readonly_roots(plan: ToolLaunchPlan, workdir: str) -> list[str]:
         if _within(path, workdir):
             continue
         if _too_broad_to_grant(path):
-            logger.warning("Not granting %s to the sandbox: it is too broad to be a launch root", path)
+            logger.warning(
+                "Not granting %s to the sandbox: it is too broad to be a launch root", path
+            )
             continue
         seen.add(os.path.normcase(path))
         roots.append(path)

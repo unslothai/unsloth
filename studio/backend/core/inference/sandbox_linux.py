@@ -481,7 +481,9 @@ _CACHE_INSPECT_SECONDS = CACHE_SCAN_SECONDS + 2.0
 
 
 def _inspect_cache_component(
-    name: str, path: str, witness: "list[tuple] | None" = None
+    name: str,
+    path: str,
+    witness: "list[tuple] | None" = None,
 ) -> "str | None":
     """The hazard for one component, or a reason it could not be inspected."""
     if not os.path.isdir(path):
@@ -588,7 +590,10 @@ def _cache_hazard_uncached(name: str, path: str) -> "tuple[str | None, list[tupl
         worker.start()
     worker.join(_CACHE_INSPECT_SECONDS)
     if not answer:
-        return (f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)", None)
+        return (
+            f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)",
+            None,
+        )
     with _cache_scan_lock:
         # By identity: another caller may already have replaced it.
         if _cache_scan_pending.get(path) is worker:
