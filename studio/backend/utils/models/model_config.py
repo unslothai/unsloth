@@ -23,7 +23,6 @@ from hub.utils.hf_tokens import (
     recording_a_request_token_fetch,
     ANONYMOUS_CACHE_IDENTITY,
     cached_read_refused,
-    hub_answered_no,
     qualify_cache_identity,
     HfTokenArg,
     apply_token_to_child_env,

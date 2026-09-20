@@ -309,28 +309,6 @@ def cached_read_refused(
     )
 
 
-def hub_answered_no(
-    hf_token: HfTokenArg,
-    *,
-    repo_id: str,
-    repo_type: str = "model",
-    offline: bool = False,
-) -> bool:
-    """Whether the Hub ANSWERED that this caller may not reach *repo_id*; ``None`` is not.
-    ``cached_read_refused`` collapses the two, and readers older than that gate need them apart.
-    A remembered denial counts as an answer."""
-    repo = (repo_id or "").strip()
-    if not repo or _is_local_path(repo):
-        return False
-    if is_anonymous(hf_token):
-        token: Optional[str] = None
-    elif not isinstance(hf_token, str) or not hf_token:
-        return False
-    else:
-        token = hf_token
-    return _explicit_token_reaches_repo(repo, token, repo_type, offline = offline) is False
-
-
 def _is_local_path(repo_id: str) -> bool:
     """Lazy: hub.utils.paths pulls in the path stack, this module is imported beneath it."""
     try:
