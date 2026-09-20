@@ -897,6 +897,10 @@ def test_a_cache_reference_lists_the_quants_of_the_copy_it_names(monkeypatch, cl
     assert answered.status_code == 200, answered.text
     assert seen["repo_id"] == REPO_DIR
     assert seen["local_path"] == REPO_DIR
+    # And the answer does not hand the path back: a local listing copies its input into
+    # `repo_id`, so resolving on the way in has to be matched by referencing on the way out.
+    assert REPO_DIR not in answered.text, answered.text
+    assert answered.json()["repo_id"] == reference
 
     # BOUNDARY. A browser session names the repo itself and it arrives as written.
     seen.clear()

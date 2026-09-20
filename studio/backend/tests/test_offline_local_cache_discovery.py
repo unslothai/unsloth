@@ -494,6 +494,15 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
         assert tested_at < validated_at, "the cache test has to precede anything that can fetch"
         assert validated_at < written_at, "a 400 from validation must leave no record behind"
         assert written_at < launched_at, "nothing may be fetched unrecorded"
+        # And INSIDE the admitted start callback, not on the way to it: the busy guard 409s,
+        # the arbiter refuses and the retirement check rejects a tombstoned account, none of
+        # them starting a worker, and a record any of them leaves behind withholds a repo
+        # nobody fetched.
+        admitted_at = media_load.index("def _start_")
+        fetches_at = media_load.index(".begin_load(")
+        assert admitted_at < written_at < fetches_at, (
+            "the media record is outside the callback the load is admitted through"
+        )
 
     assert "_note_load_fetched_with_a_request_token" not in inspect.getsource(
         inference_routes.load_model_gated

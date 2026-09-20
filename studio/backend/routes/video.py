@@ -371,6 +371,12 @@ async def load_video_model_gated(
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
 
         def _start_load():
+            # Recorded HERE, inside the admitted callback: every cheap refusal (the busy guard
+            # above, the arbiter, the retirement check inside admit_media_load) has already let
+            # this load through, and the worker below has not been handed the credential yet. A
+            # record left by a load that was refused withholds a repo nobody fetched.
+            for _ref in _media_repos_to_record:
+                _note_load_fetched_with_a_request_token(_ref, request.hf_token)
             # Kicks the (slow) load onto a background thread and returns at once; begin_load itself validates
             # network-free.
             return backend.begin_load(
@@ -400,10 +406,6 @@ async def load_video_model_gated(
         def _begin_load():
             return account_access.admit_media_load("video", _start_load, request.model_path)
 
-        # Written now that nothing cheap can refuse this load, and still before the worker is
-        # handed the credential.
-        for _ref in _media_repos_to_record:
-            _note_load_fetched_with_a_request_token(_ref, request.hf_token)
         # begin_load signals whatever generation is running, so guard on every device.
         require_no_foreign_generations()
         if device != "cpu":

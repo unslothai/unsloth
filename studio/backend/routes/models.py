@@ -4467,6 +4467,7 @@ async def get_gguf_variants(
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     hf_token_header: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
     # Resolved before the access check, not after: a handle matches no allowlist entry, and
@@ -4500,7 +4501,9 @@ async def get_gguf_variants(
             context_model = None
         local = context_model is not None and is_local_path(context_model)
 
-        return GgufVariantsResponse(
+        # See the /hub twin: the identifier is resolved on the way in, so it has to be
+        # referenced again on the way out.
+        return redact_host_paths(GgufVariantsResponse(
             repo_id = response.repo_id,
             variants = [
                 GgufVariantDetail(
@@ -4536,7 +4539,7 @@ async def get_gguf_variants(
             dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
             loadable_variants = getattr(response, "loadable_variants", None),
             loadable = getattr(response, "loadable", None),
-        )
+        ), via_api_key = via_api_key)
     except HTTPException:
         raise
     except Exception as e:

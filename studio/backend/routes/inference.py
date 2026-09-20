@@ -38811,6 +38811,11 @@ async def load_diffusion_model_gated(
                 )
 
         def _start_engine_load():
+            # Recorded HERE for the reason the video route gives: inside the admitted callback,
+            # past the busy guard, the arbiter and the retirement check, and still before the
+            # worker is handed the credential.
+            for _ref in _media_repos_to_record:
+                _note_load_fetched_with_a_request_token(_ref, request.hf_token)
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             return engine.begin_load(
                 request.model_path,
@@ -38848,9 +38853,6 @@ async def load_diffusion_model_gated(
                 ),
             )
 
-        # Nothing cheap can refuse the load now, and the worker has not been handed the token.
-        for _ref in _media_repos_to_record:
-            _note_load_fetched_with_a_request_token(_ref, request.hf_token)
         if needs_gpu:
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
