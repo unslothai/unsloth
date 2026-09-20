@@ -16374,7 +16374,14 @@ def _check_signal_escape_patterns(code: str):
                     self._bind(node.target, None, scope)
                 elif isinstance(node, ast.withitem):
                     if node.optional_vars is not None:
-                        self._bind(node.optional_vars, None, scope)
+                        # `with socket.socket() as s` hands back the socket itself, so the name is
+                        # still a socket receiver; anything else binds a value we cannot name.
+                        held = node.context_expr
+                        socket_held = (
+                            isinstance(held, ast.Call)
+                            and _canonical_fq(held.func, self) in _SOCKET_FACTORY_FQ
+                        )
+                        self._bind(node.optional_vars, held if socket_held else None, scope)
                 elif isinstance(node, ast.Delete):
                     # The name is gone at runtime; whatever a later lookup finds is not this value.
                     for target in node.targets:
@@ -16836,7 +16843,10 @@ def _check_signal_escape_patterns(code: str):
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "connect"
                 and node.args
-                and _is_a_socket_receiver(node.func.value)
+                and (
+                    isinstance(node.args[0], ast.Tuple)
+                    or _is_a_socket_receiver(node.func.value)
+                )
             ):
                 a0 = node.args[0]
                 host_lit = None

@@ -2925,6 +2925,15 @@ class TestScopeAndReceiverAccuracy:
                 'import socket\nsocket.socket().connect(("169.254.169.254", 80))',
                 id = "inline_socket",
             ),
+            pytest.param(
+                "import socket\nwith socket.socket() as s:\n"
+                '    s.connect(("169.254.169.254", 80))',
+                id = "context_manager_socket",
+            ),
+            pytest.param(
+                'import socket\ndef go(s):\n    s.connect(("169.254.169.254", 80))',
+                id = "socket_passed_in",
+            ),
         ],
     )
     def test_a_socket_connect_is_still_policed_blocked(self, code):
