@@ -327,6 +327,7 @@ def test_a_workdir_on_another_drive_does_not_break_the_policy_build():
 
 def test_a_different_drive_counts_as_outside_the_workdir(monkeypatch):
     """The guard must answer "outside", not swallow the question."""
+
     def different_drives(paths):
         raise ValueError("Paths don't have the same drive")
 
@@ -344,7 +345,8 @@ def test_a_windows_editable_url_decodes_to_a_drive_path():
     from urllib.parse import urlparse
 
     decoded = os_sandbox._path_from_file_url(
-        urlparse("file:///C:/Users/me/my%20project"), is_windows = True)
+        urlparse("file:///C:/Users/me/my%20project"), is_windows = True
+    )
 
     assert decoded == "C:\\Users\\me\\my project"
 
@@ -354,7 +356,8 @@ def test_a_unc_editable_url_keeps_its_host():
     from urllib.parse import urlparse
 
     decoded = os_sandbox._path_from_file_url(
-        urlparse("file://server/share/project"), is_windows = True)
+        urlparse("file://server/share/project"), is_windows = True
+    )
 
     assert decoded == "\\\\server\\share\\project"
 
@@ -366,8 +369,9 @@ def test_posix_editable_url_decoding_is_unchanged():
     url = "file:///home/me/my%20project"
     parsed = urlparse(url)
 
-    assert os_sandbox._path_from_file_url(parsed, is_windows = False) == \
-        os.path.abspath(unquote(parsed.path))
+    assert os_sandbox._path_from_file_url(parsed, is_windows = False) == os.path.abspath(
+        unquote(parsed.path)
+    )
 
 
 def test_windows_setup_installs_the_sandbox_executor():
@@ -377,8 +381,7 @@ def test_windows_setup_installs_the_sandbox_executor():
     route, and available() tells users to re-run setup. Without this wiring
     that message is false and the preview always falls back.
     """
-    setup = os.path.join(
-        os.path.dirname(__file__), "..", "..", "setup.ps1")
+    setup = os.path.join(os.path.dirname(__file__), "..", "..", "setup.ps1")
     with open(setup, encoding = "utf-8") as handle:
         body = handle.read()
 

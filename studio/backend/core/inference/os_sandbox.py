@@ -344,7 +344,7 @@ def _path_from_file_url(parsed, is_windows: bool | None = None) -> str:
     path = unquote(parsed.path or "")
     if not windows:
         if host and host.lower() != "localhost":
-            return ""     # a remote host is not a local editable source root
+            return ""  # a remote host is not a local editable source root
         return os.path.abspath(path)
     path = path.replace("/", "\\")
     if host and host.lower() != "localhost":
