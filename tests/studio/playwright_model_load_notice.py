@@ -60,9 +60,9 @@ class LoadFixture:
         await self.page.goto(self.base_url + ("/?download=1" if download else "/"))
         # Generous: this fixture has its own vite config, so the first run in a job pays a cold
         # dependency pre-bundle and a full reload before React mounts. The 5s default loses there.
-        await expect(
-            self.page.get_by_role("button", name = "Load model", exact = True)
-        ).to_be_visible(timeout = 60_000)
+        await expect(self.page.get_by_role("button", name = "Load model", exact = True)).to_be_visible(
+            timeout = 60_000
+        )
 
     def request_failed(self, request):
         if urlsplit(request.url).path == "/api/inference/load":
