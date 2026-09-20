@@ -9303,9 +9303,14 @@ def _with_session_packages(env: dict, workdir: str) -> dict:
     # unisolated calls. In safe mode, the trusted sitecustomize shim stays first
     # on PYTHONPATH so a planted copy cannot shadow it.
     updated["PYTHONNOUSERSITE"] = "1"
+    # pip puts console entry points in Scripts on Windows and bin on POSIX.
+    # Always appending bin meant that after an isolated call installed a CLI,
+    # switching to Bypass Permissions or falling back to software safeguards
+    # left Python imports working while Terminal said the command was missing.
+    entry_points = "Scripts" if sys.platform == "win32" else "bin"
     for key, value in (
         ("PYTHONPATH", packages),
-        ("PATH", os.path.join(packages, "bin")),
+        ("PATH", os.path.join(packages, entry_points)),
     ):
         updated[key] = os.pathsep.join(part for part in (updated.get(key, ""), value) if part)
     return updated

@@ -30,25 +30,33 @@ import tarfile
 import tempfile
 import urllib.request
 
-# Pinned. An upgrade is a deliberate change that re-runs the Windows
-# qualification job, not something that drifts in from the registry.
-MXC_VERSION = "0.8.0"
-REGISTRY_URL = f"https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-{MXC_VERSION}.tgz"
+# The pinned identity lives in one dependency-free module the backend reads
+# too, so the installer and the launch-time trust check cannot disagree about
+# what the binary is. Imported by path rather than as a package, because setup
+# runs before the backend's own imports are necessarily satisfiable, and a
+# missing pin must REFUSE rather than install something unverified.
+def _load_pins():
+    import importlib.util
 
-# wxc-exec.exe is the security boundary for every isolated Windows tool call,
-# so what gets installed is pinned by digest and a mismatch REFUSES rather than
-# warning. Without this a compromised registry response, mirror or republished
-# artifact becomes the sandbox and the install still reports success.
-#
-# Recorded from the artifact the Windows qualification job ran against, and
-# cross-checked against the registry's own integrity metadata for 0.8.0
-# (sha512-pnf5QsASwp+qtRi5uth2GDjwuyG0rHWRpxCf3RbAjQ4wDTNfBX/9l0A+RVZspU2agpF3/11uWB1JisIS7WrNYg==).
-# Bumping MXC_VERSION means recording these again from the new tarball.
-TARBALL_SHA256 = "06bb2399d7e98ab1907acf851e12a4e44748dd467b79d3e53c2f2fbf569da14e"
-EXECUTOR_SHA256 = {
-    "x64": "6049c64723af1173c3739dc6cd6b2f33f6c021bb2832c4216233cba7f71aee9a",
-    "arm64": "dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503",
-}
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "backend", "core", "inference", "mxc_pins.py",
+    )
+    spec = importlib.util.spec_from_file_location("mxc_pins", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot read the MXC pins at {path}; refusing to install unverified")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+pins = _load_pins()
+
+MXC_VERSION = pins.MXC_VERSION
+TARBALL_SHA256 = pins.TARBALL_SHA256
+EXECUTOR_SHA256 = pins.EXECUTOR_SHA256
+HOST_PREP_SHA256 = pins.HOST_PREP_SHA256
+REGISTRY_URL = f"https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-{MXC_VERSION}.tgz"
 
 # What the Windows backend actually launches, plus the helpers MXC's own
 # ProcessContainer path expects to find beside it.
@@ -198,6 +206,15 @@ def prepare_host(dest: str, timeout: float = 120.0) -> dict:
     prep = os.path.join(dest, "wxc-host-prep.exe")
     if not os.path.isfile(prep):
         raise SystemExit(f"{prep} is missing; run this without --prepare-host first")
+    # This one runs ELEVATED, and the managed directory is user-writable, so
+    # the download-time check does not cover it: any same-user process that
+    # replaced the helper between installation and this step would get
+    # administrator execution the moment the user approves the UAC prompt.
+    if not pins.matches_pin(prep, HOST_PREP_SHA256):
+        raise SystemExit(
+            f"{prep} is not the pinned MXC {MXC_VERSION} host-preparation helper. "
+            "Nothing was run. Re-run this script without --prepare-host to reinstall it."
+        )
     results = {}
     for subcommand in ("prepare-system-drive", "prepare-null-device"):
         try:
@@ -272,7 +289,13 @@ def main() -> int:
         return 0 if (present and actual == expected) else 1
 
     if args.prepare_host:
-        print(json.dumps(prepare_host(dest, args.prepare_host_timeout), indent = 2))
+        results = prepare_host(dest, args.prepare_host_timeout)
+        print(json.dumps(results, indent = 2))
+        # Non-zero when the Tier 3 prerequisites were NOT applied. A refused
+        # UAC prompt, a missing elevation or a failed prepare-null-device
+        # otherwise looked like success to setup and to automation.
+        if any(result.get("exit") != 0 for result in results.values()):
+            return 1
         return 0
 
     print(json.dumps(install(dest), indent = 2))

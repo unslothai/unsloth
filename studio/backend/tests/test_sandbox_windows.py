@@ -511,15 +511,22 @@ def test_the_shell_and_its_userland_are_granted(tmp_path):
 def test_the_installer_destination_override_is_honoured(tmp_path, monkeypatch):
     """Setup installing into UNSLOTH_MXC_DIR must not leave the backend looking
     somewhere else and reporting the executor as missing."""
+    from core.inference import mxc_pins
+
     dest = tmp_path / "custom-mxc"
     dest.mkdir()
-    (dest / "wxc-exec.exe").write_text("")
+    executor = dest / "wxc-exec.exe"
+    executor.write_bytes(b"pretend this is wxc-exec")
+    # executable_path() now verifies the digest at the trust boundary, so a
+    # stand-in has to be pinned for this to be a test about the DIRECTORY.
+    monkeypatch.setitem(
+        mxc_pins.EXECUTOR_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(executor)))
 
     monkeypatch.setenv("UNSLOTH_MXC_DIR", str(dest))
 
     assert sandbox_windows.managed_mxc_dir() == str(dest)
     monkeypatch.delenv("UNSLOTH_MXC_EXEC", raising = False)
-    assert sandbox_windows.executable_path() == str(dest / "wxc-exec.exe")
+    assert sandbox_windows.executable_path() == str(executor)
 
 
 def test_the_session_package_directory_reaches_the_windows_environment(plan, tmp_path):
@@ -611,3 +618,92 @@ def test_the_degraded_installer_honours_a_custom_studio_home(monkeypatch, tmp_pa
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "custom"))
 
     assert installer.default_dest() == os.path.join(str(tmp_path / "custom"), "mxc")
+
+
+def test_an_executor_that_is_not_the_pinned_build_is_refused(tmp_path, monkeypatch):
+    """The managed directory is user-writable.
+
+    A same-user process, including a software-safeguarded tool call made before
+    isolation became available, can replace wxc-exec.exe after installation.
+    Everything this backend claims rests on that binary being the pinned one,
+    so the digest is checked at the trust boundary and not only at install time.
+    """
+    impostor = tmp_path / "wxc-exec.exe"
+    impostor.write_bytes(b"not the pinned executor")
+    monkeypatch.setenv("UNSLOTH_MXC_EXEC", str(impostor))
+
+    assert sandbox_windows.executable_path() is None
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    ok, reason = sandbox_windows.available()
+    assert ok is False
+    assert "pinned build" in reason
+
+
+def test_the_pinned_executor_is_accepted(tmp_path, monkeypatch):
+    """Fails closed, but not closed on everything: a matching digest passes."""
+    from core.inference import mxc_pins
+
+    executor = tmp_path / "wxc-exec.exe"
+    executor.write_bytes(b"pretend this is wxc-exec")
+    monkeypatch.setitem(
+        mxc_pins.EXECUTOR_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(executor)))
+    monkeypatch.setenv("UNSLOTH_MXC_EXEC", str(executor))
+
+    assert sandbox_windows.executable_path() == str(executor)
+
+
+def test_the_elevated_helper_is_verified_before_it_runs(tmp_path, monkeypatch):
+    """wxc-host-prep.exe carries requireAdministrator, so a replaced helper
+    gains administrator execution the moment the user approves the UAC prompt.
+    The download-time check does not cover that window."""
+    installer = _installer_module()
+    dest = tmp_path / "mxc"
+    dest.mkdir()
+    (dest / "wxc-host-prep.exe").write_bytes(b"not the pinned helper")
+
+    ran = []
+    monkeypatch.setattr(installer.subprocess, "run", lambda *a, **k: ran.append(a))
+
+    with pytest.raises(SystemExit) as refusal:
+        installer.prepare_host(str(dest))
+
+    assert "pinned" in str(refusal.value)
+    assert ran == [], "the elevated helper was executed before it was verified"
+
+
+def test_a_failed_host_preparation_exits_non_zero(tmp_path, monkeypatch):
+    """A refused UAC prompt otherwise looked like success to setup."""
+    installer = _installer_module()
+
+    monkeypatch.setattr(
+        installer, "prepare_host",
+        lambda dest, timeout: {"prepare-system-drive": {"exit": 65}},
+    )
+    monkeypatch.setattr(installer.sys, "argv", ["install_mxc_runtime.py", "--prepare-host",
+                                                "--dest", str(tmp_path)])
+
+    assert installer.main() == 1
+
+    monkeypatch.setattr(
+        installer, "prepare_host",
+        lambda dest, timeout: {"prepare-system-drive": {"exit": 0}},
+    )
+    assert installer.main() == 0
+
+
+def test_the_fallback_path_uses_scripts_on_windows(monkeypatch, tmp_path):
+    """After an isolated call installs a CLI, Bypass Permissions or a software
+    fallback must find it too: pip puts entry points in Scripts on Windows."""
+    from core.inference import tools
+
+    packages = tmp_path / ".unsloth-packages"
+    packages.mkdir()
+
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    updated = tools._with_session_packages({"PATH": "C:\\Windows"}, str(tmp_path))
+    assert updated["PATH"].split(os.pathsep)[-1] == str(packages / "Scripts")
+
+    monkeypatch.setattr(tools.sys, "platform", "linux")
+    updated = tools._with_session_packages({"PATH": "/usr/bin"}, str(tmp_path))
+    assert updated["PATH"].split(os.pathsep)[-1] == str(packages / "bin")

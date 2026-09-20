@@ -38,6 +38,8 @@ import uuid
 
 from loggers import get_logger
 
+from . import mxc_pins
+
 from .os_sandbox import (
     PROFILE_VERSION,
     SESSION_PACKAGES_RELPATH,
@@ -112,10 +114,21 @@ def executable_path() -> str | None:
     binary whose identity the whole boundary rests on.
     """
     configured = os.environ.get(_EXECUTABLE_ENV)
-    if configured:
-        return configured if os.path.isfile(configured) else None
-    candidate = os.path.join(managed_mxc_dir(), _EXECUTABLE_NAME)
-    return candidate if os.path.isfile(candidate) else None
+    candidate = configured or os.path.join(managed_mxc_dir(), _EXECUTABLE_NAME)
+    if not os.path.isfile(candidate):
+        return None
+    # Checked HERE, not only at install time. The managed directory is
+    # user-writable, so a same-user process, including a software-safeguarded
+    # tool call made before isolation became available, can replace the file
+    # afterwards. Everything this backend claims rests on this binary being
+    # the one that was pinned, so the check belongs at the trust boundary.
+    if not mxc_pins.matches_pin(candidate, mxc_pins.EXECUTOR_SHA256):
+        logger.warning(
+            "Ignoring %s: it is not the pinned MXC %s executor. Re-run "
+            "Studio setup to reinstall it.", candidate, mxc_pins.MXC_VERSION,
+        )
+        return None
+    return candidate
 
 
 def managed_mxc_dir() -> str:
@@ -163,7 +176,8 @@ def available() -> tuple[bool, str]:
     executor = executable_path()
     if executor is None:
         return False, (
-            "the MXC sandbox executor is not installed. Studio setup installs "
+            "the MXC sandbox executor is not installed, or the installed one "
+            "is not the pinned build. Studio setup installs "
             "it when the Windows isolation preview is enabled, so re-run setup "
             "with UNSLOTH_WINDOWS_SANDBOX_PREVIEW=1, or install it directly "
             "with: python studio/install_mxc_runtime.py"
