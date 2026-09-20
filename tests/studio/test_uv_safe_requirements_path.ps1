@@ -70,27 +70,36 @@ try {
     #    8.3 enabled, which is a fact about that runner rather than a defect. The invariant that
     #    actually has to hold on both is: Temporary tells the caller whether the path is safe to
     #    delete, and the user's file survives either way.
+    #
+    #    Identity, not spelling, on BOTH branches. An alias differs from the long name as a string
+    #    while naming one file, so a string comparison cannot tell "a copy" from "the user's file
+    #    under another name" -- and getting that backwards is precisely the mistake that deletes
+    #    someone's requirements file.
+    function Test-SameUnderlyingFile([string]$a, [string]$b) {
+        try {
+            if ((Get-Item -LiteralPath $a -Force).FullName -eq (Get-Item -LiteralPath $b -Force).FullName) { return $true }
+        } catch { return $false }
+        # Different strings can still be one file. Write through one, read back through the other,
+        # and put the content back. Confined to this test's own fixture.
+        $probe = "typer-probe-" + [guid]::NewGuid().ToString("N")
+        try {
+            $original = Get-Content -Raw -LiteralPath $b
+            $probe | Set-Content -LiteralPath $b
+            $same = ((Get-Content -Raw -LiteralPath $a).Trim() -eq $probe)
+            $original.TrimEnd("`r", "`n") | Set-Content -LiteralPath $b
+            return $same
+        } catch { return $false }
+    }
+
     if ($r2.Temporary) {
-        Check "a copy is not the user's own file" ($r2.Path -ne $spaced)
+        # Reported safe to delete, so it had better not be the user's file.
+        Check "a copy is not the user's own file" (-not (Test-SameUnderlyingFile $r2.Path $spaced))
         Remove-Item -LiteralPath $r2.Path -Force
         Check "deleting the copy leaves the original in place" (Test-Path -LiteralPath $spaced)
     } else {
-        # Not temporary means it must BE the user's file, reached by another name. Compare identity
-        # rather than the string: the whole point of the alias is that the spelling differs.
-        $sameFile = $false
-        try {
-            $sameFile = ((Get-Item -LiteralPath $r2.Path -Force).FullName -eq (Get-Item -LiteralPath $spaced -Force).FullName)
-        } catch { }
-        if (-not $sameFile) {
-            # An 8.3 alias and the long name are different strings for one file, so fall back to
-            # writing through one and reading it back through the other.
-            try {
-                "typer-probe" | Set-Content -LiteralPath $spaced
-                $sameFile = ((Get-Content -Raw -LiteralPath $r2.Path).Trim() -eq "typer-probe")
-                "typer" | Set-Content -LiteralPath $spaced
-            } catch { }
-        }
-        Check "a non-temporary path is the user's own file under another name" $sameFile
+        # Reported unsafe to delete, so it had better BE the user's file, reached by another name.
+        Check "a non-temporary path is the user's own file under another name" (
+            Test-SameUnderlyingFile $r2.Path $spaced)
         Check "the user's file is still there and untouched" (
             (Test-Path -LiteralPath $spaced) -and ((Get-Content -Raw -LiteralPath $spaced).Trim() -eq "typer"))
     }
