@@ -509,9 +509,19 @@ async def logout(
 ) -> Response:
     """Revoke refresh tokens for the subject; the access token is stateless and expires on its own."""
     try:
-        storage.revoke_user_refresh_tokens(current_subject, account_id = _key_account_scope())
+        account_scope = _key_account_scope()
     except Exception:
-        pass
+        # No account context to scope by (owner-only install, retired account): revoke by username.
+        account_scope = None
+    try:
+        storage.revoke_user_refresh_tokens(current_subject, account_id = account_scope)
+    except Exception:
+        # A swallowed failure answered 204 with the refresh tokens still live, so a stolen one
+        # outlived the sign-out that was reported as done. The detail stays generic.
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = "Sign-out could not be completed. Please try again.",
+        )
     if current_subject == storage.DEFAULT_ADMIN_USERNAME:
         try:
             request.app.state.bootstrap_password = None

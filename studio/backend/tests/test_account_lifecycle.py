@@ -693,6 +693,34 @@ def test_logout_revokes_only_actor_and_only_owner_clears_bootstrap_state(matrix,
     )
 
 
+def test_logout_reports_a_failed_revoke_instead_of_204(matrix, monkeypatch):
+    client, _auth, _ = matrix
+    token = authentication.create_refresh_token("alice")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(storage, "revoke_user_refresh_tokens", _boom)
+    response = client.post("/api/auth/logout", headers = headers("alice"))
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Sign-out could not be completed. Please try again."}
+    # The refresh token is still live, which is exactly what the 204 used to hide.
+    assert storage.verify_refresh_token(token) is not None
+
+
+def test_logout_survives_an_unavailable_account_scope(matrix, monkeypatch):
+    client, auth, _ = matrix
+    token = authentication.create_refresh_token("alice")
+
+    def _no_context():
+        raise RuntimeError("no account context")
+
+    monkeypatch.setattr(auth, "_key_account_scope", _no_context)
+    response = client.post("/api/auth/logout", headers = headers("alice"))
+    assert response.status_code == 204
+    assert storage.verify_refresh_token(token) is None
+
+
 @pytest.mark.parametrize(
     "method,suffix,payload",
     [
