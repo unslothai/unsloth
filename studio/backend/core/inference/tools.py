@@ -10260,9 +10260,7 @@ def _get_project_workdir_info(session_id: str) -> "tuple[str, bool] | None":
         from storage.studio_db import project_workspace_incarnation_exists
 
         if project_workspace_incarnation_exists(project_id):
-            raise ProjectWorkspaceSessionUnavailableError(
-                "Project workspace is unavailable"
-            )
+            raise ProjectWorkspaceSessionUnavailableError("Project workspace is unavailable")
         return None
     current_session_id = project.get("workspaceSessionId") or (
         f"{_PROJECT_SESSION_PREFIX}{project_id}"
