@@ -86,14 +86,31 @@ export function gpuMemoryTotalsGb(
           ? Math.min(total, hostBackedReported as number)
           : total;
         return {
-          hostBacked: Math.max(totals.hostBacked, hostBacked),
+          // `shared_memory` is the flag that means "this budget IS the host's own
+          // pool", so several of them are views of one thing and the largest is it.
+          // `unified_memory` alone says only that a device shares memory with its
+          // OWN cpu, which on a multi-socket unified host (MI300A) is one pool per
+          // socket, not one pool for the machine. Collapsing those would report a
+          // four-socket node as a single card, so they stay additive, which is also
+          // exactly how they were counted before they were classified as shared at
+          // all. No inventory loses capacity by being read correctly.
+          hostBacked:
+            device.shared_memory === true
+              ? Math.max(totals.hostBacked, hostBacked)
+              : totals.hostBacked,
+          perDevice:
+            device.shared_memory === true
+              ? totals.perDevice
+              : totals.perDevice + hostBacked,
           reserved:
             totals.reserved + (hostBackedKnown ? total - hostBacked : 0),
         };
       },
-      { hostBacked: 0, reserved: 0 },
+      { hostBacked: 0, perDevice: 0, reserved: 0 },
     );
-  const shared = roundToDevicePrecision(sharedPool.hostBacked);
+  const shared = roundToDevicePrecision(
+    sharedPool.hostBacked + sharedPool.perDevice,
+  );
   const dedicated = roundToDevicePrecision(
     dedicatedDevices + sharedPool.reserved,
   );

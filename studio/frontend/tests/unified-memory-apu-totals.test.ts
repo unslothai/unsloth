@@ -64,14 +64,55 @@ test("a discrete card beside an APU keeps its own VRAM separate", () => {
   assert.equal(totals.total, 64);
 });
 
-test("two views of one host pool are still counted once", () => {
+test("a multi-socket unified host keeps one pool per socket", () => {
+  // `shared_memory` means "this budget IS the host's own pool", so several of those
+  // are views of one thing and the largest is it. `unified_memory` alone says only
+  // that a device shares memory with its OWN cpu, which on a multi-socket unified
+  // node is a pool per socket. Collapsing these would report such a node as a single
+  // card, and it is also not what they were counted as before being classified
+  // shared at all: the aggregate has to survive the reclassification.
   const totals = gpuMemoryTotalsGb([
     { memory_total_gb: 48, shared_memory: false, unified_memory: true },
     { memory_total_gb: 48, shared_memory: false, unified_memory: true },
   ]);
-  assert.equal(totals.shared, 48);
   assert.equal(totals.dedicated, 0);
+  assert.equal(totals.shared, 96);
+  assert.equal(totals.total, 96);
+});
+
+test("devices that already carried the shared flag are still one pool", () => {
+  // The Vulkan case the max was written for: duplicate ICD rows for one device.
+  const totals = gpuMemoryTotalsGb([
+    { memory_total_gb: 48, shared_memory: true },
+    { memory_total_gb: 48, shared_memory: true },
+  ]);
+  assert.equal(totals.shared, 48);
   assert.equal(totals.total, 48);
+});
+
+test("the aggregate survives the reclassification in every shape", () => {
+  // The split is a presentation and budgeting question; the total is what fit
+  // verdicts are measured against, so it has to be identical to what the old
+  // dedicated-sum produced for the same inventory.
+  const inventories = [
+    [{ memory_total_gb: 64, shared_memory: false, unified_memory: true }],
+    [
+      { memory_total_gb: 16, shared_memory: false },
+      { memory_total_gb: 48, shared_memory: false, unified_memory: true },
+    ],
+    [
+      { memory_total_gb: 48, shared_memory: false, unified_memory: true },
+      { memory_total_gb: 48, shared_memory: false, unified_memory: true },
+    ],
+  ];
+  for (const devices of inventories) {
+    const totals = gpuMemoryTotalsGb(devices);
+    const asDedicatedSum = devices.reduce(
+      (sum, device) => sum + (device.memory_total_gb ?? 0),
+      0,
+    );
+    assert.equal(totals.total, asDedicatedSum, JSON.stringify(devices));
+  }
 });
 
 test("the platforms that already reported a shared pool do not move", () => {
