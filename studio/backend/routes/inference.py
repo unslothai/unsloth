@@ -36674,6 +36674,9 @@ def _build_openai_passthrough_body(
     )
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
+    if not messages:
+        logger.warning("chat passthrough refused a request with no messages")
+        raise HTTPException(status_code = 400, detail = "No messages provided.")
     # Markup is broken in _build_passthrough_payload, shared with both /v1/messages (#7066).
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
     tools = _passthrough_client_tools(payload)

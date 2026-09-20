@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
+import struct
 import sys
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +28,18 @@ from core.inference.tool_loop_controller import is_tool_error, strip_result_for_
 
 PNG_B64 = "iVBORw0KGgoAAAANSUhEUg=="
 WAV_B64 = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
+
+
+def _png_pixel(rgba: bytes) -> str:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    raw = b"\x89PNG\r\n\x1a\n"
+    raw += chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+    raw += chunk(b"IDAT", zlib.compress(b"\x00" + rgba))
+    raw += chunk(b"IEND", b"")
+    return base64.b64encode(raw).decode("ascii")
 
 
 def _text(value: str) -> SimpleNamespace:
@@ -707,3 +722,137 @@ def test_promote_history_keeps_in_budget_text_byte_identical():
         {"role": "tool", "tool_call_id": "call_0", "name": "mcp__fs__read", "content": "plain text"},
     ]
     assert mcp_images.promote_history(messages, vision = False)[-1] is messages[-1]
+
+
+def test_multi_turn_replay_re_attaches_both_envelopes():
+    first, second = _png_pixel(b"\xde\x00\x00\xff"), _png_pixel(b"\x00\x00\xde\xff")
+    envelope = lambda data: (
+        "[1 image returned]\n"
+        + MCP_IMAGES_SENTINEL
+        + json.dumps([{"data": data, "mimeType": "image/png"}])
+    )
+    call = lambda call_id: {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": "mcp__fs__read_media_file", "arguments": "{}"},
+            }
+        ],
+    }
+    messages = [
+        {"role": "user", "content": "look at this"},
+        call("call_0"),
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "mcp__fs__read_media_file",
+            "content": envelope(first),
+        },
+        {"role": "user", "content": "and this"},
+        call("call_1"),
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "mcp__fs__read_media_file",
+            "content": envelope(second),
+        },
+    ]
+    text_only = mcp_images.promote_history(messages, vision = False)
+    assert [tool["content"] for tool in text_only if tool["role"] == "tool"] == [
+        "[1 image returned]",
+        "[1 image returned]",
+    ]
+    assert not any(first in str(message) or second in str(message) for message in text_only)
+    promoted: list = []
+    out = mcp_images.promote_history(messages, vision = True, promoted_out = promoted)
+    urls = [part["image_url"]["url"] for part in promoted]
+    assert len(urls) == 2
+    assert all(url.startswith("data:image/png;base64,") for url in urls)
+    assert urls[0] != urls[1]
+    for message in out:
+        text = message.get("content")
+        if isinstance(text, str):
+            assert first not in text and second not in text
+        else:
+            assert not any(first in str(part) or second in str(part) for part in (text or []))
+
+
+def test_dict_content_blocks_still_become_an_envelope():
+    flat = _flatten_result(_result({"type": "image", "data": PNG_B64, "mimeType": "image/png"}))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "[1 image returned]"
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_structured_content_only_image_is_recovered():
+    structured = {"content": [{"type": "image", "data": PNG_B64, "mimeType": "image/png"}]}
+    flat = _flatten_result(_result(structured = structured))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "[1 image returned]"
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+    assert PNG_B64 not in strip_result_for_model(flat)
+
+
+def test_recovered_image_repeats_as_body_text_only_once():
+    structured = {"content": [{"type": "image", "data": PNG_B64, "mimeType": "image/png"}]}
+    flat = _flatten_result(_result(_text("Took a screenshot"), structured = structured))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "Took a screenshot\n[1 image returned]"
+    assert PNG_B64 not in body
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_image_wrapper_obj_in_structured_content_is_recovered():
+    structured = {"tool": "camera", "image": {"data": PNG_B64, "mimeType": "image/png"}}
+    flat = _flatten_result(_result(structured = structured))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "{'tool': 'camera', 'image': {'mimeType': 'image/png'}}\n[1 image returned]"
+    assert PNG_B64 not in body
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_data_uri_resource_image_is_recovered():
+    block = SimpleNamespace(
+        type = "resource",
+        resource = SimpleNamespace(uri = f"data:image/png;base64,{PNG_B64}", blob = None),
+    )
+    flat = _flatten_result(_result(block))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "[1 image returned]"
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_non_image_structured_objects_are_not_recovered():
+    svg = "<svg width='5' height='5' xmlns='http://www.w3.org/2000/svg'><rect/></svg>"
+    structured = {"content": [{"type": "image", "data": svg, "mimeType": "image/png"}]}
+    flat = _flatten_result(_result(structured = structured))
+    assert MCP_IMAGES_SENTINEL not in flat
+    assert svg in flat
+
+
+def test_recovered_envelope_round_trips_through_split_images():
+    structured = {"content": [{"type": "image", "data": PNG_B64, "mimeType": "image/png"}]}
+    data_uri = SimpleNamespace(
+        type = "resource",
+        resource = SimpleNamespace(uri = f"data:image/png;base64,{PNG_B64}", blob = None),
+    )
+    result = _result(
+        _text("Took a screenshot"),
+        {"type": "image", "data": PNG_B64, "mimeType": "image/png"},
+        data_uri,
+        structured = structured,
+    )
+    flat = _flatten_result(result)
+    head, images = mcp_images.split_images(flat)
+    assert head == "Took a screenshot\n[2 images returned]"
+    assert [img["data"] for img in images] == [PNG_B64, PNG_B64]
+    assert strip_result_for_model(flat) == head
+
+
+def test_frontend_backend_marker_and_cap_parity():
+    assert "\n" + MCP_IMAGES_SENTINEL == "\n__MCP_IMAGES__:"
+    assert mcp_images.SENTINEL == "__MCP_IMAGES__:"
+    assert mcp_images.MAX_TOOL_TEXT_CHARS == 256_000

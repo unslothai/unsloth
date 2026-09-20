@@ -652,3 +652,9 @@ test("a client tool's structured result is not unwrapped as the MCP wrapper", ()
     /export function isBareMcpImageWrapper\(val: unknown\): boolean \{\n\s*if \(!isMcpImageToolResult\(val\)\) return false;\n\s*const keys = Object\.keys\(val as object\)\.filter\(\(key\) => key !== "text" && key !== "images"\);\n\s*return keys\.length === 0;/,
   );
 });
+
+test("the wire contract matches the backend envelope exactly", () => {
+  assert.equal(MCP_IMAGES_MARKER, "\n__MCP_IMAGES__:");
+  assert.equal(MAX_TOOL_TEXT_CHARS, 256_000);
+  assert.equal(MCP_IMAGE_PARSE_ERROR_TEXT, "[MCP image could not be parsed]");
+});

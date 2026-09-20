@@ -1525,21 +1525,21 @@ MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
 
 
 def _block_text(block: Any) -> Optional[str]:
-    text = getattr(block, "text", None)
+    text = _block_value(block, "text")
     if text:
         return str(text)
-    resource = getattr(block, "resource", None)
+    resource = _block_value(block, "resource")
     if resource is not None:
-        text = getattr(resource, "text", None)
+        text = _block_value(resource, "text")
         return str(text) if text else None
     return None
 
 
 def _block_link(block: Any) -> Optional[str]:
     # keep host-generated link text from suppressing structured_content
-    uri = getattr(block, "uri", None)
-    if uri and getattr(block, "type", None) == "resource_link":
-        name = getattr(block, "name", None)
+    uri = _block_value(block, "uri")
+    if uri and _block_value(block, "type") == "resource_link":
+        name = _block_value(block, "name")
         return f"[resource: {name} <{uri}>]" if name else f"[resource: <{uri}>]"
     return None
 
@@ -1594,25 +1594,53 @@ def _image_mime(mime: Any) -> Optional[str]:
     return resolved if _MEDIA_TYPE.match(resolved) else None
 
 
+def _block_value(block: Any, key: str) -> Any:
+    # bridged servers hand content blocks as plain dicts; a dict has no attributes
+    if isinstance(block, dict):
+        return block.get(key)
+    try:
+        return getattr(block, key)
+    except AttributeError:
+        return None
+
+
 def _resource_mime(obj: Any) -> Any:
     # mcp 2.x renames mimeType to mime_type, keeping camelCase only as an alias
-    mime = getattr(obj, "mimeType", None)
-    return mime if mime is not None else getattr(obj, "mime_type", None)
+    mime = _block_value(obj, "mimeType")
+    return mime if mime is not None else _block_value(obj, "mime_type")
+
+
+def _data_uri_image(uri: Any) -> Optional[tuple[str, str]]:
+    """Only base64 data: resources are recoverable here; other schemes are left
+    for blob blocks."""
+    if not isinstance(uri, str) or not uri.lower().startswith("data:"):
+        return None
+    head, sep, payload = uri.partition(",")
+    if not sep or not payload or not head.lower().endswith(";base64"):
+        return None
+    mime = _image_mime(head[len("data:") : -len(";base64")])
+    if not mime:
+        return None
+    return payload, mime
 
 
 def _block_image(block: Any) -> Optional[tuple[str, str]]:
     # embedded resources keep binary data on resource.blob
-    data = getattr(block, "data", None)
+    data = _block_value(block, "data")
     mime = _resource_mime(block)
     if not data:
-        resource = getattr(block, "resource", None)
+        resource = _block_value(block, "resource")
         if resource is None:
             return None
-        data = getattr(resource, "blob", None)
+        uri = _block_value(resource, "uri")
+        data = _block_value(resource, "blob")
         mime = _resource_mime(resource)
-        if not mime:
-            uri = getattr(resource, "uri", None)
-            mime = _uri_mime(uri) if uri else None
+        if not data and uri:
+            recovered = _data_uri_image(uri)
+            if recovered is not None:
+                data, mime = recovered
+        if not mime and uri:
+            mime = _uri_mime(uri)
     mime = _image_mime(mime)
     if data and mime:
         return str(data), mime
@@ -1621,19 +1649,19 @@ def _block_image(block: Any) -> Optional[tuple[str, str]]:
 
 def _block_attachment(block: Any) -> Optional[tuple[str, str]]:
     # presence, not truthiness: a zero-byte file arrives as ""
-    data = getattr(block, "data", None)
+    data = _block_value(block, "data")
     if data is not None:
-        kind = getattr(block, "type", "binary")
+        kind = _block_value(block, "type") or "binary"
         mime = _resource_mime(block)
         uri = None
     else:
-        resource = getattr(block, "resource", None)
-        data = getattr(resource, "blob", None) if resource is not None else None
+        resource = _block_value(block, "resource")
+        data = _block_value(resource, "blob") if resource is not None else None
         if data is None:
             return None
         kind = "file"
         mime = _resource_mime(resource)
-        uri = getattr(resource, "uri", None)
+        uri = _block_value(resource, "uri")
     label = f"{kind} attachment"
     if mime:
         label += f" ({mime})"
@@ -1684,6 +1712,12 @@ def _strip_payloads(value: Any, payloads: set[str]) -> Any:
             value = extras
         kept = {}
         for key, item in value.items():
+            # a data-resource mirror carries the bytes in uri, not blob; the payload
+            # strip must still drop it or the envelope repeats as body text
+            if key == "uri" and isinstance(item, str):
+                _, sep, raw = item.partition(",")
+                if sep and raw in payloads:
+                    continue
             item = _strip_payloads(item, payloads)
             if item is not _MIRRORED:
                 kept[key] = item
@@ -1694,6 +1728,43 @@ def _strip_payloads(value: Any, payloads: set[str]) -> Any:
     else:
         return value
     return _MIRRORED if value and not kept else kept
+
+
+def _structured_images(value: Any, budget: int, payloads: set[str]) -> list[dict]:
+    """Images the content blocks did not carry, recovered from structured_content
+    into an envelope; only entries that sniff as bounded, decodable images are
+    promoted."""
+    images: list[dict] = []
+    scanned = 0
+
+    def _scan(node: Any, depth: int = 0) -> None:
+        nonlocal budget, scanned
+        if images or depth > 6 or scanned > 300:
+            return
+        if isinstance(node, dict):
+            image = _block_image(node)
+            if image is not None:
+                data, mime = image
+                if (
+                    len(data) <= budget
+                    and data not in payloads
+                    and mcp_images.probably_decodable({"data": data, "mimeType": mime})
+                ):
+                    payloads.add(data)
+                    budget -= len(data)
+                    images.append({"data": data, "mimeType": mime})
+                return
+            for key in ("image", "images", "thumbnail", "content"):
+                if key in node:
+                    _scan(node[key], depth + 1)
+            return
+        if isinstance(node, (list, tuple)):
+            scanned += 1
+            for item in node:
+                _scan(item, depth + 1)
+
+    _scan(value)
+    return images
 
 
 def _flatten_result(result: Any) -> str:
@@ -1733,6 +1804,10 @@ def _flatten_result(result: Any) -> str:
     body = "\n".join(parts)
     # the filesystem server mirrors binary blocks in structured_content; keep everything else
     structured = None if has_text else getattr(result, "structured_content", None)
+    if not images:
+        images = _structured_images(
+            getattr(result, "structured_content", None), budget, payloads
+        )
     if structured is not None and payloads:
         structured = _strip_payloads(structured, payloads)
     if structured is not None and structured is not _MIRRORED:
