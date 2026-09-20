@@ -2772,6 +2772,11 @@ exit 1
     # they are mounted at, so the longest Name that prefixes a path names the volume really
     # holding it. Best effort: off Windows, or wherever CIM cannot answer, every caller falls
     # back to the drive-root logic this shipped with, which is right for a lettered volume.
+    # Known limit: Name exposes ONE access path, so a volume reached through a second one (a
+    # mount point on a volume that also has a drive letter) matches no entry and falls back to
+    # the drive root. That is the answer this shipped with, so the lookup only ever widens what
+    # it gets right; enumerating Win32_MountPoint associations would close it, at the cost of a
+    # second CIM query and a join on every Windows install, for a diagnostic.
     # Split out so the matching can be exercised without a mount point to mount: no host in CI
     # has one, and it is the part with the edge cases.
     function Select-StudioVolumeForPath {
