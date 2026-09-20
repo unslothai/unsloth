@@ -888,4 +888,21 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
   const median = runs.sort((a, b) => a - b)[2]!;
   assert.ok(median < 100,
     `500k of \`]:\` cost ${median.toFixed(1)}ms; the per-occurrence window scan is back`);
+
+  // A `[` in the window is not enough to make the scan worth paying for. `[]: `
+  // keeps one in every window while never opening a definition, so without the
+  // "after the last unescaped `]`" bound each occurrence still slices ~3000
+  // characters and scans every bracket start before the nonempty-label class
+  // fails: 338ms against 7ms bounded.
+  const invalid = `See [guide][g].\n\n${"[]: ".repeat(125000)}`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(invalid + " ");
+  const invalidRuns: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(invalid + " ".repeat(i));
+    invalidRuns.push(performance.now() - t0);
+  }
+  const invalidMedian = invalidRuns.sort((a, b) => a - b)[2]!;
+  assert.ok(invalidMedian < 100,
+    `500k of \`[]:\` cost ${invalidMedian.toFixed(1)}ms; invalid candidates are being rescanned`);
 });

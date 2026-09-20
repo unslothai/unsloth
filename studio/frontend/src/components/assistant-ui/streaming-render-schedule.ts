@@ -67,6 +67,15 @@ const LINK_DEFINITION_WINDOW = 999 * 3 + 2;
 // ever moves forward, which keeps that check O(n) over the whole reply;
 // `lastIndexOf` would reintroduce the quadratic scan it exists to remove, since
 // its backward search is not bounded by the window.
+// Odd run of preceding backslashes, so `[a\]b]:` keeps its escaped `]` inside the
+// label while `[a]b]:` does not.
+function isEscaped(text: string, index: number): boolean {
+  let slashes = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i -= 1) {
+    slashes += 1;
+  }
+  return slashes % 2 === 1;
+}
 function hasLinkDefinition(text: string): boolean {
   let bracket = text.indexOf("[");
   // The lookahead is CACHED, not recomputed per `]:`. Asking `indexOf` again
@@ -75,12 +84,25 @@ function hasLinkDefinition(text: string): boolean {
   // measured, that mistake made a 500k reply SLOWER than no skip at all
   // (282ms -> 881ms). Held this way the total is one `indexOf` per `[`.
   let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
+  // The label admits no bare `]`, so a match's `[` must also follow the last
+  // UNESCAPED one before this `]:`. Without that bound a window full of `[`
+  // that cannot open a definition is rescanned per occurrence: 500k of `[]: `
+  // cost 338ms, against 3.3ms once the window collapses to the failing label.
+  let close = -1;
+  let nextClose = text.indexOf("]");
   for (let end = text.indexOf("]:"); end >= 0; end = text.indexOf("]:", end + 1)) {
     while (nextBracket >= 0 && nextBracket <= end) {
       bracket = nextBracket;
       nextBracket = text.indexOf("[", bracket + 1);
     }
-    const start = end < LINK_DEFINITION_WINDOW ? 0 : end - LINK_DEFINITION_WINDOW;
+    while (nextClose >= 0 && nextClose < end) {
+      close = nextClose;
+      nextClose = text.indexOf("]", close + 1);
+    }
+    let start = end < LINK_DEFINITION_WINDOW ? 0 : end - LINK_DEFINITION_WINDOW;
+    if (close > start && !isEscaped(text, close)) {
+      start = close + 1;
+    }
     // Note `start`, not `bracket`: the LAST `[` can fail where an earlier one
     // matches, because the class admits `[` inside a label (`[a[]:` matches from
     // index 0 and not from index 2), so this is only ever a skip test.
