@@ -33,10 +33,21 @@ DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
 # satisfy a variant="fp16" load, a rule this codebase already pins in
 # tests/test_prefetch_snapshot_scope.py::test_variant_keeps_bin_when_only_default_safetensors.
 # A glob also kept openai/whisper-large-v3's "pytorch_model.bin.index.fp32.json" while dropping
-# the shards it indexes.
-_BIN_WEIGHT_RE = re.compile(
-    r"pytorch_model(?:\.(?P<variant>[A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin"
+# the shards it indexes. Both shard layouts are accepted, because transformers writes the
+# counter-first one and unsloth/models/_utils.py already recognises both.
+_BIN_WEIGHT_RES = (
+    re.compile(r"pytorch_model(?:\.(?P<variant>[A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin"),
+    re.compile(r"pytorch_model[-_][0-9]+-of-[0-9]+\.(?P<variant>[A-Za-z0-9_]+)\.bin"),
 )
+
+
+def _variant_shard_re(variant: str) -> "re.Pattern[str]":
+    v = re.escape(variant)
+    return re.compile(
+        rf"model\.{v}[-_][0-9]+-of-[0-9]+\.safetensors|model[-_][0-9]+-of-[0-9]+\.{v}\.safetensors"
+    )
+
+
 _BIN_INDEX_RE = re.compile(
     r"pytorch_model(?:\.(?P<pre>[A-Za-z0-9_]+))?\.bin\.index(?:\.(?P<post>[A-Za-z0-9_]+))?\.json"
 )
@@ -112,15 +123,12 @@ def _variant_ships_as_safetensors(names: list[str], variant: str | None) -> bool
         return True
     if f"model.{variant}.safetensors" in names:
         return True
-    # Both orderings are in use: whisper-large-v3 ships model.safetensors.index.fp32.json.
-    index = {
-        f"model.safetensors.index.{variant}.json",
-        f"model.{variant}.safetensors.index.json",
-    }
-    if not index & set(names):
+    # transformers' _add_variant puts the variant second-to-last, so the index a variant load
+    # looks for is exactly this one; model.<variant>.safetensors.index.json is not a spelling
+    # it can find, and accepting it would drop bins over an index nothing reads.
+    if f"model.safetensors.index.{variant}.json" not in names:
         return False
-    sharded = re.compile(rf"model\.{re.escape(variant)}[-_][0-9]+-of-[0-9]+\.safetensors")
-    return any(sharded.fullmatch(name) for name in names)
+    return any(_variant_shard_re(variant).fullmatch(name) for name in names)
 
 
 def redundant_torch_bin_files(filenames: Iterable[str]) -> list[str]:
@@ -128,7 +136,7 @@ def redundant_torch_bin_files(filenames: Iterable[str]) -> list[str]:
     names = list(filenames)
     redundant = []
     for name in names:
-        match = _BIN_WEIGHT_RE.fullmatch(name)
+        match = next((m for m in (rx.fullmatch(name) for rx in _BIN_WEIGHT_RES) if m), None)
         variant = match.group("variant") if match else None
         if not match:
             match = _BIN_INDEX_RE.fullmatch(name)

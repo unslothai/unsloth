@@ -119,6 +119,24 @@ test("an indexless variant does not authorise dropping its bins", async () => {
   });
 });
 
+test("both variant shard layouts are recognised", async () => {
+  // transformers writes model-00001-of-00002.fp16.safetensors (counter first).
+  stubSiblings({
+    "config.json": 2,
+    "model.safetensors": 500,
+    "model-00001-of-00002.fp16.safetensors": 250,
+    "model-00002-of-00002.fp16.safetensors": 250,
+    "model.safetensors.index.fp16.json": 1,
+    "pytorch_model.bin": 500,
+    "pytorch_model-00001-of-00002.fp16.bin": 250,
+    "pytorch_model-00002-of-00002.fp16.bin": 250,
+  });
+  assert.deepEqual(await fetchModelSize("acme/counter-first-variant"), {
+    totalBytes: 2 + 500 + 250 + 250 + 1,
+    weightsBytes: 500 + 250 + 250,
+  });
+});
+
 test("a variant index never outlives its shards", async () => {
   // whisper-large-v3's real shape: the fp32 variant ships as safetensors, so the bin shards
   // and their index both go.

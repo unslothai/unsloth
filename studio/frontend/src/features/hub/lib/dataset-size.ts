@@ -282,8 +282,12 @@ const DUPLICATE_WEIGHT_FORMAT_RE =
 // when the SAME variant ships as safetensors: model.safetensors does not satisfy a
 // variant="fp16" load, and a glob also kept whisper-large-v3's pytorch_model.bin.index.fp32.json
 // while dropping the shards it indexes.
-const BIN_WEIGHT_RE =
-  /^pytorch_model(?:\.([A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin$/;
+// Both shard layouts, because transformers writes the counter-first one and this codebase
+// already recognises both in unsloth/models/_utils.py.
+const BIN_WEIGHT_RES = [
+  /^pytorch_model(?:\.([A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin$/,
+  /^pytorch_model[-_][0-9]+-of-[0-9]+\.([A-Za-z0-9_]+)\.bin$/,
+];
 const BIN_INDEX_RE =
   /^pytorch_model(?:\.([A-Za-z0-9_]+))?\.bin\.index(?:\.([A-Za-z0-9_]+))?\.json$/;
 
@@ -291,13 +295,12 @@ const BIN_INDEX_RE =
 function variantShipsAsSafetensors(names: string[], variant: string | undefined): boolean {
   if (!variant) return true;
   if (names.includes(`model.${variant}.safetensors`)) return true;
-  // Both orderings are in use: whisper-large-v3 ships model.safetensors.index.fp32.json.
-  const hasIndex =
-    names.includes(`model.safetensors.index.${variant}.json`) ||
-    names.includes(`model.${variant}.safetensors.index.json`);
-  if (!hasIndex) return false;
+  // transformers' _add_variant puts the variant second-to-last, so this is the only index
+  // spelling a variant load can find.
+  if (!names.includes(`model.safetensors.index.${variant}.json`)) return false;
+  const v = variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const sharded = new RegExp(
-    `^model\\.${variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[-_][0-9]+-of-[0-9]+\\.safetensors$`,
+    `^(?:model\\.${v}[-_][0-9]+-of-[0-9]+\\.safetensors|model[-_][0-9]+-of-[0-9]+\\.${v}\\.safetensors)$`,
   );
   return names.some((n) => sharded.test(n));
 }
@@ -306,7 +309,7 @@ function redundantTorchBinFiles(names: string[]): Set<string> {
   const out = new Set<string>();
   for (const name of names) {
     let variant: string | undefined;
-    const weight = BIN_WEIGHT_RE.exec(name);
+    const weight = BIN_WEIGHT_RES.map((re) => re.exec(name)).find((m) => m);
     if (weight) {
       variant = weight[1];
     } else {

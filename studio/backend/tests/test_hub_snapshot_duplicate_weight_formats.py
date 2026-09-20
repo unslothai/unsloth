@@ -153,12 +153,31 @@ def test_an_indexless_variant_does_not_authorise_dropping_its_bins():
     assert "pytorch_model.fp16-00001-of-00002.bin" in kept
 
     # With the variant index the fp16 safetensors family is complete, so the bins go.
-    for index_name in (
-        "model.safetensors.index.fp16.json",
-        "model.fp16.safetensors.index.json",
-    ):
-        indexed = dict(indexless_variant, **{index_name: 1})
-        assert not any(n.startswith("pytorch_model") for n in _kept(indexed)), index_name
+    indexed = dict(indexless_variant, **{"model.safetensors.index.fp16.json": 1})
+    assert not any(n.startswith("pytorch_model") for n in _kept(indexed))
+
+    # transformers' _add_variant writes model.safetensors.index.fp16.json. The other
+    # spelling is not one a variant load can find, so it must not authorise the drop.
+    wrong_index = dict(indexless_variant, **{"model.fp16.safetensors.index.json": 1})
+    assert "pytorch_model.fp16-00001-of-00002.bin" in _kept(wrong_index)
+
+
+def test_both_variant_shard_layouts_are_recognised():
+    # transformers writes model-00001-of-00002.fp16.safetensors (counter first);
+    # unsloth/models/_utils.py::_is_canonical_variant_model_weight_safetensors takes both.
+    counter_first = {
+        "config.json": 2,
+        "model.safetensors": 500,
+        "model-00001-of-00002.fp16.safetensors": 250,
+        "model-00002-of-00002.fp16.safetensors": 250,
+        "model.safetensors.index.fp16.json": 1,
+        "pytorch_model.bin": 500,
+        "pytorch_model-00001-of-00002.fp16.bin": 250,
+        "pytorch_model-00002-of-00002.fp16.bin": 250,
+    }
+    kept = _kept(counter_first)
+    assert not any(n.startswith("pytorch_model") for n in kept), sorted(kept)
+    assert "model-00001-of-00002.fp16.safetensors" in kept
 
 
 def test_a_variant_index_never_outlives_its_shards():
