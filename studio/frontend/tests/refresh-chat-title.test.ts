@@ -327,3 +327,28 @@ test("subscription failures return null for the automatic title fallback", async
     null,
   );
 });
+
+test("a comparison conflict restores the successfully refreshed sibling", async () => {
+  state.threads[0].pairId = "pair";
+  state.threads.push({ ...state.threads[0], id: "right" });
+  let release!: () => void;
+  state.wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const refresh = refreshChatTitle({ ...item, id: "pair", type: "compare" });
+  while (state.requests.length === 0)
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  state.threads = state.threads.map((thread) =>
+    thread.id === "right" ? { ...thread, title: "Manual title" } : thread,
+  );
+  release();
+  await assert.rejects(refresh, /Title changed/);
+  assert.equal(
+    state.threads.find((thread) => thread.id === "chat")?.title,
+    item.title,
+  );
+  assert.equal(
+    state.threads.find((thread) => thread.id === "right")?.title,
+    "Manual title",
+  );
+});
