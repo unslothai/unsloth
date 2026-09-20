@@ -644,6 +644,11 @@ def test_seed_declared_files_match_the_glob_not_its_prefix(monkeypatch, tmp_path
             ["data/questions_train_000.jsonl", "data/questions_test_000.jsonl"],
             "datasets/org/repo/data/*train*.jsonl",
         ),
+        # A dotted split name: only the final extension comes off the stem.
+        (
+            ["data/questions.train.parquet", "data/questions.test.parquet"],
+            "datasets/org/repo/data/*train*.parquet",
+        ),
         # "training" is not the train split, so the narrow prefix still wins.
         (
             ["data/train-0.parquet", "data/training-0.parquet", "data/test-0.parquet"],

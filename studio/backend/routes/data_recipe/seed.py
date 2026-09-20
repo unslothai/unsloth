@@ -270,8 +270,8 @@ def _split_rank(path: str, split_lower: str) -> int:
     lowered = path.lower()
     if f"/{split_lower}/" in f"/{lowered}":
         return 0
-    stem = Path(lowered).name.split(".", 1)[0]
-    if split_lower in _NAME_SEPARATORS.split(stem):
+    # Only the final extension comes off: questions.train.parquet keeps its split.
+    if split_lower in _NAME_SEPARATORS.split(Path(lowered).stem):
         return 1
     return 2
 
