@@ -71,9 +71,19 @@ def test_snapshot_is_json_safe_and_ordered_by_start():
     assert [e["thread_id"] for e in snap] == ["first", "second"]
     # The threading.Event must not leak into an HTTP response body.
     assert all("event" not in e for e in snap)
-    assert {"handle", "thread_id", "run_id", "model", "kind", "account_id", "started_at"} == set(
-        snap[0]
-    )
+    # `project_id` is the project the run started in, captured so a folder change
+    # cannot rotate the workspace out from under it. It is a plain string or None.
+    assert {
+        "handle",
+        "thread_id",
+        "project_id",
+        "run_id",
+        "model",
+        "kind",
+        "account_id",
+        "started_at",
+    } == set(snap[0])
+    assert all(e["project_id"] is None or isinstance(e["project_id"], str) for e in snap)
 
 
 def test_thread_ids_are_deduped_and_skip_unnamed_runs():
