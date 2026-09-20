@@ -5186,3 +5186,44 @@ class TestSelfPreservingRebindings:
     )
     def test_a_genuine_shadow_is_still_a_shadow_ok(self, code):
         _ok(code)
+
+
+class TestCallableAliasArms:
+    """A callable held behind a conditional expression can be either arm, so both are policed."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f"import requests\nflag = True\nfetch = requests.get if flag else print\n"
+                f'fetch("{_METADATA_URL}")',
+                id = "network_on_the_true_arm",
+            ),
+            pytest.param(
+                f"import requests\nfetch = print if flag else requests.get\n"
+                f'fetch("{_METADATA_URL}")',
+                id = "network_on_the_false_arm",
+            ),
+            pytest.param(
+                f"import requests\nfetch = print if a else (len if b else requests.get)\n"
+                f'fetch("{_METADATA_URL}")',
+                id = "nested_conditional",
+            ),
+            pytest.param(
+                f"import requests\ns = requests.Session()\nfetch = s.get if flag else print\n"
+                f'fetch("{_METADATA_URL}")',
+                id = "session_method_arm",
+            ),
+        ],
+    )
+    def test_either_arm_is_policed(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_an_allowed_host_through_an_arm_keeps_working_ok(self):
+        _ok(
+            "import requests\nfetch = requests.get if flag else print\n"
+            'fetch("https://huggingface.co/api/models")'
+        )
+
+    def test_a_conditional_between_two_builtins_is_left_alone_ok(self):
+        _ok("fetch = str if flag else repr\nprint(fetch(5))")

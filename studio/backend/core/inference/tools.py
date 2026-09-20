@@ -16260,6 +16260,20 @@ def _check_signal_escape_patterns(code: str):
             return None
         return _SESSION_FACTORY_FQ.get(_canonical_fq(node.func, bindings))
 
+    def _callable_arms(values) -> "list":
+        """The callables a set of bound values can amount to, with a conditional expression split
+        into its arms. `fetch = requests.get if flag else print` can hold either one, and the
+        policy has to answer for both."""
+        arms = []
+        pending = list(values)
+        while pending and len(arms) < _MAX_RESOLVE_DEPTH:
+            value = pending.pop(0)
+            if isinstance(value, ast.IfExp):
+                pending[:0] = [value.body, value.orelse]
+                continue
+            arms.append(value)
+        return arms
+
     def _call_fq_names(func_node, bindings) -> "list[str]":
         """Every name this call answers to: as written, and with aliases and session variables
         resolved. Both are policed, because resolving is only ever allowed to ADD a match. A rewrite
@@ -16290,7 +16304,7 @@ def _check_signal_escape_patterns(code: str):
                 # the name can hold is offered, because resolving only ever adds a name that is
                 # checked.
                 from_values = []
-                for value in bindings.possible_values(head, func_node):
+                for value in _callable_arms(bindings.possible_values(head, func_node)):
                     if not isinstance(value, (ast.Attribute, ast.Name)):
                         continue
                     candidate = _canonical_fq(value, bindings)
