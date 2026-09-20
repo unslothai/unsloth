@@ -114,10 +114,21 @@ def _recorded_master_root() -> Path | None:
         if key in _recorded_master_roots:
             return _recorded_master_roots[key]
     found: Path | None = None
+    # A miss is cached; a failure to LOOK is not. "No note" is a fact about the install and will
+    # not change under this process, but EACCES on share/ or EIO off a mount that came back is a
+    # fact about one instant. Cached, either one pinned the backend to the legacy runtime paths
+    # for its whole lifetime, silently, with the trees it should have found sitting beside it --
+    # and forget_recorded_master_root() is the only way back out, which nothing calls in
+    # production. FileNotFoundError and NotADirectoryError are the definitive shapes: share/ or
+    # the note is absent, or a path component is not a directory, which is an absent note too.
+    definitive = True
     try:
         recorded = (studio / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8").strip()
-    except (OSError, ValueError, UnicodeDecodeError):
+    except (FileNotFoundError, NotADirectoryError, ValueError, UnicodeDecodeError):
         recorded = ""
+    except OSError:
+        recorded = ""
+        definitive = False
     if recorded:
         master = _resolved(recorded)
         try:
@@ -126,8 +137,9 @@ def _recorded_master_root() -> Path | None:
                 found = master
         except (OSError, ValueError):
             found = None
-    with _recorded_master_lock:
-        _recorded_master_roots[key] = found
+    if definitive:
+        with _recorded_master_lock:
+            _recorded_master_roots[key] = found
     return found
 
 
@@ -159,9 +171,13 @@ def _warn_unrecognized_portable(raw: str) -> None:
     if _warned_unrecognized_portable:
         return
     _warned_unrecognized_portable = True
+    # Not "to leave it off": an off value is not a veto. A master root IS a portable install, so
+    # 0/false/off/no only decline to turn portable mode on by themselves, and UNSLOTH_HOME still
+    # carries it. Promising otherwise in the one message a confused user reads would be worse
+    # than the unrecognized value that got them here.
     logger.warning(
-        "Ignoring UNSLOTH_PORTABLE=%r: expected one of %s to turn portable mode "
-        "on, or one of %s to leave it off.",
+        "Ignoring UNSLOTH_PORTABLE=%r: expected one of %s to turn portable mode on, or one of "
+        "%s to leave that choice to UNSLOTH_HOME, which turns it on when it names a master root.",
         raw,
         "/".join(_PORTABLE_ON_VALUES),
         "/".join(_PORTABLE_OFF_VALUES),
@@ -1015,7 +1031,13 @@ def _usable_dir(value: str) -> bool:
         handle, probe = tempfile.mkstemp(dir = value, prefix = ".unsloth-write-probe.")
     except (OSError, ValueError):
         return False
-    os.close(handle)
+    # Guarded like the unlink below. Every other failure in this function is a False, and an
+    # EIO or ENOSPC on close escaping here would take _setup_cache_env() with it -- a whole
+    # backend start lost to a write probe whose entire job is to answer yes or no.
+    try:
+        os.close(handle)
+    except OSError:
+        return False
     try:
         os.unlink(probe)
     except OSError:

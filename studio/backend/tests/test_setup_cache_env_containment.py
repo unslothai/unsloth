@@ -1287,3 +1287,69 @@ def test_a_plain_empty_style_library_still_lets_the_pin_through(tmp_path):
     sr._setup_cache_env()
 
     assert os.environ["MPLCONFIGDIR"] == str(tmp_path / "studio" / "cache" / "matplotlib")
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason = "chmod 000 denies neither")
+def test_a_note_that_could_not_be_read_is_not_cached_as_a_missing_one(monkeypatch, tmp_path):
+    """A miss is a fact about the install; a failure to LOOK is a fact about one instant.
+
+    _recorded_master_root() memoises per studio path, and the backend is a long-lived process.
+    Caching an EACCES on share/ -- a mount that came back, a permission fixed a second later --
+    pinned that process to the legacy runtime paths for its whole lifetime with the trees it
+    should have found sitting right beside it, and nothing in production calls
+    forget_recorded_master_root() to get back out.
+    """
+    master = tmp_path / "root"
+    studio = master / "studio"
+    share = studio / "share"
+    share.mkdir(parents = True)
+    (share / ".unsloth-master-root").write_text(str(master) + "\n", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
+    sr = _load_storage_roots()
+
+    share.chmod(0o000)
+    try:
+        assert sr.unsloth_home() is None
+    finally:
+        share.chmod(0o755)
+
+    assert sr.unsloth_home() == master, "a transient read failure was cached as a missing note"
+
+
+def test_a_genuinely_absent_note_is_still_cached(monkeypatch, tmp_path):
+    """The other half: the fix must not turn the memo off. unsloth_home() runs on every
+    cache-var lookup, so re-stat'ing a note that is simply not there is a syscall per call."""
+    studio = tmp_path / "root" / "studio"
+    (studio / "share").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() is None
+    # Written after the miss was cached. A cached answer is the point; the installer that writes
+    # a note into a tree this process already looked at is what forget_recorded_master_root() is
+    # for, and it still works.
+    (studio / "share" / ".unsloth-master-root").write_text(
+        str(tmp_path / "root") + "\n", encoding = "utf-8",
+    )
+    assert sr.unsloth_home() is None
+    sr.forget_recorded_master_root()
+    assert sr.unsloth_home() == tmp_path / "root"
+
+
+def test_a_write_probe_that_cannot_close_its_handle_is_a_no_not_a_crash(monkeypatch, tmp_path):
+    """_usable_dir answers yes or no. Every other failure in it returns False; an OSError from
+    os.close escaping instead would take the whole _setup_cache_env() -- and the backend start
+    that called it -- down with it."""
+    sr = _load_storage_roots()
+
+    real_close = os.close
+
+    def _failing_close(fd):
+        real_close(fd)
+        raise OSError(errno.EIO, "close failed")
+
+    monkeypatch.setattr(sr.os, "close", _failing_close)
+    assert sr._usable_dir(str(tmp_path)) is False
+
+    monkeypatch.setattr(sr.os, "close", real_close)
+    assert sr._usable_dir(str(tmp_path)) is True

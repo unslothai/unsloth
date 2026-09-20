@@ -2789,7 +2789,40 @@ $UnslothHome = Split-Path -Parent $LlamaCppDir
 #
 # Only for a master root: the other branches derive the root from paths the uninstaller already
 # knows, and a stale note claiming a root that moved would be worse than none.
-if ((Get-MasterRootOverride) -and -not $StageRoot) {
+#
+# And only when a reader will honour it. setup.sh's _master_root_note_is_honoured holds the same
+# two rules for the same reasons; keep them together.
+function Test-MasterRootNoteIsHonoured {
+    param([string]$Root, [string]$StudioRoot)
+    $norm = Get-CanonicalDir -Path $Root
+    if (-not $norm) { return $false }
+    $here = Get-CanonicalDir -Path $StudioRoot
+    if (-not $here) { return $false }
+    # The legacy default is the one root every reader finds without help, and both uninstallers
+    # refuse it outright. Recording it turned UNSLOTH_HOME=%USERPROFILE%\.unsloth -- set once,
+    # naming the directory the install was already in -- into a permanent portable install: every
+    # later bare launch read it back, portable mode stayed on, and HF_HUB_CACHE moved off the
+    # shared Hugging Face cache this change promises not to move.
+    $legacy = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth")
+    if ($legacy -and ($norm -ieq $legacy)) { return $false }
+    # A note must describe the tree it is written into: every reader requires the Studio
+    # directory it was read from to lie INSIDE the root it names, so a tree copied between master
+    # roots cannot aim a removal at the original install. install.ps1 does not read UNSLOTH_HOME
+    # yet, so a master root on an ordinary install leaves Studio at the legacy path and the
+    # runtimes under the master root -- the case the note exists for, and the shape every reader
+    # rejects. Say so rather than leaving a file that reads as a recorded root and behaves as none.
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio lives at" -ForegroundColor Yellow
+    Write-StudioLine "        $here, which is outside it. That root cannot be recorded, so a later" -ForegroundColor Yellow
+    Write-StudioLine "        launch or uninstall will not find them. Set UNSLOTH_STUDIO_HOME to" -ForegroundColor Yellow
+    Write-StudioLine "        $norm\studio, or re-set UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
+    return $false
+}
+if ((Get-MasterRootOverride) -and -not $StageRoot -and
+    (Test-MasterRootNoteIsHonoured -Root $UnslothHome -StudioRoot $StudioHome)) {
     try {
         $noteDir = Join-Path $StudioHome "share"
         if (-not (Test-Path -LiteralPath $noteDir -PathType Container)) {
@@ -2821,6 +2854,32 @@ if ((Get-MasterRootOverride) -and -not $StageRoot) {
     } catch {
         Write-StudioLine "  note: could not record the master root for uninstall: $($_.Exception.Message)" -ForegroundColor DarkGray
     }
+}
+
+# Clear a note an earlier run left naming the legacy default root, whatever this run was asked to
+# do. setup.sh does the same, for the same reason: the gate above stops new ones, but an install
+# that already has one keeps reading it back on every bare launch, and no later update would pass
+# through the write block to correct it. Narrow on purpose -- this is the single value both
+# uninstallers already refuse, so removing it takes nothing any reader could act on.
+try {
+    $staleNote = Join-Path (Join-Path $StudioHome "share") ".unsloth-master-root"
+    if (Test-Path -LiteralPath $staleNote -PathType Leaf) {
+        $staleValue = (Get-Content -LiteralPath $staleNote -TotalCount 1 -ErrorAction Stop)
+        if ($staleValue) { $staleValue = $staleValue.Trim() }
+        if ($staleValue) {
+            if ($staleValue -eq "~") { $staleValue = $env:USERPROFILE }
+            elseif ($staleValue -like "~/*" -or $staleValue -like "~\*") {
+                $staleValue = (Join-Path $env:USERPROFILE $staleValue.Substring(1).TrimStart('/', '\'))
+            }
+            $staleNorm = Get-CanonicalDir -Path $staleValue
+            $legacyNorm = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth")
+            if ($staleNorm -and $legacyNorm -and ($staleNorm -ieq $legacyNorm)) {
+                Remove-Item -LiteralPath $staleNote -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+} catch {
+    # A note this run cannot read is one it has no business deleting.
 }
 
 $WithLlamaCppDir = $null

@@ -3543,7 +3543,45 @@ mkdir -p "$UNSLOTH_HOME"
 #
 # Only for a master root: the other branches derive UNSLOTH_HOME from paths the uninstaller
 # already knows, and a stale note claiming a root that moved would be worse than none.
-if [ -n "$_MASTER_ROOT" ] && [ -z "$STAGE_ROOT" ]; then
+#
+# And only when a reader will honour it, which is the point of _master_root_note_is_honoured
+# below. Both rejected shapes were being written: every reader then refused the note and the
+# install behaved exactly as it did before the note existed, while the file on disk said
+# otherwise. A note nobody reads is not a neutral leftover -- it is the record this feature
+# depends on, silently absent.
+_master_root_note_is_honoured() {
+    # Canonicalised here rather than trusting the value from the top of the script: that one was
+    # resolved before the mkdir above, so a root created by this run kept its uncanonical
+    # spelling, and the containment test below is textual.
+    _mrn_root=$(CDPATH= cd -P -- "$1" 2>/dev/null && pwd -P) || _mrn_root=""
+    [ -n "$_mrn_root" ] || return 1
+    # The legacy default is the one root every reader already finds without help, and both
+    # uninstallers refuse it outright (`case "$_mr" in "$HOME/.unsloth"|/|"") return 0`). Writing
+    # it turned `UNSLOTH_HOME=$HOME/.unsloth` -- set once, for one command, naming the directory
+    # the install was already in -- into a permanent portable install: every later bare launch
+    # read the note back, portable_mode() went true for good, and HF_HUB_CACHE moved off
+    # ~/.cache/huggingface, which is the one cache this change promises not to move. Nothing is
+    # lost by staying quiet: a root that IS the default needs no note to be found again.
+    _mrn_legacy=$(CDPATH= cd -P -- "${HOME:-}/.unsloth" 2>/dev/null && pwd -P) || _mrn_legacy="${HOME:-}/.unsloth"
+    [ "$_mrn_root" != "$_mrn_legacy" ] || return 1
+    # A note must describe the tree it is written into: every reader -- storage_roots.py, the
+    # CLI, and both uninstallers -- requires the Studio directory it was read from to lie INSIDE
+    # the root it names, so a tree copied between master roots cannot aim a removal at the
+    # original install. install.sh and install.ps1 do not read UNSLOTH_HOME yet, so
+    # `UNSLOTH_HOME=/mnt/portable unsloth studio update` on an ordinary install leaves Studio at
+    # ~/.unsloth/studio and puts the runtimes at /mnt/portable -- exactly the case the note
+    # exists for, and exactly the shape all four readers reject. Warn there instead of leaving a
+    # file that reads as a recorded root and behaves as none.
+    case "$STUDIO_HOME" in
+        "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
+    esac
+    echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself lives at" >&2
+    echo "      $STUDIO_HOME, which is outside it. That root cannot be recorded, so a later launch" >&2
+    echo "      or uninstall will not find them. Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or" >&2
+    echo "      re-export UNSLOTH_HOME whenever you run Unsloth." >&2
+    return 1
+}
+if [ -n "$_MASTER_ROOT" ] && [ -z "$STAGE_ROOT" ] && _master_root_note_is_honoured "$UNSLOTH_HOME"; then
     if mkdir -p "$STUDIO_HOME/share" 2>/dev/null; then
         # Staged then renamed: a reader that catches a half-written note would name a truncated
         # path, and this note licenses deletions.
@@ -3564,6 +3602,31 @@ if [ -n "$_MASTER_ROOT" ] && [ -z "$STAGE_ROOT" ]; then
         fi
         unset _mrn_tmp
     fi
+fi
+# Clear a note an earlier run left naming the legacy default root, whatever this run was asked
+# to do. The gate above stops new ones, but an install that already has one keeps reading it
+# back on every bare launch -- portable mode on, the Hugging Face hub cache moved off
+# ~/.cache/huggingface -- and no later `unsloth studio update` would ever pass through the write
+# block to correct it, since that block only runs when UNSLOTH_HOME is set again. Narrow on
+# purpose: this is the single value both uninstallers already refuse, so removing it takes
+# nothing any reader was entitled to act on. A note naming any other root is left alone, since
+# an unreadable or unexpected one may simply describe an install this run cannot see.
+if [ -f "$STUDIO_HOME/share/.unsloth-master-root" ]; then
+    _mrn_old=$(head -n 1 "$STUDIO_HOME/share/.unsloth-master-root" 2>/dev/null \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') || _mrn_old=""
+    if [ -n "$_mrn_old" ]; then
+        case "$_mrn_old" in
+            "~") _mrn_old="${HOME:-}" ;;
+            "~/"*) _mrn_old="${HOME:-}/${_mrn_old#'~/'}" ;;
+        esac
+        _mrn_old_canon=$(CDPATH= cd -P -- "$_mrn_old" 2>/dev/null && pwd -P) || _mrn_old_canon=""
+        [ -n "$_mrn_old_canon" ] && _mrn_old="$_mrn_old_canon"
+        _mrn_legacy=$(CDPATH= cd -P -- "${HOME:-}/.unsloth" 2>/dev/null && pwd -P) || _mrn_legacy="${HOME:-}/.unsloth"
+        if [ "$_mrn_old" = "$_mrn_legacy" ]; then
+            rm -f "$STUDIO_HOME/share/.unsloth-master-root" 2>/dev/null || true
+        fi
+    fi
+    unset _mrn_old _mrn_old_canon
 fi
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"

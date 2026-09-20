@@ -1173,13 +1173,15 @@ def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
     writer is now held to it too.
     """
     src = SETUP_SH.read_text(encoding = "utf-8")
-    block = _slice(src, 'if [ -n "$_MASTER_ROOT" ] && [ -z "$STAGE_ROOT" ]; then', "LLAMA_CPP_DIR=")
+    block = _slice(src, "_master_root_note_is_honoured() {", "LLAMA_CPP_DIR=")
 
-    studio_home = tmp_path / "studio"
+    # Contained, so the honoured-note gate passes and the writer below actually runs. The gate
+    # itself is covered by test_the_master_root_note_is_only_written_when_a_reader_honours_it.
+    master = tmp_path / "portable"
+    studio_home = master / "studio"
     (studio_home / "share").mkdir(parents = True)
     victim = tmp_path / "victim.txt"
     victim.write_text("do not truncate me\n", encoding = "utf-8")
-    master = tmp_path / "portable"
 
     script = "\n".join(
         (
@@ -1223,7 +1225,7 @@ def test_the_windows_note_writer_creates_its_staging_file_exclusively():
     """The setup.ps1 half of the test above. Held structurally: the Linux runners have no
     Windows filesystem to plant a link on, and CreateNew is the thing that must not regress."""
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    block = _slice(ps, "if ((Get-MasterRootOverride) -and -not $StageRoot) {", "\n# ")
+    block = _slice(ps, "if ((Get-MasterRootOverride) -and -not $StageRoot -and", "\n# ")
     # Comments stripped, as the other structural checks here do: the block explains the old
     # staging name in prose, and the name is only a finding when something executes it.
     block = "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("#"))
@@ -1233,3 +1235,110 @@ def test_the_windows_note_writer_creates_its_staging_file_exclusively():
     assert "[System.IO.FileMode]::CreateNew" in block
     # WriteAllText opens an existing path rather than failing on it.
     assert "WriteAllText($noteTmp" not in block
+
+
+def _run_note_block(tmp_path, studio_home, master, *, existing_note = None, home = None):
+    """Run the shipped note gate + writer + legacy sweep against a fixture, and report the note.
+
+    The whole region is executed, not pattern-matched: the gate, the writer it guards and the
+    sweep below it are one decision, and slicing them apart is how a gate that never runs passes.
+    """
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    block = _slice(src, "_master_root_note_is_honoured() {", "LLAMA_CPP_DIR=")
+    note = studio_home / "share" / ".unsloth-master-root"
+    note.parent.mkdir(parents = True, exist_ok = True)
+    if existing_note is not None:
+        note.write_text(str(existing_note) + "\n", encoding = "utf-8")
+    completed = subprocess.run(
+        ["bash", "-c", "set -u\n" + block],
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(home if home is not None else tmp_path / "home"),
+            "STUDIO_HOME": str(studio_home),
+            "UNSLOTH_HOME": str(master),
+            "_MASTER_ROOT": str(master),
+            "STAGE_ROOT": "",
+        },
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    value = note.read_text(encoding = "utf-8").strip() if note.exists() else None
+    return value, completed.stderr
+
+
+@NEEDS_POSIX_BASH
+def test_the_master_root_note_is_only_written_when_a_reader_honours_it(tmp_path):
+    """A note whose Studio tree is not INSIDE the root it names is refused by every reader --
+    storage_roots.py, the CLI and both uninstallers all require containment -- so writing one
+    records nothing and hides the fact that nothing was recorded.
+
+    This is not a corner. install.sh does not read UNSLOTH_HOME yet, so
+    `UNSLOTH_HOME=/mnt/portable unsloth studio update` on an ordinary install is exactly this
+    shape: Studio stays at ~/.unsloth/studio while llama.cpp, node and whisper.cpp go to
+    /mnt/portable. That is the case the note was added for, and the case in which it was written
+    and then thrown away by every reader. Warn instead.
+    """
+    home = tmp_path / "home"
+    studio_home = home / ".unsloth" / "studio"
+    master = tmp_path / "portable"
+    master.mkdir()
+    value, stderr = _run_note_block(tmp_path, studio_home, master, home = home)
+    assert value is None, f"wrote a note no reader will honour: {value}"
+    assert "cannot be recorded" in stderr, stderr
+
+    # The contained layout, which every reader does honour, still records.
+    contained = master / "studio"
+    value, _ = _run_note_block(tmp_path, contained, master, home = home)
+    assert value == str(master)
+
+
+@NEEDS_POSIX_BASH
+def test_the_legacy_default_root_is_never_recorded_and_an_old_note_is_cleared(tmp_path):
+    """`UNSLOTH_HOME=$HOME/.unsloth` names the directory the install is already in. Both
+    uninstallers refuse that value outright, so a note carrying it licenses nothing -- but
+    storage_roots honours it, and honouring it flips portable_mode() on for every later BARE
+    launch, which moves HF_HUB_CACHE off ~/.cache/huggingface. One command that named the default
+    root therefore turned a shared model cache into a private one, permanently, with no variable
+    set at the time.
+
+    The write is refused, and an existing note carrying that value is cleared on the next run --
+    without the sweep the damage survives the fix, since the writer only runs when UNSLOTH_HOME
+    is set again and the user who hit this set it once.
+    """
+    home = tmp_path / "home"
+    studio_home = home / ".unsloth" / "studio"
+    legacy_master = home / ".unsloth"
+    studio_home.mkdir(parents = True)
+
+    # Contained (studio IS inside ~/.unsloth), so only the legacy-root rule can refuse it.
+    value, _ = _run_note_block(tmp_path, studio_home, legacy_master, home = home)
+    assert value is None, f"recorded the legacy default root: {value}"
+
+    # An install that already carries one from an earlier build is repaired in place.
+    value, _ = _run_note_block(
+        tmp_path, studio_home, legacy_master, existing_note = legacy_master, home = home,
+    )
+    assert value is None, "a stale legacy-root note survived"
+
+    # A note naming any other root is left alone: it may describe an install this run cannot see.
+    other = tmp_path / "portable"
+    other.mkdir()
+    value, _ = _run_note_block(
+        tmp_path, studio_home, legacy_master, existing_note = other, home = home,
+    )
+    assert value == str(other)
+
+
+def test_the_windows_note_gate_holds_the_same_two_rules():
+    """The setup.ps1 half of the two tests above. Structural: no PowerShell-on-Linux run can
+    exercise %USERPROFILE% canonicalisation the way a real Windows profile does."""
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    gate = _slice(ps, "function Test-MasterRootNoteIsHonoured {", "\nif ((Get-MasterRootOverride)")
+    assert "$legacy = Get-CanonicalDir" in gate, "the legacy default root is not refused"
+    assert "StartsWith($norm + $sep" in gate, "containment is not checked"
+    # The gate has to be wired into the writer, not merely defined beside it.
+    assert "Test-MasterRootNoteIsHonoured -Root $UnslothHome -StudioRoot $StudioHome" in ps
+    sweep = _slice(ps, "$staleNote = Join-Path", "} catch {")
+    assert "Remove-Item -LiteralPath $staleNote" in sweep
