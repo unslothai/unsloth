@@ -504,9 +504,12 @@ class ChatGenerationSupervisor:
         #      not renew the progress lease, so once progress has aged past the lease timeout
         #      reconcile_runs settles the run as interrupted and supervisor.cancel() sets THIS event,
         #      which wait_tool_decision polls at 500ms.
-        # Either way the waiter returns deny, pops its own _pending slot, and the producer unwinding
-        # balances the InferenceActivityReservation below. So the reservation is held for at most the
-        # park ceiling, well inside the lease window (default 1200s) a non-durable run already costs.
+        # Either way the waiter returns deny and pops its own _pending slot. Note what the ceiling
+        # does NOT bound: it ends one approval WAIT, not the run. The loop appends the denial as a
+        # tool message and keeps generating, so the InferenceActivityReservation below is released by
+        # the producer unwinding and by nothing else. A turn that parks on several calls in a row can
+        # therefore hold it for several ceilings, and the progress between them renews the lease. The
+        # sweeper is the only bound on a producer that stops making progress at all.
         cancel_event.durable = True
         activity = InferenceActivityReservation()
         activity.reserve()
