@@ -3925,13 +3925,11 @@ def _kv_cache_cell_layout(n_ctx: int, n_parallel: int, kv_unified: bool) -> tupl
 def _positive_int_n_ctx(value: object) -> Optional[int]:
     """A context size read out of llama-server's JSON, or None if it isn't one.
 
-    Shared by the ``/slots`` and ``/props`` probes so both reject the same
-    shapes. ``bool`` is excluded explicitly because it subclasses ``int``: a
-    JSON ``true`` would otherwise pass ``isinstance(v, int) and v > 0`` and
-    publish a ONE token window, which becomes the max_tokens ceiling and
-    rejects every real prompt. Strings stay rejected rather than coerced --
-    a server that cannot name its own context in a number is not one to
-    guess for.
+    ``bool`` is excluded explicitly because it subclasses ``int``: a JSON
+    ``true`` would otherwise pass ``isinstance(v, int) and v > 0`` and publish a
+    ONE token window, which becomes the max_tokens ceiling and rejects every
+    real prompt. Strings stay rejected rather than coerced -- a server that
+    cannot name its own context in a number is not one to guess for.
     """
     if isinstance(value, bool) or not isinstance(value, int):
         return None
