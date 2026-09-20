@@ -12,6 +12,9 @@ const { refreshChatTitle } = await import(
 const { queueChatTitle } = await import(
   "../src/features/chat/utils/chat-title-queue.ts"
 );
+const { updateChatTitles } = await import(
+  "../src/features/chat/utils/chat-title-writes.ts"
+);
 const storage = await import("./helpers/store-stubs/refresh-chat-title.ts");
 const { state } = storage;
 const source = readFileSync(
@@ -44,6 +47,7 @@ function adapter(pairId?: string) {
     getStoredChatThread: storage.getStoredChatThread,
     listStoredChatThreads: storage.listStoredChatThreads,
     updateChatThread: storage.updateChatThread,
+    updateChatTitles,
     updateStoredChatThread: async (id: string, patch: { title: string }) => {
       state.threads = state.threads.map((row) =>
         row.id === id ? { ...row, ...patch } : row,
@@ -189,4 +193,24 @@ test("an automatic title request times out and releases its timer", async () => 
   controller.abort();
   assert.equal(await result, null);
   assert.equal(disposed, true);
+});
+
+test("automatic comparison failure restores its own first-pane write", async () => {
+  state.threads[0].pairId = "pair";
+  state.threads.push({ ...state.threads[0], id: "right" });
+  const automatic = adapter("pair").generateTitle("chat", state.messages);
+  await started;
+  state.threads = state.threads.map((row) =>
+    row.id === "right" ? { ...row, title: "Manual right" } : row,
+  );
+  release();
+  await assert.rejects(automatic, /Title changed/);
+  assert.equal(
+    state.threads.find((row) => row.id === "chat")?.title,
+    "New Chat",
+  );
+  assert.equal(
+    state.threads.find((row) => row.id === "right")?.title,
+    "Manual right",
+  );
 });

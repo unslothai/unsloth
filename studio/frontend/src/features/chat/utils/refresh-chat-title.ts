@@ -6,7 +6,7 @@ import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 import { authFetch } from "@/features/auth";
 import { schemaDeclaresRepairGuards } from "./openapi-support";
 import { parseExternalModelId } from "../external-providers";
-import { updateChatThread } from "../api/chat-api";
+import { updateChatTitles } from "./chat-title-writes";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
@@ -129,24 +129,5 @@ async function refresh(item: SidebarItem): Promise<void> {
     timeout.dispose();
   }
   if (!title) throw new Error("The model did not return a title. Try again.");
-  const results = await Promise.allSettled(
-    threads.map((thread) =>
-      updateChatThread(thread.id, { title }, { expectedTitle: thread.title }),
-    ),
-  );
-  const failure = results.find((result) => result.status === "rejected");
-  if (failure) {
-    await Promise.all(
-      threads.map((thread, index) =>
-        results[index].status === "fulfilled"
-          ? updateChatThread(
-              thread.id,
-              { title: thread.title },
-              { expectedTitle: title },
-            )
-          : Promise.resolve(),
-      ),
-    );
-    throw failure.reason;
-  }
+  await updateChatTitles(threads, title);
 }

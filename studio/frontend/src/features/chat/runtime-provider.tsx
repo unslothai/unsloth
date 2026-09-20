@@ -46,7 +46,7 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
-import { CHAT_HISTORY_UPDATED_EVENT, updateChatThread } from "./api/chat-api";
+import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
 import { getResearchThreadState } from "./api/research-api";
 import {
   cancelChatGenerationRun,
@@ -162,6 +162,7 @@ import {
   isChatThreadDeleted,
   markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
+import { updateChatTitles } from "./utils/chat-title-writes";
 import { queueChatTitle } from "./utils/chat-title-queue";
 import { generateChatTitle } from "./utils/generate-chat-title";
 import { fallbackTitleFromUserText } from "./utils/chat-title";
@@ -1338,23 +1339,22 @@ function createStudioDbAdapter(
           async function persistTitle(title: string): Promise<string> {
             try {
               await ensureStoredChatThread(remoteId, thread);
-              await updateChatThread(
-                remoteId,
-                { title },
-                { expectedTitle: thread?.title ?? defaultTitle },
+              if (paired) await ensureStoredChatThread(paired.id, paired);
+              await updateChatTitles(
+                [
+                  { id: remoteId, title: thread?.title ?? defaultTitle },
+                  ...(paired ? [paired] : []),
+                ],
+                title,
               );
-              if (paired) {
-                await ensureStoredChatThread(paired.id, paired);
-                await updateChatThread(
-                  paired.id,
-                  { title },
-                  { expectedTitle: paired.title },
-                );
-              }
               return title;
             } catch (error) {
               const current = await getStoredChatThread(remoteId);
-              if (current && current.title !== thread?.title)
+              if (
+                current &&
+                current.title !== thread?.title &&
+                current.title !== title
+              )
                 return current.title;
               throw error;
             }
