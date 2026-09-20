@@ -7483,6 +7483,18 @@ class LlamaCppBackend:
         return self._launch_context_length
 
     @property
+    def effective_context_total(self) -> Optional[int]:
+        """Context actually allocated across every slot, or None before readback.
+
+        The aggregate ``_reconcile_effective_ctx_with_server`` already computes as
+        ``n_ctx * slots``. Published because a reload is sized in totals and the
+        two values that could stand in for one both fail: ``context_length`` is a
+        single slot's share, and ``launch_context_length`` is null for an
+        auto-sized launch and is a REQUEST rather than an allocation when --fit
+        reduced it."""
+        return self._kv_cache_context_total
+
+    @property
     def pre_fit_context_length(self) -> Optional[int]:
         """Per-slot context expected before ``--fit`` shrank it; None if it did not.
 

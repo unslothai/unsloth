@@ -1170,6 +1170,17 @@ class _InferenceRuntimeFields(BaseModel):
             "--kv-unified. Null for backends that do not launch a child."
         ),
     )
+    effective_context_total: Optional[int] = Field(
+        None,
+        description = (
+            "Context llama-server actually ALLOCATED across every serving slot, as "
+            "read back from the running server: context_length times the slot count, "
+            "or context_length itself under --kv-unified. Unlike launch_context_length "
+            "this survives an auto-sized launch that named no total, and unlike it "
+            "again it is what the server ran at rather than what it was asked for, so "
+            "it is the safe size to replay on a reload. Null until the readback runs."
+        ),
+    )
     pre_fit_context_length: Optional[int] = Field(
         None,
         description = (

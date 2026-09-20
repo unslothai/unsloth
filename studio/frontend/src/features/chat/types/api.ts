@@ -246,6 +246,7 @@ export interface LoadModelResponse {
   context_length_enforced?: boolean | null;
   /** Total -c llama-server was launched with, across every serving slot. */
   launch_context_length?: number | null;
+  effective_context_total?: number | null;
   /** Per-slot context expected before --fit shrank it; null if it did not. */
   pre_fit_context_length?: number | null;
   supports_reasoning?: boolean;
@@ -373,6 +374,7 @@ export interface InferenceStatusResponse {
   context_length_enforced?: boolean | null;
   /** Total -c llama-server was launched with, across every serving slot. */
   launch_context_length?: number | null;
+  effective_context_total?: number | null;
   /** Per-slot context expected before --fit shrank it; null if it did not. */
   pre_fit_context_length?: number | null;
   cache_type_kv?: string | null;

@@ -62,6 +62,7 @@ test("an MLX response carries a window without a native one", () => {
     loadedIsMlx: true,
     loadedContextEnforced: null,
     launchContextLength: null,
+    effectiveContextTotal: null,
     preFitContextLength: null,
   });
   // Transformers, which sizes nothing, still contributes no window.
@@ -73,6 +74,7 @@ test("an MLX response carries a window without a native one", () => {
     loadedIsMlx: null,
     loadedContextEnforced: null,
     launchContextLength: null,
+    effectiveContextTotal: null,
     preFitContextLength: null,
   });
   assert.equal(loadedContextFields(null).loadedIsGguf, null);
@@ -300,6 +302,7 @@ test("a GGUF load carries the launch total and any --fit reduction", () => {
       context_length: 67584,
       launch_context_length: 98304,
       pre_fit_context_length: 98304,
+      effective_context_total: 67584,
     }),
     {
       loadedContextLength: 67584,
@@ -309,6 +312,7 @@ test("a GGUF load carries the launch total and any --fit reduction", () => {
       loadedIsMlx: null,
       loadedContextEnforced: true,
       launchContextLength: 98304,
+      effectiveContextTotal: 67584,
       preFitContextLength: 98304,
     },
   );
@@ -383,5 +387,49 @@ test("a custom context length still outranks the launch total", () => {
       presetSource: "custom",
     }),
     16384,
+  );
+});
+
+// An auto-fit launch omits -c and sets no LLAMA_ARG_CTX_SIZE, so the backend
+// reports launchContextLength as null by design. Before the allocated aggregate
+// was published there was nothing left but the per-slot share, and a four-slot
+// non-unified server reloaded at 2,048 total and came back with ~512 per slot.
+test("an auto-sized reload uses the allocated aggregate, not one slot's share", () => {
+  assert.equal(
+    resolveLoadMaxSeqLength({
+      modelId: "org/A-GGUF",
+      isGguf: true,
+      customContextLength: null,
+      loadedContextLength: 2048,
+      launchContextLength: null,
+      effectiveContextTotal: 8192,
+      currentCheckpoint: "org/A-GGUF",
+      activeGgufVariant: null,
+      pinnedMaxSeqLength: null,
+      defaultMaxSeqLength: 4096,
+      presetSource: "custom",
+    }),
+    8192,
+  );
+});
+
+// Where --fit reduced the window the aggregate is what the server RAN at, while
+// the launch total is what it refused, so the aggregate must win.
+test("the allocated aggregate outranks a launch total --fit refused", () => {
+  assert.equal(
+    resolveLoadMaxSeqLength({
+      modelId: "org/A-GGUF",
+      isGguf: true,
+      customContextLength: null,
+      loadedContextLength: 67584,
+      launchContextLength: 98304,
+      effectiveContextTotal: 67584,
+      currentCheckpoint: "org/A-GGUF",
+      activeGgufVariant: null,
+      pinnedMaxSeqLength: null,
+      defaultMaxSeqLength: 4096,
+      presetSource: "custom",
+    }),
+    67584,
   );
 });

@@ -2167,6 +2167,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "maxContextLength",
   "nativeContextLength",
   "launchContextLength",
+  "effectiveContextTotal",
   "preFitContextLength",
   "loadedIsGguf",
   "loadedIsMlx",
@@ -3088,6 +3089,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       customContextLength: config.customContextLength,
       loadedContextLength: null,
       launchContextLength: null,
+            effectiveContextTotal: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
       isMlx: isServedByMlx(

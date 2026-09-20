@@ -202,6 +202,7 @@ export function loadedContextFields(resp: {
   max_context_length?: number | null;
   context_length_enforced?: boolean | null;
   launch_context_length?: number | null;
+  effective_context_total?: number | null;
   pre_fit_context_length?: number | null;
 } | null): {
   loadedContextLength: number | null;
@@ -211,6 +212,7 @@ export function loadedContextFields(resp: {
   loadedIsMlx: boolean | null;
   loadedContextEnforced: boolean | null;
   launchContextLength: number | null;
+  effectiveContextTotal: number | null;
   preFitContextLength: number | null;
 } {
   if (!resp) {
@@ -222,6 +224,7 @@ export function loadedContextFields(resp: {
       loadedIsMlx: null,
       loadedContextEnforced: null,
       launchContextLength: null,
+      effectiveContextTotal: null,
       preFitContextLength: null,
     };
   }
@@ -237,6 +240,7 @@ export function loadedContextFields(resp: {
       loadedIsMlx: resp.is_mlx ?? null,
       loadedContextEnforced: null,
       launchContextLength: null,
+      effectiveContextTotal: null,
       preFitContextLength: null,
     };
   }
@@ -254,6 +258,7 @@ export function loadedContextFields(resp: {
     // Only llama.cpp launches a child, so only it can report a total distinct from
     // the per-slot window, or a --fit step that shrank one below the other.
     launchContextLength: resp.launch_context_length ?? null,
+    effectiveContextTotal: resp.effective_context_total ?? null,
     preFitContextLength: resp.pre_fit_context_length ?? null,
   };
 }
