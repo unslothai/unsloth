@@ -16909,13 +16909,24 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(target, ast.Attribute) and _written_fq(target)
     }
 
+    def _any_prefix_was_rebound(node) -> bool:
+        """Whether the source assigned this attribute or anything it hangs off. `sqlite3.x` being
+        replaced makes `sqlite3.x.connect` someone else's callable even though the root is still
+        the module that was imported."""
+        written = _written_fq(node)
+        if not written:
+            return False
+        parts = written.split(".")
+        return any(
+            ".".join(parts[: index + 1]) in _rebound_attributes for index in range(len(parts))
+        )
+
     def _connect_is_exempt(node: ast.Call) -> bool:
         """Whether a `connect` call is one of the local-resource clients, still spelling what it
         was imported as. Replacing the callable, `sqlite3.connect = smtplib.SMTP().connect`,
         leaves the receiver looking like the module while the call opens a socket."""
-        return (
-            _opens_a_local_resource(node.func.value)
-            and _written_fq(node.func) not in _rebound_attributes
+        return _opens_a_local_resource(node.func.value) and not _any_prefix_was_rebound(
+            node.func
         )
 
     def _names_a_local_client_module(node) -> bool:
@@ -16929,6 +16940,9 @@ def _check_signal_escape_patterns(code: str):
             return False
         if _bindings.values_for(root.id, root):
             # Assigned somewhere, so the import is not what this name holds.
+            return False
+        if _any_prefix_was_rebound(node):
+            # An attribute below the module was replaced, so what hangs off it is not the module's.
             return False
         imported = _bindings.alias_for(_bindings.modules, root.id, root)
         return (imported or root.id).split(".")[0] in _LOCAL_CONNECT_OWNERS

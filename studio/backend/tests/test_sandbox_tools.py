@@ -3917,3 +3917,23 @@ class TestReplacedConnectCallables:
 
     def test_an_untouched_local_client_keeps_working_ok(self):
         _ok('import sqlite3\nsqlite3.connect("state.db")\nsqlite3.connect("other.db")')
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import sqlite3, smtplib\n"
+                "sqlite3.x = smtplib.SMTP()\n"
+                'sqlite3.x.connect("169.254.169.254", 80)',
+                id = "attribute_below_the_module",
+            ),
+            pytest.param(
+                "import sqlite3, smtplib\n"
+                "sqlite3.a.b = smtplib.SMTP()\n"
+                'sqlite3.a.b.connect("169.254.169.254", 80)',
+                id = "deeper_attribute",
+            ),
+        ],
+    )
+    def test_a_rebound_prefix_is_not_the_module_either(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
