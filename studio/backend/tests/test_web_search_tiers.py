@@ -45,6 +45,13 @@ class _Recorder:
 
     def install(self, behaviour_for):
         for name, cls in ENGINES["text"].items():
+            # Engine construction is neutralised as well as search. These are SELECTION tests, and
+            # building a real engine reaches ddgs's HTTP client: on the py<3.10 pin (ddgs 9.8.0) that
+            # raises `Invalid impersonate: "safari_15.6.1"` against a current primp, which would make
+            # every case below fail for a reason that has nothing to do with the tiers. Bypassing it
+            # is what lets these tests cover BOTH pinned ddgs versions, including the one whose
+            # unknown-name fallback the resolver exists to prevent.
+            self._monkeypatch.setattr(cls, "__init__", lambda self, *a, **k: None, raising = False)
             self._monkeypatch.setattr(cls, "search", self._search_for(name, behaviour_for(name)))
 
     @property
@@ -66,6 +73,19 @@ def _names(recorder):
     return recorder.names
 
 
+def _require_two_tiers():
+    """A second tier has to RESOLVE for a fallthrough case to mean anything.
+
+    It does on both pinned versions (9.14.4 gives all three, 9.8.0 gives yahoo alone, since it ships
+    no grokipedia and disables google), but an upstream release that disabled the rest would turn
+    these two cases red for a reason that is not about this code. Skipping with the resolved tiers
+    named is honest; asserting anyway would be a failure nobody could act on.
+    """
+    resolved = tools._resolve_engine_tiers(ENGINES["text"])
+    if len(resolved) < 2:
+        pytest.skip(f"installed ddgs resolves only {len(resolved)} tier(s): {resolved}")
+
+
 def test_tier_one_answers_alone_and_tier_two_is_never_asked(engine_calls):
     engine_calls.install(lambda name: "results")
 
@@ -78,6 +98,7 @@ def test_tier_one_answers_alone_and_tier_two_is_never_asked(engine_calls):
 
 
 def test_tier_two_runs_only_after_tier_one_finds_nothing(engine_calls):
+    _require_two_tiers()
     engine_calls.install(lambda name: "empty" if name in TIER1 else "results")
 
     result = tools.execute_tool("web_search", {"query": "unsloth"})
@@ -89,6 +110,7 @@ def test_tier_two_runs_only_after_tier_one_finds_nothing(engine_calls):
 
 
 def test_a_tier_one_refusal_falls_through_to_tier_two(engine_calls):
+    _require_two_tiers()
     engine_calls.install(lambda name: "raise" if name in TIER1 else "results")
 
     result = tools.execute_tool("web_search", {"query": "unsloth"})
@@ -116,11 +138,17 @@ def test_an_engine_absent_from_the_registry_does_not_reopen_auto(
     for name in missing:
         monkeypatch.delitem(ENGINES["text"], name, raising = False)
 
+    expected = set(tools._resolve_engine_tiers(ENGINES["text"])[0].split(","))
+
     result = tools.execute_tool("web_search", {"query": "unsloth"})
 
-    contacted = _names(engine_calls)
+    contacted = set(_names(engine_calls))
     assert "yandex" not in contacted
-    assert set(contacted) <= set(TIER1) | set(TIER2)
+    # Equality against the RESOLVED tier, not a subset. As a subset check this passed on the
+    # pre-allowlist code whenever its shuffle happened to keep the dispatched engines inside the two
+    # tiers, which made it a flaky discriminator (measured: 1 pass in 10 on base). Deriving the
+    # expected set from the resolver keeps it exact and portable across ddgs versions.
+    assert contacted == expected, f"expected exactly the resolved tier 1 {expected}, got {contacted}"
     assert "URL: https://" in result
 
 
@@ -141,8 +169,14 @@ def test_disabled_engines_are_dropped_from_a_tier(monkeypatch, engine_calls):
 
     tools.execute_tool("web_search", {"query": "unsloth"})
 
-    assert "duckduckgo" not in _names(engine_calls)
-    assert "yandex" not in _names(engine_calls)
+    contacted = set(_names(engine_calls))
+    assert "duckduckgo" not in contacted
+    # Subset, not just "no yandex". Asserting the absence of one engine made this a FLAKY
+    # discriminator: measured against the pre-allowlist code it passed 1 run in 10, because ddgs
+    # shuffles its auto candidates and sometimes filled the result budget before reaching Yandex.
+    # The subset assertion fails on that code every time, which is what a negative control owes.
+    assert contacted <= set(TIER1) - {"duckduckgo"}, f"an engine outside tier 1 ran: {contacted}"
+    assert "yandex" not in contacted
 
 
 def test_the_resolver_never_names_an_engine_outside_the_tiers():
