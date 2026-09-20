@@ -144,13 +144,34 @@ def available() -> tuple[bool, str]:
     return True, "MXC ProcessContainer is available on this host"
 
 
+def _system_roots() -> list[str]:
+    """The Windows directories any process needs simply to start.
+
+    MXC grants nothing implicitly: "Omitted = no filesystem access beyond the
+    default sandbox root". On POSIX the loader's needs are covered by binding
+    /usr and /lib read-only, and this is the same grant. Without it python.exe
+    cannot resolve ntdll, kernel32 or the CRT and the launch fails before the
+    payload runs, which is what the first Windows CI run showed.
+
+    Read-only, so this widens what a tool call can READ to the system
+    directories, exactly as `system_paths_readable` already says for Linux. It
+    does not widen what it can write.
+    """
+    roots: list[str] = []
+    system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or "C:\\Windows"
+    for path in (system_root, os.path.join(system_root, "System32")):
+        if os.path.isdir(path) and path not in roots:
+            roots.append(path)
+    return roots
+
+
 def _readonly_roots(workdir: str) -> list[str]:
     """What the interpreter needs to start, and nothing else.
 
     Reuses the same resolvers the Linux and macOS backends use, so an editable
     install that works there works here.
     """
-    roots: list[str] = []
+    roots: list[str] = _system_roots() if sys.platform == "win32" else []
     for path in (*editable_source_roots(), *editable_import_roots()):
         # An editable install living inside the workdir is already writable
         # there; granting it again read-only would be contradictory.

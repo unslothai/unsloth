@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -130,9 +131,39 @@ def install(dest: str) -> dict:
     }
 
 
+def prepare_host(dest: str) -> dict:
+    """Run MXC's one-time elevated host preparation.
+
+    Tier 3 (AppContainer plus DACL) is the tier every shipping Windows build
+    lands on, and it needs minimum-rights ACEs on the system drive root and
+    MXC's managed security descriptor on \\Device\\Null before a sandboxed
+    workload runs reliably. `wxc-host-prep.exe` has requireAdministrator in its
+    manifest, so this prompts for UAC and exits 65 if it is refused.
+
+    Deliberately separate from install(): fetching the binary needs no
+    privilege, and Studio should ask before changing host security state rather
+    than doing it silently as part of a download.
+    """
+    prep = os.path.join(dest, "wxc-host-prep.exe")
+    if not os.path.isfile(prep):
+        raise SystemExit(f"{prep} is missing; run this without --prepare-host first")
+    results = {}
+    for subcommand in ("prepare-system-drive", "prepare-null-device"):
+        completed = subprocess.run(
+            [prep, subcommand], capture_output = True, timeout = 300,
+        )
+        results[subcommand] = {
+            "exit": completed.returncode,
+            "stderr": completed.stderr.decode(errors = "replace").strip()[:300],
+        }
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description = __doc__)
     parser.add_argument("--dest", default = None, help = "where to install (default: Studio home)")
+    parser.add_argument("--prepare-host", action = "store_true",
+                        help = "run MXC's elevated host preparation (prompts for UAC)")
     parser.add_argument(
         "--verify-only", action = "store_true", help = "report an existing install without downloading"
     )
@@ -153,6 +184,10 @@ def main() -> int:
             )
         )
         return 0 if present else 1
+
+    if args.prepare_host:
+        print(json.dumps(prepare_host(dest), indent = 2))
+        return 0
 
     print(json.dumps(install(dest), indent = 2))
     return 0
