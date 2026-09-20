@@ -773,6 +773,11 @@ def _resolve_seed_hf_path(
                     f"**/{label}{_SEP}*/**/*{ext}",
                     f"**/*{_SEP}{label}/**/*{ext}",
                     f"**/*{_SEP}{label}{_SEP}*/**/*{ext}",
+                    # One split may use several of those shapes at once, as
+                    # train/ beside sets/train_a/, and only a looser form covers
+                    # both. Still only taken where the listing bears it out.
+                    f"**/{label}*/**/*{ext}",
+                    f"**/*{label}*/**/*{ext}",
                 ):
                     if _pattern_fits_the_split(data_files, folders, root, shape):
                         return f"{_anchor(dataset_name, root)}/{shape}"

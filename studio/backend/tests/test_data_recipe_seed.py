@@ -1064,6 +1064,16 @@ def test_seed_hf_path_stops_at_the_sharded_names_the_loader_reads_first(monkeypa
     assert matched == ["data/train-00000-of-00001.parquet"]
 
 
+def test_seed_hf_path_unions_an_exact_and_a_qualified_split_folder(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["train/0.parquet", "sets/train_a/1.parquet", "sets/test_b/2.parquet"]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train")
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert sorted(matched) == ["sets/train_a/1.parquet", "train/0.parquet"]
+
+
 def test_seed_hf_path_keeps_folders_naming_the_split_in_the_middle(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = [
