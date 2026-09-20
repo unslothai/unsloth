@@ -856,27 +856,21 @@ test("a fenced block larger than the budget keeps retaining", () => {
   );
 });
 
-// The definition probe skips a `]:` with no `[` in its window, which is only
-// sound because every match must open with one. Two ways that skip could be
-// wrong, both pinned here: the LAST `[` is not the only candidate, and the
-// lookahead that finds it must not rescan the reply once it has run out.
+// The window skip is sound only because a match opens with `[` and its label holds no bare `]`.
+// Two ways it could be wrong, both pinned: the LAST `[` is not the only candidate, and the
+// lookahead must not rescan once it has run out.
 test("a `]:` whose window holds no `[` is skipped without changing the answer", () => {
-  // `[a[]:` matches from index 0 (label `a[`) and NOT from the last `[`, whose
-  // label would be empty. A skip that clamped the scan to the last `[` would
-  // report false here.
+  // `[a[]:` matches from 0 (label `a[`), not from the last `[` (empty label): a skip clamped to
+  // the last one reports false.
   assert.equal(markdownRenderScope(`See [x][a[].\n\n${paragraphs(12)}[a[]: /url\n`), "document");
   // Nothing to open a definition with, at any distance.
   assert.equal(markdownRenderScope(`See [x][y].\n\n${"]: ".repeat(2000)}`), "blocks");
 });
 
 test("a reply dense with `]:` and no definition does not pay per occurrence", () => {
-  // Not a linearity check: without the skip this is linear too, just with the
-  // whole 2999-character window as its constant. What separates them is the
-  // SIZE of that constant, and the gap is ~80x -- 289ms against 3.6ms on a 500k
-  // reply, inside a path markdownRenderKey runs on EVERY streamed render.
-  // The bound is absolute and deliberately loose: a machine 10x slower than this
-  // one still lands at ~36ms fixed and ~2900ms unfixed, so it discriminates
-  // without depending on the runner's speed.
+  // Not linearity: unskipped this is linear too, with the 2999-char window as its constant. The
+  // gap is the constant's SIZE, ~80x (289ms vs 3.6ms at 500k), on a path markdownRenderKey runs
+  // every render. Absolute and loose so a 10x slower runner still separates ~36ms from ~2900ms.
   const dense = `See [guide][g].\n\n${"]: ".repeat(166666)}`;
   for (let i = 0; i < 3; i += 1) markdownRenderScope(dense + " ");
   const runs: number[] = [];
@@ -889,11 +883,8 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
   assert.ok(median < 100,
     `500k of \`]:\` cost ${median.toFixed(1)}ms; the per-occurrence window scan is back`);
 
-  // A `[` in the window is not enough to make the scan worth paying for. `[]: `
-  // keeps one in every window while never opening a definition, so without the
-  // "after the last unescaped `]`" bound each occurrence still slices ~3000
-  // characters and scans every bracket start before the nonempty-label class
-  // fails: 338ms against 7ms bounded.
+  // A `[` in the window is not enough: `[]: ` keeps one in every window while never opening a
+  // definition, so unbounded each occurrence still slices ~3000 chars. 338ms against 7ms.
   const invalid = `See [guide][g].\n\n${"[]: ".repeat(125000)}`;
   for (let i = 0; i < 3; i += 1) markdownRenderScope(invalid + " ");
   const invalidRuns: number[] = [];

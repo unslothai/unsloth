@@ -60,15 +60,7 @@ const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
 // Widest match in UTF-16 units: 999 times `\` plus an astral code point, plus `[`.
 const LINK_DEFINITION_WINDOW = 999 * 3 + 2;
 
-// Same predicate as the regex over the whole reply, since the pattern has no
-// anchor or lookaround, but `]:` is rare where `[` is not (unslothai/unsloth#10529).
-// Every match must open with a `[`, so a `]:` with none in its window cannot end
-// one and is skipped before paying for the slice and the scan. `bracket` only
-// ever moves forward, which keeps that check O(n) over the whole reply;
-// `lastIndexOf` would reintroduce the quadratic scan it exists to remove, since
-// its backward search is not bounded by the window.
-// Odd run of preceding backslashes, so `[a\]b]:` keeps its escaped `]` inside the
-// label while `[a]b]:` does not.
+// Odd backslash run: `[a\]b]:` keeps its escaped `]` in the label, `[a]b]:` does not.
 function isEscaped(text: string, index: number): boolean {
   let slashes = 0;
   for (let i = index - 1; i >= 0 && text[i] === "\\"; i -= 1) {
@@ -76,18 +68,16 @@ function isEscaped(text: string, index: number): boolean {
   }
   return slashes % 2 === 1;
 }
+// Same predicate as the regex over the whole reply (it has no anchor or lookaround), scanned from
+// the rare `]:` rather than from every `[` (unslothai/unsloth#10529). Two bounds keep each
+// terminator cheap: a match opens with `[`, and its label admits no bare `]`, so the window starts
+// after the last unescaped one. Both cursors only advance and their lookaheads are CACHED --
+// re-asking `indexOf` past -1 rescans the tail while advancing nothing, measured slower than no
+// skip at all (282ms -> 881ms), and `lastIndexOf` is unbounded backwards. Per 500k reply:
+// `]: ` 289ms -> 3.6ms, `[]: ` 338ms -> 7.1ms.
 function hasLinkDefinition(text: string): boolean {
   let bracket = text.indexOf("[");
-  // The lookahead is CACHED, not recomputed per `]:`. Asking `indexOf` again
-  // after it has already returned -1 rescans the whole remaining reply and
-  // advances nothing, which is the quadratic this skip exists to remove --
-  // measured, that mistake made a 500k reply SLOWER than no skip at all
-  // (282ms -> 881ms). Held this way the total is one `indexOf` per `[`.
   let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
-  // The label admits no bare `]`, so a match's `[` must also follow the last
-  // UNESCAPED one before this `]:`. Without that bound a window full of `[`
-  // that cannot open a definition is rescanned per occurrence: 500k of `[]: `
-  // cost 338ms, against 3.3ms once the window collapses to the failing label.
   let close = -1;
   let nextClose = text.indexOf("]");
   for (let end = text.indexOf("]:"); end >= 0; end = text.indexOf("]:", end + 1)) {
@@ -103,9 +93,8 @@ function hasLinkDefinition(text: string): boolean {
     if (close > start && !isEscaped(text, close)) {
       start = close + 1;
     }
-    // Note `start`, not `bracket`: the LAST `[` can fail where an earlier one
-    // matches, because the class admits `[` inside a label (`[a[]:` matches from
-    // index 0 and not from index 2), so this is only ever a skip test.
+    // `start`, not `bracket`: the class admits `[` inside a label, so the last one can fail where
+    // an earlier matches (`[a[]:` matches from 0, not 2). Skip test only.
     if (bracket < start || bracket > end) {
       continue;
     }
