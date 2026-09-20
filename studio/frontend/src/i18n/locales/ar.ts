@@ -162,6 +162,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "لا توجد محادثات",
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       settings: "الإعدادات",
@@ -1257,7 +1259,11 @@ export const ar = {
       },
       gpu: {
         title: "أجهزة GPU",
-        ggufInference: "استدلال GGUF",
+        memory: "ذاكرة GPU",
+        sharedWithSystemRam: "مشتركة مع ذاكرة النظام",
+        estimatedAvailable: "المتاح تقديريًا: {value}",
+        sharedEstimatedAvailable: "ذاكرة النظام المشتركة: المتاح تقديريًا {value}",
+        ggufInference: "ذاكرة نماذج GGUF",
         unavailable: "غير متاح",
         detecting: "جارٍ البحث عن وحدات GPU...",
         unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
