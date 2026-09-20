@@ -980,10 +980,13 @@ _warn_if_uv_cache_is_off_volume() {
         return 0
     fi
     # The caller can turn linking off outright, and then nothing is shared whatever filesystem the cache is on. `copy` is the only mode that does not share blocks: clone reflinks, hardlink links, symlink points at the cache. Not a return -- the cross-filesystem notice below may apply as well.
-    case "$(printf '%s' "${UV_LINK_MODE:-}" | tr '[:upper:]' '[:lower:]')" in
+    _wov_mode=$(printf '%s' "${UV_LINK_MODE:-}" | tr '[:upper:]' '[:lower:]')
+    case "$_wov_mode" in
         copy) _ROLLBACK_COSTS_FULL_SIZE=true ;;
     esac
     [ -n "${UV_CACHE_DIR:-}" ] || return 0
+    # A symlink crosses a filesystem boundary happily, so everything below is the wrong story under that mode: the venv holds links into the cache wherever the cache is, nothing is copied, and the old environment goes on sharing it. Warning here would be a cost that does not exist and an opt-out that frees nothing.
+    [ "$_wov_mode" = symlink ] && return 0
     _same_volume "$UV_CACHE_DIR" "$STUDIO_HOME" && return 0
     # Read by the rollback warning below: the cost it describes is only real across this boundary.
     _ROLLBACK_COSTS_FULL_SIZE=true

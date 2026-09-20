@@ -276,6 +276,37 @@ for _lm in hardlink clone symlink ""; do
     esac
 done
 
+# And the other direction: a symlink crosses a filesystem boundary, so an off-volume cache under
+# that mode costs nothing and must not warn. Driven with two device ids, as above.
+_run_link_mode_offvol() {  # mode
+    {
+        printf '%s\n' 'step() { printf "STEP %s\n" "$2"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$_TMP"
+        printf '%s\n' '_UV_CACHE_MODE=studio'
+        printf "UV_LINK_MODE='%s'\n" "$1"
+        cat "$_NOTICE_FILE"
+        printf '%s\n' '_path_device_id() { case "$1" in *cache*) echo 41 ;; *) echo 42 ;; esac; }'
+        printf '%s\n' 'UV_CACHE_DIR="$STUDIO_HOME/cache"'
+        printf '%s\n' 'mkdir -p "$UV_CACHE_DIR"'
+        printf '%s\n' '_warn_if_uv_cache_is_off_volume'
+        printf '%s\n' 'printf "COSTS_FULL_SIZE=%s\n" "${_ROLLBACK_COSTS_FULL_SIZE:-false}"'
+    } | "$_SH" 2>&1
+}
+_OFFVOL_SYMLINK=$(_run_link_mode_offvol symlink)
+case "$_OFFVOL_SYMLINK" in
+    *"COSTS_FULL_SIZE=false"*) ok "an off-volume cache under symlink mode costs nothing" ;;
+    *) bad "symlink mode across filesystems was reported as costing a full copy" ;;
+esac
+case "$_OFFVOL_SYMLINK" in
+    *"different filesystem"*) bad "symlink mode printed a copy notice about links" ;;
+    *) ok "and prints no copy notice" ;;
+esac
+case "$(_run_link_mode_offvol hardlink)" in
+    *"COSTS_FULL_SIZE=true"*) ok "while hardlink mode across filesystems still does" ;;
+    *) bad "an off-volume hardlink cache stopped warning" ;;
+esac
+
 _NOTICE_CUSTOM=$(_run_notice custom)
 _NOTICE_STUDIO=$(_run_notice studio)
 case "$_NOTICE_CUSTOM" in

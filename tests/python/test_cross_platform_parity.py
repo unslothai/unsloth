@@ -1668,11 +1668,19 @@ class TestNoCacheStillCostsAFullEnvironment:
         ids = ["install.sh", "install.ps1"],
     )
     def test_no_cache_sets_the_full_size_flag(self, path, probe):
+        # Sliced on the block, not on a character window around a message: a window silently
+        # stops covering what it was written for as soon as anything is inserted above it.
         text = path.read_text(encoding = "utf-8")
-        flag = "_ROLLBACK_COSTS_FULL_SIZE" if path is INSTALL_SH else "StudioRollbackCostsFullSize"
-        window = text.split("is on a different", 1)[0][-1600:]
-        assert probe in window, f"{path.name} does not consider no-cache mode before gating"
-        assert flag in window, f"{path.name} does not set the full-size flag for no-cache mode"
+        if path is INSTALL_SH:
+            block = text.split("_warn_if_uv_cache_is_off_volume() {", 1)[1].split("\n}\n", 1)[0]
+            flag = "_ROLLBACK_COSTS_FULL_SIZE"
+        else:
+            block = text.split("Set-StudioUvCacheEnvironment -StudioRoot", 1)[1].split(
+                "Bytecode compilation", 1
+            )[0]
+            flag = "StudioRollbackCostsFullSize"
+        assert probe in block, f"{path.name} does not consider no-cache mode before gating"
+        assert flag in block, f"{path.name} does not set the full-size flag for no-cache mode"
 
 
 class TestVolumeLookupsResolveLinks:
@@ -1899,3 +1907,23 @@ class TestCopyLinkModeCostsAFullEnvironment:
         flag = "_ROLLBACK_COSTS_FULL_SIZE" if path is INSTALL_SH else "StudioRollbackCostsFullSize"
         window = text.split(var, 1)[1][:600]
         assert flag in window, f"{path.name} reads the link mode without acting on it"
+
+
+class TestSymlinkModeCrossesFilesystemsFreely:
+    """UV_LINK_MODE=symlink points the venv at the cache instead of materialising it, and a
+    symlink crosses a filesystem boundary happily. The off-volume reasoning is therefore the
+    wrong story under that mode: nothing is copied, the old environment goes on sharing the
+    cache, and both the copy notice and the low-space warning would name a cost that does not
+    exist and an opt-out that frees nothing (#11313)."""
+
+    @pytest.mark.parametrize(
+        "path, test",
+        [
+            (INSTALL_SH, '[ "$_wov_mode" = symlink ]'),
+            (INSTALL_PS1, '$_linkMode -eq "symlink"'),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_symlink_mode_skips_the_off_volume_path(self, path, test):
+        text = path.read_text(encoding = "utf-8")
+        assert test in text, f"{path.name} treats symlink mode as if uv were copying"

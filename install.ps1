@@ -7031,11 +7031,16 @@ exit 0
         # the cache is on. `copy` is the only mode that does not share blocks: clone reflinks,
         # hardlink links, symlink points at the cache. Checked before the branches below rather
         # than inside them, because the cross-volume notice may apply as well.
-        if ($env:UV_LINK_MODE -and $env:UV_LINK_MODE.Trim().ToLowerInvariant() -eq "copy") {
+        $_linkMode = if ($env:UV_LINK_MODE) { $env:UV_LINK_MODE.Trim().ToLowerInvariant() } else { "" }
+        if ($_linkMode -eq "copy") {
             $script:StudioRollbackCostsFullSize = $true
         }
         if (Test-StudioUvNoCache) {
             $script:StudioRollbackCostsFullSize = $true
+        } elseif ($_linkMode -eq "symlink") {
+            # A symlink crosses a volume boundary happily, so the copy story below does not apply:
+            # the venv holds links into the cache wherever it is and the old environment goes on
+            # sharing it. install.sh exempts its twin the same way.
         } elseif ($env:UV_CACHE_DIR -and -not (Test-StudioSameVolume -PathA $env:UV_CACHE_DIR -PathB $StudioHome)) {
             # Read by Start-StudioVenvRollback, which runs later: the cost its own warning
             # describes is only real across this boundary.
