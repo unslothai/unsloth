@@ -341,7 +341,6 @@ def _is_local_path(repo_id: str) -> bool:
 
 def _env_hf_token() -> "Optional[str]":
     import os
-
     for key in _HF_TOKEN_ENV_KEYS:
         if key == "HF_OIDC_RESOURCE":
             # Names a token rather than holding one, so it cannot be compared to a caller's.
