@@ -63,14 +63,29 @@ export function isFoldedReasoningGroup(
   return governingReasoningEnd(parts, startIndex) !== null;
 }
 
-/** Tool calls the lead is holding, for its collapsed header. */
-export function countFoldedToolParts(parts: readonly PartLike[]): number {
+/** Tool calls the lead is holding, for its collapsed header. A run the thread keeps visible
+ *  (see tool-fold-exemptions.ts) is left out, so the header never claims a call that is on
+ *  screen below it. */
+export function countFoldedToolParts(
+  parts: readonly PartLike[],
+  runIsExempt: (start: number, end: number) => boolean = () => false,
+): number {
   const lead = leadReasoningEnd(parts);
   if (lead === null) return 0;
-  let count = 0;
   const end = foldEnd(parts, lead);
-  for (let i = lead + 1; i < end; i += 1) {
-    if (parts[i]?.type === "tool-call") count += 1;
+  let count = 0;
+  let i = lead + 1;
+  while (i < end) {
+    if (parts[i]?.type !== "tool-call") {
+      i += 1;
+      continue;
+    }
+    let runEnd = i;
+    while (runEnd + 1 < end && parts[runEnd + 1]?.type === "tool-call") {
+      runEnd += 1;
+    }
+    if (!runIsExempt(i, runEnd)) count += runEnd - i + 1;
+    i = runEnd + 1;
   }
   return count;
 }

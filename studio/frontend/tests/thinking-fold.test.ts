@@ -81,6 +81,41 @@ test("the lead counts every call it holds and none after the answer", () => {
   assert.equal(countFoldedToolParts(parts(["text", "tool-call"])), 0);
 });
 
+test("a run the thread keeps visible is not counted as held", () => {
+  // The first run (parts 1..2) is exempt, say a call awaiting approval; the second is not.
+  const exempt = (start: number) => start === 1;
+  assert.equal(countFoldedToolParts(twoRounds, exempt), 1);
+  assert.equal(
+    countFoldedToolParts(twoRounds, () => true),
+    0,
+  );
+  // Runs are passed whole, as the tool group sees them.
+  const seen: Array<[number, number]> = [];
+  countFoldedToolParts(twoRounds, (start, end) => {
+    seen.push([start, end]);
+    return false;
+  });
+  assert.deepEqual(seen, [
+    [1, 2],
+    [5, 5],
+  ]);
+});
+
+test("the tool group and the header share one exemption rule", () => {
+  const rules = readSrc("components/assistant-ui/tool-fold-exemptions.ts");
+  assert.match(rules, /export function holdsOwnOutput/);
+  assert.match(rules, /export function awaitsConfirmation/);
+  assert.match(rules, /export function toolRunIsExempt/);
+  const toolGroup = readSrc("components/assistant-ui/tool-group.tsx");
+  assert.match(toolGroup, /\.some\(holdsOwnOutput\)/);
+  assert.match(toolGroup, /awaitsConfirmation\(part, toolConfirmations\)/);
+  const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
+  assert.match(
+    reasoning,
+    /countFoldedToolParts\(message\.parts, \(start, end\) =>\n\s*toolRunIsExempt\(message\.parts, start, end, toolConfirmations\),/,
+  );
+});
+
 test("the lead reports the turn's thinking time added up", () => {
   const byStart: Record<number, number | undefined> = { 0: 4, 3: 6 };
   const resolve = (_parts: readonly { type: string }[], start: number) =>
@@ -138,6 +173,29 @@ test("later thinking rounds render inside the lead, with no header of their own"
     /if \(folded\) \{\n\s*return <FoldedReasoningRound \{\.\.\.props\} \/>;\n\s*\}/,
   );
   assert.match(reasoning, /data-slot="reasoning-folded-round"/);
+  // A folded round pages a long trace the same way the lead does.
+  const foldedRound = reasoning.slice(
+    reasoning.indexOf("const FoldedReasoningRound"),
+    reasoning.indexOf("const ReasoningGroupBlock"),
+  );
+  assert.match(foldedRound, /const pages = useReasoningPages\(/);
+  assert.match(foldedRound, /<ReasoningBody\n/);
+  // Copy on the lead reaches the folded rounds, which have no Copy of their own.
+  assert.match(
+    reasoning,
+    /foldLead \? foldEnd\(message\.parts, endIndex\) - 1 : endIndex/,
+  );
+  assert.match(reasoning, /endIndex=\{copyEndIndex\}/);
+  // The count sits outside the label, so it shows while the block is still working.
+  const trigger = reasoning.slice(
+    reasoning.indexOf("function ReasoningTrigger"),
+    reasoning.indexOf("function ReasoningContent"),
+  );
+  assert.ok(
+    trigger.indexOf("{foldedSummary ? (") >
+      trigger.indexOf("</span>\n      {/*"),
+    "the count is inside the label and lost while active",
+  );
   // The lead keeps working through those rounds, so its clock covers the whole turn.
   assert.match(
     reasoning,
@@ -147,8 +205,12 @@ test("later thinking rounds render inside the lead, with no header of their own"
 
 test("a folded run is hidden, not unmounted", () => {
   const toolGroup = readSrc("components/assistant-ui/tool-group.tsx");
-  // One wrapper either way: the cards keep their state, their scroll and any live output.
-  assert.match(toolGroup, /className=\{cn\(!roundOpen && "hidden"\)\}/);
+  // One wrapper whether the run is exempt or not: an approval arriving or clearing changes
+  // visibility only, so the cards keep their state, their scroll and any live output.
+  assert.match(
+    toolGroup,
+    /className=\{cn\(!\(roundOpen \|\| exempt\) && "hidden"\)\}/,
+  );
   assert.match(toolGroup, /data-slot="tool-run-under-thinking"/);
   const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
   assert.match(reasoning, /!open && "hidden"/);
@@ -158,10 +220,10 @@ test("output and approvals are never folded away", () => {
   const toolGroup = readSrc("components/assistant-ui/tool-group.tsx");
   assert.match(
     toolGroup,
-    /const foldable =\n\s*foldToolActivity &&\n\s*roundKey !== null &&\n\s*!containsUngroupedTool &&\n\s*!hasPendingConfirmation;/,
+    /const underThinking = foldToolActivity && roundKey !== null;\n\s*const exempt = containsUngroupedTool \|\| hasPendingConfirmation;/,
   );
   // With the preference off the tree is exactly what it was, wrapper included.
-  assert.match(toolGroup, /if \(!foldable\) \{\n\s*return group;\n\s*\}/);
+  assert.match(toolGroup, /if \(!underThinking\) \{\n\s*return group;\n\s*\}/);
 });
 
 test("the preference ships off and survives a reload", () => {

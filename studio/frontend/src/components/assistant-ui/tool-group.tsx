@@ -34,7 +34,7 @@ import {
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
-import { hasCreatedFiles } from "./sandbox-files";
+import { awaitsConfirmation, holdsOwnOutput } from "./tool-fold-exemptions";
 import { syncToolActivityPreference } from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
@@ -242,15 +242,7 @@ const ToolGroupImpl: FC<
 > = ({ children, startIndex, endIndex }) => {
   const toolCount = endIndex - startIndex + 1;
   const containsUngroupedTool = useAuiState(({ message }) =>
-    message.parts
-      .slice(startIndex, endIndex + 1)
-      .some(
-        (part) =>
-          part.type === "tool-call" &&
-          (part.toolName === "render_html" ||
-            part.toolName === "python" ||
-            hasCreatedFiles(part.toolName, part.result)),
-      ),
+    message.parts.slice(startIndex, endIndex + 1).some(holdsOwnOutput),
   );
   // A blocking allow/deny prompt must never be hidden inside a collapsed
   // group, so force the group open while any of its calls awaits confirmation.
@@ -258,14 +250,7 @@ const ToolGroupImpl: FC<
   const hasPendingConfirmation = useAuiState(({ message }) =>
     message.parts
       .slice(startIndex, endIndex + 1)
-      .some(
-        (part) =>
-          part.type === "tool-call" &&
-          Object.prototype.hasOwnProperty.call(
-            toolConfirmations,
-            part.toolCallId,
-          ),
-      ),
+      .some((part) => awaitsConfirmation(part, toolConfirmations)),
   );
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
@@ -324,11 +309,8 @@ const ToolGroupImpl: FC<
   const roundOpen = useReasoningRoundStore((state) =>
     roundKey === null ? true : (state.open[roundKey] ?? false),
   );
-  const foldable =
-    foldToolActivity &&
-    roundKey !== null &&
-    !containsUngroupedTool &&
-    !hasPendingConfirmation;
+  const underThinking = foldToolActivity && roundKey !== null;
+  const exempt = containsUngroupedTool || hasPendingConfirmation;
 
   // Render single calls, canvases, Python scripts, and calls that created files
   // directly so their persistent content never hides in a collapsed group.
@@ -342,16 +324,18 @@ const ToolGroupImpl: FC<
       </ToolGroupRoot>
     );
 
-  if (!foldable) {
+  if (!underThinking) {
     return group;
   }
 
   // Hidden rather than unmounted: a folded run keeps its cards, its scroll positions and any
-  // output still streaming into it, so opening the block is instant and loses nothing.
+  // output still streaming into it, so opening the block is instant and loses nothing. The
+  // wrapper stays while the run is under a block, exempt or not, so an approval arriving or
+  // clearing only changes visibility and never remounts the cards.
   return (
     <div
       data-slot="tool-run-under-thinking"
-      className={cn(!roundOpen && "hidden")}
+      className={cn(!(roundOpen || exempt) && "hidden")}
     >
       {group}
     </div>
