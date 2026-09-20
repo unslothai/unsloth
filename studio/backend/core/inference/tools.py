@@ -16185,6 +16185,8 @@ def _check_signal_escape_patterns(code: str):
         node for node in (getattr(ast, "MatchMapping", None),) if node is not None
     )
     _resolve_budget = [_MAX_RESOLVE_STEPS]
+    # "no answer", as distinct from "bound to something this analysis cannot name".
+    _NOTHING_HELD = object()
 
     def _takes_a_url_argument(fq: str) -> bool:
         """True when the call takes the target URL as an argument. Constructors that take no URL
@@ -16496,10 +16498,40 @@ def _check_signal_escape_patterns(code: str):
                     continue
                 if key in self.strings:
                     return self.strings[key]
+                held = self._value_held_here(key, node)
+                if held is not _NOTHING_HELD:
+                    return held
                 if key in self._counts:
                     # Bound in this scope but not trusted: it shadows anything further out.
                     return None
             return None
+
+        def _value_held_here(self, key, node):
+            """The value a name bound more than once holds at *node*, or ``_NOTHING_HELD``.
+
+            Same reasoning as the import aliases: dropping the name everywhere would let a later
+            assignment unpolice the calls above it, so `u = metadata`, the request, `u = allowed`
+            would pass on the strength of a value the request never sees."""
+            positioned = self._value_positions.get(key)
+            if not positioned:
+                return _NOTHING_HELD
+            positioned = sorted(positioned, key = lambda entry: entry[0])
+            if self._scope_of.get(id(node)) != key[0]:
+                # A function body runs when it is called, so its position says nothing about which
+                # outer value it sees. The last one is the conservative answer.
+                return positioned[-1][1]
+            before = [
+                position
+                for position, _alias in self._bind_positions.get(key, [])
+                if position <= self._position(node)
+            ]
+            if not before:
+                return _NOTHING_HELD
+            last = max(before)
+            for position, value in positioned:
+                if position == last:
+                    return value
+            return _NOTHING_HELD
 
         def values_for(self, name: str, node) -> list:
             """Where the name's value can have come from, stopping at the scope that binds it: a
@@ -16846,7 +16878,7 @@ def _check_signal_escape_patterns(code: str):
     # `sqlite3.connect("host=cache.db")` is a file called host=cache.db.
     _FILE_ONLY_CONNECT_OWNERS = frozenset({"sqlite3", "apsw", "duckdb"})
 
-    def _dsn_hosts(text: str) -> "list[str]":
+    def _dsn_hosts(text: str, complete: bool = True) -> "list[str]":
         """Every host a database connection string names. A libpq DSN may list failover hosts,
         `host = primary,standby`, and the client tries each, so screening the first alone would
         let the second through. A SQLite path and a bare `dbname = app` name none."""
@@ -16854,8 +16886,15 @@ def _check_signal_escape_patterns(code: str):
             scheme = text.split("://", 1)[0].split("+")[0].lower()
             if scheme in _LOCAL_DSN_SCHEMES:
                 return []
-            match = _URL_HOST_RE.match(text) or _URL_HOST_TERMINATED_RE.match(text)
-            authority = match.group(1) if match else text.split("://", 1)[1].split("/")[0]
+            match = (_URL_HOST_RE if complete else _URL_HOST_TERMINATED_RE).match(text)
+            if match is None:
+                if not complete:
+                    # The authority has not been closed yet, so what follows could still be part
+                    # of it and no host is known.
+                    return []
+                authority = text.split("://", 1)[1].split("/")[0]
+            else:
+                authority = match.group(1)
             # A libpq URL carries its failover list in the authority: user@a,b/db.
             userinfo, _, hosts = authority.rpartition("@")
             prefix = f"{userinfo}@" if userinfo else ""
@@ -16895,10 +16934,10 @@ def _check_signal_escape_patterns(code: str):
         candidates += list(node.args[:1])
         for candidate in candidates:
             text, complete = _static_str_prefix(candidate, _bindings)
-            if not (complete and text):
+            if not text or not (complete or "://" in text):
                 continue
-            hosts = _dsn_hosts(text) if ("://" in text or "=" in text) else []
-            if not hosts and candidate is not positional:
+            hosts = _dsn_hosts(text, complete) if ("://" in text or "=" in text) else []
+            if not hosts and complete and candidate is not positional:
                 # A bare `host = ` keyword is the host itself, not a connection string, and it
                 # may still list failover hosts.
                 hosts = [host for host in text.split(",") if host]
@@ -17399,11 +17438,15 @@ def _check_signal_escape_patterns(code: str):
         return node.args[0] if (takes_positional and node.args) else None
 
     def _configured_host(host_node) -> "str | None":
-        """The host that constructor argument names, when it is known."""
+        """The host that constructor argument names, when it is known. A base URL with a dynamic
+        path still names its host: `f"http://169.254.169.254/{path}"` passed the authority
+        delimiter before the unknown part began."""
+        host, _resolved = _host_from_url_node(host_node, _bindings)
+        if host:
+            return host
         text, complete = _static_str_prefix(host_node, _bindings)
-        if not (complete and text):
-            return None
-        return _host_from_url_node(host_node, _bindings)[0] if "://" in text else text
+        # A bare host rather than a URL, which only a fully known string can be.
+        return text if (complete and text and "://" not in text) else None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def visit_Call(self, node):

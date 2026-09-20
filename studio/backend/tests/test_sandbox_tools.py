@@ -3148,12 +3148,19 @@ class TestContextManagersWalrusesAndTheVersionFloor:
             '    s.get("https://huggingface.co/api/models")'
         )
 
-    def test_a_walrus_in_a_comprehension_binds_outside_it_ok(self):
-        # Python binds it in the containing scope, so the outer literal is no longer the value and
-        # nothing may vouch for the call.
-        _ok(
+    def test_a_walrus_in_a_comprehension_binds_outside_it_blocked(self):
+        # Python binds it in the containing scope, so the comprehension really does leave the
+        # metadata URL in u and the call below it fetches that, not the literal above.
+        _blocked(
             'import requests\nu = "https://huggingface.co/"\n'
-            f'[(u := "{_METADATA_URL}") for _ in [0]]\nrequests.get(u)'
+            f'[(u := "{_METADATA_URL}") for _ in [0]]\nrequests.get(u)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_walrus_below_the_call_does_not_answer_for_it_ok(self):
+        _ok(
+            'import requests\nu = "https://huggingface.co/api/models"\nrequests.get(u)\n'
+            f'[(u := "{_METADATA_URL}") for _ in [0]]'
         )
 
     def test_a_walrus_outside_a_comprehension_still_resolves_blocked(self):
@@ -4084,3 +4091,62 @@ class TestPoolManagerTakesAPoolCount:
             'p.request("GET", "/x")',
             expect_phrase = "Blocked: request target is read",
         )
+
+
+class TestAStringBindingHoldsUntilItIsReplaced:
+    """A later assignment does not reach back and unpolice the request above it."""
+
+    def test_a_value_replaced_after_the_call_is_still_what_the_call_saw(self):
+        _blocked(
+            f'import requests\nu = "{_METADATA_URL}"\nrequests.get(u)\n'
+            'u = "https://huggingface.co"',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_value_replaced_before_the_call_is_the_one_that_counts_ok(self):
+        _ok(
+            f'import requests\nu = "{_METADATA_URL}"\n'
+            'u = "https://huggingface.co/api/models"\nrequests.get(u)'
+        )
+
+
+class TestPartiallyDynamicAuthorities:
+    """A URL with a dynamic tail still names its host once the authority is closed."""
+
+    def test_a_base_url_with_a_dynamic_path_is_screened(self):
+        _blocked(
+            "import httpx\n"
+            "def fetch(path):\n"
+            f'    httpx.Client(base_url = f"http://169.254.169.254/{{path}}").get("/x")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_database_url_with_a_dynamic_name_is_screened(self):
+        _blocked(
+            "import psycopg2\n"
+            "def go(db):\n"
+            '    psycopg2.connect(f"postgresql://u@169.254.169.254/{db}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import httpx\n"
+                "def fetch(h):\n"
+                '    httpx.Client(base_url = f"https://huggingface.co{h}").get("/x")',
+                id = "base_url_authority_not_closed",
+            ),
+            pytest.param(
+                "import psycopg2\n"
+                "def go(h):\n"
+                '    psycopg2.connect(f"postgresql://u@huggingface.co{h}/db")',
+                id = "dsn_authority_not_closed",
+            ),
+        ],
+    )
+    def test_an_unterminated_authority_vouches_for_nothing_ok(self, code):
+        # "https://huggingface.co" + suffix may really be huggingface.co.evil.org, so a prefix
+        # that has not passed the delimiter names no host either way.
+        _ok(code)
