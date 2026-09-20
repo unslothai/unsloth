@@ -892,9 +892,9 @@ class TestRocmEntrypoint:
         group = wf["jobs"]["tag"].get("concurrency", {})
         assert group, "the tag job promotes both stable tags and must serialize across runs"
         assert "run_id" not in group["group"], group
-        assert group["cancel-in-progress"] is False, (
-            "a cancelled promotion is the split this exists to prevent"
-        )
+        assert (
+            group["cancel-in-progress"] is False
+        ), "a cancelled promotion is the split this exists to prevent"
 
     def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
         """docker/Dockerfile.studio-rocm is built by the same run as the base, on the
