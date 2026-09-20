@@ -678,6 +678,47 @@ def test_seed_hf_path_keeps_the_split_when_widening_several_declared_globs(
     )
 
 
+def test_seed_hf_path_keeps_a_split_whose_name_carries_a_separator(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = [
+        "data/validation_matched-000.parquet",
+        "data/validation_mismatched-000.parquet",
+        "data/train-000.parquet",
+    ]
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "validation_matched")
+        == "datasets/org/repo/data/validation_matched-*.parquet"
+    )
+
+
+def test_seed_hf_path_keeps_a_subset_whose_name_carries_a_separator(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["sample-10BT-train.parquet", "sample-100BT-train.parquet"]
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", "sample-10BT")
+        == "datasets/org/repo/sample-10BT-train*.parquet"
+    )
+
+
+def test_seed_hf_path_widens_through_split_named_folders(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["sets/train_a/0.parquet", "sets/train_b/0.parquet", "sets/test/0.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_files": [
+                {"split": "train", "path": ["sets/train_a/*", "sets/train_b/*"]},
+                {"split": "test", "path": "sets/test/*"},
+            ],
+        }
+    ]
+    # The shard names say nothing, so the split has to come from the folders.
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+        == "datasets/org/repo/sets/**/*train*/**/*.parquet"
+    )
+
+
 def test_seed_globstar_keeps_the_folder_boundary(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["data/train.csv", "data/z/train.csv", "data/nottrain.parquet"]

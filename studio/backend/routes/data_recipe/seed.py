@@ -266,7 +266,13 @@ def _common_parent(paths: list[str]) -> str:
     return "/".join(shared)
 
 
-_NAME_SEPARATORS = re.compile(r"[-._ ]+")
+def _label_in_name(name: str, label: str) -> bool:
+    """The label standing on its own in a file name, separators and all.
+
+    Tokenizing the name instead would lose a label that carries a separator, so
+    validation_matched or sample-10BT could never match anything.
+    """
+    return re.search(rf"(?:^|[-._ ]){re.escape(label)}(?:$|[-._ ])", name) is not None
 
 
 def _split_rank(path: str, split_lower: str) -> int:
@@ -280,7 +286,7 @@ def _split_rank(path: str, split_lower: str) -> int:
     if f"/{split_lower}/" in f"/{lowered}":
         return 0
     # Only the final extension comes off: questions.train.parquet keeps its split.
-    if split_lower in _NAME_SEPARATORS.split(Path(lowered).stem):
+    if _label_in_name(Path(lowered).stem, split_lower):
         return 1
     return 2
 
@@ -300,7 +306,7 @@ def _in_subset(data_files: list[str], subset: str | None, split_lower: str) -> l
         f
         for f in data_files
         if subset_lower in f.lower().split("/")[:-1]
-        or subset_lower in _NAME_SEPARATORS.split(Path(f.lower()).stem)
+        or _label_in_name(Path(f.lower()).stem, subset_lower)
     ]
     if any(_split_rank(f, split_lower) <= 1 for f in hits):
         return hits
@@ -377,9 +383,16 @@ def _widened_declared_pattern(
     """
     parent = _common_parent(declared_files)
     base = f"{parent}/**" if parent else "**"
-    scoped = f"{base}/*{split_lower}*{suffix}"
-    if set(_files_under_patterns([scoped], data_files)) == set(declared_files):
-        return scoped
+    prefix = f"{parent}/" if parent else ""
+    wanted = set(declared_files)
+    # The split may be written into the file names or into the folders between
+    # here and them, so try both before giving up on keeping it.
+    for candidate in (
+        f"{base}/*{split_lower}*{suffix}",
+        f"{prefix}**/*{split_lower}*/**/*{suffix}",
+    ):
+        if set(_files_under_patterns([candidate], data_files)) == wanted:
+            return candidate
     # Nothing narrower fits, so cover the folder: reading a neighbour is
     # recoverable, dropping half the split is not.
     return f"{base}/*{suffix}"
