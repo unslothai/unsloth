@@ -11,8 +11,12 @@ request land in the SAME group. Neither is the whole invariant:
 
   1. Its scan starts from ``push: branches: [main]``, so a workflow triggered ONLY by
      ``pull_request`` is outside it entirely. runner-pool-probe.yml sat there with no
-     ``concurrency:`` block at all -- a ten-runner matrix, four cells macOS at 10x the
-     minute rate, kept alive in full by every superseding push.
+     ``concurrency:`` block at all -- a ten-runner matrix kept alive in full by every
+     superseding push, four of whose cells are macOS against a cap of five concurrent
+     macOS jobs ACCOUNT-WIDE. This repository is public, so the cost is those slots and
+     the queue they delay for every other repository on the account, not billed minutes:
+     standard GitHub-hosted runners are free here and the included-minutes meter reads
+     zero. ``test_macos_slots_per_commit.py`` guards the same cap from the other side.
 
   2. A shared group is necessary and not sufficient. GitHub cancels a PENDING run when a
      newer one queues into its group, but a run that has already STARTED is only cancelled
