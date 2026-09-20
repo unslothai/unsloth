@@ -30,9 +30,7 @@ export function refreshChatTitle(item: SidebarItem): Promise<void> {
   return request;
 }
 
-function budgetTranscript(conversation: string, contextLength: number): string {
-  // reserve prompt/output space and budget utf-8 bytes conservatively for multilingual text.
-  const budget = Math.max(128, Math.min(12_000, contextLength - 512));
+function budgetTranscript(conversation: string, budget: number): string {
   const bytes = new TextEncoder().encode(conversation);
   if (bytes.length <= budget) return conversation;
   const marker = "\n[Earlier conversation abbreviated]\n";
@@ -108,18 +106,22 @@ async function refresh(item: SidebarItem): Promise<void> {
         .join("\n\n");
     }),
   );
-  const conversation = conversations
-    .filter(Boolean)
-    .join("\n\nAnother comparison pane:\n\n");
-  if (!conversation) throw new Error("This chat has no text to summarize.");
+  const nonempty = conversations.filter(Boolean);
+  if (nonempty.length === 0)
+    throw new Error("This chat has no text to summarize.");
+  const separator = "\n\nAnother comparison pane:\n\n";
+  // reserve prompt/output space and budget utf-8 bytes conservatively for multilingual text.
+  const budget = Math.max(128, Math.min(12_000, contextLength - 512));
+  const paneBudget = Math.floor(
+    (budget - (nonempty.length - 1) * separator.length) / nonempty.length,
+  );
+  const conversation = nonempty
+    .map((pane) => budgetTranscript(pane, paneBudget))
+    .join(separator);
   const timeout = disposableTimeoutSignal(60_000);
   let title: string | null;
   try {
-    title = await generateChatTitle(
-      budgetTranscript(conversation, contextLength),
-      model,
-      timeout.signal,
-    );
+    title = await generateChatTitle(conversation, model, timeout.signal);
   } finally {
     timeout.dispose();
   }

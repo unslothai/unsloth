@@ -419,3 +419,34 @@ for (const failures of [1, 2]) {
     }
   });
 }
+
+test("long comparisons preserve both panes within one context budget", async () => {
+  state.threads[0].pairId = "pair";
+  state.threads.push({ ...state.threads[0], id: "right" });
+  state.messages = [
+    message(
+      "left",
+      "user",
+      `Opening left topic ${"older details ".repeat(1000)} Latest left topic`,
+    ),
+    {
+      ...message(
+        "right",
+        "user",
+        `Opening right topic ${"older details ".repeat(1000)} Latest right topic`,
+      ),
+      threadId: "right",
+    },
+  ];
+  await refreshChatTitle({ ...item, id: "pair", type: "compare" });
+  const transcript = state.requests[0].messages[1].content;
+  for (const fragment of [
+    "Opening left topic",
+    "Latest left topic",
+    "Opening right topic",
+    "Latest right topic",
+    "Another comparison pane:",
+  ])
+    assert.ok(transcript.includes(fragment), fragment);
+  assert.ok(new TextEncoder().encode(transcript).length <= 3584);
+});
