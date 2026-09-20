@@ -79,6 +79,10 @@ test("refresh uses the entire branch with auto-title off and disables tools", as
   assert.equal(request.enable_thinking, false);
   assert.equal(request.stream, false);
   assert.equal(request.model, "local-model");
+  assert.match(
+    request.messages[0].content,
+    /Reflect how the topic has evolved\./,
+  );
 });
 
 test("refresh uses the visible branch rather than a newer alternate reply", async () => {

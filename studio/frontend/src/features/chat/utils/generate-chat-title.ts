@@ -28,6 +28,7 @@ export async function generateChatTitle(
   conversation: string,
   model: string,
   signal?: AbortSignal,
+  purpose: "initial" | "refresh" = "initial",
 ): Promise<string | null> {
   function normalizeTitle(raw: string): string | null {
     let title = raw.split(/\r?\n/, 1)[0] ?? "";
@@ -89,7 +90,9 @@ export async function generateChatTitle(
       {
         role: "system",
         content:
-          "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Reflect how the topic has evolved. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
+          "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. " +
+          (purpose === "refresh" ? "Reflect how the topic has evolved. " : "") +
+          "Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
       },
       { role: "user", content: conversation },
     ],

@@ -131,7 +131,12 @@ async function refresh(
   const timeout = disposableTimeoutSignal(60_000);
   let title: string | null;
   try {
-    title = await generateChatTitle(conversation, model, timeout.signal);
+    title = await generateChatTitle(
+      conversation,
+      model,
+      timeout.signal,
+      "refresh",
+    );
   } finally {
     timeout.dispose();
   }

@@ -233,3 +233,62 @@ test("queued refresh keeps the model selected when it was requested", async () =
   await Promise.all([automatic, refreshing]);
   assert.equal(state.requests[0].model, "local-model");
 });
+
+test("automatic local titles preserve the original request and normalized result", async () => {
+  const { generateChatTitle } = await import(
+    "../src/features/chat/utils/generate-chat-title.ts"
+  );
+  const { disposableTimeoutSignal } = await import(
+    "../src/features/hub/lib/abort-signals.ts"
+  );
+  const start = source.indexOf("async function generateTitleWithModel(");
+  const end = source.indexOf("\nfunction cloneContent", start);
+  const clipStart = source.indexOf("function clip(");
+  const clipEnd = source.indexOf("\nfunction extractTextParts", clipStart);
+  const generate = new Function(
+    "useChatRuntimeStore",
+    "disposableTimeoutSignal",
+    "generateChatTitle",
+    stripTypeScriptTypes(
+      source.slice(clipStart, clipEnd) + source.slice(start, end),
+    ) + "\nreturn generateTitleWithModel;",
+  )(storage.useChatRuntimeStore, disposableTimeoutSignal, generateChatTitle);
+  for (const assistantText of [undefined, "Initial reply ".repeat(40)]) {
+    state.requests = [];
+    state.response.choices[0].message.content = 'Title: "Local Chat Topic!"';
+    const userText = "Opening email ".repeat(30);
+    assert.equal(
+      await generate({ userText, assistantText }),
+      "Local Chat Topic",
+    );
+    assert.deepEqual(state.requests, [
+      {
+        model: "local-model",
+        stream: false,
+        temperature: 0.2,
+        top_p: 0.9,
+        max_tokens: 24,
+        top_k: 20,
+        repetition_penalty: 1.0,
+        enable_thinking: false,
+        reasoning_effort: "none",
+        enable_tools: false,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
+          },
+          {
+            role: "user",
+            content:
+              `User: ${userText.trim().slice(0, 256)}` +
+              (assistantText
+                ? `\nAssistant: ${assistantText.trim().slice(0, 384)}`
+                : ""),
+          },
+        ],
+      },
+    ]);
+  }
+});
