@@ -712,3 +712,68 @@ def test_the_fallback_path_uses_scripts_on_windows(monkeypatch, tmp_path):
     monkeypatch.setattr(tools.sys, "platform", "linux")
     updated = tools._with_session_packages({"PATH": "/usr/bin"}, str(tmp_path))
     assert updated["PATH"].split(os.pathsep)[-1] == str(packages / "bin")
+
+
+def test_the_editable_checkout_parent_is_not_granted(plan, tmp_path, monkeypatch):
+    """MXC's readonlyPaths are recursive, so granting an import root would hand
+    over the rest of the checkout: .env, credentials, fixtures, .git. macOS
+    grants those parents as literals for listing only and Linux merely creates
+    them, so neither platform hands over the tree either."""
+    from core.inference import os_sandbox
+
+    checkout = tmp_path / "checkout"
+    package = checkout / "package"
+    package.mkdir(parents = True)
+    (checkout / ".env").write_text("SECRET=1")
+
+    monkeypatch.setattr(os_sandbox, "editable_source_roots", lambda: (str(package),))
+    monkeypatch.setattr(
+        sandbox_windows, "editable_source_roots", lambda: (str(package),))
+    # raising = False because the fixed backend does not import this name at
+    # all. If it ever does again, this stand-in is what it would receive, and
+    # the assertion below is what would catch it.
+    monkeypatch.setattr(
+        sandbox_windows, "editable_import_roots", lambda: (str(checkout),), raising = False)
+    monkeypatch.setattr(os_sandbox, "editable_import_roots", lambda: (str(checkout),))
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    policy = sandbox_windows.build_policy(plan, str(workdir), "unsloth-test")
+    granted = {os.path.normcase(path) for path in policy["filesystem"]["readonlyPaths"]}
+
+    assert os.path.normcase(str(package)) in granted, "the source root itself must stay granted"
+    assert os.path.normcase(str(checkout)) not in granted, (
+        "the whole editable checkout was granted read access"
+    )
+
+
+def test_the_elevated_helper_is_reverified_before_each_invocation(tmp_path, monkeypatch):
+    """The first preparation step can take the full timeout, and the pathname
+    stays user-writable throughout, so a same-user process could wait for it to
+    finish and swap the helper before the second elevated run."""
+    import subprocess as sp
+
+    from core.inference import mxc_pins
+
+    installer = _installer_module()
+    dest = tmp_path / "mxc"
+    dest.mkdir()
+    prep = dest / "wxc-host-prep.exe"
+    prep.write_bytes(b"the pinned helper")
+    monkeypatch.setitem(
+        installer.HOST_PREP_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(prep)))
+
+    ran = []
+
+    def swap_after_the_first_run(argv, **kwargs):
+        ran.append(argv[1])
+        prep.write_bytes(b"replaced between the two elevated runs")
+        return sp.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(installer.subprocess, "run", swap_after_the_first_run)
+
+    with pytest.raises(SystemExit) as refusal:
+        installer.prepare_host(str(dest))
+
+    assert ran == ["prepare-system-drive"], f"the swapped helper ran elevated: {ran}"
+    assert "no longer the pinned" in str(refusal.value)

@@ -47,7 +47,6 @@ from .os_sandbox import (
     SandboxBuildError,
     SandboxUnavailableError,
     ToolLaunchPlan,
-    editable_import_roots,
     editable_source_roots,
     scan_workdir_for_host_channels,
 )
@@ -301,9 +300,16 @@ def _readonly_roots(plan: ToolLaunchPlan, workdir: str) -> list[str]:
     install that works there works here.
     """
     roots: list[str] = _system_roots() if sys.platform == "win32" else []
+    # editable_import_roots() is deliberately ABSENT. On a flat-layout editable
+    # install it returns the checkout's parent, and MXC's readonlyPaths are
+    # recursive, so granting it would expose the rest of the checkout -- .env,
+    # credentials, fixtures, .git -- to model-authored code that also has
+    # unrestricted network access. macOS grants those parents as literals, for
+    # listing only, and Linux merely creates them, so neither platform hands
+    # over the tree either. The source roots themselves are granted, which is
+    # what the installed finder actually reads.
     candidates = (
         *editable_source_roots(),
-        *editable_import_roots(),
         *_runtime_roots(),
         *_launch_program_roots(plan),
     )

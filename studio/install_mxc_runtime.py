@@ -221,6 +221,15 @@ def prepare_host(dest: str, timeout: float = 120.0) -> dict:
         )
     results = {}
     for subcommand in ("prepare-system-drive", "prepare-null-device"):
+        # Re-checked before EVERY invocation, not once before the loop. The
+        # first call can take up to the full timeout, and the pathname stays
+        # user-writable throughout, so a same-user process could wait for it to
+        # finish and swap the helper before the second elevated run.
+        if not pins.matches_pin(prep, HOST_PREP_SHA256):
+            raise SystemExit(
+                f"{prep} changed and is no longer the pinned MXC {MXC_VERSION} "
+                f"host-preparation helper. {subcommand} was NOT run."
+            )
         try:
             completed = subprocess.run(
                 [prep, subcommand],
