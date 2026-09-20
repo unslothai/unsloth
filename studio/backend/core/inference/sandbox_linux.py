@@ -150,6 +150,35 @@ def _within(path: str, root: str) -> bool:
         return False
 
 
+# Directories a cache component must never BE or CONTAIN. Configuring
+# HF_HUB_CACHE as a broad path is a misconfiguration, not an attack, but the
+# consequence is not: the component is mounted WRITABLE, and the host-channel
+# scan passes it because ordinary credential files are not host channels, so
+# model-authored code in `required` mode could read, change or delete the
+# user's home.
+_CACHE_FORBIDDEN_CHILDREN = (
+    ".ssh", ".aws", ".config/gcloud", ".kube", ".docker", ".gnupg",
+    ".netrc", ".git-credentials",
+)
+
+
+def _too_broad_for_a_cache(path: str) -> bool:
+    """Whether ``path`` is a home or system directory rather than a cache."""
+    real = os.path.realpath(path)
+    if real == os.sep or os.path.dirname(real) == real:
+        return True                       # a filesystem root
+    home = os.path.realpath(os.path.expanduser("~"))
+    if home and home != os.sep and (_within(home, real) or real == home):
+        return True                       # the user's home, or an ancestor of it
+    if real in ("/home", "/Users", "/root", "/etc", "/var", "/usr", "/opt", "/tmp"):
+        return True
+    # A directory that already holds credentials is not a cache directory,
+    # whatever it is called.
+    return any(
+        os.path.exists(os.path.join(real, child)) for child in _CACHE_FORBIDDEN_CHILDREN
+    )
+
+
 def _holds_studio_state(path: str) -> bool:
     """Whether ``path`` IS, or CONTAINS, a Studio state root."""
     real = os.path.realpath(path)
@@ -571,6 +600,12 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         # below would not object because an ordinary file is not a host
         # channel. Checked separately from the system-root filtering because
         # this bind does not come from _SYSTEM_ROOTS at all.
+        if _too_broad_for_a_cache(path):
+            logger.warning(
+                "Not sharing the %s cache into the sandbox: %s is a home or "
+                "system directory rather than a cache", name, path,
+            )
+            continue
         if _holds_studio_state(path):
             logger.warning(
                 "Not sharing the %s cache into the sandbox: it is at or above "
