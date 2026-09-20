@@ -1615,6 +1615,9 @@ export const ptBR = {
         collapseByDefault: "Recolher atividade de ferramentas por padrão",
         collapseByDefaultDescription:
           "Mantém entradas e saídas das ferramentas recolhidas durante a execução. Expanda uma linha para inspecioná-la.",
+        foldIntoThinking: "Recolher chamadas de ferramentas no Pensamento",
+        foldIntoThinkingDescription:
+          "Oculta as chamadas de ferramentas de um turno até abrir o bloco de Pensamento.",
       },
       webSearch: {
         title: "Busca na web",

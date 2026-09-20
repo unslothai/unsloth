@@ -1592,6 +1592,9 @@ export const ko = {
         collapseByDefault: "기본적으로 도구 활동 접기",
         collapseByDefaultDescription:
           "도구가 실행되는 동안 입력과 출력을 접어 둡니다. 확인하려면 도구 행을 펼치세요.",
+        foldIntoThinking: "도구 호출을 생각 안으로 접기",
+        foldIntoThinkingDescription:
+          "생각 블록을 열기 전까지 해당 턴의 도구 호출을 숨깁니다.",
       },
       webSearch: {
         title: "웹 검색",

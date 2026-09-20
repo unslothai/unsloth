@@ -17,6 +17,7 @@ import {
 // the delete confirm dialog. alwaysDeleteChatFiles: on also removes the sandbox folder.
 // showModelDisclaimer: off hides the "LLMs can make mistakes" footer. showResponseModel: on shows
 // the producing model on responses. collapseThinkingByDefault: on keeps thinking collapsed.
+// foldToolActivityIntoThinking: on hides a round's tool calls until its thinking block is opened.
 // pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
@@ -39,6 +40,8 @@ export interface ChatPreferencesState {
   setCollapseThinkingByDefault: (value: boolean) => void;
   collapseToolActivityByDefault: boolean;
   setCollapseToolActivityByDefault: (value: boolean) => void;
+  foldToolActivityIntoThinking: boolean;
+  setFoldToolActivityIntoThinking: (value: boolean) => void;
   pastedTextMinChars: number;
   setPastedTextMinChars: (value: number) => void;
 }
@@ -79,6 +82,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       collapseToolActivityByDefault: true,
       setCollapseToolActivityByDefault: (collapseToolActivityByDefault) =>
         set({ collapseToolActivityByDefault }),
+      // Off by default: it hides rows the thread shows today, so it stays opt in.
+      foldToolActivityIntoThinking: false,
+      setFoldToolActivityIntoThinking: (foldToolActivityIntoThinking) =>
+        set({ foldToolActivityIntoThinking }),
       pastedTextMinChars: PASTED_TEXT_DEFAULT_MIN_CHARS,
       setPastedTextMinChars: (pastedTextMinChars) =>
         set({ pastedTextMinChars }),
@@ -97,6 +104,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           collapseThinkingByDefault: saved?.collapseThinkingByDefault ?? false,
           collapseToolActivityByDefault:
             saved?.collapseToolActivityByDefault ?? true,
+          foldToolActivityIntoThinking:
+            saved?.foldToolActivityIntoThinking ?? false,
           pastedTextMinChars: normalisePastedTextMinChars(
             saved?.pastedTextMinChars,
           ),

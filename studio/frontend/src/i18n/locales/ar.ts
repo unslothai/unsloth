@@ -1597,6 +1597,9 @@ export const ar = {
         collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
+        foldIntoThinking: "طيّ استدعاءات الأدوات داخل التفكير",
+        foldIntoThinkingDescription:
+          "إخفاء استدعاءات الأدوات في الدور حتى فتح كتلة التفكير.",
       },
       webSearch: {
         title: "البحث على الويب",

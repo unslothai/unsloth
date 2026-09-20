@@ -30,12 +30,19 @@ import {
   UnmeasuredCollapsibleTrigger,
 } from "@/components/ui/unmeasured-collapsible";
 import {
+  clearReasoningRound,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   resolveReasoningToggle,
+  setReasoningRoundOpen,
   startsNewReasoningRound,
   useChatPreferencesStore,
 } from "@/features/chat";
+import {
+  countRoundToolParts,
+  foldedToolSummary,
+  reasoningRoundKey,
+} from "@/components/assistant-ui/thinking-fold";
 import { isRenderableRenderHtmlToolPart } from "@/features/chat/artifacts/html-fences";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { formatWorkedFor } from "@/lib/format-worked-for";
@@ -57,6 +64,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -167,12 +175,16 @@ function ReasoningRoot({
 function ReasoningTrigger({
   active,
   duration,
+  foldedToolCount = 0,
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
   active?: boolean;
   duration?: number;
+  /** Tool calls hidden under this block, named so a closed block is not silent about them. */
+  foldedToolCount?: number;
 }) {
+  const foldedSummary = foldedToolSummary(foldedToolCount);
   const Trigger = GRID_COLLAPSE_REASONING_ENABLED
     ? UnmeasuredCollapsibleTrigger
     : CollapsibleTrigger;
@@ -194,7 +206,15 @@ function ReasoningTrigger({
         {active ? (
           <span className="text-sm">Thinking...</span>
         ) : (
-          <span>Worked for {formatWorkedFor(duration ?? 0)}</span>
+          <span>
+            Worked for {formatWorkedFor(duration ?? 0)}
+            {foldedSummary ? (
+              <span className="text-muted-foreground/70">
+                {" \u00b7 "}
+                {foldedSummary}
+              </span>
+            ) : null}
+          </span>
         )}
       </span>
       <ChevronDownIcon
@@ -725,6 +745,21 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   });
   const variant = isOpen ? "outline" : "ghost";
 
+  // Publish this round's open state for the tool calls folded under it, and count them for the
+  // header. A layout effect, so the tools settle before the frame the user sees.
+  const foldToolActivity = useChatPreferencesStore(
+    (state) => state.foldToolActivityIntoThinking,
+  );
+  const roundKey = reasoningRoundKey(messageId, endIndex);
+  const roundToolCount = useAuiState(({ message }) =>
+    countRoundToolParts(message.parts, endIndex),
+  );
+  useLayoutEffect(() => {
+    if (!foldToolActivity) return;
+    setReasoningRoundOpen(roundKey, isOpen);
+  }, [foldToolActivity, isOpen, roundKey]);
+  useLayoutEffect(() => () => clearReasoningRound(roundKey), [roundKey]);
+
   // Allow closing during streaming (matches ChatGPT).
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -755,6 +790,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
           active={isReasoningStreaming}
           // Prefer server timing when available.
           duration={persistedDuration ?? duration}
+          foldedToolCount={foldToolActivity && !isOpen ? roundToolCount : 0}
         />
         <div className="flex w-16 shrink-0 justify-end">
           {isOpen && !isReasoningStreaming && (

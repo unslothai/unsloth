@@ -11,6 +11,12 @@ import {
 import { useAuiState } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
+import { useReasoningRoundStore } from "@/features/chat/stores/reasoning-round-store";
+import {
+  governingReasoningEnd,
+  reasoningRoundKey,
+} from "./thinking-fold";
 import {
   toolOutputKey,
   useToolPaneScope,
@@ -303,17 +309,56 @@ const ToolGroupImpl: FC<
       ((hasLiveOutput && messageRunning) ||
         (forcedOpenRef.current && messageRunning)));
 
+  // With the fold preference on, this run of calls belongs to the thinking block before it and
+  // shows only while that block is open. Calls that hold their own output, and any awaiting an
+  // allow or deny, are never folded away.
+  const foldToolActivity = useChatPreferencesStore(
+    (state) => state.foldToolActivityIntoThinking,
+  );
+  const roundKey = useAuiState(({ message }) => {
+    const reasoningEnd = governingReasoningEnd(message.parts, startIndex);
+    return reasoningEnd === null
+      ? null
+      : reasoningRoundKey(message.id, reasoningEnd);
+  });
+  const roundOpen = useReasoningRoundStore((state) =>
+    roundKey === null ? true : (state.open[roundKey] ?? false),
+  );
+  const foldable =
+    foldToolActivity &&
+    roundKey !== null &&
+    !containsUngroupedTool &&
+    !hasPendingConfirmation;
+
   // Render single calls, canvases, Python scripts, and calls that created files
   // directly so their persistent content never hides in a collapsed group.
-  if (toolCount <= 1 || containsUngroupedTool) {
-    return <>{children}</>;
+  const group =
+    toolCount <= 1 || containsUngroupedTool ? (
+      <>{children}</>
+    ) : (
+      <ToolGroupRoot open={forceOpen ? true : undefined}>
+        <ToolGroupTrigger count={toolCount} />
+        <ToolGroupContent>{children}</ToolGroupContent>
+      </ToolGroupRoot>
+    );
+
+  if (!foldable) {
+    return group;
   }
 
+  // Hidden rather than unmounted: a folded run keeps its cards, its scroll positions and any
+  // output still streaming into it, so opening the block is instant and loses nothing.
   return (
-    <ToolGroupRoot open={forceOpen ? true : undefined}>
-      <ToolGroupTrigger count={toolCount} />
-      <ToolGroupContent>{children}</ToolGroupContent>
-    </ToolGroupRoot>
+    <div
+      data-slot="tool-run-under-thinking"
+      className={cn(
+        roundOpen
+          ? "mt-1 border-muted-foreground/25 border-l pl-3"
+          : "hidden",
+      )}
+    >
+      {group}
+    </div>
   );
 };
 

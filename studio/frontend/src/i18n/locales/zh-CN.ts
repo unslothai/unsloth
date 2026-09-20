@@ -1561,6 +1561,9 @@ export const zhCN = {
         collapseByDefault: "默认折叠工具活动",
         collapseByDefaultDescription:
           "工具运行时保持输入和输出折叠。需要检查时展开对应工具行。",
+        foldIntoThinking: "将工具调用折叠进思考",
+        foldIntoThinkingDescription:
+          "在展开思考块之前隐藏该轮的工具调用。",
       },
       webSearch: {
         title: "网页搜索",

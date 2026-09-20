@@ -50,6 +50,6 @@ test("a finished run says how long it worked, in units that read", () => {
 
 test("the reasoning header says Worked for", async () => {
   const reasoning = await readSrcAsync("components/assistant-ui/reasoning.tsx");
-  assert.match(reasoning, /<span>Worked for \{formatWorkedFor\(duration \?\? 0\)\}<\/span>/);
+  assert.match(reasoning, /Worked for \{formatWorkedFor\(duration \?\? 0\)\}/);
   assert.ok(!reasoning.includes("Thought for"), "the old label is still rendered");
 });

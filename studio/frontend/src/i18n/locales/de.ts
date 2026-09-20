@@ -1637,6 +1637,9 @@ export const de = {
         collapseByDefault: "Tool-Aktivität standardmäßig einklappen",
         collapseByDefaultDescription:
           "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
+        foldIntoThinking: "Tool-Aufrufe ins Denken einklappen",
+        foldIntoThinkingDescription:
+          "Tool-Aufrufe eines Zuges ausblenden, bis der Denken-Block geöffnet wird.",
       },
       webSearch: {
         title: "Websuche",

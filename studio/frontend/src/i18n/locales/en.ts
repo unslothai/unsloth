@@ -1592,6 +1592,9 @@ export const en = {
         collapseByDefault: "Collapse tool activity by default",
         collapseByDefaultDescription:
           "Keep tool details collapsed. Expand a row to inspect it.",
+        foldIntoThinking: "Fold tool calls into Thinking",
+        foldIntoThinkingDescription:
+          "Hide a turn's tool calls until its Thinking block is opened.",
       },
       webSearch: {
         title: "Web search",
