@@ -16094,6 +16094,25 @@ def _check_signal_escape_patterns(code: str):
     _HTTP_METHOD_NAMES = frozenset(
         {"get", "post", "put", "patch", "delete", "head", "options", "request"}
     )
+    # Client methods that send without being named after a verb, and which positional argument
+    # holds the URL. A urllib3 pool's `urlopen("GET", url)` takes the verb first, which is not the
+    # same method as `urllib.request.urlopen(url)`, so the owner decides.
+    _SENDING_METHODS = {
+        "ws_connect": 0,
+        "stream": 1,
+        "send": 0,
+    }
+    _POOL_SENDING_METHODS = {"urlopen": 1}
+
+    def _sending_url_index(fq: str) -> "int | None":
+        """Which argument holds the URL for a client method that is not named after a verb, or
+        None when this is not one."""
+        owner, _, method = fq.rpartition(".")
+        if method in _SENDING_METHODS:
+            return _SENDING_METHODS[method]
+        if method in _POOL_SENDING_METHODS and owner.split(".")[0] == "urllib3":
+            return _POOL_SENDING_METHODS[method]
+        return None
     _SESSION_PREFIXES = (
         "requests.Session",
         "httpx.Client",
@@ -16150,7 +16169,9 @@ def _check_signal_escape_patterns(code: str):
         if fq in ("urllib.request.urlopen", "urllib.request.urlretrieve", "urllib.request.Request"):
             return True
         owner, _, method = fq.rpartition(".")
-        return bool(owner) and method in _HTTP_METHOD_NAMES and owner in _URL_OWNERS
+        if not owner or owner not in _URL_OWNERS:
+            return False
+        return method in _HTTP_METHOD_NAMES or _sending_url_index(fq) is not None
 
     def _is_a_network_call(fq: str) -> bool:
         """Whether this name reaches the network. A session instance has plenty of methods that do
@@ -16159,13 +16180,17 @@ def _check_signal_escape_patterns(code: str):
             return False
         for prefix in _SESSION_PREFIXES:
             if fq.startswith(prefix + "."):
-                return fq.rpartition(".")[2] in _HTTP_METHOD_NAMES
+                method = fq.rpartition(".")[2]
+                return method in _HTTP_METHOD_NAMES or _sending_url_index(fq) is not None
         return True
 
     def _url_arg_index(fq: str) -> int:
         """Which positional argument holds the URL. `requests.request(method, url)` and the session
         and client `.request` methods take the method first, so reading argument zero there polices
         the verb and lets the real target through."""
+        sending = _sending_url_index(fq)
+        if sending is not None:
+            return sending
         return 1 if fq.rpartition(".")[2] == "request" else 0
 
     # Wrappers whose own first argument is the URL the request will use, so a Request object is
@@ -16404,6 +16429,14 @@ def _check_signal_escape_patterns(code: str):
             ]
             if not history:
                 return None
+            history = sorted(history, key = lambda entry: entry[0])
+            if self._scope_of.get(id(node)) != key[0]:
+                # A function body runs when it is called, not where it is written, so its line
+                # number says nothing about which outer binding it will see. `def f(): r.get(...)`
+                # above `import requests as r` reads the import, because f() runs after it. The
+                # last binding in the source is the conservative answer: it keeps the call
+                # policed instead of letting a body placed above an import escape the check.
+                return history[-1][1]
             before = [
                 position
                 for position, _alias in self._bind_positions.get(key, [])
@@ -17093,6 +17126,57 @@ def _check_signal_escape_patterns(code: str):
             return _HF_UPLOAD_PATH_VIOLATION
         return None
 
+    # Clients that can be handed their host once, at construction, after which a request needs
+    # only a path. `urllib3` pools take a bare host, the others a whole base URL.
+    _POOL_FACTORY_FQ = (
+        "urllib3.PoolManager",
+        "urllib3.HTTPConnectionPool",
+        "urllib3.HTTPSConnectionPool",
+    )
+
+    def _screen_host(host: str, node) -> None:
+        """Record what the policy says about a host that a call will reach."""
+        if _is_metadata_host(host):
+            network_calls.append(
+                {
+                    "type": "metadata_host_blocked",
+                    "line": getattr(node, "lineno", -1),
+                    "description": "Blocked: cloud-metadata host",
+                }
+            )
+        elif not _is_trusted_host(host):
+            network_calls.append(
+                {
+                    "type": "untrusted_host_blocked",
+                    "line": getattr(node, "lineno", -1),
+                    "description": (
+                        "Blocked: host not in sandbox allowlist; "
+                        "use an allowed informational source"
+                    ),
+                }
+            )
+
+    def _configured_host(node: ast.Call, fq: str) -> "str | None":
+        """The host a client was configured with. `httpx.Client(base_url = ...)` followed by
+        `c.get("/latest")` reaches a host the request itself never names, so the constructor is
+        where that host has to be read."""
+        is_pool = fq in _POOL_FACTORY_FQ
+        if fq not in _SESSION_FACTORY_FQ and not is_pool:
+            return None
+        host_node = None
+        for kw in node.keywords or []:
+            if kw.arg in ("base_url", "host"):
+                host_node = kw.value
+                break
+        if host_node is None and is_pool and node.args:
+            host_node = node.args[0]
+        if host_node is None:
+            return None
+        text, complete = _static_str_prefix(host_node, _bindings)
+        if not (complete and text):
+            return None
+        return _host_from_url_node(host_node, _bindings)[0] if "://" in text else text
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
             fq_names = _call_fq_names(node.func, _bindings)
@@ -17156,6 +17240,12 @@ def _check_signal_escape_patterns(code: str):
                                 ),
                             }
                         )
+
+            for name in fq_names:
+                configured = _configured_host(node, name)
+                if configured:
+                    _screen_host(configured, node)
+                    break
 
             if network_fq:
                 # 1) Upload-shape check (host-independent).

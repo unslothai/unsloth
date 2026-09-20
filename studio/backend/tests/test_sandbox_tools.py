@@ -3497,3 +3497,140 @@ class TestLocalConnectorsAreJudgedByOrigin:
     )
     def test_a_real_local_client_is_left_alone_ok(self, code):
         _ok(code)
+
+
+class TestSendingMethodsThatAreNotVerbs:
+    """A client method sends whether or not it is named after an HTTP verb."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import aiohttp\n"
+                "c = aiohttp.ClientSession()\n"
+                'c.ws_connect("ws://169.254.169.254/latest")',
+                id = "ws_connect",
+            ),
+            pytest.param(
+                f'import httpx\nc = httpx.Client()\nc.stream("GET", "{_METADATA_URL}")',
+                id = "stream",
+            ),
+            pytest.param(
+                f'import urllib3\np = urllib3.PoolManager()\np.urlopen("GET", "{_METADATA_URL}")',
+                id = "pool_urlopen",
+            ),
+        ],
+    )
+    def test_a_sending_method_is_policed_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_urlopen_on_the_stdlib_still_reads_its_first_argument(self):
+        # urllib.request.urlopen(url) and pool.urlopen(method, url) are different methods that
+        # share a name, so the owner decides which argument holds the URL.
+        _blocked(
+            f'import urllib.request\nurllib.request.urlopen("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import httpx\n"
+                "c = httpx.Client()\n"
+                'c.stream("GET", "https://huggingface.co/api/models")',
+                id = "allowed_host",
+            ),
+            pytest.param(
+                'import requests\ns = requests.Session()\ns.mount("https://example.com/", None)',
+                id = "sends_nothing",
+            ),
+        ],
+    )
+    def test_what_does_not_reach_a_blocked_host_keeps_working_ok(self, code):
+        _ok(code)
+
+
+class TestHostsConfiguredOnTheClient:
+    """A host handed to the constructor is the host the later relative request reaches."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import httpx\nc = httpx.Client(base_url = "http://169.254.169.254")\n'
+                'c.get("/latest")',
+                id = "httpx_base_url",
+            ),
+            pytest.param(
+                "import aiohttp\n"
+                'c = aiohttp.ClientSession(base_url = "http://169.254.169.254")\n'
+                'c.get("/latest")',
+                id = "aiohttp_base_url",
+            ),
+            pytest.param(
+                'import urllib3\np = urllib3.HTTPConnectionPool("169.254.169.254", 80)\n'
+                'p.request("GET", "/latest")',
+                id = "pool_positional_host",
+            ),
+        ],
+    )
+    def test_a_configured_metadata_host_is_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_a_configured_untrusted_host_is_refused(self):
+        _blocked(
+            'import urllib3\np = urllib3.HTTPSConnectionPool(host = "evil.example")\n'
+            'p.request("GET", "/x")',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import httpx\nc = httpx.Client(base_url = "https://huggingface.co")\n'
+                'c.get("/api/models")',
+                id = "allowed_base_url",
+            ),
+            pytest.param(
+                'import urllib3\np = urllib3.HTTPSConnectionPool("huggingface.co")\n'
+                'p.request("GET", "/api/models")',
+                id = "allowed_pool_host",
+            ),
+            pytest.param(
+                'import httpx\nc = httpx.Client(timeout = 5)\n'
+                'c.get("https://huggingface.co/api/models")',
+                id = "no_host_configured",
+            ),
+        ],
+    )
+    def test_a_configured_allowed_host_keeps_working_ok(self, code):
+        _ok(code)
+
+
+class TestBindingsSeenFromInsideAFunction:
+    """A function body runs when it is called, so its line number says nothing about which outer
+    binding it observes. The last binding in the source is the conservative answer."""
+
+    def test_a_body_written_above_its_import_is_still_policed(self):
+        _blocked(
+            f'import requests\nr = object()\ndef f():\n    r.get("{_METADATA_URL}")\n'
+            "import requests as r\nf()",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_body_written_above_its_session_is_still_policed(self):
+        _blocked(
+            f'import requests\ndef f():\n    s.get("{_METADATA_URL}")\n'
+            "s = requests.Session()\nf()",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_ordinary_closure_over_a_client_keeps_working_ok(self):
+        _ok(
+            "import requests as r\n"
+            "def f():\n"
+            '    return r.get("https://huggingface.co/api/models")\n'
+            "f()"
+        )
