@@ -1740,6 +1740,10 @@ class TestBashBlocklistPosition:
     def test_coproc_classifies_exactly_as_the_command_behind_it(self, command):
         # Equal in BOTH directions: merely getting stricter would start prompting for coprocesses that are fine.
         assert self._find()(f"coproc {command}") == self._find()(command)
+        # A forged lookahead moves nothing: shlex has already dropped the quotes, so the walker reads the same
+        # token either way and must not take the command word for a coprocess name.
+        head, _, rest = command.partition(" ")
+        assert self._find()(f"coproc {head} 'if' {rest}") == self._find()(f"{head} 'if' {rest}")
         assert is_high_risk_tool_call(
             "terminal", {"command": f"coproc {command}"}
         ) == is_high_risk_tool_call("terminal", {"command": command})

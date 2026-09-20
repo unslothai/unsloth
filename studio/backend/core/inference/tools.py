@@ -204,11 +204,22 @@ _SHELL_KEYWORDS_AS_SEP = frozenset(
     {"then", "do", "else", "elif", "if", "while", "until", "!", "coproc"}
 )
 # Bash takes `coproc NAME ...` only before a COMPOUND command, which is what tells a name from a command: the same
-# position holds the command itself in `coproc rm -f x`.
-_COPROC_COMPOUND_STARTERS = frozenset(
-    {"{", "(", "((", "[[", "if", "while", "until", "for", "case", "select"}
-)
+# position holds the command itself in `coproc rm -f x`. Only the WORD starters are listed: `{` and `(` are already
+# separators, so `coproc JOB { rm ...; }` resolves without reading JOB as a name, and listing them would only mean
+# trusting a lookahead that a quoted `'{'` can forge.
+_COPROC_COMPOUND_STARTERS = frozenset({"if", "while", "until", "for", "case", "select"})
 _COPROC_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
+
+
+def _coproc_name_would_hide_a_command(token: str) -> bool:
+    """Whether skipping `token` as a coprocess name would skip a word some classifier judges."""
+    base = token.lower()
+    return (
+        base in _BLOCKED_COMMANDS
+        or base in _HIGH_RISK_COMMANDS
+        or base in _AUTO_UNSAFE_COMMAND_FLAGS
+        or base in _COMMAND_PREFIXES
+    )
 
 
 def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
@@ -222,10 +233,11 @@ def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
         and tokens[index - 1] == "coproc"
         and index + 1 < len(tokens)
         and tokens[index + 1] in _COPROC_COMPOUND_STARTERS
-        # shlex hands back the same token for a real `{` and a quoted `'{'`, and quoting it makes the lookahead a
-        # lie: `coproc rm '{' -f victim` is the SIMPLE form and deletes. A blocked word is therefore never read as
-        # a name, which costs only the absurd `coproc rm { echo hi; }` naming a coprocess after the command.
-        and tokens[index].lower() not in _BLOCKED_COMMANDS
+        # shlex drops quoting, so a quoted starter forges the lookahead: `coproc rm 'if' -f victim` is the SIMPLE
+        # form and deletes. No word any classifier judges is therefore read as a name, which keeps the answer the
+        # one the command alone gets however the lookahead was spelled. It costs only the absurd `coproc rm { echo
+        # hi; }`, naming a coprocess after a blocked command.
+        and not _coproc_name_would_hide_a_command(tokens[index])
         and _COPROC_NAME_RE.match(tokens[index]) is not None
     )
 
