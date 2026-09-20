@@ -346,7 +346,7 @@ def test_fetch_release_falls_back_to_latest_on_404(monkeypatch):
             raise urllib.error.HTTPError(url, 404, "not found", None, None)
         return _Resp()
 
-    monkeypatch.setattr(sdmod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sdmod, "auth_safe_open", fake_urlopen)
     rel = _fetch_release("gone-tag", repo = "leejet/stable-diffusion.cpp")
     assert rel["tag_name"] == "latest-xyz"
     assert any("/tags/gone-tag" in c for c in calls) and any(c.endswith("/latest") for c in calls)
@@ -357,7 +357,7 @@ def test_fetch_release_propagates_non_404(monkeypatch):
         url = getattr(req, "full_url", req)
         raise urllib.error.HTTPError(url, 403, "rate limited", None, None)
 
-    monkeypatch.setattr(sdmod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sdmod, "auth_safe_open", fake_urlopen)
     with pytest.raises(urllib.error.HTTPError):
         _fetch_release("any-tag")
 

@@ -164,6 +164,8 @@ export const ja = {
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "チャットなし",
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
@@ -1237,7 +1239,11 @@ export const ja = {
       },
       gpu: {
         title: "GPU デバイス",
-        ggufInference: "GGUF 推論",
+        memory: "GPUメモリ",
+        sharedWithSystemRam: "システムRAMと共有",
+        estimatedAvailable: "推定空き容量: {value}",
+        sharedEstimatedAvailable: "共有システムRAM: 推定空き容量 {value}",
+        ggufInference: "GGUFモデル用メモリ",
         unavailable: "利用不可",
         detecting: "GPU を確認しています...",
         unreadable: "このサーバーのハードウェアを読み取れませんでした。",
