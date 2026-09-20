@@ -898,3 +898,49 @@ def test_a_registered_model_folder_is_readable(monkeypatch, tmp_path):
     )
 
     assert str(library) in profile
+
+
+@_darwin_only
+def test_a_hard_link_to_a_readable_file_cannot_be_created_in_the_workdir(tmp_path, monkeypatch):
+    """The workdir is writable and the model folders are readable, both on one
+    volume. If link(2) is permitted, a tool can alias a readable external file
+    into the workdir and write through it, which is outside the boundary this
+    profile advertises. file-link is its own SBPL operation rather than part of
+    file-write*, so (deny default) should already refuse it; this is the
+    measurement that says whether it does, on the host that decides.
+
+    The link is made on the host first: a link that fails for an unrelated
+    reason, a different volume most of all, would prove nothing.
+    """
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    library = tmp_path / "library"
+    library.mkdir()
+    external = library / "weights.bin"
+    external.write_text("UNSLOTH_EXTERNAL_INODE", encoding = "utf-8")
+    monkeypatch.setattr(backend, "model_library_roots", lambda: (str(library),))
+
+    control = workdir / "host-alias"
+    os.link(external, control)
+    assert control.stat().st_ino == external.stat().st_ino, (
+        "the host could not hard-link across these two paths, so the negative "
+        "control below would prove nothing"
+    )
+    control.unlink()
+
+    argv = ("/bin/ln", str(external), str(workdir / "alias"))
+    prepared = backend.prepare(
+        ToolLaunchPlan(argv = argv, workdir = str(workdir), env = {"PATH": "/usr/bin:/bin"})
+    )
+    try:
+        result = subprocess.run(
+            prepared.argv, capture_output = True, text = True, timeout = 60, check = False
+        )
+    finally:
+        prepared.cleanup()
+
+    assert result.returncode != 0, (
+        "a hard link to a readable file outside the workdir was created inside it, "
+        "so a tool can write to that file through the alias"
+    )
+    assert not (workdir / "alias").exists()

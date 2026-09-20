@@ -1087,7 +1087,7 @@ def test_a_wedged_cache_mount_drops_the_cache_instead_of_hanging_the_launch(tmp_
         time.sleep(30)
         raise AssertionError("the caller should not have waited for this")
 
-    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", lambda name, path: wedged(path))
+    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", lambda name, path, witness = None: wedged(path))
     monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 1.0)
     started = time.monotonic()
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
@@ -1128,7 +1128,7 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     _share_cache_paths(monkeypatch, cache)
     started: list[str] = []
 
-    def wedged(name, path):
+    def wedged(name, path, witness = None):
         started.append(path)
         time.sleep(30)
 
@@ -1182,7 +1182,7 @@ def test_concurrent_launches_start_one_cache_worker_and_never_raise(tmp_path, mo
     started: list[str] = []
     gate = threading.Event()
 
-    def wedged(name, path):
+    def wedged(name, path, witness = None):
         started.append(path)
         gate.wait(30)
 
@@ -2190,39 +2190,22 @@ def test_a_scratch_directory_studio_did_not_create_is_left_alone(tmp_path):
     assert (scratch / "theirs").exists(), "a directory Studio did not create was swept"
 
 
-def test_a_stale_fifo_is_removed_and_one_with_a_reader_is_not(tmp_path):
-    """The same proof for the other endpoint type: ENXIO means no reader."""
-    import threading
-
+def test_a_dormant_fifo_is_never_swept(tmp_path):
+    """A FIFO with no reader is at rest, not abandoned: it is meant to outlive
+    the processes at its ends, and 0700 plus ownership is evidence of who made
+    the directory rather than proof. The launch is refused instead, as before."""
     from core.inference import os_sandbox
 
     workdir = tmp_path / "work"
     scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
     scratch.mkdir(parents = True)
     os.chmod(scratch, 0o700)
-    os.mkfifo(scratch / "stale", 0o600)
-    os.mkfifo(scratch / "live", 0o600)
+    os.mkfifo(scratch / "theirs", 0o600)
 
-    opened = threading.Event()
-    reader_fd = []
-
-    def read_end():
-        fd = os.open(str(scratch / "live"), os.O_RDONLY)
-        reader_fd.append(fd)
-        opened.set()
-
-    reader = threading.Thread(target = read_end, daemon = True)
-    reader.start()
-    writer = os.open(str(scratch / "live"), os.O_WRONLY)
-    opened.wait(5)
-    try:
-        removed = os_sandbox.clear_stale_tool_ipc(str(workdir))
-        assert removed == (str(scratch / "stale"),), removed
-        assert (scratch / "live").exists(), "a FIFO with a reader was unlinked"
-    finally:
-        os.close(writer)
-        for fd in reader_fd:
-            os.close(fd)
+    assert os_sandbox.clear_stale_tool_ipc(str(workdir)) == ()
+    assert (scratch / "theirs").exists(), "an idle named pipe was deleted"
+    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "device or IPC node"):
+        os_sandbox.scan_workdir_for_host_channels(str(workdir))
 
 
 def test_the_stale_ipc_sweep_runs_inside_the_scan_budget(monkeypatch, tmp_path):
@@ -2272,3 +2255,54 @@ def test_the_sweep_stops_at_its_deadline(tmp_path):
     assert os_sandbox.clear_stale_tool_ipc(str(workdir), time.monotonic() - 1) == ()
     assert (scratch / "listener-0").exists()
     assert os_sandbox.clear_stale_tool_ipc(str(workdir)) == (str(scratch / "listener-0"),)
+
+
+def test_a_channel_planted_deep_inside_a_cached_component_invalidates_its_verdict(
+    monkeypatch, tmp_path
+):
+    """The memo made the walk cheap and made invalidation wrong: a socket
+    created inside an existing nested directory leaves the component root's
+    mtime alone, so a clean verdict could be reused over exactly the channel
+    the scan exists to reject."""
+    from core.inference import sandbox_linux
+
+    cache = tmp_path / "hostcache"
+    nested = cache / "hub" / "models--org--name" / "snapshots" / "abc"
+    nested.mkdir(parents = True)
+    (nested / "config.json").write_text("{}")
+    _share_cache_paths(monkeypatch, cache)
+    sandbox_linux.reset_cache_verdicts()
+
+    session = str(tmp_path / "session")
+    assert "hub" in sandbox_linux._model_cache_binds(session), "the clean cache was not shared"
+
+    _bind_unix_socket(str(nested / "planted"))
+    binds = sandbox_linux._model_cache_binds(session)
+
+    assert "hub" not in binds, "a cached verdict was reused over a newly planted socket"
+
+
+def test_an_unchanged_cache_is_not_walked_again(monkeypatch, tmp_path):
+    """The other half: revalidation has to stay cheaper than the walk it
+    replaces, or the memo is pointless."""
+    from core.inference import sandbox_linux
+
+    cache = tmp_path / "hostcache"
+    (cache / "hub" / "models--org--name").mkdir(parents = True)
+    (cache / "hub" / "models--org--name" / "config.json").write_text("{}")
+    _share_cache_paths(monkeypatch, cache)
+    sandbox_linux.reset_cache_verdicts()
+
+    session = str(tmp_path / "session")
+    assert "hub" in sandbox_linux._model_cache_binds(session)
+
+    walks: list[str] = []
+    real = sandbox_linux._inspect_cache_component
+
+    def counted(name, path, witness = None):
+        walks.append(path)
+        return real(name, path, witness)
+
+    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", counted)
+    assert "hub" in sandbox_linux._model_cache_binds(session)
+    assert walks == [], f"the unchanged cache was walked again: {walks}"

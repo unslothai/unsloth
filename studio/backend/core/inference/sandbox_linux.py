@@ -33,6 +33,7 @@ from .os_sandbox import (
     ToolLaunchPlan,
     WorkdirUnsafeError,
     cache_share_hazard,
+    directory_witness_matches,
     editable_source_roots,
     scan_workdir_for_host_channels,
     model_library_roots,
@@ -479,14 +480,16 @@ def _path(plan: ToolLaunchPlan, packages: str) -> str:
 _CACHE_INSPECT_SECONDS = CACHE_SCAN_SECONDS + 2.0
 
 
-def _inspect_cache_component(name: str, path: str) -> "str | None":
+def _inspect_cache_component(
+    name: str, path: str, witness: "list[tuple] | None" = None
+) -> "str | None":
     """The hazard for one component, or a reason it could not be inspected."""
     if not os.path.isdir(path):
         return "is not a directory"
     nested = next((m for m in _host_mount_points() if m != path and _within(m, path)), None)
     if nested is not None:
         return f"contains a nested host mount: {nested}"
-    return cache_share_hazard(path)
+    return cache_share_hazard(path, witness)
 
 
 # Retain timed-out workers until they finish, preventing a thread leak on a wedged path.
@@ -500,15 +503,16 @@ _cache_scan_lock = threading.Lock()
 # them: measured here, 2.1ms against an empty cache and 44.2ms against 15,000
 # entries, which is 85-95% of this backend's whole launch cost on a real cache.
 #
-# What the key trades. It is the component root's identity and mtime, so a change
-# made through the root (a new model, a removed one) invalidates it, while a
-# change made deep inside an existing directory does not. That window is narrow
-# on purpose and is bounded three ways: the TTL below, the fact that a link
-# cannot be created across the cache's own mount from inside the sandbox
-# (link(2) returns EXDEV), and the fact that a cache large enough to be
-# interesting is over CACHE_SCAN_ENTRIES and is therefore never shared at all.
+# What the key trades. The component root's identity and mtime alone were not
+# enough: a socket, a FIFO or a link created inside an EXISTING nested directory
+# leaves the root untouched, so a clean verdict could have been reused for five
+# minutes over exactly the channel the scan exists to reject. The verdict now
+# also carries every directory the scan visited, and reuse re-stats all of them.
+# That is one stat per directory against one lstat per entry, which keeps the
+# saving that motivated the memo while making the invalidation answer for the
+# whole tree rather than for its root.
 _CACHE_VERDICT_TTL_SECONDS = 300.0
-_cache_verdicts: "dict[str, tuple[float, tuple, str | None]]" = {}
+_cache_verdicts: "dict[str, tuple[float, tuple, list[tuple], str | None]]" = {}
 
 
 def _cache_component_signature(path: str) -> tuple:
@@ -532,27 +536,40 @@ def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
     with _cache_scan_lock:
         cached = _cache_verdicts.get(path)
         if cached is not None:
-            expires, cached_signature, verdict = cached
-            if now < expires and cached_signature == signature:
+            expires, cached_signature, witness, verdict = cached
+            if (
+                now < expires
+                and cached_signature == signature
+                and directory_witness_matches(witness)
+            ):
                 return verdict
             del _cache_verdicts[path]
 
-    verdict = _cache_hazard_uncached(name, path)
+    verdict, witness = _cache_hazard_uncached(name, path)
 
     with _cache_scan_lock:
         # Re-read the signature: the walk itself took time, and a component that
         # changed under it must not be recorded against its pre-walk identity.
-        if _cache_component_signature(path) == signature:
-            _cache_verdicts[path] = (now + _CACHE_VERDICT_TTL_SECONDS, signature, verdict)
+        if _cache_component_signature(path) == signature and witness is not None:
+            _cache_verdicts[path] = (now + _CACHE_VERDICT_TTL_SECONDS, signature, witness, verdict)
     return verdict
 
 
-def _cache_hazard_uncached(name: str, path: str) -> "str | None":
+def _cache_hazard_uncached(name: str, path: str) -> "tuple[str | None, list[tuple] | None]":
+    """The verdict, and the directories it was reached over.
+
+    The witness is None for any verdict that is not reusable: a walk that never
+    finished visited only part of the tree, and re-statting that part would
+    vouch for directories nobody looked at.
+    """
     answer: list[str | None] = []
+    witness: "list[tuple]" = []
+    complete: list[bool] = []
 
     def inspect() -> None:
         try:
-            answer.append(_inspect_cache_component(name, path))
+            answer.append(_inspect_cache_component(name, path, witness))
+            complete.append(True)
         except Exception as exc:  # noqa: BLE001 - a launch never fails over this
             answer.append(f"could not be inspected: {exc}")
 
@@ -560,7 +577,10 @@ def _cache_hazard_uncached(name: str, path: str) -> "str | None":
         pending = _cache_scan_pending.get(path)
         if pending is not None:
             if pending.is_alive():
-                return "was still being inspected when a previous launch gave up (a wedged mount?)"
+                return (
+                    "was still being inspected when a previous launch gave up (a wedged mount?)",
+                    None,
+                )
             del _cache_scan_pending[path]
         worker = threading.Thread(target = inspect, name = f"unsloth-cache-scan-{name}", daemon = True)
         # Start under the lock, or another caller can replace the not-yet-alive worker.
@@ -568,12 +588,12 @@ def _cache_hazard_uncached(name: str, path: str) -> "str | None":
         worker.start()
     worker.join(_CACHE_INSPECT_SECONDS)
     if not answer:
-        return f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)"
+        return (f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)", None)
     with _cache_scan_lock:
         # By identity: another caller may already have replaced it.
         if _cache_scan_pending.get(path) is worker:
             del _cache_scan_pending[path]
-    return answer[0]
+    return answer[0], (witness if complete else None)
 
 
 def _model_cache_binds(workdir: str) -> dict[str, str]:
