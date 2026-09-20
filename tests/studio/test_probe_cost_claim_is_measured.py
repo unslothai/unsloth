@@ -74,7 +74,9 @@ def _timeout_minutes() -> int:
 # FORM is recognised here and the number is parsed separately, and a duration that cannot
 # be parsed fails rather than going unseen.
 _HOLD_CLAIM = re.compile(
-    r"\b(?:hold\w*|held|occup\w*|tie[sd]?\s+up)\b[^.;]{0,80}?\bfor\s+"
+    r"\b(?:hold\w*|held|occup\w*|block\w*|reserv\w*|consum\w*|keep\w*|kept|"
+    r"take[sn]?|taking|took|us(?:e|es|ed|ing)|tie[sd]?\s+up|ty(?:e|ing)\s+up)\b"
+    r"[^.;]{0,80}?\bfor\s+"
     r"(?:about\s+|roughly\s+|around\s+|nearly\s+|almost\s+|approximately\s+|"
     r"up\s+to\s+|at\s+least\s+|at\s+most\s+|no\s+more\s+than\s+|over\s+|under\s+|"
     r"the\s+|full\s+|entire\s+|whole\s+|"
@@ -175,6 +177,22 @@ _ANOTHER_HOLDER = re.compile(
 )
 
 
+_CUTOFF = re.compile(r"(?<![\w-])(?:timeout|cutoff)", re.I)
+
+
+def _names_the_cutoff(clause: str) -> bool:
+    """Does this clause say, positively, that the duration is the hung-cell bound?
+
+    The same positive-and-not-negated rule the occupancy side uses. A raw substring is
+    not a qualification here either: "a superseded working matrix that never hangs costs
+    ten minutes" mentions hanging only to deny it, and is the false claim in full.
+    """
+    for found in (_HANGS.search(clause), _CUTOFF.search(clause)):
+        if found and not _NEGATED.search(clause[: found.start()]):
+            return True
+    return False
+
+
 def _about_a_hung_cell(text: str, position: int) -> bool:
     """Is the thing doing the holding a cell that hangs, said positively?"""
     clause = _clause_before(text, position)
@@ -235,9 +253,7 @@ def test_the_timeout_is_never_offered_as_what_a_superseded_matrix_holds():
         # lets a bare claim borrow the qualification from the clause before it: "A
         # superseded matrix costs ten minutes" placed after the accurate timeout
         # sentence is not an occupancy verb, so it lands here, and it read as excused.
-        if not re.search(
-            r"timeout|hang\w*|hung|cutoff", _clause_before(rationale, match.start()), re.I
-        ):
+        if not _names_the_cutoff(_clause_before(rationale, match.start())):
             offenders.append(window)
     assert not offenders, (
         f"{WORKFLOW.name} gives {minutes} minutes as something a cell occupies, or as a "
