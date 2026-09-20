@@ -80,3 +80,33 @@ def test_requirements_cache_resolves_when_listing_fails(monkeypatch):
     )
     assert filename == _BONSAI_FILE
     assert shards == []
+
+
+def test_does_not_synthesize_when_listing_and_cache_miss(monkeypatch):
+    import sys
+    import types
+
+    def _fail_list(*_a, **_k):
+        raise OSError("hub down")
+
+    monkeypatch.setattr("huggingface_hub.list_repo_files", _fail_list)
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_cached_variant_resolution",
+        lambda *_a, **_k: (None, []),
+    )
+
+    fake = types.ModuleType("hub.services.models.gguf_variants")
+    fake.gguf_variant_requirements = lambda *_a, **_k: None
+    monkeypatch.setitem(sys.modules, "hub.services.models.gguf_variants", fake)
+    monkeypatch.setattr(
+        "hub.utils.gguf.list_gguf_variants_from_hf_cache",
+        lambda *_a, **_k: None,
+    )
+
+    filename, shards = llama_cpp_module._resolve_variant_gguf_files(
+        _BONSAI_REPO,
+        "PQ2_0",
+    )
+    assert filename is None
+    assert shards == []
