@@ -642,3 +642,167 @@ def test_the_ceiling_lane_check_can_fail(tmp_path, monkeypatch) -> None:
     # The floor lane's own exact pin must NOT be mistaken for a stale ceiling.
     write(f"trl=={TESTED_CEILING}")
     test_a_ceiling_lane_pins_the_declared_ceiling()
+
+
+# ---------------------------------------------------------------------------
+# The ceiling has to be RESOLVABLE, not merely declared.
+#
+# A cap says which releases a `pip install` MAY take. It does not say which one pip
+# actually lands on: every other requirement in the same list narrows it too, and pip
+# backtracks silently rather than erroring. So a ceiling can be raised, reviewed, merged
+# and advertised while no install on earth can reach it -- which is the defect this whole
+# file exists to catch, arriving through a sibling requirement instead of through a stale
+# mirror of the trl line.
+#
+# That is not hypothetical. With `trl<=1.13.0` declared next to `datasets<4.4.0`, pip
+# walked back through all thirty 1.x releases and installed trl 0.29.1, because every trl
+# 1.x requires `datasets>=4.7.0`. Nothing was red: the lift measured, reviewed and shipped
+# was the lift nobody could get.
+#
+# Recorded rather than fetched, so this runs in the dependency-free cap-site job on three
+# OSes with no network. `test_the_recorded_trl_datasets_floors_still_match_pypi` re-derives
+# it from PyPI when the network is there, so a future trl that moves its datasets floor
+# again fails there rather than silently widening the hole here.
+TRL_DATASETS_FLOORS = (
+    # (first trl release with this floor, the datasets floor it declares)
+    (Version("0.18.2"), Version("3.0.0")),
+    (Version("1.0.0"),  Version("4.7.0")),
+)
+
+
+def _pyproject_requirement(name: str) -> SpecifierSet:
+    """The single declared WINDOW for `name`, by the same one-window rule trl gets.
+
+    Exact `==` pins are skipped rather than counted as a second window, for the reason the
+    cap lift leaves `transformers==5.5.0` alone: a window says which releases a
+    `pip install` may resolve, an exact pin says which release the fully-pinned Studio
+    single-env ships (`datasets==4.3.0` sits amongst `fastapi==`, `uvicorn==`, `pydantic==`),
+    and moving one is a separate change needing its own lockfile. Counting them together
+    would make this assertion fire on a disagreement that is deliberate.
+    """
+    data = _toml()
+    project = data.get("project") or {}
+    raws: list[str] = list(project.get("dependencies") or [])
+    for extra in (project.get("optional-dependencies") or {}).values():
+        raws.extend(extra)
+    windows = set()
+    for raw in raws:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            continue
+        if req.name.lower().replace("_", "-") != name:
+            continue
+        if all(spec.operator == "==" for spec in req.specifier) and len(req.specifier):
+            continue
+        windows.add(str(req.specifier))
+    assert windows, f"pyproject.toml declares no {name} window at all, only exact pins"
+    assert len(windows) == 1, (
+        f"pyproject.toml declares {len(windows)} different {name} windows across its "
+        f"extras: {sorted(windows)}. One of them will be the one users hit and the other "
+        f"will be the one CI tests."
+    )
+    return SpecifierSet(windows.pop())
+
+
+def _datasets_floor_for(trl_version: Version) -> Version:
+    floor = TRL_DATASETS_FLOORS[0][1]
+    for first, declared in TRL_DATASETS_FLOORS:
+        if trl_version >= first:
+            floor = declared
+    return floor
+
+
+def _datasets_releases() -> list[Version]:
+    """Every datasets release the declared window could pick, recorded for the same reason."""
+    return [
+        Version(v) for v in (
+            "3.4.1", "3.5.0", "3.6.0",
+            "4.0.0", "4.1.0", "4.2.0", "4.3.0", "4.4.0", "4.4.1", "4.4.2", "4.5.0",
+            "4.6.0", "4.6.1", "4.7.0", "4.8.0", "4.8.5",
+            "5.0.0", "5.0.1",
+        )
+    ]
+
+
+def test_the_declared_datasets_window_can_supply_the_declared_trl_ceiling() -> None:
+    """The assertion the shipped cap failed: a ceiling no sibling window lets pip reach."""
+    ceiling = _ceiling(_declared_window())
+    needed = _datasets_floor_for(ceiling)
+    datasets_window = _pyproject_requirement("datasets")
+    usable = [v for v in _datasets_releases() if str(v) in datasets_window and v >= needed]
+    assert usable, (
+        f"the declared trl ceiling {ceiling} requires datasets>={needed}, but the declared "
+        f"datasets window {datasets_window} admits no such release. pip does not error on "
+        f"this: it backtracks to the newest trl whose datasets floor fits and installs that "
+        f"instead, so the advertised ceiling is one no install can reach and nothing goes "
+        f"red. Move the datasets window with the trl one, or lower the trl ceiling to the "
+        f"newest release this datasets window can actually supply."
+    )
+
+
+def test_the_resolvability_check_can_fail() -> None:
+    """NEGATIVE CONTROL: the window that shipped, and the one that fixes it."""
+    stranded = SpecifierSet(">=3.4.1,!=4.0.*,!=4.1.0,<4.4.0")
+    needed = _datasets_floor_for(Version("1.13.0"))
+    assert not [v for v in _datasets_releases() if str(v) in stranded and v >= needed], (
+        "datasets<4.4.0 must not be able to supply a trl 1.x: that pairing is exactly the "
+        "silently-unreachable ceiling this check exists to catch."
+    )
+    opened = SpecifierSet(">=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0")
+    assert [v for v in _datasets_releases() if str(v) in opened and v >= needed]
+
+
+def test_the_datasets_window_still_excludes_exactly_what_the_runtime_guard_refuses() -> None:
+    """`patch_datasets` raises on 4.4.0 through 4.5.0. The metadata must say the same thing.
+
+    Not "at least as strict": a metadata window WIDER than the guard installs a release the
+    guard then refuses at import, and one NARROWER (the shipped `<4.4.0`) forbids releases
+    nothing objects to, which is how the trl ceiling became unreachable.
+    """
+    guard = RL_REPLACEMENTS.parent.parent / "import_fixes.py"
+    source = guard.read_text(encoding = "utf-8")
+    match = re.search(
+        r'datasets_version <= Version\("([\d.]+)"\).*?datasets_version >= Version\("([\d.]+)"\)',
+        source, re.S,
+    )
+    assert match, "patch_datasets no longer states its forbidden range in the shape this reads"
+    high, low = Version(match.group(1)), Version(match.group(2))
+
+    window = _pyproject_requirement("datasets")
+    for release in _datasets_releases():
+        refused_at_runtime = low <= release <= high
+        admitted_by_metadata = str(release) in window
+        if refused_at_runtime:
+            assert not admitted_by_metadata, (
+                f"datasets {release} is inside patch_datasets' forbidden range "
+                f"[{low}, {high}] but the declared window still admits it, so pip may "
+                f"install a release that raises NotImplementedError at import."
+            )
+
+
+def test_the_recorded_trl_datasets_floors_still_match_pypi() -> None:
+    """Re-derive TRL_DATASETS_FLOORS from PyPI. Skips offline; this is the only network here."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    def metadata(version: Version) -> list[str]:
+        url = f"https://pypi.org/pypi/trl/{version}/json"
+        try:
+            with urllib.request.urlopen(url, timeout = 15) as response:
+                return json.load(response)["info"].get("requires_dist") or []
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+            pytest.skip(f"PyPI unreachable ({error})")
+
+    for first, declared in TRL_DATASETS_FLOORS:
+        floors = [
+            Requirement(raw).specifier
+            for raw in metadata(first)
+            if Requirement(raw).name.lower() == "datasets" and not Requirement(raw).marker
+        ]
+        assert floors, f"trl {first} declares no unconditional datasets requirement"
+        assert str(declared) in str(floors[0]), (
+            f"trl {first} now declares datasets{floors[0]}, not >={declared}. Update "
+            f"TRL_DATASETS_FLOORS, then re-check the declared datasets window against it."
+        )

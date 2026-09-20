@@ -867,6 +867,30 @@
       "evidence_hash": "e584ecfdb097d9482bb19cd3992813bc1a119cfd4c40af14748bafe22900d91e"
     },
     {
+      "package": "trl",
+      "file": "trl/_lazy_module.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L71:             return importlib.import_module(\".\" + module_name, self.__name__)",
+      "evidence_hash": "e584ecfdb097d9482bb19cd3992813bc1a119cfd4c40af14748bafe22900d91e"
+    },
+    {
+      "package": "trl",
+      "file": "trl/experimental/async_distillation/vllm_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L48:         while True: sha256:925f5318e1a94b98c1d4e73ac0f2a10cd48b9e3d7fb78e789d4b9ac9d01ceea6",
+      "evidence_hash": "5de7b25a3eafdadc8b50ae22fd4f599e09f12912c05ae595797292fcb68992fa"
+    },
+    {
+      "package": "trl",
+      "file": "trl/experimental/async_grpo/vllm_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L48:         while True: sha256:c3c21557aa82ba4593ff95c6934504bcb987ded9f67836ec1e2f371aa3166f52",
+      "evidence_hash": "2d5cf3effabb28b1410203deed71a621301cce15e09dc1485b3b538b183184f8"
+    },
+    {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "Accesses cloud metadata/IMDS AND makes network calls",

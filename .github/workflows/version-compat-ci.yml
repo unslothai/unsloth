@@ -205,7 +205,7 @@ jobs:
               torch torchvision 'torchcodec>=0.12'
             pkg_pins: >-
               'transformers==5.17.0' 'trl==1.13.0'
-              peft sentence-transformers accelerate 'datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0'
+              peft sentence-transformers accelerate 'datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0'
               bitsandbytes triton hf_transfer
           - slug: latest
             continue_on_error: true
