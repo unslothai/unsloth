@@ -4629,3 +4629,60 @@ class TestPathsThroughBranches:
             f'import requests\nif flag:\n    u = "{_METADATA_URL}"\nrequests.get(u)',
             expect_phrase = "Blocked: cloud-metadata host",
         )
+
+
+class TestJoinsThatOnlyHoldOnTheirOwnPath:
+    """An if / else that replaces a value only does so where it runs."""
+
+    def test_a_join_inside_a_branch_does_not_answer_for_a_use_outside_it(self):
+        _blocked(
+            f'import requests\nurl = "{_METADATA_URL}"\nif outer:\n    if flag:\n'
+            '        url = "https://huggingface.co/a"\n    else:\n'
+            '        url = "https://huggingface.co/b"\nrequests.get(url)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_store_control_cannot_reach_does_not_count(self):
+        _blocked(
+            f'import requests\nurl = "{_METADATA_URL}"\ntry:\n    if flag:\n'
+            "        raise RuntimeError()\n"
+            '        url = "https://huggingface.co/a"\n    else:\n'
+            '        url = "https://huggingface.co/b"\n'
+            "except RuntimeError:\n    pass\nrequests.get(url)",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_arm_that_leaves_lets_the_other_arm_decide_ok(self):
+        # The raising arm never reaches the call, so the else arm is what the call sees.
+        _ok(
+            f'import requests\nu = "{_METADATA_URL}"\nif flag:\n'
+            "    raise RuntimeError()\nelse:\n"
+            '    u = "https://huggingface.co/api/models"\nrequests.get(u)'
+        )
+
+
+class TestShadowedModules:
+    """A name the source defines is not the module it spells."""
+
+    def test_a_local_class_named_os_is_not_the_environment_ok(self):
+        _ok(
+            "import requests\n"
+            "class os:\n"
+            '    environ = {"URL": "https://huggingface.co/x"}\n'
+            'requests.get(os.environ["URL"])'
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param('import os, requests\nrequests.get(os.environ["URL"])', id = "environ"),
+            pytest.param('import os, requests\nrequests.get(os.getenv("URL"))', id = "getenv"),
+            pytest.param(
+                'import os as o\nimport requests\nrequests.get(o.environ["URL"])',
+                id = "aliased_import",
+            ),
+        ],
+    )
+    def test_the_imported_module_is_still_the_environment(self, code):
+        # An import of the name is how you get the real module, so it is not a shadow.
+        _blocked(code, expect_phrase = "Blocked: request target is read")

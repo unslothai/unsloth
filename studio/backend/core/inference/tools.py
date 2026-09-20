@@ -16553,17 +16553,46 @@ def _check_signal_escape_patterns(code: str):
                     stack.append(target.value)
             return out
 
+        @staticmethod
+        def _leaves_the_path(statement) -> bool:
+            """Whether control cannot continue past this statement to the next one."""
+            return isinstance(statement, (ast.Raise, ast.Return, ast.Break, ast.Continue)) or (
+                isinstance(statement, ast.If)
+                and bool(statement.orelse)
+                and _NameBindings._path_leaves(statement.body)
+                and _NameBindings._path_leaves(statement.orelse)
+            )
+
+        @staticmethod
+        def _path_leaves(body: list) -> bool:
+            return any(_NameBindings._leaves_the_path(statement) for statement in body)
+
         def _definitely_assigns(self, body: list) -> set:
             """Names assigned on every path through *body*. A loop may not run and a bare `if`
             may not be taken, so neither is definite; an `if` with an `else` is, for the names
             both arms assign on every one of their own paths."""
             out: set = set()
             for statement in body:
+                if self._leaves_the_path(statement):
+                    # Control leaves here, so nothing written below it runs on this path.
+                    break
                 out |= self._assigned_here(statement)
                 if isinstance(statement, ast.If) and statement.orelse:
-                    out |= self._definitely_assigns(statement.body) & self._definitely_assigns(
-                        statement.orelse
-                    )
+                    arms = []
+                    for arm in (statement.body, statement.orelse):
+                        # An arm that raises or returns never reaches the join, so it neither
+                        # contributes a value nor has to: the other arm alone decides.
+                        arms.append(
+                            None if self._path_leaves(arm) else self._definitely_assigns(arm)
+                        )
+                    if arms[0] is None and arms[1] is None:
+                        continue
+                    if arms[0] is None:
+                        out |= arms[1]
+                    elif arms[1] is None:
+                        out |= arms[0]
+                    else:
+                        out |= arms[0] & arms[1]
                 elif isinstance(statement, (ast.With, ast.AsyncWith)):
                     out |= self._definitely_assigns(statement.body)
                 elif isinstance(statement, ast.Try):
@@ -16577,11 +16606,12 @@ def _check_signal_escape_patterns(code: str):
             for statement in _tree_nodes(tree):
                 if not isinstance(statement, ast.If) or not statement.orelse:
                     continue
-                both = self._definitely_assigns(statement.body) & self._definitely_assigns(
-                    statement.orelse
-                )
+                both = self._definitely_assigns([statement])
+                scope = self._scope_of.get(id(statement))
                 for name in both:
-                    self._exhaustive_joins.setdefault(name, []).append(self._position(statement))
+                    self._exhaustive_joins.setdefault((scope, name), []).append(
+                        self._position(statement)
+                    )
 
         def _mark_conditional_bindings(self, tree) -> None:
             """The suites that only run when a branch is taken. Whether a binding inside one is
@@ -16619,11 +16649,18 @@ def _check_signal_escape_patterns(code: str):
             return False
 
         def is_bound(self, name: str, node) -> bool:
-            """Whether the source binds this name anywhere the use can see, which is what says a
-            builtin has been shadowed."""
+            """Whether the source gives this name a meaning of its own anywhere the use can see,
+            which is what says a builtin or a module has been shadowed.
+
+            An import of the same name is not a shadow: `import os` is how you get the real `os`.
+            A `def`, a `class` or an assignment is."""
             for scope in self._chain(node):
-                if (scope, name) in self._counts:
-                    return True
+                key = (scope, name)
+                if key not in self._counts:
+                    continue
+                return any(
+                    not is_alias for _position, is_alias in self._bind_positions.get(key, [])
+                )
             return False
 
         def possible_values(self, name: str, node) -> list:
@@ -16661,8 +16698,10 @@ def _check_signal_escape_patterns(code: str):
                 if not self._is_conditional_for(position, where):
                     start = index
             # An if / else that assigns the name on both paths replaces whatever came before it.
-            for join in self._exhaustive_joins.get(key[1], ()):
-                if join <= where:
+            for join in self._exhaustive_joins.get(key, ()):
+                # A join inside a branch only replaces the earlier value on the path that takes
+                # it, so it cannot answer for a use outside that branch.
+                if join <= where and not self._is_conditional_for(join, where):
                     start = max(
                         start,
                         next(
@@ -17309,7 +17348,7 @@ def _check_signal_escape_patterns(code: str):
                         return True
                 if _reads_a_file(sub):
                     return True
-                if _reads_env_or_secret(sub):
+                if _reads_env_or_secret(sub, bindings):
                     return True
                 if _reads_an_external_source_through_an_alias(sub, bindings):
                     return True
@@ -17525,15 +17564,23 @@ def _check_signal_escape_patterns(code: str):
             return bool(owner) and f"{owner}.{node.attr}" in _EXTERNAL_SOURCE_FQ
         return False
 
-    def _is_os_environ(node: ast.AST) -> bool:
+    def _names_the_real_module(node: ast.Name, module: str, bindings) -> bool:
+        """Whether this name is the module it spells rather than something the source defined.
+        `class os: environ = {...}` is a local class, and reading it is not reading the process
+        environment. A shadowed name is judged the same way `input` and `getpass` already are."""
+        if node.id != module:
+            return False
+        return bindings is None or not bindings.is_bound(node.id, node)
+
+    def _is_os_environ(node: ast.AST, bindings = None) -> bool:
         return (
             isinstance(node, ast.Attribute)
-            and node.attr == "environ"
+            and node.attr in ("environ", "environb")
             and isinstance(node.value, ast.Name)
-            and node.value.id == "os"
+            and _names_the_real_module(node.value, "os", bindings)
         )
 
-    def _reads_env_or_secret(node: ast.AST | None) -> bool:
+    def _reads_env_or_secret(node: "ast.AST | None", bindings = None) -> bool:
         """True if any node in the subtree resolves to an env/process read. Walks the whole subtree
         (not just the root) to catch wrappers like `str(os.environ)`. Covers
         os.environ[/.get]/os.getenv, bare getenv, and subprocess.{run,check_output,...} that
@@ -17541,7 +17588,7 @@ def _check_signal_escape_patterns(code: str):
         if node is None:
             return False
         for sub in ast.walk(node):
-            if _is_os_environ(sub):
+            if _is_os_environ(sub, bindings):
                 return True
             if isinstance(sub, ast.Call):
                 f = sub.func
@@ -17549,7 +17596,7 @@ def _check_signal_escape_patterns(code: str):
                     if (
                         f.attr in {"getenv", "getenvb"}
                         and isinstance(f.value, ast.Name)
-                        and f.value.id == "os"
+                        and _names_the_real_module(f.value, "os", bindings)
                     ):
                         return True
                     if (
@@ -17616,7 +17663,7 @@ def _check_signal_escape_patterns(code: str):
                 )
         all_values = list(node.args or []) + [kw.value for kw in (node.keywords or [])]
         for v in all_values:
-            if _reads_env_or_secret(v):
+            if _reads_env_or_secret(v, _bindings):
                 return (
                     "HF upload cannot include os.environ / os.getenv / subprocess "
                     "env reads; secrets and tokens must not be exfiltrated"
