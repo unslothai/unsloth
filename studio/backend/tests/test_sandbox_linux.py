@@ -1733,3 +1733,84 @@ def test_a_deeply_nested_studio_state_root_is_refused_not_restored(monkeypatch, 
     kept = sandbox_linux._without_studio_state((str(opt),), depth = 0)
 
     assert kept == (), "an ancestor of the Studio auth database was bound anyway"
+
+
+def test_a_symlinked_sibling_is_not_promoted_to_a_bind_source(monkeypatch, tmp_path):
+    """Splitting a system root must not mount what the whole-root bind did not.
+
+    Inside a whole-root bind a symlink is dormant: it resolves inside the jail,
+    where its target is not mounted. Named as a bind source it resolves on the
+    HOST, so /opt/private -> /home/operator/private would become readable to
+    model-authored code precisely because the root was split.
+    """
+    from core.inference import sandbox_linux
+
+    opt = tmp_path / "opt"
+    state = opt / "unsloth-studio"
+    (state / "auth").mkdir(parents = True)
+    private = tmp_path / "home" / "operator" / "private"
+    private.mkdir(parents = True)
+    (opt / "private").symlink_to(private)
+    (opt / "toolchain").mkdir()
+    # A symlink that stays inside the root is still useful and still safe.
+    (opt / "inside-link").symlink_to(opt / "toolchain")
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    kept = sandbox_linux._without_studio_state((str(opt),))
+
+    assert str(opt / "private") not in kept, "a symlink out of the root became a bind source"
+    assert str(opt / "toolchain") in kept
+    assert str(opt / "inside-link") in kept
+
+
+def test_a_cache_holding_studio_state_is_not_shared_writable(monkeypatch, tmp_path):
+    """HF_HUB_CACHE at or above the Studio root would bind auth/auth.db in
+    WRITABLE, and the hazard scan would not object: an ordinary file is not a
+    host channel."""
+    from core.inference import sandbox_linux
+
+    state = tmp_path / "studio"
+    (state / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    assert sandbox_linux._holds_studio_state(str(state)) is True
+    assert sandbox_linux._holds_studio_state(str(tmp_path)) is True, (
+        "an ancestor of the Studio root was not recognised"
+    )
+    assert sandbox_linux._holds_studio_state(str(tmp_path / "elsewhere")) is False
+
+
+def test_the_cache_bind_itself_drops_a_component_holding_studio_state(monkeypatch, tmp_path):
+    """Through _model_cache_binds, not just the predicate: the guard is only
+    worth anything if the bind list is what changes.
+
+    HF_HUB_CACHE pointed at the Studio root is the concrete case. The bind is
+    WRITABLE, and the hazard scan does not object, because an ordinary file is
+    not a host channel.
+    """
+    import types
+
+    from core.inference import sandbox_linux
+
+    state = tmp_path / "studio"
+    (state / "auth").mkdir(parents = True)
+    elsewhere = tmp_path / "models"
+    for name in ("xet", "datasets", "assets"):
+        (elsewhere / name).mkdir(parents = True, exist_ok = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    settings = types.ModuleType("utils.hf_cache_settings")
+    settings.get_hf_cache_paths = lambda: types.SimpleNamespace(
+        cache_home = str(elsewhere),
+        hub_cache = str(state),          # the Studio root itself
+        xet_cache = str(elsewhere / "xet"),
+    )
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
+    monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
+
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "work"))
+
+    assert "hub" not in binds, "the Studio root was shared into the sandbox as the hub cache"
+    # The unrelated components are untouched: this is a targeted refusal.
+    assert binds.get("xet") == str(elsewhere / "xet")

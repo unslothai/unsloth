@@ -150,6 +150,15 @@ def _within(path: str, root: str) -> bool:
         return False
 
 
+def _holds_studio_state(path: str) -> bool:
+    """Whether ``path`` IS, or CONTAINS, a Studio state root."""
+    real = os.path.realpath(path)
+    return any(
+        _within(real, root) or _within(root, real)
+        for root in studio_state_roots()
+    )
+
+
 def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, ...]:
     """Bind a system root's children instead of the root when Studio's own
     state lives inside it.
@@ -187,10 +196,29 @@ def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, 
             continue  # unreadable: bind nothing rather than everything
         kept.extend(
             _without_studio_state(
-                tuple(path for path in children if os.path.isdir(path)), depth - 1
+                tuple(path for path in children if _bindable_child(path, real)), depth - 1
             )
         )
     return tuple(dict.fromkeys(kept))
+
+
+def _bindable_child(path: str, root: str) -> bool:
+    """A directory under ``root`` that can be a bind SOURCE in its own right.
+
+    Symlinks are the trap. Inside a whole-root bind a symlink is dormant: it
+    resolves inside the jail, where its target is not mounted. Named as a bind
+    source it resolves on the HOST, so splitting ``/opt`` and then binding
+    ``/opt/private -> /home/operator/private`` would mount that private
+    directory into the sandbox, which the unsplit bind never did. Kept only
+    when the target stays under the same root, so a toolchain that symlinks
+    within its own tree still works.
+    """
+    try:
+        if not stat.S_ISDIR(os.lstat(path).st_mode):
+            return stat.S_ISDIR(os.stat(path).st_mode) and _within(os.path.realpath(path), root)
+    except OSError:
+        return False
+    return True
 
 
 @lru_cache(maxsize = 8)
@@ -540,6 +568,17 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
     for name in _MODEL_CACHE_SUBDIRS:
         path = os.path.abspath(resolved.get(name) or os.path.join(home, name))
         if _within(path, workdir):
+            continue
+        # A cache configured at, or above, the Studio root would share
+        # auth/auth.db into the jail and make it WRITABLE, and the hazard scan
+        # below would not object because an ordinary file is not a host
+        # channel. Checked separately from the system-root filtering because
+        # this bind does not come from _SYSTEM_ROOTS at all.
+        if _holds_studio_state(path):
+            logger.warning(
+                "Not sharing the %s cache into the sandbox: it is at or above "
+                "Studio's own state directory", name,
+            )
             continue
         # Writable caches need the workdir's host-channel checks, including nested bind mounts.
         hazard = _cache_hazard_within_deadline(name, path)
