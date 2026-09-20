@@ -247,6 +247,47 @@ def test_an_untouched_max_length_default_does_not_cap_the_model_context(
     )
 
 
+def test_an_explicit_max_length_equal_to_the_default_is_still_honoured(tmp_path, trl_has_guard):
+    """`SFTConfig(max_length = 1024)` is a request, even though 1024 is also the default.
+
+    No value can tell the two apart, so the generated config records whether the caller
+    named it and the resolution reads that rather than comparing against the default.
+    """
+    from datasets import Dataset
+    from trl import SFTConfig
+
+    default_max_length = _trl_default_max_length()
+    if default_max_length is None or default_max_length <= 0:
+        pytest.skip("this TRL has no positive max_length default, so the two cannot collide")
+    assert hasattr(
+        SFTConfig(output_dir = str(tmp_path)), "_unsloth_max_length_explicit"
+    ), "the generated config must record constructor provenance"
+
+    def _long_text(tok):
+        return Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4)
+
+    trainer = _build(
+        tmp_path,
+        dataset = _long_text,
+        model_max_seq_length = 8192,
+        max_length = default_max_length,
+    )
+    assert trainer.args.max_seq_length == default_max_length
+    assert _longest(trainer) == default_max_length, (
+        "an explicitly requested cap was read as an untouched default and the model "
+        "context overrode it"
+    )
+
+
+def test_an_unnamed_max_length_still_defers_to_the_model(tmp_path, trl_has_guard):
+    """The control for the test above: the sentinel must resolve back to TRL's default."""
+    from trl import SFTConfig
+
+    cfg = SFTConfig(output_dir = str(tmp_path))
+    assert cfg.max_length == _trl_default_max_length(), "the sentinel leaked into the config"
+    assert cfg._unsloth_max_length_explicit is False
+
+
 def test_the_cap_reads_an_explicit_max_length_not_a_positive_one():
     """The behavioural test above needs a TRL whose default is positive; this one does not."""
     from unsloth.models import rl
