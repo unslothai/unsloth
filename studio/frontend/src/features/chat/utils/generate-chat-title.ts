@@ -74,14 +74,15 @@ export async function generateChatTitle(
   const payload: OpenAIChatCompletionsRequest = {
     model,
     ...external,
-    stream: provider?.providerType === "openai_codex",
+    stream: Boolean(provider),
     temperature: 0.2,
     top_p: 0.9,
     max_tokens: 24,
     top_k: 20,
     repetition_penalty: 1.0,
     enable_thinking: false,
-    reasoning_effort: "none",
+    reasoning_effort:
+      provider?.providerType === "openai_codex" ? undefined : "none",
     // title generation must not inherit the server's tools-on default.
     enable_tools: false,
     messages: [
@@ -98,7 +99,7 @@ export async function generateChatTitle(
     raw = "";
     try {
       for await (const chunk of streamChatCompletions(
-        { ...payload, reasoning_effort: undefined },
+        payload,
         signal ?? new AbortController().signal,
       )) {
         const choice = chunk.choices?.[0];

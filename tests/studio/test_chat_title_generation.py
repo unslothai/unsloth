@@ -69,7 +69,7 @@ def test_title_model_payload_includes_optional_assistant_reply():
     assert 'parts.join("\\n")' in block
     block += TITLE_TS.read_text(encoding = "utf-8")
     assert "enable_thinking: false" in block
-    assert 'reasoning_effort: "none"' in block
+    assert 'provider?.providerType === "openai_codex" ? undefined : "none"' in block
 
 
 def test_generate_title_passes_first_assistant_reply_after_first_user():

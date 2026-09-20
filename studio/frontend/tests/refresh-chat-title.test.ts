@@ -352,3 +352,21 @@ test("a comparison conflict restores the successfully refreshed sibling", async 
     "Manual title",
   );
 });
+
+for (const providerType of ["openai", "anthropic", "vllm"]) {
+  test(`${providerType} connection titles consume the backend SSE response`, async () => {
+    state.model = "external::connection::chat-model";
+    state.providers = [
+      {
+        id: "connection",
+        providerType,
+        baseUrl: "https://example.invalid/v1",
+        hasApiKey: true,
+      },
+    ];
+    await refreshChatTitle(item);
+    assert.equal(state.requests[0].stream, true);
+    assert.equal(state.requests[0].reasoning_effort, "none");
+    assert.equal(state.threads[0].title, "Contract Negotiation");
+  });
+}

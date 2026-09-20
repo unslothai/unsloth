@@ -17,6 +17,7 @@ export const state = {
     enable_tools: boolean;
     enable_thinking: boolean;
     stream: boolean;
+    reasoning_effort?: string;
     provider_id?: string;
     external_model?: string;
     provider_type?: string;
@@ -73,6 +74,11 @@ export async function authFetch(_url: string, init: RequestInit) {
   if (request.provider_type === "openai_codex" && !request.stream) {
     return new Response("ChatGPT subscription chat requires stream=true.", {
       status: 400,
+    });
+  }
+  if (request.provider_type) {
+    return new Response('data: {"choices":[]}\n\ndata: [DONE]\n\n', {
+      headers: { "Content-Type": "text/event-stream" },
     });
   }
   await state.wait;
