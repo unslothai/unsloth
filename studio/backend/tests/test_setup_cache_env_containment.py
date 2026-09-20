@@ -383,51 +383,11 @@ def test_studio_home_outranks_unsloth_home(monkeypatch, tmp_path):
     sr = _load_storage_roots()
 
     assert sr.studio_root() == explicit.resolve()
-
-
-def test_data_designer_home_is_set_before_the_library_would_read_it(tmp_path):
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(
-        tmp_path / "studio" / "data-designer" / "managed-assets"
-    )
-
-
-def test_an_existing_data_designer_home_is_left_where_it_is(tmp_path):
-    legacy = tmp_path / "home" / ".data-designer"
-    (legacy / "managed-assets").mkdir(parents = True)
-    (legacy / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert "DATA_DESIGNER_HOME" not in os.environ
-    assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
-
-
 def _use_data_designer(home: Path) -> None:
     """Write what a Studio Data Designer session leaves behind."""
     (home / "managed-assets").mkdir(parents = True, exist_ok = True)
     (home / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
     (home / "managed-assets" / "seeds.parquet").write_bytes(b"PAR1")
-
-
-def test_a_used_managed_home_survives_a_legacy_dir_appearing_later(tmp_path):
-    # The legacy probe re-runs every launch, so a standalone run creating ~/.data-designer
-    # would hand the work under the Studio root to a re-seeded default.
-    managed = tmp_path / "studio" / "data-designer"
-    _use_data_designer(managed)
-    (tmp_path / "home" / ".data-designer").mkdir(parents = True)
-
-    sr = _load_storage_roots()
-    sr._setup_cache_env()
-
-    assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
-    assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(managed / "managed-assets")
-
-
 def test_a_used_managed_home_does_not_flip_when_the_legacy_dir_is_deleted(tmp_path):
     # Deleting and recreating ~/.data-designer used to toggle which home a run read.
     managed = tmp_path / "studio" / "data-designer"
@@ -447,65 +407,6 @@ def test_a_used_managed_home_does_not_flip_when_the_legacy_dir_is_deleted(tmp_pa
         seen.append(os.environ.get("DATA_DESIGNER_HOME"))
 
     assert seen == [str(managed)] * 4
-
-
-def test_an_unused_managed_home_still_defers_to_a_legacy_dir(tmp_path):
-    # _setup_cache_env creates the managed home on first launch, so existence alone must not
-    # claim a user's data.
-    (tmp_path / "studio" / "data-designer" / "managed-assets").mkdir(parents = True)
-    (tmp_path / "home" / ".data-designer").mkdir(parents = True)
-
-    sr = _load_storage_roots()
-    sr._setup_cache_env()
-
-    assert "DATA_DESIGNER_HOME" not in os.environ
-    assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
-
-
-def test_an_unreadable_managed_home_keeps_its_pin(monkeypatch, tmp_path):
-    # An inspection failure is not evidence of an empty home: reading it as one drops the pin
-    # and hides the recipes under the managed tree.
-    managed = tmp_path / "studio" / "data-designer"
-    _use_data_designer(managed)
-    (tmp_path / "home" / ".data-designer").mkdir(parents = True)
-    sr = _load_storage_roots()
-
-    real_iterdir = Path.iterdir
-
-    def deny(self):
-        if self in (managed, managed / "managed-assets"):
-            raise PermissionError(13, "Permission denied")
-        return real_iterdir(self)
-
-    monkeypatch.setattr(Path, "iterdir", deny)
-    sr._setup_cache_env()
-
-    assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
-    assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(managed / "managed-assets")
-
-
-@pytest.mark.skipif(
-    os.name == "nt" or os.geteuid() == 0,
-    reason = "chmod 000 denies neither root nor Windows",
-)
-def test_an_unreadable_managed_assets_child_keeps_its_pin(tmp_path):
-    # Same flip one level down: the home lists fine and the walk trips on managed-assets.
-    managed = tmp_path / "studio" / "data-designer"
-    _use_data_designer(managed)
-    (tmp_path / "home" / ".data-designer").mkdir(parents = True)
-    sr = _load_storage_roots()
-
-    assets = managed / "managed-assets"
-    assets.chmod(0o000)
-    try:
-        sr._setup_cache_env()
-    finally:
-        assets.chmod(0o755)
-
-    assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
-    assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(assets)
-
-
 def _fail_stat_on(monkeypatch, target: Path, error: OSError) -> None:
     """Make every stat of *target* raise *error*, and leave every other path alone.
 
@@ -525,66 +426,289 @@ def _fail_stat_on(monkeypatch, target: Path, error: OSError) -> None:
     for name in ("stat", "lstat"):
         monkeypatch.setattr(os, name, denying(getattr(os, name)))
 
+def _assert_the_resolver_really_ran(tmp_path: Path) -> None:
+    """A decline only means something beside a pin that still happened.
 
-@pytest.mark.skipif(
+    "MPLCONFIGDIR is absent" is equally true when no pinning code exists at all, so on its own
+    every decline case passed against a reverted implementation. Naming a sibling that is pinned
+    unconditionally makes the whole family falsifiable without a control test per case.
+    """
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"].startswith(str(tmp_path / "studio"))
+    assert os.environ["NUMBA_CACHE_DIR"].startswith(str(tmp_path / "studio"))
+
+
+def _mpl_managed(tmp_path: Path) -> Path:
+    return tmp_path / "studio" / "cache" / "matplotlib"
+
+
+def _write_rc(directory: Path) -> None:
+    directory.mkdir(parents = True, exist_ok = True)
+    (directory / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+
+
+def _write_style(stylelib: Path) -> None:
+    stylelib.mkdir(parents = True, exist_ok = True)
+    (stylelib / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
+
+
+@contextlib.contextmanager
+def _denied(*paths: Path):
+    """chmod 000 for the duration of the call under test, restored however it ends."""
+    for path in paths:
+        path.chmod(0o000)
+    try:
+        yield
+    finally:
+        for path in paths:
+            path.chmod(0o755)
+
+
+_NEEDS_CHMOD = pytest.mark.skipif(
     os.name == "nt" or os.geteuid() == 0,
     reason = "chmod 000 denies neither root nor Windows",
 )
-def test_an_unreadable_legacy_data_designer_dir_keeps_the_home_unpinned(tmp_path):
-    # Path.exists() cannot answer this: EACCES raises up to 3.13 and is swallowed from 3.14,
-    # and both readings ended at the pin.
-    home = tmp_path / "home"
-    _use_data_designer(home / ".data-designer")
-    sr = _load_storage_roots()
-
-    home.chmod(0o000)
-    try:
-        sr._setup_cache_env()
-    finally:
-        home.chmod(0o755)
-
-    assert "DATA_DESIGNER_HOME" not in os.environ
-    assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
+_XDG_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith(("linux", "freebsd")),
+    reason = "XDG config base is the Linux/FreeBSD branch",
+)
 
 
-def test_a_legacy_data_designer_dir_on_a_failing_volume_keeps_the_home_unpinned(
-    monkeypatch, tmp_path
+def _mpl_user_rc(tmp_path, monkeypatch):
+    _write_rc(_matplotlib_config_dir(tmp_path / "home"))
+
+
+def _mpl_user_styles(tmp_path, monkeypatch):
+    _write_style(_matplotlib_config_dir(tmp_path / "home") / "stylelib")
+
+
+def _mpl_empty_config(tmp_path, monkeypatch):
+    _matplotlib_config_dir(tmp_path / "home").mkdir(parents = True)
+
+
+def _mpl_xdg_rc(tmp_path, monkeypatch):
+    _write_rc(tmp_path / "xdg" / "matplotlib")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+
+def _mpl_denied_config(tmp_path, monkeypatch):
+    config = _matplotlib_config_dir(tmp_path / "home")
+    _write_rc(config)
+    return _denied(config.parent)
+
+
+def _mpl_denied_styles(tmp_path, monkeypatch):
+    styles = _matplotlib_config_dir(tmp_path / "home") / "stylelib"
+    _write_style(styles)
+
+    @contextlib.contextmanager
+    def guard():
+        with _denied(styles):
+            # Path.glob suppresses the scandir error, which is what read an unreadable stylelib
+            # as empty; without this the case could pass while chmod did nothing.
+            assert list(styles.glob("*.mplstyle")) == []
+            yield
+
+    return guard()
+
+
+def _mpl_failing_volume(tmp_path, monkeypatch):
+    config = _matplotlib_config_dir(tmp_path / "home")
+    _write_rc(config)
+    _fail_stat_on(monkeypatch, config / "matplotlibrc", OSError(errno.EIO, "Input/output error"))
+
+
+def _mpl_managed_styles_and_user_rc(tmp_path, monkeypatch):
+    _write_style(_mpl_managed(tmp_path) / "stylelib")
+    _write_rc(_matplotlib_config_dir(tmp_path / "home"))
+
+
+def _mpl_empty_managed_and_user_rc(tmp_path, monkeypatch):
+    (_mpl_managed(tmp_path) / "stylelib").mkdir(parents = True)
+    _write_rc(_matplotlib_config_dir(tmp_path / "home"))
+
+
+def _mpl_linked_styles(tmp_path, monkeypatch):
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.mkdir(parents = True)
+    elsewhere = tmp_path / "styles-volume"
+    elsewhere.mkdir()   # empty, which is the whole point
+    (config / "stylelib").symlink_to(elsewhere, target_is_directory = True)
+
+
+def _mpl_dangling_styles(tmp_path, monkeypatch):
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.mkdir(parents = True)
+    (config / "stylelib").symlink_to(tmp_path / "never-mounted", target_is_directory = True)
+
+
+def _mpl_plain_empty_styles(tmp_path, monkeypatch):
+    (_matplotlib_config_dir(tmp_path / "home") / "stylelib").mkdir(parents = True)
+
+
+@pytest.mark.parametrize(
+    "prepare, pinned",
+    [
+        # MPLCONFIGDIR moves the CONFIG directory as well as the cache, so a pin wins only when
+        # there is nothing of the user's at matplotlib's own directory to hide. Each "must still
+        # pin" row is the control for the row above it: matplotlib creates the config dir and
+        # stylelib on import, so existence alone must never count as configuration.
+        pytest.param(_mpl_user_rc, False, id = "a user matplotlibrc"),
+        pytest.param(_mpl_user_styles, False, id = "a user style library"),
+        pytest.param(_mpl_empty_config, True, id = "an empty config dir"),
+        pytest.param(_mpl_xdg_rc, False, id = "an rc under XDG_CONFIG_HOME", marks = _XDG_ONLY),
+        pytest.param(
+            _mpl_denied_config, False, id = "a config dir we may not read", marks = _NEEDS_CHMOD
+        ),
+        pytest.param(
+            _mpl_denied_styles, False, id = "a stylelib we may not read", marks = _NEEDS_CHMOD
+        ),
+        pytest.param(_mpl_failing_volume, False, id = "an rc on a failing volume"),
+        pytest.param(_mpl_managed_styles_and_user_rc, True, id = "our own styles, already ours"),
+        pytest.param(_mpl_empty_managed_and_user_rc, False, id = "an empty managed dir"),
+        pytest.param(_mpl_linked_styles, False, id = "a stylelib linked to an empty volume"),
+        pytest.param(_mpl_dangling_styles, False, id = "a dangling stylelib link"),
+        pytest.param(_mpl_plain_empty_styles, True, id = "a plain empty stylelib"),
+    ],
+)
+def test_mplconfigdir_is_pinned_only_when_it_would_hide_nothing(
+    tmp_path, monkeypatch, prepare, pinned
 ):
-    legacy = tmp_path / "home" / ".data-designer"
-    _use_data_designer(legacy)
+    guard = prepare(tmp_path, monkeypatch) or contextlib.nullcontext()
     sr = _load_storage_roots()
+
+    with guard:
+        sr._setup_cache_env()
+
+    if pinned:
+        assert os.environ["MPLCONFIGDIR"] == str(_mpl_managed(tmp_path))
+    else:
+        assert "MPLCONFIGDIR" not in os.environ
+        _assert_the_resolver_really_ran(tmp_path)
+
+
+def _dd_managed(tmp_path: Path) -> Path:
+    return tmp_path / "studio" / "data-designer"
+
+
+def _dd_legacy(tmp_path: Path) -> Path:
+    return tmp_path / "home" / ".data-designer"
+
+
+def _dd_nothing(tmp_path, monkeypatch):
+    (tmp_path / "home").mkdir(parents = True, exist_ok = True)
+
+
+def _dd_legacy_in_use(tmp_path, monkeypatch):
+    _use_data_designer(_dd_legacy(tmp_path))
+
+
+def _dd_managed_in_use(tmp_path, monkeypatch):
+    _use_data_designer(_dd_managed(tmp_path))
+    _dd_legacy(tmp_path).mkdir(parents = True)
+
+
+def _dd_managed_untouched(tmp_path, monkeypatch):
+    (_dd_managed(tmp_path) / "managed-assets").mkdir(parents = True)
+    _dd_legacy(tmp_path).mkdir(parents = True)
+
+
+def _dd_managed_untouched_legacy_in_use(tmp_path, monkeypatch):
+    (_dd_managed(tmp_path) / "managed-assets").mkdir(parents = True)
+    _use_data_designer(_dd_legacy(tmp_path))
+
+
+def _dd_managed_unlistable(tmp_path, monkeypatch):
+    managed = _dd_managed(tmp_path)
+    _use_data_designer(managed)
+    _dd_legacy(tmp_path).mkdir(parents = True)
+    real_iterdir = Path.iterdir
+
+    def deny(self):
+        if self in (managed, managed / "managed-assets"):
+            raise PermissionError(13, "Permission denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", deny)
+
+
+def _dd_managed_assets_denied(tmp_path, monkeypatch):
+    managed = _dd_managed(tmp_path)
+    _use_data_designer(managed)
+    _dd_legacy(tmp_path).mkdir(parents = True)
+    return _denied(managed / "managed-assets")
+
+
+def _dd_redirected_assets(tmp_path, monkeypatch):
+    managed = _dd_managed(tmp_path)
+    managed.mkdir(parents = True)
+    elsewhere = tmp_path / "big-disk" / "assets"
+    elsewhere.mkdir(parents = True)   # empty, which is the whole point
+    (managed / "managed-assets").symlink_to(elsewhere, target_is_directory = True)
+    _use_data_designer(_dd_legacy(tmp_path))
+
+
+def _dd_legacy_denied(tmp_path, monkeypatch):
+    _use_data_designer(_dd_legacy(tmp_path))
+    return _denied(tmp_path / "home")
+
+
+def _dd_legacy_failing_volume(tmp_path, monkeypatch):
+    legacy = _dd_legacy(tmp_path)
+    _use_data_designer(legacy)
     _fail_stat_on(monkeypatch, legacy, OSError(errno.EIO, "Input/output error"))
 
-    sr._setup_cache_env()
 
-    assert "DATA_DESIGNER_HOME" not in os.environ
-    assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
-
-
-def test_a_legacy_data_designer_symlink_we_cannot_follow_keeps_the_home_unpinned(tmp_path):
-    # Path.exists() reports ELOOP as absence on every release, so the pin was taken anyway.
-    legacy = tmp_path / "home" / ".data-designer"
+def _dd_legacy_symlink_loop(tmp_path, monkeypatch):
+    legacy = _dd_legacy(tmp_path)
     legacy.parent.mkdir(parents = True, exist_ok = True)
     legacy.symlink_to(legacy)
-    sr = _load_storage_roots()
-
+    # ELOOP reads as absence through Path.exists() on every release, which is the bug.
     assert Path(legacy).exists() is False
-    sr._setup_cache_env()
-
-    assert "DATA_DESIGNER_HOME" not in os.environ
 
 
-def test_an_absent_legacy_data_designer_dir_still_pins_the_home(tmp_path):
-    # The inverse: hardening the probe must not stop it ever containing anything.
-    (tmp_path / "home").mkdir(parents = True, exist_ok = True)
+@pytest.mark.parametrize(
+    "prepare, pinned",
+    [
+        # Data Designer's home is not a cache: repointing one that holds yaml configs and
+        # multi-GB parquet hides them behind a re-seeded default. Our own home wins once it has
+        # been USED, since the legacy probe re-runs every launch and a standalone run creating
+        # ~/.data-designer would otherwise take the work written under the Studio root.
+        pytest.param(_dd_nothing, True, id = "no legacy home at all"),
+        pytest.param(_dd_legacy_in_use, False, id = "a legacy home in use"),
+        pytest.param(_dd_managed_in_use, True, id = "our home in use, legacy empty"),
+        pytest.param(_dd_managed_untouched, False, id = "our home untouched, legacy empty"),
+        pytest.param(
+            _dd_managed_untouched_legacy_in_use, False, id = "our home untouched, legacy in use"
+        ),
+        pytest.param(_dd_managed_unlistable, True, id = "our home we may not list"),
+        pytest.param(
+            _dd_managed_assets_denied, True, id = "our managed-assets denied", marks = _NEEDS_CHMOD
+        ),
+        pytest.param(_dd_redirected_assets, True, id = "managed-assets redirected by a link"),
+        pytest.param(
+            _dd_legacy_denied, False, id = "a legacy home we may not read", marks = _NEEDS_CHMOD
+        ),
+        pytest.param(_dd_legacy_failing_volume, False, id = "a legacy home on a failing volume"),
+        pytest.param(_dd_legacy_symlink_loop, False, id = "a legacy home that is a symlink loop"),
+    ],
+)
+def test_the_data_designer_home_is_pinned_only_when_it_would_hide_nothing(
+    tmp_path, monkeypatch, prepare, pinned
+):
+    guard = prepare(tmp_path, monkeypatch) or contextlib.nullcontext()
     sr = _load_storage_roots()
 
-    sr._setup_cache_env()
+    with guard:
+        sr._setup_cache_env()
 
-    managed = tmp_path / "studio" / "data-designer"
-    assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
-    assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(managed / "managed-assets")
-
+    managed = _dd_managed(tmp_path)
+    if pinned:
+        assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
+        assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(managed / "managed-assets")
+    else:
+        assert "DATA_DESIGNER_HOME" not in os.environ
+        assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
+        _assert_the_resolver_really_ran(tmp_path)
 
 def test_managed_assets_follow_an_explicit_data_designer_home(monkeypatch, tmp_path):
     chosen = tmp_path / "mine" / ".data-designer"
@@ -689,57 +813,6 @@ def _matplotlib_config_dir(home: Path) -> Path:
         base = (os.environ.get("XDG_CONFIG_HOME") or "").strip()
         return (Path(base) if base else home / ".config") / "matplotlib"
     return home / ".matplotlib"
-
-
-def test_a_user_matplotlibrc_keeps_matplotlibs_own_config_dir(tmp_path):
-    # MPLCONFIGDIR moves the config dir too, so pinning here would silently drop the file.
-    config = _matplotlib_config_dir(tmp_path / "home")
-    config.mkdir(parents = True)
-    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert "MPLCONFIGDIR" not in os.environ
-
-
-def test_a_user_style_library_keeps_matplotlibs_own_config_dir(tmp_path):
-    styles = _matplotlib_config_dir(tmp_path / "home") / "stylelib"
-    styles.mkdir(parents = True)
-    (styles / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert "MPLCONFIGDIR" not in os.environ
-
-
-def test_an_empty_matplotlib_config_dir_is_still_pinned(tmp_path):
-    # matplotlib mkdir -p's this on every import, so existence cannot mean user configuration.
-    _matplotlib_config_dir(tmp_path / "home").mkdir(parents = True)
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert os.environ["MPLCONFIGDIR"] == str(tmp_path / "studio" / "cache" / "matplotlib")
-
-
-@pytest.mark.skipif(
-    not sys.platform.startswith(("linux", "freebsd")),
-    reason = "XDG config base is the Linux/FreeBSD branch",
-)
-def test_the_matplotlib_config_dir_follows_xdg_config_home(monkeypatch, tmp_path):
-    config = tmp_path / "xdg" / "matplotlib"
-    config.mkdir(parents = True)
-    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert "MPLCONFIGDIR" not in os.environ
-
-
 def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
     pytest.importorskip("matplotlib")
     config = _matplotlib_config_dir(tmp_path / "home")
@@ -770,65 +843,6 @@ def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
     assert result["rc"] == str(config / "matplotlibrc")
     assert result["dpi"] == 222.0
     assert result["style"] is True
-
-
-@pytest.mark.skipif(
-    os.name == "nt" or os.geteuid() == 0,
-    reason = "chmod 000 denies neither root nor Windows",
-)
-def test_an_uninspectable_matplotlib_config_dir_leaves_mplconfigdir_unset(tmp_path):
-    # MPLCONFIGDIR lives for the whole process, so reading an unreadable config dir as empty
-    # hides the matplotlibrc even once the mount recovers.
-    config = _matplotlib_config_dir(tmp_path / "home")
-    config.mkdir(parents = True)
-    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
-    sr = _load_storage_roots()
-
-    config.parent.chmod(0o000)
-    try:
-        sr._setup_cache_env()
-    finally:
-        config.parent.chmod(0o755)
-
-    assert "MPLCONFIGDIR" not in os.environ
-
-
-@pytest.mark.skipif(
-    os.name == "nt" or os.geteuid() == 0,
-    reason = "chmod 000 denies neither root nor Windows",
-)
-def test_an_uninspectable_style_library_leaves_mplconfigdir_unset(tmp_path):
-    # Path.glob suppresses the scandir error on every release we support, so an unreadable
-    # stylelib read as empty and every custom style went missing from the loss plots.
-    styles = _matplotlib_config_dir(tmp_path / "home") / "stylelib"
-    styles.mkdir(parents = True)
-    (styles / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
-    sr = _load_storage_roots()
-
-    styles.chmod(0o000)
-    try:
-        assert list(styles.glob("*.mplstyle")) == []
-        sr._setup_cache_env()
-    finally:
-        styles.chmod(0o755)
-
-    assert "MPLCONFIGDIR" not in os.environ
-
-
-def test_a_matplotlib_config_dir_on_a_failing_volume_leaves_mplconfigdir_unset(
-    monkeypatch, tmp_path
-):
-    config = _matplotlib_config_dir(tmp_path / "home")
-    config.mkdir(parents = True)
-    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
-    sr = _load_storage_roots()
-    _fail_stat_on(monkeypatch, config / "matplotlibrc", OSError(errno.EIO, "Input/output error"))
-
-    sr._setup_cache_env()
-
-    assert "MPLCONFIGDIR" not in os.environ
-
-
 @pytest.mark.skipif(
     not sys.platform.startswith(("linux", "freebsd")),
     reason = "XDG config base is the Linux/FreeBSD branch",
@@ -1088,39 +1102,6 @@ def test_a_managed_matplotlibrc_is_not_displaced_by_a_later_legacy_one(tmp_path)
     sr._setup_cache_env()
 
     assert os.environ["MPLCONFIGDIR"] == str(managed)
-
-
-def test_a_managed_style_library_is_not_displaced_either(tmp_path):
-    managed = tmp_path / "studio" / "cache" / "matplotlib"
-    (managed / "stylelib").mkdir(parents = True)
-    (managed / "stylelib" / "house.mplstyle").write_text(
-        "axes.facecolor: black\n", encoding = "utf-8"
-    )
-    config = _matplotlib_config_dir(tmp_path / "home")
-    config.mkdir(parents = True)
-    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert os.environ["MPLCONFIGDIR"] == str(managed)
-
-
-def test_an_empty_managed_dir_still_defers_to_a_user_matplotlibrc(tmp_path):
-    """The pre-existing rule, which the one above must not swallow. _setup_cache_env creates the
-    managed directory on the first launch, so existence alone would pin a directory nobody has
-    configured and drop a real user matplotlibrc."""
-    (tmp_path / "studio" / "cache" / "matplotlib" / "stylelib").mkdir(parents = True)
-    config = _matplotlib_config_dir(tmp_path / "home")
-    config.mkdir(parents = True)
-    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert "MPLCONFIGDIR" not in os.environ
-
-
 def test_a_blank_toolchain_override_is_dropped_on_a_spaced_root(monkeypatch, tmp_path):
     """ "blank counts as unset" has to hold for a root we refuse to pin, too.
 
@@ -1206,89 +1187,6 @@ def test_a_usable_managed_inductor_path_is_still_published(tmp_path):
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(
         tmp_path / "studio" / "cache" / "torchinductor"
     )
-
-
-def test_a_redirected_managed_assets_link_counts_as_use(tmp_path):
-    """A link at managed-assets is the user sending their assets somewhere else.
-
-    _setup_cache_env only ever creates a plain directory there, so a link is state that was put
-    there deliberately. entry.is_dir() follows it, and an empty target therefore read as the
-    untouched layout Unsloth creates: the pin was dropped in favour of a standalone
-    ~/.data-designer and the redirect went with it.
-    """
-    managed = tmp_path / "studio" / "data-designer"
-    managed.mkdir(parents = True)
-    elsewhere = tmp_path / "big-disk" / "assets"
-    elsewhere.mkdir(parents = True)  # empty, which is the whole point
-    (managed / "managed-assets").symlink_to(elsewhere, target_is_directory = True)
-    legacy = tmp_path / "home" / ".data-designer"
-    (legacy / "managed-assets").mkdir(parents = True)
-    (legacy / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
-
-
-def test_the_layout_unsloth_creates_still_defers_to_a_legacy_home(tmp_path):
-    """The rule above must not swallow the pre-existing one: a plain empty managed-assets is
-    what the first launch makes, and existence alone must not pin a home nobody has used."""
-    managed = tmp_path / "studio" / "data-designer"
-    (managed / "managed-assets").mkdir(parents = True)
-    legacy = tmp_path / "home" / ".data-designer"
-    (legacy / "managed-assets").mkdir(parents = True)
-    (legacy / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert "DATA_DESIGNER_HOME" not in os.environ
-
-
-def test_a_linked_style_library_is_configuration_not_an_empty_directory(tmp_path):
-    """scandir follows a link, so a stylelib symlink to an empty directory read as empty.
-
-    The link is the user sending their styles to another volume. Treating it as nothing let
-    MPLCONFIGDIR move, and the styles placed at that target later were then hidden behind the
-    pin. The Data Designer probe already checks the link itself for the same reason.
-    """
-    config = _matplotlib_config_dir(tmp_path / "home")
-    config.mkdir(parents = True)
-    elsewhere = tmp_path / "styles-volume"
-    elsewhere.mkdir()  # empty, which is the whole point
-    (config / "stylelib").symlink_to(elsewhere, target_is_directory = True)
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert "MPLCONFIGDIR" not in os.environ
-
-
-def test_a_dangling_style_library_link_is_not_read_as_absence(tmp_path):
-    """The target volume is not mounted right now. The link is still the user's."""
-    config = _matplotlib_config_dir(tmp_path / "home")
-    config.mkdir(parents = True)
-    (config / "stylelib").symlink_to(tmp_path / "never-mounted", target_is_directory = True)
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert "MPLCONFIGDIR" not in os.environ
-
-
-def test_a_plain_empty_style_library_still_lets_the_pin_through(tmp_path):
-    """The rule above must not swallow the pre-existing one: matplotlib creates stylelib on
-    import, so an ordinary empty one is not configuration."""
-    config = _matplotlib_config_dir(tmp_path / "home")
-    (config / "stylelib").mkdir(parents = True)
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    assert os.environ["MPLCONFIGDIR"] == str(tmp_path / "studio" / "cache" / "matplotlib")
-
-
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason = "chmod 000 denies neither")
 def test_a_note_that_could_not_be_read_is_not_cached_as_a_missing_one(monkeypatch, tmp_path):
     """A miss is a fact about the install; a failure to LOOK is a fact about one instant.
@@ -1355,93 +1253,95 @@ def test_a_write_probe_that_cannot_close_its_handle_is_a_no_not_a_crash(monkeypa
     assert sr._usable_dir(str(tmp_path)) is True
 
 
-def test_a_note_in_a_legacy_tree_cannot_defeat_the_managed_spawn_scrub(monkeypatch, tmp_path):
-    """process.rs removes UNSLOTH_HOME and UNSLOTH_PORTABLE from every managed spawn so that
-    "Tauri uses the legacy Unsloth root whatever the environment says". A note is a FILE, which no
-    env_remove can reach, and one naming an ANCESTOR passes containment: $HOME contains
-    ~/.unsloth/studio. Both variables came back through the filesystem and the packaged app's
-    Hugging Face caches moved out from under it.
+def _note_ancestor_of_a_legacy_tree(tmp_path, monkeypatch):
+    """A note naming $HOME, which passes containment because ~/.unsloth/studio is inside it.
 
-    Spawned exactly as start_backend does, with every scrubbed name absent, so anything that
-    comes back came off disk.
+    process.rs scrubs UNSLOTH_HOME and UNSLOTH_PORTABLE from every managed spawn so Tauri uses
+    the legacy root whatever the environment says. A note is a FILE, which no env_remove reaches,
+    so this is how both variables came back and moved the packaged app's caches.
     """
     home = tmp_path / "home"
     studio = home / ".unsloth" / "studio"
-    (studio / "share").mkdir(parents = True)
-    (studio / "share" / ".unsloth-master-root").write_text(str(home) + "\n", encoding = "utf-8")
+    _write_note(studio, home)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
     for scrubbed in ("UNSLOTH_HOME", "UNSLOTH_PORTABLE", "STUDIO_HOME"):
         monkeypatch.delenv(scrubbed, raising = False)
-    sr = _load_storage_roots()
-
-    assert sr.unsloth_home() is None, "a planted note reintroduced a scrubbed root"
-    assert sr.portable_mode() is False
-
-    sr._setup_cache_env()
-
-    assert os.environ["HF_HUB_CACHE"] == str(home / ".cache" / "huggingface" / "hub")
+    return None
 
 
-def test_a_note_naming_the_legacy_default_root_is_declined(monkeypatch, tmp_path):
-    """The reader has to decline it, not just the writer.
-
-    setup.sh and setup.ps1 refuse to record `$HOME/.unsloth` and sweep an old one away, but only
-    when setup runs again, and the user who hit this set UNSLOTH_HOME once for one command. Until
-    the reader declines it too, every bare launch keeps reading the note back, portable_mode()
-    stays true and HF_HUB_CACHE stays off ~/.cache/huggingface. Both uninstallers already refuse
-    exactly this value, so honouring it here is the four readers disagreeing.
-    """
+def _note_naming_the_legacy_default(tmp_path, monkeypatch):
+    """The reader has to decline it, not just the writer: setup only sweeps an old note when it
+    runs again, and the user who hit this set UNSLOTH_HOME once, for one command."""
     home = tmp_path / "home"
     studio = home / ".unsloth" / "studio"
-    (studio / "share").mkdir(parents = True)
-    (studio / "share" / ".unsloth-master-root").write_text(
-        str(home / ".unsloth") + "\n",
-        encoding = "utf-8",
-    )
+    _write_note(studio, home / ".unsloth")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
-    sr = _load_storage_roots()
-
-    assert sr.unsloth_home() is None
-    assert sr.portable_mode() is False
-
-    sr._setup_cache_env()
-
-    # The shared cache stays shared, which is what this module promises for a non-portable install.
-    assert os.environ["HF_HUB_CACHE"] == str(home / ".cache" / "huggingface" / "hub")
-    assert "TORCH_HOME" not in os.environ
+    return None
 
 
-def test_a_note_naming_a_real_master_root_is_still_honoured(monkeypatch, tmp_path):
-    """The other side of the rule above: the feature has to keep working. A recorded root that is
-    not the legacy default, and that contains this Studio tree, is what the note is for."""
+def _note_naming_a_real_master_root(tmp_path, monkeypatch):
+    """The other side of the rule: a recorded root that is not the legacy default and that
+    contains this Studio tree is exactly what the note is for."""
     master = tmp_path / "portable"
-    studio = master / "studio"
-    (studio / "share").mkdir(parents = True)
-    (studio / "share" / ".unsloth-master-root").write_text(str(master) + "\n", encoding = "utf-8")
+    _write_note(master / "studio", master)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
-    sr = _load_storage_roots()
-
-    assert sr.unsloth_home() == master
-    assert sr.portable_mode() is True
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(master / "studio"))
+    return master
 
 
-def test_an_explicit_legacy_unsloth_home_is_still_the_user_speaking(monkeypatch, tmp_path):
-    """Only the RECORDED root is declined. `unsloth_home()` returns an explicit UNSLOTH_HOME
-    before it ever reads the note, and narrowing that would change what the variable means
-    rather than what a stale file on disk is allowed to claim."""
+def _an_explicit_legacy_unsloth_home(tmp_path, monkeypatch):
+    """Only the RECORDED root is declined. unsloth_home() returns an explicit UNSLOTH_HOME before
+    it reads any note, and narrowing that would change what the variable means."""
     home = tmp_path / "home"
     (home / ".unsloth" / "studio" / "share").mkdir(parents = True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home / ".unsloth" / "studio"))
     monkeypatch.setenv("UNSLOTH_HOME", str(home / ".unsloth"))
+    return home / ".unsloth"
+
+
+def _write_note(studio: Path, root: Path) -> None:
+    (studio / "share").mkdir(parents = True, exist_ok = True)
+    (studio / "share" / ".unsloth-master-root").write_text(str(root) + "\n", encoding = "utf-8")
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        pytest.param(_note_ancestor_of_a_legacy_tree, id = "a note naming an ancestor"),
+        pytest.param(_note_naming_the_legacy_default, id = "a note naming the legacy default"),
+        pytest.param(_note_naming_a_real_master_root, id = "a note naming a real master root"),
+        pytest.param(_an_explicit_legacy_unsloth_home, id = "an explicit legacy UNSLOTH_HOME"),
+    ],
+)
+def test_a_master_root_is_honoured_only_when_a_reader_should_honour_it(
+    tmp_path, monkeypatch, prepare
+):
+    """`prepare` returns the root that must be honoured, or None when it must be declined.
+
+    The hub cache is asserted either way, since declining is only meaningful if the shared cache
+    really stays shared, and honouring is only meaningful if the caches really move.
+    """
+    expected = prepare(tmp_path, monkeypatch)
     sr = _load_storage_roots()
 
-    assert sr.unsloth_home() == (home / ".unsloth")
-    assert sr.portable_mode() is True
+    assert sr.unsloth_home() == expected
+    assert sr.portable_mode() is (expected is not None)
 
+    sr._setup_cache_env()
+
+    hub = Path(os.environ["HF_HUB_CACHE"])
+    if expected is None:
+        assert hub == Path(os.environ["HOME"]) / ".cache" / "huggingface" / "hub"
+        assert "TORCH_HOME" not in os.environ
+    else:
+        assert expected in hub.parents
+        assert Path(os.environ["TORCH_HOME"]).is_relative_to(expected)
 
 # 25 of 113 cases stayed green with the production hunks reverted: each asserts a variable is
 # ABSENT, which is equally true when no pinning code exists, so they were assertions rather than

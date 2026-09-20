@@ -95,6 +95,35 @@ def _env(home: Path, **overrides: str) -> dict[str, str]:
 
 
 @NEEDS_POSIX_BASH
+
+def _master_root_answer(tmp_path: Path, environment: str) -> str:
+    """What uninstall.ps1's own _MasterRoot answers, with *environment* run before it.
+
+    The functions are Invoke-Expression'd straight out of the shipped script, so a rewrite that
+    keeps the words and loses the behaviour fails here instead of passing against a copy.
+    """
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        f"""$txt = Get-Content -Raw "{UNINSTALL_PS1}"
+foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
+    $m = [regex]::Match($txt, "(?ms)^    function $n \\{{.*?^    \\}}")
+    if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED:$n"; exit 1 }}
+    Invoke-Expression $m.Value
+}}
+{environment}
+""",
+        encoding = "utf-8",
+    )
+    out = run_pwsh(
+        [PWSH, "-NoProfile", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout.strip()
+    assert "EXTRACT-FAILED" not in out, out
+    return out
+
+
 def test_a_master_root_puts_the_runtimes_beside_studio(tmp_path):
     root = tmp_path / "portable"
     (root / "studio").mkdir(parents = True)
@@ -728,29 +757,12 @@ def test_the_windows_uninstaller_resolves_a_relative_root_like_setup(tmp_path):
     chosen = tmp_path / "chosen"
     (chosen / "portable").mkdir(parents = True)
     initial.mkdir()
-    script = tmp_path / "probe.ps1"
-    script.write_text(
-        f"""$txt = Get-Content -Raw "{UNINSTALL_PS1}"
-foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
-    $m = [regex]::Match($txt, "(?ms)^    function $n \\{{.*?^    \\}}")
-    if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED:$n"; exit 1 }}
-    Invoke-Expression $m.Value
-}}
-[System.Environment]::CurrentDirectory = "{initial}"
+    out = _master_root_answer(tmp_path, f"""[System.Environment]::CurrentDirectory = "{initial}"
 Set-Location "{chosen}"
 $env:UNSLOTH_HOME = "portable"
 $env:USERPROFILE = "{tmp_path}/profile"
 Write-Output (_MasterRoot)
-""",
-        encoding = "utf-8",
-    )
-    out = run_pwsh(
-        [PWSH, "-NoProfile", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        check = True,
-    ).stdout.strip()
-    assert "EXTRACT-FAILED" not in out, out
+""")
     assert out == str(chosen / "portable"), out
 
 
@@ -917,30 +929,13 @@ def test_the_windows_uninstaller_does_not_borrow_another_installs_note(tmp_path)
     named = tmp_path / "named"
     (named / "share").mkdir(parents = True)
 
-    script = tmp_path / "probe.ps1"
-    script.write_text(
-        f"""$txt = Get-Content -Raw "{UNINSTALL_PS1}"
-foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
-    $m = [regex]::Match($txt, "(?ms)^    function $n \\{{.*?^    \\}}")
-    if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED:$n"; exit 1 }}
-    Invoke-Expression $m.Value
-}}
-$env:UNSLOTH_HOME = ""
+    out = _master_root_answer(tmp_path, f"""$env:UNSLOTH_HOME = ""
 $env:STUDIO_HOME = ""
 $env:UNSLOTH_STUDIO_HOME = "{named}"
 $env:USERPROFILE = "{profile}"
 $answer = _MasterRoot
 Write-Output "ANSWER:$answer"
-""",
-        encoding = "utf-8",
-    )
-    out = run_pwsh(
-        [PWSH, "-NoProfile", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        check = True,
-    ).stdout.strip()
-    assert "EXTRACT-FAILED" not in out, out
+""")
     assert out == "ANSWER:", out
 
 
@@ -963,29 +958,12 @@ def test_the_windows_uninstaller_finds_a_master_root_from_the_note(tmp_path):
     profile = tmp_path / "profile"
     (profile / ".unsloth" / "studio" / "share").mkdir(parents = True)
 
-    script = tmp_path / "probe.ps1"
-    script.write_text(
-        f"""$txt = Get-Content -Raw "{UNINSTALL_PS1}"
-foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
-    $m = [regex]::Match($txt, "(?ms)^    function $n \\{{.*?^    \\}}")
-    if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED:$n"; exit 1 }}
-    Invoke-Expression $m.Value
-}}
-$env:UNSLOTH_HOME = ""
+    out = _master_root_answer(tmp_path, f"""$env:UNSLOTH_HOME = ""
 $env:STUDIO_HOME = ""
 $env:UNSLOTH_STUDIO_HOME = "{master}/studio"
 $env:USERPROFILE = "{profile}"
 Write-Output (_MasterRoot)
-""",
-        encoding = "utf-8",
-    )
-    out = run_pwsh(
-        [PWSH, "-NoProfile", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        check = True,
-    ).stdout.strip()
-    assert "EXTRACT-FAILED" not in out, out
+""")
     assert out == str(master), out
 
 
