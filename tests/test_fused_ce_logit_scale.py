@@ -72,6 +72,11 @@ class _FakeModel:
 
 
 class _FakeCausalLM:
+    # mistral.py's mask synthesis reads self.training before either loss branch, and
+    # whether it gets that far depends on the attention backend, so the attribute has
+    # to exist or these tests pass or error depending on what ran before them.
+    training = False
+
     def __init__(self, config):
         self.config = config
         self.model = _FakeModel(_hidden_states())
