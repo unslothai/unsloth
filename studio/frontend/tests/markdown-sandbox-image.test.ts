@@ -254,3 +254,30 @@ test("a src that records its own session does not wait for the project row", () 
   assert.ok(gate.includes("sandboxSessionInSrc(src) === null"), "the gate skips recorded srcs");
   assert.ok(gate.includes("project === undefined"), "and only holds while the row is missing");
 });
+
+test("a rotated workspace session reaches the rehype rewrite", () => {
+  // The rewrite runs before MarkdownImage, so a bare source resolved without the
+  // rotated id is rewritten to the `project-<id>` fallback and then left alone as
+  // though the src had chosen that session itself.
+  const rotated = "project-workspace-YWJj-0123456789abcdef";
+  const withSession = markdownSandboxImageSrc("plot.png", {
+    threadId: "thread-1",
+    projectId: "proj-1",
+    workspaceSessionId: rotated,
+  });
+  const withoutSession = markdownSandboxImageSrc("plot.png", {
+    threadId: "thread-1",
+    projectId: "proj-1",
+    workspaceSessionId: undefined,
+  });
+  assert.ok(
+    withSession?.includes(encodeURIComponent(rotated)) ||
+      withSession?.includes(rotated),
+    `rotated session missing from ${withSession}`,
+  );
+  assert.notStrictEqual(
+    withSession,
+    withoutSession,
+    "the rotated session made no difference to the rewritten src",
+  );
+});

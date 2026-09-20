@@ -182,8 +182,11 @@ test("retained block and sandbox changes move Streamdown's render identity", () 
     jsxAttribute(streamdown, "key")?.initializer?.getText(source),
     "{`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}",
   );
+  // The workspace session belongs in the key for the same reason the other two do:
+  // the rehype rewrite resolves a bare `plot.png` through it, and changing a
+  // project's folder rotates it.
   assert.match(
     source.getText(),
-    /const sandboxScopeKey = JSON.stringify\(\[threadId, projectId\]\)/,
+    /const sandboxScopeKey = JSON.stringify\(\[threadId, projectId, workspaceSessionId\]\)/,
   );
 });

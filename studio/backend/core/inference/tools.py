@@ -11469,6 +11469,16 @@ def update_project_workspace_when_idle(project_id: str, update):
         ):
             return False, None
         _removing_sessions.update(locked_keys)
+    # Asked again now the fence is held. The check above is a read of state another
+    # tab can change a moment later, and a generation that registered in that gap
+    # captured the session this is about to rotate. Registration does not take this
+    # fence, so one starting DURING `update()` is still not covered; closing that
+    # needs generation registration to participate in the project fence itself.
+    if _project_generation_in_flight(project_id):
+        with _sessions_free:
+            _removing_sessions.difference_update(locked_keys)
+            _sessions_free.notify_all()
+        return False, None
     try:
         return True, update()
     finally:
