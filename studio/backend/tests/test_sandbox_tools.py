@@ -4526,3 +4526,70 @@ class TestPreparedAndBuiltRequests:
             "import requests\ns = requests.Session()\n"
             's.send(requests.Request("GET", "https://huggingface.co/api/models").prepare())'
         )
+
+
+class TestEveryAddressKeyword:
+    """libpq uses `hostaddr` as the destination, so the order the keywords are written in cannot
+    decide whether it is screened."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import psycopg\n"
+                'psycopg.connect(host = "huggingface.co", hostaddr = "169.254.169.254")',
+                id = "host_first",
+            ),
+            pytest.param(
+                "import psycopg\n"
+                'psycopg.connect(hostaddr = "169.254.169.254", host = "huggingface.co")',
+                id = "hostaddr_first",
+            ),
+        ],
+    )
+    def test_both_orders_are_screened(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+
+class TestConditionalBareHosts:
+    """A pool takes a bare host, so its branches are screened as hosts rather than as URLs."""
+
+    def test_a_metadata_host_in_one_branch_is_refused(self):
+        _blocked(
+            'import urllib3\nh = "huggingface.co"\nif flag:\n    h = "169.254.169.254"\n'
+            'urllib3.HTTPConnectionPool(h).request("GET", "/latest")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_both_branches_allowed_keeps_working_ok(self):
+        _ok(
+            'import urllib3\nh = "huggingface.co"\nif flag:\n    h = "huggingface.co"\n'
+            'urllib3.HTTPConnectionPool(h).request("GET", "/x")'
+        )
+
+
+class TestValuesReplacedOnEveryPath:
+    """When an if and its else both assign the name, nothing before the statement can reach a use
+    after it."""
+
+    def test_a_value_both_branches_replace_is_not_a_candidate_ok(self):
+        _ok(
+            f'import requests\nu = "{_METADATA_URL}"\nif flag:\n'
+            '    u = "https://huggingface.co/a"\nelse:\n'
+            '    u = "https://huggingface.co/b"\nrequests.get(u)'
+        )
+
+    def test_a_blocked_host_inside_a_branch_is_still_found(self):
+        _blocked(
+            'import requests\nu = "https://huggingface.co/a"\nif flag:\n'
+            f'    u = "{_METADATA_URL}"\nelse:\n'
+            '    u = "https://huggingface.co/b"\nrequests.get(u)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_branch_without_an_else_leaves_the_earlier_value_reachable(self):
+        _blocked(
+            f'import requests\nu = "{_METADATA_URL}"\nif flag:\n'
+            '    u = "https://huggingface.co/a"\nrequests.get(u)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )

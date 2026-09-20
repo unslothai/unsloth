@@ -16335,6 +16335,7 @@ def _check_signal_escape_patterns(code: str):
             self._alias_history: dict = {}
             self._value_positions: dict = {}
             self._conditional_bindings: set = set()
+            self._exhaustive_joins: dict = {}
             self._value_spans: dict = {}
             # Names imported twice: no order-independent answer, so no alias at all.
             self._ambiguous_aliases: set = set()
@@ -16532,6 +16533,24 @@ def _check_signal_escape_patterns(code: str):
                     return None
             return None
 
+        def _mark_exhaustive_joins(self, tree) -> None:
+            """Where an `if` and its `else` both assign a name, nothing before the statement can
+            reach a use after it, so those earlier values stop being candidates there."""
+            for statement in _tree_nodes(tree):
+                if not isinstance(statement, ast.If) or not statement.orelse:
+                    continue
+                assigned = [
+                    {
+                        inner.id
+                        for branch in part
+                        for inner in ast.walk(branch)
+                        if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store)
+                    }
+                    for part in (statement.body, statement.orelse)
+                ]
+                for name in assigned[0] & assigned[1]:
+                    self._exhaustive_joins.setdefault(name, []).append(self._position(statement))
+
         def _mark_conditional_bindings(self, tree) -> None:
             """Positions of assignments that only run if a branch is taken. Source position says
             they came before the call, but not that they ran, so they cannot displace the value
@@ -16571,9 +16590,7 @@ def _check_signal_escape_patterns(code: str):
             return []
 
         def _candidates_held_here(self, key, node) -> list:
-            positioned = sorted(
-                self._value_positions.get(key, ()), key = lambda entry: entry[0]
-            )
+            positioned = sorted(self._value_positions.get(key, ()), key = lambda entry: entry[0])
             if not positioned:
                 return []
             if self._scope_of.get(id(node)) != key[0]:
@@ -16591,6 +16608,20 @@ def _check_signal_escape_patterns(code: str):
             for index, (position, _value) in enumerate(before):
                 if position not in self._conditional_bindings:
                     start = index
+            # An if / else that assigns the name on both paths replaces whatever came before it.
+            for join in self._exhaustive_joins.get(key[1], ()):
+                if join <= where:
+                    start = max(
+                        start,
+                        next(
+                            (
+                                index
+                                for index, (position, _value) in enumerate(before)
+                                if position >= join
+                            ),
+                            start,
+                        ),
+                    )
             return before[start:]
 
         def _value_held_here(self, key, node):
@@ -16745,10 +16776,11 @@ def _check_signal_escape_patterns(code: str):
                         # `with socket.socket() as s` hands back the socket itself, so the name is
                         # still a socket receiver; anything else binds a value we cannot name.
                         held = node.context_expr
-                        # requests.Session, httpx.Client, aiohttp.ClientSession and socket all
-                        # hand back the object itself, so the name still holds it.
-                        # `with open(...) as f` hands back the file, so the name still holds it.
-                        opened = _canonical_fq(held.func, self) if isinstance(held, ast.Call) else ""
+                        # requests.Session, httpx.Client, aiohttp.ClientSession, socket and
+                        # open all hand back the object itself, so the name still holds it.
+                        opened = (
+                            _canonical_fq(held.func, self) if isinstance(held, ast.Call) else ""
+                        )
                         keeps_itself = isinstance(held, ast.Call) and (
                             opened in _SOCKET_FACTORY_FQ
                             or opened in _SESSION_FACTORY_FQ
@@ -16770,6 +16802,7 @@ def _check_signal_escape_patterns(code: str):
 
         def collect(self, tree) -> "_NameBindings":
             self._mark_conditional_bindings(tree)
+            self._mark_exhaustive_joins(tree)
             scoped = list(self._walk_scoped(tree))
             self._raw_mode = True
             self._scan_bindings(scoped)
@@ -16997,9 +17030,7 @@ def _check_signal_escape_patterns(code: str):
     # `host = ` in a libpq DSN, `SERVER = ` in an ODBC one.
     # The value runs to the next separator and may be a comma separated failover list, which the
     # caller splits: libpq tries each host in turn, so every one of them has to be screened.
-    _DSN_HOST_RE = re.compile(
-        r"(?:^|[;\s])(?:hostaddr|host|server)\s*=\s*([^;\s]+)", re.IGNORECASE
-    )
+    _DSN_HOST_RE = re.compile(r"(?:^|[;\s])(?:hostaddr|host|server)\s*=\s*([^;\s]+)", re.IGNORECASE)
     # Schemes that name a file rather than a host, so `sqlite:///state.db` opens nothing remote.
     _LOCAL_DSN_SCHEMES = ("sqlite", "duckdb", "file", "shm", "memory")
     # These open a file and nothing else, so their argument is a path however it is spelled:
@@ -17059,11 +17090,10 @@ def _check_signal_escape_patterns(code: str):
         """Every host a `connect` on a database client names, across the DSN and the keywords."""
         expanded, _opaque = _expanded_host_arguments(node)
         positional = node.args[0] if node.args else None
-        candidates = [
-            kw.value for kw in node.keywords or [] if kw.arg in _DATABASE_HOST_KEYWORDS
-        ]
+        candidates = [kw.value for kw in node.keywords or [] if kw.arg in _DATABASE_HOST_KEYWORDS]
         candidates += expanded
         candidates += list(node.args[:1])
+        found: list = []
         for candidate in candidates:
             text, complete = _static_str_prefix(candidate, _bindings)
             if not text or not (complete or "://" in text):
@@ -17073,9 +17103,10 @@ def _check_signal_escape_patterns(code: str):
                 # A bare `host = ` keyword is the host itself, not a connection string, and it
                 # may still list failover hosts.
                 hosts = [host for host in text.split(",") if host]
-            if hosts:
-                return hosts
-        return []
+            for host in hosts:
+                if host not in found:
+                    found.append(host)
+        return found
 
     def _assigned_attributes(target, out: set) -> None:
         """Every attribute a target assigns, through tuple, list and starred destructuring.
@@ -17128,9 +17159,7 @@ def _check_signal_escape_patterns(code: str):
     def _database_target_is_external(node: ast.Call) -> bool:
         """Whether the DSN or host of a database `connect` is read from outside the source."""
         expanded, _opaque = _expanded_host_arguments(node)
-        candidates = [
-            kw.value for kw in node.keywords or [] if kw.arg in _DATABASE_HOST_KEYWORDS
-        ]
+        candidates = [kw.value for kw in node.keywords or [] if kw.arg in _DATABASE_HOST_KEYWORDS]
         candidates += expanded
         candidates += list(node.args[:1])
         return any(_externally_sourced(candidate, _bindings) for candidate in candidates)
@@ -17625,7 +17654,7 @@ def _check_signal_escape_patterns(code: str):
                 }
             )
 
-    def _other_possible_hosts(url_node) -> "list[str]":
+    def _other_possible_hosts(url_node, bare_hosts: bool = False) -> "list[str]":
         """Hosts a target could reach besides the one it resolves to, because more than one
         assignment can hold at the call."""
         if not isinstance(url_node, ast.Name):
@@ -17637,6 +17666,11 @@ def _check_signal_escape_patterns(code: str):
         out: list = []
         for value in values:
             host, _resolved = _host_from_url_node(value, _bindings)
+            if host is None and bare_hosts:
+                # A pool takes a bare host rather than a URL, so a fully known string is one.
+                text, complete = _static_str_prefix(value, _bindings)
+                if complete and text and "://" not in text:
+                    host = text
             if host and host not in out:
                 out.append(host)
         return out
@@ -17780,7 +17814,7 @@ def _check_signal_escape_patterns(code: str):
                 host_node = _configured_host_node(node, name)
                 if host_node is None:
                     continue
-                for possible in _other_possible_hosts(host_node):
+                for possible in _other_possible_hosts(host_node, bare_hosts = True):
                     _screen_host(possible, node)
                 configured = _configured_host(host_node)
                 if configured:
