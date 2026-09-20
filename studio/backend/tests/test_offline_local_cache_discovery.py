@@ -505,6 +505,11 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
 
     config_read = inspect.getsource(model_config_module)
     assert "note_repo_fetched_with_a_request_token(token, model_name" in config_read
+    # And only where the call can actually fetch: both of these resolve an already-cached file
+    # without asking the Hub, so an unconditional record marks a repo the cache may have held
+    # anonymously and withholds it from the tokenless offline caller.
+    assert "not _config_json_already_cached(model_name, revision)" in config_read
+    assert "if not _this_file_was_already_here(rel):" in inspect.getsource(picker_module)
 
 
 def test_every_credentialed_fetch_is_recorded_not_only_a_foreign_one(monkeypatch, writes):
@@ -851,6 +856,35 @@ def test_an_anonymous_cache_only_config_read_serves_a_repo_on_disk(monkeypatch, 
     assert config is not None
     assert seen["name"] == ON_DISK and seen["local_files_only"] is True
     assert probes["n"] == 0, "a cache-only read went to the network"
+
+
+@pytest.mark.parametrize(
+    "already_cached, expected",
+    [(True, []), (False, [("hf_a_one_off", ON_DISK, "model")])],
+    ids = ["a cache hit records nothing", "a real fetch is recorded"],
+)
+def test_a_credentialed_config_read_records_only_what_it_could_fetch(
+    monkeypatch, already_cached, expected
+):
+    """AutoConfig resolves an already-cached config without asking the Hub. Recording that marks a
+    repo the cache may have held anonymously, which then withholds it from the tokenless offline
+    caller this path exists for."""
+    recorded: list = []
+    monkeypatch.setattr(
+        model_config_module,
+        "note_repo_fetched_with_a_request_token",
+        lambda token, repo, kind: recorded.append((token, repo, kind)),
+    )
+    monkeypatch.setattr(
+        model_config_module, "_config_json_already_cached", lambda *_a, **_k: already_cached
+    )
+    # The Hub says this caller may reach the repo, so the gate above is not what is under test.
+    _counting_probe(monkeypatch, True)
+    _stub_autoconfig(monkeypatch)
+
+    model_config_module.load_model_config(ON_DISK, token = "hf_a_one_off")
+
+    assert recorded == expected
 
 
 def _offline_route_guard(monkeypatch, tmp_path, repo_id, present, host_token):

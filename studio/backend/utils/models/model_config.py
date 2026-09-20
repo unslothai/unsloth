@@ -615,8 +615,11 @@ def load_model_config(
 
     if token:
         # config.json lands in the hub cache under what may be a one-off token; unrecorded it
-        # reads later as "nothing here needed one".
-        if not local_files_only:
+        # reads later as "nothing here needed one". Only when this call can actually fetch it:
+        # AutoConfig resolves an already-cached config without asking the Hub, and recording that
+        # marks a repo the cache may have held anonymously all along, which then withholds it
+        # from the tokenless offline caller this whole path exists for.
+        if not local_files_only and not _config_json_already_cached(model_name, revision):
             note_repo_fetched_with_a_request_token(token, model_name, "model")
         return AutoConfig.from_pretrained(
             model_name,

@@ -445,12 +445,30 @@ def read_default_chat_template(
             size = getattr(matched[0], "size", None)
             return not (isinstance(size, int) and size > MAX_TEMPLATE_METADATA_BYTES)
 
+        def _this_file_was_already_here(rel: str) -> bool:
+            """``_this_file_is_cached`` asks the same question and answers True when it cannot
+            tell, which is right for a gate and wrong here: not knowing must RECORD, since an
+            unrecorded credentialed fetch is what hands a private repo to a tokenless caller."""
+            try:
+                from huggingface_hub import try_to_load_from_cache
+                return isinstance(
+                    try_to_load_from_cache(
+                        repo_id = resolved, filename = rel, cache_dir = active_hf_hub_cache()
+                    ),
+                    str,
+                )
+            except Exception:  # noqa: BLE001 -- cannot tell, so record
+                return False
+
         def _download_text(rel: str) -> Optional[str]:
             if not _remote_worth_downloading(rel):
                 return None
             try:
-                # Lands files in the hub cache under what may be a one-off token.
-                note_repo_fetched_with_a_request_token(hf_token, resolved, "model")
+                # Lands files in the hub cache under what may be a one-off token, but only when
+                # it really fetches: hf_hub_download returns a cached file without asking the
+                # Hub, and recording that withholds a repo the cache may have held anonymously.
+                if not _this_file_was_already_here(rel):
+                    note_repo_fetched_with_a_request_token(hf_token, resolved, "model")
                 path = hf_hub_download(
                     resolved,
                     rel,
