@@ -844,8 +844,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
 
 
-def test_base64_media_turns_are_durable_and_their_attachments_stay_turn_scoped():
-    """A media turn is durable now, and the channel that made it look non-durable is turn-scoped.
+def test_a_media_turn_stays_legacy_and_its_attachments_stay_turn_scoped():
+    """A turn that carries media is still legacy; what changed is that it stops refusing its FOLLOW-UPS.
 
     The gate used to read the raw base64 fields off post-prune HISTORY, so one screenshot anywhere in a thread
     pushed every later text-only turn onto the cancel-on-disconnect stream - and that stale blob went out as a
@@ -853,6 +853,10 @@ def test_base64_media_turns_are_durable_and_their_attachments_stay_turn_scoped()
     never carried media at all. Both halves are pinned here: the gate is now `isDurableRunCandidate({...})` over
     resolved values (its own truth table lives in tests/durable-gate.test.ts), and the payload's attachment channel
     scans THIS turn's message alone.
+
+    Naming, because the two are easy to confuse: admitting a media turn ITSELF to a durable run is a separate
+    change living in #10406, and this branch does not make it. `turnCarriesMedia` still sends such a turn to the
+    legacy stream here, and routes/chat_generation_runs.py still refuses a populated `_MEDIA_FIELDS` payload.
     """
     # The adapter delegates; it does not spell the rule out here anymore.
     assert "const generationCandidate = isDurableRunCandidate({" in CHAT_ADAPTER
@@ -862,15 +866,17 @@ def test_base64_media_turns_are_durable_and_their_attachments_stay_turn_scoped()
         "});",
     )
     # What reaches the gate is the turn-scoped scan, never a raw blob pulled off history: if a base64 field shows up
-    # in the gate again, a media turn is back on the subscriber-owned stream and closing the tab kills it mid-turn.
+    # in the gate again, every text-only turn after one screenshot is back on the subscriber-owned stream and
+    # closing the tab kills it mid-turn.
     assert "turnCarriesMedia: currentTurnCarriesMedia," in candidate
     # The rule itself lives in the pure module, where a truth table can pin it case by case.
     assert "input.turnCarriesMedia !== true" in DURABLE_GATE
     for token in ("imageBase64", "audioBase64", "videoBase64"):
         assert token not in candidate, (
-            f"the durability gate reads {token} again, so a media turn is back on the subscriber-owned stream "
-            "and closing the tab kills it mid-generation. If a media turn must be refused again, do it behind a "
-            "backend toggle in studio/backend/routes/chat_generation_runs.py, not in the frontend gate"
+            f"the durability gate reads the thread-scoped {token} again, so every text-only turn following one "
+            "screenshot is back on the subscriber-owned stream and closing the tab kills it mid-generation. If "
+            "those follow-ups must be refused again, do it behind a backend toggle in "
+            "studio/backend/routes/chat_generation_runs.py, not in the frontend gate"
         )
     # The channel that made a text-only follow-up look like a media turn: scanned out of THIS turn's message.
     assert "const currentTurnMessages = [generationUserMessage]" in CHAT_ADAPTER
