@@ -4568,99 +4568,6 @@ class TestConditionalBareHosts:
         )
 
 
-class TestValuesReplacedOnEveryPath:
-    """When an if and its else both assign the name, nothing before the statement can reach a use
-    after it."""
-
-    def test_a_value_both_branches_replace_is_not_a_candidate_ok(self):
-        _ok(
-            f'import requests\nu = "{_METADATA_URL}"\nif flag:\n'
-            '    u = "https://huggingface.co/a"\nelse:\n'
-            '    u = "https://huggingface.co/b"\nrequests.get(u)'
-        )
-
-    def test_a_blocked_host_inside_a_branch_is_still_found(self):
-        _blocked(
-            'import requests\nu = "https://huggingface.co/a"\nif flag:\n'
-            f'    u = "{_METADATA_URL}"\nelse:\n'
-            '    u = "https://huggingface.co/b"\nrequests.get(u)',
-            expect_phrase = "Blocked: cloud-metadata host",
-        )
-
-    def test_a_branch_without_an_else_leaves_the_earlier_value_reachable(self):
-        _blocked(
-            f'import requests\nu = "{_METADATA_URL}"\nif flag:\n'
-            '    u = "https://huggingface.co/a"\nrequests.get(u)',
-            expect_phrase = "Blocked: cloud-metadata host",
-        )
-
-
-class TestPathsThroughBranches:
-    """Whether a binding can reach a call depends on the path, not on which statements happen to
-    enclose it."""
-
-    def test_an_arm_that_only_assigns_under_a_nested_condition_is_not_exhaustive(self):
-        _blocked(
-            f'import requests\nu = "{_METADATA_URL}"\nif flag:\n    if other:\n'
-            '        u = "https://huggingface.co/a"\nelse:\n'
-            '    u = "https://huggingface.co/b"\nrequests.get(u)',
-            expect_phrase = "Blocked: cloud-metadata host",
-        )
-
-    def test_two_assignments_in_the_same_guarded_block_run_in_order_ok(self):
-        _ok(
-            'import requests\nif __name__ == "__main__":\n'
-            f'    u = "{_METADATA_URL}"\n'
-            '    u = "https://huggingface.co/api/models"\n'
-            "    requests.get(u)"
-        )
-
-    def test_the_last_value_in_the_same_block_is_the_one_screened(self):
-        _blocked(
-            'import requests\nif __name__ == "__main__":\n'
-            '    u = "https://huggingface.co/a"\n'
-            f'    u = "{_METADATA_URL}"\n'
-            "    requests.get(u)",
-            expect_phrase = "Blocked: cloud-metadata host",
-        )
-
-    def test_an_assignment_in_a_block_the_call_is_outside_of_is_still_possible(self):
-        _blocked(
-            f'import requests\nif flag:\n    u = "{_METADATA_URL}"\nrequests.get(u)',
-            expect_phrase = "Blocked: cloud-metadata host",
-        )
-
-
-class TestJoinsThatOnlyHoldOnTheirOwnPath:
-    """An if / else that replaces a value only does so where it runs."""
-
-    def test_a_join_inside_a_branch_does_not_answer_for_a_use_outside_it(self):
-        _blocked(
-            f'import requests\nurl = "{_METADATA_URL}"\nif outer:\n    if flag:\n'
-            '        url = "https://huggingface.co/a"\n    else:\n'
-            '        url = "https://huggingface.co/b"\nrequests.get(url)',
-            expect_phrase = "Blocked: cloud-metadata host",
-        )
-
-    def test_a_store_control_cannot_reach_does_not_count(self):
-        _blocked(
-            f'import requests\nurl = "{_METADATA_URL}"\ntry:\n    if flag:\n'
-            "        raise RuntimeError()\n"
-            '        url = "https://huggingface.co/a"\n    else:\n'
-            '        url = "https://huggingface.co/b"\n'
-            "except RuntimeError:\n    pass\nrequests.get(url)",
-            expect_phrase = "Blocked: cloud-metadata host",
-        )
-
-    def test_an_arm_that_leaves_lets_the_other_arm_decide_ok(self):
-        # The raising arm never reaches the call, so the else arm is what the call sees.
-        _ok(
-            f'import requests\nu = "{_METADATA_URL}"\nif flag:\n'
-            "    raise RuntimeError()\nelse:\n"
-            '    u = "https://huggingface.co/api/models"\nrequests.get(u)'
-        )
-
-
 class TestShadowedModules:
     """A name the source defines is not the module it spells."""
 
@@ -4686,26 +4593,6 @@ class TestShadowedModules:
     def test_the_imported_module_is_still_the_environment(self, code):
         # An import of the name is how you get the real module, so it is not a shadow.
         _blocked(code, expect_phrase = "Blocked: request target is read")
-
-
-class TestJoinsBelongToTheirOwnScope:
-    """An if / else inside a function says nothing about a module-level name."""
-
-    def test_a_join_in_a_function_does_not_answer_for_module_level(self):
-        _blocked(
-            f'import requests\nurl = "{_METADATA_URL}"\ndef helper():\n    if flag:\n'
-            '        url = "https://huggingface.co/a"\n    else:\n'
-            '        url = "https://huggingface.co/b"\n'
-            'if other:\n    url = "https://huggingface.co/c"\nrequests.get(url)',
-            expect_phrase = "Blocked: cloud-metadata host",
-        )
-
-    def test_a_join_in_the_name_s_own_scope_still_replaces_it_ok(self):
-        _ok(
-            f'import requests\nurl = "{_METADATA_URL}"\nif flag:\n'
-            '    url = "https://huggingface.co/a"\nelse:\n'
-            '    url = "https://huggingface.co/b"\nrequests.get(url)'
-        )
 
 
 class TestDuckTypedReadersAndReaders:
@@ -4753,3 +4640,64 @@ class TestDuckTypedReadersAndReaders:
     )
     def test_a_real_path_read_is_still_a_file_read(self, code):
         _blocked(code, expect_phrase = "Blocked: request target is read")
+
+
+class TestEveryValueABindingCanHold:
+    """The rule is deliberately simple: a call is answered by every value assigned to the name
+    that can reach it, and a value is only superseded by a later assignment the call is certain
+    to have run past. Deciding which branch runs is not something this analysis tries to do, so
+    where the answer would depend on that it over-blocks rather than under-blocks."""
+
+    def test_a_straight_line_reassignment_supersedes_what_came_before_ok(self):
+        _ok(
+            'import requests\nu = "https://evil.example/a"\n'
+            'u = "https://huggingface.co/api/models"\nrequests.get(u)'
+        )
+
+    def test_a_reassignment_in_the_same_block_as_the_call_supersedes_too_ok(self):
+        _ok(
+            'import requests\nif __name__ == "__main__":\n'
+            f'    u = "{_METADATA_URL}"\n'
+            '    u = "https://huggingface.co/api/models"\n'
+            "    requests.get(u)"
+        )
+
+    def test_building_a_value_out_of_itself_still_resolves_ok(self):
+        _ok(
+            'import requests\nu = "https://huggingface.co"\nu = u + "/api/models"\n'
+            "requests.get(u)"
+        )
+
+    def test_a_value_assigned_in_a_branch_the_call_is_outside_of_is_screened(self):
+        _blocked(
+            'import requests\nu = "https://huggingface.co/a"\nif flag:\n'
+            f'    u = "{_METADATA_URL}"\n'
+            "requests.get(u)",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_value_both_arms_replace_is_screened_anyway(self):
+        # Deliberate over-block. Proving that no path leaves the original value behind takes
+        # branch analysis, and getting that wrong fails open. This costs a refusal on a rare
+        # shape; the other way round costs a metadata request.
+        _blocked(
+            f'import requests\nu = "{_METADATA_URL}"\nif flag:\n'
+            '    u = "https://huggingface.co/a"\nelse:\n'
+            '    u = "https://huggingface.co/b"\nrequests.get(u)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_value_assigned_below_the_call_in_a_loop_is_screened(self):
+        # The next turn round the loop reads it, so position alone does not rule it out.
+        _blocked(
+            'import requests\nu = "https://huggingface.co/a"\nfor x in items:\n'
+            "    requests.get(u)\n"
+            f'    u = "{_METADATA_URL}"',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_value_assigned_below_the_call_outside_a_loop_is_not_ok(self):
+        _ok(
+            'import requests\nu = "https://huggingface.co/api/models"\nrequests.get(u)\n'
+            f'u = "{_METADATA_URL}"'
+        )

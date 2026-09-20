@@ -16335,7 +16335,7 @@ def _check_signal_escape_patterns(code: str):
             self._alias_history: dict = {}
             self._value_positions: dict = {}
             self._conditional_suites: list = []
-            self._exhaustive_joins: dict = {}
+            self._loop_suites: list = []
             self._value_spans: dict = {}
             # Names imported twice: no order-independent answer, so no alias at all.
             self._ambiguous_aliases: set = set()
@@ -16533,85 +16533,22 @@ def _check_signal_escape_patterns(code: str):
                     return None
             return None
 
-        @staticmethod
-        def _assigned_here(statement) -> set:
-            """Names this one statement binds, ignoring anything nested inside it."""
-            out: set = set()
-            targets = list(getattr(statement, "targets", []))
-            if isinstance(statement, (ast.AnnAssign, ast.AugAssign)) and statement.target:
-                targets.append(statement.target)
-            if isinstance(statement, (ast.With, ast.AsyncWith)):
-                targets += [item.optional_vars for item in statement.items if item.optional_vars]
-            stack = list(targets)
-            while stack:
-                target = stack.pop()
-                if isinstance(target, ast.Name):
-                    out.add(target.id)
-                elif isinstance(target, (ast.Tuple, ast.List)):
-                    stack.extend(target.elts)
-                elif isinstance(target, ast.Starred):
-                    stack.append(target.value)
-            return out
-
-        @staticmethod
-        def _leaves_the_path(statement) -> bool:
-            """Whether control cannot continue past this statement to the next one."""
-            return isinstance(statement, (ast.Raise, ast.Return, ast.Break, ast.Continue)) or (
-                isinstance(statement, ast.If)
-                and bool(statement.orelse)
-                and _NameBindings._path_leaves(statement.body)
-                and _NameBindings._path_leaves(statement.orelse)
-            )
-
-        @staticmethod
-        def _path_leaves(body: list) -> bool:
-            return any(_NameBindings._leaves_the_path(statement) for statement in body)
-
-        def _definitely_assigns(self, body: list) -> set:
-            """Names assigned on every path through *body*. A loop may not run and a bare `if`
-            may not be taken, so neither is definite; an `if` with an `else` is, for the names
-            both arms assign on every one of their own paths."""
-            out: set = set()
-            for statement in body:
-                if self._leaves_the_path(statement):
-                    # Control leaves here, so nothing written below it runs on this path.
-                    break
-                out |= self._assigned_here(statement)
-                if isinstance(statement, ast.If) and statement.orelse:
-                    arms = []
-                    for arm in (statement.body, statement.orelse):
-                        # An arm that raises or returns never reaches the join, so it neither
-                        # contributes a value nor has to: the other arm alone decides.
-                        arms.append(
-                            None if self._path_leaves(arm) else self._definitely_assigns(arm)
-                        )
-                    if arms[0] is None and arms[1] is None:
-                        continue
-                    if arms[0] is None:
-                        out |= arms[1]
-                    elif arms[1] is None:
-                        out |= arms[0]
-                    else:
-                        out |= arms[0] & arms[1]
-                elif isinstance(statement, (ast.With, ast.AsyncWith)):
-                    out |= self._definitely_assigns(statement.body)
-                elif isinstance(statement, ast.Try):
-                    # finally always runs; the rest only on some path.
-                    out |= self._definitely_assigns(statement.finalbody)
-            return out
-
-        def _mark_exhaustive_joins(self, tree) -> None:
-            """Where an `if` and its `else` both assign a name on every path, nothing before the
-            statement can reach a use after it, so those earlier values stop being candidates."""
+        def _mark_loop_suites(self, tree) -> None:
+            """Loop bodies. A binding written below a call inside one still reaches that call on
+            the next turn round, so position alone does not rule it out there."""
             for statement in _tree_nodes(tree):
-                if not isinstance(statement, ast.If) or not statement.orelse:
+                if not isinstance(statement, (ast.While, ast.For, ast.AsyncFor)):
                     continue
-                both = self._definitely_assigns([statement])
-                scope = self._scope_of.get(id(statement))
-                for name in both:
-                    self._exhaustive_joins.setdefault((scope, name), []).append(
-                        self._position(statement)
+                if statement.body:
+                    self._loop_suites.append(
+                        (self._position(statement.body[0]), self._span_of(statement.body[-1])[1])
                     )
+
+        def _shares_a_loop(self, position, where) -> bool:
+            for start, end in self._loop_suites:
+                if start <= position <= end and start <= where <= end:
+                    return True
+            return False
 
         def _mark_conditional_bindings(self, tree) -> None:
             """The suites that only run when a branch is taken. Whether a binding inside one is
@@ -16689,7 +16626,8 @@ def _check_signal_escape_patterns(code: str):
             before = [
                 entry
                 for entry in positioned
-                if entry[0] <= where and self._binding_applies_at(key, entry[0], where)
+                if (entry[0] <= where or self._shares_a_loop(entry[0], where))
+                and self._binding_applies_at(key, entry[0], where)
             ]
             if not before:
                 return []
@@ -16698,21 +16636,6 @@ def _check_signal_escape_patterns(code: str):
                 if not self._is_conditional_for(position, where):
                     start = index
             # An if / else that assigns the name on both paths replaces whatever came before it.
-            for join in self._exhaustive_joins.get(key, ()):
-                # A join inside a branch only replaces the earlier value on the path that takes
-                # it, so it cannot answer for a use outside that branch.
-                if join <= where and not self._is_conditional_for(join, where):
-                    start = max(
-                        start,
-                        next(
-                            (
-                                index
-                                for index, (position, _value) in enumerate(before)
-                                if position >= join
-                            ),
-                            start,
-                        ),
-                    )
             return before[start:]
 
         def _value_held_here(self, key, node):
@@ -16893,10 +16816,8 @@ def _check_signal_escape_patterns(code: str):
 
         def collect(self, tree) -> "_NameBindings":
             self._mark_conditional_bindings(tree)
+            self._mark_loop_suites(tree)
             scoped = list(self._walk_scoped(tree))
-            # After the walk, not before: joins are keyed by scope, and the scope map is what the
-            # walk builds. Keyed too early they all read as module level.
-            self._mark_exhaustive_joins(tree)
             self._raw_mode = True
             self._scan_bindings(scoped)
             self._raw_mode = False
