@@ -41,13 +41,33 @@ SPEC.loader.exec_module(ILP)
 HostInfo = ILP.HostInfo
 
 # The release zips this file reads. Downloaded out of band and absent in CI, where every
-# test that wants one skips.
+# test that wants one skips. The default is under the user's own cache so the file carries
+# no path belonging to one machine; point UNSLOTH_TEST_LLAMACPP_ASSET_DIR at the zips to
+# run these for real.
 ASSET_DIR = Path(
     os.environ.get(
         "UNSLOTH_TEST_LLAMACPP_ASSET_DIR",
-        "/mnt/disks/unslothai/daniel3/workspace_26/data/llamacpp_assets",
+        Path.home() / ".cache" / "unsloth" / "llamacpp-test-assets",
     )
 )
+
+
+def _asset_or_skip(asset: str) -> Path:
+    """The bundle, or a skip when this machine does not have it.
+
+    ``is_file()`` is not enough on its own: it propagates PermissionError and the other
+    stat failures, so an asset directory that exists but cannot be read (an unreadable
+    mount, another user's tree) fails the test instead of skipping it, which is the
+    opposite of what this file promises.
+    """
+    archive = ASSET_DIR / asset
+    try:
+        present = archive.is_file()
+    except OSError as error:
+        pytest.skip(f"release bundle not readable on this machine: {asset} ({error})")
+    if not present:
+        pytest.skip(f"release bundle not on this machine: {asset}")
+    return archive
 
 
 def _host(**kw) -> HostInfo:
@@ -160,8 +180,7 @@ def test_a_real_release_bundle_is_healthy(asset, backend, tag, source, host, tmp
     through a repair with nothing to fix. Only the release itself can say whether the
     payload globs match what is actually in the archive.
     """
-    if not (ASSET_DIR / asset).is_file():
-        pytest.skip(f"release bundle not on this machine: {asset}")
+    _asset_or_skip(asset)
     root = _unpack_bundle(asset, backend, tag, source, host, tmp_path)
     assert ILP.installed_runtime_health(root, host = host) == (True, ""), asset
 
@@ -187,8 +206,7 @@ def test_a_file_quarantined_from_a_real_windows_bundle_is_caught(victim, tmp_pat
     the glob to match. Linux is where that stops being true, below.
     """
     asset = "app-b10798-mix-659e406-windows-x64-cpu.zip"
-    if not (ASSET_DIR / asset).is_file():
-        pytest.skip(f"release bundle not on this machine: {asset}")
+    _asset_or_skip(asset)
     root = _unpack_bundle(asset, None, "b10798", "published", WINDOWS, tmp_path)
     (ILP.install_runtime_dir(root, WINDOWS) / victim).unlink()
     verdict = ILP.installed_runtime_health(root, host = WINDOWS)
@@ -207,8 +225,7 @@ def test_a_windows_cuda_bundle_without_its_paired_runtime_is_incomplete(tmp_path
     real archive so the trio is genuinely absent rather than merely omitted from a fixture.
     """
     asset = "app-b10798-mix-659e406-windows-x64-cuda12-legacy.zip"
-    if not (ASSET_DIR / asset).is_file():
-        pytest.skip(f"release bundle not on this machine: {asset}")
+    _asset_or_skip(asset)
     root = _unpack_bundle(asset, "cuda", "b10798", "published", WINDOWS, tmp_path)
     runtime_dir = ILP.install_runtime_dir(root, WINDOWS)
     assert not list(runtime_dir.glob("cudart64_*.dll")), "the bundle is expected to ship no cudart"
@@ -231,8 +248,7 @@ def test_the_real_cuda_bundle_carries_its_own_build_marker(tmp_path):
     directory at the install root would grade the tree with the wrong table.
     """
     asset = "app-b10798-mix-659e406-windows-x64-cuda12-legacy.zip"
-    if not (ASSET_DIR / asset).is_file():
-        pytest.skip(f"release bundle not on this machine: {asset}")
+    _asset_or_skip(asset)
     root = _unpack_bundle(asset, "cuda", "b10798", "published", WINDOWS, tmp_path)
     runtime_dir = ILP.install_runtime_dir(root, WINDOWS)
     bundled = runtime_dir / "UNSLOTH_PREBUILT_INFO.json"
@@ -650,9 +666,7 @@ def _installed_trio_bundle(tmp_path: Path) -> Path:
     the SONAME makes the versionless link dangle and ``is_file()`` drops it on its own.
     A real install has no links left to dangle, which is the whole point of this test.
     """
-    archive = ASSET_DIR / _TRIO_ASSET
-    if not archive.is_file():
-        pytest.skip(f"{_TRIO_ASSET} is not present")
+    archive = _asset_or_skip(_TRIO_ASSET)
     prebuilt_core = _load_prebuilt_core()
     if prebuilt_core is None:
         pytest.skip("prebuilt_core is not importable here")
