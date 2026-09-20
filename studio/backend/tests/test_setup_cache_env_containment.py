@@ -1398,7 +1398,8 @@ def test_a_note_naming_the_legacy_default_root_is_declined(monkeypatch, tmp_path
     studio = home / ".unsloth" / "studio"
     (studio / "share").mkdir(parents = True)
     (studio / "share" / ".unsloth-master-root").write_text(
-        str(home / ".unsloth") + "\n", encoding = "utf-8",
+        str(home / ".unsloth") + "\n",
+        encoding = "utf-8",
     )
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
     sr = _load_storage_roots()
@@ -1448,8 +1449,13 @@ def test_an_explicit_legacy_unsloth_home_is_still_the_user_speaking(monkeypatch,
 # when no pinning code exists at all, so none of them could fail on the merge base: they are
 # assertions, not negative controls. Pairing each decline with the pins that must STILL happen in
 # the same run makes the family falsifiable without rewriting twenty-five tests.
-_DECLINE_SIBLINGS = ("TORCHINDUCTOR_CACHE_DIR", "NUMBA_CACHE_DIR", "CUDA_CACHE_PATH",
-                     "UV_CACHE_DIR", "UNSLOTH_COMPILE_LOCATION")
+_DECLINE_SIBLINGS = (
+    "TORCHINDUCTOR_CACHE_DIR",
+    "NUMBA_CACHE_DIR",
+    "CUDA_CACHE_PATH",
+    "UV_CACHE_DIR",
+    "UNSLOTH_COMPILE_LOCATION",
+)
 
 
 @pytest.mark.parametrize("declined", ["MPLCONFIGDIR", "DATA_DESIGNER_HOME"])

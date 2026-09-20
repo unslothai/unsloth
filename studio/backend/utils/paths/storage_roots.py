@@ -171,8 +171,11 @@ def _recorded_master_root() -> Path | None:
         master = _resolved(recorded)
         try:
             here = studio.resolve()
-            if master.is_dir() and (here == master or master in here.parents) \
-                    and not _is_legacy_studio_tree(studio):
+            if (
+                master.is_dir()
+                and (here == master or master in here.parents)
+                and not _is_legacy_studio_tree(studio)
+            ):
                 found = master
         except (OSError, ValueError):
             found = None
