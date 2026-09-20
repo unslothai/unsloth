@@ -11371,12 +11371,41 @@ def project_session_id(project_id: str) -> str:
     return f"{_PROJECT_SESSION_PREFIX}{project_id}"
 
 
+def _project_generation_in_flight(project_id: str) -> bool:
+    """Whether a chat in this project is part way through a generation.
+
+    ``_active_sessions`` counts tool calls that are EXECUTING, which is zero in the
+    gap between two calls of one generation. The frontend snapshots the session id
+    once when the generation starts, so rotating in that gap leaves its next tool
+    call carrying an id the project no longer has, and the run dies with
+    "Project workspace changed" part way through.
+
+    Unreadable state counts as in flight: making the user retry the folder change
+    costs them a moment, and breaking a running generation costs them the run.
+    """
+    try:
+        from state import active_generations
+        from storage.studio_db import project_thread_ids
+
+        running = set(active_generations.active_thread_ids())
+        if not running:
+            return False
+        return any(thread_id in running for thread_id in project_thread_ids(project_id))
+    except Exception:
+        logger.warning(
+            "Could not tell whether project %s is generating", project_id, exc_info = True
+        )
+        return True
+
+
 def update_project_workspace_when_idle(project_id: str, update):
     """change storage while no tool can start in either workspace."""
     session_id = project_session_id(project_id)
     key = _session_key(session_id)
     update_key = f"\x00project-update:{project_id.casefold()}"
     locked_keys = {key, update_key}
+    if _project_generation_in_flight(project_id):
+        return False, None
     with _sessions_free:
         if (
             any(item in _removing_sessions for item in locked_keys)

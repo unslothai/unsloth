@@ -3377,6 +3377,20 @@ def project_workspace_incarnation_exists(project_id: str) -> bool:
         conn.close()
 
 
+def project_thread_ids(id: str) -> list[str]:
+    """The chats that belong to this project."""
+    conn = get_connection()
+    try:
+        return [
+            str(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM chat_threads WHERE project_id = ?", (id,)
+            )
+        ]
+    finally:
+        conn.close()
+
+
 def _require_owner_for_external_workspace() -> None:
     """Only the owner may point a project at a folder of their own.
 

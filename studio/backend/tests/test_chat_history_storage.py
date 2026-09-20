@@ -2283,3 +2283,48 @@ def test_a_stranger_at_the_reserved_root_is_not_adopted_as_the_managed_one(
 
     studio_db.delete_chat_project(project["id"], delete_files = True)
     assert precious.exists(), "deleting the project removed an unrelated directory"
+
+
+def test_a_folder_change_waits_for_a_generation_that_is_between_tool_calls(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """`_active_sessions` is zero in the gap between two tool calls of one run.
+
+    The frontend snapshots `sandboxSessionId` once when the generation starts, so
+    rotating in that gap leaves the next tool call carrying an id the project no
+    longer has and the run dies with "Project workspace changed" part way through.
+    """
+    import threading
+
+    from core.inference import tools
+    from state import active_generations
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    first = workspace_projects_home / "folder-a"
+    second = workspace_projects_home / "folder-b"
+    for folder in (first, second):
+        folder.mkdir()
+
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(first))
+    thread_id = f"thread-of-{project['id']}"
+    studio_db.upsert_chat_thread({
+        "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
+        "projectId": project["id"], "archived": 0, "createdAt": 1, "updatedAt": 1,
+    })
+
+    def change():
+        return studio_db.set_chat_project_workspace(
+            project["id"], external_workspace_path = str(second))
+
+    with active_generations.ActiveGeneration(
+        threading.Event(), thread_id = thread_id, run_id = "run-1"
+    ):
+        # Nothing is executing right now, which is exactly the window at issue.
+        key = tools._session_key(tools.project_session_id(project["id"]))
+        assert tools._active_sessions.get(key, 0) == 0
+        changed, _ = tools.update_project_workspace_when_idle(project["id"], change)
+        assert not changed, "a folder change rotated out from under a running generation"
+
+    # Once the generation is over the change goes through as before.
+    changed, _ = tools.update_project_workspace_when_idle(project["id"], change)
+    assert changed

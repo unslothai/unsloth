@@ -1240,7 +1240,7 @@ def patch_project(
         if not changed:
             raise HTTPException(
                 status_code = 409,
-                detail = "Wait for the project's active tool calls to finish before changing its workspace.",
+                detail = "Wait for the project's chats to finish before changing its workspace.",
             )
     if project is None:
         raise HTTPException(
