@@ -468,7 +468,10 @@ def test_a_studio_home_that_is_a_file_still_reads_the_database_on_windows(tmp_pa
     chosen = tmp_path / "chosen"
 
     answer, was_read = _run_guard_probe(
-        tmp_path, studio_home, chosen, probe = _WINDOWS_SHAPED_GUARD_PROBE,
+        tmp_path,
+        studio_home,
+        chosen,
+        probe = _WINDOWS_SHAPED_GUARD_PROBE,
         extra_env = {"NOT_A_DIRECTORY": str(studio_home)},
     )
 
