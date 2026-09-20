@@ -188,16 +188,19 @@ def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, 
     for root in roots:
         real = os.path.realpath(root)
         if any(_within(real, path) for path in state):
-            continue                       # the root IS Studio state
+            continue  # the root IS Studio state
         if not any(_within(path, real) for path in state) or depth <= 0:
             kept.append(root)
             continue
         try:
             children = sorted(os.path.join(root, name) for name in os.listdir(root))
         except OSError:
-            continue                       # unreadable: bind nothing rather than everything
-        kept.extend(_without_studio_state(
-            tuple(path for path in children if os.path.isdir(path)), depth - 1))
+            continue  # unreadable: bind nothing rather than everything
+        kept.extend(
+            _without_studio_state(
+                tuple(path for path in children if os.path.isdir(path)), depth - 1
+            )
+        )
     return tuple(dict.fromkeys(kept))
 
 
@@ -606,7 +609,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     # from it. The canonical form stays the bind SOURCE and what is checked.
     inner = os.path.abspath(plan.workdir)
     system_roots = _without_studio_state(
-        tuple(path for path in _SYSTEM_ROOTS if os.path.isdir(path)))
+        tuple(path for path in _SYSTEM_ROOTS if os.path.isdir(path))
+    )
     if os.path.isdir(_NIX_STORE) and _within(os.path.realpath(sys.executable), _NIX_STORE):
         system_roots += (_NIX_STORE,)
     runtime_paths = _runtime_read_paths(workdir, system_roots, inner)

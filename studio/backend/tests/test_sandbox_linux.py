@@ -1695,9 +1695,9 @@ def test_the_studio_state_directory_is_never_a_system_bind(monkeypatch, tmp_path
     kept = sandbox_linux._without_studio_state((str(opt),))
 
     assert str(state) not in kept
-    assert not any(sandbox_linux._within(str(state), path) for path in kept), (
-        "a bind source still contains the Studio auth database"
-    )
+    assert not any(
+        sandbox_linux._within(str(state), path) for path in kept
+    ), "a bind source still contains the Studio auth database"
     assert str(toolchain) in kept, "unrelated /opt software stopped being readable"
 
 

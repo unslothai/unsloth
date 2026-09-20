@@ -547,9 +547,9 @@ def test_an_unavailable_verdict_is_not_cached_for_the_long_window(monkeypatch, t
     from core.inference import os_sandbox as _os_sandbox
     from core.inference import sandbox_probe
 
-    assert sandbox_probe._CACHE_TTL_UNAVAILABLE_SECONDS <= 120, (
-        "an unavailable verdict is cached long enough to outlive the user's own remediation"
-    )
+    assert (
+        sandbox_probe._CACHE_TTL_UNAVAILABLE_SECONDS <= 120
+    ), "an unavailable verdict is cached long enough to outlive the user's own remediation"
 
     probes = []
 

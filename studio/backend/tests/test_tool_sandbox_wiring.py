@@ -713,8 +713,11 @@ def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
         "core.inference.sandbox_probe.reset_probe_cache", lambda: reset.append(True)
     )
     prepared = PreparedSandboxLaunch(
-        argv = ("/usr/bin/sandbox-exec",), workdir = "/work", env = {},
-        preexec_fn = None, backend = "macos-seatbelt",
+        argv = ("/usr/bin/sandbox-exec",),
+        workdir = "/work",
+        env = {},
+        preexec_fn = None,
+        backend = "macos-seatbelt",
     )
 
     tools._forget_sandbox_capability_if_the_backend_failed(
