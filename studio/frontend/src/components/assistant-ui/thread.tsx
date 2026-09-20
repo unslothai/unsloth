@@ -8480,6 +8480,9 @@ const EditComposer: FC = () => {
   const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
   const researchActive = useThreadResearchActive();
+  const [originalAttachments] = useState(
+    () => aui.composer().getState().attachments,
+  );
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
@@ -8492,6 +8495,7 @@ const EditComposer: FC = () => {
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
       <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted">
+        <ComposerAttachments className="mb-0 px-3 pt-3 [&_.aui-pasted-text-chip:not(:hover)]:bg-background" />
         <ComposerPrimitive.Input
           submitMode={sendShortcut === "mod-enter" ? "ctrlEnter" : "enter"}
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
@@ -8515,10 +8519,12 @@ const EditComposer: FC = () => {
                 event.preventDefault();
                 return;
               }
-              const newText = aui.composer().getState().text;
-              const originalText = aui.message().getCopyText();
+              const { text, attachments } = aui.composer().getState();
 
-              if (newText === originalText) {
+              if (
+                text === aui.message().getCopyText() &&
+                attachments === originalAttachments
+              ) {
                 aui.composer().cancel();
                 return;
               }
