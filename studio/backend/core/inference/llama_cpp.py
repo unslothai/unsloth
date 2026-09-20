@@ -7242,6 +7242,7 @@ class LlamaCppBackend:
         # Total KV allocation context across all slots. _effective_context_length
         # becomes the per-slot request limit after /props reconciliation.
         self._kv_cache_context_total: Optional[int] = None
+        self._server_total_slots: Optional[int] = None
         # Both set by the runtime reconciliation, the only place that can tell
         # the launch total and the per-slot window apart.
         self._launch_context_length: Optional[int] = None
@@ -17515,6 +17516,7 @@ class LlamaCppBackend:
         self._effective_cache_types = ("f16", "f16")
         self._requested_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
+        self._server_total_slots = None
         self._launch_context_length = None
         self._pre_fit_context_length = None
         # False means "confirmed to hold no VRAM" and makes the training coordinator skip
@@ -30640,6 +30642,7 @@ class LlamaCppBackend:
             self._effective_cache_types = ("f16", "f16")
             self._requested_cache_types = ("f16", "f16")
             self._kv_cache_context_total = None
+            self._server_total_slots = None
             self._launch_context_length = None
             self._pre_fit_context_length = None
             self._chat_template = None
@@ -32727,6 +32730,10 @@ class LlamaCppBackend:
         modalities = props.get("modalities")
         if isinstance(modalities, dict):
             self._has_video_input = bool(modalities.get("video"))
+        # The slot count the SERVER ended up with, which is not always the one
+        # Studio asked for: a trailing --parallel in llama_extra_args last-wins,
+        # and effective_parallel_slots still holds the managed request.
+        self._server_total_slots = _positive_int_n_ctx(props.get("total_slots"))
         # Another process' JSON: a non-dict block or non-numeric n_ctx used to
         # raise out of here and fail the load. Unreadable /props means "unknown".
         settings = props.get("default_generation_settings")
@@ -32795,7 +32802,17 @@ class LlamaCppBackend:
         self._record_launch_vs_per_slot_ctx(launch_cmd, actual_n_ctx, launch_env)
         if not actual_n_ctx or actual_n_ctx <= 0:
             return
-        slots = 1 if self._kv_cache_unified else self.effective_parallel_slots
+        # Under a shared pool every slot sees the whole thing, so the total IS
+        # n_ctx. Otherwise prefer the count the server reported over the one
+        # Studio requested: measured on b11057, `--parallel 4 ... --parallel 2`
+        # gives total_slots 2 and n_ctx 16384, and multiplying by the requested 4
+        # would publish 65536 against a real 32768 -- a doubling that a reload
+        # then replays and doubles again.
+        slots = (
+            1
+            if self._kv_cache_unified
+            else (self._server_total_slots or self.effective_parallel_slots)
+        )
         self._kv_cache_context_total = actual_n_ctx * slots
         effective_n_ctx = self._effective_context_length
         if not effective_n_ctx:

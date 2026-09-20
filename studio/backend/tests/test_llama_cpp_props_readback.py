@@ -833,3 +833,35 @@ def test_a_digit_string_int_refuses_is_unknown_not_a_crash(monkeypatch):
     for bad in ("²", "³", "9" * 5000):
         _stub_props(monkeypatch, body = {"default_generation_settings": {"n_ctx": bad}})
         assert _make_backend()._query_server_n_ctx() is None, bad[:12]
+
+
+def test_the_aggregate_uses_the_servers_slot_count_not_the_request(monkeypatch):
+    """A trailing --parallel in llama_extra_args last-wins in llama.cpp while
+    effective_parallel_slots still holds the managed request.
+
+    Measured on llama-server b11057: `-c 32768 --parallel 4 --no-kv-unified
+    --parallel 2` reports total_slots 2 and n_ctx 16384. Multiplying by the
+    requested 4 publishes 65536 against a real 32768, and a reload replays that
+    doubled total and doubles it again."""
+    _stub_endpoints(
+        monkeypatch,
+        props = _FakeResponse(
+            200,
+            {"default_generation_settings": {"n_ctx": 16384}, "total_slots": 2},
+        ),
+    )
+    inst = _make_backend(effective_ctx = 16384)
+    inst._effective_parallel_slots = 4  # what Studio asked for
+    inst._reconcile_effective_ctx_with_server(0, launch_cmd = ["llama-server"])
+    assert inst.effective_context_total == 32768
+
+
+def test_a_server_that_names_no_slot_count_falls_back_to_the_request(monkeypatch):
+    _stub_endpoints(
+        monkeypatch,
+        props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 8192}}),
+    )
+    inst = _make_backend(effective_ctx = 8192)
+    inst._effective_parallel_slots = 4
+    inst._reconcile_effective_ctx_with_server(0, launch_cmd = ["llama-server"])
+    assert inst.effective_context_total == 32768
