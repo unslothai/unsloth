@@ -162,3 +162,71 @@ test("the turn-on reaches neither the installation nor the open chat's snapshot"
     assert.notEqual(put.codeToolsEnabled, true);
   }
 });
+
+test("a chat opened after Full access was picked still gets the code tools", async (t) => {
+  // Full access is session-scoped: applyThreadScopedSettings deliberately keeps
+  // it across a chat switch, while Code is replaced by the incoming chat's own
+  // preference. Deriving the grant from a flag armed once on entry left that
+  // chat on Full access with no code tools, the state this feature prevents.
+  enableCountedTimers(t);
+  const tick = (ms: number) => t.mock.timers.tick(ms);
+  // Code already on in the chat where Full access is picked: the case that
+  // arms nothing, because there is nothing to turn on.
+  const { mod, store, on, state } = await freshStore(true);
+  const drain = () =>
+    drainMockedTimers(tick, {
+      label: "cross-chat drain",
+      barrier: () => mod.awaitStartedThreadScopedSettingsWrites(),
+    });
+  await (state().hydratePersistedSettings as () => Promise<void>)();
+  await drain();
+  (state().setActiveThreadId as (id: string) => void)("A");
+  mod.beginThreadScopedPairing("A");
+  (state().applyThreadScopedSettings as (id: string, s: null) => void)("A", null);
+  pick(state(), "full");
+  assert.equal(on(), true);
+
+  // An older chat whose own settings are Code off and the ordinary level.
+  (state().setActiveThreadId as (id: string) => void)("B");
+  mod.beginThreadScopedPairing("B");
+  (
+    state().applyThreadScopedSettings as (
+      id: string,
+      s: Record<string, unknown>,
+    ) => void
+  )("B", { codeToolsEnabled: false, permissionMode: "auto" });
+  await drain();
+  assert.equal(state().permissionMode, "full", "Full access survives the switch");
+  assert.equal(store.getState().params.checkpoint, LOCAL);
+  assert.equal(on(), true, "so the code tools come with it");
+});
+
+test("a Code click under Full access survives a chat switch too", async (t) => {
+  enableCountedTimers(t);
+  const tick = (ms: number) => t.mock.timers.tick(ms);
+  const { mod, on, state } = await freshStore(false);
+  const drain = () =>
+    drainMockedTimers(tick, {
+      label: "cross-chat decline drain",
+      barrier: () => mod.awaitStartedThreadScopedSettingsWrites(),
+    });
+  await (state().hydratePersistedSettings as () => Promise<void>)();
+  await drain();
+  (state().setActiveThreadId as (id: string) => void)("A");
+  mod.beginThreadScopedPairing("A");
+  (state().applyThreadScopedSettings as (id: string, s: null) => void)("A", null);
+  pick(state(), "full");
+  clickCode(state(), false); // the user's own no
+  assert.equal(on(), false);
+
+  (state().setActiveThreadId as (id: string) => void)("B");
+  mod.beginThreadScopedPairing("B");
+  (
+    state().applyThreadScopedSettings as (
+      id: string,
+      s: Record<string, unknown>,
+    ) => void
+  )("B", { codeToolsEnabled: false, permissionMode: "auto" });
+  await drain();
+  assert.equal(on(), false, "a switch does not undo it");
+});
