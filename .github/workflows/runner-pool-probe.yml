@@ -9,8 +9,17 @@ on:
       - .github/workflows/runner-pool-probe.yml
 
 # Latest-only, like every other pull-request workflow here. This one fans out to ten
-# runners, four of them macOS at 10x the minute rate, so a second push to the same pull
-# request was leaving a full ten-runner matrix measuring a commit nobody will merge.
+# runners, so a second push to the same pull request was leaving a full ten-runner matrix
+# measuring a commit nobody will merge.
+#
+# What that costs is SLOTS, not minutes. This repository is public, so standard
+# GitHub-hosted runners bill nothing and the account's included-minutes meter reads zero;
+# every label in the matrix below is a standard runner. The scarce resource is concurrency,
+# and four of these ten cells are macOS against a cap of five concurrent macOS jobs
+# ACCOUNT-WIDE, across every repository -- the cap tests/studio/test_macos_slots_per_commit.py
+# exists to protect, and the reason macOS queue waits here are measured in hours rather
+# than minutes. A superseded matrix was holding four of those five for up to ten minutes,
+# and the queue it delays is the whole account's, not this workflow's.
 #
 # Superseding does not weaken the measurement. The probe compares labels WITHIN one
 # dispatch -- the ten cells leave the queue in the same second, and that is the only
