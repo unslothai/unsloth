@@ -781,3 +781,34 @@ def test_a_cleanup_that_could_not_undo_host_state_is_recorded_apart(caplog):
     tools._warn_about_unreverted_host_state(prepared, _log = logged.append)
 
     assert logged and "could not undo a change it made to this host" in logged[0]
+
+
+def test_the_unconfined_placeholder_is_not_treated_as_a_boundary():
+    """`unconfined-by-owner` records that the owner ALLOWED unconfined tools on
+    a host that cannot confine them. It carries neither a pre-exec nor a
+    wrapper, so a caller reading "not None" as "boundary present" would skip
+    the generic sandbox and run the call unisolated even in `required` mode.
+    """
+    from core.inference.tool_confinement import Confinement
+
+    assert Confinement(mechanism = "unconfined-by-owner").confines is False
+    assert Confinement(mechanism = "landlock", preexec = lambda: None).confines is True
+    assert Confinement(mechanism = "sandbox-exec", wrapper = ("sandbox-exec",)).confines is True
+
+
+def test_a_managed_account_without_confinement_still_refuses_required(monkeypatch):
+    """The whole point of `required`: no boundary means no execution."""
+    from core.inference.tool_confinement import Confinement
+
+    monkeypatch.setattr(
+        tools, "_account_confinement",
+        lambda: Confinement(mechanism = "unconfined-by-owner"),
+    )
+    _declining_backend(
+        monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe = False
+    )
+
+    result = tools._python_exec("print(1)", None, 60, _SESSION, tool_execution_mode = "required")
+
+    assert "1" not in result.splitlines()[:1], f"the call ran unisolated: {result!r}"
+    assert "Execution error" in result or "OS_ISOLATION_UNAVAILABLE" in result

@@ -18376,7 +18376,10 @@ def _python_exec(
         # Managed accounts already have a fail-closed, account-specific boundary. Keep it
         # as the outer launch contract instead of stacking a generic sandbox around it:
         # on Linux its pre-exec Landlock policy would restrict bwrap before mount setup.
-        if confinement is None:
+        # `confines` rather than `is not None`: the unconfined-by-owner placeholder carries
+        # neither a pre-exec nor a wrapper, so treating it as a boundary would run the call
+        # unisolated even in `required` mode.
+        if confinement is None or not confinement.confines:
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(
                     argv = (sys.executable, "-u", tmp_path),
@@ -18572,7 +18575,7 @@ def _bash_exec(
             else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
         )
         # Use the same mutually exclusive launch paths as the Python executor.
-        if confinement is None:
+        if confinement is None or not confinement.confines:
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(
                     argv = tuple(shell_argv),
