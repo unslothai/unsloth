@@ -805,3 +805,42 @@ def test_a_path_that_cannot_be_encoded_is_refused_rather_than_carried():
     # guard would be undoing the fix it is protecting.
     assert backend._validated("/tmp/session-café") == "/tmp/session-café"
     assert "\\u00" not in backend._sbpl_string("/tmp/session-café")
+
+
+def test_studio_state_under_an_optional_read_root_is_denied(monkeypatch, tmp_path):
+    """A Homebrew-prefixed Studio home is inside a recursive read root.
+
+    Without a later deny, a sandboxed script builds the path to auth/auth.db
+    and reads the HS256 jwt_secret, walking past tools.py's literal-path guard
+    in the mode that exists to stop exactly that.
+    """
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "Cellar" / "unsloth-studio"
+    (state / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules((), (), str(tmp_path / "work"), str(tmp_path / "tmp"))
+
+    assert rules, "no rule was emitted for a Studio home inside a read root"
+    assert rules[0].startswith("(deny file-read*")
+    assert str(state) in rules[0]
+
+
+def test_the_runtime_inside_a_custom_studio_home_is_restored(monkeypatch, tmp_path):
+    """A blanket deny would break a custom-home install: the managed venv lives
+    under the Studio root, so the interpreter itself would stop being readable.
+    """
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "studio"
+    venv = state / "unsloth_studio" / "lib"
+    venv.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules(
+        (str(venv),), (), str(tmp_path / "work"), str(tmp_path / "tmp"))
+
+    assert len(rules) == 2, "the runtime under the Studio home was not restored"
+    assert rules[1].startswith("(allow file-read*")
+    assert str(venv) in rules[1]

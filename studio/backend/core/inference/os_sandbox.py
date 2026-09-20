@@ -390,6 +390,34 @@ def editable_source_roots() -> tuple[str, ...]:
     return tuple(roots)
 
 
+def studio_state_roots() -> tuple[str, ...]:
+    """Where Studio keeps ``auth/auth.db`` and the rest of its persisted state.
+
+    The default lives under ``$HOME``, which no backend grants, but a custom
+    home can sit anywhere, including inside a directory a backend DOES grant:
+    the shipped Docker layout puts it at ``/opt/unsloth-studio`` (docker/run.sh
+    mounts the volume there, studio_launch.sh exports it) and ``/opt`` is a
+    Linux read root, while a macOS install under a Homebrew prefix lands inside
+    an optional read root. That database holds the HS256 jwt_secret, and
+    tools.py guards the literal path, so a path built at run time walks past the
+    guard and the sandbox must not be the thing that hands the file over.
+
+    Not cached: the resolution reads the environment, and a test or a restarted
+    Studio with a different home must not inherit an earlier answer.
+    """
+    roots: list[str] = []
+    try:
+        from utils.paths.storage_roots import studio_root
+        roots.append(os.path.realpath(str(studio_root())))
+    except Exception:  # noqa: BLE001 - a launch never fails over this
+        pass
+    for name in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            roots.append(os.path.realpath(os.path.expanduser(value)))
+    return tuple(dict.fromkeys(path for path in roots if path and path != os.sep))
+
+
 @functools.lru_cache(maxsize = 1)
 def editable_import_roots() -> tuple[str, ...]:
     """Import roots need listing: bwrap creates empty parents, Seatbelt needs literal grants."""

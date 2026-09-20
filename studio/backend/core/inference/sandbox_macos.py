@@ -30,6 +30,7 @@ from .os_sandbox import (
     editable_import_roots,
     editable_source_roots,
     scan_workdir_for_host_channels,
+    studio_state_roots,
 )
 
 BACKEND_NAME = "macos-seatbelt"
@@ -513,6 +514,35 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
     return tuple(inside)
 
 
+def _studio_state_rules(
+    runtime_paths: tuple[str, ...],
+    developer_paths: tuple[str, ...],
+    workdir: str,
+    private_tmp: str,
+) -> list[str]:
+    """Deny Studio's own state, then restore what the launch genuinely needs.
+
+    A blanket deny would be wrong: on a custom-home install the managed venv
+    lives under the Studio root, so the interpreter would stop being readable.
+    The restore list is the paths the profile already computed as necessary,
+    not a wider re-grant.
+    """
+    state = studio_state_roots()
+    if not state:
+        return []
+    needed = tuple(
+        path
+        for path in (*runtime_paths, *developer_paths, workdir, private_tmp)
+        if path and any(_within(path, root) for root in state)
+    )
+    rules = [_rule("deny file-read* file-test-existence file-map-executable",
+                   _path_filters(state))]
+    if needed:
+        rules.append(_rule("allow file-read* file-test-existence file-map-executable",
+                           _path_filters(needed)))
+    return [rule for rule in rules if rule]
+
+
 def build_profile(
     *,
     workdir: str,
@@ -581,6 +611,14 @@ def build_profile(
         _rule("allow file-read* file-test-existence", read_filters),
         _rule("allow file-read* file-test-existence", optional_filters),
         _rule("allow file-map-executable", read_filters),
+        # AFTER the read allowances, because Seatbelt is last-match-wins. A
+        # custom Studio home under one of the optional read roots (a Homebrew
+        # prefix, say) is otherwise recursively readable, which hands over
+        # auth/auth.db and the HS256 jwt_secret to model-authored code and
+        # walks past tools.py's literal-path guard even in `required` mode.
+        # The runtime paths inside it are restored immediately below, since on
+        # a custom-home install the interpreter itself lives there.
+        *_studio_state_rules(runtime_paths, developer_paths, workdir, private_tmp),
         _rule("allow file-write*", write_filters),
         # AFTER the allowance, because Seatbelt is last-match-wins: Studio's own
         # runtime stays read-only even when it lives under the writable workdir.

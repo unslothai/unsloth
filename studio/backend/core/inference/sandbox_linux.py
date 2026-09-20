@@ -35,6 +35,7 @@ from .os_sandbox import (
     cache_share_hazard,
     editable_source_roots,
     scan_workdir_for_host_channels,
+    studio_state_roots,
 )
 
 logger = get_logger(__name__)
@@ -149,28 +150,6 @@ def _within(path: str, root: str) -> bool:
         return False
 
 
-def _studio_state_roots() -> tuple[str, ...]:
-    """Where Studio keeps ``auth/auth.db`` and the rest of its persisted state.
-
-    The default is under ``$HOME``, which no system root binds, but the shipped
-    Docker layout puts it at ``/opt/unsloth-studio`` (docker/run.sh mounts the
-    volume there and studio_launch.sh exports it), and ``/opt`` IS a system
-    root. tools.py guards the literal path, so the sandbox must not be the
-    thing that hands the file over.
-    """
-    roots: list[str] = []
-    try:
-        from utils.paths.storage_roots import studio_root
-        roots.append(os.path.realpath(str(studio_root())))
-    except Exception:  # noqa: BLE001 - a launch never fails over this
-        pass
-    for name in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME"):
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            roots.append(os.path.realpath(os.path.expanduser(value)))
-    return tuple(dict.fromkeys(path for path in roots if path and path != os.sep))
-
-
 def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, ...]:
     """Bind a system root's children instead of the root when Studio's own
     state lives inside it.
@@ -181,7 +160,7 @@ def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, 
     `required` mode. Descending keeps both: everything else under the root is
     still readable, the state directory is simply never a bind source.
     """
-    state = _studio_state_roots()
+    state = studio_state_roots()
     if not state:
         return roots
     kept: list[str] = []
@@ -189,8 +168,17 @@ def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, 
         real = os.path.realpath(root)
         if any(_within(real, path) for path in state):
             continue  # the root IS Studio state
-        if not any(_within(path, real) for path in state) or depth <= 0:
+        if not any(_within(path, real) for path in state):
             kept.append(root)
+            continue
+        if depth <= 0:
+            # Fails CLOSED. Restoring an ancestor known to contain the state
+            # directory would hand over auth/auth.db for a home buried deeply
+            # enough, which is the opposite of what the descent is for.
+            logger.warning(
+                "Not binding %s read-only: Studio's own state is nested too "
+                "deeply inside it to exclude", root,
+            )
             continue
         try:
             children = sorted(os.path.join(root, name) for name in os.listdir(root))
