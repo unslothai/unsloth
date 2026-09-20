@@ -2494,32 +2494,40 @@ def test_begin_load_rejects_concurrent(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: (0, []))
     )
-    # Hold the spawned worker inside the load. It waits on an event this test owns rather
-    # than sleeping for a fixed 0.2s, because the drain below has to join it and joining a
-    # thread that has not begun running raises. threading.enumerate() lists threads that
-    # have called start() but not yet started executing (CPython holds them in _limbo), so
-    # the fire-and-forget worker can be enumerated and unjoinable at the same instant. That
-    # is what failed run 35542154102, on a commit that touched none of this:
+    # Hold the spawned worker inside the load, and drain that worker by identity rather than
+    # by diffing threading.enumerate(). The old drain joined every thread that had appeared
+    # since the call, and enumerate() includes threads that have called start() but have not
+    # reached the point where join() is legal, so it failed run 35542154102 on a commit that
+    # touched none of this:
     #
     #   tests/test_diffusion_backend.py:2509: in test_begin_load_rejects_concurrent
     #       thread.join(timeout = 5)
     #   RuntimeError: cannot join thread before it is started
     #
-    # Waiting for the worker to signal from inside load_pipeline closes that window: a
-    # thread that has reached the target is a thread that has started. It also makes the
-    # rejection below an assertion about a load that is genuinely running, rather than one
-    # that happens to be inside a sleep that has not elapsed yet.
+    # Filtering that set is not a fix. CPython assigns Thread.ident before it sets the
+    # `_started` event join() actually waits on, so a thread can be enumerated, carry an
+    # ident, and still raise. Since enumerate() is process-global the offending thread need
+    # not even belong to this test. Recording the worker from inside the stub sidesteps all
+    # of it: a thread that is running its own target is past that window by definition.
+    #
+    # Holding it on an event rather than a 0.2s sleep also makes the rejection below an
+    # assertion about a load that is genuinely running, rather than one that happens to be
+    # inside a sleep that has not elapsed yet.
     holding = threading.Event()
     entered = threading.Event()
+    worker = []
 
     def held(self, **kwargs):
+        # Recorded from inside the worker, so the drain below joins exactly the thread this
+        # test started and nothing else. A thread running its own target has passed the
+        # point where join() is legal, which enumerating cannot establish.
+        worker.append(threading.current_thread())
         entered.set()
         # Bounded so a mistake here cannot hang the suite. The release below is what is
         # expected to end this wait; the timeout is only a backstop.
         assert holding.wait(timeout = 30), "the test never released the load worker"
 
     monkeypatch.setattr(DiffusionBackend, "load_pipeline", held)
-    before = set(threading.enumerate())
     backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
     assert entered.wait(timeout = 30), "the load worker never reached load_pipeline"
     with pytest.raises(RuntimeError):
@@ -2528,11 +2536,7 @@ def test_begin_load_rejects_concurrent(monkeypatch):
     # this test and then runs the REAL load_pipeline inside whatever test is current, under
     # that test's patches.
     holding.set()
-    for thread in set(threading.enumerate()) - before:
-        # Anything else that happened to be in limbo when the set above was taken belongs to
-        # another test, not to this one; skipping it is right, and joining it would be wrong.
-        if thread.ident is not None:
-            thread.join(timeout = 5)
+    worker[0].join(timeout = 5)
 
 
 def test_unload_cancels_in_flight_load(fake_runtime):
