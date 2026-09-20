@@ -666,7 +666,7 @@ def test_the_ceiling_lane_check_can_fail(tmp_path, monkeypatch) -> None:
 TRL_DATASETS_FLOORS = (
     # (first trl release with this floor, the datasets floor it declares)
     (Version("0.18.2"), Version("3.0.0")),
-    (Version("1.0.0"),  Version("4.7.0")),
+    (Version("1.0.0"), Version("4.7.0")),
 )
 
 
@@ -716,11 +716,26 @@ def _datasets_floor_for(trl_version: Version) -> Version:
 def _datasets_releases() -> list[Version]:
     """Every datasets release the declared window could pick, recorded for the same reason."""
     return [
-        Version(v) for v in (
-            "3.4.1", "3.5.0", "3.6.0",
-            "4.0.0", "4.1.0", "4.2.0", "4.3.0", "4.4.0", "4.4.1", "4.4.2", "4.5.0",
-            "4.6.0", "4.6.1", "4.7.0", "4.8.0", "4.8.5",
-            "5.0.0", "5.0.1",
+        Version(v)
+        for v in (
+            "3.4.1",
+            "3.5.0",
+            "3.6.0",
+            "4.0.0",
+            "4.1.0",
+            "4.2.0",
+            "4.3.0",
+            "4.4.0",
+            "4.4.1",
+            "4.4.2",
+            "4.5.0",
+            "4.6.0",
+            "4.6.1",
+            "4.7.0",
+            "4.8.0",
+            "4.8.5",
+            "5.0.0",
+            "5.0.1",
         )
     ]
 
@@ -764,7 +779,8 @@ def test_the_datasets_window_still_excludes_exactly_what_the_runtime_guard_refus
     source = guard.read_text(encoding = "utf-8")
     match = re.search(
         r'datasets_version <= Version\("([\d.]+)"\).*?datasets_version >= Version\("([\d.]+)"\)',
-        source, re.S,
+        source,
+        re.S,
     )
     assert match, "patch_datasets no longer states its forbidden range in the shape this reads"
     high, low = Version(match.group(1)), Version(match.group(2))
