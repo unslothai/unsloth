@@ -66,7 +66,6 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"-hfv", "-hfrv", "--hf-repo-v"}),
     frozenset({"-hffv", "--hf-file-v"}),
     frozenset({"-hft", "--hf-token"}),
-    frozenset({"-mm", "--mmproj"}),
     frozenset({"-mmu", "--mmproj-url"}),
     # Networking: Unsloth binds + proxies; retargeting orphans the proxy.
     frozenset({"--host"}),
@@ -1704,13 +1703,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_UI_CONFIG_FILE",
     "LLAMA_ARG_UI_MCP_PROXY",
     "LLAMA_ARG_STATIC_PATH",
-    # Deliberately absent: LLAMA_ARG_MMPROJ and LLAMA_ARG_MMPROJ_URL. --mmproj is refused in the box because Unsloth
-    # resolves the projector itself, but the environment twin is an INPUT here: _launch_has_mmproj reads both to know
-    # the launch has a projector at all, which is what keeps the vision and audio state of a model loaded through an
-    # inherited one. Only the paravirtual CPU recovery drops them, where an unpinned projector is the corrupt path it
-    # is undoing. The pooling twins are absent for the opposite reason: load_model already pops LLAMA_ARG_POOLING /
-    # _RERANKING / _EMBEDDINGS itself. The multi-model server mode is absent too: a child holding its own model
-    # directory, preset and autoload policy is not the single model Unsloth launched and accounts for.
+    # inherited projectors remain inputs to the launch and its memory accounting.
     "LLAMA_ARG_MODELS_DIR",
     "LLAMA_ARG_MODELS_PRESET",
     "LLAMA_ARG_MODELS_MAX",

@@ -6267,7 +6267,7 @@ def _launch_required_ubatch(
 
     # Pass-through arguments override managed projector flags.
     override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
-    if override:
+    if override and not vision_off and not extra_args_disable_mmproj(extra_args):
         required = max(
             required, _mmproj_required_ubatch(str(override), n_embd_text, extra_args, env)
         )
@@ -19232,12 +19232,18 @@ class LlamaCppBackend:
             return False
 
     def _resolve_launch_mmproj_path(
-        self, *, model_path: str, mmproj_path: Optional[str]
+        self,
+        *,
+        model_path: str,
+        mmproj_path: Optional[str],
+        extra_args: Optional[Iterable[str]] = None,
     ) -> Optional[str]:
-        """Return mmproj_path iff it exists on disk AND matches the model family.
-
-        None if mmproj_path is None, missing, or family-mismatched.
-        """
+        """Resolve a projector, trusting an explicit path over filename heuristics."""
+        override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+        if override is not None:
+            if not override or not Path(override).is_file():
+                raise ValueError("The custom mmproj path must name an existing file.")
+            return override
         if not mmproj_path:
             return None
 
@@ -21797,17 +21803,15 @@ class LlamaCppBackend:
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
-        """Return cmd without the '--mmproj <path>' pair (text-only retry).
-        Every other flag is preserved; a no-op when --mmproj is absent.
-        """
+        """Remove explicit projector paths, including aliases, for managed emission or retry."""
         out: list[str] = []
         skip_value = False
         for tok in cmd:
             if skip_value:
                 skip_value = False
                 continue
-            if tok == "--mmproj":
-                skip_value = True
+            if _flag_name(tok) in {"--mmproj", "-mm"}:
+                skip_value = "=" not in tok
                 continue
             out.append(tok)
         return out
@@ -22466,6 +22470,12 @@ class LlamaCppBackend:
         ctx_checkpoints = intent.ctx_checkpoints
         cache_ram = intent.cache_ram
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
+        custom_mmproj = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+        if custom_mmproj is not None:
+            mmproj_path = self._resolve_launch_mmproj_path(
+                model_path = gguf_path or "", mmproj_path = mmproj_path, extra_args = extra_args
+            )
+            is_vision = True
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         reasoning_budget = intent.reasoning_budget
         reasoning_budget_message = intent.reasoning_budget_message
@@ -23156,6 +23166,7 @@ class LlamaCppBackend:
                     else self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
+                        extra_args = extra_args,
                     ),
                     # Use the same order-independent metadata read as the estimators.
                     _read_gguf_embedding_length(model_path),
@@ -23522,6 +23533,7 @@ class LlamaCppBackend:
                     launch_mmproj_path = self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
+                        extra_args = extra_args,
                     )
                     # The switch turns VISION off, and a projector is not always a
                     # vision tower: ultravox, Voxtral and Qwen3-ASR declare an audio
@@ -27624,7 +27636,7 @@ class LlamaCppBackend:
                 # User pass-through args go last. Placement flags are removed
                 # below when the Unsloth picker owns the GPU selection.
                 if _mem_extras:
-                    _emit_extra_args = list(_mem_extras)
+                    _emit_extra_args = self._strip_mmproj_args(list(_mem_extras))
                     if _gpu_ids_own_device_flags:
                         # gpu_ids owns placement, so remove competing device flags.
                         _before_device_strip = list(_emit_extra_args)
@@ -31161,7 +31173,9 @@ class LlamaCppBackend:
             resident_identity = getattr(self, "_gguf_load_identity", None)
             if resident_identity is not None:
                 candidate_identity = LlamaCppBackend._gguf_load_source_identity(
-                    intent.gguf_path, intent.mmproj_path
+                    intent.gguf_path,
+                    _extra_args_device(intent.extra_args, {"--mmproj", "-mm"})
+                    or intent.mmproj_path,
                 )
                 return candidate_identity == resident_identity
             try:
@@ -31189,7 +31203,7 @@ class LlamaCppBackend:
         the main ``--gpu-layers``. A drafter explicitly forced to CPU
         (--spec-draft-ngl 0 / --spec-draft-device cpu) doesn't count."""
         _args = [str(a) for a in cmd]
-        if any(a.startswith("--mmproj") for a in _args):
+        if any(a.startswith("--mmproj") or _flag_name(a) == "-mm" for a in _args):
             # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole
             # GPU backend on it, so the projector holds no VRAM. Last flag wins.
             _off = [a for a in _args if a in ("--mmproj-offload", "--no-mmproj-offload")]
@@ -32897,6 +32911,8 @@ class LlamaCppBackend:
             return None
 
     _SIDECAR_WEIGHT_FLAGS = (
+        "--mmproj",
+        "-mm",
         "--lora",
         "--lora-scaled",
         "--control-vector",

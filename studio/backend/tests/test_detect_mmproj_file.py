@@ -9,6 +9,8 @@ from pathlib import Path
 
 import struct
 
+import pytest
+
 from utils.models.model_config import (
     _detect_family_token,
     detect_mmproj_file,
@@ -20,14 +22,17 @@ _GGUF_MAGIC = 0x46554747
 
 
 def _gguf_with_general(path: Path, fields: dict) -> Path:
-    """Write a minimal GGUF with only ``general.*`` string KVs."""
+    """Write a minimal GGUF with string and unsigned integer KVs."""
     body = b""
     for k, v in fields.items():
         kb = k.encode("utf-8")
-        vb = v.encode("utf-8")
         body += struct.pack("<Q", len(kb)) + kb
-        body += struct.pack("<I", 8)  # STRING vtype
-        body += struct.pack("<Q", len(vb)) + vb
+        if isinstance(v, int):
+            body += struct.pack("<II", 4, v)
+        else:
+            vb = v.encode("utf-8")
+            body += struct.pack("<I", 8)
+            body += struct.pack("<Q", len(vb)) + vb
     header = struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, len(fields))
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(header + body)
@@ -411,3 +416,49 @@ def test_a_draft_model_under_assets_is_not_mistaken_for_a_projector(tmp_path: Pa
     model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
     _touch(tmp_path / "assets" / "Qwen3.8-0.8B-draft-Q4_K_M.gguf")
     assert detect_mmproj_file(str(model)) is None
+
+
+@pytest.mark.parametrize("projection_dim", [5376, 2560, 0])
+@pytest.mark.parametrize("identity_matches", [False, True])
+def test_gemma4_finetune_pairs_by_functional_metadata(tmp_path, projection_dim, identity_matches):
+    model = _gguf_with_general(
+        tmp_path / "gembrain.gguf",
+        {
+            "general.architecture": "gemma4",
+            "general.basename": "Gemma-4" if identity_matches else "Gemma-4-Gembrain",
+            "general.base_model.0.repo_url": (
+                "https://huggingface.co/google/gemma-4-31B-it"
+                if identity_matches
+                else "https://huggingface.co/community/Gembrain"
+            ),
+            "gemma4.embedding_length": 5376,
+        },
+    )
+    projector = _gguf_with_general(
+        tmp_path / "mmproj-gemma-4-31B-it-BF16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "Gemma-4",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-31B-it",
+            "clip.vision.projector_type": "gemma4v",
+            "clip.vision.projection_dim": projection_dim,
+        },
+    )
+    expected = (
+        str(projector)
+        if projection_dim == 5376 or (projection_dim == 0 and identity_matches)
+        else None
+    )
+    assert detect_mmproj_file(str(model)) == expected
+    if projection_dim:
+        assert mmproj_matches_model_family(str(model), str(projector)) == (projection_dim == 5376)
+
+
+def test_mmproj_rejection_names_mismatched_fields(tmp_path, capsys):
+    model = _gguf_with_general(tmp_path / "model.gguf", {"general.basename": "Foo"})
+    _gguf_with_general(tmp_path / "mmproj.gguf", {"general.basename": "Bar"})
+    assert detect_mmproj_file(str(model)) is None
+    output = capsys.readouterr().out
+    assert "general.basename" in output
+    assert "Foo" in output and "Bar" in output
