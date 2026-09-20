@@ -766,7 +766,8 @@ def test_a_managed_account_without_confinement_still_refuses_required(monkeypatc
     from core.inference.tool_confinement import Confinement
 
     monkeypatch.setattr(
-        tools, "_account_confinement",
+        tools,
+        "_account_confinement",
         lambda: Confinement(mechanism = "unconfined-by-owner"),
     )
     _declining_backend(
