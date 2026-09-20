@@ -727,13 +727,13 @@ def test_the_editable_checkout_parent_is_not_granted(plan, tmp_path, monkeypatch
     (checkout / ".env").write_text("SECRET=1")
 
     monkeypatch.setattr(os_sandbox, "editable_source_roots", lambda: (str(package),))
-    monkeypatch.setattr(
-        sandbox_windows, "editable_source_roots", lambda: (str(package),))
+    monkeypatch.setattr(sandbox_windows, "editable_source_roots", lambda: (str(package),))
     # raising = False because the fixed backend does not import this name at
     # all. If it ever does again, this stand-in is what it would receive, and
     # the assertion below is what would catch it.
     monkeypatch.setattr(
-        sandbox_windows, "editable_import_roots", lambda: (str(checkout),), raising = False)
+        sandbox_windows, "editable_import_roots", lambda: (str(checkout),), raising = False
+    )
     monkeypatch.setattr(os_sandbox, "editable_import_roots", lambda: (str(checkout),))
 
     workdir = tmp_path / "work"
@@ -742,9 +742,9 @@ def test_the_editable_checkout_parent_is_not_granted(plan, tmp_path, monkeypatch
     granted = {os.path.normcase(path) for path in policy["filesystem"]["readonlyPaths"]}
 
     assert os.path.normcase(str(package)) in granted, "the source root itself must stay granted"
-    assert os.path.normcase(str(checkout)) not in granted, (
-        "the whole editable checkout was granted read access"
-    )
+    assert (
+        os.path.normcase(str(checkout)) not in granted
+    ), "the whole editable checkout was granted read access"
 
 
 def test_the_elevated_helper_is_reverified_before_each_invocation(tmp_path, monkeypatch):
@@ -760,8 +760,7 @@ def test_the_elevated_helper_is_reverified_before_each_invocation(tmp_path, monk
     dest.mkdir()
     prep = dest / "wxc-host-prep.exe"
     prep.write_bytes(b"the pinned helper")
-    monkeypatch.setitem(
-        installer.HOST_PREP_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(prep)))
+    monkeypatch.setitem(installer.HOST_PREP_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(prep)))
 
     ran = []
 
