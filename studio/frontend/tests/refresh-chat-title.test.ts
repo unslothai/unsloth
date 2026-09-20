@@ -38,6 +38,7 @@ function message(
 }
 beforeEach(() => {
   state.model = "local-model";
+  state.contextLength = 4096;
   state.threads = [{ ...item, modelType: "base", archived: false }];
   state.messages = [];
   state.messages.push(message("u1", "user", "Help write a follow-up email"));
@@ -206,4 +207,50 @@ test("saved connections route to the selected provider and respect disabled conn
   state.connectionsEnabled = false;
   await assert.rejects(refreshChatTitle(item));
   assert.equal(state.requests.length, 1);
+});
+
+test("refresh works without native AbortSignal.timeout and releases its timer", async () => {
+  const nativeTimeout = AbortSignal.timeout;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
+  Object.defineProperty(AbortSignal, "timeout", {
+    configurable: true,
+    value: undefined,
+  });
+  globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+    timer = originalSetTimeout(...args);
+    return timer;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
+    if (id === timer) disposed = true;
+    return originalClearTimeout(id);
+  }) as typeof clearTimeout;
+  try {
+    await refreshChatTitle(item);
+    assert.equal(state.writes.length, 1);
+    assert.equal(disposed, true);
+  } finally {
+    if (timer) originalClearTimeout(timer);
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    Object.defineProperty(AbortSignal, "timeout", {
+      configurable: true,
+      value: nativeTimeout,
+    });
+  }
+});
+
+test("long multilingual transcripts fit the loaded context and keep the latest topic", async () => {
+  state.contextLength = 2048;
+  state.messages[1].content = [
+    { type: "text", text: "Older details 🦥 ".repeat(5000) },
+  ];
+  await refreshChatTitle(item);
+  const transcript = state.requests[0].messages[1].content;
+  assert.ok(new TextEncoder().encode(transcript).length <= 1536);
+  assert.ok(transcript.includes("follow-up email"));
+  assert.ok(transcript.includes("liability clause"));
+  assert.ok(transcript.includes("renewal terms"));
 });

@@ -8,6 +8,7 @@ import type {
 
 export const state = {
   model: "local-model",
+  contextLength: 4096,
   threads: [] as ThreadRecord[],
   messages: [] as MessageRecord[],
   requests: [] as {
@@ -37,7 +38,11 @@ export const state = {
   connectionsEnabled: true,
 };
 export const useChatRuntimeStore = {
-  getState: () => ({ params: { checkpoint: state.model }, autoTitle: false }),
+  getState: () => ({
+    params: { checkpoint: state.model, maxSeqLength: 4096 },
+    loadedContextLength: state.contextLength,
+    autoTitle: false,
+  }),
 };
 export const useExternalProvidersStore = { getState: () => state };
 export async function getStoredChatThread(id: string) {
