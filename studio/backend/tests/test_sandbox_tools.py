@@ -3856,3 +3856,64 @@ class TestAiohttpPositionalBaseUrl:
             'import aiohttp\nc = aiohttp.ClientSession("https://huggingface.co")\n'
             'c.get("/api/models")'
         )
+
+
+class TestMultiHostConnectionStrings:
+    """A libpq DSN may list failover hosts and the client tries each, so screening the first
+    alone would let the rest through."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import psycopg2\npsycopg2.connect("host=huggingface.co,evil.example dbname=app")',
+                id = "keyword_list",
+            ),
+            pytest.param(
+                'import psycopg2\npsycopg2.connect("postgresql://u@huggingface.co,evil.example/db")',
+                id = "url_authority_list",
+            ),
+            pytest.param(
+                'import pyodbc\npyodbc.connect("DRIVER={x};SERVER=huggingface.co,evil.example;")',
+                id = "odbc_list",
+            ),
+            pytest.param(
+                'import psycopg2\npsycopg2.connect(host = "huggingface.co,evil.example")',
+                id = "host_keyword_list",
+            ),
+        ],
+    )
+    def test_a_second_host_behind_an_allowed_one_is_still_screened(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_a_metadata_host_later_in_the_list_is_blocked(self):
+        _blocked(
+            'import psycopg2\npsycopg2.connect("host=huggingface.co,169.254.169.254 dbname=app")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_single_allowed_host_keeps_working_ok(self):
+        _ok('import psycopg2\npsycopg2.connect("host=huggingface.co dbname=app")')
+
+
+class TestReplacedConnectCallables:
+    """The exemption is for the client that was imported, not for the name it left behind."""
+
+    def test_a_connect_replaced_on_a_local_module_is_screened(self):
+        _blocked(
+            "import sqlite3, smtplib\n"
+            "sqlite3.connect = smtplib.SMTP().connect\n"
+            'sqlite3.connect("evil.example", 25)',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_the_same_trick_at_a_metadata_host_is_blocked(self):
+        _blocked(
+            "import sqlite3, smtplib\n"
+            "sqlite3.connect = smtplib.SMTP().connect\n"
+            'sqlite3.connect("169.254.169.254", 80)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_untouched_local_client_keeps_working_ok(self):
+        _ok('import sqlite3\nsqlite3.connect("state.db")\nsqlite3.connect("other.db")')

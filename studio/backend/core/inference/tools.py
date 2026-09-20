@@ -16832,26 +16832,31 @@ def _check_signal_escape_patterns(code: str):
                 return _canonical_fq(bound.func, _bindings) in _SOCKET_FACTORY_FQ
         return False
 
-    # `host = ` in a libpq DSN, `SERVER = ` in an ODBC one. The value runs to the next separator.
-    _DSN_HOST_RE = re.compile(r"(?:^|[;\s])(?:host|server)\s*=\s*([^;\s,]+)", re.IGNORECASE)
+    # `host = ` in a libpq DSN, `SERVER = ` in an ODBC one.
+    # The value runs to the next separator and may be a comma separated failover list, which the
+    # caller splits: libpq tries each host in turn, so every one of them has to be screened.
+    _DSN_HOST_RE = re.compile(r"(?:^|[;\s])(?:host|server)\s*=\s*([^;\s]+)", re.IGNORECASE)
     # Schemes that name a file rather than a host, so `sqlite:///state.db` opens nothing remote.
     _LOCAL_DSN_SCHEMES = ("sqlite", "duckdb", "file", "shm", "memory")
 
-    def _dsn_host(text: str) -> "str | None":
-        """The host a database connection string names, or None when it names a file or nothing.
-        `postgresql://user:pass@db.example/app` and `SERVER = db.example` both reach a host; a
-        SQLite path and a bare `dbname = app` do not."""
+    def _dsn_hosts(text: str) -> "list[str]":
+        """Every host a database connection string names. A libpq DSN may list failover hosts,
+        `host = primary,standby`, and the client tries each, so screening the first alone would
+        let the second through. A SQLite path and a bare `dbname = app` name none."""
         if "://" in text:
             scheme = text.split("://", 1)[0].split("+")[0].lower()
             if scheme in _LOCAL_DSN_SCHEMES:
-                return None
+                return []
             match = _URL_HOST_RE.match(text) or _URL_HOST_TERMINATED_RE.match(text)
-            if match:
-                return match.group(1)
-            authority = text.split("://", 1)[1]
-            return authority.split("/")[0] or None
-        match = _DSN_HOST_RE.search(text)
-        return match.group(1) if match else None
+            authority = match.group(1) if match else text.split("://", 1)[1].split("/")[0]
+            # A libpq URL carries its failover list in the authority: user@a,b/db.
+            userinfo, _, hosts = authority.rpartition("@")
+            prefix = f"{userinfo}@" if userinfo else ""
+            return [f"{prefix}{host}" for host in hosts.split(",") if host]
+        out: list = []
+        for match in _DSN_HOST_RE.finditer(text):
+            out.extend(host for host in match.group(1).split(",") if host)
+        return out
 
     def _expanded_host_arguments(node: ast.Call) -> "tuple[list, bool]":
         """Host values hidden in a `**` expansion, and whether any expansion could not be read.
@@ -16874,9 +16879,10 @@ def _check_signal_escape_patterns(code: str):
             opaque = True
         return found, opaque
 
-    def _remote_database_host(node: ast.Call) -> "str | None":
-        """The host a `connect` on a database client names, when it names one at all."""
+    def _remote_database_hosts(node: ast.Call) -> "list[str]":
+        """Every host a `connect` on a database client names, across the DSN and the keywords."""
         expanded, _opaque = _expanded_host_arguments(node)
+        positional = node.args[0] if node.args else None
         candidates = [kw.value for kw in node.keywords or [] if kw.arg in ("host", "server")]
         candidates += expanded
         candidates += list(node.args[:1])
@@ -16884,13 +16890,33 @@ def _check_signal_escape_patterns(code: str):
             text, complete = _static_str_prefix(candidate, _bindings)
             if not (complete and text):
                 continue
-            host = _dsn_host(text) if ("://" in text or "=" in text) else None
-            if host is None and candidate is not (node.args[0] if node.args else None):
-                # A bare `host = ` keyword is the host itself, not a connection string.
-                host = text
-            if host:
-                return host
-        return None
+            hosts = _dsn_hosts(text) if ("://" in text or "=" in text) else []
+            if not hosts and candidate is not positional:
+                # A bare `host = ` keyword is the host itself, not a connection string, and it
+                # may still list failover hosts.
+                hosts = [host for host in text.split(",") if host]
+            if hosts:
+                return hosts
+        return []
+
+    _rebound_attributes = {
+        _written_fq(target)
+        for statement in _tree_nodes(tree)
+        for target in (
+            list(getattr(statement, "targets", []))
+            + ([statement.target] if isinstance(statement, (ast.AnnAssign, ast.AugAssign)) else [])
+        )
+        if isinstance(target, ast.Attribute) and _written_fq(target)
+    }
+
+    def _connect_is_exempt(node: ast.Call) -> bool:
+        """Whether a `connect` call is one of the local-resource clients, still spelling what it
+        was imported as. Replacing the callable, `sqlite3.connect = smtplib.SMTP().connect`,
+        leaves the receiver looking like the module while the call opens a socket."""
+        return (
+            _opens_a_local_resource(node.func.value)
+            and _written_fq(node.func) not in _rebound_attributes
+        )
 
     def _names_a_local_client_module(node) -> bool:
         """Whether *node* is a reference to one of the local-client modules as imported. A name
@@ -17328,17 +17354,18 @@ def _check_signal_escape_patterns(code: str):
             # Direct sock.connect((host, port)) bypasses the FQ-prefix branch, and so do the
             # scalar-host clients (ftplib, smtplib, socketio). Only the APIs whose `connect` opens
             # a local resource are left alone: reading a database path as a host refuses it.
-            # A database client is exempt from host screening only while it opens a file. Its
-            # connection string can name a remote host just as plainly as a URL does, and
+            # Even then the exemption is only from screening the argument as a bare host. A
+            # connection string can name a remote host as plainly as a URL does, and
             # `postgresql://user:pass@host/db` is the usual way to write one.
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "connect"
-                and _opens_a_local_resource(node.func.value)
+                and _connect_is_exempt(node)
             ):
-                database_host = _remote_database_host(node)
-                if database_host:
-                    _screen_host(database_host, node)
+                database_hosts = _remote_database_hosts(node)
+                if database_hosts:
+                    for database_host in database_hosts:
+                        _screen_host(database_host, node)
                 else:
                     _expanded, opaque = _expanded_host_arguments(node)
                     if opaque and any(
@@ -17364,7 +17391,7 @@ def _check_signal_escape_patterns(code: str):
                 and (
                     isinstance(node.args[0], ast.Tuple)
                     or _is_a_socket_receiver(node.func.value)
-                    or not _opens_a_local_resource(node.func.value)
+                    or not _connect_is_exempt(node)
                 )
             ):
                 a0 = node.args[0]
