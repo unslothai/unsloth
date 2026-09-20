@@ -395,7 +395,9 @@ function Install-UnslothStudio {
             } else {
                 $fso.GetFile($Path).ShortPath
             }
-            if ($short -and -not $short.Contains(" ")) { return $short }
+            # A space-free alias is not necessarily a name that resolves (#11290). This value
+            # reaches UV_OVERRIDE and --find-links, so a bogus one breaks every later uv call.
+            if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short)) { return $short }
         } catch {}
         return $Path
     }
