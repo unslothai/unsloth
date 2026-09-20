@@ -689,22 +689,30 @@ def active_hf_cache_loadable_snapshot(repo_id: str) -> Optional[Path]:
     return snapshot if snapshot is not None and snapshot_is_loadable(snapshot, repo_id) else None
 
 
-def active_hf_cache_holds_repo_in_any_case(repo_id: str) -> bool:
-    """``active_hf_cache_loadable_snapshot`` widened across the repo id's casing. The Hub is case insensitive, so one checkpoint sits in the cache under whichever spelling first asked for it, while the directories it creates are not. A caller deciding only whether the weights are already on disk has to accept every spelling, or it re-fetches a copy it is looking straight at."""
+def active_hf_cache_repo_spelling(repo_id: str) -> Optional[str]:
+    """The spelling ``repo_id`` is actually cached under in the active cache, or None.
+
+    The Hub is case insensitive, the cache directories it creates are not, and huggingface_hub keys the directory on the id verbatim, so one checkpoint sits under whichever spelling first asked for it (huggingface/huggingface_hub#3838). Returning the spelling rather than a bool is what lets a caller LOAD the copy it found: asking for any other casing downloads it again.
+    """
     if active_hf_cache_loadable_snapshot(repo_id) is not None:
-        return True
+        return repo_id
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
-        wanted = _repo_folder_name(repo_id).lower()
+        exact = _repo_folder_name(repo_id)
+        wanted = exact.lower()
+        prefix = len("models--")
         for repo_dir in _expand_path(active_hf_hub_cache()).iterdir():
-            if repo_dir.name.lower() != wanted or repo_dir.name == _repo_folder_name(repo_id):
+            if repo_dir.name.lower() != wanted or repo_dir.name == exact:
                 continue
+            # Repo ids cannot contain '--' (huggingface_hub.utils.validate_repo_id), so
+            # the directory name maps back to exactly one id.
+            variant = repo_dir.name[prefix:].replace("--", "/")
             snapshot = _snapshot_in_repo_dir(repo_dir)
-            if snapshot is not None and snapshot_is_loadable(snapshot, repo_id):
-                return True
+            if snapshot is not None and snapshot_is_loadable(snapshot, variant):
+                return variant
     except Exception:
-        return False
-    return False
+        return None
+    return None
 
 
 def snapshot_is_loadable(snapshot, model_name: str) -> bool:

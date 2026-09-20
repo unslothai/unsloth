@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Test when cached upstream weights should bypass Unsloth's repo mapping."""
+"""Test which repo id a chat load is handed, and when Unsloth's mapper picks it."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("unsloth_zoo")
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
-from core.inference.inference import _load_cached_repo_as_named  # noqa: E402
+from core.inference.inference import _exact_model_name_for_load  # noqa: E402
 
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
@@ -152,7 +152,7 @@ def test_cached_repo_loads_as_named_when_the_swap_target_is_missing(
 ):
     _cache_repo(hub_cache, UPSTREAM)
 
-    assert _load_cached_repo_as_named(_config(), load_in_4bit) is True
+    assert _exact_model_name_for_load(_config(), load_in_4bit) == UPSTREAM
 
 
 @pytest.mark.parametrize("load_in_4bit", [True, False])
@@ -160,16 +160,25 @@ def test_cached_swap_target_keeps_the_swap(mapper, hub_cache, load_in_4bit):
     _cache_repo(hub_cache, UPSTREAM)
     _cache_repo(hub_cache, PREQUANT if load_in_4bit else UNSLOTH_16BIT)
 
-    assert _load_cached_repo_as_named(_config(), load_in_4bit) is False
+    assert _exact_model_name_for_load(_config(), load_in_4bit) is None
 
 
 @pytest.mark.parametrize("load_in_4bit", [True, False])
-def test_cached_swap_target_in_another_case_keeps_the_swap(mapper, hub_cache, load_in_4bit):
-    # The mapper lowercases its targets; the Hub, and Studio's own downloads, do not.
-    _cache_repo(hub_cache, UPSTREAM)
-    _cache_repo(hub_cache, (PREQUANT if load_in_4bit else UNSLOTH_16BIT).upper())
+def test_a_differently_cased_swap_target_is_loaded_under_its_cached_spelling(
+    mapper, hub_cache, load_in_4bit
+):
+    """The mapper lowercases its targets; the Hub, and Studio's own downloads, do not.
 
-    assert _load_cached_repo_as_named(_config(), load_in_4bit) is False
+    Answering "cached, let the mapper have it" is not enough: the mapper hands the
+    loader its own lowercase spelling, huggingface_hub keys the cache directory on the
+    id verbatim (huggingface/huggingface_hub#3838), and the copy on disk is fetched a
+    second time. Measured at 1356 MiB on Qwen3-1.7B with Xet dedup off.
+    """
+    target = (PREQUANT if load_in_4bit else UNSLOTH_16BIT).upper()
+    _cache_repo(hub_cache, UPSTREAM)
+    _cache_repo(hub_cache, target)
+
+    assert _exact_model_name_for_load(_config(), load_in_4bit) == target
 
 
 def test_a_differently_cased_target_short_a_shard_still_loads_as_named(mapper, hub_cache):
@@ -177,7 +186,7 @@ def test_a_differently_cased_target_short_a_shard_still_loads_as_named(mapper, h
     _cache_repo(hub_cache, UPSTREAM)
     _cache_repo(hub_cache, PREQUANT.upper(), missing_shard = True)
 
-    assert _load_cached_repo_as_named(_config(), True) is True
+    assert _exact_model_name_for_load(_config(), True) == UPSTREAM
 
 
 def test_without_bitsandbytes_the_16bit_target_decides(mapper, hub_cache):
@@ -185,37 +194,37 @@ def test_without_bitsandbytes_the_16bit_target_decides(mapper, hub_cache):
     mapper.loader.ALLOW_BITSANDBYTES = False
     _cache_repo(hub_cache, UPSTREAM)
     _cache_repo(hub_cache, PREQUANT)
-    assert _load_cached_repo_as_named(_config(), True) is True
+    assert _exact_model_name_for_load(_config(), True) == UPSTREAM
 
     _cache_repo(hub_cache, UNSLOTH_16BIT)
-    assert _load_cached_repo_as_named(_config(), True) is False
+    assert _exact_model_name_for_load(_config(), True) is None
 
 
 def test_without_prequantized_models_the_stripped_target_decides(mapper, hub_cache):
     mapper.loader.ALLOW_PREQUANTIZED_MODELS = False
     _cache_repo(hub_cache, UPSTREAM)
     _cache_repo(hub_cache, PREQUANT)
-    assert _load_cached_repo_as_named(_config(), True) is True
+    assert _exact_model_name_for_load(_config(), True) == UPSTREAM
 
     _cache_repo(hub_cache, PREQUANT.removesuffix("-unsloth-bnb-4bit"))
-    assert _load_cached_repo_as_named(_config(), True) is False
+    assert _exact_model_name_for_load(_config(), True) is None
 
 
 def test_modelscope_keeps_the_swap(mapper, hub_cache):
     mapper.loader.USE_MODELSCOPE = True
     _cache_repo(hub_cache, UPSTREAM)
 
-    assert _load_cached_repo_as_named(_config(), True) is False
+    assert _exact_model_name_for_load(_config(), True) is None
 
 
 def test_named_repo_short_a_shard_keeps_the_swap(mapper, hub_cache):
     _cache_repo(hub_cache, UPSTREAM, missing_shard = True)
 
-    assert _load_cached_repo_as_named(_config(), True) is False
+    assert _exact_model_name_for_load(_config(), True) is None
 
 
 def test_uncached_named_repo_keeps_the_swap(mapper, hub_cache):
-    assert _load_cached_repo_as_named(_config(), True) is False
+    assert _exact_model_name_for_load(_config(), True) is None
 
 
 def test_checkpoint_in_a_previous_cache_root_keeps_the_swap(
@@ -229,14 +238,14 @@ def test_checkpoint_in_a_previous_cache_root_keeps_the_swap(
     monkeypatch.setenv("HF_HUB_CACHE", str(previous))
 
     assert hf_cache_snapshot_is_loadable(UPSTREAM) is True
-    assert _load_cached_repo_as_named(_config(), True) is False
+    assert _exact_model_name_for_load(_config(), True) is None
 
 
 def test_known_bad_repo_keeps_the_swap(mapper, hub_cache):
     _cache_repo(hub_cache, UPSTREAM)
     mapper.BAD_MAPPINGS[UPSTREAM.lower()] = UNSLOTH_16BIT
 
-    assert _load_cached_repo_as_named(_config(), True) is False
+    assert _exact_model_name_for_load(_config(), True) is None
 
 
 @pytest.mark.parametrize("load_in_4bit", [True, False])
@@ -244,14 +253,14 @@ def test_quantized_checkpoint_keeps_the_swap(mapper, hub_cache, load_in_4bit):
     # MXFP4 weights cannot satisfy the requested 4-bit or 16-bit load as-is.
     _cache_repo(hub_cache, UPSTREAM, config = {"quantization_config": {"quant_method": "mxfp4"}})
 
-    assert _load_cached_repo_as_named(_config(), load_in_4bit) is False
+    assert _exact_model_name_for_load(_config(), load_in_4bit) is None
 
 
 def test_name_the_installed_tables_do_not_know_skips_the_mapper(mapper, hub_cache):
     # Leave remote mapper lookups to the loader.
     _cache_repo(hub_cache, "someone/custom-model")
 
-    assert _load_cached_repo_as_named(_config("someone/custom-model"), True) is False
+    assert _exact_model_name_for_load(_config("someone/custom-model"), True) is None
     assert mapper.calls == []
 
 
@@ -259,14 +268,16 @@ def test_name_the_installed_tables_do_not_know_skips_the_mapper(mapper, hub_cach
 def test_local_and_adapter_loads_are_untouched(mapper, hub_cache, overrides):
     _cache_repo(hub_cache, UPSTREAM)
 
-    assert _load_cached_repo_as_named(_config(**overrides), True) is False
+    assert _exact_model_name_for_load(_config(**overrides), True) is None
     assert mapper.calls == []
 
 
 def test_load_model_hands_the_verdict_to_both_loaders():
-    """Dropping the two keyword arguments restores the download and leaves every other
-    test here passing, so the wiring needs its own assertion. A real ``load_model`` call
-    cannot run here (no weights, no network, no unsloth), so read the call sites.
+    """Dropping either keyword argument restores the download and leaves every other test
+    here passing, so the wiring needs its own assertion. ``model_name`` matters as much as
+    the flag: the verdict can name the swap target's cached spelling, and passing
+    ``config.path`` there would load the wrong repo. A real ``load_model`` call cannot run
+    here (no weights, no network, no unsloth), so read the call sites.
     """
     import ast
 
@@ -277,34 +288,41 @@ def test_load_model_hands_the_verdict_to_both_loaders():
         if isinstance(node, ast.FunctionDef) and node.name == "load_model"
     )
 
-    verdicts = {
-        target.id
-        for node in ast.walk(load_model)
-        if isinstance(node, ast.Assign)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Name)
-        and node.value.func.id == "_load_cached_repo_as_named"
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    }
-    assert verdicts, "load_model never calls _load_cached_repo_as_named"
+    def assigned_from(predicate):
+        return {
+            target.id
+            for node in ast.walk(load_model)
+            if isinstance(node, ast.Assign) and predicate(node.value)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
 
-    forwarded = {
-        node.func.value.id
-        for node in ast.walk(load_model)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "from_pretrained"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id in ("FastLanguageModel", "FastVisionModel")
-        and any(
-            kw.arg == "use_exact_model_name"
-            and isinstance(kw.value, ast.Name)
-            and kw.value.id in verdicts
-            for kw in node.keywords
-        )
-    }
-    assert forwarded == {
-        "FastLanguageModel",
-        "FastVisionModel",
-    }, f"only {sorted(forwarded)} receive use_exact_model_name"
+    verdicts = assigned_from(
+        lambda v: isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
+        and v.func.id == "_exact_model_name_for_load"
+    )
+    assert verdicts, "load_model never calls _exact_model_name_for_load"
+    # Whatever the flag and the path are called, they have to be computed FROM the
+    # verdict, so a rename stays green and a hardcoded True or config.path does not.
+    derived = verdicts | assigned_from(
+        lambda v: any(isinstance(n, ast.Name) and n.id in verdicts for n in ast.walk(v))
+    )
+
+    def receives(kwarg):
+        return {
+            node.func.value.id
+            for node in ast.walk(load_model)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "from_pretrained"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in ("FastLanguageModel", "FastVisionModel")
+            and any(
+                kw.arg == kwarg and isinstance(kw.value, ast.Name) and kw.value.id in derived
+                for kw in node.keywords
+            )
+        }
+
+    both = {"FastLanguageModel", "FastVisionModel"}
+    for kwarg in ("use_exact_model_name", "model_name"):
+        assert receives(kwarg) == both, f"only {sorted(receives(kwarg))} receive {kwarg}"
