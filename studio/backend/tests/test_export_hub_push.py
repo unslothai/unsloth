@@ -375,6 +375,77 @@ def test_merged_export_push_card_does_not_name_a_local_base_model(tmp_path, monk
     assert str(tmp_path) not in seen["card"]
 
 
+def test_base_export_push_keeps_the_export_metadata_out_of_the_repo(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_base_backend", calls, seen)
+
+    success, message, output_path = backend.export_base_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert Path(output_path, "export_metadata.json").is_file()
+    assert seen["folder"] == output_path
+    assert seen["uploaded"] == ["model.safetensors", "tokenizer.json"]
+
+
+def test_base_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_base_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "old.Q4_K_M.gguf").write_bytes(b"GGUF")
+    (export_dir / "export_metadata.json").write_text("{}")
+
+    success, message, output_path = backend.export_base_model(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert output_path == str(export_dir.resolve())
+    assert Path(output_path, "model.safetensors").is_file()
+    assert seen["folder"] != output_path
+    assert not Path(seen["folder"]).exists()
+    assert seen["uploaded"] == ["model.safetensors", "tokenizer.json"]
+
+
+def test_base_export_staging_failure_leaves_the_hub_untouched(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_stage_failure", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "old.gguf").write_bytes(b"GGUF")
+    save = backend.current_model.save_pretrained
+    saved_to = []
+
+    def fail_staging(directory):
+        saved_to.append(directory)
+        if len(saved_to) == 2:
+            raise OSError(28, "No space left on device")
+        save(directory)
+
+    monkeypatch.setattr(backend.current_model, "save_pretrained", fail_staging)
+    success, message, _output_path = backend.export_base_model(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+
+    assert success is False
+    assert "No space left on device" in message
+    assert len(saved_to) == 2
+    assert Path(export_dir, "model.safetensors").is_file()
+    assert not Path(saved_to[1]).exists()
+    assert calls == []
+
+
 class _LoraTokenizer(_Tokenizer):
     def __init__(self, calls):
         self.calls = calls
@@ -394,6 +465,7 @@ class _LoraModel:
 
     def __init__(self, calls):
         self.calls = calls
+        self.conversions = []
 
     def save_pretrained(self, save_directory):
         Path(save_directory, "adapter_model.safetensors").write_bytes(b"weights")
@@ -409,7 +481,12 @@ class _LoraModel:
         quantization_method = None,
         token = None,
     ):
-        Path(save_directory, "model-lora-q8_0.gguf").write_bytes(b"GGUF")
+        self.conversions.append(save_directory)
+        output = Path(save_directory)
+        output.mkdir(parents = True, exist_ok = True)
+        (output / "adapter_config.json").write_text("{}")
+        (output / "adapter_model.safetensors").write_bytes(b"lora")
+        (output / f"model-lora-{quantization_method}.gguf").write_bytes(b"GGUF")
 
     def push_to_hub(
         self,
@@ -616,3 +693,56 @@ def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, mon
     assert "MLX serialization failed" in message
     assert calls == []  # no create_repo, no tightening, no upload
     assert "repo" not in seen
+
+
+_LORA_GGUF_FILES = ["adapter_config.json", "adapter_model.safetensors", "model-lora-q8_0.gguf"]
+
+
+def _gguf_backend(monkeypatch, name, calls, seen):
+    _module, backend, _gguf, _uploads = _lora_backend(monkeypatch, name, calls, seen, "gguf")
+    return backend
+
+
+def test_lora_gguf_export_push_uploads_the_saved_folder(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _gguf_backend(
+        monkeypatch, "test_export_hub_push_lora_gguf_fresh_backend", calls, seen
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "._old.gguf").write_bytes(b"\x00\x05\x16\x07rsrc")
+
+    success, message, output_path = _push_lora(backend, str(export_dir), True, False)
+
+    assert success is True, message
+    assert backend.current_model.conversions == [str(export_dir)]
+    assert calls == ["create_repo", "upload_folder"]
+    assert seen["folder"] == output_path
+    assert seen["uploaded"] == _LORA_GGUF_FILES
+
+
+def test_lora_gguf_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
+    tmp_path, monkeypatch
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _gguf_backend(
+        monkeypatch, "test_export_hub_push_lora_gguf_reused_backend", calls, seen
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+    (export_dir / "Modelfile").write_text("FROM model.Q4_K_M.gguf")
+    (export_dir / "export_metadata.json").write_text('{"base_model": "/home/me/models/base"}')
+
+    success, message, output_path = _push_lora(backend, str(export_dir), True, False)
+
+    assert success is True, message
+    assert output_path == str(export_dir.resolve())
+    assert Path(output_path, "model-lora-q8_0.gguf").is_file()
+    assert len(backend.current_model.conversions) == 2
+    assert seen["folder"] != output_path
+    assert Path(seen["folder"]).name == export_dir.name
+    assert not Path(seen["folder"]).exists()
+    assert seen["uploaded"] == _LORA_GGUF_FILES
