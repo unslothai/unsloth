@@ -98,6 +98,24 @@ def _value(text: str) -> int:
     return int(text) if text.isdigit() else _AS_A_NUMBER[text.lower()]
 
 
+def _clause_before(text: str, position: int) -> str:
+    """What sits between the last clause boundary and `position`.
+
+    The subject of the verb, in other words, and the only place a hung-cell
+    qualification can legitimately be. "A cell that hangs holds its runner for ten
+    minutes" is true and has to stay legal; "although the timeout is the cutoff for a
+    hang, a superseded matrix holds its runners for ten minutes" is the same false claim
+    it always was, and the difference between them is exactly which clause the
+    qualification is in.
+    """
+    boundary = max(text.rfind(mark, 0, position) for mark in (".", ";", ",", ":"))
+    return text[boundary + 1 : position]
+
+
+def _about_a_hung_cell(text: str, position: int) -> bool:
+    return bool(re.search(r"hang\w*|hung", _clause_before(text, position), re.I))
+
+
 def test_the_rationale_and_the_timeout_are_both_still_there():
     """A guard that found neither would pass every check below for the wrong reason."""
     rationale = _rationale()
@@ -131,15 +149,17 @@ def test_the_timeout_is_never_offered_as_what_a_superseded_matrix_holds():
     duration = re.compile(r"\b(" + "|".join(spellings) + r")\s+minutes?\b", re.I)
     rationale = _rationale()
     # The durations an occupancy verb actually governs, by where their number starts.
-    occupied = {claim.start("value") for claim in _HOLD_CLAIM.finditer(rationale)}
+    occupied = {claim.start("value"): claim.start() for claim in _HOLD_CLAIM.finditer(rationale)}
     offenders = []
     for match in duration.finditer(rationale):
         window = rationale[max(0, match.start() - 90) : match.end() + 40]
         # Governed by a verb of occupancy: that is the false claim, whatever else the
-        # sentence concedes elsewhere.
+        # sentence concedes elsewhere. Unless the thing doing the holding is a cell that
+        # HANGS, which really does hold its runner until the timeout.
         if match.start() in occupied:
-            offenders.append(window)
-            continue
+            if not _about_a_hung_cell(rationale, occupied[match.start()]):
+                offenders.append(window)
+                continue
         # Otherwise it passes only if named, right here, as the cutoff it is.
         if not re.search(r"timeout|hang\w*|hung|cutoff", window, re.I):
             offenders.append(window)
@@ -165,46 +185,73 @@ def test_the_timeout_is_still_explained_as_the_hung_cell_bound():
     )
 
 
-def test_the_occupancy_claim_is_a_measured_one():
-    """Seconds, and said to be measured, both read off the claim itself.
+def _sentence_around(text: str, start: int, end: int) -> str:
+    """The claim's own sentence, so provenance cannot be borrowed from a neighbour."""
+    opened = text.rfind(".", 0, start)
+    closed = text.find(".", end)
+    return text[opened + 1 : closed if closed != -1 else len(text)].strip()
+
+
+def test_every_occupancy_claim_is_a_measured_one():
+    """Seconds, and consistent with the measurement, for EVERY claim rather than the first.
+
+    Checking only the first lets a correct opening sentence mask anything added later:
+    "A superseded matrix holds its runners for about 600 seconds" further down passed
+    while the measured sentence above it stayed intact, and the timeout test does not see
+    it either, because 600 seconds is not the configured ten minutes.
 
     Nothing here is checked over a window. The queue figures further down are also
     measured and also in seconds, so a window check passes with the occupancy claim
     removed entirely, and it passes with the claim changed to minutes while a stale
     `median 4s` sits behind it. Seconds alone is not enough either: "about 600 seconds"
-    is the original overstatement in the right unit. So the value is read off the claim
-    and compared with the median the same sentence reports, within 3x either way. All
-    three of those holes were found by sabotaging this test, in that order.
+    is the original overstatement in the right unit.
+
+    So the comment has to report a median, at least one claim has to carry that median in
+    its own sentence, and every claim has to agree with it within 3x. Restating the figure
+    elsewhere without repeating the provenance stays legal, which it should: what is being
+    guarded against is an unmeasured number, not a second mention of a measured one.
+
+    A claim about the HUNG case is exempt, since "a cell that hangs holds its runner for
+    ten minutes" is true and is the timeout test's subject rather than this one's.
     """
     rationale = _rationale()
-    claim = _HOLD_CLAIM.search(rationale)
-    assert claim, (
-        f"{WORKFLOW.name} no longer says how long a cell holds its runner, in the form "
-        f"'holds it for <duration>'. Without that the timeout is the only number in "
-        f"reach, which is how the wrong one got quoted in the first place"
+    claims = [
+        claim
+        for claim in _HOLD_CLAIM.finditer(rationale)
+        if not _about_a_hung_cell(rationale, claim.start())
+    ]
+    assert claims, (
+        f"{WORKFLOW.name} no longer says how long a WORKING cell holds its runner, in the "
+        f"form 'holds it for <duration>'. Without that the timeout is the only occupancy "
+        f"figure in the comment, which is the reading this whole guard exists to prevent"
     )
-    unit = claim.group("unit")
-    assert _SECONDS.match(unit), (
-        f"the occupancy claim is {claim.group('value')} {unit}: {claim.group(0)!r}. A "
-        f"cell runs one echo and was measured at four, so anything but seconds here is "
-        f"the overstatement this guard exists to catch"
-    )
-    # The provenance has to belong to this claim, so read to the end of its sentence.
-    sentence_end = rationale.find(".", claim.end())
-    sentence = rationale[claim.start() : sentence_end if sentence_end != -1 else len(rationale)]
-    assert re.search(r"measured|median", sentence, re.I), (
-        f"the occupancy claim has no sign it was observed: {sentence!r}. Both costs this "
-        f"comment gave before were plausible numbers nobody had measured"
-    )
-    measured = _MEASURED.search(sentence)
+    measured = _MEASURED.search(rationale)
     assert measured, (
-        f"the occupancy claim cites no median: {sentence!r}. Saying a figure was measured "
-        f"without giving the measurement leaves nothing for the claim to be checked "
-        f"against, which is how 'about five seconds' could have read 600 and still passed"
+        f"{WORKFLOW.name} cites no median. Saying a figure was measured without giving "
+        f"the measurement leaves nothing for the claim to be checked against, which is "
+        f"how 'about five seconds' could have read 600 and still passed"
     )
-    claimed, observed = _value(claim.group("value")), _value(measured.group("value"))
-    assert observed <= claimed * 3 and claimed <= observed * 3, (
-        f"the occupancy claim says {claimed}s but reports measuring {observed}s: "
-        f"{sentence!r}. Seconds is not enough on its own -- an overstatement of the same "
-        f"shape as the original fits comfortably inside the unit"
+    observed = _value(measured.group("value"))
+    grounded = [
+        claim
+        for claim in claims
+        if _MEASURED.search(_sentence_around(rationale, claim.start(), claim.end()))
+    ]
+    assert grounded, (
+        f"the median is reported, but not in the sentence that makes an occupancy claim: "
+        f"{[claim.group(0) for claim in claims]}. Provenance has to belong to a claim or "
+        f"it is decoration"
     )
+    for claim in claims:
+        unit = claim.group("unit")
+        assert _SECONDS.match(unit), (
+            f"an occupancy claim is {claim.group('value')} {unit}: {claim.group(0)!r}. A "
+            f"cell runs one echo and was measured at {observed}s, so anything but seconds "
+            f"here is the overstatement this guard exists to catch"
+        )
+        claimed = _value(claim.group("value"))
+        assert observed <= claimed * 3 and claimed <= observed * 3, (
+            f"an occupancy claim says {claimed}s where the comment reports measuring "
+            f"{observed}s: {claim.group(0)!r}. Seconds is not enough on its own -- an "
+            f"overstatement of the same shape as the original fits inside the unit"
+        )
