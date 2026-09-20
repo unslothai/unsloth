@@ -106,7 +106,7 @@ export function EditProjectDialog({
         </DialogHeader>
         {/* The same name field the create dialog uses. */}
         <div className="flex items-stretch overflow-hidden rounded-[16px] border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-white/[0.06]">
-          <span className="flex w-9 shrink-0 items-center justify-center text-muted-foreground">
+          <span className="flex w-10 shrink-0 items-center justify-center pl-1 text-muted-foreground">
             <HugeiconsIcon
               icon={Folder02Icon}
               strokeWidth={1.75}
