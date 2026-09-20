@@ -181,6 +181,10 @@ def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) 
     return subprocess.Popen(prepared.argv, **popen_kwargs)
 
 
+# Recorded when the walk ran out of budget before it could reach a verdict.
+# `auto` carries it and launches; `required` refuses on it. Named rather than
+# spelled twice, because the two readers must agree.
+WORKDIR_SCAN_INCOMPLETE = "workdir_scan_incomplete"
 WORKDIR_SCAN_ENTRIES = 50_000
 WORKDIR_SCAN_SECONDS = 5.0
 # The shared cache is walked per launch, so its budget is tighter than the
@@ -271,7 +275,7 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
         hazard = _host_channel_hazard(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
     except _ScanBudgetExceeded as exc:
         logger.warning("The session workdir %s: %s", workdir, exc)
-        return ("workdir_scan_incomplete",)
+        return (WORKDIR_SCAN_INCOMPLETE,)
     if hazard is not None:
         raise WorkdirUnsafeError(f"the session workdir {hazard}")
     return ()
@@ -659,6 +663,21 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
 
     try:
         prepared = backend.prepare(plan)
+        if plan.requested_mode == "required" and WORKDIR_SCAN_INCOMPLETE in (
+            prepared.launch_limitations
+        ):
+            # `auto` degrades here on purpose: a big session workdir must not
+            # end a chat, and the alternative was a permanent refusal that no
+            # retry recovered from. `required` is a different promise. The
+            # unvisited part of the walk could hold an external hard link or a
+            # host socket, and saying so in the record does not keep a boundary
+            # the caller asked to be guaranteed, so this one fails closed.
+            prepared.cleanup()
+            raise WorkdirUnsafeError(
+                "the session workdir is too large to check for host channels, "
+                "and `required` cannot promise a boundary it did not verify. "
+                "Start a new chat, or use `auto` to run with software safeguards."
+            )
     except OSError as exc:
         # Must be typed: raw, this reaches tools.py's general `except Exception`,
         # which answers `auto` by running with software safeguards.

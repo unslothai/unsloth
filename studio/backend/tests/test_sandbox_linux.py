@@ -1857,3 +1857,82 @@ def test_a_filesystem_root_is_never_a_cache(monkeypatch, tmp_path):
     assert sandbox_linux._too_broad_for_a_cache("/") is True
     assert sandbox_linux._too_broad_for_a_cache("/home") is True
     assert sandbox_linux._too_broad_for_a_cache(str(tmp_path / "models" / "hub")) is False
+
+
+def _stub_capable_backend(monkeypatch, limitations):
+    """An available capability and a backend that builds, so the test is about
+    prepare_tool_launch's decision rather than about this host's bwrap."""
+    from core.inference import os_sandbox, sandbox_linux
+
+    capability = os_sandbox.SandboxCapability(
+        backend = "stub", available = True, reason = "stub",
+        environment = "linux", protection_state = "qualified",
+        profile_id = "stub", limitations = (),
+    )
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda *a, **k: capability)
+
+    def build(plan):
+        return os_sandbox.PreparedSandboxLaunch(
+            argv = plan.argv, workdir = plan.workdir, env = dict(plan.env),
+            preexec_fn = None, backend = "stub",
+            launch_limitations = limitations,
+        )
+
+    monkeypatch.setattr(sandbox_linux, "prepare", build)
+
+
+def test_required_refuses_a_workdir_it_could_not_finish_checking(monkeypatch, tmp_path):
+    """`auto` degrades here on purpose, and `required` must not.
+
+    The budget exists so one pip install cannot end a chat, but the unvisited
+    part of the walk could hold an external hard link or a host socket. Saying
+    so in the execution record does not keep a boundary the caller asked to be
+    guaranteed.
+    """
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    for i in range(8):
+        (workdir / f"f{i}").write_text("")
+
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+
+    limitations = os_sandbox.scan_workdir_for_host_channels(str(workdir))
+    assert limitations == (os_sandbox.WORKDIR_SCAN_INCOMPLETE,), (
+        "the budget did not trip, so this test proves nothing"
+    )
+    _stub_capable_backend(monkeypatch, limitations)
+
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = ("/bin/true",), workdir = str(workdir), env = {},
+        requested_mode = "required", timeout_seconds = 10,
+    )
+
+    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "too large to check"):
+        os_sandbox.prepare_tool_launch(plan)
+
+
+def test_auto_still_launches_on_the_same_workdir(monkeypatch, tmp_path):
+    """The other half of the same decision: the brick fix must survive."""
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    for i in range(8):
+        (workdir / f"f{i}").write_text("")
+
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    _stub_capable_backend(monkeypatch, (os_sandbox.WORKDIR_SCAN_INCOMPLETE,))
+
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = ("/bin/true",), workdir = str(workdir), env = {},
+        requested_mode = "auto", timeout_seconds = 10,
+    )
+
+    prepared = os_sandbox.prepare_tool_launch(plan)
+    try:
+        assert prepared.execution_record is not None
+        assert os_sandbox.WORKDIR_SCAN_INCOMPLETE in prepared.execution_record.limitations
+    finally:
+        prepared.cleanup()
