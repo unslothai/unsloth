@@ -217,7 +217,7 @@ export function ParamSlider({
   }
   return (
     <div className="space-y-3.5">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex min-h-8 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             {label}
@@ -390,7 +390,8 @@ function CollapsibleSection({
           </span>
         </button>
       )}
-      {open && <div className="pb-7">{children}</div>}
+      {/* Same gap below the last control as the header leaves above the first. */}
+      {open && <div className="pb-5">{children}</div>}
     </div>
   );
 }
@@ -1077,7 +1078,7 @@ export function ChatSettingsPanel({
 
   const settingsContent = (
     <>
-      <div className="flex h-full min-h-0 flex-col">
+      <div className="hint-on-hover flex h-full min-h-0 flex-col">
       {/* Header is outside the scroll area so the scrollbar never shifts the close button.
           Reuse the chat header metrics so the toggle stays put when the panel opens. */}
       <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[18px] pt-[var(--studio-chat-header-padding-top,11px)]">
@@ -1124,7 +1125,7 @@ export function ChatSettingsPanel({
       <div className="px-[18px] pt-3">
         {(hasModelContent || modelConfig) && (
               <CollapsibleSection label="Model" defaultOpen={true} first={true}>
-            <div className="flex flex-col gap-3 pt-1">
+            <div className="flex flex-col gap-3">
               {modelConfig}
               {showSpecFallback && (
                 <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
@@ -1196,7 +1197,7 @@ export function ChatSettingsPanel({
           defaultOpen={true}
           first={!hasModelContent && !modelConfig}
         >
-          <div className="flex flex-col gap-3 pt-1">
+          <div className="flex flex-col gap-3">
             <DropdownMenu>
                   <DropdownMenuTrigger asChild={true}>
                 <div
@@ -1319,7 +1320,7 @@ export function ChatSettingsPanel({
 
         {showPromptCachingControl && activeExternalProvider ? (
           <CollapsibleSection label="Provider" defaultOpen={true}>
-            <div className="flex items-center justify-between gap-3 pt-1">
+            <div className="flex min-h-8 items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                   Prompt caching
@@ -1342,7 +1343,7 @@ export function ChatSettingsPanel({
               />
             </div>
             {showPromptCacheTtlControl && promptCachingEnabled ? (
-              <div className="flex items-center justify-between gap-3 pt-3">
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-3.5">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Cache TTL
@@ -1366,7 +1367,7 @@ export function ChatSettingsPanel({
                   }}
                 >
                   <SelectTrigger
-                    className="panel-select-trigger h-8 w-[124px] shrink-0"
+                    className="panel-select-trigger h-8 shrink-0"
                     aria-label="Prompt cache TTL"
                   >
                     <SelectValue />
@@ -1379,7 +1380,7 @@ export function ChatSettingsPanel({
               </div>
             ) : null}
             {showFastModeControl ? (
-              <div className="flex items-center justify-between gap-3 pt-3">
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-3.5">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Fast mode
@@ -1478,7 +1479,7 @@ export function ChatSettingsPanel({
         </CollapsibleSection>
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
-          <div className="flex flex-col gap-5 pt-1">
+          <div className="flex flex-col gap-5">
             {showTemperature ? (
               <ParamSlider
                 label="Temperature"
@@ -1535,7 +1536,7 @@ export function ChatSettingsPanel({
                       </SelectContent>
                     </Select>
                     {effectiveMinPMode(params) === "server-default" ? (
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-ui-11 text-muted-foreground">
                         Uses the server’s sampling settings.
                       </p>
                     ) : null}
@@ -1602,7 +1603,7 @@ export function ChatSettingsPanel({
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
             {showSeed ? (
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex min-h-8 items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Seed
@@ -1654,7 +1655,7 @@ export function ChatSettingsPanel({
 
             {isExternalModel ? null : (
           <CollapsibleSection label="Tools">
-            <div className="flex flex-col gap-5 pt-1">
+            <div className="flex flex-col gap-5">
               <AutoHealToolCallsToggle />
               <NudgeToolCallsToggle />
               <ConfirmToolCallsToggle />
@@ -1942,7 +1943,7 @@ function AutoHealToolCallsToggle() {
   );
 
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Auto-Healing Tool Calls
@@ -1953,7 +1954,7 @@ function AutoHealToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch"
+        className="panel-switch shrink-0"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
       />
@@ -1966,7 +1967,7 @@ function NudgeToolCallsToggle() {
   const setNudgeToolCalls = useChatRuntimeStore((s) => s.setNudgeToolCalls);
 
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Nudge Tool Calls
@@ -1977,7 +1978,7 @@ function NudgeToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch"
+        className="panel-switch shrink-0"
         checked={nudgeToolCalls}
         onCheckedChange={setNudgeToolCalls}
       />
@@ -1990,7 +1991,7 @@ function ConfirmToolCallsToggle() {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -2011,7 +2012,7 @@ function ConfirmToolCallsToggle() {
         ) : null}
       </div>
       <Switch
-        className="panel-switch"
+        className="panel-switch shrink-0"
         checked={permissionMode === "ask"}
         onCheckedChange={setConfirmToolCalls}
         disabled={permissionMode === "full"}

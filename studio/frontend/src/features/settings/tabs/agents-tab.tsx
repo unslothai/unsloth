@@ -1270,7 +1270,7 @@ export function AgentsTab() {
         </h1>
         <p
           data-settings-label={t("settings.agents.description")}
-          className="text-xs text-muted-foreground leading-relaxed"
+          className="text-xs text-muted-foreground"
         >
           {t("settings.agents.description")}
         </p>

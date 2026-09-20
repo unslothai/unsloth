@@ -488,6 +488,48 @@ def _ensure_hub_repo_private(hf_api, repo_id):
         ) from exception
 
 
+def _open_hub_repo(hf_api, repo_id, private):
+    """Create or reuse the repo we are about to upload into, private before anything lands.
+
+    Call this immediately before the upload, not earlier: it is what turns a failure after
+    this point into an empty repo.
+    """
+    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+    repo_id = getattr(repo_url, "repo_id", repo_id)
+    if private:
+        _ensure_hub_repo_private(hf_api, repo_id)
+    return repo_id
+
+
+def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
+    """Write the card the delegated push can no longer write for itself.
+
+    Unsloth's `upload_to_huggingface` only writes it when its own `create_repo(exist_ok=False)`
+    finds the repo absent, so opening the repo first silently costs a fresh push its card.
+    Best-effort, and an existing card is kept, exactly as the merged and base paths do.
+    """
+    try:
+        if hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
+            return
+        config = getattr(model, "config", None)
+        if config is None:
+            return
+        base_model = getattr(config, "_name_or_path", "unknown") or "unknown"
+        # method/extra reproduce what upload_to_huggingface passed for this path
+        # ("finetuned", "trl"): the template already carries the unsloth tag, so `extra`
+        # is where trl goes, and the heading already reads "Uploaded finetuned ... model".
+        content = MODEL_CARD.format(
+            username = repo_id.split("/")[0],
+            base_model = repo_id if os.path.isdir(base_model) else base_model,
+            model_type = getattr(config, "model_type", "llm"),
+            method = "",
+            extra = "trl",
+        )
+        ModelCard(content).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+    except Exception as exception:
+        logger.warning(f"Could not publish the model card: {exception}")
+
+
 class ExportBackend:
     def __init__(self):
         self.inference_backend = get_inference_backend()
@@ -1627,17 +1669,18 @@ class ExportBackend:
 
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
 
+                # Needs a local save_directory so the conversion is not re-run.
+                if gguf and not (output_path and Path(output_path).is_dir()):
+                    return (
+                        False,
+                        "GGUF LoRA Hub upload requires a local save directory; set one and retry.",
+                        None,
+                    )
+
+                hf_api = HfApi(token = hf_token)
+
                 if gguf:
-                    # Needs a local save_directory so the conversion is not re-run.
-                    if not (output_path and Path(output_path).is_dir()):
-                        return (
-                            False,
-                            "GGUF LoRA Hub upload requires a local save directory; set one and "
-                            "retry.",
-                            None,
-                        )
-                    hf_api = HfApi(token = hf_token)
-                    hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    repo_id = _open_hub_repo(hf_api, repo_id, private)
                     hf_api.upload_folder(
                         folder_path = output_path,
                         repo_id = repo_id,
@@ -1645,16 +1688,22 @@ class ExportBackend:
                     )
                 elif _IS_MLX:
                     with tempfile.TemporaryDirectory() as tmp_dir:
+                        # Serialise first: opening the repo before this would leave an empty
+                        # one behind whenever the adapter or tokenizer fails to write.
                         self.current_model.save_lora_adapters(tmp_dir)
                         self.current_tokenizer.save_pretrained(tmp_dir)
-                        hf_api = HfApi(token = hf_token)
-                        hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                        repo_id = _open_hub_repo(hf_api, repo_id, private)
                         hf_api.upload_folder(
                             folder_path = tmp_dir,
                             repo_id = repo_id,
                             repo_type = "model",
                         )
                 else:
+                    # Opened here rather than left to push_to_hub: a repo that does not exist
+                    # yet is one another client can create public first, and `private` cannot
+                    # change an existing repo's visibility, so the adapter would land in it.
+                    repo_id = _open_hub_repo(hf_api, repo_id, private)
+                    _publish_unsloth_model_card(hf_api, repo_id, self.current_model, hf_token)
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
                     self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
                 logger.info(f"Adapter pushed successfully to {repo_id}")
