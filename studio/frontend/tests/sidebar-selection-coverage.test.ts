@@ -25,7 +25,11 @@ test("every chat list hands its rows a selection list", async () => {
 
 test("folder rows select too, and open their own bulk menu", async () => {
   const source = APP_SIDEBAR;
-  assert.match(source, /handleProjectSelectionClick\(event, project\.id\)/);
+  // The row hands in its own list: Pinned holds folders too, with ids of its own.
+  assert.match(
+    source,
+    /handleProjectSelectionClick\(event, project\.id, order\.orderedIds\)/,
+  );
   assert.match(source, /selectProjectForContextMenu\(project\.id\)/);
   assert.match(source, /\{renderProjectContextMenu\(\)\}/);
   assert.match(source, /selectedProjectIds\.has\(project\.id\)/);

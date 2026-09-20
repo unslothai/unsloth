@@ -165,6 +165,8 @@ export const fr = {
       export: "Exporter",
       recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Aucune discussion",
       showMore: "Afficher plus",
       showLess: "Afficher moins",
       settings: "Paramètres",
