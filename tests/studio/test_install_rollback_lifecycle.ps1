@@ -95,10 +95,13 @@ foreach ($name in $extracted) {
     }, $true)) {
         $callee = $call.GetCommandName()
         if (-not $callee) { continue }
-        # CimCmdlets ships only on Windows. Get-StudioMountedVolume guards its one call on the
-        # platform before making it, so off Windows the name is never reached; requiring it to
-        # resolve here would fail this suite on the hosts it actually runs on.
-        if ($windowsOnlyCommands -contains $callee -and -not ($IsWindows -or $env:OS -eq "Windows_NT")) { continue }
+        # CimCmdlets ships only on Windows, and Get-StudioMountedVolume guards its one call on
+        # the platform before making it, so a host without the module never reaches the name.
+        # Keyed on the command being absent rather than on the platform: $env:OS can say Windows
+        # on a host whose PowerShell has no CimCmdlets, and on a real Windows runner the name
+        # resolves and is checked like any other.
+        if ($windowsOnlyCommands -contains $callee -and
+            -not (Get-Command -Name $callee -ErrorAction SilentlyContinue)) { continue }
         if (-not (Get-Command -Name $callee -ErrorAction SilentlyContinue)) {
             $unresolved.Add("$callee (called by $name)")
         }
@@ -266,8 +269,20 @@ try {
     # the drive-root logic underneath still produces the answers the rest of this file relies on.
     # The mount-point case itself is pinned by text in tests/python/test_cross_platform_parity.py
     # and is not reproduced on any host available here.
-    Check "the mount-point probe answers nothing off Windows" (
-        $null -eq (Get-StudioMountedVolume -Path $StudioHome))
+    $probed = $null
+    $probeThrew = $false
+    try { $probed = Get-StudioMountedVolume -Path $StudioHome } catch { $probeThrew = $true }
+    Check "the mount-point probe never throws" (-not $probeThrew)
+    if ($IsWindows -or $env:OS -eq "Windows_NT") {
+        # On Windows it answers for real, and may legitimately answer nothing when CIM is not
+        # available to this account. What it must never do is throw or hand back something the
+        # callers cannot read: this file also runs on windows-latest, where the earlier
+        # "answers nothing" form asserted a Linux-only outcome and failed.
+        Check "on Windows the probe answers a volume or nothing, never something unusable" (
+            $null -eq $probed -or $null -ne $probed.Name)
+    } else {
+        Check "off Windows the probe answers nothing" ($null -eq $probed)
+    }
     Check "and an empty path is not an error" ($null -eq (Get-StudioMountedVolume -Path ""))
     $freeHere = Get-StudioFreeSpaceBytes -Path $StudioHome
     Check "free space still comes back from the fallback" ($null -ne $freeHere -and $freeHere -gt 0)
