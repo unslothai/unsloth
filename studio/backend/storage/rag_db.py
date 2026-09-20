@@ -17,6 +17,7 @@ import logging
 import re
 import sqlite3
 import threading
+from pathlib import Path
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class RagExtensionUnavailable(RuntimeError):
 
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 # The dylib is either there or it is not, and the UI polls the KB list on a timer, so one warning
 # per process says everything the repeats would.
 _unavailable_lock = threading.Lock()
@@ -54,7 +55,6 @@ _extension_loaded = False
 
 
 def _warn_unavailable_once(exc: BaseException | None = None) -> None:
-    """Log the sqlite-vec unavailability at most once per process."""
     global _unavailable_warned
     with _unavailable_lock:
         if _unavailable_warned:
@@ -286,9 +286,14 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN withheld_paths TEXT")
 
 
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
+
+
 def get_connection() -> sqlite3.Connection:
     """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises if the extension is unavailable."""
-    global _schema_ready, _extension_loaded
+    global _extension_loaded
     if not RAG_AVAILABLE:
         raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG)
 
@@ -311,12 +316,13 @@ def get_connection() -> sqlite3.Connection:
     # database does next. A monotonic flip, so no lock.
     _extension_loaded = True
 
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise

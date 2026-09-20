@@ -54,6 +54,7 @@ def loader():
         _requested_float32 = lambda dtype: False,
         hf_login = lambda token: token,
         requested_device_map = lambda device: device,
+        is_automatic_device_map = lambda device: isinstance(device, str),
         prepare_device_map = lambda: ("sequential", False),
         ALLOW_BITSANDBYTES = True,
         ALLOW_PREQUANTIZED_MODELS = True,

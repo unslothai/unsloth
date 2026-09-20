@@ -206,7 +206,11 @@ def test_empty_and_errored_scans_are_cached(monkeypatch):
     for outcome in ("empty", "error"):
         calls = {"n": 0}
 
-        def _scan(_root, _outcome = outcome):
+        def _scan(
+            _root,
+            _outcome = outcome,
+            **_kwargs,
+        ):
             calls["n"] += 1
             if _outcome == "error":
                 raise RuntimeError("scan blew up")
@@ -234,7 +238,7 @@ def test_catalog_ttl_starts_after_scan_completes(monkeypatch):
 
     calls = {"n": 0}
 
-    def _slow_scan(_root):
+    def _slow_scan(_root, **_kwargs):
         calls["n"] += 1
         clock["t"] += inf._CATALOG_TTL_S + 10  # the scan itself outlives the TTL
         return [_Info("/m/A.gguf", "A")]
@@ -272,7 +276,7 @@ def test_cached_local_catalog_offloads_and_caches(monkeypatch):
     # cached, so a burst of /v1/models calls does not re-scan or block.
     calls = {"scan": 0, "threaded": 0}
 
-    def _fake_collect(_root):
+    def _fake_collect(_root, **_kwargs):
         calls["scan"] += 1
         return [_Info("/data/models/A.gguf", "A")]
 

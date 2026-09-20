@@ -56,11 +56,18 @@ class _Proc:
 
 
 class _ImmediateThread:
-    def __init__(self, *, target, **_kwargs):
-        self.target = target
+    def __init__(
+        self,
+        *,
+        target,
+        args = (),
+        kwargs = None,
+        **_kwargs,
+    ):
+        self.target, self.args, self.kwargs = target, args, kwargs or {}
 
     def start(self):
-        self.target()
+        self.target(*self.args, **self.kwargs)
 
 
 def test_resolve_effective_use_xet(monkeypatch):

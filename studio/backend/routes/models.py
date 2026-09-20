@@ -2,14 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
-import hashlib
 import json
 import os
 import shutil
 import sys
-import threading
 import time
-import uuid
 import weakref
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
@@ -24,6 +21,7 @@ from core.inference.memory_contract import (
     project_kv_cache_estimate,
 )
 from core.inference.model_ids import display_model_name
+from hub.services.models import account_access
 from hub.services.models import catalog_classification as _catalog_classification
 from utils import gguf_archs as _gguf_archs
 from hub.services.models.catalog_classification import (
@@ -71,6 +69,7 @@ _gguf_family_buildable = _catalog_classification._gguf_family_buildable
 _is_h3_bundle_gguf_hint = _catalog_classification._is_h3_bundle_gguf_hint
 SPEECH_GGUF_ARCHS = _gguf_archs.SPEECH_GGUF_ARCHS
 is_speech_gguf_architecture = _gguf_archs.is_speech_gguf_architecture
+from utils.account_context import account_thread
 from utils.utils import canonical_model_repo_id, log_and_http_error
 
 import re as _re
@@ -207,6 +206,7 @@ def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> 
     returning ``header_token`` itself would return whatever a caller that bypassed
     FastAPI's injection left in the parameter -- an unresolved ``Depends`` object.
     """
+    header_token = account_access.account_hf_token(header_token)
     header_explicit = _normalize_hf_token(header_token)
     if header_explicit:
         return header_explicit
@@ -744,233 +744,22 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     return found
 
 
-def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
-    """A writable directory for Ollama ``.gguf`` symlinks. Prefers ``<ollama_dir>/.studio_links/`` so
-    links sit next to their blobs; falls back to a per-ollama-dir namespace under Unsloth's cache when
-    the models dir is read-only (common for system installs)."""
-    from utils.paths.storage_roots import cache_root
+def _scan_ollama_dir(
+    ollama_dir: Path,
+    *,
+    limit: Optional[int] = None,
+    materialize_links: bool = True,
+) -> List[LocalModelInfo]:
+    """Ollama rows for the compat inventory, from the one scanner the Hub inventory also uses.
 
-    primary = ollama_dir / ".studio_links"
-    try:
-        primary.mkdir(exist_ok = True)
-        return primary
-    except OSError as e:
-        logger.debug(
-            "Ollama dir %s not writable for .studio_links (%s); falling back to Unsloth cache",
-            ollama_dir,
-            e,
-        )
-
-    # Fallback: namespace by a hash of ollama_dir so two roots don't collide (cache path only).
-    try:
-        digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
-    except OSError:
-        digest = "default"
-    fallback = cache_root() / "ollama_links" / digest
-    try:
-        fallback.mkdir(parents = True, exist_ok = True)
-        return fallback
-    except OSError as e:
-        logger.warning(
-            "Could not create Ollama symlink cache at %s: %s",
-            fallback,
-            e,
-        )
-        return None
-
-
-def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[LocalModelInfo]:
-    """Scan an Ollama models directory for downloaded models. Ollama uses a content-addressable layout
-    (``manifests/<host>/<namespace>/<model>/<tag>`` + ``blobs/sha256-...``); ``rglob`` finds every
-    layout depth. The ``application/vnd.ollama.image.model`` layer holds the GGUF weights and
-    ``...image.projector`` is the vision adapter. Ollama blobs lack the ``.gguf`` extension the
-    loading pipeline requires, so create ``.gguf``-named links to them, one subdir per model keyed
-    by a short hash of the manifest path so ``detect_mmproj_file`` only sees that model's projector.
-    Symlinks when possible, else hardlinks."""
-    manifests_root = ollama_dir / "manifests"
-    if not manifests_root.is_dir():
-        return []
-
-    found: List[LocalModelInfo] = []
-    blobs_dir = ollama_dir / "blobs"
-    links_root = _ollama_links_dir(ollama_dir)
-    if links_root is None:
-        logger.warning(
-            "Skipping Ollama scan for %s: no writable location for .gguf links",
-            ollama_dir,
-        )
-        return []
-
-    def _make_link(link_dir: Path, link_name: str, target: Path) -> Optional[str]:
-        """Create a .gguf-named link to an Ollama blob. Symlink, then hardlink; skips the model if neither
-        works (a multi-GB copy in a sync request would block the backend). Idempotent."""
-        link_dir.mkdir(parents = True, exist_ok = True)
-        link_path = link_dir / link_name
-        resolved = target.resolve()
-
-        # Skip if the link already points at the same blob; size checks can reuse stale links.
-        try:
-            if link_path.exists() and os.path.samefile(str(link_path), str(resolved)):
-                return str(link_path)
-        except OSError as e:
-            logger.debug("Error checking existing link %s: %s", link_path, e)
-
-        tmp_path = link_dir / f".{link_name}.tmp-{uuid.uuid4().hex[:8]}"
-        try:
-            if tmp_path.is_symlink() or tmp_path.exists():
-                tmp_path.unlink()
-            try:
-                tmp_path.symlink_to(resolved)
-            except OSError:
-                try:
-                    os.link(str(resolved), str(tmp_path))
-                except OSError:
-                    logger.warning(
-                        "Could not create link for Ollama blob %s "
-                        "(symlinks and hardlinks both failed). "
-                        "Skipping model to avoid blocking the API.",
-                        target,
-                    )
-                    return None
-            os.replace(str(tmp_path), str(link_path))
-            return str(link_path)
-        except OSError as e:
-            logger.debug("Could not create Ollama link %s: %s", link_path, e)
-            try:
-                if tmp_path.is_symlink() or tmp_path.exists():
-                    tmp_path.unlink()
-            except OSError as cleanup_err:
-                logger.debug("Could not clean up tmp path %s: %s", tmp_path, cleanup_err)
-            return None
-
-    try:
-        for tag_file in manifests_root.rglob("*"):
-            if not tag_file.is_file():
-                continue
-
-            rel = tag_file.relative_to(manifests_root)
-            parts = rel.parts
-            if len(parts) < 3:
-                continue
-
-            host = parts[0]
-            repo_parts = list(parts[1:-1])
-            tag = parts[-1]
-
-            if host == "registry.ollama.ai" and repo_parts and repo_parts[0] == "library":
-                repo_name = "/".join(repo_parts[1:])
-            elif host == "registry.ollama.ai":
-                repo_name = "/".join(repo_parts)
-            else:
-                repo_name = "/".join([host] + repo_parts)
-
-            if not repo_name:
-                continue
-
-            display = f"{repo_name}:{tag}"
-
-            manifest_key = rel.as_posix()
-            stem_hash = hashlib.sha256(manifest_key.encode()).hexdigest()[:10]
-
-            try:
-                manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
-            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-                logger.debug(
-                    "Skipping unreadable/invalid Ollama manifest %s: %s",
-                    tag_file,
-                    e,
-                )
-                continue
-            # rglob("*") hands us every file under manifests/, so a pruned pull, an editor backup, or any stray JSON can
-            # be a list or a string; .get() on one raises AttributeError, which neither this loop's `except OSError`
-            # nor the caller's catches, and one such file would 500 the whole picker.
-            if not isinstance(manifest, dict):
-                logger.debug("Skipping Ollama manifest %s: top level is not an object", tag_file)
-                continue
-
-            config = manifest.get("config")
-            config_digest = config.get("digest", "") if isinstance(config, dict) else ""
-            if not isinstance(config_digest, str):
-                config_digest = ""
-            model_type = ""
-            file_type = ""
-            if config_digest and blobs_dir.is_dir():
-                config_blob = blobs_dir / config_digest.replace(":", "-")
-                if config_blob.is_file():
-                    try:
-                        cfg = json.loads(config_blob.read_text(encoding = "utf-8-sig"))
-                    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-                        logger.debug(
-                            "Could not parse Ollama config blob %s: %s",
-                            config_blob,
-                            e,
-                        )
-                        cfg = None
-                    if isinstance(cfg, dict):
-                        model_type = cfg.get("model_type", "")
-                        file_type = cfg.get("file_type", "")
-
-            model_link_dir = links_root / stem_hash
-
-            gguf_link_path: Optional[str] = None
-            quant = f"-{file_type}" if file_type else ""
-            safe_name = repo_name.replace("/", "-")
-            layers = manifest.get("layers") or []
-            if not isinstance(layers, list):
-                logger.debug("Skipping Ollama manifest %s: layers is not a list", tag_file)
-                continue
-            for layer in layers:
-                if not isinstance(layer, dict):
-                    continue
-                media = layer.get("mediaType", "")
-                digest = layer.get("digest", "")
-                if not isinstance(digest, str) or not digest:
-                    continue
-
-                if media == "application/vnd.ollama.image.model":
-                    candidate = blobs_dir / digest.replace(":", "-")
-                    if candidate.is_file():
-                        link_name = f"{safe_name}-{tag}{quant}.gguf"
-                        gguf_link_path = _make_link(model_link_dir, link_name, candidate)
-
-                elif media == "application/vnd.ollama.image.projector":
-                    candidate = blobs_dir / digest.replace(":", "-")
-                    if candidate.is_file():
-                        mmproj_name = f"{safe_name}-{tag}-mmproj.gguf"
-                        _make_link(model_link_dir, mmproj_name, candidate)
-
-            if not gguf_link_path:
-                continue
-
-            suffix = ""
-            if model_type:
-                suffix += f" ({model_type}"
-                if file_type:
-                    suffix += f" {file_type}"
-                suffix += ")"
-
-            try:
-                updated_at = tag_file.stat().st_mtime
-            except OSError:
-                updated_at = None
-
-            found.append(
-                LocalModelInfo(
-                    id = gguf_link_path,
-                    model_id = f"ollama/{repo_name}:{tag}",
-                    display_name = display + suffix,
-                    path = gguf_link_path,
-                    # The frontend groups and labels these rows by this value (local-model-options.ts, pickers.tsx);
-                    # "custom" hid them in the generic folder section (#9986).
-                    source = "ollama",
-                    updated_at = updated_at,
-                ),
-            )
-            if limit is not None and len(found) >= limit:
-                return found
-    except OSError as e:
-        logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
-    return found
+    This inventory's readers treat a row's id and path as filenames, so ``materialize_links``
+    defaults to the ``.gguf`` link; a caller that resolves the model itself passes False.
+    """
+    from hub.services.models.ollama import scan_ollama_dir
+    return [
+        LocalModelInfo.model_validate(row.model_dump())
+        for row in scan_ollama_dir(ollama_dir, limit = limit, materialize_links = materialize_links)
+    ]
 
 
 def _scan_hermes_dir(hermes_dir: Path) -> List[LocalModelInfo]:
@@ -991,10 +780,12 @@ class _CompatLocalInventorySources(NamedTuple):
     lm_dirs: tuple[Path, ...]
     known_hf_caches: tuple[Path, ...]
     hermes_dirs: tuple[Path, ...] = ()
+    ollama_dirs: tuple[Path, ...] = ()
 
 
 def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
     from utils.paths import (
+        ollama_model_dirs,
         hermes_model_dirs,
         hf_default_cache_dir,
         legacy_hf_cache_dir,
@@ -1008,6 +799,7 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         tuple(lmstudio_model_dirs()),
         tuple(known_hf_hub_caches()),
         tuple(hermes_model_dirs()),
+        tuple(ollama_model_dirs()),
     )
 
 
@@ -1016,13 +808,15 @@ def collect_local_models(
     *,
     custom_folders: Optional[list[dict]] = None,
     sources: Optional[_CompatLocalInventorySources] = None,
+    materialize_ollama_links: bool = True,
 ) -> List[LocalModelInfo]:
-    """Scan ``models_root``, the HF caches, LM Studio and Hermes dirs, and user scan
+    """Scan ``models_root``, the HF caches, LM Studio, Hermes and Ollama dirs, and user scan
     folders, returning a deduplicated, hidden-filtered list of discovered local models.
 
     Shared by ``GET /models/local`` (the model picker) and the OpenAI-compatible
     catalog (``GET /v1/models``) so the UI and the API never drift. ``models_root``
-    must already be validated/trusted by the caller.
+    must already be validated/trusted by the caller, and ``materialize_ollama_links`` is the one
+    thing the two do not share; see :func:`_scan_ollama_dir`.
     """
     from storage.studio_db import list_scan_folders
     from hub.utils import gguf as gguf_utils
@@ -1097,6 +891,12 @@ def collect_local_models(
         except Exception as e:
             logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, e)
 
+    for ollama_dir in sources.ollama_dirs:
+        try:
+            local_models += _scan_ollama_dir(ollama_dir, materialize_links = materialize_ollama_links)
+        except Exception as e:
+            logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
+
     # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
     hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
@@ -1158,6 +958,7 @@ def collect_local_models(
                 custom_models += _scan_ollama_dir(
                     folder_path,
                     limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                    materialize_links = materialize_ollama_links,
                 )
         except OSError as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
@@ -1341,7 +1142,7 @@ async def list_local_models(
     ),
     current_subject: str = Depends(get_current_subject),
 ):
-    """List local model candidates from the models dir, HF caches, LM Studio and Hermes dirs."""
+    """List local model candidates from the models dir, HF caches, LM Studio, Hermes, Ollama."""
     # Resolve all scan directories up front.
     sources = _compat_local_inventory_sources()
     hf_cache_dir = sources.hf_cache_dir
@@ -1377,6 +1178,8 @@ async def list_local_models(
 
     try:
         models = await _shared_compat_local_inventory_scan(models_root, sources)
+        if account_access.managed_account():
+            models = await asyncio.to_thread(account_access.filter_model_rows, models)
         return LocalModelListResponse(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
@@ -1410,6 +1213,8 @@ async def add_scan_folder_endpoint(
     body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Register a new directory to scan for local models."""
+    if account_access.managed_account():
+        body = body.model_copy(update = {"path": account_access.private_directory(body.path, "")})
     from storage.studio_db import add_scan_folder_with_status
 
     try:
@@ -1532,6 +1337,7 @@ async def get_recommended_folders(current_subject: str = Depends(get_current_sub
     weights are returned, so an empty LM Studio/Ollama scaffold no longer
     shows up as a suggestion.
     """
+    account_access.require_installation_owner()
     from utils.paths.storage_roots import lmstudio_model_dirs
 
     folders: list[str] = []
@@ -1725,7 +1531,7 @@ def _build_browse_allowlist(
         _add(outputs_root())
         _add(exports_root())
     except Exception as exc:  # noqa: BLE001 -- best-effort
-        logger.debug("browse-folders: studio roots unavailable: %s", exc)
+        logger.debug("browse-folders: Unsloth roots unavailable: %s", exc)
     try:
         for folder in list_scan_folders():
             p = folder.get("path")
@@ -1963,6 +1769,11 @@ def browse_folders(
     so traversal can't escape. Sorting: model-bearing dirs, then plain,
     then hidden (if ``show_hidden=true``).
     """
+    from utils.paths.storage_roots import workspace_root
+
+    managed = account_access.managed_account()
+    if managed:
+        path = account_access.private_directory(path or str(workspace_root()), "")
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
     from utils.paths import external_media
     from storage.studio_db import (
@@ -1972,12 +1783,21 @@ def browse_folders(
     )
 
     # Probe removable-media and Windows drive roots once; allowlist and chips reuse the result.
-    media_roots = [
-        *external_media.linux_run_media_mount_roots(),
-        *external_media.macos_volume_roots(),
-    ]
-    drive_roots = external_media.windows_drive_roots()
-    allowed_roots = _build_browse_allowlist(media_roots, drive_roots)
+    # A managed account browses its workspace only, and its chips name nothing outside it.
+    media_roots = (
+        []
+        if managed
+        else [
+            *external_media.linux_run_media_mount_roots(),
+            *external_media.macos_volume_roots(),
+        ]
+    )
+    drive_roots = [] if managed else external_media.windows_drive_roots()
+    allowed_roots = (
+        [workspace_root().resolve()]
+        if managed
+        else _build_browse_allowlist(media_roots, drive_roots)
+    )
 
     try:
         target = _resolve_browse_target(path, allowed_roots)
@@ -2086,25 +1906,29 @@ def browse_folders(
             seen_sug.add(resolved)
             suggestions.append(resolved)
 
-    _add_sug(Path.home())
-    for p in media_roots:
-        _add_sug(p)
-    for p in drive_roots:
-        _add_sug(p)
-    try:
-        _add_sug(hf_default_cache_dir())
-    except Exception:
-        pass
-    try:
-        for folder in list_scan_folders():
-            _add_sug(Path(folder.get("path", "")))
-    except Exception as exc:
-        logger.debug("browse-folders: could not load scan folders: %s", exc)
-    try:
-        for p in well_known_model_dirs():
+    if managed:
+        for root in allowed_roots:
+            _add_sug(root)
+    else:
+        _add_sug(Path.home())
+        for p in media_roots:
             _add_sug(p)
-    except Exception as exc:
-        logger.debug("browse-folders: could not load well-known dirs: %s", exc)
+        for p in drive_roots:
+            _add_sug(p)
+        try:
+            _add_sug(hf_default_cache_dir())
+        except Exception:
+            pass
+        try:
+            for folder in list_scan_folders():
+                _add_sug(Path(folder.get("path", "")))
+        except Exception as exc:
+            logger.debug("browse-folders: could not load scan folders: %s", exc)
+        try:
+            for p in well_known_model_dirs():
+                _add_sug(p)
+        except Exception as exc:
+            logger.debug("browse-folders: could not load well-known dirs: %s", exc)
 
     return BrowseFoldersResponse(
         current = str(target),
@@ -2133,9 +1957,20 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         inference_backend = await asyncio.to_thread(get_inference_backend)
 
         default_models = inference_backend.default_models
+        if account_access.managed_account():
+            default_models = [
+                m
+                for m in default_models
+                if await asyncio.to_thread(account_access.model_visible, m)
+            ]
 
         loaded_models = []
+        hide_resident = account_access.resident_hidden(
+            "chat", getattr(inference_backend, "active_model_name", None)
+        )
         for model_name, model_data in inference_backend.models.items():
+            if hide_resident:
+                continue
             _is_vision = model_data.get("is_vision", False)
             _audio_type = model_data.get("audio_type")
             model_info = ModelDetails(
@@ -2156,7 +1991,10 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded and llama_backend.model_identifier:
+        hide_resident = hide_resident or account_access.resident_hidden(
+            "chat", getattr(llama_backend, "model_identifier", None)
+        )
+        if not hide_resident and llama_backend.is_loaded and llama_backend.model_identifier:
             display_id, _reported_identifier = _llama_status_model_ids(llama_backend)
             loaded_models.append(
                 ModelDetails(
@@ -2245,6 +2083,12 @@ def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
             return None
         blobs_dir = repo_dir / "blobs"
         resolved_blobs_dir = blobs_dir.resolve(strict = True) if blobs_dir.is_dir() else None
+        # hub 1.x keeps one content-addressed blob store per cache root and links each repo's
+        # blobs into it, so a weight file resolves outside the repo without leaving the cache.
+        shared_blobs_dir = repo_dir.parent / "blobs"
+        resolved_shared_blobs_dir = (
+            shared_blobs_dir.resolve(strict = True) if shared_blobs_dir.is_dir() else None
+        )
     except (OSError, RuntimeError, ValueError):
         return None
 
@@ -2269,9 +2113,9 @@ def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
                     candidate = (root_path / filename).resolve(strict = True)
                     if not candidate.is_file():
                         continue
-                    if not candidate.is_relative_to(snapshot) and not (
-                        resolved_blobs_dir is not None
-                        and candidate.is_relative_to(resolved_blobs_dir)
+                    if not candidate.is_relative_to(snapshot) and not any(
+                        blob_root is not None and candidate.is_relative_to(blob_root)
+                        for blob_root in (resolved_blobs_dir, resolved_shared_blobs_dir)
                     ):
                         continue
                     total += candidate.stat().st_size
@@ -2313,6 +2157,44 @@ def _model_config_inspection_target(
     return snapshot
 
 
+async def _require_model_access_or_caller_token(
+    model_name: str,
+    hf_token,
+    *,
+    local_path: Optional[str] = None,
+    prefer_local_cache: bool = False,
+) -> None:
+    """Managed access check that also accepts the caller's own Hub token, since a remote preflight
+    precedes the first download and its grant. Local and cache-only selections keep the check."""
+    if not account_access.managed_account():
+        return
+    try:
+        await asyncio.to_thread(account_access.require_model_access, model_name)
+    except HTTPException as exc:
+        if (
+            exc.status_code != 404
+            or local_path
+            or prefer_local_cache
+            or is_local_path(model_name)
+            or not isinstance(hf_token, str)
+            or not hf_token.strip()
+        ):
+            raise
+        await asyncio.to_thread(account_access.authorize_download, model_name, "model", hf_token)
+
+
+def _tensor_split_can_launch(tensor_parallel, flash_attn) -> bool:
+    """Whether a load asking for a tensor split can actually take one.
+
+    llama.cpp returns nullptr for "SPLIT_MODE_TENSOR requires flash_attn to be enabled", so
+    such a load falls back to a layer split. Only a RESOLVED False refuses; None is "not
+    resolved", not evidence the child runs without flash attention.
+    """
+    if not tensor_parallel:
+        return False
+    return flash_attn is not False
+
+
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
@@ -2324,9 +2206,18 @@ async def get_model_config(
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
+    if local_path:
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_model_access, local_path)
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
-        allow_ambient_token = allow_ambient_token,
+        allow_ambient_token = allow_ambient_token and not account_access.managed_account(),
+    )
+    await _require_model_access_or_caller_token(
+        model_name,
+        hf_token,
+        local_path = local_path,
+        prefer_local_cache = prefer_local_cache,
     )
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
     from utils.models.model_config import shared_hub_model_info
@@ -2490,6 +2381,11 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
+    if account_access.managed_account():
+        for ref in (model_name, model_local_path, model_snapshot_path, model_snapshot_repo_id):
+            if isinstance(ref, str) and ref:
+                await asyncio.to_thread(account_access.require_model_access, ref)
+        allow_ambient_token = False
     # Without this an absent body token reads as None, i.e. ambient-authorized, and the
     # scan returns source snippets from a cached private repo.
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
@@ -2763,6 +2659,7 @@ async def discard_remote_code_download(
     ``*.gguf``) -- i.e. a model the user actually downloaded. The frontend only
     calls this when the scan reported ``created_by_scan``.
     """
+    account_access.require_installation_owner()
     if is_local_path(model_name):
         return {"deleted": False, "reason": "local"}
     if not _is_valid_repo_id(model_name):
@@ -2889,6 +2786,8 @@ async def scan_loras(
     Returns training outputs (outputs_dir) and exported models
     (exports_dir) in one list, distinguished by the source field.
     """
+    exports_dir = account_access.private_directory(exports_dir, "exports")
+    outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
         resolved_exports_dir = str(resolve_export_dir(exports_dir))
@@ -2962,6 +2861,8 @@ async def scan_diffusion_loras(
     from core.inference import diffusion_lora
 
     entries = diffusion_lora.list_loras(family = family)
+    if account_access.managed_account():
+        entries = await asyncio.to_thread(account_access.filter_model_rows, entries)
     return {
         "loras": [
             {
@@ -2995,6 +2896,8 @@ async def scan_diffusion_controlnets(
     from core.inference import diffusion_controlnet
 
     entries = diffusion_controlnet.list_controlnets(family = family)
+    if account_access.managed_account():
+        entries = await asyncio.to_thread(account_access.filter_model_rows, entries)
     return {
         "controlnets": [
             {
@@ -3459,6 +3362,8 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 
     This endpoint wraps the backend get_base_model_from_lora function.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, lora_path)
     try:
         base_model = get_base_model_from_lora(lora_path)
 
@@ -3500,8 +3405,10 @@ async def check_vision_model(
     """
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
-        allow_ambient_token = allow_ambient_token,
+        allow_ambient_token = allow_ambient_token and not account_access.managed_account(),
     )
+    # After the token, so a private repo classifies before its first download.
+    await _require_model_access_or_caller_token(model_name, hf_token)
     try:
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision). Offline
@@ -3546,8 +3453,10 @@ async def check_embedding_model(
     """
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
-        allow_ambient_token = allow_ambient_token,
+        allow_ambient_token = allow_ambient_token and not account_access.managed_account(),
     )
+    # After the token, so a private repo classifies before its first download.
+    await _require_model_access_or_caller_token(model_name, hf_token)
     try:
         logger.info(f"Checking if embedding model: {model_name}")
         # Same guard as /check-vision: is_embedding_model hits the hub with a 15s timeout.
@@ -3634,7 +3543,7 @@ async def _read_native_context_length_bounded(model: str, is_local: bool) -> Opt
         slots.release()
         return None
     try:
-        threading.Thread(target = worker, name = "native-ctx", daemon = True).start()
+        account_thread(target = worker, name = "native-ctx", daemon = True).start()
     except RuntimeError:
         slots.release()  # thread never ran, so it will never release
         return None
@@ -3861,6 +3770,38 @@ async def get_kv_cache_estimate(
         False,
         description = "Load a vision GGUF without its mmproj, freeing the projector's VRAM",
     ),
+    flash_attn: Optional[bool] = Query(
+        None,
+        description = (
+            "Flash attention state to price. Omit to resolve it the way the launch does "
+            "(the build's capability, LLAMA_ARG_FLASH_ATTN, a last-wins -fa in the extra "
+            "arguments, and a quantized V cache which forces it on). It is not a detail: "
+            "with flash attention off llama.cpp floors the V axis at f16 and pads "
+            "variable-width V tensors, which is a 1.44x KV cache at q8_0 and 2.28x at q4_0"
+        ),
+    ),
+    kv_unified: Optional[bool] = Query(
+        None,
+        description = (
+            "--kv-unified state to price; omit to resolve it as the launch does. Changes "
+            "the sliding-window allowance on an SWA model, which is per slot when unified"
+        ),
+    ),
+    swa_full: Optional[bool] = Query(
+        None,
+        description = (
+            "--swa-full state to price; omit to resolve it as the launch does. Collapses "
+            "an SWA model's two cache sizes into one full-context cache"
+        ),
+    ),
+    no_mmproj_offload: Optional[bool] = Query(
+        None,
+        description = (
+            "--no-mmproj-offload state to price; omit to resolve it as the launch does. "
+            "A projector on the host is not VRAM, so pricing the wrong side moves the "
+            "total by the whole mmproj"
+        ),
+    ),
     request: Request = None,  # type: ignore[assignment]
     current_subject: str = Depends(get_current_subject),
 ):
@@ -3874,6 +3815,8 @@ async def get_kv_cache_estimate(
     null for ngram, which drafts from the generated text and costs no VRAM, and
     for models with no drafter -- the caller draws no segment either way.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, repo_id)
 
     # The header read, the HF cache walk, the drafter lookup and the capability probe are all blocking disk work,
     # and this route is called once per visible row, so run it in a worker. n_ctx and n_parallel are bound as
@@ -3995,28 +3938,104 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"cache type resolution failed for '{repo_id}': {e}")
 
-            # ctx_checkpoints is not a rounding error: each saved checkpoint is an SWA snapshot per slot, so a
-            # 4-slot SWA model at 32k measures 5.82 GiB with none and 11.82 GiB at the llama.cpp default of 32.
+            # Taking the estimator's defaults while the loader resolved the same knobs
+            # differently is why one model and cache type reported two KV caches (#10489).
+            # An asked-for value is spelled as the extra argument a load would carry and
+            # re-resolved by the launch's own helpers, never taken verbatim.
+            # isinstance(..., bool): called in process, an omitted argument arrives as the
+            # ``Query`` default object, which is truthy.
+            _asked_flash_attn = flash_attn if isinstance(flash_attn, bool) else None
+            _asked_kv_unified = kv_unified if isinstance(kv_unified, bool) else None
+            _asked_swa_full = swa_full if isinstance(swa_full, bool) else None
+            _asked_no_mmproj = no_mmproj_offload if isinstance(no_mmproj_offload, bool) else None
+            _plan_extra_args: list[str] = []
+            if _asked_flash_attn is not None:
+                _plan_extra_args += ["--flash-attn", "on" if _asked_flash_attn else "off"]
+            if _asked_kv_unified is not None:
+                _plan_extra_args += ["--kv-unified" if _asked_kv_unified else "--no-kv-unified"]
+            if _asked_swa_full:
+                # Enable-only: llama.cpp has no --no-swa-full, so a false leaves the env to
+                # answer.
+                _plan_extra_args += ["--swa-full"]
+            if _asked_no_mmproj is not None:
+                _plan_extra_args += [
+                    "--no-mmproj-offload" if _asked_no_mmproj else "--mmproj-offload"
+                ]
+            _planner_extras = _plan_extra_args or None
+
+            _plan_kwargs: dict = {}
+            try:
+                from core.inference.llama_cpp import (
+                    _kv_unified_from_args,
+                    _planned_flash_attn_state,
+                    _planned_main_cache_types as _plan_cache_types,
+                    _swa_full_from_args_or_env,
+                )
+
+                _plan_caps = {}
+                try:
+                    _plan_caps = LlamaCppBackend.probe_server_capabilities() or {}
+                except Exception as e:
+                    logger.debug(f"capability probe failed for '{repo_id}': {e}")
+                _plan_kwargs = {
+                    "flash_attn": _planned_flash_attn_state(
+                        _planner_extras,
+                        planned_cache_types = _plan_cache_types(cache_type_kv, _planner_extras),
+                        # An unreadable probe keeps the managed default.
+                        supports_flash_attn = bool(_plan_caps.get("supports_flash_attn", True)),
+                        tensor_parallel = bool(tensor_parallel),
+                        architecture = getattr(be, "_architecture", None),
+                    ),
+                    # The loader's own default: unified only for >1 slot, only if supported.
+                    "kv_unified": _kv_unified_from_args(
+                        _planner_extras,
+                        default = (n_parallel or 1) > 1
+                        and bool(_plan_caps.get("supports_kv_unified", False)),
+                    ),
+                    "swa_full": _swa_full_from_args_or_env(_planner_extras),
+                }
+            except Exception as e:
+                logger.debug(f"attention plan resolution failed for '{repo_id}': {e}")
+
+            # Probe failures keep the unflagged default rather than assuming zero.
+            _cc_caps: dict = {}
+            _total_ram_mib: Optional[int] = None
+            try:
+                _cc_caps = be.probe_server_capabilities() or {}
+                _total_ram_mib = getattr(be, "_host_memory_capacity_mib", lambda: None)()
+            except Exception as e:
+                logger.debug(f"checkpoint budget inputs unavailable for '{repo_id}': {e}")
+
+            # A blank field means llama.cpp's default, narrowed only by a cap Studio can emit.
+            from core.inference.llama_cpp import effective_ctx_checkpoints_for_caps
+
+            _effective_checkpoints = effective_ctx_checkpoints_for_caps(
+                _cc_caps,
+                None,
+                ctx_checkpoints,
+                per_checkpoint_bytes = getattr(be, "_rollback_state_bytes", lambda _n: 0)(1),
+                n_parallel = n_parallel,
+                total_host_bytes = (_total_ram_mib * 1024 * 1024) if _total_ram_mib else None,
+            )
             kv = be._estimate_kv_cache_bytes(
                 n_ctx,
                 _effective_cache_type,
                 n_parallel = n_parallel,
-                ctx_checkpoints = ctx_checkpoints or 0,
+                ctx_checkpoints = _effective_checkpoints,
                 n_ubatch = n_ubatch,
+                **_plan_kwargs,
             )
 
-            # The checkpoint share of that cache, by difference rather than by re-deriving the SWA layer walk: the
-            # snapshots are the only term separating the two calls. Reported separately because llama.cpp keeps these
-            # snapshots in HOST heap (the planner's GPU figure is kv_bytes - kv_checkpoint_bytes); folded into the
-            # bar's VRAM total they warn OOM over memory that never touches the card.
+            # Report the host-resident checkpoint share separately from GPU cache bytes.
             kv_checkpoint = 0
-            if ctx_checkpoints:
+            if _effective_checkpoints:
                 _kv_without = be._estimate_kv_cache_bytes(
                     n_ctx,
                     _effective_cache_type,
                     n_parallel = n_parallel,
                     ctx_checkpoints = 0,
                     n_ubatch = n_ubatch,
+                    **_plan_kwargs,
                 )
                 kv_checkpoint = max(0, int(kv) - int(_kv_without))
 
@@ -4092,6 +4111,18 @@ async def get_kv_cache_estimate(
                         projector = int(_Be._get_gguf_size_bytes(mmproj) * _Be._MMPROJ_VRAM_SAFETY)
                 except Exception as e:
                     logger.debug(f"mmproj estimate failed for '{repo_id}' {quant}: {e}")
+            # The RESOLVED placement, not the query value: the env alone can put the
+            # projector on the host, and the frontend adds projectorBytes onto its GPU
+            # weights segment, so the bar was charged for memory that never reaches the card.
+            try:
+                from core.inference.llama_cpp import _resolved_mmproj_offload
+                _mmproj_offloaded = _resolved_mmproj_offload(_planner_extras)
+            except Exception as e:  # noqa: BLE001 -- cannot resolve -> the asked value stands
+                logger.debug(f"could not resolve the mmproj placement: {e}")
+                _mmproj_offloaded = None if _asked_no_mmproj is None else not _asked_no_mmproj
+            if _mmproj_offloaded is False:
+                # The projector is in HOST memory, with vision still on.
+                projector = None
 
             # Only the MTP modes reserve memory; ngram is free. "auto" may or may not resolve to MTP, and the estimator
             # returns None when it does not. Guarded separately: the MTP path reads more metadata than the KV path, and
@@ -4183,7 +4214,13 @@ async def get_kv_cache_estimate(
                             # 16. Blank is not zero: _build_speculative_flags emits its own default when the field is unset (2 with a
                             # GPU, 3 without) and the rollback state is multiplied by it. An explicit 0 is still honoured.
                             spec_draft_n_max = _effective_draft_n_max,
+                            # Same estimator, so it must get the same resolved plan.
+                            **_plan_kwargs,
                         )
+                        # Plus the draft decode graph's floor, which the helper leaves to
+                        # the loader's soft overhead.
+                        if spec is not None:
+                            spec += be._MTP_DRAFT_COMPUTE_BYTES
                 except Exception as e:
                     logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
 
@@ -4219,6 +4256,18 @@ async def get_kv_cache_estimate(
                     _effective_tp = _effective_tensor_parallel(None, bool(tensor_parallel))
                 except Exception as e:
                     logger.debug(f"tensor mode resolution failed for '{repo_id}': {e}")
+                if _effective_tp and not _tensor_split_can_launch(
+                    _effective_tp, _plan_kwargs.get("flash_attn")
+                ):
+                    logger.debug(
+                        f"'{repo_id}': flash attention is off, so the launch cannot take a tensor "
+                        "split; pricing the layer split it would fall back to"
+                    )
+                    _effective_tp = False
+                    # Into the extras as well, not only the boolean: the breakdown re-resolves
+                    # the split through a helper that reads an inherited
+                    # LLAMA_ARG_SPLIT_MODE=tensor, which would turn a bare False back on.
+                    _planner_extras = list(_planner_extras or []) + ["--split-mode", "layer"]
                 _planner_devices = 1
                 if _effective_tp:
                     from routes.inference import (
@@ -4231,6 +4280,9 @@ async def get_kv_cache_estimate(
                             None, _cached_inference_devices(), tensor_parallel = True
                         ),
                     )
+                # The planner resolves its plan from extra arguments, which is why the plan
+                # was built in that vocabulary: without it, gpu_bytes and kv_bytes in ONE
+                # response describe two different loads.
                 _cfg = _cached_estimate_config(repo_id, quant, None, False)
                 if _cfg is not None and _cfg is not _ESTIMATE_NOT_ON_DISK:
                     _cfg = _localized_estimate_config(_cfg, path)
@@ -4247,8 +4299,11 @@ async def get_kv_cache_estimate(
                         spec_draft_cache_type = spec_draft_cache_type,
                         n_batch = n_batch,
                         n_ubatch = n_ubatch,
-                        tensor_parallel = tensor_parallel,
+                        # The RESOLVED split: _gguf_memory_breakdown re-resolves it, so the
+                        # raw toggle turned tensor mode straight back on.
+                        tensor_parallel = _effective_tp,
                         n_devices = _planner_devices,
+                        llama_extra_args = _planner_extras,
                     )
                     if _b is not None:
                         # `or None` would fold a real zero into "no answer". Zero is meaningful: inherited placement such as
@@ -4275,8 +4330,10 @@ async def get_kv_cache_estimate(
                             spec_draft_cache_type = spec_draft_cache_type,
                             n_batch = n_batch,
                             n_ubatch = n_ubatch,
-                            tensor_parallel = tensor_parallel,
+                            # A floor priced for an impossible placement is not a floor.
+                            tensor_parallel = _effective_tp,
                             n_devices = _planner_devices,
+                            llama_extra_args = _planner_extras,
                         )
                         if _floor is not None:
                             planner_floor = min(int(_floor.gpu_bytes), planner_gpu)
@@ -4345,6 +4402,8 @@ async def get_gguf_variants(
     current_subject: str = Depends(get_current_subject),
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, repo_id)
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants
@@ -4384,6 +4443,10 @@ async def get_gguf_variants(
                     download_size_bytes = int(
                         getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                     ),
+                    pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
+                    pending_drafter_size_bytes = int(
+                        getattr(v, "pending_drafter_size_bytes", 0) or 0
+                    ),
                     downloaded = bool(v.downloaded),
                     update_available = bool(getattr(v, "update_available", False)),
                     partial = bool(getattr(v, "partial", False)),
@@ -4399,6 +4462,7 @@ async def get_gguf_variants(
                 else None
             ),
             resolved_locally = bool(getattr(response, "resolved_locally", False)),
+            dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
             loadable_variants = getattr(response, "loadable_variants", None),
             loadable = getattr(response, "loadable", None),
         )
@@ -4795,7 +4859,8 @@ def _preferred_gguf_copy(
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        return {"cached": cached_gguf_rows()}
+        # Off the loop: the filter can probe the Hub per ungranted repo.
+        return {"cached": await asyncio.to_thread(cached_gguf_rows)}
     except Exception as e:
         logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
         return {"cached": []}
@@ -4861,9 +4926,11 @@ def cached_gguf_rows(cache_scans = None) -> list[dict]:
                 logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
                 continue
     # Newest download first; stable repo_id tie-break for equal/missing mtimes.
-    return sorted(
-        seen_lower.values(),
-        key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+    return account_access.filter_model_rows(
+        sorted(
+            seen_lower.values(),
+            key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+        )
     )
 
 
@@ -4899,7 +4966,8 @@ async def list_cached_models(
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        return {"cached": cached_model_rows()}
+        # Off the loop: the filter can probe the Hub per ungranted repo.
+        return {"cached": await asyncio.to_thread(cached_model_rows)}
     except Exception as e:
         logger.error(f"Error listing cached models: {e}", exc_info = True)
         return {"cached": []}
@@ -5141,9 +5209,11 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 continue
 
     # Local-only list path: update checks are GGUF-only and happen lazily when variants are viewed.
-    return sorted(
-        seen_lower.values(),
-        key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+    return account_access.filter_model_rows(
+        sorted(
+            seen_lower.values(),
+            key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+        )
     )
 
 
@@ -5164,7 +5234,9 @@ async def delete_cached_model(
     current_subject: str = Depends(get_current_subject),
 ):
     """Compatibility route backed by the shared multi-cache deletion service."""
+    account_access.require_installation_owner()
     from hub.services.models import deletion
+
     return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
 
 
@@ -5270,6 +5342,8 @@ async def get_cached_model_path(
     current_subject: str = Depends(get_current_subject),
 ):
     """Absolute on-disk path of a cached repo or one of its GGUF variants."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, repo_id)
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant.strip() or None)
@@ -5283,6 +5357,9 @@ async def reveal_cached_model(
     current_subject: str = Depends(get_current_subject),
 ):
     """Reveal a cached repo (or one GGUF variant's file) in the OS file manager."""
+    account_access.require_installation_owner()
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, repo_id)
     from utils.paths.path_utils import reveal_in_file_manager
 
     if not _is_valid_repo_id(repo_id):
@@ -5309,6 +5386,7 @@ async def list_checkpoints(
 
     Scans the outputs folder for training runs and their checkpoints.
     """
+    outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
         raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir)
@@ -5343,7 +5421,7 @@ async def list_checkpoints(
 
 
 # Successful estimates only, keyed by model id. Failures aren't cached so they can recover.
-_EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
+_EXPORT_SIZE_CACHE: dict[object, tuple[int, int, str]] = {}
 
 
 def _is_sizable_local_path(model: str) -> bool:
@@ -5390,10 +5468,16 @@ def _is_sizable_local_path(model: str) -> bool:
 def _export_size_cached(
     model: str, hf_token: Optional[str]
 ) -> tuple[Optional[int], Optional[int], str]:
-    """Estimate a model's fp16/bf16-equivalent size in bytes (+ total params). Memoizes successful results by
-    model id; never raises (failures return (None, None, "unavailable") and are not cached). Blocking I/O;
-    call off-thread."""
-    cached = _EXPORT_SIZE_CACHE.get(model)
+    """Estimate a model's fp16/bf16-equivalent size in bytes (+ total params).
+
+    Memoizes successful results by model id; never raises (failures return
+    (None, None, "unavailable") and are not cached). Blocking I/O; call off-thread.
+    """
+    # Keyed per managed account: a relative model name is private to a workspace.
+    cache_key = (
+        (account_access.current_account_id(), model) if account_access.managed_account() else model
+    )
+    cached = _EXPORT_SIZE_CACHE.get(cache_key)
     if cached is not None:
         return cached
     try:
@@ -5413,7 +5497,7 @@ def _export_size_cached(
         if not fp16_bytes or fp16_bytes <= 0:
             return None, None, source or "unavailable"
         result = (int(fp16_bytes), int(fp16_bytes) // 2, source)
-        _EXPORT_SIZE_CACHE[model] = result
+        _EXPORT_SIZE_CACHE[cache_key] = result
         return result
     except Exception as e:  # a size hint must never break export
         logger.warning("Could not estimate export size for '%s': %s", model, e)
@@ -5431,6 +5515,7 @@ async def get_export_size(
     Returns nulls with HTTP 200 when the size can't be determined. The HF token
     (for gated repos) comes from the X-HF-Token header so it never hits URLs/logs.
     """
+    await _require_model_access_or_caller_token(model, _normalize_hf_token(hf_token))
     if is_local_path(model):
         if not _is_sizable_local_path(model):
             return ExportSizeResponse(

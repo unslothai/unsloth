@@ -70,6 +70,7 @@ from core.inference.llama_cpp import (
     _THREAD_OVERRIDE_FLAGS,
     _backfill_usage_from_timings,
     _build_ngram_mod_flags,
+    _build_reasoning_budget_flags,
     _canonicalize_spec_mode,
     _extra_args_set_any_flag,
     _extra_args_set_spec_type,
@@ -891,6 +892,272 @@ def test_probe_server_capabilities_reports_outdated_binary(tmp_path):
     assert caps["mtp_token"] is None
     assert caps["supports_mtp"] is False
     assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_detects_reasoning_budget_flags(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        # Column 0, the way llama-server really prints its flags; the indented lines are
+        # descriptions. The sibling tests below use the same layout.
+        "--reasoning-budget N\n--reasoning-budget-message MESSAGE\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_reasoning_budget"] is True
+    assert caps["supports_reasoning_budget_message"] is True
+    assert caps["reasoning_budget_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_reports_missing_reasoning_budget_flags(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--gpu-layers N\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_reasoning_budget"] is False
+    assert caps["supports_reasoning_budget_message"] is False
+    assert caps["reasoning_budget_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_ignores_indented_flag_references_in_descriptions(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--gpu-layers N\n  --reasoning-budget is unavailable on this legacy build\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_reasoning_budget"] is False
+
+
+def test_reasoning_budget_capability_gate_allows_defaults_on_old_binary(monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": False,
+                "supports_reasoning_budget_message": False,
+                "reasoning_budget_probe_inconclusive": False,
+            }
+        ),
+    )
+    caps = LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/old/llama-server",
+        extra_args = None,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    )
+    assert caps["supports_reasoning_budget"] is False
+    assert _build_reasoning_budget_flags(caps, -1, "") == []
+
+
+def test_reasoning_budget_command_flags_follow_capabilities():
+    caps = {
+        "supports_reasoning_budget": True,
+        "supports_reasoning_budget_message": True,
+    }
+    assert _build_reasoning_budget_flags(caps, -1, "") == []
+    assert _build_reasoning_budget_flags(caps, 64, "  PAD  ") == [
+        "--reasoning-budget",
+        "64",
+        "--reasoning-budget-message",
+        "  PAD  ",
+    ]
+
+
+@_NEEDS_BASH
+def test_reasoning_budget_capability_gate_rejects_legacy_positive_range(tmp_path, monkeypatch):
+    fake = tmp_path / "llama-server"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "--reasoning-budget" && "$2" != "0" && "$2" != "-1" ]]; then\n'
+        "  exit 1\n"
+        "fi\n"
+        "printf '%s\\n' '--reasoning-budget N' '--reasoning-budget-message TEXT'\n"
+    )
+    fake.chmod(0o755)
+    _clear_caps_cache()
+
+    with pytest.raises(ValueError, match = "does not accept positive reasoning budgets"):
+        LlamaCppBackend.validate_reasoning_budget_capabilities(
+            str(fake),
+            extra_args = None,
+            reasoning_budget = 512,
+            reasoning_budget_message = "",
+        )
+    # A passthrough flag is still an explicit request, so it gates like the field.
+    with pytest.raises(ValueError, match = "does not accept positive reasoning budgets"):
+        LlamaCppBackend.validate_reasoning_budget_capabilities(
+            str(fake),
+            extra_args = ["--reasoning-budget", "512"],
+            reasoning_budget = -1,
+            reasoning_budget_message = "",
+        )
+    # The env default is not: no Studio control clears it, and llama-server
+    # validates its own env, so failing here is unrecoverable from the UI.
+    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET", "512")
+    LlamaCppBackend.validate_reasoning_budget_capabilities(
+        str(fake),
+        extra_args = None,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    )
+    monkeypatch.delenv("LLAMA_ARG_THINK_BUDGET")
+    LlamaCppBackend.validate_reasoning_budget_capabilities(
+        str(fake),
+        extra_args = None,
+        reasoning_budget = 0,
+        reasoning_budget_message = "",
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs,missing_flag",
+    [
+        ({"reasoning_budget": 64}, "--reasoning-budget"),
+        ({"reasoning_budget_message": "Conclude"}, "--reasoning-budget-message"),
+        (
+            {"extra_args": ["--reasoning-budget", "-1"]},
+            "--reasoning-budget",
+        ),
+    ],
+)
+def test_reasoning_budget_capability_gate_rejects_explicit_old_binary(
+    monkeypatch, kwargs, missing_flag
+):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": False,
+                "supports_reasoning_budget_message": False,
+                "reasoning_budget_probe_inconclusive": False,
+            }
+        ),
+    )
+    request = {
+        "extra_args": None,
+        "reasoning_budget": -1,
+        "reasoning_budget_message": "",
+        **kwargs,
+    }
+    with pytest.raises(ValueError, match = missing_flag):
+        LlamaCppBackend.validate_reasoning_budget_capabilities("/old/llama-server", **request)
+
+
+def test_reasoning_budget_capability_gate_ignores_env_on_unprobeable_binary(monkeypatch):
+    """An env default must not fail closed on a binary whose --help cannot be read.
+
+    Nothing was configured, so the rejection named a setting the UI shows as default.
+    Effective state still reports the inherited value; only the gate ignores it.
+    """
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": False,
+                "supports_reasoning_budget_message": False,
+                "reasoning_budget_probe_inconclusive": True,
+            }
+        ),
+    )
+    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET", "512")
+    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET_MESSAGE", "Wrap up.")
+    LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/custom/llama-server",
+        extra_args = None,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    )
+
+
+def test_positive_budget_probe_drops_inherited_llama_env(monkeypatch):
+    """llama-server reads LLAMA_ARG_* before argv, so a stale inherited value fails its own
+    parse and would be recorded as the binary rejecting positive budgets."""
+    import core.inference.llama_cpp as llama_cpp_module
+
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": True,
+                "supports_reasoning_budget_message": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_llama_server_env_for_binary",
+        staticmethod(
+            lambda binary: {
+                "PATH": "/usr/bin",
+                "LLAMA_ARG_PORT": "junk",
+                "LLAMA_ARG_THINK_BUDGET": "512",
+            }
+        ),
+    )
+    seen = {}
+
+    def _run(cmd, **kwargs):
+        seen["env"] = dict(kwargs["env"])
+        return _types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "run", _run)
+    caps = LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/custom/llama-server",
+        extra_args = None,
+        reasoning_budget = 512,
+        reasoning_budget_message = "",
+    )
+    assert caps["supports_reasoning_budget_value:512"] is True
+    assert not [name for name in seen["env"] if name.startswith("LLAMA_ARG_")]
+    assert seen["env"]["PATH"] == "/usr/bin"
+
+
+def test_reasoning_budget_capability_gate_rejects_inconclusive_probe(monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": False,
+                "supports_reasoning_budget_message": False,
+                "reasoning_budget_probe_inconclusive": True,
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match = "could not verify"):
+        LlamaCppBackend.validate_reasoning_budget_capabilities(
+            "/custom/llama-server",
+            extra_args = None,
+            reasoning_budget = 64,
+            reasoning_budget_message = "",
+        )
+
+
+def test_explicit_reasoning_budget_rejects_local_diffusion_before_kill(tmp_path, monkeypatch):
+    gguf = tmp_path / "diffusion.gguf"
+    gguf.write_bytes(b"GGUF")
+    backend = LlamaCppBackend()
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda *args, **kwargs: "/fake")
+    monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *args, **kwargs: True)
+    monkeypatch.setattr(backend, "_kill_process", lambda: pytest.fail("killed before rejection"))
+
+    with pytest.raises(ValueError, match = "DiffusionGemma"):
+        backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "owner/DiffusionGemma-GGUF",
+                reasoning_budget = 64,
+            )
+        )
 
 
 @_NEEDS_BASH
@@ -3550,3 +3817,129 @@ def test_the_dspark_gate_uses_the_probe_it_is_given():
     # No sidecar on disk and an incapable binary: the fetch is skipped, which is exactly
     # the degraded launch the accumulator has to remember.
     assert result is None
+
+
+def _write_head_only_drafter(path, *, with_token_embd: bool):
+    """A real GGUF the predicate will judge, so these exercise the actual verdict."""
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), "qwen35")
+    names = ["output.weight", "blk.64.nextn.eh_proj.weight"]
+    if with_token_embd:
+        names.insert(0, "token_embd.weight")
+    for name in names:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+def test_repairing_an_unloadable_drafter_in_place_reloads(tmp_path):
+    """Apply after a repair must reload, or speculative decoding stays off for good.
+
+    The dedupe counts a deliberately dropped drafter as launched, comparing resolved
+    PATHS. Replace the rejected sidecar with a self-contained head at the same path and
+    a path-only comparison still says "already loaded", so the drafter-free server is
+    kept and nothing re-runs the header check.
+    """
+    sidecar = _write_head_only_drafter(tmp_path / "mtp-model.gguf", with_token_embd = False)
+    backend = _mtp_backend(
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_unloadable",
+        _spec_drafter_kind = "mtp",
+        _mtp_draft_path = None,
+        _mtp_draft_suppressed_path = str(sidecar),
+        _mtp_draft_suppressed_reason = "unloadable",
+    )
+    # Still head-only: re-asking would drop it again, so a reload would buy nothing.
+    assert _matches_mtp(backend, mtp_draft_path = str(sidecar), compare_mtp_draft = True) is True
+
+    _write_head_only_drafter(tmp_path / "mtp-model.gguf", with_token_embd = True)
+    assert _matches_mtp(backend, mtp_draft_path = str(sidecar), compare_mtp_draft = True) is False
+
+
+def test_repairing_a_paravirtually_suppressed_drafter_does_not_reload(tmp_path):
+    """The negative: that drop is a property of the BUILD, not of the file's contents.
+
+    A drafter suppressed because the probe offered no draft-layer flag would be
+    suppressed again byte-for-byte, so re-asking the header question there would tear
+    down a healthy server for nothing.
+    """
+    sidecar = _write_head_only_drafter(tmp_path / "mtp-model.gguf", with_token_embd = True)
+    backend = _mtp_backend(
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+        _mtp_draft_path = None,
+        _mtp_draft_suppressed_path = str(sidecar),
+        _mtp_draft_suppressed_reason = "paravirtual",
+    )
+    assert _matches_mtp(backend, mtp_draft_path = str(sidecar), compare_mtp_draft = True) is True
+
+
+def test_a_drafter_dropped_as_unloadable_does_not_reload_to_refetch_it():
+    """Refetching returns the same file, so the retry rule must stand down."""
+    sidecar = "/cache/snapshots/abc/mtp-gemma-4-12b-it.gguf"
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+        _mtp_draft_path = None,
+        _mtp_draft_suppressed_path = sidecar,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            mtp_draft_path = sidecar,
+            compare_mtp_draft = True,
+        )
+        is True
+    )
+
+
+def test_positive_budget_probe_uses_resolved_launch_path(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary: {"supports_reasoning_budget": True}),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_exec_path_for_launch",
+        staticmethod(lambda binary: "/runtime/bin/llama-server"),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_llama_server_env_for_binary",
+        staticmethod(lambda binary: {}),
+    )
+
+    def run(cmd, **kwargs):
+        return _types.SimpleNamespace(returncode = 0 if cmd[0] == "/runtime/bin/llama-server" else 1)
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "run", run)
+    caps = LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/runtime/llama-server",
+        extra_args = None,
+        reasoning_budget = 32,
+        reasoning_budget_message = "",
+    )
+    assert caps["supports_reasoning_budget_value:32"] is True
