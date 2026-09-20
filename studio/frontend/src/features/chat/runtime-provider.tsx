@@ -1162,6 +1162,11 @@ function scheduleGenerationRecovery(
             await publish(update.run);
           }
           if (isTerminalChatGenerationRun(update.run)) {
+            // The run is over, so any approval card recovery raised is over with it. A run that
+            // terminates without a tool_end (backend failed or restarted while the call was parked)
+            // leaves the card armed otherwise: the initial guard above only covers a run that was
+            // ALREADY terminal when this attached, not one that gets there later.
+            toolRecovery.disarmAll();
             // Only another successful active-list sync would otherwise drop it, so the thread would keep
             // reading as durable and a later subscriber-owned stream would be capped, losing the
             // checkpoints that are its only persistence.

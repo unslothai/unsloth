@@ -194,3 +194,50 @@ test("recovery still works for a caller that passes no confirmation hooks", () =
     "the approval id still lands on the part",
   );
 });
+
+const seededParkedCard = () => [
+  {
+    at: 12,
+    part: {
+      type: "tool-call",
+      toolCallId: "sess-1:thread-1:appr-9",
+      toolName: "terminal",
+      backendToolCallId: "call-9",
+      toolApprovalId: "appr-9",
+      args: { command: "echo hi" },
+    },
+  },
+];
+
+test("a run that ends without a tool_end still takes its cards down", () => {
+  // The backend failed or restarted while the call was parked, so no tool_end is ever emitted and
+  // the per-call disarm never runs. Without a run-level sweep the card outlives its own run:
+  // buttons on screen over a dead run, and a decision that can only 404 because the pending slot
+  // went with the restart. The terminal guard at the call site covers a run that was ALREADY
+  // terminal when recovery attached; this covers one that gets there afterwards.
+  const spy = spyConfirmations();
+  const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
+
+  recovery.armSeededApprovals("sess-1");
+  assert.equal(spy.registered.length, 1);
+  assert.equal(spy.live.size, 1, "the card is live before the run ends");
+
+  recovery.disarmAll();
+  assert.deepEqual(spy.resolved, ["sess-1:thread-1:appr-9"]);
+  assert.equal(spy.live.size, 0, "no card outlives its run");
+
+  // Idempotent: the follow loop can see more than one terminal snapshot, and a second sweep must
+  // not reach for a card this recovery no longer owns.
+  recovery.disarmAll();
+  assert.deepEqual(spy.resolved, ["sess-1:thread-1:appr-9"]);
+});
+
+test("the run-level sweep only takes down cards this recovery armed", () => {
+  // Same scoping rule as the per-call disarm: a recovery shares the store with whatever else is on
+  // screen, so a card it never raised is not its business to resolve.
+  const spy = spyConfirmations();
+  const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
+
+  recovery.disarmAll();                       // armed nothing, so it resolves nothing
+  assert.deepEqual(spy.resolved, []);
+});

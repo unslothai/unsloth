@@ -149,6 +149,17 @@ export function createGenerationToolRecovery(
     armed.delete(partId);
     toolConfirmations.resolve(partId);
   };
+  /** Drop every card this recovery armed, for the end of the run rather than the end of a call.
+   *  A run that terminates WITHOUT a tool_end (the backend failed or restarted while the call was
+   *  parked) never reaches disarmApproval, so the card would outlive its own run: buttons still on
+   *  screen, tool group still open, and a decision that can only 404 because the backend's pending
+   *  slot went with the restart. Still only this recovery's own cards, for the same reason
+   *  disarmApproval is scoped that way. */
+  const disarmAll = () => {
+    if (!toolConfirmations) return;
+    for (const partId of armed) toolConfirmations.resolve(partId);
+    armed.clear();
+  };
   const researchHandoff = newDeepResearchHandoff();
   /** The sources a finished search card yields, parsed once per card rather than per publish.
    *  Every rebuild used to re-run the parse over every finished search result in the turn,
@@ -498,5 +509,5 @@ export function createGenerationToolRecovery(
     }
     return out;
   };
-  return { replayFrom, apply, withSources, armSeededApprovals };
+  return { replayFrom, apply, withSources, armSeededApprovals, disarmAll };
 }
