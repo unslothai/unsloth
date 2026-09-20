@@ -7446,7 +7446,13 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
     _fail_free_kb=$(_free_space_kb "$STUDIO_HOME")
     _fail_suffix=""
     if [ -n "$_fail_free_kb" ] && [ "$_fail_free_kb" -lt 65536 ] 2>/dev/null; then
-        _fail_suffix=": $STUDIO_HOME has only $((_fail_free_kb / 1024)) MB free, so the disk is full, which is very likely the cause. Free some space and re-run; --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
+        # Naming the opt-out to someone who already used it describes a re-run that fails the same way: that copy was discarded before the install began, so there is nothing left here for the installer to give back.
+        if [ "${_NO_ROLLBACK:-false}" = true ]; then
+            _fail_remedy="Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
+        else
+            _fail_remedy="Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
+        fi
+        _fail_suffix=": $STUDIO_HOME has only $((_fail_free_kb / 1024)) MB free, so the disk is full, which is very likely the cause. $_fail_remedy"
     fi
     if [ "$TAURI_MODE" = true ]; then
         tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)$_fail_suffix"
@@ -7455,7 +7461,7 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
     fi
     if [ -n "$_fail_suffix" ]; then
         echo "       $STUDIO_HOME has only $((_fail_free_kb / 1024)) MB free -- the disk is full, which is very likely the cause." >&2
-        echo "       Free some space and re-run. --no-rollback (or UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install." >&2
+        echo "       $_fail_remedy" >&2
     fi
     echo ""
     exit "$_SETUP_EXIT"

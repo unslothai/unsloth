@@ -1620,3 +1620,33 @@ class TestDiskFullDiagnosisReachesTauri:
         assert probe < guard, (
             "the free-space probe runs only in the non-Tauri branch, so --tauri never measures"
         )
+
+
+class TestDiskFullRemedyIsNotTheFlagAlreadyGiven:
+    """A run that already passed --no-rollback and still ran out of space must not be told to
+    re-run with --no-rollback: that copy was discarded before the install began, so the re-run
+    fails identically. Same rule as the pre-move space warning, at the other end of the install."""
+
+    @pytest.mark.parametrize(
+        "path, flag",
+        [
+            (INSTALL_SH, '[ "${_NO_ROLLBACK:-false}" = true ]'),
+            (INSTALL_PS1, "if ($script:StudioNoRollback)"),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_the_remedy_varies_on_the_flag(self, path, flag):
+        text = path.read_text(encoding = "utf-8")
+        block = text.split("is very likely the cause", 1)[0][-1400:]
+        assert flag in block, f"{path.name} gives the same remedy whether or not the flag is set"
+
+    @pytest.mark.parametrize(
+        "path",
+        [INSTALL_SH, INSTALL_PS1],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_the_already_discarded_case_says_so(self, path):
+        text = path.read_text(encoding = "utf-8")
+        assert "already discarded by --no-rollback" in text, (
+            f"{path.name} does not tell an opted-out run that there is nothing left to reclaim"
+        )

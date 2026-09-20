@@ -10675,15 +10675,24 @@ sys.exit(2 if conflict else (0 if installed else 1))
         # because a marker is one line.
         $_failFree = Get-StudioFreeSpaceBytes -Path $StudioHome
         $_failSuffix = ""
+        $_failRemedy = ""
         if ($null -ne $_failFree -and $_failFree -lt 64MB) {
             $_failMb = [math]::Round($_failFree / 1MB)
-            $_failSuffix = ": $StudioHome has only $_failMb MB free, so the disk is full, which is very likely the cause. Free some space and re-run; --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
+            # Naming the opt-out to someone who already used it describes a re-run that fails
+            # the same way: that copy was discarded before the install began, so there is
+            # nothing left here for the installer to give back. install.sh gates its twin too.
+            $_failRemedy = if ($script:StudioNoRollback) {
+                "Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
+            } else {
+                "Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
+            }
+            $_failSuffix = ": $StudioHome has only $_failMb MB free, so the disk is full, which is very likely the cause. $_failRemedy"
         }
         if (-not $TauriMode) {
             Write-StudioLine "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
             if ($_failSuffix) {
                 Write-StudioLine "        $StudioHome has only $_failMb MB free -- the disk is full, which is very likely the cause." -ForegroundColor Red
-                Write-StudioLine "        Free some space and re-run. --no-rollback (or UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install." -ForegroundColor Red
+                Write-StudioLine "        $_failRemedy" -ForegroundColor Red
             }
         }
         return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)$_failSuffix" $setupExit)
