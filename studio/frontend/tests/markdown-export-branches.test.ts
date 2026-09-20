@@ -167,9 +167,7 @@ test("Markdown leaves out the reply a regeneration replaced", async () => {
   });
 });
 
-// Switching chats sets the thread id before the history load refills the view, so for a moment the
-// branch on screen is an empty list. That is no opinion about which reply is showing, not a branch
-// with nothing on it, and exporting in that window must still produce the conversation.
+// Mid-switch the branch on screen is briefly an empty list, which is no opinion about which reply is showing.
 test("Markdown still exports while the switched-to chat is loading", async () => {
   const expected = "## User\n\nName one fruit.\n\n## Assistant\n\nPears.\n";
   assert.deepEqual(await markdownOutputs(regenerated, []), {
@@ -179,8 +177,7 @@ test("Markdown still exports while the switched-to chat is loading", async () =>
   });
 });
 
-// The markdown paths moving to the displayed branch must not drag CSV along: a spreadsheet of
-// every version is the one export people use to compare them.
+// CSV must not follow markdown onto one branch: it is the export used to compare versions.
 test("CSV still writes both replies while markdown writes one", async () => {
   const downloads: string[] = [];
   const exporters = loadExporters(regenerated, downloads, []);

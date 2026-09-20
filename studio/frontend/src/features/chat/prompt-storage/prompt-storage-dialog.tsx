@@ -250,9 +250,7 @@ async function loadConversationMessages(
   if (!hasParentIds) return raw;
   // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
   const storedIds = new Set(raw.map((m) => m.id));
-  // A branch with no message on it yet is not an opinion about which branch is on screen: switching
-  // chats sets remoteId before the history load refills the view, and exporting in that window used to
-  // hand back an empty file. No live branch and an empty one both mean "follow the newest turn".
+  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
   const headId = liveBranch?.length
     ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
     : undefined;
@@ -470,8 +468,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   );
 }
 
-// One place decides that the on-screen branch is what leaves the app as markdown: a second
-// literal elsewhere is a second thing to forget. Callers keep their own empty-state wording.
+// One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
 const loadDisplayedBranchMessages = (
   threadId: string,
   options: { emptyMessage?: string } = {},
