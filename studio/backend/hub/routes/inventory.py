@@ -154,11 +154,15 @@ async def get_gguf_variants(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
+    # Both identifiers can come back to us as handles: an API-key caller reading the cache
+    # inventory is handed `ref:` in place of every host path, and that reference is the only
+    # name it has for a custom local GGUF or for a copy in a secondary root. Unresolved, the
+    # lookup either misses or is answered out of the ACTIVE cache, which is a different file.
     return await gguf_variants.get_gguf_variants_response(
-        repo_id,
+        resolve_host_path_reference(repo_id) or repo_id,
         prefer_local_cache = prefer_local_cache,
         offline = offline,
-        local_path = local_path,
+        local_path = resolve_host_path_reference(local_path) or local_path,
         hf_token = hf_token,
     )
 

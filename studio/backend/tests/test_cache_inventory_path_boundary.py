@@ -850,6 +850,55 @@ def test_a_cache_reference_can_delete_the_copy_it_names(monkeypatch, client, rou
     assert seen["cache_path"] == REPO_DIR
 
 
+@pytest.mark.parametrize(
+    ("client", "route"),
+    [(_hub, "/api/hub/gguf-variants"), (_models, "/api/models/gguf-variants")],
+    ids = ("hub", "compat"),
+)
+def test_a_cache_reference_lists_the_quants_of_the_copy_it_names(monkeypatch, client, route):
+    """The inventory hands an API-key caller a handle in place of every host path, so a handle
+    is the only name it HAS for a custom local GGUF or for a copy in a secondary root. Passed
+    back unresolved, the lookup either misses or is answered out of the ACTIVE cache, which is
+    a different file."""
+    seen = {}
+
+    from hub.schemas.inventory import GgufVariantsResponse
+    from hub.services.models import account_access, gguf_variants as hub_gguf_variants
+
+    async def _variants(repo_id, prefer_local_cache = False, offline = False,
+                        local_path = None, hf_token = None):
+        seen.update(repo_id = repo_id, local_path = local_path)
+        return GgufVariantsResponse(repo_id = repo_id, variants = [])
+
+    async def _answer(repo_id, **kwargs):
+        return hub_gguf_variants.VariantsAnswer(
+            await _variants(repo_id, **kwargs), None, True
+        )
+
+    monkeypatch.setattr(hub_gguf_variants, "get_gguf_variants_response", _variants)
+    monkeypatch.setattr(hub_gguf_variants, "get_gguf_variants_answer", _answer)
+    monkeypatch.setattr(
+        hub_gguf_variants, "pinned_snapshot_for_request", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(account_access, "managed_account", lambda: False)
+    reference = host_paths.cache_reference(REPO_DIR)
+    assert reference != REPO_DIR
+
+    answered = client(via_api_key = True).get(
+        f"{route}?repo_id={reference}&local_path={reference}"
+    )
+    assert answered.status_code == 200, answered.text
+    assert seen["repo_id"] == REPO_DIR
+    assert seen["local_path"] == REPO_DIR
+
+    # BOUNDARY. A browser session names the repo itself and it arrives as written.
+    seen.clear()
+    answered = client(via_api_key = False).get(f"{route}?repo_id=unsloth/Llama-3.2-1B-GGUF")
+    assert answered.status_code == 200, answered.text
+    assert seen["repo_id"] == "unsloth/Llama-3.2-1B-GGUF"
+    assert seen["local_path"] is None
+
+
 def test_a_cache_row_pinned_to_a_snapshot_is_referenced_too(monkeypatch):
     pinned = f"{HOST_ROOT}/models--unsloth--Llama-3.2-1B-Instruct/snapshots/deadbeef"
 

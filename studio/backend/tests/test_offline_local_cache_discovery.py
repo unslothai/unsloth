@@ -662,6 +662,32 @@ def test_a_credential_reader_separates_an_absent_credential_from_an_unreadable_o
     assert hf_tokens._caller_populated_the_cache("hf_anything") is False
 
 
+@pytest.mark.parametrize(
+    "alias",
+    ["HF_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN"],
+)
+def test_a_credential_held_only_under_a_legacy_alias_still_counts(monkeypatch, alias):
+    """`get_token` reads HF_TOKEN, HUGGING_FACE_HUB_TOKEN, the OIDC exchange and the token file,
+    and nothing else. The aliases this module elsewhere treats as credentials (it strips all of
+    them from a download subprocess) therefore came back as "this host holds nothing", which
+    authorizes a tokenless caller against a cache that credential may have filled."""
+    for key in hf_tokens._HF_TOKEN_ENV_KEYS:
+        monkeypatch.delenv(key, raising = False)
+    monkeypatch.setattr("huggingface_hub.get_token", lambda: None)
+
+    assert _REAL_AMBIENT_HF_TOKEN() == (True, None)
+
+    monkeypatch.setenv(alias, f"  {HOST_CREDENTIAL}  ")
+    assert _REAL_AMBIENT_HF_TOKEN() == (True, HOST_CREDENTIAL)
+
+    # And when the reader itself could not answer, the alias is still knowledge.
+    def _raises():
+        raise OSError("token file unreadable")
+
+    monkeypatch.setattr("huggingface_hub.get_token", _raises)
+    assert _REAL_AMBIENT_HF_TOKEN() == (True, HOST_CREDENTIAL)
+
+
 def test_an_unreadable_saved_credential_is_unknown_rather_than_absent(monkeypatch):
     """`get_secret` answers None for an absent row AND an undecryptable one; the row EXISTING
     separates them, readable without decrypting anything."""

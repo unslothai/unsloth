@@ -4469,6 +4469,10 @@ async def get_gguf_variants(
     current_subject: str = Depends(get_current_subject),
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
+    # Resolved before the access check, not after: a handle matches no allowlist entry, and
+    # it is the only name an API-key caller has for a local GGUF (see the /hub twin).
+    repo_id = resolve_host_path_reference(repo_id) or repo_id
+    local_path = resolve_host_path_reference(local_path) or local_path
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, repo_id)
     try:

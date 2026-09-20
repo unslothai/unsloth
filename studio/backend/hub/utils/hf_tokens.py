@@ -339,6 +339,19 @@ def _is_local_path(repo_id: str) -> bool:
         return False
 
 
+def _env_hf_token() -> "Optional[str]":
+    import os
+
+    for key in _HF_TOKEN_ENV_KEYS:
+        if key == "HF_OIDC_RESOURCE":
+            # Names a token rather than holding one, so it cannot be compared to a caller's.
+            continue
+        value = os.environ.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _ambient_hf_token() -> "tuple[bool, Optional[str]]":
     """``(False, None)`` is "could not answer"; reading it as "no credential" is a fail-open."""
     get_token = None
@@ -351,20 +364,23 @@ def _ambient_hf_token() -> "tuple[bool, Optional[str]]":
         try:
             token = get_token()
         except Exception:
-            return (False, None)
+            # It could not answer, but the environment still can, and a credential found
+            # there is knowledge rather than a guess.
+            env_token = _env_hf_token()
+            return (True, env_token) if env_token else (False, None)
         if isinstance(token, str) and token.strip():
             return (True, token.strip())
-        return (True, None)
-    import os
-
-    for key in _HF_TOKEN_ENV_KEYS:
-        if key == "HF_OIDC_RESOURCE":
-            # Names a token rather than holding one, so it cannot be compared to a caller's.
-            continue
-        value = os.environ.get(key)
-        if isinstance(value, str) and value.strip():
-            return (True, value.strip())
-    return (False, None)
+        # An empty answer is NOT "this host holds nothing": `get_token` reads HF_TOKEN,
+        # HUGGING_FACE_HUB_TOKEN, the OIDC exchange and the token file, and nothing else.
+        # A host whose credential sits in one of the aliases this module already treats as
+        # a credential (HF_HUB_TOKEN, HUGGINGFACE_HUB_TOKEN, HUGGINGFACEHUB_API_TOKEN) read
+        # as credentialless, which authorizes a tokenless caller against a cache that
+        # credential may well have filled.
+        return (True, _env_hf_token())
+    # No reader at all: the environment is the only thing left to ask, and silence there is
+    # "could not answer" rather than "nothing".
+    env_token = _env_hf_token()
+    return (True, env_token) if env_token else (False, None)
 
 
 def _saved_studio_hf_token() -> "tuple[bool, Optional[str]]":
