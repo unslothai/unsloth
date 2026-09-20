@@ -125,13 +125,17 @@ def test_the_timeout_value_is_never_written_as_a_prose_duration():
     next. "a non-hung cell holds its runner for ten minutes" was the one after that.
     They differ only as English; as a claim about what a working cell costs they are the
     same sentence, and what they have in common is writing the timeout's value out in
-    prose.
+    prose. The separator is `[\s-]+` for the same reason: "a ten-minute slot cost" is
+    that claim in adjectival form, and a hyphen is a separator here rather than part of
+    a word.
     """
     minutes = _timeout_minutes()
     spellings = [str(minutes)]
     if minutes in _AS_A_WORD:
         spellings.append(_AS_A_WORD[minutes])
-    written = re.compile(r"(?<![\w-])(?:" + "|".join(spellings) + r")\s+(?:minutes?|mins?)\b", re.I)
+    written = re.compile(
+        r"(?<![\w-])(?:" + "|".join(spellings) + r")[\s-]+(?:minutes?|mins?)\b", re.I
+    )
     found = [match.group(0) for match in written.finditer(_rationale())]
     assert not found, (
         f"{WORKFLOW.name} writes the timeout value as a duration: {found}. That value is "
