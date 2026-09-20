@@ -226,7 +226,14 @@ foreach ($b in $bareGuards) { Write-Host "        bare: $($b.Value)" -Foreground
 
 # Behavioural, on this host: chmod 000 reproduces the same throw class PowerShell raises for a
 # Windows deny ACE. Skipped under a uid that bypasses permission bits, which would pass vacuously.
-if ((& id -u) -eq "0") {
+# The probe is POSIX-only: `id` and `chmod` are not Windows commands, and this file runs under
+# "Stop", so calling them there is a terminating CommandNotFoundException that would abort the
+# suite on the very platform it is about. $IsWindows does not exist on 5.1, where the answer is
+# Windows by construction, so $env:OS answers for it. The text assertions above are the Windows
+# coverage; a real deny ACE is not reproduced anywhere here.
+if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    Write-Host "  SKIP  Windows: chmod cannot build a denied directory here (the guards are pinned by text above)"
+} elseif ((& id -u) -eq "0") {
     Write-Host "  SKIP  running as root: a denied directory is still readable, so this cannot fail"
 } else {
     $deniedRoot = Join-Path ([System.IO.Path]::GetTempPath()) "denied_$([guid]::NewGuid().ToString('N'))"
@@ -248,8 +255,13 @@ if ((& id -u) -eq "0") {
         Check "the guarded form does not throw" (-not $guardedThrew)
     } finally {
         & chmod 755 $deniedRoot
-        Remove-Item -LiteralPath $deniedRoot -Recurse -Force -ErrorAction SilentlyContinue
+        # Fully qualified: the mock above shadows Remove-Item for the rest of the file, and it is
+        # an advanced function, so -ErrorAction SilentlyContinue silences the throw it was written
+        # to raise. The cleanup then reported success and left the directory behind every run.
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $deniedRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
+    Check "the denied directory is cleaned up rather than left behind" (
+        -not (Test-Path -LiteralPath $deniedRoot))
 }
 
 Write-Host "the inherited-override filter drops the torch trio in any casing"
