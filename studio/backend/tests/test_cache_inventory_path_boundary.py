@@ -153,11 +153,7 @@ def test_scan_root_lists_are_emptied_not_referenced():
 
 # `base_model` is a host path for one source and a repo id for the next; the sibling decides.
 def _adapter(identifier, base_model, source) -> dict:
-    return {
-        "models": [
-            {"id": identifier, "base_model": base_model, "base_model_source": source}
-        ]
-    }
+    return {"models": [{"id": identifier, "base_model": base_model, "base_model_source": source}]}
 
 
 _LOCAL_ADAPTER = _adapter("my-lora", "/home/op/models/Llama-3.1-8B", "local")
@@ -405,7 +401,13 @@ def test_a_rejected_scan_folder_does_not_disclose_where_it_resolved(monkeypatch)
             True,
         ),
         *[
-            (f"Models folder path is not a directory: {root}", root, ("not a directory",), None, False)
+            (
+                f"Models folder path is not a directory: {root}",
+                root,
+                ("not a directory",),
+                None,
+                False,
+            )
             for root in ("/tmp", "/cache", "C:\\cache")
         ],
         (
@@ -657,11 +659,7 @@ def test_every_compat_mirror_of_an_inventory_route_takes_the_caller_class():
     found = _route_arguments(models_routes)
     missing_routes = [name for name in _COMPAT_INVENTORY_ROUTES if name not in found]
     assert not missing_routes, f"these routes were renamed or removed: {missing_routes}"
-    without = [
-        name
-        for name in _COMPAT_INVENTORY_ROUTES
-        if "via_api_key" not in found[name]
-    ]
+    without = [name for name in _COMPAT_INVENTORY_ROUTES if "via_api_key" not in found[name]]
     assert not without, (
         "these compatibility routes answer inventory data without taking the caller class: "
         f"{without}"
@@ -756,7 +754,6 @@ def test_a_reference_table_that_fills_up_drops_the_oldest(monkeypatch):
 
 def _request_model(name: str):
     from models import inference, training
-
     return getattr(inference, name, None) or getattr(training, name)
 
 
@@ -817,7 +814,13 @@ def test_every_request_that_consumes_an_inventory_identity_resolves_the_handle(
 def test_a_cache_reference_can_delete_the_copy_it_names(monkeypatch, client, route):
     seen = {}
 
-    async def _delete(repo_id, variant, hf_token, cache_path, only_if_orphan = None):
+    async def _delete(
+        repo_id,
+        variant,
+        hf_token,
+        cache_path,
+        only_if_orphan = None,
+    ):
         seen.update(repo_id = repo_id, variant = variant, cache_path = cache_path)
         return {"status": "deleted", "repo_id": repo_id, "variant": variant}
 
@@ -1020,7 +1023,10 @@ _WIRING = {
         "resolve_inventory_handle(",
         "restore_inventory_handles(",
     ),
-    ("inference.load_diffusion_model", "exact"): ("except HTTPException", "raised_inventory_detail"),
+    ("inference.load_diffusion_model", "exact"): (
+        "except HTTPException",
+        "raised_inventory_detail",
+    ),
     ("video.load_video_model", "exact"): ("except HTTPException", "raised_inventory_detail"),
     ("inference.diffusion_load_progress", "exact"): (
         "authenticated_via_api_key",
@@ -1065,7 +1071,14 @@ _MODEL_PATH = f"{HOST_ROOT}/my models/Llama-3.2-1B"
 _DATASET_PATH = "/home/operator/datasets/customer-transcripts.jsonl"
 
 
-def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = (HOST_ROOT,)):
+def _assert_redacted(
+    row,
+    expect,
+    *,
+    inventory = False,
+    kept_text = (),
+    roots = (HOST_ROOT,),
+):
     redact = redact_inventory_host_paths if inventory else redact_host_paths
     redacted = redact(row, via_api_key = True)
     body = json.dumps(redacted)
@@ -1090,19 +1103,23 @@ def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = 
     [
         (
             {"loaded": True, "repo_id": _MODEL_PATH, "device": "cuda"},
-            {"repo_id": REF, "device": KEPT}, {},
+            {"repo_id": REF, "device": KEPT},
+            {},
         ),
         (
             {"run_id": "abc", "model_name": _MODEL_PATH, "status": "completed"},
-            {"model_name": REF, "status": KEPT}, {},
+            {"model_name": REF, "status": KEPT},
+            {},
         ),
         (
             {"repo_id": "unsloth/Llama-3.2-1B", "model_name": "unsloth/Llama-3.2-1B"},
-            {"repo_id": KEPT, "model_name": KEPT}, {},
+            {"repo_id": KEPT, "model_name": KEPT},
+            {},
         ),
         (
             {"id": "ref:whatever", "is_lora": True, "base_model": _MODEL_PATH},
-            {"base_model": REF, "is_lora": KEPT}, {},
+            {"base_model": REF, "is_lora": KEPT},
+            {},
         ),
         ({"base_model": "unsloth/Llama-3.2-1B"}, {"base_model": KEPT}, {}),
         (
@@ -1112,7 +1129,8 @@ def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = 
                 "local_datasets": [_DATASET_PATH],
                 "model_name": "unsloth/Llama-3.2-1B",
             },
-            {"dataset_name": REF, "model_name": KEPT}, {"roots": ("/home/operator",)},
+            {"dataset_name": REF, "model_name": KEPT},
+            {"roots": ("/home/operator",)},
         ),
         ({"id": "run-2", "dataset_name": "unsloth/Radiology-mini"}, {"dataset_name": KEPT}, {}),
         (
@@ -1120,7 +1138,8 @@ def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = 
                 "error_message": f"FileNotFoundError: no such file: {HOST_ROOT}/data/train.jsonl",
                 "status": "error",
             },
-            {"status": KEPT}, {"kept_text": ("FileNotFoundError",)},
+            {"status": KEPT},
+            {"kept_text": ("FileNotFoundError",)},
         ),
         (
             {
@@ -1129,12 +1148,20 @@ def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = 
                 "load_id": f"{HOST_ROOT}/models/Llama-3.2-1B",
                 "repo_id": "unsloth/Llama-3.2-1B",
             },
-            {"id": REF, "load_id": REF, "repo_id": KEPT}, {"inventory": True},
+            {"id": REF, "load_id": REF, "repo_id": KEPT},
+            {"inventory": True},
         ),
     ],
     ids = (
-        "loaded-status", "training-run", "hub-row", "lora-base", "hub-base",
-        "local-dataset-name", "hub-dataset-name", "failure-message", "local-row",
+        "loaded-status",
+        "training-run",
+        "hub-row",
+        "lora-base",
+        "hub-base",
+        "local-dataset-name",
+        "hub-dataset-name",
+        "failure-message",
+        "local-row",
     ),
 )
 def test_a_path_that_outlives_its_request_is_still_referenced(row, expect, kwargs):

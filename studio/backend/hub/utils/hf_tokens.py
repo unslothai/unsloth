@@ -154,7 +154,7 @@ def _denial_is_remembered(key: tuple[str, str, str]) -> bool:
 
 
 def _with_remembered_denial(key: tuple[str, str, str], verdict: Optional[bool]) -> Optional[bool]:
-    """"Could not ask" reads as the last answer if that was no; once any refusal is evicted, no
+    """ "Could not ask" reads as the last answer if that was no; once any refusal is evicted, no
     key may claim it was never refused."""
     if verdict is None and (_denial_is_remembered(key) or _denial_memory_lost_an_entry()):
         return False
