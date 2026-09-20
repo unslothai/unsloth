@@ -4,7 +4,7 @@
 // Which tool calls stay visible whatever the fold and collapse preferences say. One place for the
 // rule, so the tool group that shows the run and the Thinking header that counts it agree.
 
-import { hasCreatedFiles } from "./sandbox-files";
+import { hasCreatedFiles } from "./sandbox-files.ts";
 
 export interface ToolPartLike {
   readonly type: string;
@@ -13,13 +13,14 @@ export interface ToolPartLike {
   readonly result?: unknown;
 }
 
-/** Canvases, Python and anything that wrote a file: their output is the point, so it is never
- *  tucked away. */
+/** Canvases, Python, generated images and anything that wrote a file: their output lives only
+ *  in the card, so it is never tucked away. */
 export function holdsOwnOutput(part: ToolPartLike): boolean {
   return (
     part.type === "tool-call" &&
     (part.toolName === "render_html" ||
       part.toolName === "python" ||
+      part.toolName === "image_generation" ||
       hasCreatedFiles(part.toolName, part.result))
   );
 }
@@ -45,7 +46,9 @@ export function toolRunIsExempt(
 ): boolean {
   for (let i = start; i <= end && i < parts.length; i += 1) {
     const part = parts[i];
-    if (!part) continue;
+    if (!part) {
+      continue;
+    }
     if (holdsOwnOutput(part) || awaitsConfirmation(part, toolConfirmations)) {
       return true;
     }

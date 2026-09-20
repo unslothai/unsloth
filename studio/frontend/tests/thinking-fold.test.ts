@@ -17,6 +17,11 @@ import {
   leadReasoningEnd,
   reasoningRoundKey,
 } from "../src/components/assistant-ui/thinking-fold.ts";
+import {
+  awaitsConfirmation,
+  holdsOwnOutput,
+  toolRunIsExempt,
+} from "../src/components/assistant-ui/tool-fold-exemptions.ts";
 import { en } from "../src/i18n/locales/en.ts";
 import { SETTINGS_SEARCH_INDEX } from "../src/features/settings/settings-search.ts";
 import { readSrc, readSrcAsync } from "./helpers/kit.ts";
@@ -90,7 +95,7 @@ test("a run the thread keeps visible is not counted as held", () => {
     0,
   );
   // Runs are passed whole, as the tool group sees them.
-  const seen: Array<[number, number]> = [];
+  const seen: [number, number][] = [];
   countFoldedToolParts(twoRounds, (start, end) => {
     seen.push([start, end]);
     return false;
@@ -99,6 +104,47 @@ test("a run the thread keeps visible is not counted as held", () => {
     [1, 2],
     [5, 5],
   ]);
+});
+
+test("calls whose output lives only in their card stay visible", () => {
+  const call = (toolName: string, result?: unknown) => ({
+    type: "tool-call",
+    toolName,
+    toolCallId: `c-${toolName}`,
+    result,
+  });
+  // A generated image has no message part of its own: hide the card and the image is gone.
+  assert.equal(holdsOwnOutput(call("image_generation")), true);
+  assert.equal(holdsOwnOutput(call("render_html")), true);
+  assert.equal(holdsOwnOutput(call("python")), true);
+  assert.equal(
+    holdsOwnOutput(
+      call("terminal", {
+        text: "",
+        images: [],
+        sessionId: "s",
+        files: [{ name: "a.txt", size: 3 }],
+      }),
+    ),
+    true,
+  );
+  assert.equal(holdsOwnOutput(call("web_search")), false);
+  assert.equal(holdsOwnOutput(call("terminal", "plain output")), false);
+  assert.equal(holdsOwnOutput({ type: "reasoning" }), false);
+  // An approval prompt keeps its run visible; a resolved one does not.
+  assert.equal(
+    awaitsConfirmation(call("terminal"), { "c-terminal": {} }),
+    true,
+  );
+  assert.equal(awaitsConfirmation(call("terminal"), {}), false);
+  const run = [
+    call("web_search"),
+    call("image_generation"),
+    call("web_search"),
+  ];
+  assert.equal(toolRunIsExempt(run, 0, 2, {}), true);
+  assert.equal(toolRunIsExempt(run, 0, 0, {}), false);
+  assert.equal(toolRunIsExempt(run, 0, 0, { "c-web_search": {} }), true);
 });
 
 test("the tool group and the header share one exemption rule", () => {
