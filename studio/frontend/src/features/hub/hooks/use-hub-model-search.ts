@@ -774,6 +774,19 @@ export function useHubModelSearch(
             filterRange,
           ) as AsyncGenerator<unknown>;
         }
+        if (hasFilters && pinUnslothFirst && !unslothOnly) {
+          return mergedModelIterator(
+            "",
+            task,
+            accessToken,
+            undefined,
+            sortBy,
+            sortDirection,
+            signal,
+            filterRange,
+            filterPriority,
+          );
+        }
         return mergeTaskIterators(
           normalizeTaskFilter(task),
           (task, taskSignal) =>
