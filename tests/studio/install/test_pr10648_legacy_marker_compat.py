@@ -222,10 +222,8 @@ def _extract_legacy_tree(tag: str, destination: Path) -> "Path | None":
     destination.mkdir(parents = True, exist_ok = True)
     wanted = [f"studio/{name}" for name in _LEGACY_MODULES]
     wanted += ["studio/backend/__init__.py", "studio/backend/utils/__init__.py"]
-    # prebuilt_core imports this one at module scope too from the auth-safe redirect
-    # change onwards, and PYTHONPATH below is REPLACED with this tree, so leaving it
-    # out would make the module unimportable for every tag that has it. ls-tree, not
-    # a bare append: the tags predating it must still resolve rather than skip.
+    # prebuilt_core imports this too, and PYTHONPATH below is REPLACED with this tree.
+    # ls-tree, not a bare append: the tags predating it must resolve rather than skip.
     optional = git("ls-tree", "-r", "--name-only", tag, "studio/backend/utils/auth_safe.py")
     if optional.returncode == 0:
         wanted += [

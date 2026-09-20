@@ -63,18 +63,9 @@ def tls_certificate(tmp_path_factory):
 
 @pytest.fixture
 def stdlib_ssl():
-    """Run on the stdlib ``ssl``, whatever native TLS did to it at import.
-
-    ``prebuilt_core`` carries native_tls.py's inline gate, which calls
-    ``truststore.inject_into_ssl()`` at import -- on by default on macOS. truststore's
-    ``SSLContext`` reads the OS trust store, so it ignores the ``SSL_CERT_FILE`` this
-    suite points at its test CA, and it cannot wrap a server-side socket at all:
-    ``wrap_socket(server_side = True)`` dies in ``_verify_peercerts`` with
-    ``AttributeError: 'NoneType' object has no attribute 'get_unverified_chain'``.
-    Observed as 100 failures on macos-15, green on ubuntu-latest, because the gate
-    is platform-defaulted. This suite is about the redirect policy, not about which
-    root store verifies a real host, so take the injection off for its duration and
-    put it back after.
+    """Run on the stdlib ``ssl``: importing ``prebuilt_core`` injects truststore on
+    macOS and Windows, whose SSLContext ignores SSL_CERT_FILE and cannot wrap a
+    server-side socket (``get_unverified_chain`` on None in ``_verify_peercerts``).
     """
     injected = ssl.SSLContext.__module__.startswith("truststore")
     if injected:
@@ -114,9 +105,7 @@ def servers(stdlib_ssl, tls_certificate, monkeypatch):
                 if self.command != "HEAD":
                     self.wfile.write(body)
 
-            # routes/training.py preflights a gated repo with method = "HEAD"; without
-            # this the stdlib answers 501 and a HEAD case would test the error path.
-            do_HEAD = do_GET
+            do_HEAD = do_GET  # without it the stdlib 501s and HEAD tests the error path
 
             def log_message(self, *args):
                 pass
@@ -261,19 +250,13 @@ def test_installer_import_without_backend_dependencies(name, mode, tmp_path):
     [
         ("https://hub.example/a", "https://hub.example:99999/b"),
         ("https://hub.example/a", "https://hub.example:abc/b"),
-        # Both ends unreadable: the sentinel must not compare equal to itself, or a
-        # request that got here with a bad port would hand the token straight on.
+        # Both ends unreadable: the sentinel must not compare equal to itself.
         ("https://hub.example:abc/a", "https://hub.example:abc/b"),
     ],
 )
 def test_an_unparseable_redirect_port_strips_rather_than_raising(start, target):
-    """A Location whose port cannot be read must not escape as ValueError.
-
-    None of the four clients catches ValueError -- they catch URLError, HTTPError,
-    OSError and friends -- so a handler that raises turns a soft "no release info"
-    into an uncaught exception on an update check. Unreadable target, other origin,
-    strip.
-    """
+    """No client catches ValueError, so raising turns a soft "no release info" into an
+    uncaught exception on an update check. Unreadable target, other origin, strip."""
     request = urllib.request.Request(
         start, headers = {"Authorization": TOKEN, "Accept": "application/json"}
     )
@@ -292,8 +275,6 @@ def test_an_unparseable_redirect_port_stays_soft_for_every_client(client, server
     source = servers(payload = [release] if client == "freshness" else release)
     source.redirects["/start"] = "https://127.0.0.1:99999/final"
     # No ValueError arm: it must not be raised, so letting it escape fails the test.
-    # The port is unroutable, so the surviving outcomes are the clients' own soft
-    # failures -- None, or a URLError/HTTPError they already declare.
     try:
         fetch(client, source.url + "/start", monkeypatch)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as error:
@@ -302,13 +283,8 @@ def test_an_unparseable_redirect_port_stays_soft_for_every_client(client, server
 
 
 def test_a_downgrade_is_refused_part_way_down_a_chain(servers):
-    """The refusal has to hold on hop 3, not only on the hop the caller made.
-
-    Every other case here puts the redirect one hop from the request, so a policy that
-    only looked at the original request URL would pass them all. This one goes
-    https -> https -> http: before the shared rule, the token reached the plaintext
-    host at the end of a chain that began legitimately.
-    """
+    """https -> https -> http. Every other case here is one hop from the request, so a
+    policy comparing only the ORIGINAL request URL would pass them all and still leak."""
     source = servers(payload = {"tag_name": "v1"})
     plaintext = servers(tls = False, payload = {"tag_name": "v1"})
     source.redirects["/start"] = source.url + "/two"
@@ -325,14 +301,8 @@ def test_a_downgrade_is_refused_part_way_down_a_chain(servers):
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
 @pytest.mark.parametrize("cross_origin", [False, True])
 def test_the_method_and_a_signed_query_survive_the_hop(method, cross_origin, servers):
-    """HEAD and a signed query string are both production shapes, and neither is
-    otherwise covered.
-
-    ``routes/training.py`` preflights a gated repo with ``method = "HEAD"``, and both
-    GitHub and Hugging Face redirect a download to a CDN URL whose credentials live in
-    the query string. Stripping ``Authorization`` must not disturb either: a mangled
-    query turns a working signed URL into a 403 that looks like an auth failure.
-    """
+    """routes/training.py preflights with HEAD, and GitHub and Hugging Face redirect to
+    a CDN URL whose credentials are in the query: mangling it reads as an auth failure."""
     source = servers(payload = {"tag_name": "v1"})
     destination = servers(payload = {"tag_name": "v1"}) if cross_origin else source
     target = destination.url

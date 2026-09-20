@@ -26,9 +26,7 @@ import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Sequence
 
-# Same rule as prebuilt_core.py: put studio/ on sys.path ourselves so the absolute
-# branch does not depend on the caller having done it (today only
-# backend/core/inference/sd_cpp_backend.py does).
+# Same bootstrap as prebuilt_core.py: today only sd_cpp_backend.py prepares the path.
 if __package__:
     from .backend.utils.auth_safe import auth_safe_open
 else:
