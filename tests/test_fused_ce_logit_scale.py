@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The fused CE branch must apply the same logit transforms as the eager branch.
+"""Every loss branch must apply the logit transforms the reference implementation does.
 
-Cohere carries ``logit_scale`` (logits are multiplied by it) and Granite carries
-``logits_scaling`` (logits are divided by it). The eager branch reads both through
-``detect_logit_transforms`` and hands them to ``fast_cross_entropy_loss``; the fused
-branch, which is the default whenever labels are present, has to pass them to
-``unsloth_fused_ce_loss`` or training optimizes a different loss than the reference
-implementation computes. Pure torch, so it runs on CPU.
+Cohere multiplies by logit_scale, Granite divides by logits_scaling; dropping either
+optimizes a different loss. Pure torch, so it runs on CPU.
 """
 
 from __future__ import annotations
@@ -72,9 +68,8 @@ class _FakeModel:
 
 
 class _FakeCausalLM:
-    # mistral.py's mask synthesis reads self.training before either loss branch, and
-    # whether it gets that far depends on the attention backend, so the attribute has
-    # to exist or these tests pass or error depending on what ran before them.
+    # mistral.py reads self.training before either loss branch; without this the tests
+    # pass or error depending on which attention backend a previous test selected.
     training = False
 
     def __init__(self, config):
@@ -119,13 +114,8 @@ def _reference_loss(scale, softcapping = 0.0):
 
 
 def _config(cls, **kwargs):
-    """Deferred, because these tables are built at import.
-
-    transformers validates config fields strictly and which values a class accepts moves
-    between releases, so constructing eagerly turns one unconstructable class into a
-    collection error for the whole file. Building inside the test turns it into a skip
-    of the one case that cannot be expressed on the installed version.
-    """
+    """Deferred: transformers validates strictly and per release, so eager construction
+    turns one unconstructable class into a collection error for the whole file."""
 
     def build():
         try:
@@ -173,11 +163,8 @@ def test_fused_ce_applies_falcon_h1_multiplier_once(monkeypatch):
 
 
 def test_mistral_fused_ce_reads_the_transforms_the_same_way(monkeypatch):
-    """The sibling call site must not drop a scale either.
-
-    No shipped Mistral config carries one, so the scale is injected here: the point is
-    that the call site forwards whatever the config holds, not that Mistral needs it.
-    """
+    """No shipped Mistral config carries a scale, so one is injected: the point is that
+    the call site forwards what the config holds, not that Mistral needs it."""
     plain = _config(MistralConfig)()
     assert _fused_loss(plain, monkeypatch, MistralForCausalLM_fast_forward) == pytest.approx(
         _reference_loss(1.0),
@@ -207,8 +194,8 @@ def test_transforms_resolve_without_unsloth_zoo(config, expected, monkeypatch):
     config = config()
     """The fallback arm runs whenever unsloth_zoo predates detect_logit_transforms."""
     monkeypatch.setattr(llama_module, "detect_logit_transforms", None)
-    # Both arms answer these configs the same way, so without this the coverage would
-    # evaporate silently if the patch ever stopped reaching the code under test.
+    # Both arms agree on these configs, so without this the coverage could evaporate
+    # silently if the patch stopped reaching the code under test.
     assert llama_module.detect_logit_transforms is None
     assert resolve_logit_transforms(config) == pytest.approx(expected)
 
@@ -223,11 +210,8 @@ def test_transforms_resolve_without_unsloth_zoo(config, expected, monkeypatch):
     ],
 )
 def test_a_none_valued_field_resolves_to_zero(model_type, field, monkeypatch):
-    """None must read as "off" rather than reach the kernel and raise.
-
-    A plain namespace, not a real config: transformers 5 rejects None for these fields at
-    construction, but a checkpoint carrying one still deserializes into an older config.
-    """
+    """None must read as "off". A namespace, not a config: transformers 5 rejects None at
+    construction, but a checkpoint carrying one still loads into an older config."""
     monkeypatch.setattr(llama_module, "detect_logit_transforms", None)
     config = SimpleNamespace(model_type = model_type, **{field: None})
     assert resolve_logit_transforms(config) == (0, 0, 0)
@@ -247,14 +231,10 @@ def _inference_logits(model, forward):
     return forward(model, labels = None, return_dict = True, **extra).logits
 
 
-# Both loss branches and both call sites resolve the transforms from one place, so every
-# case below is expected to hold four times over.
 _SCALE_CASES = [
     (_config(CohereConfig, logit_scale = 0.0625), 0.0625, 0.0),
     # Granite exercises the divisor fold, which the fused branch never takes.
     (_config(GraniteConfig, logits_scaling = 4.0), 1.0 / 4.0, 0.0),
-    # Soft capping alone, and the scale/cap ordering the kernels claim to use: capping
-    # first would give a different number, since tanh does not commute with scaling.
     (_config(Gemma2Config, final_logit_softcapping = 4.0), 1.0, 4.0),
 ]
 _SCALE_IDS = ["cohere", "granite", "gemma2_softcap"]
@@ -285,11 +265,8 @@ def test_inference_logits_carry_the_same_transforms(config, scale, softcapping, 
 def test_materialized_branch_is_handed_the_same_transforms(
     config, scale, softcapping, module, forward, monkeypatch
 ):
-    """The eager branch needs Triton, so assert on what it hands the kernel, not the loss.
-
-    Each module has its own binding of fast_cross_entropy_loss via `from .llama import *`,
-    so the spy has to go on the module whose call site is under test.
-    """
+    """The eager branch needs Triton, so assert on what it hands the kernel. Each module
+    has its own binding via `from .llama import *`, so the spy goes on the call site's."""
     config = config()
     calls = []
 
@@ -313,10 +290,8 @@ def test_materialized_branch_is_handed_the_same_transforms(
 
 
 def test_transforms_are_applied_scale_first_then_soft_cap():
-    """tanh does not commute with scaling, so the order is the whole claim.
-
-    No shipped family both scales and caps, so nothing above separates the two orders.
-    """
+    """tanh does not commute with scaling, and no shipped family does both, so nothing
+    above separates the two orders."""
     logits = F.linear(_hidden_states(), _lm_head_weight())
     scale, softcapping = 0.0625, 4.0
     scale_first = softcapping * torch.tanh((logits * scale) / softcapping)

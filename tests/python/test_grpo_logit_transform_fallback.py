@@ -2,19 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """The GRPO fallback must answer the same as ``detect_logit_transforms``.
 
-``rl_replacements`` resolves the logit transforms twice: through the planner when
-unsloth_zoo provides it, and through an inline fallback when it does not. Only the
-planner arm is pinned by ``test_grpo_logit_transform_families``; the fallback arm is
-inlined into two 700-line GRPO bodies by ``inspect.getsource``, so it cannot be
-imported and has never been executed by a test.
-
-Three families are what the fallback gets wrong if it reads ``logits_scaling`` alone:
-Falcon-H1 carries its scale under a different name, HyperCLOVA X multiplies by the
-same name Granite divides by, and MiniCPM3's scales the hidden states rather than the
-logits. A wrong factor here does not raise. It shifts every log-prob, and with it the
-importance ratio the policy update is computed from.
-
-So: lift the ``else:`` block out of each function and run it.
+The fallback is inlined into two GRPO bodies by ``inspect.getsource``, so it cannot be
+imported: lift each ``else:`` arm out with ast and run it. A wrong factor here does not
+raise, it shifts every log-prob and with it the importance ratio.
 """
 
 from __future__ import annotations
@@ -69,8 +59,8 @@ def _run(block, config):
     namespace = {
         "model_config": config,
         "model": None,
-        # The fallback's soft-cap reader needs the model, which this harness does not
-        # build; the scales are what is under test.
+        # The soft-cap reader needs a model this harness does not build; the scales are
+        # what is under test.
         "_unsloth_get_final_logit_softcapping": lambda _model: 0,
     }
     exec(compile(block, "<fallback>", "exec"), namespace)

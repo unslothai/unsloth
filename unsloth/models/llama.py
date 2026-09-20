@@ -1343,12 +1343,8 @@ LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 def resolve_logit_transforms(config):
     """What the loss must do to the logits, as (softcapping, multiply, divide).
 
-    Every loss branch reads them from here, so the fused and the materialized branch
-    cannot drift apart: which field carries the scale is per family (cohere logit_scale
-    multiplies, granite logits_scaling divides, falcon_h1 lm_head_multiplier multiplies)
-    and detect_logit_transforms knows all of their spellings, including the nested and
-    MoE ones. The fallback covers the common families when unsloth_zoo predates it.
-    0 means the transform is off, so an absent field must read as 0 and not as 1.
+    Every loss branch reads it from here so they cannot drift apart. 0 means off, so an
+    absent field must read as 0 and not as 1.
     """
     if detect_logit_transforms is not None:
         transforms = detect_logit_transforms(config)
@@ -1357,16 +1353,14 @@ def resolve_logit_transforms(config):
             transforms["logit_scale_multiply"],
             transforms["logit_scale_divide"],
         )
-    # `or 0` throughout: these fields are all declared nullable, and a None reaching the
-    # kernel raises instead of reading as "off". Same reason `or ""` on model_type, which
-    # remote-code configs do set to None.
+    # `or 0` and `or ""` throughout: these fields are all nullable, and a None reaches
+    # the kernel and raises instead of reading as "off".
     logit_softcapping = getattr(config, "final_logit_softcapping", 0) or 0
     logit_scale_multiply = getattr(config, "logit_scale", 0) or 0
     logit_scale_divide = 0
     model_type = getattr(config, "model_type", "") or ""
     if model_type.startswith("granite"):
-        # granitemoe, -shared, -hybrid, -swa and granite4_vision_text carry it directly. The
-        # composites keep it on text_config, which only detect_logit_transforms descends into.
+        # The composites keep it on text_config, which only detect_logit_transforms reads.
         logit_scale_divide = getattr(config, "logits_scaling", 0) or 0
     elif model_type == "falcon_h1":
         logit_scale_multiply = getattr(config, "lm_head_multiplier", 0) or 0
@@ -1383,11 +1377,8 @@ def resolve_logit_scaling(config):
 
 
 def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
-    """Scale, then soft cap, in the order the kernels and the reference both use.
-
-    Only for branches that return the logits themselves; the loss paths hand the same
-    numbers to a kernel that applies them internally.
-    """
+    """Scale, then soft cap, the order the kernels and the reference both use. Only for
+    branches that return the logits; the loss paths let the kernel apply them."""
     if logit_scaling != 0:
         if logits.requires_grad:
             logits = logit_scaling * logits
@@ -1517,8 +1508,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 )
 
                 if self.config.model_type == "falcon_h1" and logit_scale_multiply:
-                    # Read through the resolver, not off the config, so a nullable
-                    # lm_head_multiplier reads as "off" instead of multiplying by None.
+                    # Via the resolver, so a nullable lm_head_multiplier reads as "off".
                     hidden_states = hidden_states * logit_scale_multiply
                     # Now folded into the hidden states, so the kernel must not scale again.
                     logit_scale_multiply = 0
