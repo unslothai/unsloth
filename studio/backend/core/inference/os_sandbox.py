@@ -221,7 +221,39 @@ class _ScanBudgetExceeded(Exception):
     """
 
 
-def _host_channel_hazard(root: str, max_entries: int, seconds: float) -> str | None:
+def directory_signature(path: str) -> tuple:
+    """Identity plus mtime for one directory, the unit a cached verdict is re-checked in."""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return (path, None)
+    return (path, info.st_dev, info.st_ino, info.st_mtime_ns)
+
+
+def directory_witness_matches(witness: "list[tuple]") -> bool:
+    """Whether every directory a finished scan visited is still as it left it.
+
+    A verdict about a tree is only reusable while the tree is unchanged, and
+    the root's own mtime says nothing about what happened three levels down.
+    Adding, removing or replacing an entry updates the mtime of the directory
+    holding it, so re-statting the directories the scan visited catches a
+    socket, a FIFO or a new link planted anywhere inside it, at one stat per
+    directory rather than one lstat per entry.
+
+    What it does not catch is a link created OUTSIDE the tree to a file inside
+    it, which changes that file's link count and no directory's mtime. That
+    needs host-side write access to the tree's own files, which is access
+    enough to change them directly, so it is not a step up for anyone.
+    """
+    return all(directory_signature(entry[0]) == entry for entry in witness)
+
+
+def _host_channel_hazard(
+    root: str,
+    max_entries: int,
+    seconds: float,
+    witness: "list[tuple] | None" = None,
+) -> str | None:
     """Return a host-access hazard under *root*, or None.
 
     Reject sockets, devices, FIFOs, external hard links and nested mounts.
@@ -240,6 +272,8 @@ def _host_channel_hazard(root: str, max_entries: int, seconds: float) -> str | N
     for base, dirs, names in os.walk(
         root, followlinks = False, onerror = lambda exc: unreadable.append(exc.filename or root)
     ):
+        if witness is not None:
+            witness.append(directory_signature(base))
         if unreadable:
             return f"{unreadable[0]} cannot be fully inspected"
         for name in (*dirs, *names):
@@ -374,24 +408,13 @@ def _looks_like_our_scratch_dir(path: str) -> bool:
     return stat.S_IMODE(info.st_mode) == TOOL_TEMP_MODE
 
 
-def _ipc_endpoint_is_dead(path: str, mode: int) -> bool:
-    """Whether nothing is using this socket or FIFO, proved rather than assumed.
+def _ipc_endpoint_is_dead(path: str) -> bool:
+    """Whether nothing is listening on this socket, proved rather than assumed.
 
     False for anything the probe cannot settle, including an unexpected errno
     and a name the probe cannot express, because the cost of being wrong is one
     refused launch in one direction and a broken running tool call in the other.
     """
-    if stat.S_ISFIFO(mode):
-        try:
-            # A writer that would block is a writer with no reader: ENXIO says
-            # the other end is gone. O_NONBLOCK so this cannot hang on a FIFO
-            # somebody IS reading.
-            handle = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
-        except OSError as exc:
-            return exc.errno == errno.ENXIO
-        os.close(handle)
-        return False
-
     verdict = _unix_socket_is_refused(path)
     if verdict is None:
         # sun_path is 108 bytes and a session workdir can be longer than that,
@@ -436,7 +459,7 @@ def _unix_socket_is_refused(path: str) -> bool | None:
 
 
 def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple[str, ...]:
-    """Remove sockets and FIFOs left behind in Studio's own scratch directory.
+    """Remove dead listening sockets left behind in Studio's own scratch directory.
 
     A socket under the workdir is a genuine hazard and stays fatal, with one
     exception this handles. ``<workdir>/unsloth-tmp`` is created by Studio, is
@@ -466,12 +489,21 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
     refuses this launch, which ends when the other call does rather than
     lasting the rest of the chat.
 
+    Sockets only, and this is the reason FIFOs are not swept with them. A bound
+    AF_UNIX path that nothing is listening on is garbage by construction: bind
+    refuses an existing path, so a server has to unlink it before it can be
+    used again. A FIFO is the opposite. It is meant to outlive the processes at
+    its ends, having no reader right now is its ordinary resting state, and the
+    directory being 0700 and ours is evidence rather than proof of who created
+    it. Deleting a user's idle named pipe just because a tool call started is
+    not a trade worth making, so a FIFO here is left alone and the walk refuses
+    the launch, exactly as before.
+
     Unlinking is not a way past the check: the entry is gone before the walk
     runs, so nothing in the sandbox can reach it, and a hard link to a host
     socket loses its link here too. Anything that will not unlink is left alone
-    and the scan still refuses it. Sockets and FIFOs only: a device node or a
-    nested mount in there is not something a crashed tool leaves, and it stays
-    fatal.
+    and the scan still refuses it. A device node or a nested mount in there is
+    not something a crashed tool leaves, and it stays fatal.
 
     ``deadline`` is a ``time.monotonic`` stamp to stop at. The scratch directory
     can be large or can sit on the same stalled mount as everything else under
@@ -499,14 +531,14 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
                 except OSError:
                     continue
                 mode = entry.st_mode
-                if not (stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode)):
+                if not stat.S_ISSOCK(mode):
                     continue
                 if entry.st_nlink > 1:
                     # Another name for the same endpoint exists somewhere, and
                     # the walk's hard-link rule is the one that should answer
                     # for it. Removing this name would hide the finding.
                     continue
-                if not _ipc_endpoint_is_dead(path, mode):
+                if not _ipc_endpoint_is_dead(path):
                     logger.info("Leaving a live IPC endpoint in the tool scratch directory: %s", path)
                     continue
                 try:
@@ -556,7 +588,7 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
     return ()
 
 
-def cache_share_hazard(path: str) -> str | None:
+def cache_share_hazard(path: str, witness: "list[tuple] | None" = None) -> str | None:
     """Return a reason not to share this writable cache component, or None.
 
     Apply the workdir's host-access checks: sockets and hard links can expose
@@ -568,7 +600,7 @@ def cache_share_hazard(path: str) -> str | None:
     bandwidth and nothing else.
     """
     try:
-        return _host_channel_hazard(path, CACHE_SCAN_ENTRIES, CACHE_SCAN_SECONDS)
+        return _host_channel_hazard(path, CACHE_SCAN_ENTRIES, CACHE_SCAN_SECONDS, witness)
     except _ScanBudgetExceeded as exc:
         return str(exc)
 
