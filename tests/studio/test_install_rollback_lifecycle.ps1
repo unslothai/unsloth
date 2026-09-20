@@ -291,24 +291,29 @@ try {
 
     Write-Host "picking the volume that holds a path, including a directory mount point"
     # The matching, with the volume list supplied rather than read from CIM, so the mount-point
-    # cases run on a host that has no mount points. Paths are POSIX here because GetFullPath is,
-    # but the question under test is which Name wins, which is the same either way.
+    # cases run on a host that has no mount points. Every path goes through GetFullPath first,
+    # exactly as the function does: on Windows a rooted path with no drive picks up the current
+    # drive, so fake volume names built from a bare separator match nothing and all four cases
+    # fail there. Deriving both sides from the same call keeps this true on either platform.
     $sep = [System.IO.Path]::DirectorySeparatorChar
-    $rootVol  = [pscustomobject]@{ Name = "$sep";                 DeviceID = "root";  FreeSpace = 1GB }
-    $mountVol = [pscustomobject]@{ Name = "${sep}studio$sep";     DeviceID = "mount"; FreeSpace = 2GB }
-    $otherVol = [pscustomobject]@{ Name = "${sep}studiofoo$sep";  DeviceID = "other"; FreeSpace = 3GB }
+    $mountPath = [System.IO.Path]::GetFullPath("${sep}studio")
+    $otherPath = [System.IO.Path]::GetFullPath("${sep}studiofoo")
+    $elsePath  = [System.IO.Path]::GetFullPath("${sep}elsewhere${sep}x")
+    $rootVol  = [pscustomobject]@{ Name = [System.IO.Path]::GetPathRoot($mountPath); DeviceID = "root";  FreeSpace = 1GB }
+    $mountVol = [pscustomobject]@{ Name = "$mountPath$sep";                          DeviceID = "mount"; FreeSpace = 2GB }
+    $otherVol = [pscustomobject]@{ Name = "$otherPath$sep";                          DeviceID = "other"; FreeSpace = 3GB }
     $vols = @($rootVol, $mountVol, $otherVol)
     Check "a path under a mount point picks the mounted volume" (
-        (Select-StudioVolumeForPath -Path "${sep}studio${sep}cache" -Volumes $vols).DeviceID -eq "mount")
+        (Select-StudioVolumeForPath -Path (Join-Path $mountPath "cache") -Volumes $vols).DeviceID -eq "mount")
     # The regression this section exists for: the mount point itself has no trailing separator.
     Check "the mount point itself picks the mounted volume, not the drive root" (
-        (Select-StudioVolumeForPath -Path "${sep}studio" -Volumes $vols).DeviceID -eq "mount")
+        (Select-StudioVolumeForPath -Path $mountPath -Volumes $vols).DeviceID -eq "mount")
     Check "a sibling whose name merely starts the same does not match it" (
-        (Select-StudioVolumeForPath -Path "${sep}studiofoo" -Volumes $vols).DeviceID -eq "other")
+        (Select-StudioVolumeForPath -Path $otherPath -Volumes $vols).DeviceID -eq "other")
     Check "a path under neither falls to the root volume" (
-        (Select-StudioVolumeForPath -Path "${sep}elsewhere${sep}x" -Volumes $vols).DeviceID -eq "root")
+        (Select-StudioVolumeForPath -Path $elsePath -Volumes $vols).DeviceID -eq "root")
     Check "nothing to choose from is not an error" (
-        $null -eq (Select-StudioVolumeForPath -Path "${sep}studio" -Volumes @()))
+        $null -eq (Select-StudioVolumeForPath -Path $mountPath -Volumes @()))
     Check "an empty path chooses nothing" (
         $null -eq (Select-StudioVolumeForPath -Path "" -Volumes $vols))
 
