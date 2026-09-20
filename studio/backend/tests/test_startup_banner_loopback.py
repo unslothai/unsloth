@@ -43,6 +43,34 @@ def test_wildcard_aliases_show_reachable_urls(capsys, host, loopback_url):
     assert "http://192.168.1.24:8891" in out
 
 
+def test_wsl_windows_browser_hint_shows_localhost_for_wildcard_bind(capsys):
+    print_studio_access_banner(
+        port = 8888,
+        bind_host = "0.0.0.0",
+        display_host = "172.25.35.232",
+        network_host = "0.0.0.0",
+        wsl_windows_browser_hint = True,
+    )
+    out = capsys.readouterr().out
+    assert "From the Windows host (WSL2):" in out
+    assert "http://localhost:8888" in out
+    assert "From another device on your network" not in out
+    assert "172.25.35.232" not in out
+
+
+def test_wsl_windows_browser_hint_yields_to_lan_share_line(capsys):
+    print_studio_access_banner(
+        port = 8888,
+        bind_host = "0.0.0.0",
+        display_host = "203.0.113.9",
+        network_host = "192.168.1.50",
+        wsl_windows_browser_hint = True,
+    )
+    out = capsys.readouterr().out
+    assert "From another device on your network" in out
+    assert "From the Windows host (WSL2):" not in out
+
+
 def test_banner_prints_on_strict_cp1252_stdout(monkeypatch):
     buf = io.BytesIO()
     stdout = io.TextIOWrapper(buf, encoding = "cp1252", errors = "strict")

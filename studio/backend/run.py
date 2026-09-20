@@ -593,6 +593,25 @@ def _network_share_host_for_bind(host: str) -> str:
     return host
 
 
+def _wsl_windows_browser_hint_needed(host: str) -> bool:
+    """True for WSL2 NAT with a wildcard bind and no LAN URL to advertise (#11187)."""
+    import platform
+    import sys
+
+    if sys.platform != "linux" or "microsoft" not in platform.release().casefold():
+        return False
+    if not is_wildcard_host(host):
+        return False
+    try:
+        from lan_access import _wsl_networking_mode
+    except ImportError:
+        return False
+    mode = _wsl_networking_mode()
+    if mode in (None, "mirrored"):
+        return False
+    return is_wildcard_host(_network_share_host_for_bind(host))
+
+
 def _loopback_bind_host_for(host: str) -> str:
     return wildcard_loopback_host(host) or "127.0.0.1"
 
@@ -698,6 +717,7 @@ def _emit_startup_output(
         network_host = _network_share_host_for_bind(host),
         include_stop_hint = False,
         lan_addresses = lan_addresses,
+        wsl_windows_browser_hint = _wsl_windows_browser_hint_needed(host),
     )
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
