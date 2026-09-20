@@ -215,110 +215,6 @@ def test_query_n_ctx_swallows_transport_errors(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# /slots -> /props -> stdout probe chain
-#
-# /props' default_generation_settings.n_ctx can report the TOTAL -c on builds
-# where /slots reports the real per-slot window, which is exactly the
-# launch-vs-per-slot confusion this probe exists to resolve. Prefer /slots,
-# fall back to /props, and read the startup log only when both are unavailable
-# (--no-slots, or a build that omits default_generation_settings).
-# ---------------------------------------------------------------------------
-
-
-def test_slots_is_preferred_over_props(monkeypatch):
-    """With --parallel 4, /props can report the total while /slots is per-slot."""
-    _stub_endpoints(
-        monkeypatch,
-        slots = _FakeResponse(200, [{"id": 0, "n_ctx": 8192}]),
-        props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 32768}}),
-    )
-    assert _make_backend()._probe_runtime_n_ctx() == 8192
-
-
-def test_no_slots_build_falls_back_to_props(monkeypatch):
-    """--no-slots disables the endpoint; /props still answers."""
-    _stub_endpoints(
-        monkeypatch,
-        slots = _FakeResponse(404, {}),
-        props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 67584}}),
-    )
-    assert _make_backend()._probe_runtime_n_ctx() == 67584
-
-
-def test_malformed_slots_payload_falls_back_to_props(monkeypatch):
-    for bad in ([], {}, [{"id": 0}], [{"id": 0, "n_ctx": 0}], ["nope"]):
-        _stub_endpoints(
-            monkeypatch,
-            slots = _FakeResponse(200, bad),
-            props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 4096}}),
-        )
-        assert _make_backend()._probe_runtime_n_ctx() == 4096, bad
-
-
-def test_both_endpoints_unavailable_falls_back_to_stdout(monkeypatch):
-    _stub_endpoints(
-        monkeypatch, slots_exc = RuntimeError("refused"), props_exc = RuntimeError("refused")
-    )
-    inst = _make_backend()
-    inst._stdout_lines = [
-        "llama_context: constructing llama_context",
-        "slot         init: id  0 | task -1 | new slot, n_ctx = 2048",
-    ]
-    assert inst._probe_runtime_n_ctx() == 2048
-
-
-def test_all_three_sources_unavailable_returns_none(monkeypatch):
-    _stub_endpoints(
-        monkeypatch, slots_exc = RuntimeError("refused"), props_exc = RuntimeError("refused")
-    )
-    inst = _make_backend()
-    inst._stdout_lines = ["nothing useful here"]
-    assert inst._probe_runtime_n_ctx() is None
-
-
-def test_video_modality_still_recorded_when_slots_wins(monkeypatch):
-    """/props is the only source of modality info, so it must be read even when
-    /slots supplies the context value -- otherwise video input silently breaks."""
-    _stub_endpoints(
-        monkeypatch,
-        slots = _FakeResponse(200, [{"id": 0, "n_ctx": 8192}]),
-        props = _FakeResponse(
-            200,
-            {
-                "default_generation_settings": {"n_ctx": 32768},
-                "modalities": {"vision": True, "video": True},
-            },
-        ),
-    )
-    inst = _make_backend()
-    assert inst._probe_runtime_n_ctx() == 8192
-    assert inst._has_video_input is True
-
-
-def test_slots_probe_authenticates_and_bypasses_proxies(monkeypatch):
-    """An ambient HTTP(S)_PROXY must not hijack the loopback probe, and an
-    --api-key child must not 401 it."""
-    captured = {}
-
-    def fake_get(
-        url,
-        headers = None,
-        timeout = None,
-        trust_env = None,
-    ):
-        if url.endswith("/slots"):
-            captured["headers"] = headers
-            captured["trust_env"] = trust_env
-            return _FakeResponse(200, [{"id": 0, "n_ctx": 8192}])
-        return _FakeResponse(404, {})
-
-    monkeypatch.setattr(llama_cpp_mod.httpx, "get", fake_get, raising = False)
-    assert _make_backend(api_key = "test-key")._probe_runtime_n_ctx() == 8192
-    assert captured["trust_env"] is False
-    assert captured["headers"] == {"Authorization": "Bearer test-key"}
-
-
-# ---------------------------------------------------------------------------
 # _reconcile_effective_ctx_with_server decisions
 # ---------------------------------------------------------------------------
 
@@ -811,82 +707,27 @@ def test_probe_missing_binary_reports_new_capabilities_false():
     assert info["supports_fit_ctx"] is False
 
 
+
+
 # ---------------------------------------------------------------------------
-# Probe input validation
+# /props input validation
 #
-# Both cells below are real defects found reviewing #5911, not hypotheticals:
-# a JSON bool is an int to isinstance(), and the /props parse sits outside the
-# only try that guards it.
+# A real defect found reviewing #5911: the parse sits outside the only try that
+# guards the request, so another process' malformed JSON reached the load path.
 # ---------------------------------------------------------------------------
 
 
-def test_a_boolean_slot_n_ctx_is_not_a_context_window(monkeypatch):
-    """``isinstance(True, int)`` is True, so an unguarded check turns a JSON
-    ``true`` into a 1-token window -- which then becomes the max_tokens ceiling
-    and rejects every real prompt. Fall through to /props instead."""
-    _stub_endpoints(
-        monkeypatch,
-        slots = _FakeResponse(200, [{"id": 0, "n_ctx": True}]),
-        props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 8192}}),
-    )
-    assert _make_backend()._probe_runtime_n_ctx() == 8192
-
-
-def test_a_malformed_props_payload_still_lets_slots_answer(monkeypatch):
-    """/props is queried first for its modality side effect, so a malformed
-    payload there must not abort the chain before /slots is ever read. A
-    non-dict default_generation_settings raises AttributeError off .get, and a
-    non-numeric n_ctx raises ValueError off int() -- both outside the try that
-    guards the request itself, so both propagate into the post-health load path
-    and fail the load."""
+def test_a_malformed_props_payload_reports_unknown_rather_than_raising(monkeypatch):
+    """``default_generation_settings`` is whatever llama-server sent. A non-dict
+    raises AttributeError off ``.get`` and a non-numeric n_ctx raises ValueError
+    off ``int()`` -- both outside the try that guards the request itself, so both
+    propagated out of the readback into the post-health load path and failed the
+    load. An unreadable /props means "unknown", not "abort"."""
     for bad in (
         {"default_generation_settings": [{"n_ctx": 8192}]},
         {"default_generation_settings": {"n_ctx": "not-a-number"}},
         {"default_generation_settings": {"n_ctx": [4096]}},
+        {"default_generation_settings": {"n_ctx": True}},
     ):
-        _stub_endpoints(
-            monkeypatch,
-            slots = _FakeResponse(200, [{"id": 0, "n_ctx": 2048}]),
-            props = _FakeResponse(200, bad),
-        )
-        assert _make_backend()._probe_runtime_n_ctx() == 2048, bad
-
-
-def test_a_malformed_props_payload_alone_returns_none(monkeypatch):
-    """Same payloads with no /slots to rescue the chain: the probe reports
-    "unknown", it does not raise into the caller."""
-    _stub_endpoints(
-        monkeypatch,
-        slots = _FakeResponse(404, {}),
-        props = _FakeResponse(200, {"default_generation_settings": [{"n_ctx": 8192}]}),
-    )
-    assert _make_backend()._probe_runtime_n_ctx() is None
-
-
-def test_stdout_fallback_reads_the_line_current_llama_cpp_actually_logs(monkeypatch):
-    """The stdout fallback exists for --no-slots builds, so it has to match the
-    spelling those builds emit.
-
-    Verbatim from llama-server b11057 (commit 59657a613) launched with
-    ``-c 32768 --parallel 4 --no-kv-unified``; that run logged the per-slot
-    window exactly once, in this line, and logged no "new slot, n_ctx =" at all.
-    """
-    _stub_endpoints(
-        monkeypatch, slots_exc = RuntimeError("refused"), props_exc = RuntimeError("refused")
-    )
-    inst = _make_backend()
-    inst._stdout_lines = [
-        "0.04.385.170 I srv    load_model: initializing, n_slots = 4, "
-        "n_ctx_slot = 8192, kv_unified = 'false'",
-    ]
-    assert inst._probe_runtime_n_ctx() == 8192
-
-
-def test_stdout_fallback_still_reads_the_older_per_slot_line(monkeypatch):
-    """Older builds logged it from slot_init instead; both must keep working."""
-    _stub_endpoints(
-        monkeypatch, slots_exc = RuntimeError("refused"), props_exc = RuntimeError("refused")
-    )
-    inst = _make_backend()
-    inst._stdout_lines = ["slot         init: id  0 | task -1 | new slot, n_ctx = 2048"]
-    assert inst._probe_runtime_n_ctx() == 2048
+        _stub_props(monkeypatch, body = bad)
+        assert _make_backend()._query_server_n_ctx() is None, bad
