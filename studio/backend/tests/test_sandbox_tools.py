@@ -2698,16 +2698,20 @@ class TestResolverRobustness:
             pytest.param(
                 "import socket as r\nimport requests as r\nr.get(input())", id = "socket_first"
             ),
-            pytest.param(
-                "def unused():\n    import socket as r\nimport requests as r\nr.get(input())",
-                id = "import_in_a_function",
-            ),
         ],
     )
     def test_a_name_imported_twice_resolves_to_nothing_either_way(self, code):
         # ast.walk order is unspecified, so a doubly bound alias must not be resolved at all
         # rather than resolved to whichever import the walk reached last.
         assert _check_code_safety(code) is None, code
+
+    def test_an_import_in_another_scope_does_not_collide(self):
+        # The module-level r is requests whatever an unused function imported, so the call resolves
+        # and its externally sourced target is refused.
+        _blocked(
+            "def unused():\n    import socket as r\nimport requests as r\nr.get(input())",
+            expect_phrase = "Blocked: request target is read from the environment or input",
+        )
 
     def test_a_subscript_write_does_not_discard_the_binding_blocked(self):
         # table[u] = 0 reads u, it does not rebind it.
@@ -2887,4 +2891,77 @@ class TestRequestMethodAndWrapperArguments:
             "import urllib.request\n"
             'req = urllib.request.Request("https://en.wikipedia.org/wiki/Python")\n'
             "urllib.request.urlopen(req)"
+        )
+
+
+class TestScopeAndReceiverAccuracy:
+    """Resolution has to follow Python's own name and attribute rules, or it refuses code that is
+    fine and reads a host off a binding the call never uses."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param('import sqlite3\nsqlite3.connect("state.db")', id = "literal_path"),
+            pytest.param(
+                'import sqlite3\npath = "state.db"\nsqlite3.connect(path)', id = "bound_path"
+            ),
+        ],
+    )
+    def test_a_non_socket_connect_is_not_a_host_ok(self, code):
+        _ok(code)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import socket\ns = socket.socket()\ns.connect(("169.254.169.254", 80))',
+                id = "bound_socket",
+            ),
+            pytest.param(
+                'import socket\nh = "169.254.169.254"\ns = socket.socket()\ns.connect((h, 80))',
+                id = "bound_socket_bound_host",
+            ),
+            pytest.param(
+                'import socket\nsocket.socket().connect(("169.254.169.254", 80))',
+                id = "inline_socket",
+            ),
+        ],
+    )
+    def test_a_socket_connect_is_still_policed_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_a_parameter_shadows_an_external_global_ok(self):
+        # Python resolves the argument to the parameter; the module-level url is never read.
+        _ok(
+            "import requests\nurl = input()\ndef fetch(url):\n    requests.get(url)\n"
+            'fetch("https://huggingface.co/")'
+        )
+
+    def test_an_unshadowed_external_global_is_still_blocked(self):
+        _blocked(
+            'import os, requests\nurl = os.environ["TARGET"]\nrequests.get(url)',
+            expect_phrase = "Blocked: request target is read from the environment or input",
+        )
+
+    def test_an_import_alias_does_not_escape_its_function_ok(self):
+        # The module-level open() is the builtin, whatever an unused function imported.
+        _ok("def unused():\n    from urllib.request import urlopen as open\nopen(input())")
+
+    def test_a_module_level_import_alias_still_resolves_blocked(self):
+        _blocked(
+            f'from urllib.request import urlopen\nurlopen("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_method_does_not_see_the_class_namespace_ok(self):
+        # A bare name in a method skips the class body and resolves to the module global.
+        _ok(
+            'import requests\nurl = "https://huggingface.co/api/models"\nclass C:\n'
+            f'    url = "{_METADATA_URL}"\n    def fetch(self):\n        requests.get(url)'
+        )
+
+    def test_a_class_body_still_sees_its_own_names_blocked(self):
+        _blocked(
+            f'import requests\nclass C:\n    url = "{_METADATA_URL}"\n    requests.get(url)',
+            expect_phrase = "Blocked: cloud-metadata host",
         )

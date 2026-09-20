@@ -16133,11 +16133,12 @@ def _check_signal_escape_patterns(code: str):
         head = parts[0]
         resolved = None
         if len(parts) == 1:
-            resolved = bindings.funcs.get(head)
+            resolved = bindings.alias_for(bindings.funcs, head, func_node)
         else:
             for table in (bindings.sessions, bindings.modules, bindings.funcs):
-                if head in table:
-                    resolved = ".".join([table[head]] + parts[1:])
+                target = bindings.alias_for(table, head, func_node)
+                if target is not None:
+                    resolved = ".".join([target] + parts[1:])
                     break
         return [written] if resolved is None or resolved == written else [resolved, written]
 
@@ -16160,18 +16161,19 @@ def _check_signal_escape_patterns(code: str):
         extra check; a wrong string binding, by contrast, would vouch for a host."""
 
         def __init__(self):
-            self.modules: dict[str, str] = {}
-            self.funcs: dict[str, str] = {}
+            self.modules: dict[tuple, str] = {}
+            self.funcs: dict[tuple, str] = {}
             self.strings: dict[tuple, ast.AST] = {}
             # Every value ever assigned to a name, single-assignment or not. Resolution only trusts
             # a name bound once, but "where did this value come from" has to see them all: a rebind
             # must not be able to hide that one of them reads the environment.
             self.all_values: dict[tuple, list] = {}
-            self.sessions: dict[str, str] = {}
+            self.sessions: dict[tuple, str] = {}
             self._counts: dict[tuple, int] = {}
             self._candidates: dict[tuple, ast.AST] = {}
             self._scope_of: dict[int, object] = {}
             self._scope_parent: dict[object, object] = {}
+            self._class_scopes: set = set()
 
         def _walk_scoped(self, root):
             """Every node with the scope it sits in: None for module level, else id(def node)."""
@@ -16185,19 +16187,38 @@ def _check_signal_escape_patterns(code: str):
                 ):
                     inner = id(node)
                     self._scope_parent[inner] = scope
+                    if isinstance(node, ast.ClassDef):
+                        self._class_scopes.add(inner)
                 for child in ast.iter_child_nodes(node):
                     stack.append((child, inner))
                 yield node, scope
 
         def _chain(self, node) -> list:
-            """Scopes that can answer for a name used at *node*, innermost first."""
+            """Scopes that can answer for a name used at *node*, innermost first.
+
+            A class body is skipped once it is no longer the innermost scope: a bare name in a
+            method resolves to the enclosing function or module, never to a class attribute."""
             scope = self._scope_of.get(id(node))
             chain = []
+            first = True
             while scope is not None:
-                chain.append(scope)
+                if first or scope not in self._class_scopes:
+                    chain.append(scope)
+                first = False
                 scope = self._scope_parent.get(scope)
             chain.append(None)
             return chain
+
+        def alias_for(self, table: dict, name: str, node):
+            """An import alias or session binding visible from *node*, or None. Stops at the first
+            scope that binds the name, since a nearer binding shadows the alias."""
+            for scope in self._chain(node):
+                key = (scope, name)
+                if key in table:
+                    return table[key]
+                if key in self._counts and self._counts[key] > 1:
+                    return None
+            return None
 
         def string_for(self, name: str, node):
             """The value bound to *name* where *node* uses it, or None when nothing is trusted."""
@@ -16211,10 +16232,13 @@ def _check_signal_escape_patterns(code: str):
             return None
 
         def values_for(self, name: str, node) -> list:
-            out = []
+            """Where the name's value can have come from, stopping at the scope that binds it: a
+            parameter shadowing a global is the parameter, and the global is never read."""
             for scope in self._chain(node):
-                out.extend(self.all_values.get((scope, name), ()))
-            return out
+                key = (scope, name)
+                if key in self._counts:
+                    return list(self.all_values.get(key, ()))
+            return []
 
         def _mark(self, name: "str | None", scope) -> None:
             if name:
@@ -16245,7 +16269,7 @@ def _check_signal_escape_patterns(code: str):
                         self._mark(alias.asname or alias.name.split(".")[0], scope)
                         # Without `as`, the bound name is already the canonical head of the FQ name.
                         if alias.asname and alias.name in _NET_MODULES:
-                            self.modules[alias.asname] = alias.name
+                            self.modules[(scope, alias.asname)] = alias.name
                 elif isinstance(node, ast.ImportFrom):
                     for alias in node.names:
                         local = alias.asname or alias.name
@@ -16254,9 +16278,9 @@ def _check_signal_escape_patterns(code: str):
                             continue
                         fq = f"{node.module}.{alias.name}"
                         if fq in _NET_MODULES:
-                            self.modules[local] = fq
+                            self.modules[(scope, local)] = fq
                         elif node.module in _NET_MODULES:
-                            self.funcs[local] = fq
+                            self.funcs[(scope, local)] = fq
             for node, scope in scoped:
                 if isinstance(node, (ast.MatchAs, ast.MatchStar)):
                     self._mark(node.name, scope)
@@ -16293,15 +16317,12 @@ def _check_signal_escape_patterns(code: str):
                     for name in node.names:
                         self._mark(name, scope)
                         self._mark(name, None)
-            # An alias table entry is only good while the name means one thing. `import requests as
-            # r` followed by `import socket as r`, or by an assignment to `r`, leaves the last one
-            # walked in the table, and ast.walk order is not specified, so drop both.
-            bound_anywhere: dict[str, int] = {}
-            for (_scope, name), count in self._counts.items():
-                bound_anywhere[name] = bound_anywhere.get(name, 0) + count
+            # An alias entry is only good while the name means one thing in its own scope. `import
+            # requests as r` followed by `import socket as r`, or by an assignment to `r`, leaves
+            # whichever the walk reached last, and ast.walk order is not specified, so drop both.
             for table in (self.modules, self.funcs):
-                for name in [n for n in table if bound_anywhere.get(n, 0) != 1]:
-                    del table[name]
+                for key in [k for k in table if self._counts.get(k, 0) != 1]:
+                    del table[key]
             # Sessions are resolved in their own pass: classifying them while the table fills would
             # let one binding's result change how the next one is read.
             factories = {}
@@ -16310,8 +16331,8 @@ def _check_signal_escape_patterns(code: str):
                     continue
                 if isinstance(value, ast.Call):
                     factory = _SESSION_FACTORY_FQ.get(_canonical_fq(value.func, self))
-                    if factory is not None and bound_anywhere.get(name, 0) == 1:
-                        factories[name] = factory
+                    if factory is not None:
+                        factories[(scope, name)] = factory
                         continue
                 # A call resolves to no text, but it is still where the name's value came from, so
                 # `u = input()` has to stay followable.
@@ -16395,6 +16416,19 @@ def _check_signal_escape_patterns(code: str):
             # A fully known string with no scheme is not a URL the host policy can act on.
             return None, True
         return None, False
+
+    _SOCKET_FACTORY_FQ = ("socket.socket", "socket.create_connection", "socket.socketpair")
+
+    def _is_a_socket_receiver(node) -> bool:
+        """Whether *node* evaluates to a socket: `socket.socket(...)` inline, or a name bound to
+        one. A tuple argument looks socket-shaped too, but the receiver is what settles it."""
+        if isinstance(node, ast.Call):
+            return _canonical_fq(node.func, _bindings) in _SOCKET_FACTORY_FQ
+        if isinstance(node, ast.Name):
+            bound = _bindings.string_for(node.id, node)
+            if isinstance(bound, ast.Call):
+                return _canonical_fq(bound.func, _bindings) in _SOCKET_FACTORY_FQ
+        return False
 
     def _externally_sourced(
         node,
@@ -16691,8 +16725,15 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
+            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch. Only a socket
+            # receiver: `sqlite3.connect("state.db")` and every other API that happens to spell a
+            # method `connect` opens no host, and reading its first argument as one refuses it.
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and node.args
+                and _is_a_socket_receiver(node.func.value)
+            ):
                 a0 = node.args[0]
                 host_lit = None
                 host_node = a0.elts[0] if isinstance(a0, ast.Tuple) and a0.elts else a0
