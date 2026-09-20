@@ -110,6 +110,10 @@ _project_workspace_paths_lock = threading.RLock()
 _schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
+# Written into every managed root Studio creates, naming the project it belongs to.
+# A reserved root that Studio never created carries no marker, however much it looks
+# like a workspace from the outside, so ownership is proven rather than inferred.
+_PROJECT_WORKSPACE_MARKER = ".unsloth-project-workspace"
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1
 _DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT = 100_000
 _DIRECTORY_IDENTITY_SCAN_TIME_LIMIT_SECONDS = 1.0
@@ -210,11 +214,36 @@ class ProjectWorkspaceConflictError(RuntimeError):
     pass
 
 
+def _project_workspace_marker_owner(root: Path) -> str | None:
+    """The project id recorded in *root*'s marker, or None if it carries none.
+
+    Unreadable counts as absent: this decides whether Studio may later delete the
+    directory, and a marker it cannot read is not proof that the directory is ours.
+    """
+    try:
+        owner = (root / _PROJECT_WORKSPACE_MARKER).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError):
+        return None
+    return owner or None
+
+
+def _write_project_workspace_marker(root: Path, owner_project_id: str | None) -> None:
+    """Claim *root* for a project. Best effort: a root that cannot be marked is still
+    usable now, it just will not be re-adopted later, which is the safe direction."""
+    if not owner_project_id:
+        return
+    try:
+        (root / _PROJECT_WORKSPACE_MARKER).write_text(owner_project_id, encoding = "utf-8")
+    except OSError:
+        logger.warning("Could not mark project workspace %s", root, exc_info = True)
+
+
 def _ensure_project_workspace(
     root_path: str,
     check_descendants: bool = False,
     exclude_project_id: str | None = None,
     check_overlap: bool = True,
+    owner_project_id: str | None = None,
 ) -> str:
     root = Path(root_path).expanduser()
     try:
@@ -235,6 +264,7 @@ def _ensure_project_workspace(
         root_resolved = ensure_dir(root).resolve()
         for subdir in _PROJECT_WORKSPACE_SUBDIRS:
             ensure_dir(root_resolved / subdir)
+        _write_project_workspace_marker(root_resolved, owner_project_id)
     except OSError as exc:
         raise ProjectWorkspaceError(str(root), exc) from exc
     return str(root_resolved)
@@ -3347,6 +3377,20 @@ def project_workspace_incarnation_exists(project_id: str) -> bool:
         conn.close()
 
 
+def _require_owner_for_external_workspace() -> None:
+    """Only the owner may point a project at a folder of their own.
+
+    ``tools._get_project_workdir_info`` returns None outside the owner context, so a
+    managed account's tool calls run in its account sandbox whatever the row says.
+    Storing the path anyway leaves the API and the UI naming a folder the files will
+    never reach. Refused here rather than in the route so every caller is covered.
+    """
+    if not is_owner_context():
+        raise PermissionError(
+            "Only the owner account can use an existing folder as a project workspace"
+        )
+
+
 def upsert_chat_project(
     project: dict,
     external_workspace_path: Optional[str] = None,
@@ -3354,6 +3398,7 @@ def upsert_chat_project(
 ) -> dict:
     with _project_workspace_paths_lock, _one_walk_per_directory():
         if external_workspace_path:
+            _require_owner_for_external_workspace()
             from core.inference.tools import adopt_orphaned_workspace_when_idle
 
             changed, result = adopt_orphaned_workspace_when_idle(
@@ -3427,6 +3472,7 @@ def _upsert_chat_project(
             check_descendants = creating,
             exclude_project_id = str(project["id"]) if existing else None,
             check_overlap = creating,
+            owner_project_id = str(project["id"]),
         )
     conn = get_connection()
     try:
@@ -3529,6 +3575,7 @@ def set_chat_project_workspace(
 ) -> Optional[dict]:
     with _project_workspace_paths_lock, _one_walk_per_directory():
         if external_workspace_path:
+            _require_owner_for_external_workspace()
             if get_chat_project(id) is None:
                 return None
             from core.inference.tools import adopt_orphaned_workspace_when_idle
@@ -3563,15 +3610,17 @@ def _unclaimed_managed_root(project: dict, root_path: str) -> str:
     whole thing: ``_delete_project_workspace`` decides by the pathname's suffix and
     cannot tell the difference.
 
-    Ours always holds the subdirectories every managed workspace is created with, so
-    switching back to a root this project already used still finds it.
+    Ours carries a marker naming this project, written when Studio created it, so
+    switching back to a root this project already used still finds it. The
+    subdirectories are NOT that proof: anything can hold a folder called ``sandbox``,
+    and a stranger's directory that happens to was adopted and then deleted whole.
     """
     if project.get("workspaceKind") != "external":
         return root_path
     root = Path(root_path).expanduser()
     if not root.exists():
         return root_path
-    if all((root / subdir).is_dir() for subdir in _PROJECT_WORKSPACE_SUBDIRS):
+    if _project_workspace_marker_owner(root) == str(project["id"]):
         return root_path
     return _available_project_root(_default_project_root(project), str(project["id"]))
 
@@ -3623,7 +3672,8 @@ def _set_chat_project_workspace(
     if external_workspace_path is None:
         root_path = _unclaimed_managed_root(project, root_path)
         root_path = _ensure_project_workspace(
-            root_path, check_descendants = True, exclude_project_id = id
+            root_path, check_descendants = True, exclude_project_id = id,
+            owner_project_id = id,
         )
         workspace_path = None
         workspace_identity = None
@@ -3703,6 +3753,7 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
         check_descendants = creating,
         exclude_project_id = id,
         check_overlap = creating,
+        owner_project_id = id,
     )
     # A delete running in another threadpool worker can drop the row at any point before the directory
     # is created, so confirm the project outlived the create rather than trusting a pre-create

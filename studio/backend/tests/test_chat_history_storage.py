@@ -2222,3 +2222,64 @@ def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, mo
     messages = studio_db.sync_chat_messages("thread-1", payload)
     assert len(messages) == 2
     assert [m["id"] for m in messages] == ["u1", "u2"]
+
+
+def test_a_managed_account_cannot_point_a_project_at_its_own_folder(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """The row must not name a folder the files will never reach.
+
+    `tools._get_project_workdir_info` returns None outside the owner context, so a
+    managed account's tool calls run in its account sandbox however the row reads.
+    Storing the selection anyway leaves the API and the UI promising a directory
+    nothing is ever written to.
+    """
+    from utils.account_context import AccountContext, bind_account, reset_account
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    chosen = workspace_projects_home / "managed-pick"
+    chosen.mkdir()
+
+    token = bind_account(AccountContext("acct-managed", "managed-user", "user"))
+    try:
+        with pytest.raises(PermissionError):
+            studio_db.upsert_chat_project(_project(), external_workspace_path = str(chosen))
+    finally:
+        reset_account(token)
+
+    # The owner is unaffected, which is the point of gating rather than removing.
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(chosen))
+    assert project["workspaceKind"] == "external"
+
+
+def test_a_stranger_at_the_reserved_root_is_not_adopted_as_the_managed_one(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """A project made with a chosen folder only RESERVES its managed pathname.
+
+    Anything can be sitting there by the time the user switches to managed storage,
+    and holding a `sandbox` subdirectory is not proof that Studio made it: deleting
+    the project with its files then takes the whole unrelated directory, because
+    `_delete_project_workspace` decides by the pathname's suffix.
+    """
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    chosen = workspace_projects_home / "picked"
+    chosen.mkdir()
+
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(chosen))
+    reserved = Path(project["rootPath"])
+    assert not reserved.exists(), "the managed root is reserved, not created"
+
+    # A stranger turns up at that pathname, dressed as a workspace.
+    (reserved / "sandbox").mkdir(parents = True)
+    precious = reserved / "ten-years-of-work.txt"
+    precious.write_text("not Studio's to delete", encoding = "utf-8")
+
+    studio_db.set_chat_project_workspace(project["id"], external_workspace_path = None)
+    switched = studio_db.get_chat_project(project["id"])
+    assert Path(switched["rootPath"]).resolve() != reserved.resolve(), (
+        "a directory Studio never created was adopted as the managed root"
+    )
+
+    studio_db.delete_chat_project(project["id"], delete_files = True)
+    assert precious.exists(), "deleting the project removed an unrelated directory"
