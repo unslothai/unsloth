@@ -42,7 +42,7 @@ env:
     **Windows**: Download `Unsloth-Desktop-Windows.exe`, or `Unsloth-Desktop-Windows-ARM64.exe` on a Windows on ARM machine.
     **Linux**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
-    > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+    > Linux in-app updates cover `.deb` and AppImage installs. A `.deb` installed before in-app updates shipped needs one manual update first.
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
     > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
     > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
@@ -1668,6 +1668,7 @@ jobs:
               ('-setup.exe.sig', f'{windows_name}.exe.sig'),
               ('-setup.exe', f'{windows_name}.exe'),
               ('.dmg', f'{base_name}-MacOS.dmg'),
+              ('.deb.sig', f'{base_name}-Ubuntu.deb.sig'),
               ('.deb', f'{base_name}-Ubuntu.deb'),
           )
           staged = []
@@ -1837,6 +1838,7 @@ jobs:
               f'{base_name}-Linux.AppImage',
               f'{base_name}-Linux.AppImage.sig',
               f'{base_name}-Ubuntu.deb',
+              f'{base_name}-Ubuntu.deb.sig',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
               f'{base_name}-Windows-ARM64.exe',
@@ -1956,6 +1958,7 @@ jobs:
 
           darwin = entry('.app.tar.gz.sig')
           linux = entry('.AppImage.sig')
+          debian = entry('.deb.sig')
           # Both Windows bundles end in .exe.sig, and exactly_one() refuses an ambiguous
           # match, so name them in full. -Windows.exe.sig does not match -Windows-ARM64.exe.sig
           # under endswith, which is what keeps the two entries distinct.
@@ -1973,6 +1976,7 @@ jobs:
                   'darwin-aarch64-app': darwin,
                   'linux-x86_64': linux,
                   'linux-x86_64-appimage': linux,
+                  'linux-x86_64-deb': debian,
                   'windows-x86_64': windows,
                   'windows-x86_64-nsis': windows,
                   # Tauri asks for {os}-{arch}; without these an ARM64 install either

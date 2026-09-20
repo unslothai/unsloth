@@ -183,6 +183,7 @@ import {
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
+  codeToolsOn,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -683,7 +684,7 @@ export function SharedComposer({
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(

@@ -159,6 +159,7 @@ def _stage_assets(tmp_path: Path) -> None:
     for name, payload in (
         ("Unsloth-Desktop-MacOS.dmg", b"disk image"),
         ("Unsloth-Desktop-Ubuntu.deb", b"package"),
+        ("Unsloth-Desktop-Ubuntu.deb.sig", signature),
         ("Unsloth-Desktop-ARM64.app.tar.gz", b"mac updater"),
         ("Unsloth-Desktop-ARM64.app.tar.gz.sig", signature),
         ("Unsloth-Desktop-Linux.AppImage", b"linux updater"),
@@ -176,9 +177,12 @@ def _run_create_release(
     tmp_path: Path,
     *,
     invalid_signature = False,
+    missing_debian_signature = False,
     **kwargs,
 ):
     _stage_assets(tmp_path)
+    if missing_debian_signature:
+        (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Ubuntu.deb.sig").unlink()
     if invalid_signature:
         (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Linux.AppImage.sig").write_text(
             "Tauri signer diagnostic, not a signature\n", encoding = "utf-8"
@@ -318,6 +322,33 @@ def test_publish_rejects_signer_diagnostics_as_updater_signatures(tmp_path):
     assert not [line for line in commands if line.startswith("gh release create")]
 
 
+def test_linux_release_stages_the_debian_signature(tmp_path):
+    bundles = tmp_path / "bundles"
+    bundles.mkdir()
+    files = []
+    for suffix in ("deb", "deb.sig", "AppImage", "AppImage.sig"):
+        path = bundles / f"Unsloth_0.1.50_amd64.{suffix}"
+        path.write_text(suffix, encoding = "utf-8")
+        files.append(str(path))
+    result, _ = _run_step(
+        _workflow(),
+        "build",
+        "Stage release assets",
+        tmp_path,
+        extra_env = {"ARTIFACT_PATHS": json.dumps(files), "MATRIX_ARTIFACT": "linux"},
+    )
+    assert result.returncode == 0, result.stderr
+    staged = tmp_path / "desktop-release-assets"
+    assert (staged / "Unsloth-Desktop-Ubuntu.deb.sig").read_text() == "deb.sig"
+    assert (staged / "Unsloth-Desktop-Linux.AppImage.sig").read_text() == "AppImage.sig"
+
+
+def test_a_missing_debian_signature_prevents_manifest_publication(tmp_path):
+    result, _ = _run_create_release(_workflow(), tmp_path, missing_debian_signature = True)
+    assert result.returncode != 0
+    assert "Expected exactly one .deb.sig updater asset" in result.stderr
+
+
 def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     workflow = _workflow()
     result, commands = _run_create_release(workflow, tmp_path)
@@ -334,6 +365,13 @@ def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     latest = tmp_path / "latest.json"
     assert latest.is_file()
     metadata = yaml.safe_load(latest.read_text(encoding = "utf-8"))
+    platforms = metadata["platforms"]
+    debian = platforms["linux-x86_64-deb"]
+    assert debian["url"].endswith("/Unsloth-Desktop-Ubuntu.deb")
+    signature = tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Ubuntu.deb.sig"
+    assert debian["signature"] == signature.read_text().strip()
+    assert platforms["linux-x86_64-appimage"]["url"].endswith(".AppImage")
+    assert platforms["linux-x86_64"] == platforms["linux-x86_64-appimage"]
     for platform in metadata["platforms"].values():
         decoded = base64.b64decode(platform["signature"], validate = True)
         assert decoded.startswith(b"untrusted comment:")

@@ -447,6 +447,26 @@ jobs:
             fi
             cat "$apt_log"
             BIN="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/usr/bin/' | head -1)"
+            # In-app .deb updates run the installed binary through a polkit action, so the
+            # package has to carry the action file. tauri ships it via bundle.linux.deb.files,
+            # a mapping nothing else validates: drop the entry and updates fall back to the
+            # release page silently, with no failing test anywhere.
+            POLICY=/usr/share/polkit-1/actions/ai.unsloth.studio.update.policy
+            if ! dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -qx "$POLICY"; then
+              echo "::error::the .deb no longer ships $POLICY, so in-app Debian updates cannot authenticate"
+              exit 1
+            fi
+            # auth_admin on all three implicit cases is what makes the update prompt, rather
+            # than either silently elevating or refusing outright.
+            if [ "$(stat -c '%U:%G %a' "$POLICY")" != "root:root 644" ]; then
+              echo "::error::$POLICY has the wrong owner or mode: $(stat -c '%U:%G %a' "$POLICY")"
+              exit 1
+            fi
+            grep -c 'auth_admin' "$POLICY" | grep -qx 3 || {
+              echo "::error::$POLICY no longer requires auth_admin for all three implicit cases"
+              exit 1
+            }
+            echo "polkit action shipped: $(stat -c '%U:%G %a %n' "$POLICY")"
           else
             sudo apt-get install -y -qq --no-install-recommends \
               libfuse2 libgles2 libgl1 libegl1 libgbm1 libwayland-client0 \
