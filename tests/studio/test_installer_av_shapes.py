@@ -927,8 +927,31 @@ function Get-WinEvent {
 """
 
 
-def _run_watch(tmp_path, action: str) -> tuple[str, list[str]]:
-    """Drive the real Invoke-WithCompilerWatch over $Action, with TEMP pointed at tmp_path."""
+# A new subdirectory's watch is not in place the instant the directory appears. On
+# Windows, ReadDirectoryChangesW is recursive in the kernel, so there is no gap at all.
+# Off Windows, .NET emulates IncludeSubdirectories by adding an inotify watch per
+# directory, and it adds the one for a directory it has just been told about after the
+# fact: a file written into a brand-new subdirectory microseconds later can land before
+# its watch does, and the creation is never raised.
+#
+# That is invisible to a test whose files are still on disk at the end, because the
+# listing half reports those anyway. It is the whole result for the one below, where the
+# live stream is the only detector left. Measured here, idle, 64 cores: 1 miss in 60
+# without this settle, 0 in 60 with it. A two-core hosted runner is where it actually
+# bit (Backend CI job 105986532571, `Repo tests (CPU, studio)`, COUNT:0).
+#
+# This is a property of watching a Linux filesystem, not of Watch-ForCompiler.ps1, which
+# runs on Windows in anger. csc.exe does not write its intermediates in the same
+# microsecond it creates their directory either, so waiting here is the faithful shape.
+_SETTLE_FOR_THE_SUBDIRECTORY_WATCH = "Start-Sleep -Milliseconds 500; "
+
+
+def _run_watch(tmp_path, action: str, setup: str = "") -> tuple[str, list[str]]:
+    """Drive the real Invoke-WithCompilerWatch over $Action, with TEMP pointed at tmp_path.
+
+    ``setup`` runs BEFORE the watch starts, for the one case that needs a directory to
+    already exist and already be watched when the action writes into it.
+    """
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
     evidence = tmp_path / "evidence"
@@ -941,6 +964,7 @@ def _run_watch(tmp_path, action: str) -> tuple[str, list[str]]:
                 f'$env:TMP = "{temp_root.as_posix()}"',
                 _FAKE_WINEVENT,
                 f'. "{_WATCHER}"',
+                setup,
                 f"$action = {{ {action} }}",
                 "$seen = Invoke-WithCompilerWatch -Name 'probe' -Action $action "
                 f'-EvidenceRoot "{evidence.as_posix()}"',
@@ -972,7 +996,10 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
     action = (
         '$dir = Join-Path $env:TEMP "abcd1234"; '
         "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
-        'Set-Content -LiteralPath (Join-Path $dir "abcd1234.cmdline") -Value "/noconfig"; '
+        # See _SETTLE_FOR_THE_SUBDIRECTORY_WATCH: off Windows the watch for $dir is added
+        # after $dir appears, and this is the one test with no listing half to fall back on.
+        + _SETTLE_FOR_THE_SUBDIRECTORY_WATCH
+        + 'Set-Content -LiteralPath (Join-Path $dir "abcd1234.cmdline") -Value "/noconfig"; '
         'Set-Content -LiteralPath (Join-Path $dir "abcd1234.dll") -Value "MZ"; '
         "Start-Sleep -Milliseconds 400; "
         # The whole point: gone before the action returns, exactly as CodeDom leaves it.
@@ -982,6 +1009,34 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
     assert libraries, f"a compile that cleaned up after itself was missed again: {stdout}"
     assert any(lib.endswith(".cmdline") for lib in libraries), libraries
     assert any(lib.endswith(".dll") for lib in libraries), libraries
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_deleted_intermediate_is_reported_with_no_subdirectory_race_to_lose(tmp_path) -> None:
+    """The same claim as above, with the platform's timing taken out of it.
+
+    The claim is that a file which no longer exists when the action returns is still
+    reported, and nothing about that claim needs the file's directory to be new. Here the
+    directory is created before the watch starts, so its watch is in place before anything
+    is written into it and the live stream is the only thing being measured. If the test
+    above ever goes quiet on a loaded runner, this one still fails when the watcher stops
+    reporting what it saw, which is the regression either of them is for.
+    """
+    setup = (
+        '$staged = Join-Path $env:TEMP "wxyz9876"; '
+        "New-Item -ItemType Directory -Force -Path $staged | Out-Null"
+    )
+    action = (
+        '$dir = Join-Path $env:TEMP "wxyz9876"; '
+        'Set-Content -LiteralPath (Join-Path $dir "wxyz9876.cmdline") -Value "/noconfig"; '
+        'Set-Content -LiteralPath (Join-Path $dir "wxyz9876.dll") -Value "MZ"; '
+        "Start-Sleep -Milliseconds 400; "
+        "Remove-Item -LiteralPath $dir -Recurse -Force"
+    )
+    stdout, libraries = _run_watch(tmp_path, action, setup = setup)
+    assert libraries, f"a compile that cleaned up after itself was missed again: {stdout}"
+    assert any(lib.endswith("wxyz9876.cmdline") for lib in libraries), libraries
+    assert any(lib.endswith("wxyz9876.dll") for lib in libraries), libraries
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
