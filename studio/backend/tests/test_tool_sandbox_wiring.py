@@ -699,3 +699,47 @@ def test_the_shipped_sitecustomize_is_found_before_the_session_packages(tmp_path
     assert entries.index(tools._SANDBOX_SITE_DIR) < entries.index(
         str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
     )
+
+
+def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
+    """A rejected Seatbelt profile is reported as `sandbox-exec:`, not `bwrap:`.
+
+    Matching only the bubblewrap prefix left macOS launching a backend already
+    known to be broken for the whole positive TTL, instead of re-probing and
+    letting `auto` fall back.
+    """
+    reset = []
+    monkeypatch.setattr(
+        "core.inference.sandbox_probe.reset_probe_cache", lambda: reset.append(True)
+    )
+    prepared = PreparedSandboxLaunch(
+        argv = ("/usr/bin/sandbox-exec",), workdir = "/work", env = {},
+        preexec_fn = None, backend = "macos-seatbelt",
+    )
+
+    tools._forget_sandbox_capability_if_the_backend_failed(
+        prepared, "Exit code 1:\nsandbox-exec: sandbox_apply: Operation not permitted\n"
+    )
+    assert reset == [True]
+
+    # A payload that failed inside a sandbox that was built correctly says
+    # nothing about the host, and must not cost a re-probe.
+    tools._forget_sandbox_capability_if_the_backend_failed(
+        prepared, "Exit code 1:\nTraceback (most recent call last):\n"
+    )
+    assert reset == [True]
+
+
+def test_an_unknown_execution_mode_is_refused_whatever_the_account(monkeypatch):
+    """A managed account's confinement is the outer launch contract and skips
+    the planner, which was the only place the mode was checked. So whether an
+    unknown mode was refused depended on which account ran the call."""
+    import pytest
+
+    with pytest.raises(os_sandbox.SandboxUnavailableError) as refusal:
+        tools._requested_execution_mode("nonsense", False)
+
+    assert "TOOL_EXECUTION_MODE_INVALID" in str(refusal.value)
+    assert tools._requested_execution_mode("auto", False) == "auto"
+    assert tools._requested_execution_mode("required", False) == "required"
+    assert tools._requested_execution_mode("auto", True) == "full"
