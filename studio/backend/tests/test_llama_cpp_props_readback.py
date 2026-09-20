@@ -865,3 +865,22 @@ def test_a_server_that_names_no_slot_count_falls_back_to_the_request(monkeypatch
     inst._effective_parallel_slots = 4
     inst._reconcile_effective_ctx_with_server(0, launch_cmd = ["llama-server"])
     assert inst.effective_context_total == 32768
+
+
+def test_a_slot_override_does_not_invent_a_fit_reduction(monkeypatch):
+    """Requested 2 slots, overridden to 4: the server divides 32768 four ways, so
+    8192 per slot is the division and not a fit. Expecting the requested count's
+    16384 share would report a reduction that never happened, in the amber notice
+    this PR puts on screen."""
+    _stub_endpoints(
+        monkeypatch,
+        props = _FakeResponse(
+            200, {"default_generation_settings": {"n_ctx": 8192}, "total_slots": 4}
+        ),
+    )
+    inst = _make_backend(effective_ctx = 8192)
+    inst._effective_parallel_slots = 2
+    inst._reconcile_effective_ctx_with_server(0, launch_cmd = ["llama-server", "-c", "32768"])
+    assert inst.launch_context_length == 32768
+    assert inst.pre_fit_context_length is None
+    assert inst.effective_context_total == 32768

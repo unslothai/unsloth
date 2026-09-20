@@ -32760,9 +32760,14 @@ class LlamaCppBackend:
         launch_n_ctx = self._launch_context_length
         if not launch_n_ctx or not actual_n_ctx:
             return
+        # The SERVER's slot count, for the same reason the aggregate uses it: a
+        # trailing --parallel last-wins while effective_parallel_slots keeps the
+        # managed request. Expecting a share the server never divided reports a
+        # --fit reduction that did not happen, and the inverse override hides a
+        # real one.
         _, _, expected_per_slot = _kv_cache_cell_layout(
             launch_n_ctx,
-            self.effective_parallel_slots,
+            self._server_total_slots or self.effective_parallel_slots,
             self._kv_cache_unified,
         )
         if expected_per_slot - actual_n_ctx >= _KV_CELL_BLOCK:
