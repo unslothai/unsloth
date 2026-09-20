@@ -40,7 +40,8 @@ env:
 
     **macOS**: Download `Unsloth-Desktop-MacOS.dmg` (Apple Silicon).
     **Windows**: Download `Unsloth-Desktop-Windows.exe`, or `Unsloth-Desktop-Windows-ARM64.exe` on a Windows on ARM machine.
-    **Linux**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
+    **Linux x64**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
+    **Linux ARM64**: Download `Unsloth-Desktop-Ubuntu-ARM64.deb` for Ubuntu 24.04 or newer. `Unsloth-Desktop-ARM64.app.tar.gz` is macOS-only.
 
     > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
@@ -500,6 +501,10 @@ jobs:
             args: ''
             label: Linux (x64)
             artifact: linux-x64
+          - platform: ubuntu-24.04-arm
+            args: ''
+            label: Linux (ARM64)
+            artifact: linux-arm64
           - platform: windows-latest
             args: ''
             label: Windows (x64)
@@ -566,7 +571,7 @@ jobs:
 
       # ── Linux dependencies ──
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.artifact, 'linux-')
         # Bounded and retried through the shared helper: an unbounded apt step does
         # not fail, it spends the job's whole budget and is reported as "cancelled"
         # with no reason and every later step skipped. update and install go as one
@@ -972,6 +977,18 @@ jobs:
           projectPath: studio
           tauriScript: npx --prefix . tauri
           args: -v --bundles deb,appimage
+
+      - name: Build Linux ARM64 package
+        id: build_linux_arm64
+        if: matrix.platform == 'ubuntu-24.04-arm'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        with:
+          projectPath: studio
+          tauriScript: npx --prefix . tauri
+          args: -v --bundles deb
 
       - name: Verify complete Linux AppImage
         if: matrix.platform == 'ubuntu-22.04'
@@ -1624,7 +1641,7 @@ jobs:
       - name: Stage release assets
         shell: bash
         env:
-          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
+          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_linux_arm64.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
           # Both Windows legs emit a -setup.exe, and publish-release merges every
           # leg's artifact into one directory, so the two must not stage the same
           # name. x64 keeps the historical name; anything else would break every
@@ -1660,6 +1677,11 @@ jobs:
               if os.environ.get('MATRIX_ARTIFACT') == 'windows-arm64'
               else f'{base_name}-Windows'
           )
+          deb_name = (
+              f'{base_name}-Ubuntu-ARM64.deb'
+              if os.environ.get('MATRIX_ARTIFACT') == 'linux-arm64'
+              else f'{base_name}-Ubuntu.deb'
+          )
           suffix_names = (
               ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
               ('.app.tar.gz', f'{base_name}-ARM64.app.tar.gz'),
@@ -1668,7 +1690,7 @@ jobs:
               ('-setup.exe.sig', f'{windows_name}.exe.sig'),
               ('-setup.exe', f'{windows_name}.exe'),
               ('.dmg', f'{base_name}-MacOS.dmg'),
-              ('.deb', f'{base_name}-Ubuntu.deb'),
+              ('.deb', deb_name),
           )
           staged = []
           for raw_path in artifact_paths:
@@ -1741,8 +1763,8 @@ jobs:
         run: |
           set -uo pipefail
 
-          # The three matrix legs, by their `name:` (Build <matrix.label>).
-          LEGS=('Build macOS (Apple Silicon)' 'Build Linux (x64)' 'Build Windows (x64)' 'Build Windows (ARM64)')
+          # publishing requires every named matrix leg to finish successfully.
+          LEGS=('Build macOS (Apple Silicon)' 'Build Linux (x64)' 'Build Linux (ARM64)' 'Build Windows (x64)' 'Build Windows (ARM64)')
           POLL=30
           DEADLINE=$(( $(date +%s) + 75 * 60 ))
           # Matrix job records appear with the run, so a leg still missing well
@@ -1837,6 +1859,7 @@ jobs:
               f'{base_name}-Linux.AppImage',
               f'{base_name}-Linux.AppImage.sig',
               f'{base_name}-Ubuntu.deb',
+              f'{base_name}-Ubuntu-ARM64.deb',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
               f'{base_name}-Windows-ARM64.exe',
@@ -2195,6 +2218,7 @@ jobs:
               'Unsloth-Desktop-MacOS.dmg',
               'Unsloth-Desktop-Linux.AppImage',
               'Unsloth-Desktop-Ubuntu.deb',
+              'Unsloth-Desktop-Ubuntu-ARM64.deb',
               'Unsloth-Desktop-Windows.exe',
               'Unsloth-Desktop-Windows-ARM64.exe',
           }

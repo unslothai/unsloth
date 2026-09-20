@@ -38,11 +38,15 @@ Download the native Unsloth Desktop app for your operating system:
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux / Ubuntu (deb)</b></td>
+    <td><b>Linux x64 / Ubuntu (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux (AppImage)</b></td>
+    <td><b>Linux ARM64 / Ubuntu 24.04+ (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux x64 (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
   </tr>
 </table>
@@ -123,11 +127,15 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux / Ubuntu (deb)</b></td>
+    <td><b>Linux x64 / Ubuntu (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux (AppImage)</b></td>
+    <td><b>Linux ARM64 / Ubuntu 24.04+ (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux x64 (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>

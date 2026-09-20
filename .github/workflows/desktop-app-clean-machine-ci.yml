@@ -346,16 +346,17 @@ jobs:
   linux:
     # See the macOS job: a fork PR's token cannot list drafts, so skip rather than fail.
     if: github.event.pull_request.head.repo.fork != true
-    name: desktop linux ${{ matrix.kind }}
-    runs-on: ubuntu-22.04
+    name: desktop linux ${{ matrix.kind }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {kind: deb, experimental: false}
-          - {kind: appimage, experimental: false}
+          - {kind: deb, arch: x64, os: ubuntu-22.04, asset: Ubuntu.deb, experimental: false}
+          - {kind: deb, arch: arm64, os: ubuntu-24.04-arm, asset: Ubuntu-ARM64.deb, experimental: false}
+          - {kind: appimage, arch: x64, os: ubuntu-22.04, asset: Linux.AppImage, experimental: false}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -367,12 +368,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          asset_suffix='.deb'
-          pat='*.deb'
-          if [ "${{ matrix.kind }}" = "appimage" ]; then
-            asset_suffix='.AppImage'
-            pat='*.AppImage'
-          fi
+          asset_suffix='${{ matrix.asset }}'
+          pat="*$asset_suffix"
           # See the macOS job. Loud on purpose: no matching bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
             releases_json="$RUNNER_TEMP/desktop-releases.json"
@@ -605,7 +602,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: desktop-linux-${{ matrix.kind }}
+          name: desktop-linux-${{ matrix.kind }}-${{ matrix.arch }}
           path: logs/
           retention-days: 7
           if-no-files-found: warn
