@@ -150,7 +150,9 @@ def prepare_host(dest: str) -> dict:
     results = {}
     for subcommand in ("prepare-system-drive", "prepare-null-device"):
         completed = subprocess.run(
-            [prep, subcommand], capture_output = True, timeout = 300,
+            [prep, subcommand],
+            capture_output = True,
+            timeout = 300,
         )
         results[subcommand] = {
             "exit": completed.returncode,
@@ -162,8 +164,11 @@ def prepare_host(dest: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description = __doc__)
     parser.add_argument("--dest", default = None, help = "where to install (default: Studio home)")
-    parser.add_argument("--prepare-host", action = "store_true",
-                        help = "run MXC's elevated host preparation (prompts for UAC)")
+    parser.add_argument(
+        "--prepare-host",
+        action = "store_true",
+        help = "run MXC's elevated host preparation (prompts for UAC)",
+    )
     parser.add_argument(
         "--verify-only", action = "store_true", help = "report an existing install without downloading"
     )
