@@ -102,6 +102,23 @@ test("a bin-only dtype variant is still counted", async () => {
   });
 });
 
+test("an indexless variant does not authorise dropping its bins", async () => {
+  // Sharded fp16 safetensors with no fp16 index are not loadable, so the fp16 bin family
+  // is still the only usable copy and must stay counted.
+  stubSiblings({
+    "config.json": 2,
+    "model.safetensors": 500,
+    "model.fp16-00001-of-00002.safetensors": 250,
+    "pytorch_model.bin": 500,
+    "pytorch_model.fp16-00001-of-00002.bin": 250,
+    "pytorch_model.fp16-00002-of-00002.bin": 250,
+  });
+  assert.deepEqual(await fetchModelSize("acme/indexless-variant"), {
+    totalBytes: 2 + 500 + 250 + 250 + 250,
+    weightsBytes: 500 + 250 + 250 + 250,
+  });
+});
+
 test("a variant index never outlives its shards", async () => {
   // whisper-large-v3's real shape: the fp32 variant ships as safetensors, so the bin shards
   // and their index both go.

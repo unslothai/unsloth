@@ -137,6 +137,30 @@ def test_a_bin_only_dtype_variant_survives():
     assert "pytorch_model.fp16.bin" not in _kept(both)
 
 
+def test_an_indexless_variant_does_not_authorise_dropping_its_bins():
+    # Same rule as the canonical gate, applied per variant: sharded fp16 safetensors with no
+    # fp16 index are not loadable, so the fp16 bin family is still the only usable copy.
+    indexless_variant = {
+        "config.json": 2,
+        "model.safetensors": 500,
+        "model.fp16-00001-of-00002.safetensors": 250,
+        "pytorch_model.bin": 500,
+        "pytorch_model.fp16-00001-of-00002.bin": 250,
+        "pytorch_model.fp16-00002-of-00002.bin": 250,
+    }
+    kept = _kept(indexless_variant)
+    assert "pytorch_model.bin" not in kept
+    assert "pytorch_model.fp16-00001-of-00002.bin" in kept
+
+    # With the variant index the fp16 safetensors family is complete, so the bins go.
+    for index_name in (
+        "model.safetensors.index.fp16.json",
+        "model.fp16.safetensors.index.json",
+    ):
+        indexed = dict(indexless_variant, **{index_name: 1})
+        assert not any(n.startswith("pytorch_model") for n in _kept(indexed)), index_name
+
+
 def test_a_variant_index_never_outlives_its_shards():
     # openai/whisper-large-v3's real shape. The fp32 variant ships as safetensors, so the bin
     # shards go -- and their index must go with them rather than dangle over absent files.

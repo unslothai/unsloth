@@ -101,16 +101,26 @@ def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
 
 
 def _variant_ships_as_safetensors(names: list[str], variant: str | None) -> bool:
-    """Whether `variant` is already covered by a safetensors checkpoint.
+    """Whether `variant` is already covered by a COMPLETE safetensors checkpoint.
 
     ``None`` is the canonical checkpoint, which the root-safetensors gate has established.
-    A named variant needs its OWN safetensors (``model.fp32-00001-of-00002.safetensors``);
-    the default ``model.safetensors`` cannot serve a ``variant=`` load.
+    A named variant needs its OWN safetensors (the default ``model.safetensors`` cannot
+    serve a ``variant=`` load), and its sharded form needs an index for the same reason the
+    canonical one does: numbered shards are not loadable without it.
     """
     if variant is None:
         return True
-    pattern = re.compile(rf"model\.{re.escape(variant)}(?:[-_][0-9]+-of-[0-9]+)?\.safetensors")
-    return any(pattern.fullmatch(name) for name in names)
+    if f"model.{variant}.safetensors" in names:
+        return True
+    # Both orderings are in use: whisper-large-v3 ships model.safetensors.index.fp32.json.
+    index = {
+        f"model.safetensors.index.{variant}.json",
+        f"model.{variant}.safetensors.index.json",
+    }
+    if not index & set(names):
+        return False
+    sharded = re.compile(rf"model\.{re.escape(variant)}[-_][0-9]+-of-[0-9]+\.safetensors")
+    return any(sharded.fullmatch(name) for name in names)
 
 
 def redundant_torch_bin_files(filenames: Iterable[str]) -> list[str]:

@@ -287,12 +287,19 @@ const BIN_WEIGHT_RE =
 const BIN_INDEX_RE =
   /^pytorch_model(?:\.([A-Za-z0-9_]+))?\.bin\.index(?:\.([A-Za-z0-9_]+))?\.json$/;
 
+// A sharded variant needs its index for the same reason the canonical checkpoint does.
 function variantShipsAsSafetensors(names: string[], variant: string | undefined): boolean {
   if (!variant) return true;
-  const re = new RegExp(
-    `^model\\.${variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[-_][0-9]+-of-[0-9]+)?\\.safetensors$`,
+  if (names.includes(`model.${variant}.safetensors`)) return true;
+  // Both orderings are in use: whisper-large-v3 ships model.safetensors.index.fp32.json.
+  const hasIndex =
+    names.includes(`model.safetensors.index.${variant}.json`) ||
+    names.includes(`model.${variant}.safetensors.index.json`);
+  if (!hasIndex) return false;
+  const sharded = new RegExp(
+    `^model\\.${variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[-_][0-9]+-of-[0-9]+\\.safetensors$`,
   );
-  return names.some((n) => re.test(n));
+  return names.some((n) => sharded.test(n));
 }
 
 function redundantTorchBinFiles(names: string[]): Set<string> {
