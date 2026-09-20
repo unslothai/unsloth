@@ -44,9 +44,8 @@ export function splitMcpImages(result: string): {
   return { text: result.slice(0, idx), images };
 }
 
-// An mcp__ result that claims images the parser rejects used to replay whole --
-// its megabytes of base64 as tool text. Fail closed instead. Mirrors
-// MCP_IMAGE_PARSE_ERROR_TEXT in mcp_images.py.
+// An unparseable envelope used to replay whole as tool text; fail closed instead.
+// Mirrors MCP_IMAGE_PARSE_ERROR_TEXT in mcp_images.py.
 export const MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]";
 
 export const MAX_TOOL_TEXT_CHARS = 256_000;
@@ -61,11 +60,9 @@ export function capToolText(text: string): string {
   return (cut >= room / 2 ? head.slice(0, cut) : head) + TOOL_TEXT_TRUNCATION_NOTICE;
 }
 
-/** Tool text bound for a model: a valid envelope's payload comes off (it uploads
- *  as images), a result that mentions the sentinel but does not parse fails
- *  closed when provenance is missing/empty or is an mcp__ tool -- the same rule
- *  as the backend's sanitize_tool_text -- and nothing runs past the hard cap.
- *  The whole result is discarded, head included, like the backend. */
+/** Tool text for the model: valid envelope payloads come off as images, a result
+ *  whose sentinel does not parse fails closed when provenance is missing/empty or
+ *  an mcp__ tool (the backend's rule), and nothing passes the hard cap. */
 export function toolTextForModel(
   content: string,
   toolName: string | undefined,

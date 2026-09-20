@@ -134,12 +134,10 @@ def mentions_images(result: str) -> bool:
     return ("\n" + SENTINEL) in result
 
 
-# An mcp result that claims images it cannot parse used to replay whole --
-# its megabytes of base64 as tool text. Fail closed instead.
+# An unparseable envelope used to replay whole as tool text; fail closed instead.
 MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]"
-# Applied at the model boundary, not inside the strip: tools._split_frontend_suffix
-# recovers an envelope by subtracting the strip from the original, so the strip
-# stays suffix-only. Mirrors MAX_TOOL_TEXT_CHARS in mcp-images.ts.
+# Boundary-only: tools._split_frontend_suffix subtracts the strip to recover the
+# envelope, so the strip stays suffix-only. Mirrors MAX_TOOL_TEXT_CHARS in mcp-images.ts.
 MAX_TOOL_TEXT_CHARS = 256_000
 _TOOL_TEXT_TRUNCATION_NOTICE = (
     "\n\n[Tool result text truncated for the model; the full output is shown in the tool card.]"
@@ -1231,10 +1229,8 @@ def _promote(
                     text = cap_tool_text(content)
             else:
                 text = cap_tool_text(text)
-            # The suffix always comes off below -- it is megabytes of base64 and the
-            # model must never read it as text. Provenance decides only whether it
-            # becomes IMAGE input: a named non-MCP tool that happens to end in a
-            # valid envelope is not one an MCP server served.
+            # The suffix always comes off; provenance decides whether it is IMAGE input,
+            # and a named non-MCP tool's envelope is not one an MCP server served.
             if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
                 # A non-MCP result sitting between the images and their turn makes
                 # "the tool call above" name web_search or read_file.
