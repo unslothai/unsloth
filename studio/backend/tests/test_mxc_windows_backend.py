@@ -7,13 +7,12 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from core.inference import os_sandbox, tools
+from core.inference import mxc_runtime, os_sandbox, tools
 
 
 def _plan(tmp_path, mode="auto"):
@@ -74,10 +73,44 @@ def test_windows_terminal_uses_its_own_capability_identity(monkeypatch, tmp_path
     monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: "runner")
     capability = sandbox_windows_mxc.capability_snapshot(
         execution_kind="terminal",
-        selected_executable=str(tmp_path / "powershell.exe"),
+        selected_executable=str(tmp_path / "cmd.exe"),
     )
     assert capability.available
-    assert observed == [(str(tmp_path / "powershell.exe"), "terminal")]
+    assert observed == [(str(tmp_path / "cmd.exe"), "terminal")]
+
+
+@pytest.mark.parametrize("name", ["powershell.exe", "pwsh.exe"])
+def test_terminal_probe_supports_powershell_argv(name, tmp_path):
+    from core.inference import mxc_probe
+
+    argv = mxc_probe._terminal_probe(
+        str(tmp_path / name),
+        tmp_path,
+        tmp_path / "other's secret.txt",
+        tmp_path / "outside write.txt",
+    )
+    assert argv[:5] == (
+        str(tmp_path / name),
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+    )
+    assert "UNSLOTH_MXC_TERMINAL_PROBE_OK" in argv[-1]
+    assert "other''s secret.txt" in argv[-1]
+
+
+def test_terminal_probe_supports_native_bash_argv(tmp_path):
+    from core.inference import mxc_probe
+
+    argv = mxc_probe._terminal_probe(
+        str(tmp_path / "bash.exe"),
+        tmp_path,
+        tmp_path / "secret.txt",
+        tmp_path / "outside.txt",
+    )
+    assert argv[:2] == (str(tmp_path / "bash.exe"), "-c")
+    assert "UNSLOTH_MXC_TERMINAL_PROBE_OK" in argv[-1]
 
 
 def test_unexpected_planner_failure_never_becomes_auto_host_fallback(monkeypatch, tmp_path):
@@ -102,11 +135,16 @@ def test_selected_python_spelling_is_preserved_in_trusted_policy(monkeypatch, tm
         execution_kind="python",
     )
     request = mxc_policy.build_launch_request(plan)
-    assert request["argv"][0] == selected
-    assert request["containerId"].startswith("unsloth-")
+    assert request["config"]["containerId"].startswith("unsloth-")
     assert request["policyHash"].startswith("sha256:")
-    assert request["readwritePaths"] == [str(tmp_path)]
-    assert request["allowDaclMutation"] is False
+    assert request["config"]["filesystem"]["readwritePaths"] == [str(tmp_path)]
+    assert request["config"]["fallback"] == {"allowDaclMutation": False}
+    assert request["config"]["ui"] == {
+        "disable": False,
+        "clipboard": "none",
+        "injection": False,
+    }
+    assert request["config"]["processContainer"]["ui"]["isolation"] == "container"
 
 
 def test_dacl_refusal_after_successful_probe_is_never_replayed(monkeypatch, tmp_path):
@@ -119,25 +157,13 @@ def test_dacl_refusal_after_successful_probe_is_never_replayed(monkeypatch, tmp_
         available=True,
         reason="probe passed before the host changed",
         environment="win32",
-        profile_id="unsloth-mxc-windows-basecontainer-v1",
+        profile_id=mxc_runtime.PROFILE_ID,
         environment_fingerprint=sandbox_windows_mxc._capability_fingerprint(
             identity, "python", plan.argv[0]
         ),
     )
     monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda **_kwargs: capability)
     monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: identity)
-    monkeypatch.setattr(
-        sandbox_windows_mxc.mxc_runtime,
-        "selected_runtime",
-        lambda: type(
-            "Runtime",
-            (),
-            {
-                "generation": "generation-test",
-                "runner_sha256": "0" * 64,
-            },
-        )(),
-    )
     monkeypatch.setattr(
         sandbox_windows_mxc.mxc_adapter,
         "spawn",
@@ -149,6 +175,7 @@ def test_dacl_refusal_after_successful_probe_is_never_replayed(monkeypatch, tmp_
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: host_calls.append(True))
 
     prepared = os_sandbox.prepare_tool_launch(plan)
+    assert "ui_isolation" in prepared.execution_record.retained_safeguards
     with pytest.raises(os_sandbox.SandboxBuildError, match="without host replay"):
         os_sandbox.spawn_prepared_launch(prepared)
     assert host_calls == []
@@ -196,7 +223,7 @@ def test_runner_replacement_after_probe_is_refused_before_spawn(monkeypatch, tmp
         available=True,
         reason="qualified",
         environment="win32",
-        profile_id="unsloth-mxc-windows-basecontainer-v1",
+        profile_id=mxc_runtime.PROFILE_ID,
         environment_fingerprint=fingerprint,
     )
     monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda **_kwargs: capability)
@@ -220,7 +247,7 @@ def test_runner_replacement_after_probe_is_refused_before_spawn(monkeypatch, tmp
 def test_terminal_policy_preserves_constructed_shell_argv(monkeypatch, tmp_path):
     from core.inference import mxc_policy
 
-    shell = tmp_path / "Program Files" / "PowerShell" / "pwsh.exe"
+    shell = tmp_path / "Program Files" / "PowerShell" / "7" / "pwsh.exe"
     shell.parent.mkdir(parents=True)
     shell.touch()
     monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
@@ -231,9 +258,8 @@ def test_terminal_policy_preserves_constructed_shell_argv(monkeypatch, tmp_path)
         execution_kind="terminal",
     )
     request = mxc_policy.build_launch_request(plan)
-    assert request["argv"] == list(plan.argv)
-    assert request["executionKind"] == "terminal"
-    assert request["allowDaclMutation"] is False
+    assert request["config"]["process"]["commandLine"] == subprocess.list2cmdline(list(plan.argv))
+    assert request["config"]["fallback"]["allowDaclMutation"] is False
 
 
 def test_wsl_bash_is_refused_before_execution(monkeypatch, tmp_path):
@@ -325,87 +351,69 @@ def test_unsupported_windows_path_namespaces_are_refused(monkeypatch, path):
         mxc_policy._safe_canonical_path(path, directory=True)
 
 
-@pytest.mark.parametrize(
-    ("event", "expected", "message"),
-    [
-        (
-            {
-                "v": 1,
-                "event": "STARTED",
-                "runId": "run",
-                "token": "wrong",
-                "backendTier": "base-container",
-            },
-            "STARTED",
-            "authentication",
-        ),
-        (
-            {
-                "v": 1,
-                "event": "STARTED",
-                "runId": "other",
-                "token": "secret",
-                "backendTier": "base-container",
-            },
-            "STARTED",
-            "authentication",
-        ),
-        (
-            {
-                "v": 1,
-                "event": "STARTED",
-                "runId": "run",
-                "token": "secret",
-                "backendTier": "base-container",
-            },
-            "FINISHED",
-            "out-of-order",
-        ),
-        (
-            {"v": 1, "event": "FINISHED", "runId": "run", "token": "secret"},
-            "STARTED",
-            "out-of-order",
-        ),
-    ],
-)
-def test_control_frames_fail_closed(event, expected, message):
+def test_direct_adapter_sends_the_exact_canonical_config(monkeypatch, tmp_path):
+    import base64
     import json
+    from types import SimpleNamespace
 
-    from core.inference import mxc_adapter
+    from core.inference import mxc_adapter, mxc_policy
 
-    with pytest.raises(mxc_adapter.MxcAdapterError, match=message):
-        mxc_adapter._validated_event(
-            json.dumps(event).encode(), {"runId": "run"}, "secret", expected
-        )
+    config = {
+        "version": mxc_runtime.MXC_SCHEMA_VERSION,
+        "fallback": {"allowDaclMutation": False},
+        "ui": {"disable": False},
+    }
+    request = {
+        "config": config,
+        "configBytes": mxc_policy.canonical_config_bytes(config),
+        "policyHash": mxc_policy.compute_policy_hash(config),
+    }
+    lease = SimpleNamespace(
+        info=SimpleNamespace(path=tmp_path / "wxc-exec.exe", sha256="digest"),
+        release=lambda: None,
+    )
+    monkeypatch.setattr(mxc_adapter.mxc_runtime, "acquire_runtime", lambda: lease)
+    monkeypatch.setattr(mxc_adapter.mxc_policy, "verify_launch_identities", lambda _request: None)
+    observed = {}
+
+    class Proc:
+        returncode = None
+
+    def popen(argv, **kwargs):
+        observed["argv"] = argv
+        observed["kwargs"] = kwargs
+        return Proc()
+
+    monkeypatch.setattr(mxc_adapter.subprocess, "Popen", popen)
+    proc = mxc_adapter.spawn(request)
+    sent = base64.b64decode(observed["argv"][2])
+    assert observed["argv"][:2] == [str(lease.info.path), "--config-base64"]
+    assert sent == request["configBytes"]
+    assert json.loads(sent)["fallback"]["allowDaclMutation"] is False
+    assert json.loads(sent)["ui"]["disable"] is False
+    assert proc._mxc_backend_tier == "unknown"
 
 
-def test_control_frame_bounds_and_malformed_input():
-    from core.inference import mxc_adapter
+def test_policy_mutation_is_refused_before_wxc_dispatch(monkeypatch):
+    from core.inference import mxc_adapter, mxc_policy
 
-    with pytest.raises(mxc_adapter.MxcAdapterError, match="exceeds"):
-        mxc_adapter._validated_event(
-            b"x" * (mxc_adapter.MAX_CONTROL + 1), {"runId": "run"}, "secret", "STARTED"
-        )
-    with pytest.raises(mxc_adapter.MxcAdapterError, match="malformed"):
-        mxc_adapter._validated_event(b"{", {"runId": "run"}, "secret", "STARTED")
-
-
-def test_named_pipe_endpoints_are_per_run_and_connect_cancel_is_prompt():
-    from core.inference import mxc_pipe
-
-    first = mxc_pipe.PrivatePipeServer(buffer_size=4096)
-    second = mxc_pipe.PrivatePipeServer(buffer_size=4096)
-    try:
-        assert first.name != second.name
-        cancel = threading.Event()
-        cancel.set()
-        started = time.monotonic()
-        with pytest.raises(mxc_pipe.PipeError, match="cancelled"):
-            first.accept(deadline=time.monotonic() + 30, cancel_event=cancel)
-        assert time.monotonic() - started < 1
-    finally:
-        first.close()
-        second.close()
+    config = {
+        "fallback": {"allowDaclMutation": False},
+        "ui": {"disable": False},
+    }
+    request = {
+        "config": config,
+        "configBytes": mxc_policy.canonical_config_bytes(config),
+        "policyHash": mxc_policy.compute_policy_hash(config),
+    }
+    request["config"]["fallback"]["allowDaclMutation"] = True
+    monkeypatch.setattr(
+        mxc_adapter.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("mutated configuration was executed"),
+    )
+    with pytest.raises(mxc_adapter.MxcAdapterError, match="changed before dispatch"):
+        mxc_adapter.spawn(request)
 
 
 def test_launch_failure_is_not_replayed(monkeypatch, tmp_path):
@@ -429,6 +437,86 @@ def test_launch_failure_is_not_replayed(monkeypatch, tmp_path):
     assert calls == ["mxc"]
 
 
+def test_auto_spawn_failure_before_dispatch_uses_software_safeguards(monkeypatch, tmp_path):
+    from core.inference import mxc_adapter, sandbox_windows_mxc
+
+    plan = _plan(tmp_path, "auto")
+    identity = "qualified-wxc"
+    capability = os_sandbox.SandboxCapability(
+        backend="mxc-processcontainer",
+        available=True,
+        reason="qualified",
+        environment="win32",
+        profile_id=mxc_runtime.PROFILE_ID,
+        environment_fingerprint=sandbox_windows_mxc._capability_fingerprint(
+            identity, "python", plan.argv[0]
+        ),
+    )
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda **_kwargs: capability)
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: identity)
+    monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_adapter,
+        "spawn",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            mxc_adapter.MxcAdapterError("CreateProcess failed", stage="spawn")
+        ),
+    )
+    calls = []
+
+    class Proc:
+        pass
+
+    monkeypatch.setattr(
+        sandbox_windows_mxc.subprocess,
+        "Popen",
+        lambda argv, **_kwargs: calls.append(tuple(argv)) or Proc(),
+    )
+    prepared = os_sandbox.prepare_tool_launch(plan)
+    os_sandbox.spawn_prepared_launch(prepared)
+    assert calls == [plan.argv]
+    assert prepared.backend == "software-safeguards"
+    assert prepared.execution_record.effective_mode == "software_safeguards"
+
+
+def test_auto_failure_after_possible_dispatch_never_replays_on_host(monkeypatch, tmp_path):
+    from core.inference import mxc_adapter, sandbox_windows_mxc
+
+    plan = _plan(tmp_path, "auto")
+    identity = "qualified-wxc"
+    capability = os_sandbox.SandboxCapability(
+        backend="mxc-processcontainer",
+        available=True,
+        reason="qualified",
+        environment="win32",
+        profile_id=mxc_runtime.PROFILE_ID,
+        environment_fingerprint=sandbox_windows_mxc._capability_fingerprint(
+            identity, "python", plan.argv[0]
+        ),
+    )
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda **_kwargs: capability)
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: identity)
+    monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_adapter,
+        "spawn",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            mxc_adapter.MxcAdapterError(
+                "WXC process state was lost",
+                stage="dispatch",
+                may_have_started=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        sandbox_windows_mxc.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("original command was replayed"),
+    )
+    prepared = os_sandbox.prepare_tool_launch(plan)
+    with pytest.raises(os_sandbox.SandboxBuildError, match="without host replay"):
+        os_sandbox.spawn_prepared_launch(prepared)
+    assert prepared.execution_record.execution_status == "unknown_start"
+
+
 def test_uncertain_completion_is_terminal_and_invalidates_probe(monkeypatch, tmp_path):
     from core.inference import sandbox_windows_mxc
 
@@ -442,8 +530,8 @@ def test_uncertain_completion_is_terminal_and_invalidates_probe(monkeypatch, tmp
     invalidated = []
     monkeypatch.setattr(
         sandbox_windows_mxc.mxc_adapter,
-        "completion_receipt",
-        lambda _proc: (_ for _ in ()).throw(RuntimeError("missing FINISHED")),
+        "completion_result",
+        lambda _proc: (_ for _ in ()).throw(RuntimeError("missing completion state")),
     )
     monkeypatch.setattr(
         sandbox_windows_mxc.mxc_probe, "invalidate_cache", lambda: invalidated.append(True)

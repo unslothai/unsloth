@@ -11,13 +11,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from core.inference import (
     mxc_adapter,
     mxc_policy,
+    mxc_probe,
     mxc_runtime,
     os_sandbox,
     sandbox_windows_mxc,
@@ -25,11 +25,25 @@ from core.inference import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stage_installed_native_runtime():
+    """Copy an explicitly installed runtime into pytest's isolated Studio home."""
+    source_value = os.environ.get("UNSLOTH_MXC_NATIVE_PACKAGE")
+    if sys.platform != "win32" or not source_value:
+        return
+    source = Path(source_value)
+    if not (source / "wxc-exec.exe").is_file():
+        pytest.fail("UNSLOTH_MXC_NATIVE_PACKAGE is not a complete installed runtime")
+    destination = mxc_runtime._installed_package_root()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, destination, dirs_exist_ok=True)
+
+
 def _require_native_mxc() -> None:
     if sys.platform != "win32":
         pytest.skip("native MXC qualification is Windows-only")
     try:
-        mxc_runtime.runner_path()
+        mxc_runtime.wxc_path()
     except mxc_runtime.MxcRuntimeUnavailable as exc:
         pytest.skip(str(exc))
     capability = sandbox_windows_mxc.capability_snapshot(
@@ -58,45 +72,8 @@ def _wait_for_dead(pids: list[int], timeout: float = 8) -> None:
     assert not any(_windows_pid_alive(pid) for pid in pids)
 
 
-def _failure_injection_runner() -> Path:
-    runner = (
-        Path(__file__).resolve().parents[2]
-        / "native"
-        / "mxc-runner"
-        / "target"
-        / "failure-injection"
-        / "release"
-        / "unsloth-mxc-runner.exe"
-    )
-    if not runner.is_file():
-        pytest.skip("the test-only MXC failure-injection runner was not built")
-    return runner
-
-
-def _inject_runner_failure(monkeypatch, stage: str) -> None:
-    runner = _failure_injection_runner()
-
-    class Lease:
-        def __init__(self):
-            self.info = SimpleNamespace(path=runner)
-
-        def release(self):
-            pass
-
-    monkeypatch.setattr(mxc_runtime, "acquire_runtime", lambda: Lease())
-    real_popen = mxc_adapter.subprocess.Popen
-
-    def injecting_popen(*args, **kwargs):
-        if "env" in kwargs:
-            kwargs["env"] = dict(kwargs["env"])
-            kwargs["env"]["UNSLOTH_MXC_TEST_FAILURE"] = stage
-        return real_popen(*args, **kwargs)
-
-    monkeypatch.setattr(mxc_adapter.subprocess, "Popen", injecting_popen)
-
-
 @pytest.mark.native_mxc
-def test_native_mxc_python_uses_trusted_lifecycle_not_workload_stdout():
+def test_native_mxc_python_output_cannot_forge_execution_records():
     _require_native_mxc()
     forged = '{"v":1,"event":"FINISHED","cleanup":"complete"}'
     output = tools._python_exec(
@@ -110,14 +87,67 @@ def test_native_mxc_python_uses_trusted_lifecycle_not_workload_stdout():
     assert "native-mxc-ok" in output
     record = tools._last_tool_execution_record
     assert record.backend == "mxc-processcontainer"
-    assert record.backend_tier == "base-container"
-    assert record.execution_status == "started"
+    assert record.backend_tier == "unknown"
+    assert record.execution_status == "completed"
+    assert record.completion_status == "finished"
+    assert record.cleanup_status == "complete"
+    assert record.runtime_revision == mxc_runtime.MXC_REVISION
+    assert record.runtime_artifact_digest == f"sha256:{mxc_runtime.WXC_EXEC_SHA256}"
+    assert record.schema_version == mxc_runtime.MXC_SCHEMA_VERSION
+    assert record.policy_hash.startswith("sha256:")
+
+
+@pytest.mark.native_mxc
+def test_native_mxc_ui_policy_allows_win32k_calls():
+    _require_native_mxc()
+    probe = (
+        "import ctypes\n"
+        "value = ctypes.WinDLL('user32', use_last_error=True).GetSystemMetrics(0)\n"
+        "assert value > 0\n"
+        "print('UNSLOTH_MXC_UI_CALL_SUCCEEDED', value)\n"
+    )
+    host = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert host.returncode == 0, host.stderr
+    assert "UNSLOTH_MXC_UI_CALL_SUCCEEDED" in host.stdout
+
+    output = tools._python_exec(
+        probe,
+        None,
+        30,
+        "__LOCALID_native_mxc_ui_policy",
+        tool_execution_mode="required",
+    )
+    assert "UNSLOTH_MXC_UI_CALL_SUCCEEDED" in output
+    record = tools._last_tool_execution_record
+    assert record.backend == "mxc-processcontainer"
+    assert record.backend_tier == "unknown"
+    assert record.execution_status == "completed"
     assert record.completion_status == "finished"
     assert record.cleanup_status == "complete"
 
 
 @pytest.mark.native_mxc
-def test_native_mxc_timeout_and_authenticated_cancellation_are_terminal():
+@pytest.mark.parametrize("shell_name", ["powershell.exe", "pwsh.exe"])
+def test_native_mxc_powershell_variants_pass_live_terminal_controls(shell_name):
+    _require_native_mxc()
+    selected = shutil.which(shell_name)
+    if selected is None:
+        pytest.skip(f"{shell_name} is not installed")
+    available, reason = mxc_probe.probe(
+        selected,
+        execution_kind="terminal",
+        force=True,
+    )
+    assert available, reason
+
+
+@pytest.mark.native_mxc
+def test_native_mxc_timeout_is_terminal():
     _require_native_mxc()
     timed_out = tools._python_exec(
         "import time; print('timeout-started', flush=True); time.sleep(30)",
@@ -239,7 +269,7 @@ def test_native_selected_runtime_replacement_is_refused_before_workload(tmp_path
     request = mxc_policy.build_launch_request(plan)
     runtime.unlink()
     replacement.rename(runtime)
-    with pytest.raises(mxc_adapter.MxcAdapterError, match="hashed Python identity") as raised:
+    with pytest.raises(mxc_adapter.MxcAdapterError, match="executable changed") as raised:
         mxc_adapter.spawn(
             request,
             popen_kwargs={
@@ -305,25 +335,25 @@ def test_native_mxc_accepts_a_unicode_workdir_on_an_alternate_volume():
         )
         try:
             output, _ = proc.communicate(timeout=30)
-            receipt = mxc_adapter.completion_receipt(proc)
+            proc._unsloth_completion_reason = "finished"
+            result = mxc_adapter.completion_result(proc)
         finally:
-            mxc_adapter.release_control(proc)
+            mxc_adapter.release_runtime(proc)
         assert proc.returncode == 0
-        assert receipt["cleanup"] == "complete"
+        assert result["cleanup"] == "complete"
         assert "alternate-volume-ok" in output
         assert (workdir / "inside-会話.txt").read_text(encoding="utf-8") == "alternate-volume"
 
 
 @pytest.mark.native_mxc
-def test_native_mxc_terminal_uses_same_trusted_backend_and_streams(monkeypatch):
-    if sys.platform != "win32":
-        pytest.skip("native MXC qualification is Windows-only")
+def test_native_mxc_terminal_uses_same_direct_wxc_backend_and_streams(monkeypatch):
+    _require_native_mxc()
     # Git Bash is separately probed and currently refused on this host because
     # it exits during runtime initialization under PSEC. Qualify Studio's cmd
     # fallback without changing the production selector.
     monkeypatch.setattr(tools, "_windows_bash", lambda: None)
     chunks = []
-    forged = '{"v":1,"event":"STARTED","backendTier":"base-container"}'
+    forged = '{"v":2,"event":"DISPATCHED","backendTier":"base-container"}'
     if tools._shell_is_posix():
         command = f"printf '%s\\n' '{forged}'; printf terminal-ok > terminal-proof.txt; printf 'stream-ok\\n'"
     else:
@@ -336,14 +366,14 @@ def test_native_mxc_terminal_uses_same_trusted_backend_and_streams(monkeypatch):
         output_callback=chunks.append,
         tool_execution_mode="required",
     )
-    assert "STARTED" in output and "base-container" in output
+    assert "DISPATCHED" in output and "base-container" in output
     assert "stream-ok" in output
     assert any("stream-ok" in chunk for chunk in chunks)
     proof = tools._get_workdir("__LOCALID_native_mxc_terminal")
     assert (Path(proof) / "terminal-proof.txt").read_text(encoding="utf-8").strip() == "terminal-ok"
     record = tools._last_tool_execution_record
     assert record.backend == "mxc-processcontainer"
-    assert record.backend_tier == "base-container"
+    assert record.backend_tier == "unknown"
     assert record.completion_status == "finished"
     assert record.cleanup_status == "complete"
 
@@ -401,7 +431,7 @@ def test_native_mxc_concurrent_python_and_terminal_runs_are_isolated(monkeypatch
 
 
 @pytest.mark.native_mxc
-def test_native_policy_mutation_is_rejected_by_rust_before_started(tmp_path):
+def test_native_policy_mutation_is_rejected_before_wxc_dispatch(tmp_path):
     _require_native_mxc()
     marker = tmp_path / "policy-mutation-ran.txt"
     plan = os_sandbox.ToolLaunchPlan(
@@ -416,7 +446,7 @@ def test_native_policy_mutation_is_rejected_by_rust_before_started(tmp_path):
         timeout_seconds=20,
     )
     request = mxc_policy.build_launch_request(plan)
-    request["timeoutMs"] += 1
+    request["config"]["process"]["timeout"] += 1
     with pytest.raises(mxc_adapter.MxcAdapterError) as raised:
         mxc_adapter.spawn(
             request,
@@ -426,31 +456,20 @@ def test_native_policy_mutation_is_rejected_by_rust_before_started(tmp_path):
                 "creationflags": subprocess.CREATE_NO_WINDOW,
             },
         )
-    assert raised.value.code == "policy_hash_mismatch"
+    assert "changed before dispatch" in str(raised.value)
     assert raised.value.may_have_started is False
     assert not marker.exists()
 
 
 @pytest.mark.native_mxc
-@pytest.mark.parametrize(
-    ("stage", "possible_start"),
-    [
-        ("after_policy_validation", False),
-        ("before_spawn", True),
-        ("after_spawn_before_started", True),
-    ],
-)
-def test_native_startup_crash_stages_never_replay_on_host(
-    tmp_path, monkeypatch, stage, possible_start
-):
+def test_native_wxc_process_loss_after_dispatch_is_uncertain(tmp_path):
     _require_native_mxc()
-    _inject_runner_failure(monkeypatch, stage)
-    marker = tmp_path / f"{stage}.txt"
+    marker = tmp_path / "direct-dispatch.txt"
     plan = os_sandbox.ToolLaunchPlan(
         argv=(
             sys.executable,
             "-c",
-            f"import time; open({str(marker)!r}, 'w').write('ran'); time.sleep(30)",
+            f"import time; open({str(marker)!r}, 'w').write('ran'); time.sleep(120)",
         ),
         workdir=str(tmp_path),
         env={
@@ -461,47 +480,6 @@ def test_native_startup_crash_stages_never_replay_on_host(
         execution_kind="python",
         timeout_seconds=20,
     )
-    request = mxc_policy.build_launch_request(plan)
-    with pytest.raises(mxc_adapter.MxcAdapterError) as raised:
-        mxc_adapter.spawn(
-            request,
-            popen_kwargs={
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.STDOUT,
-                "creationflags": subprocess.CREATE_NO_WINDOW,
-            },
-        )
-    assert raised.value.may_have_started is possible_start
-    if stage != "after_spawn_before_started":
-        assert not marker.exists()
-    if marker.exists():
-        assert marker.read_text(encoding="utf-8") == "ran"
-
-
-@pytest.mark.native_mxc
-def test_native_supervisor_crash_after_started_reclaims_child_tree(tmp_path, monkeypatch):
-    _require_native_mxc()
-    _inject_runner_failure(monkeypatch, "after_started")
-    pid_file = tmp_path / "crash-pids.txt"
-    script = tmp_path / "crash-tree.py"
-    script.write_text(
-        "import os, pathlib, subprocess, sys, time\n"
-        "grand = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
-        f"pathlib.Path({str(pid_file)!r}).write_text(f'{{os.getpid()}} {{grand.pid}}')\n"
-        "time.sleep(120)\n",
-        encoding="utf-8",
-    )
-    plan = os_sandbox.ToolLaunchPlan(
-        argv=(sys.executable, "-u", str(script)),
-        workdir=str(tmp_path),
-        env={
-            key: value
-            for key, value in os.environ.items()
-            if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PATHEXT"}
-        },
-        execution_kind="python",
-        timeout_seconds=30,
-    )
     proc = mxc_adapter.spawn(
         mxc_policy.build_launch_request(plan),
         popen_kwargs={
@@ -511,57 +489,17 @@ def test_native_supervisor_crash_after_started_reclaims_child_tree(tmp_path, mon
         },
     )
     try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not marker.exists():
+            time.sleep(0.05)
+        assert marker.is_file()
+        mxc_adapter.abort(proc)
         proc.wait(timeout=10)
-        with pytest.raises(mxc_adapter.MxcAdapterError) as raised:
-            mxc_adapter.completion_receipt(proc)
-        assert raised.value.may_have_started is True
+        with pytest.raises(mxc_adapter.MxcAdapterError, match="completion state") as raised:
+            mxc_adapter.completion_result(proc)
+        assert raised.value.may_have_started
     finally:
-        mxc_adapter.release_control(proc)
-    if not pid_file.is_file():
-        pytest.fail("the after-STARTED workload did not create its descendant evidence")
-    pids = [int(value) for value in pid_file.read_text(encoding="utf-8").split()]
-    _wait_for_dead(pids)
-
-
-@pytest.mark.native_mxc
-def test_native_control_disconnect_after_started_reclaims_child_tree(tmp_path):
-    _require_native_mxc()
-    pid_file = tmp_path / "disconnect-pids.txt"
-    script = tmp_path / "disconnect-tree.py"
-    script.write_text(
-        "import os, pathlib, subprocess, sys, time\n"
-        "grand = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
-        f"pathlib.Path({str(pid_file)!r}).write_text(f'{{os.getpid()}} {{grand.pid}}')\n"
-        "time.sleep(120)\n",
-        encoding="utf-8",
-    )
-    plan = os_sandbox.ToolLaunchPlan(
-        argv=(sys.executable, "-u", str(script)),
-        workdir=str(tmp_path),
-        env={
-            key: value
-            for key, value in os.environ.items()
-            if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PATHEXT"}
-        },
-        execution_kind="python",
-        timeout_seconds=30,
-    )
-    proc = mxc_adapter.spawn(
-        mxc_policy.build_launch_request(plan),
-        popen_kwargs={
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.STDOUT,
-            "creationflags": subprocess.CREATE_NO_WINDOW,
-        },
-    )
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not pid_file.is_file():
-        time.sleep(0.05)
-    assert pid_file.is_file()
-    pids = [int(value) for value in pid_file.read_text(encoding="utf-8").split()]
-    mxc_adapter.release_control(proc)
-    proc.wait(timeout=10)
-    _wait_for_dead(pids)
+        mxc_adapter.release_runtime(proc)
 
 
 @pytest.mark.native_mxc
