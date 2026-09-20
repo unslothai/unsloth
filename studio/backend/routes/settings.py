@@ -3529,9 +3529,7 @@ class PersonalizationCustomization(BaseModel):
 
     @field_validator("sidebarNavAuto")
     @classmethod
-    def _validate_sidebar_nav_auto(
-        cls, value: Optional[list[str]]
-    ) -> Optional[list[str]]:
+    def _validate_sidebar_nav_auto(cls, value: Optional[list[str]]) -> Optional[list[str]]:
         if value is None:
             return None
         seen: set[str] = set()
