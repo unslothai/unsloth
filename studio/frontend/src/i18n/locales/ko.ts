@@ -245,9 +245,19 @@ export const ko = {
   settings: {
     accounts: {
       title: "계정",
-      description: "개별 Unsloth Studio 계정을 만듭니다. 새 사용자는 일회용 설정 코드로 로그인한 뒤 비밀번호를 정합니다.",
+      description: "개별 Unsloth 계정을 만듭니다. 새 사용자는 일회용 설정 코드로 로그인한 뒤 비밀번호를 정합니다.",
       username: "사용자 이름",
       create: "계정 만들기",
+      createDescription: "설정 코드를 전달하면 본인이 비밀번호를 정할 수 있습니다.",
+      actionsFor: "{username} 관리",
+      actions: "작업",
+      search: "계정 검색",
+      noResults: "일치하는 계정 없음",
+      created: "생성일",
+      status: "상태",
+      loginHint: "{username}(으)로 이 코드를 비밀번호 삼아 로그인한 뒤 새 비밀번호를 정하세요.",
+      privateAccount: "개별 계정",
+      empty: "아직 다른 계정이 없습니다",
       setupCode: "설정 코드",
       setupFor: "{username}의 설정 코드",
       shownOnce: "지금 이 코드를 복사해 계정 소유자에게 전달하세요. 여기에서만 표시되며 60분 안에 한 번만 사용할 수 있습니다.",
@@ -263,7 +273,7 @@ export const ko = {
       resetTitle: "{username}의 비밀번호를 재설정할까요?",
       resetDescription: "설정 코드를 다시 생성하면 {username}의 비밀번호가 바뀌고 세션이 종료되며 API 키가 취소됩니다. 새 코드를 전달해 비밀번호를 다시 정하도록 하세요.",
       deactivate: "비활성화",
-      reactivate: "다시 활성화",
+      reactivate: "활성화",
       delete: "계정 삭제",
       deleteTitle: "{username}을(를) 삭제할까요?",
       deleteDescription: "{username}의 세션을 취소하고 진행 중인 작업을 중단합니다. 채팅, 설정, 자격 증명, 업로드, 데이터셋, 학습 실행, 출력, 내보내기, 갤러리, 샌드박스, 프로젝트, 임시 파일이 퇴역 처리됩니다. 디렉터리는 이름을 바꿔 옆으로 옮길 뿐 삭제되지 않습니다. 같은 사용자 이름을 다시 만들면 이 데이터가 없는 새 계정이 시작됩니다.",
@@ -574,7 +584,7 @@ export const ko = {
       openLogsFolderFailed: "로그 폴더를 열 수 없습니다.",
       exportFailed: "로그를 다운로드할 수 없습니다.",
       exportTooOld: "실행 중인 Unsloth 백엔드가 너무 오래되어 로그를 내보낼 수 없습니다. 해당 백엔드를 업데이트한 뒤 다시 시작하세요.",
-      exportForbidden: "모든 로그를 다운로드하려면 로그인된 Unsloth Studio 세션이 필요합니다. API 키만으로는 할 수 없습니다.",
+      exportForbidden: "모든 로그를 다운로드하려면 로그인된 Unsloth 세션이 필요합니다. API 키만으로는 할 수 없습니다.",
       keywords: "디버그 디버깅 로그 오류 에러 충돌 스택 추적 진단 문제 해결 debug log logs error",
     },
     voice: {
@@ -1952,7 +1962,7 @@ export const ko = {
         desktopAvailableDescription:
           "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
         desktopExternalServer:
-          "서버를 시작한 터미널에서 `unsloth studio update`를 실행하세요.",
+          "앱이 이미 실행 중인 Studio 서버에 연결되어 있어 업데이트할 수 없습니다. 해당 서버를 중지한 다음 데스크톱 앱을 종료하고 다시 열어 업데이트하세요.",
         desktopManualInstall:
           "릴리스 페이지를 열어 최신 Linux 패키지를 설치하세요.",
         desktopCheckFailed: "업데이트를 확인하지 못했습니다",

@@ -36,7 +36,6 @@ import {
   Folder01Icon,
   McpServerIcon,
   PencilRulerIcon,
-  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Columns2Icon } from "lucide-react";
@@ -137,17 +136,6 @@ const PLUS_MENU_SETTINGS: {
     icon: (
       <HugeiconsIcon
         icon={Folder01Icon}
-        strokeWidth={2}
-        className={PLUS_MENU_ICON_CLASS}
-      />
-    ),
-  },
-  {
-    id: "bypassPermissions",
-    labelKey: "settings.general.permissions.bypassLabel",
-    icon: (
-      <HugeiconsIcon
-        icon={ShieldBanIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />

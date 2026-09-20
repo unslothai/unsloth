@@ -161,6 +161,11 @@ function formatModelSummary(models: string[]): string {
 interface ChatProvidersSettingsProps {
   providers: ExternalProviderConfig[];
   onProvidersChange: (providers: ExternalProviderConfig[]) => void;
+  /** Open this connection's edit form on arrival instead of the list. Ignored until `providers`
+   *  carries the id. */
+  openProviderId?: string | null;
+  /** Called once honoured, so the request cannot replay on a later visit. */
+  onOpenProviderConsumed?: () => void;
 }
 
 export function codexCapabilitiesWithPlanModels(
@@ -230,6 +235,8 @@ export function resolveCodexPickerModels(
 export function ChatProvidersSettings({
   providers,
   onProvidersChange,
+  openProviderId = null,
+  onOpenProviderConsumed,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
@@ -253,6 +260,7 @@ export function ChatProvidersSettings({
   const [registry, setRegistry] = useState<ProviderRegistryEntry[]>([]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
+  const [providersReady, setProvidersReady] = useState(false);
   const [syncingProviders, setSyncingProviders] = useState(false);
   const [registryLoading, setRegistryLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -444,6 +452,7 @@ export function ChatProvidersSettings({
         // Trust the backend response. An empty array means every connection was removed, often from
         // another tab; mirror that locally, else stale entries are un-removable here.
         onProvidersChange(syncedProviders);
+        setProvidersReady(true);
         // An empty list never says what this page is for, so open the form instead. Reads the synced
         // response, not the local snapshot, so a stale empty list cannot flash the form at an
         // existing user. Once only, else the focus re-sync would pull the user back here.
@@ -460,6 +469,9 @@ export function ChatProvidersSettings({
             error instanceof Error ? error.message : "Unknown error";
           toast.error(`Failed to load connections: ${message}`);
         }
+        // A failed sync leaves the hydrated list as all there is. Waiting on a success the backend
+        // may never give would leave the deep link dead offline, with the gear opening nothing.
+        if (isMounted) setProvidersReady(true);
       } finally {
         if (isMounted && showSpinner) {
           setRegistryLoading(false);
@@ -1205,6 +1217,26 @@ export function ChatProvidersSettings({
       setManualModelIds("");
     }
   }
+
+  // Wait for backend data before opening a connection's form.
+  const openedProviderRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!openProviderId) {
+      openedProviderRef.current = null;
+      return;
+    }
+    if (!providersReady) return;
+    if (openedProviderRef.current === openProviderId) return;
+    const provider = providers.find(
+      (candidate) => candidate.id === openProviderId,
+    );
+    if (!provider) return;
+    openedProviderRef.current = openProviderId;
+    void editProvider(provider);
+    onOpenProviderConsumed?.();
+    // editProvider is redeclared each render; the latch above is what fires this once per id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openProviderId, providers, providersReady, onOpenProviderConsumed]);
 
   async function deleteProvider(providerId: string) {
     setMutatingProvider(true);
@@ -1971,13 +2003,12 @@ export function ChatProvidersSettings({
 
   return (
     <div className="flex min-h-0 flex-col gap-6">
-      <header className="flex flex-col gap-1 pr-8">
-        <div className="flex min-w-0 flex-col gap-1">
-          <h1 className="font-heading text-lg font-semibold">Connections</h1>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            Manage model connections for chat.
-          </p>
-        </div>
+      {/* Same title/description metrics as every other settings page. */}
+      <header className="flex min-w-0 flex-col gap-1 pr-8">
+        <h1 className="text-xl font-semibold font-heading">Connections</h1>
+        <p className="text-xs text-muted-foreground">
+          Manage model connections for chat.
+        </p>
       </header>
 
       <div className="flex w-full max-w-[760px] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6">
