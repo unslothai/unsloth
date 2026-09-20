@@ -1154,6 +1154,13 @@ class TestBashBlocklistPosition:
             # reads the SIMPLE form and `coproc rm '{' -f victim` deletes. A blocked word is never a name.
             pytest.param("rm", "coproc rm '{' -f victim", id = "coproc_quoted_brace_blocked"),
             pytest.param("rm", "coproc rm 'if' -f victim", id = "coproc_quoted_keyword_blocked"),
+            # The name is read as a command word, so a specially scanned one keeps its special scan: sed's `e`
+            # program is still screened rather than lost behind a forged name.
+            pytest.param(
+                "rm",
+                "coproc sed 'if' -e '1e rm -f victim' input",
+                id = "coproc_quoted_keyword_sed_program_blocked",
+            ),
             pytest.param(
                 "pkill", "coproc pkill '{' -f unsloth", id = "coproc_quoted_brace_pkill_blocked"
             ),

@@ -211,17 +211,6 @@ _COPROC_COMPOUND_STARTERS = frozenset({"if", "while", "until", "for", "case", "s
 _COPROC_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
 
 
-def _coproc_name_would_hide_a_command(token: str) -> bool:
-    """Whether skipping `token` as a coprocess name would skip a word some classifier judges."""
-    base = token.lower()
-    return (
-        base in _BLOCKED_COMMANDS
-        or base in _HIGH_RISK_COMMANDS
-        or base in _AUTO_UNSAFE_COMMAND_FLAGS
-        or base in _COMMAND_PREFIXES
-    )
-
-
 def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
     """Whether `tokens[index]` is the NAME of a `coproc NAME compound-command`, not a command word.
 
@@ -233,11 +222,6 @@ def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
         and tokens[index - 1] == "coproc"
         and index + 1 < len(tokens)
         and tokens[index + 1] in _COPROC_COMPOUND_STARTERS
-        # shlex drops quoting, so a quoted starter forges the lookahead: `coproc rm 'if' -f victim` is the SIMPLE
-        # form and deletes. No word any classifier judges is therefore read as a name, which keeps the answer the
-        # one the command alone gets however the lookahead was spelled. It costs only the absurd `coproc rm { echo
-        # hi; }`, naming a coprocess after a blocked command.
-        and not _coproc_name_would_hide_a_command(tokens[index])
         and _COPROC_NAME_RE.match(tokens[index]) is not None
     )
 
@@ -1275,11 +1259,9 @@ def _exec_scan_layout(
             exec_flags.add(here)
             in_action = True
             continue
-        if (at_command and token in _SHELL_KEYWORDS_AS_SEP) or (
-            after_coproc and _is_coproc_name(tokens, here)
-        ):
-            coproc_kw = at_command and token == "coproc"
-            continue  # `then find ...` / `do find ...` / `coproc JOB { find ... }`: still a command position
+        if at_command and token in _SHELL_KEYWORDS_AS_SEP:
+            coproc_kw = token == "coproc"
+            continue  # `then find ...` / `do find ...`: still a command position
         if skip_operand:
             skip_operand = False  # a wrapper option's value (env -u NAME)
             continue
@@ -1298,7 +1280,9 @@ def _exec_scan_layout(
             # Only a find/fd the shell really RUNS forwards its exec flags. Any token spelled `fd`/`find` used to turn
             # one on, so `echo fd -x rm` came back with rm and was refused.
             forwarding = True
-        at_command = False
+        # A coprocess NAME is READ as a command word rather than skipped, so no spelling of the lookahead can hide
+        # one behind it; only command position carries past it, to the compound the name introduces.
+        at_command = after_coproc and _is_coproc_name(tokens, here)
         wrapper = ""
     return frozenset(exec_flags), frozenset(stops), frozenset(redirects)
 
@@ -1493,10 +1477,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         # A keyword only separates where a COMMAND may start. A quoted operator is DATA the command receives, not a
         # separator, so it leaves command position alone: `grep '|&' rm file` runs nothing and must not be refused.
-        if (
-            (_looks_like_separator(token) and token_index not in quoted_separators)
-            or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
-            or (after_coproc and _is_coproc_name(tokens, token_index))
+        if (_looks_like_separator(token) and token_index not in quoted_separators) or (
+            token in _SHELL_KEYWORDS_AS_SEP and expect_command
         ):
             coproc_kw = expect_command and token == "coproc"
             expect_command = True
@@ -1546,7 +1528,9 @@ def _find_blocked_commands(command: str) -> set[str]:
             prefix_pending = True
             prefix_command = base
             continue
-        expect_command = False
+        # A coprocess NAME is read as a command word rather than skipped, so no spelling of the lookahead can hide
+        # one behind it; command position simply carries past it to the compound it introduces.
+        expect_command = after_coproc and _is_coproc_name(tokens, token_index)
         prefix_pending = False
         prefix_command = ""
         xargs_index = -1
@@ -5539,19 +5523,14 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     current_command = ""
     positional_args = 0
     pending_flag_value = False
-    coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
     for _tok_idx, token in enumerate(tokens):
-        after_coproc = coproc_kw
-        coproc_kw = False
         # Runs of punctuation (";;", ";&") lex as one token; any token made purely of separator characters still
         # separates commands.
         if (
             token in _SHELL_SEPARATORS
             or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
-            or (after_coproc and _is_coproc_name(tokens, _tok_idx))
             or not set(token) - set(";&|()")
         ):
-            coproc_kw = expect_command and token == "coproc"
             expect_command = True
             prefix_pending = False
             current_command = ""
@@ -7911,20 +7890,15 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
         xargs_index = -1  # an xargs awaiting the command whose argv it builds
-        coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
         for _tok_idx, token in enumerate(tokens):
-            after_coproc = coproc_kw
-            coproc_kw = False
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
                 # This walker carries a wrapper's command position in `prefix_pending`, not `expect_command`, so the
                 # clause above misses `time coproc rm -f x`, which bash runs and which really deletes.
                 or (token == "coproc" and prefix_pending)
-                or (after_coproc and _is_coproc_name(tokens, _tok_idx))
                 or not set(token) - set(";&|()")
             ):
-                coproc_kw = (expect_command or prefix_pending) and token == "coproc"
                 expect_command = True
                 prefix_pending = False
                 xargs_index = -1
