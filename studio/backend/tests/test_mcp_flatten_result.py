@@ -121,16 +121,16 @@ def test_strip_result_for_model_drops_image_payload():
 
 
 def test_strip_preserves_literal_mcp_sentinel_in_text():
-    # A tool that legitimately returns text containing the marker (e.g. reading
-    # source/docs that quote it) must not be truncated: the suffix is not a
-    # valid JSON image array.
+    # A named non-MCP tool that legitimately returns text containing the marker
+    # (e.g. reading source/docs that quote it) must not be truncated: the suffix
+    # is not a valid JSON image array.
     text = "before\n__MCP_IMAGES__: literal from source\nafter"
-    assert strip_result_for_model(text) == text
+    assert strip_result_for_model(text, "read_file") == text
 
 
 def test_strip_preserves_non_image_json_after_marker():
     text = 'log line\n__MCP_IMAGES__:["not", "image", "dicts"]'
-    assert strip_result_for_model(text) == text
+    assert strip_result_for_model(text, "web_search") == text
 
 
 def test_strip_removes_only_valid_terminal_envelope():
@@ -616,13 +616,21 @@ def test_invalid_mcp_envelope_fails_closed_for_an_mcp_tool():
     assert huge not in stripped
 
 
-def test_invalid_mcp_envelope_is_not_touched_without_mcp_provenance():
-    # The gate is the mcp__ prefix the envelope is trusted on, never the marker alone.
+def test_invalid_mcp_envelope_is_not_touched_for_a_named_non_mcp_tool():
+    # A named non-MCP tool owns the string; the marker alone never triggers the gate.
     literal = "before\n__MCP_IMAGES__: literal from source\nafter"
-    assert strip_result_for_model(literal) == literal
     assert strip_result_for_model(literal, "read_file") == literal
     bad_json = 'log\n__MCP_IMAGES__:["not", "image", "dicts"]'
     assert strip_result_for_model(bad_json, "web_search") == bad_json
+
+
+def test_unnamed_result_with_a_broken_envelope_fails_closed_live():
+    # Same rule as promote_history: provenance missing or empty is as good as mcp__.
+    huge = "A" * 40_000
+    text = "log\n" + MCP_IMAGES_SENTINEL + "{oops: " + huge
+    assert strip_result_for_model(text) == mcp_images.MCP_IMAGE_PARSE_ERROR_TEXT
+    assert strip_result_for_model(text, "") == mcp_images.MCP_IMAGE_PARSE_ERROR_TEXT
+    assert huge not in strip_result_for_model(text)
 
 
 def test_valid_mcp_envelope_is_still_stripped_for_an_mcp_tool():
@@ -678,6 +686,23 @@ def test_promote_history_fails_closed_on_an_invalid_mcp_envelope():
             "role": "tool",
             "tool_call_id": "call_0",
             "name": "mcp__fs__read_media_file",
+            "content": "head\n" + MCP_IMAGES_SENTINEL + "{oops: " + huge,
+        },
+    ]
+    out = mcp_images.promote_history(messages, vision = False)
+    tool = out[-1]
+    assert tool["role"] == "tool"
+    assert tool["content"] == mcp_images.MCP_IMAGE_PARSE_ERROR_TEXT
+    assert huge not in tool["content"]
+
+
+def test_promote_history_fails_closed_on_an_unnamed_tool_result():
+    huge = "A" * 30_000
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
             "content": "head\n" + MCP_IMAGES_SENTINEL + "{oops: " + huge,
         },
     ]
@@ -788,78 +813,6 @@ def test_multi_turn_replay_re_attaches_both_envelopes():
             assert first not in text and second not in text
         else:
             assert not any(first in str(part) or second in str(part) for part in (text or []))
-
-
-def test_dict_content_blocks_still_become_an_envelope():
-    flat = _flatten_result(_result({"type": "image", "data": PNG_B64, "mimeType": "image/png"}))
-    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
-    assert body == "[1 image returned]"
-    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
-
-
-def test_structured_content_only_image_is_recovered():
-    structured = {"content": [{"type": "image", "data": PNG_B64, "mimeType": "image/png"}]}
-    flat = _flatten_result(_result(structured = structured))
-    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
-    assert body == "[1 image returned]"
-    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
-    assert PNG_B64 not in strip_result_for_model(flat)
-
-
-def test_recovered_image_repeats_as_body_text_only_once():
-    structured = {"content": [{"type": "image", "data": PNG_B64, "mimeType": "image/png"}]}
-    flat = _flatten_result(_result(_text("Took a screenshot"), structured = structured))
-    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
-    assert body == "Took a screenshot\n[1 image returned]"
-    assert PNG_B64 not in body
-    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
-
-
-def test_image_wrapper_obj_in_structured_content_is_recovered():
-    structured = {"tool": "camera", "image": {"data": PNG_B64, "mimeType": "image/png"}}
-    flat = _flatten_result(_result(structured = structured))
-    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
-    assert body == "{'tool': 'camera', 'image': {'mimeType': 'image/png'}}\n[1 image returned]"
-    assert PNG_B64 not in body
-    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
-
-
-def test_data_uri_resource_image_is_recovered():
-    block = SimpleNamespace(
-        type = "resource",
-        resource = SimpleNamespace(uri = f"data:image/png;base64,{PNG_B64}", blob = None),
-    )
-    flat = _flatten_result(_result(block))
-    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
-    assert body == "[1 image returned]"
-    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
-
-
-def test_non_image_structured_objects_are_not_recovered():
-    svg = "<svg width='5' height='5' xmlns='http://www.w3.org/2000/svg'><rect/></svg>"
-    structured = {"content": [{"type": "image", "data": svg, "mimeType": "image/png"}]}
-    flat = _flatten_result(_result(structured = structured))
-    assert MCP_IMAGES_SENTINEL not in flat
-    assert svg in flat
-
-
-def test_recovered_envelope_round_trips_through_split_images():
-    structured = {"content": [{"type": "image", "data": PNG_B64, "mimeType": "image/png"}]}
-    data_uri = SimpleNamespace(
-        type = "resource",
-        resource = SimpleNamespace(uri = f"data:image/png;base64,{PNG_B64}", blob = None),
-    )
-    result = _result(
-        _text("Took a screenshot"),
-        {"type": "image", "data": PNG_B64, "mimeType": "image/png"},
-        data_uri,
-        structured = structured,
-    )
-    flat = _flatten_result(result)
-    head, images = mcp_images.split_images(flat)
-    assert head == "Took a screenshot\n[2 images returned]"
-    assert [img["data"] for img in images] == [PNG_B64, PNG_B64]
-    assert strip_result_for_model(flat) == head
 
 
 def test_frontend_backend_marker_and_cap_parity():

@@ -62,8 +62,10 @@ export function capToolText(text: string): string {
 }
 
 /** Tool text bound for a model: a valid envelope's payload comes off (it uploads
- *  as images), an mcp__ result whose envelope does not parse fails closed, and
- *  nothing runs past the hard cap. */
+ *  as images), a result that mentions the sentinel but does not parse fails
+ *  closed when provenance is missing/empty or is an mcp__ tool -- the same rule
+ *  as the backend's sanitize_tool_text -- and nothing runs past the hard cap.
+ *  The whole result is discarded, head included, like the backend. */
 export function toolTextForModel(
   content: string,
   toolName: string | undefined,
@@ -71,9 +73,10 @@ export function toolTextForModel(
   const { text, images } = splitMcpImages(content);
   if (
     images.length === 0 &&
-    toolName !== undefined &&
-    toolName.startsWith(MCP_TOOL_PREFIX) &&
-    content.includes(MCP_IMAGES_MARKER)
+    content.includes(MCP_IMAGES_MARKER) &&
+    (toolName === undefined ||
+      toolName === "" ||
+      toolName.startsWith(MCP_TOOL_PREFIX))
   ) {
     return MCP_IMAGE_PARSE_ERROR_TEXT;
   }

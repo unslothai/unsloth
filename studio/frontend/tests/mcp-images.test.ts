@@ -578,18 +578,18 @@ test("a message's results are batched by replay exchange, not as one block", () 
   );
 });
 
-test("an mcp__ result whose marker does not parse is fail-closed for the model", () => {
+test("a result whose marker does not parse is fail-closed for missing/mcp__ provenance", () => {
   const bad = "log" + MCP_IMAGES_MARKER + "{oops: " + "A".repeat(2_000_000);
   assert.equal(toolTextForModel(bad, "mcp__fs__read_media_file"), MCP_IMAGE_PARSE_ERROR_TEXT);
+  assert.equal(toolTextForModel(bad, undefined), MCP_IMAGE_PARSE_ERROR_TEXT);
+  assert.equal(toolTextForModel(bad, ""), MCP_IMAGE_PARSE_ERROR_TEXT);
   const nonMcp = toolTextForModel(bad, "read_file");
   assert.ok(nonMcp.length <= MAX_TOOL_TEXT_CHARS);
-  assert.strictEqual(nonMcp, toolTextForModel(bad, undefined));
   const small = "log" + MCP_IMAGES_MARKER + "{oops}";
   assert.equal(toolTextForModel(small, "read_file"), small);
-  assert.equal(toolTextForModel(small), small);
+  assert.equal(toolTextForModel(small, "web_search"), small);
   const literal = "before" + MCP_IMAGES_MARKER + " literal\nafter";
   assert.equal(toolTextForModel(literal, "read_file"), literal);
-  assert.equal(toolTextForModel(literal), literal);
 });
 
 test("a valid envelope's payload still comes off for the model", () => {

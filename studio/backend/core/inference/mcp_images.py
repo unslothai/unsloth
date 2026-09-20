@@ -161,12 +161,17 @@ def cap_tool_text(text: str) -> str:
 
 def sanitize_tool_text(result: str, tool_name: "str | None" = None) -> str:
     """A valid envelope's payload comes off (it is IMAGE input, decided in
-    _promote); an mcp__ result that claims images the parser rejects is replaced
-    by a one-line notice. No cap here -- the strip must stay suffix-only."""
+    _promote); a result that mentions the sentinel but the parser rejects is
+    replaced by a one-line notice. The whole result is discarded, head included:
+    gigabytes of base64 can sit before the sentinel, and keeping any of it would
+    negate the cap. Do not "fix" that by preserving the prefix. No cap here --
+    the strip must stay suffix-only."""
     text, images = split_images(result)
     if images:
         return text
-    if tool_name is not None and tool_name.startswith(MCP_TOOL_PREFIX) and mentions_images(result):
+    if mentions_images(result) and (
+        tool_name is None or tool_name == "" or tool_name.startswith(MCP_TOOL_PREFIX)
+    ):
         logger.warning(
             "Tool %r returned a result that mentions %r but does not parse into image "
             "entries; %d chars withheld from the model.",
