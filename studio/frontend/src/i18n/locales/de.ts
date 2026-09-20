@@ -1285,7 +1285,11 @@ export const de = {
       },
       gpu: {
         title: "GPU-Geräte",
-        ggufInference: "GGUF-Inferenz",
+        memory: "GPU-Speicher",
+        sharedWithSystemRam: "Mit dem System-RAM geteilt",
+        estimatedAvailable: "Geschätzt verfügbar: {value}",
+        sharedEstimatedAvailable: "Gemeinsamer System-RAM: geschätzt {value} verfügbar",
+        ggufInference: "Speicher für GGUF-Modelle",
         unavailable: "nicht verfügbar",
         detecting: "Suche nach GPUs...",
         unreadable: "Die Hardware dieses Servers konnte nicht gelesen werden.",

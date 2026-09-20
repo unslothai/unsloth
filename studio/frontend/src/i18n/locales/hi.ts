@@ -1262,7 +1262,11 @@ export const hi = {
       },
       gpu: {
         title: "GPU डिवाइस",
-        ggufInference: "GGUF इन्फ़रेंस",
+        memory: "GPU मेमोरी",
+        sharedWithSystemRam: "सिस्टम RAM के साथ साझा",
+        estimatedAvailable: "अनुमानित उपलब्ध: {value}",
+        sharedEstimatedAvailable: "साझा सिस्टम RAM: अनुमानित उपलब्ध {value}",
+        ggufInference: "GGUF मॉडल मेमोरी",
         unavailable: "उपलब्ध नहीं",
         detecting: "GPU खोजे जा रहे हैं...",
         unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
