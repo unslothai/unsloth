@@ -438,6 +438,17 @@ def _common_name_prefix(paths: list[str]) -> str:
     return os.path.commonprefix([Path(path).stem for path in paths]) if paths else ""
 
 
+def _name_initials(paths: list[str]) -> str:
+    """The first characters of these file names, as a glob class body.
+
+    Only letters and digits, so nothing in the class can be read as syntax.
+    """
+    initials = sorted({Path(path).name[:1] for path in paths if Path(path).name[:1].isalnum()})
+    if not initials or len(initials) != len({Path(path).name[:1] for path in paths}):
+        return ""
+    return "".join(initials)
+
+
 def _widened_declared_pattern(
     declared_files: list[str], data_files: list[str], split_lower: str, suffix: str
 ) -> str:
@@ -464,6 +475,11 @@ def _widened_declared_pattern(
     if shared_name:
         candidates.append(f"{prefix}{shared_name}*{suffix}")
         candidates.append(f"{prefix}**/{shared_name}*{suffix}")
+    # Unrelated names still start somewhere the neighbours do not. A class is the
+    # only union the reader understands; it rejects `{a,b}` outright.
+    initials = _name_initials(declared_files)
+    if initials:
+        candidates.append(f"{prefix}**/[{initials}]*{suffix}")
     for candidate in candidates:
         if set(_files_under_patterns([candidate], data_files)) == wanted:
             return candidate

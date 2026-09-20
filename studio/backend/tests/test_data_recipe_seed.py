@@ -738,6 +738,26 @@ def test_seed_hf_path_keeps_a_split_spread_over_sibling_folders(monkeypatch, tmp
     )
 
 
+def test_seed_hf_path_unions_declared_files_with_unrelated_names(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["sets/a/part-a.parquet", "sets/b/chunk-b.parquet", "sets/c/test.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_files": [
+                {"split": "train", "path": ["sets/a/part-a.parquet", "sets/b/chunk-b.parquet"]},
+                {"split": "test", "path": "sets/c/test.parquet"},
+            ],
+        }
+    ]
+    # Nothing is shared but the first letters, and a class is the only union the
+    # reader understands: it rejects {a,b} outright.
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+        == "datasets/org/repo/sets/**/[cp]*.parquet"
+    )
+
+
 def test_seed_format_inference_stops_where_the_loader_stops(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     # 200 csv sort ahead of 201 parquet, and the loader only looks at the first
