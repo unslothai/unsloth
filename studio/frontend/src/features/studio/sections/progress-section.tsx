@@ -53,6 +53,8 @@ import {
   formatDuration,
   formatNumber,
   phaseColors,
+  sessionEtaSeconds,
+  sessionStepsPerSecond,
 } from "./progress-section-lib";
 import type { RunConfigOverride } from "./run-config-override";
 
@@ -131,14 +133,25 @@ export function ProgressSection({
       : Math.round(data.progressPercent);
 
   const elapsed = data.elapsedSeconds;
+  const sessionStartStep = data.sessionStartStep ?? 0;
   const derivedEta =
-    elapsed != null && pct > 0
-      ? Math.round((elapsed * (100 - pct)) / Math.max(pct, 1))
-      : null;
+    sessionStartStep > 0
+      ? sessionEtaSeconds(
+        data.currentStep,
+        sessionStartStep,
+        data.totalSteps,
+        elapsed,
+      )
+      : elapsed != null && pct > 0
+        ? Math.round((elapsed * (100 - pct)) / Math.max(pct, 1))
+        : null;
   const eta = data.etaSeconds ?? derivedEta;
 
-  const stepsPerSecond =
-    elapsed != null && elapsed > 0 ? data.currentStep / elapsed : null;
+  const stepsPerSecond = sessionStepsPerSecond(
+    data.currentStep,
+    sessionStartStep,
+    elapsed,
+  );
   const showHalfwayHint =
     data.phase === "training" && pct >= 50 && pct < 100;
   const showCompletedHint = data.phase === "completed";
