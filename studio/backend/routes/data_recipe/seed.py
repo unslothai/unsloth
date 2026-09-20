@@ -187,9 +187,7 @@ def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str,
     """
     if subset:
         wanted = subset.lower()
-        return next(
-            (c for c in configs if str(c.get("config_name") or "").lower() == wanted), None
-        )
+        return next((c for c in configs if str(c.get("config_name") or "").lower() == wanted), None)
     flagged = next((c for c in configs if c.get("default") is True), None)
     if flagged is not None:
         return flagged

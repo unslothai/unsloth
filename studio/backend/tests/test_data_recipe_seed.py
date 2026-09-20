@@ -558,7 +558,12 @@ def test_seed_hf_path_reads_every_card_data_files_shape(monkeypatch, tmp_path, d
     [
         # A card with one config uses it whatever it is called.
         (
-            [{"config_name": "plain_text", "data_files": [{"split": "train", "path": "pt/train-*"}]}],
+            [
+                {
+                    "config_name": "plain_text",
+                    "data_files": [{"split": "train", "path": "pt/train-*"}],
+                }
+            ],
             "datasets/org/repo/pt/train-*.parquet",
         ),
         # Another config can be flagged as the default one.
