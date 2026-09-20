@@ -55,6 +55,10 @@ HOST_PATH_HANDLE_FIELDS = frozenset(
 # Scrubbed, not blanked: the only account of WHY a run failed.
 HOST_PATH_TEXT_FIELDS = frozenset({"error_message", "error", "detail", "message"})
 
+# The same text, one per entry. A run's warnings quote the file they are about ("missing
+# <path>/tokenizer.json"), and the singular fields above do not reach a list.
+HOST_PATH_TEXT_LIST_FIELDS = frozenset({"warnings", "errors", "details_lines"})
+
 # Emptied, not referenced: scan ROOTS carry layout and nothing actionable.
 HOST_PATH_LIST_FIELDS = frozenset(
     {
@@ -386,6 +390,13 @@ def _redact(
                 continue
             if key in HOST_PATH_TEXT_FIELDS and isinstance(value, str):
                 out[key] = redact_paths_in_text(value)
+                continue
+            if key in HOST_PATH_TEXT_LIST_FIELDS and isinstance(value, (list, tuple)):
+                out[key] = [
+                    redact_paths_in_text(item) if isinstance(item, str) else
+                    _redact(item, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
+                    for item in value
+                ]
                 continue
             out[key] = _redact(value, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
         # After the walk: the field is declared on the models, so the dump's None would win.

@@ -1272,6 +1272,7 @@ def test_every_route_that_answers_with_a_persisted_record_redacts():
     from routes import inference as inference_routes
     from routes import training_history as training_routes
     from routes import video as video_routes
+    from routes import training as live_training_routes
 
     expected = {
         inference_routes: (
@@ -1285,6 +1286,9 @@ def test_every_route_that_answers_with_a_persisted_record_redacts():
             "get_training_run_detail",
             "update_training_run",
         ),
+        # The LIVE run, not only its history: the worker's own progress line quotes the model
+        # it is loading, and for a local model that is an absolute path.
+        live_training_routes: ("get_training_status",),
     }
     for module, names in expected.items():
         tree = ast.parse(inspect.getsource(module))
@@ -1298,6 +1302,30 @@ def test_every_route_that_answers_with_a_persisted_record_redacts():
             body = ast.unparse(found[name])
             assert "redact_host_paths(" in body, (module.__name__, name)
             assert "authenticated_via_api_key" in body, (module.__name__, name)
+
+
+def test_a_live_training_status_does_not_quote_the_model_path():
+    """Every field a worker writes free text into, not just the one that named the model: the
+    warnings list quotes the file it is about, and the singular text fields do not reach it."""
+    path = f"{HOST_ROOT}/my models/trained-from"
+    status = {
+        "job_id": "run-1",
+        "phase": "training",
+        "is_training_running": True,
+        "message": f"Loading {path}...",
+        "error": f"could not read {path}/config.json",
+        "warnings": [f"missing {path}/tokenizer.json"],
+        "details": {"model_name": path, "output_dir": f"{path}/out"},
+    }
+    redacted = host_paths.redact_host_paths(status, via_api_key = True)
+    body = json.dumps(redacted)
+    assert HOST_ROOT not in body, body
+    assert host_paths.response_leaks_host_path(redacted, [HOST_ROOT]) is None, redacted
+    assert redacted["job_id"] == "run-1" and redacted["phase"] == "training"
+    assert host_paths.resolve_host_path_reference(redacted["details"]["model_name"]) == path
+
+    # BOUNDARY. A browser session keeps every one of them.
+    assert host_paths.redact_host_paths(status, via_api_key = False) is status
 
 
 def test_opening_or_renaming_a_run_does_not_hand_back_the_path(monkeypatch):

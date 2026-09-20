@@ -86,6 +86,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
 from utils.utils import (
@@ -2301,9 +2302,16 @@ def _build_training_status(
 
 
 @router.get("/status")
-async def get_training_status(current_subject: str = Depends(get_current_subject)):
+async def get_training_status(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """
     Get the current training status.
+
+    Redacted for an API-key caller like every other route that can name a host path: the
+    worker's own progress line quotes the model it is loading, and for a local model that is
+    an absolute path, which would hand back what the inventory took the trouble to hide.
     """
     try:
         backend = get_training_backend()
@@ -2315,7 +2323,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
                 continue
             status = _build_training_status(backend, identity, is_active)
             if _training_status_identity(backend) == identity:
-                return status
+                return redact_host_paths(status, via_api_key = via_api_key)
         raise HTTPException(status_code = 409, detail = "Training state changed during status read")
     except HTTPException:
         raise
