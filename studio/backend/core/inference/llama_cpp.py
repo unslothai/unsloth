@@ -3902,8 +3902,7 @@ _ASSUMED_MAX_VOCAB = 262144
 # Ceiling on the float32 activations a compute graph keeps per micro-batch token, for a
 # header that cannot be read: 4 * n_ff at n_ff = 65536, above Llama 3.1 405B's 53056.
 _ASSUMED_MAX_ACTIVATION_WIDTH = 262144
-# llama.cpp allocates KV cells in blocks of this size, so any context arithmetic
-# rounds up to it and a difference smaller than one block is rounding, not a decision.
+# llama.cpp allocates KV cells in these blocks, so a sub-block difference is rounding.
 _KV_CELL_BLOCK = 256
 
 
@@ -3925,18 +3924,10 @@ def _kv_cache_cell_layout(n_ctx: int, n_parallel: int, kv_unified: bool) -> tupl
 def _positive_int_n_ctx(value: object) -> Optional[int]:
     """A context size read out of llama-server's JSON, or None if it isn't one.
 
-    ``bool`` is excluded explicitly because it subclasses ``int``: a JSON
-    ``true`` would otherwise pass ``isinstance(v, int) and v > 0`` and publish a
-    ONE token window, which becomes the max_tokens ceiling and rejects every
-    real prompt.
-
-    An all-digit STRING is accepted, and deliberately so. b11057 sends a JSON
-    number, but the readback this replaces did ``int(n_ctx)`` and so coerced
-    "8192" happily; rejecting it here would mean a build or proxy that
-    stringifies the field silently stops reconciling and goes back to
-    advertising the pre-launch estimate -- reintroducing the very bug this
-    reports. Only exact digits, so "8k", "8192.5" and "" stay rejected rather
-    than guessed at.
+    ``bool`` is rejected before ``int`` because it subclasses it: JSON ``true``
+    would publish a one-token window and cap max_tokens there. Digit strings are
+    accepted because the readback this replaces coerced them via ``int()``, and
+    silently dropping to the pre-launch estimate is the bug being fixed.
     """
     if isinstance(value, bool):
         return None
@@ -3950,11 +3941,8 @@ def _positive_int_n_ctx(value: object) -> Optional[int]:
 def _launch_ctx_from_args(args: Optional[Iterable[str]]) -> Optional[int]:
     """Total ``-c`` on the argv that actually spawned, or None when there is none.
 
-    Read off the argv rather than Studio's pre-launch estimate so a pass-through
-    ``--ctx-size`` -- which last-wins over Studio's own ``-c`` -- is the value
-    reported, the same reason ``_last_spawn_cmd`` exists. ``-c 0`` is llama.cpp's
-    "pick one for me" and names no total, so it returns None alongside a malformed
-    flag: reporting either as a launch size would invent a number.
+    Read off the argv, not Studio's estimate, so a pass-through ``--ctx-size``
+    last-wins. ``-c 0`` names no total, so it returns None like a malformed flag.
     """
     try:
         override = parse_ctx_override(args)
@@ -7228,9 +7216,8 @@ class LlamaCppBackend:
         # Total KV allocation context across all slots. _effective_context_length
         # becomes the per-slot request limit after /props reconciliation.
         self._kv_cache_context_total: Optional[int] = None
-        # Total -c the running child was launched with, and the per-slot context
-        # expected from it when --fit allocated less. Both are set by the runtime
-        # reconciliation, which is the only place that can tell them apart.
+        # Both set by the runtime reconciliation, the only place that can tell
+        # the launch total and the per-slot window apart.
         self._launch_context_length: Optional[int] = None
         self._pre_fit_context_length: Optional[int] = None
         # True once a probe has completed; cleared on transient failure.
@@ -7465,19 +7452,16 @@ class LlamaCppBackend:
     def launch_context_length(self) -> Optional[int]:
         """Total ``-c`` the running llama-server was launched with, or None.
 
-        ``context_length`` is the PER-SLOT window a single request may use;
-        this is the whole allocation that window was carved out of. They differ
-        under ``--parallel`` without ``--kv-unified``, and reporting only one of
-        them is what makes a slot split look like a failed load."""
+        ``context_length`` is the per-slot share of this; they differ under
+        ``--parallel`` without ``--kv-unified``."""
         return self._launch_context_length
 
     @property
     def pre_fit_context_length(self) -> Optional[int]:
         """Per-slot context expected before ``--fit`` shrank it; None if it did not.
 
-        Set only when llama-server allocated LESS per slot than the launch total
-        implies, so a clean ``--parallel`` split -- where the smaller window is
-        the arithmetic, not a reduction -- is not reported as a fit."""
+        Only set when the server allocated less than the launch total implies, so
+        a clean ``--parallel`` split is not reported as a fit."""
         return self._pre_fit_context_length
 
     @property
@@ -32704,11 +32688,8 @@ class LlamaCppBackend:
         modalities = props.get("modalities")
         if isinstance(modalities, dict):
             self._has_video_input = bool(modalities.get("video"))
-        # Everything below is attacker-adjacent only in the sense that it is
-        # another process' JSON: a non-dict settings block (.get -> AttributeError)
-        # or a non-numeric n_ctx (int() -> ValueError) would otherwise propagate
-        # out of the probe chain and fail the load itself, from the post-health
-        # call site. An unreadable /props means "unknown", not "abort".
+        # Another process' JSON: a non-dict block or non-numeric n_ctx used to
+        # raise out of here and fail the load. Unreadable /props means "unknown".
         settings = props.get("default_generation_settings")
         if not isinstance(settings, dict):
             return None
@@ -32719,17 +32700,11 @@ class LlamaCppBackend:
     ) -> None:
         """Record the launch total, and the --fit reduction the probe just revealed.
 
-        The launch total is the child's whole KV allocation; ``actual_n_ctx`` is
-        the share of it one request gets. Running the total back through
-        llama.cpp's own cell layout gives what a slot was EXPECTED to get, so a
-        shortfall against THAT is the fitter's doing -- whereas a plain
-        ``--parallel`` split, where the smaller window is just the division, is
-        left unreported rather than shown to the user as a failure to allocate.
-
-        The argv alone answers what was launched, so that half is recorded even
-        when the probe came back empty; only the comparison needs the server.
-        Both fields are rewritten on every reconciliation, including to None, so a
-        reload into a model that needed no fit cannot inherit the previous one's.
+        Running the launch total back through llama.cpp's cell layout gives what a
+        slot was EXPECTED to get, so a shortfall against that is the fitter's doing
+        while a plain ``--parallel`` split is left unreported. The argv alone
+        answers what was launched, so that half survives an empty probe. Both
+        fields are rewritten every reconciliation so a reload inherits nothing.
         """
         self._launch_context_length = _launch_ctx_from_args(launch_cmd)
         self._pre_fit_context_length = None
@@ -32768,14 +32743,12 @@ class LlamaCppBackend:
         ALLOCATED, not that it fits VRAM without spilling, so the "may use system
         RAM" warning is right and ``max_context_length < context_length`` is legal.
 
-        ``launch_cmd`` is the argv that actually spawned. It is what separates the
-        launch total from the per-slot window below, and the only reason the two
-        can be reported as distinct numbers rather than one ambiguous one.
+        ``launch_cmd`` is the argv that actually spawned: the only thing that
+        separates the launch total from the per-slot window.
         """
         actual_n_ctx = self._query_server_n_ctx()
-        # Before the bail-out: a probe that answered nothing does not make the argv
-        # any less readable, and leaving the previous load's total in place would
-        # report a window this server never had.
+        # Before the bail-out: an empty probe leaves the argv readable, and a stale
+        # total would report a window this server never had.
         self._record_launch_vs_per_slot_ctx(launch_cmd, actual_n_ctx)
         if not actual_n_ctx or actual_n_ctx <= 0:
             return

@@ -375,8 +375,8 @@ export function resolveLoadMaxSeqLength({
     return 0;
   }
   if (isReloadingCurrentGguf) {
-    // max_seq_length is the TOTAL -c, while loadedContextLength is one slot's share of
-    // it. Reloading a --parallel server from the share would shrink it every time.
+    // max_seq_length is the TOTAL -c; loadedContextLength is one slot's share, so
+    // reloading a --parallel server from the share shrinks it every time.
     if (launchContextLength != null && launchContextLength > 0) {
       return launchContextLength;
     }

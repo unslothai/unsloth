@@ -27,10 +27,7 @@ export type ContextUsageBarInput = {
   isMlx?: boolean;
   /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
-  /**
-   * pre_fit_context_length: the per-slot context expected before llama-server's --fit
-   * step reduced it. Null unless it really did, so `total` is otherwise unexplained.
-   */
+  /** Per-slot context expected before --fit reduced it; null unless it did. */
   preFitTotal?: number | null;
 };
 
@@ -66,12 +63,8 @@ function contextLimitAdvice(
   return used > total ? "mlx-past-limit" : "mlx-near-limit";
 }
 
-/**
- * The --fit reduction to name, or null when the window is what was asked for.
- *
- * Guarded on `from > to` rather than taken on trust: an equal pair would otherwise
- * render "reduced from 32,768 to 32,768", and the warning has to earn its amber.
- */
+/** The --fit reduction to name, or null. Guarded on `from > to` so an equal pair
+ *  does not render "reduced from 32,768 to 32,768". */
 function fitReductionOf(
   preFitTotal: number | null | undefined,
   total: number,
