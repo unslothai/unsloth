@@ -46,6 +46,7 @@ from storage.studio_db import (
     CorruptSettingsError,
     ProjectWorkspaceConflictError,
     ProjectWorkspaceError,
+    ProjectWorkspaceOwnerRequiredError,
     ProjectWorkspaceRecordError,
     ProjectWorkspaceUnavailableError,
     build_chat_history_export,
@@ -1149,6 +1150,11 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
         ) from exc
     except ProjectWorkspaceConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ProjectWorkspaceOwnerRequiredError as exc:
+        # A managed account choosing its own folder is a decision, not a failure, so it
+        # answers 403 rather than falling through to a 500 that reads like a bug. Its own
+        # class, so an operating system PermissionError still propagates untouched.
+        raise HTTPException(status_code = 403, detail = str(exc)) from exc
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
@@ -1237,6 +1243,8 @@ def patch_project(
             ) from exc
         except ProjectWorkspaceConflictError as exc:
             raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        except ProjectWorkspaceOwnerRequiredError as exc:
+            raise HTTPException(status_code = 403, detail = str(exc)) from exc
         if not changed:
             raise HTTPException(
                 status_code = 409,

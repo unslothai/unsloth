@@ -214,6 +214,17 @@ class ProjectWorkspaceConflictError(RuntimeError):
     pass
 
 
+class ProjectWorkspaceOwnerRequiredError(PermissionError):
+    """Only the owner may point a project at a folder of their own.
+
+    A PermissionError subclass so it still reads as one to anything catching that,
+    but its OWN class, because the routes must tell this decision apart from an
+    operating system refusal: opening studio.db without permission also raises
+    PermissionError, and answering that with 403 would report a filesystem problem
+    as an authorization one.
+    """
+
+
 def _project_workspace_marker_owner(root: Path) -> str | None:
     """The project id recorded in *root*'s marker, or None if it carries none.
 
@@ -3400,7 +3411,7 @@ def _require_owner_for_external_workspace() -> None:
     never reach. Refused here rather than in the route so every caller is covered.
     """
     if not is_owner_context():
-        raise PermissionError(
+        raise ProjectWorkspaceOwnerRequiredError(
             "Only the owner account can use an existing folder as a project workspace"
         )
 

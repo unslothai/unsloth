@@ -346,3 +346,39 @@ def test_unavailable_external_project_does_not_break_the_project_list(monkeypatc
 
     assert response.projects[0].workspaceAvailable is False
     assert response.projects[0].workspacePath == "/moved/project"
+
+
+def test_a_managed_account_gets_a_403_not_a_500(monkeypatch):
+    """The rejection is a decision, so it must not read to the client like a crash.
+
+    The handlers catch only the `ProjectWorkspace*` errors, so a bare `PermissionError`
+    from storage would escape as an internal server error, and the single-use lease it
+    already consumed cannot be presented again.
+    """
+    from fastapi import HTTPException
+
+    from routes import chat_history
+
+    payload = _probe_payload().model_copy(
+        update = {"workspaceKind": "external", "nativePathLease": "lease"}
+    )
+    monkeypatch.setattr(
+        chat_history, "_resolve_project_workspace_path",
+        lambda _lease: ("/tmp/picked", ("1", "2")),
+    )
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda _id: None)
+
+    def refuse(*_args, **_kwargs):
+        from storage.studio_db import ProjectWorkspaceOwnerRequiredError
+
+        raise ProjectWorkspaceOwnerRequiredError(
+            "Only the owner account can use an existing folder as a project workspace"
+        )
+
+    monkeypatch.setattr(chat_history, "upsert_chat_project", refuse)
+
+    with pytest.raises(HTTPException) as caught:
+        chat_history.save_project(payload, current_subject = "managed-user")
+
+    assert caught.value.status_code == 403
+    assert "owner account" in str(caught.value.detail)
