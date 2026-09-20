@@ -121,7 +121,7 @@ def test_the_resolver_keeps_looking_past_a_release_without_the_asset():
 def test_linux_download_skips_only_unreleased_arm64(
     tmp_path, suffix, mode, tag, returncode, unreleased
 ):
-    workflow = yaml.safe_load(WORKFLOW.read_text())
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
     download = next(
         step
         for step in workflow["jobs"]["linux"]["steps"]
@@ -129,7 +129,7 @@ def test_linux_download_skips_only_unreleased_arm64(
     )
     script = tmp_path / ".github/scripts/resolve-desktop-release.py"
     script.parent.mkdir(parents = True)
-    script.write_text(SCRIPT.read_text())
+    script.write_text(SCRIPT.read_text(encoding = "utf-8"), encoding = "utf-8")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     gh = fake_bin / "gh"

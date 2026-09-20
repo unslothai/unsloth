@@ -908,7 +908,9 @@ def test_linux_deb_architectures_stage_distinct_assets_and_validate_together(tmp
 
 def test_linux_clean_machine_downloads_only_the_runner_architecture(tmp_path):
     workflow = yaml.safe_load(
-        (REPO_ROOT / ".github/workflows/desktop-app-clean-machine-ci.yml").read_text()
+        (REPO_ROOT / ".github/workflows/desktop-app-clean-machine-ci.yml").read_text(
+            encoding = "utf-8"
+        )
     )
     job = workflow["jobs"]["linux"]
     assert job["runs-on"] == "${{ matrix.os }}"
