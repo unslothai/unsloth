@@ -1878,9 +1878,9 @@ class TestNoRollbackNeverPromisesAKeptCopy:
     def test_the_woa_migration_message_varies(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         before = text.split("the previous one is kept for rollback", 1)[0][-600:]
-        assert "$script:StudioNoRollback" in before, (
-            "the Windows-on-ARM migration rebuild promises a copy --no-rollback deletes"
-        )
+        assert (
+            "$script:StudioNoRollback" in before
+        ), "the Windows-on-ARM migration rebuild promises a copy --no-rollback deletes"
 
     def test_every_rollback_call_site_was_audited(self):
         # If a fourth call site appears, this fails and the promise above it has to be checked.
