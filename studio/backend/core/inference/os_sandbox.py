@@ -451,6 +451,13 @@ def _runtime_identity() -> str:
             digest.update(b"missing")
     digest.update((PROFILE_VERSION + sys.platform + platform.release()).encode())
     digest.update((os.path.abspath(sys.executable) + sys.prefix).encode())
+    if sys.platform == "linux":
+        try:
+            from . import sandbox_linux
+
+            digest.update(sandbox_linux.bwrap_identity().encode())
+        except Exception as exc:  # noqa: BLE001 - an unavailable backend still needs a cache key
+            digest.update(f"untrusted-bwrap:{exc}".encode())
     return digest.hexdigest()
 
 
