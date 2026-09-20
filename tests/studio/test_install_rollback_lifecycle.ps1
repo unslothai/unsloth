@@ -95,11 +95,9 @@ foreach ($name in $extracted) {
     }, $true)) {
         $callee = $call.GetCommandName()
         if (-not $callee) { continue }
-        # CimCmdlets ships only on Windows, and Get-StudioMountedVolume guards its one call on
-        # the platform before making it, so a host without the module never reaches the name.
-        # Keyed on the command being absent rather than on the platform: $env:OS can say Windows
-        # on a host whose PowerShell has no CimCmdlets, and on a real Windows runner the name
-        # resolves and is checked like any other.
+        # CimCmdlets ships only on Windows and Get-StudioMountedVolume guards its one call.
+        # Keyed on the command being absent, not the platform: $env:OS can say Windows on a host
+        # whose PowerShell has no CimCmdlets, and on a real runner the name is checked as usual.
         if ($windowsOnlyCommands -contains $callee -and
             -not (Get-Command -Name $callee -ErrorAction SilentlyContinue)) { continue }
         if (-not (Get-Command -Name $callee -ErrorAction SilentlyContinue)) {
@@ -230,11 +228,9 @@ try {
     $script:StudioNoRollback = $false
 
     Write-Host "--no-rollback tells the ARM64 migration the tree is gone (#11313)"
-    # The migration branch decides what to do from the rollback state. Before this was tracked
-    # separately, --no-rollback left it merely "inactive", which that branch reads as "not moved
-    # aside yet", so it called Start-StudioVenvRollback on a directory --no-rollback had already
-    # deleted. Move-Item threw and the install exited through Exit-InstallFailure, having already
-    # destroyed the environment. The flag has to distinguish discarded from never-started.
+    # The migration branch reads the rollback state. "Inactive" means "not moved aside yet", so
+    # without a separate discarded flag it called Start-StudioVenvRollback on a directory
+    # --no-rollback had deleted, threw, and exited having already destroyed the environment.
     [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
     Reset-RollbackState $VenvDir
@@ -243,19 +239,13 @@ try {
     Start-StudioVenvRollback -ExistingDir $VenvDir
     Check "--no-rollback records that the tree was discarded" ($script:StudioVenvRollbackDiscarded)
     Check "and the tree really is gone" (-not (Test-Path -LiteralPath $VenvDir))
-    # Replay the migration branch's own decision with that state. It must take neither the
-    # "already moved aside" arm nor the "move it now" arm.
+    # Replay the branch's own decision: neither the "already moved aside" nor the "move it" arm.
     $wouldMove = (-not $script:StudioVenvRollbackDiscarded) -and (-not $script:StudioVenvRollbackActive)
     Check "the migration would not try to move a tree that is gone" (-not $wouldMove)
-    # The other half of the same promise. When no rollback has started yet -- a healthy legacy
-    # environment migrated straight into $VenvDir -- the migration calls Start-StudioVenvRollback
-    # itself, and under --no-rollback that call DISCARDS. The retention message is printed before
-    # the call, so gating it only on "already discarded" told the user their extra packages were
-    # recoverable moments before the only copy was deleted.
-    # The gate itself is a copy of it away from the code, which would test this file rather than
-    # install.ps1, so it is pinned by text in TestArm64MigrationDoesNotPromiseWhatTheFlagDeletes
-    # instead. What IS drivable here is the state the call leaves behind: after the tree is gone,
-    # nothing may be marked as preserved.
+    # Where no rollback has started the migration calls Start-StudioVenvRollback itself, and
+    # under --no-rollback that DISCARDS after the retention message has printed. Re-checking the
+    # gate here would test this file (it is pinned by text in the parity suite); what is drivable
+    # is that nothing may be marked preserved once the tree is gone.
     [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
     Reset-RollbackState $VenvDir
@@ -281,21 +271,16 @@ try {
     }
 
     Write-Host "the volume helpers degrade to the drive root where mount points cannot be read"
-    # A Windows volume mounted at a directory is not its drive letter, so both helpers ask
-    # Win32_Volume first. That view exists only on Windows, and this host is not Windows, so what
-    # is checkable here is the fallback: the probe answers "cannot tell" rather than throwing, and
-    # the drive-root logic underneath still produces the answers the rest of this file relies on.
-    # The mount-point case itself is pinned by text in tests/python/test_cross_platform_parity.py
-    # and is not reproduced on any host available here.
+    # Both helpers ask Win32_Volume first, and that view exists only on Windows, so what is
+    # checkable off it is the fallback: "cannot tell" rather than a throw, with the drive-root
+    # logic still answering. The mount-point case is pinned by text in the parity suite.
     $probed = $null
     $probeThrew = $false
     try { $probed = Get-StudioMountedVolume -Path $StudioHome } catch { $probeThrew = $true }
     Check "the mount-point probe never throws" (-not $probeThrew)
     if ($IsWindows -or $env:OS -eq "Windows_NT") {
-        # On Windows it answers for real, and may legitimately answer nothing when CIM is not
-        # available to this account. What it must never do is throw or hand back something the
-        # callers cannot read: this file also runs on windows-latest, where the earlier
-        # "answers nothing" form asserted a Linux-only outcome and failed.
+        # On Windows it answers for real, or legitimately nothing where CIM is unavailable to
+        # this account. What it must never do is throw or return something callers cannot read.
         Check "on Windows the probe answers a volume or nothing, never something unusable" (
             $null -eq $probed -or $null -ne $probed.Name)
     } else {
@@ -327,11 +312,10 @@ try {
     Check "asking for a fresh answer replaces the cached one" (
         @($script:StudioVolumeList | Where-Object { $_.DeviceID -eq "sentinel" }).Count -eq 0)
     $script:StudioVolumeList = $null
-    # A link must be measured as the volume it points at, not the one it lives on. On one
-    # filesystem the two numbers agree either way, so what this proves is that the resolution
-    # happens at all and costs nothing: a helper that threw, or answered $null through a link,
-    # would take the warning down with it. The cross-volume case needs a second volume and a
-    # junction, neither of which exists on any host this suite runs on.
+    # A link must be measured as the volume it points at. On one filesystem both numbers agree,
+    # so what this proves is that resolution happens and costs nothing: a helper that threw, or
+    # answered $null through a link, takes the warning down with it. The cross-volume case needs
+    # a second volume and a junction, which no host this suite runs on has.
     $linkTarget = Join-Path $StudioHome "link-target"
     [System.IO.Directory]::CreateDirectory($linkTarget) | Out-Null
     $linkPath = Join-Path $StudioHome "link"
@@ -359,11 +343,9 @@ try {
         Test-StudioSameVolume -PathA $StudioHome -PathB (Join-Path $StudioHome "child"))
 
     Write-Host "picking the volume that holds a path, including a directory mount point"
-    # The matching, with the volume list supplied rather than read from CIM, so the mount-point
-    # cases run on a host that has no mount points. Every path goes through GetFullPath first,
-    # exactly as the function does: on Windows a rooted path with no drive picks up the current
-    # drive, so fake volume names built from a bare separator match nothing and all four cases
-    # fail there. Deriving both sides from the same call keeps this true on either platform.
+    # Volume list supplied rather than read from CIM, so these run on a host with no mount
+    # points. Both sides come from one GetFullPath call: on Windows a rooted path with no drive
+    # picks up the current drive, so names built from a bare separator match nothing there.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     $mountPath = [System.IO.Path]::GetFullPath("${sep}studio")
     $otherPath = [System.IO.Path]::GetFullPath("${sep}studiofoo")
@@ -416,9 +398,8 @@ try {
     }
     Write-Host "--no-rollback costs disk, never hardware (#11313)"
     # The Intel scan rescues an adapter WMI cannot classify by asking the PREVIOUS environment's
-    # torch whether XPU works; the replacement has no torch yet. Discarding that tree without
-    # taking the verdict first routes an Arc machine to CPU wheels for having opted out of a
-    # rollback copy, which is a narrower device set than the same install without the flag.
+    # torch whether XPU works. Discarding that tree without taking the verdict first routes an
+    # Arc machine to CPU wheels for having opted out of a rollback copy.
     [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
     [System.IO.Directory]::CreateDirectory((Join-Path $VenvDir "Scripts")) | Out-Null
     # Stands in for the interpreter: the probe is bounded and reads stdout, so what it runs only
@@ -453,10 +434,8 @@ try {
     }
 
     Write-Host "the tree that is kept is judged by the cache it was built against (#11313)"
-    # The tree about to be kept was built by a previous run, so this run's cache mode cannot say
-    # whether it owns its blocks. The marker the previous run left behind can: uv hardlinks only
-    # within one volume, so a cache that is gone, or was elsewhere, means the tree kept its own
-    # copies and keeping it costs their full size.
+    # The tree was built by a previous run, so this run's cache mode cannot say whether it owns
+    # its blocks; the previous run's marker can, since uv hardlinks only within one volume.
     $prevCache = Join-Path $StudioHome "prev-cache"
     [System.IO.Directory]::CreateDirectory($prevCache) | Out-Null
     # With something in it: an empty cache shares nothing, which the emptied-in-place case below
@@ -485,10 +464,9 @@ try {
     $script:StudioUvMarkerPrevious = $null
 
     Write-Host "what the previous run recorded beats what this one can infer"
-    # The marker only says where the cache was, never whether anything was linked into it. A run
-    # under UV_LINK_MODE=copy or --no-cache leaves a tree that owns every block beside a cache
-    # that is still present and still on this volume, which reads as sharing and suppresses the
-    # warning. The stamp is that run's own verdict, written beside the tree it built.
+    # The marker says where the cache was, never whether anything was linked into it: a run under
+    # UV_LINK_MODE=copy leaves a tree owning every block beside a cache that reads as shared. The
+    # stamp is that run's own verdict, written beside the tree it built.
     $stampTree = Join-Path $StudioHome "stamped-tree"
     [System.IO.Directory]::CreateDirectory($stampTree) | Out-Null
     Check "no stamp is no answer, not a wrong one" (
@@ -511,11 +489,10 @@ try {
     Microsoft.PowerShell.Management\Remove-Item -LiteralPath $stampTree -Recurse -Force -ErrorAction SilentlyContinue
 
     Write-Host "the warning and the discard message both tell the truth under --no-rollback"
-    # Two things Start-StudioVenvRollback gets wrong if it is written without them, and install.sh
-    # is gated identically: the warning's payload is the name of the opt-out, so printing it to
-    # someone who already passed that flag advises an action they have taken; and a delete that
-    # could not remove the tree frees none of the space the flag exists to free, so reporting it
-    # as discarded promises the user something that is still on their disk.
+    # Two things the rollback gets wrong without them, and install.sh is gated identically: the
+    # warning's payload is the opt-out's name, so printing it to someone who passed that flag
+    # advises an action already taken; and a delete that failed frees nothing, so reporting it as
+    # discarded promises space that is still occupied.
     function Get-StudioTreeSizeBytes { param([string]$Path) return 1GB }
     function Get-StudioFreeSpaceBytes { param([string]$Path) return 512MB }
     $script:said = @()

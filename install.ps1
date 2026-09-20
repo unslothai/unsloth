@@ -2764,24 +2764,18 @@ exit 1
         return (Resolve-StudioFinalPathInfo -Path $Path).Path
     }
 
-    # Disk arithmetic for the rollback copy and the uv cache (#11313). Each answers $null / "cannot
-    # tell" rather than guessing: a number this cannot produce is a warning it does not print.
-    # Defined here, above Set-StudioUvCacheEnvironment's call site, because a nested function does
-    # not exist until the statement defining it has run.
-    # A Windows volume can be mounted at a DIRECTORY rather than a drive letter, and then the
-    # drive root is the wrong answer to both questions below: GetPathRoot reduces C:\studio to
-    # C:\, so DriveInfo reports the host C: drive, and two paths on different mounted volumes
-    # compare equal on their root. Win32_Volume is the view that lists mount points, by the path
-    # they are mounted at, so the longest Name that prefixes a path names the volume really
-    # holding it. Best effort: off Windows, or wherever CIM cannot answer, every caller falls
-    # back to the drive-root logic this shipped with, which is right for a lettered volume.
-    # Known limit: Name exposes ONE access path, so a volume reached through a second one (a
-    # mount point on a volume that also has a drive letter) matches no entry and falls back to
-    # the drive root. That is the answer this shipped with, so the lookup only ever widens what
-    # it gets right; enumerating Win32_MountPoint associations would close it, at the cost of a
-    # second CIM query and a join on every Windows install, for a diagnostic.
-    # Split out so the matching can be exercised without a mount point to mount: no host in CI
-    # has one, and it is the part with the edge cases.
+    # Disk arithmetic for the rollback copy and the uv cache (#11313), answering $null rather than
+    # guessing: a number this cannot produce is a warning it does not print. Above
+    # Set-StudioUvCacheEnvironment's call site, since a nested function does not exist until its
+    # defining statement has run.
+    # A Windows volume can be mounted at a DIRECTORY, and then the drive root is the wrong answer:
+    # GetPathRoot reduces C:\studio to C:\, so two paths on different volumes compare equal.
+    # Win32_Volume lists mount points by the path they are mounted at, so the longest Name that
+    # prefixes a path names the volume really holding it; anywhere CIM cannot answer, callers fall
+    # back to the drive-root logic, which is right for a lettered volume.
+    # Known limit: Name exposes ONE access path, so a volume reached through a second one falls
+    # back to the drive root, the pre-existing answer. Closing it needs a Win32_MountPoint join on
+    # every install, for a diagnostic. Split out so the matching is testable without a mount point.
     function Select-StudioVolumeForPath {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
               [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Volumes)
@@ -2791,9 +2785,8 @@ exit 1
         if (-not [System.IO.Path]::IsPathRooted($Path)) { return $null }
         $full = [System.IO.Path]::GetFullPath($Path)
         # Name carries a trailing separator and GetFullPath does not, so a path that IS the mount
-        # point (UNSLOTH_STUDIO_HOME set to C:\studio itself, the natural way to use one) would
-        # miss its own volume and fall back to the drive root. Append one and both ends agree,
-        # while C:\studiofoo still cannot match a volume mounted at C:\studio.
+        # point would miss its own volume. Appending one also keeps C:\studiofoo from matching a
+        # volume mounted at C:\studio.
         if (-not $full.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
             $full += [System.IO.Path]::DirectorySeparatorChar
         }
@@ -2806,38 +2799,27 @@ exit 1
         return $best
     }
 
-    # Junctions and symlinks lie about which volume a path is on, which is why
-    # Test-StudioSameVolume canonicalises. Every volume question has to, or a studio home behind
-    # a junction (or under a junctioned profile) is measured on the link's host drive instead of
-    # the volume that will actually hold the environment. Falling back to the lexical path keeps
-    # a resolver that cannot answer from costing the caller its measurement entirely.
+    # Junctions and symlinks lie about which volume a path is on, so a studio home behind one is
+    # otherwise measured on the link's host drive. The lexical fallback keeps a resolver that
+    # cannot answer from costing the caller its measurement entirely.
     function Resolve-StudioVolumeQueryPath {
         param([Parameter(Mandatory = $true)][string]$Path)
         try {
             $final = Get-StudioFinalPath -Path $Path
-            # Get-StudioFinalPath strips \\?\ unconditionally and deliberately, so a volume with
-            # no drive letter comes back as Volume{GUID}\..., which is NOT rooted. GetFullPath
-            # would then resolve it against the current directory and hand the matcher a path on
-            # some unrelated volume, which is worse than not knowing. Keep the caller's own path
-            # in that case; it is the one the rest of the installer uses.
+            # Get-StudioFinalPath strips \\?\ deliberately, so a volume with no drive letter comes
+            # back as Volume{GUID}\..., which is NOT rooted: GetFullPath would then anchor it to
+            # the current directory and name an unrelated volume. Keep the caller's own path.
             if ($final -and [System.IO.Path]::IsPathRooted($final)) { return $final }
             return $Path
         } catch { return $Path }
     }
 
-    # Bounded and cached, for the reason Invoke-BoundedVideoControllerScan already documents: a
-    # degraded WMI repository can block a CIM query indefinitely, -ErrorAction only suppresses
-    # errors that get reported and try/catch only catches a query that eventually returns, so out
-    # of process with a wall-clock kill is the only bound that holds. This one is advisory -- it
-    # decides the wording of a disk warning -- and it runs before the venv exists, so a hang here
-    # would wedge an install that had nothing wrong with it. Cached because the answer cannot
-    # change during one install and every volume question below consults it; a timeout caches the
-    # empty answer too, so a broken repository is paid for once rather than once per question.
-    # -Fresh for the callers that want the NUMBER. FreeSpace in a cached row is a snapshot, and
-    # the failure handler asks after setup has consumed the disk: served from a list populated
-    # before the environment was built, a volume that has since fallen under the threshold reads
-    # as having room and misses the disk-full diagnosis this PR exists to add. Identity and mount
-    # paths do not move during an install, so those callers keep the cache.
+    # Bounded out of process, as Invoke-BoundedVideoControllerScan documents: a degraded WMI
+    # repository blocks a CIM query indefinitely, and neither -ErrorAction nor try/catch bounds a
+    # query that never returns. Cached, timeouts included, so a broken repository costs once.
+    # -Fresh for callers that want the NUMBER: FreeSpace in a cached row is a snapshot, and the
+    # failure handler asks after setup has consumed the disk, where a stale row reads as having
+    # room and misses the disk-full diagnosis. Mount paths do not move, so those callers cache.
     function Get-StudioVolumeList {
         param([switch]$Fresh)
         if (-not $Fresh -and $null -ne $script:StudioVolumeList) { return $script:StudioVolumeList }
@@ -2889,13 +2871,10 @@ exit 1
         } catch { return $null }
     }
 
-    # Known limit, and the reason it is a limit rather than a bug: this sums every file, so a
-    # tree whose wheels are hardlinked to a cache that outlives the install is billed for blocks
-    # a discard would not free, and the warning can then recommend an opt-out that reclaims
-    # little. install.sh asks st_nlink instead and counts only what the tree owns; the same
-    # question on Windows needs a link count per file, which is GetFileInformationByHandle and a
-    # P/Invoke per file in a tree with tens of thousands of them. Over-counting errs towards a
-    # line of advice, never towards a failed install, so it stays until it is worth that cost.
+    # Known limit: this sums every file, so a tree hardlinked to a surviving cache is billed for
+    # blocks a discard would not free. install.sh asks st_nlink and counts only what the tree
+    # owns; on Windows that is a P/Invoke per file across tens of thousands. Over-counting costs
+    # a line of advice, never a failed install, so it stays until it is worth that cost.
     function Get-StudioTreeSizeBytes {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
@@ -7016,28 +6995,18 @@ exit 0
     # installer is a command-not-found.
     Write-StudioRootOwnerMarker -Root $StudioHome
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
-    # Outside the selector, not inside it: the ranking is pinned across install.ps1, install.sh,
-    # studio/setup.sh and unsloth_cli/commands/studio.py (tests/python/test_uv_cache_selector_agreement.py),
-    # and tests/python/test_windows_uv_cache_selection.py lifts that one function out and runs it
-    # on its own, so it stays exactly what those two pin. The ranking is therefore NOT reordered to
-    # prefer a co-located cache; what is added is saying what the winner costs. Across a volume
-    # boundary uv copies every wheel rather than hardlinking it, so the new environment is a second
-    # full copy rather than a handful of megabytes -- the whole of the "a reinstall doubles the
-    # disk" report (#11313). A Studio home on any drive but C: lands here, because uv's default
-    # cache is under %LOCALAPPDATA%.
-    # In its own try, for the same reason Start-StudioVenvRollback wraps its twin: this is advice,
-    # it runs under the installer's "Stop", and advice that cannot be produced must never cost the
-    # install. Test-StudioSameVolume already answers "same volume" for anything it cannot resolve,
-    # so this only catches what it cannot catch itself, such as a parameter it will not bind.
+    # Outside the selector, whose ranking is pinned across four implementations
+    # (tests/python/test_uv_cache_selector_agreement.py) and deliberately NOT reordered to prefer
+    # a co-located cache. What is added is saying what the winner costs: across a volume boundary
+    # uv copies every wheel instead of hardlinking, making the new environment a second full copy,
+    # which is the whole of the "a reinstall doubles the disk" report (#11313). Guarded like
+    # Start-StudioVenvRollback's twin: advice that cannot be produced must not cost the install.
     try {
-        # No persistent cache at all. UV_NO_CACHE hands uv a temporary cache it discards when the
-        # command ends, so nothing the old environment's files could be shared with survives the
-        # install and keeping that tree costs its full size. No notice for this one: where the
-        # cache sits is not what is wrong here. install.sh gates its twin the same way.
-        # The caller can turn linking off outright, and then nothing is shared whatever volume
-        # the cache is on. `copy` is the only mode that does not share blocks: clone reflinks,
-        # hardlink links, symlink points at the cache. Checked before the branches below rather
-        # than inside them, because the cross-volume notice may apply as well.
+        # UV_NO_CACHE hands uv a temporary cache discarded when the command ends, so nothing
+        # survives for the old tree to share and keeping it costs full size; no notice, since
+        # where the cache sits is not the problem. `copy` is the only link mode that shares no
+        # blocks (clone reflinks, hardlink links, symlink points at the cache), and it is checked
+        # before the branches below because the cross-volume notice may apply as well.
         $_linkMode = if ($env:UV_LINK_MODE) { $env:UV_LINK_MODE.Trim().ToLowerInvariant() } else { "" }
         if ($_linkMode -eq "copy") {
             $script:StudioRollbackCostsFullSize = $true
@@ -7192,22 +7161,18 @@ exit 0
         return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
     }
 
-    # One line, before the move, naming both figures and the opt-out. Warn only: the estimate is a
-    # guess and being wrong must never stop an install that would have fitted (#11313).
-    # Did the environment about to be moved aside keep its own copy of everything? It did if the
-    # cache it was built against is gone or was on another volume, because uv can only hardlink
-    # within one. $script:StudioUvMarkerPrevious is the marker's value BEFORE this run overwrote
-    # it, which is exactly the previous run's cache; unknown answers "shared", the quiet
-    # direction every other helper here takes.
+    # Did the tree about to be moved aside keep its own copy of everything? It did if the cache it
+    # was built against is gone or was on another volume, since uv can only hardlink within one.
+    # $script:StudioUvMarkerPrevious is the marker's value before this run overwrote it, which is
+    # the previous run's cache; unknown answers "shared", the quiet direction used throughout.
     function Test-StudioPreviousCacheIsGone {
         $previous = $script:StudioUvMarkerPrevious
         if ([string]::IsNullOrWhiteSpace($previous)) { return $false }
         try {
             $previous = ([string]$previous).Trim()
             if (-not (Test-StudioPathPresent -Path $previous)) { return $true }
-            # Still a directory, but uv cache clean empties it and leaves it standing, and an
-            # empty cache shares nothing. Any entry counts: naming uv's internal layout here
-            # would rot the moment it changes, and the question is only "is anything left".
+            # uv cache clean empties the directory and leaves it standing, and an empty cache
+            # shares nothing. Any entry counts; uv's internal layout would rot as an assertion.
             $hasContent = $null
             try {
                 $hasContent = $null -ne (Get-ChildItem -LiteralPath $previous -Force `
@@ -7218,17 +7183,12 @@ exit 0
         } catch { return $false }
     }
 
-    # What the run that BUILT a tree knew about its own linking, written beside the tree at the
-    # moment it was committed. The next run reads it back rather than re-deriving it: a cache
-    # path that still exists says nothing about whether the files in it were ever linked to, so
-    # UV_LINK_MODE=copy or --no-cache would otherwise look like sharing and suppress the warning.
-    # Absent means an environment from before this stamp existed, or one whose commit could not
-    # write it, and the marker comparison answers those. install.sh needs no equivalent: st_nlink
-    # measures the same thing exactly and after the fact, which is strictly better where it is
-    # available. Windows has no per-file link count without a P/Invoke, and fsutil hardlink list
-    # is documented as requiring elevation the installer does not have and must not ask for.
-    # A function rather than a script variable so anything that extracts these helpers by
-    # following the call graph picks the name up with them.
+    # What the run that BUILT a tree knew about its own linking, written beside the tree at commit
+    # and read back by the next run: a cache path that still exists says nothing about whether
+    # anything was ever linked into it, so UV_LINK_MODE=copy would otherwise look like sharing.
+    # install.sh needs no equivalent because st_nlink measures this exactly; Windows has no
+    # per-file link count without a P/Invoke, and fsutil requires elevation this must not ask for.
+    # A function, not a script variable, so a call-graph extraction picks the name up with them.
     function Get-StudioVenvShareStampName { return ".unsloth-cache-linked" }
 
     function Write-StudioVenvCacheShareStamp {
@@ -7275,7 +7235,6 @@ exit 0
         Write-StudioLine "       The install continues. If it runs out of space, re-run with --no-rollback (or UNSLOTH_INSTALL_NO_ROLLBACK=1) to discard the old environment instead of keeping it." -ForegroundColor Yellow
     }
 
-    # ── Bounded "ask the venv python" probe ──
     # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
     # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
     # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
@@ -7331,41 +7290,15 @@ exit 0
         $script:StudioVenvRollbackTarget = $ExistingDir
         $script:StudioVenvRollbackActive = $true
         $script:StudioVenvRollbackPartial = $false
-        # The rename itself is free, but the new venv beside it is not: uv hardlinks a wheel only
-        # within one volume, so a cache elsewhere makes every file a real copy and the install
-        # needs room for two whole environments (#11313). Say so before the space is gone.
-        # In its own try: this is advice, and advice that cannot be produced must not cost the
-        # rename. This function runs under "Stop", so an enumeration denied halfway, or a harness
-        # that spliced this function without its helper, would otherwise abort the rollback.
-        # Two gates, both stopping the warning from advising something that would not help.
-        # Not under --no-rollback: the warning exists to name the opt-out, so telling a user to
-        # re-run with the flag they already passed is noise, and the branch below discards that
-        # copy anyway. And only across a volume boundary: with the cache on this volume uv
-        # hardlinks every wheel, so the old venv's blocks are shared with the cache and keeping it
-        # costs metadata rather than megabytes, while summing each file's logical length still
-        # bills every one of those links in full and would recommend an opt-out that frees
-        # nothing. Unset counts as same, the quiet direction. install.sh gates its twin the same way.
-        # The tree about to be kept was built by a PREVIOUS run, so what decides whether keeping
-        # it costs real blocks is the cache THAT run used, not the one this one picked. uv
-        # hardlinks within a volume, so the old tree shares its bulk with its own cache if that
-        # cache is still there and still on this volume; if it is gone, or was somewhere else,
-        # the tree owns its blocks and keeping it costs their full size whatever this run does.
-        # install.sh answers the same question by counting blocks with st_nlink == 1, which is
-        # exact; there is no per-file link count on Windows short of a P/Invoke per file, so this
-        # reads the marker the previous run left behind instead.
-        # Inside the guard, not just around the warning: this whole block is a diagnostic that
-        # precedes the rename, and nothing it can raise is worth failing an install that would
-        # otherwise have proceeded.
+        # Keeping the old tree costs its full size only if it owns its blocks, which is decided by
+        # the cache the run that BUILT it linked against, not the one this run picked (#11313).
+        # The whole block is advice and runs under "Stop" immediately before the rename, so it is
+        # guarded: advice that cannot be produced must not cost the install.
         try {
-            # A local, and $script:StudioRollbackCostsFullSize is left alone: that flag describes
-            # how the environment being built NOW links to its cache, and the commit stamps it
-            # onto that environment for the next run to read. Folding the old tree's verdict into
-            # it makes this run record a fact about a different tree, and the following reinstall
-            # then warns about an environment that was hardlinked all along.
-            # Recorded beats inferred: the stamp is what the run that built this tree knew about
-            # its own linking, and it settles the question on its own. This run's cache mode is a
-            # fact about a tree that does not exist yet, so it only stands in where nothing was
-            # recorded, alongside the marker comparison, as the best guess available.
+            # A local: $script:StudioRollbackCostsFullSize describes the environment being built
+            # now, and the commit stamps it onto that environment for the next run to read.
+            # The stamp settles it; this run's mode only stands in where nothing was recorded.
+            # No warning under --no-rollback, which would advise a flag the caller already passed.
             $owns = Test-StudioTreeOwnsItsBlocks -Path $ExistingDir
             if ($null -eq $owns) {
                 $owns = $script:StudioRollbackCostsFullSize -or (Test-StudioPreviousCacheIsGone)
@@ -10929,13 +10862,10 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
     if ($setupExit -ne 0) {
-        # A full disk surfaces here as nothing but an exit code, with the one out-of-space line
-        # buried in setup's output (#11313). Ask the volume directly and name it. Below 64 MB
-        # nothing useful can be unpacked, so it is the cause rather than a coincidence.
-        # Measured in BOTH modes. Under --tauri the desktop installer and its Repair flow are
-        # where this report came from, and there nothing reaches the UI except the message
-        # Exit-InstallFailure hands to Write-TauriLog, so the diagnosis rides on that. One line,
-        # because a marker is one line.
+        # A full disk surfaces here as nothing but an exit code (#11313), so ask the volume and
+        # name it; below 64 MB nothing useful unpacks, making it the cause rather than a
+        # coincidence. Measured under --tauri too, where nothing reaches the UI except the single
+        # line Exit-InstallFailure hands to Write-TauriLog, so the diagnosis rides on that.
         $_failFree = Get-StudioFreeSpaceBytes -Path $StudioHome
         $_failSuffix = ""
         $_failRemedy = ""

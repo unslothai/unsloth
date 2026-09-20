@@ -1100,10 +1100,8 @@ _start_studio_venv_replacement() {
     _VENV_ROLLBACK_DIR="$_candidate"
     _VENV_ROLLBACK_TARGET="$_existing_dir"
     _VENV_ROLLBACK_ACTIVE=true
-    # The rename itself is free, but the new venv beside it is not: uv hardlinks a wheel only within one filesystem, so a cache on another volume makes every file a real copy and the install needs room for two whole environments (#11313). Say so before the space is gone, and never abort -- the estimate is a guess and being wrong must not cost a working install.
-    # `|| true` for the same reason install.ps1 wraps its twin: this is advice, and advice that cannot be produced must not cost the rename under `set -e` -- including in a harness that spliced this function without the helper.
-    # One gate. Not under --no-rollback: the warning exists to name the opt-out, so telling a user to re-run with the flag they already passed is noise, and the branch below discards that copy anyway.
-    # There used to be a second gate, on this run's cache and link modes. It is gone because _dir_size_kb now asks st_nlink, which answers the same question better: the modes describe THIS run while the tree was built by a previous one, so they suppressed the estimate on a tree that really does own its blocks -- one built under UV_NO_CACHE, or whose cache has since been deleted, reinstalled against a fresh co-located cache. The estimate reports what a discard would free, and one that is not short of free space is already silent.
+    # uv hardlinks a wheel only within one filesystem, so a cache on another volume makes every file a real copy and the install needs room for two whole environments (#11313). Warn before the space is gone; never abort, since the estimate is a guess and being wrong must not cost a working install. `|| true` for the same reason install.ps1 guards its twin.
+    # One gate, on --no-rollback: the warning names the opt-out, so printing it to a caller who already passed that flag is noise. There is no gate on this run's cache and link modes, because _dir_size_kb asks st_nlink, which answers for the tree the previous run actually built.
     if [ "${_NO_ROLLBACK:-false}" != true ]; then
         _warn_if_rollback_needs_space "$_existing_dir" || true
     fi

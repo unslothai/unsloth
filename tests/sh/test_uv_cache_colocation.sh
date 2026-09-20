@@ -157,14 +157,12 @@ else
     assert_eq "setup.sh drops an unusable cache" "<unset>" "$(_run_setup "$_TMP/updro" '')"
 fi
 
-# The notice for a cache that could not be co-located has to name a remedy that exists. A
-# caller's own UV_CACHE_DIR wins in _configure_uv_cache and returns before --isolated-uv-cache is
-# read at all, so naming that flag to a custom-cache user sends them back for an identical run.
+# A caller's own UV_CACHE_DIR wins in _configure_uv_cache and returns before --isolated-uv-cache
+# is read, so naming that flag to a custom-cache user sends them back for an identical run.
 _NOTICE_FILE=$(mktemp)
-# Anchored on `name() {` with anything allowed after the brace: _same_volume carries a trailing
-# comment, and a pattern ending in `\{$` silently matched nothing. Under bash a missing function
-# exits 127, which `&& return 0` reads as "different volume", so every case below passed for the
-# wrong reason. Each extraction is therefore checked, not assumed.
+# Anything allowed after the brace: _same_volume carries a trailing comment, and a pattern ending
+# in `\{$` matched nothing, leaving a missing function to exit 127 which `&& return 0` read as
+# "different volume". Each extraction is checked rather than assumed.
 _slice_fn() {  # name
     awk -v fn="$1" 'index($0, fn "() {") == 1 { grab = 1 } grab { print } grab && /^\}$/ { grab = 0 }' \
         "$INSTALL_SH"
@@ -186,23 +184,19 @@ _run_notice() {  # mode
         printf "UV_CACHE_DIR='%s/uv-cache-elsewhere'\n" "$_TMP"
         printf "_UV_CACHE_MODE='%s'\n" "$_rn_mode"
         cat "$_NOTICE_FILE"
-        # After the extraction, so it shadows the real one, exactly as the link-mode cases above
-        # do. This used to point UV_CACHE_DIR at /proc, which is a different device on Linux and
-        # does not exist at all on macOS: stat failed for both paths there, the comparison gave
-        # its deliberate "same" answer, and the notice under test never printed. Two fixed ids
-        # ask the question these checks are actually about on either platform.
+        # After the extraction, so it shadows the real one. This used to point UV_CACHE_DIR at
+        # /proc, which macOS does not have: stat failed for both paths, the comparison gave its
+        # deliberate "same", and the notice under test never printed.
         printf '%s\n' '_path_device_id() { case "$1" in *uv-cache-elsewhere*) echo 41 ;; *) echo 42 ;; esac; }'
-        # Really there: _same_volume walks up to the nearest existing path first, so an absent
-        # cache directory resolves to STUDIO_HOME and is compared against itself.
+        # Really there: _same_volume walks up to the nearest existing path, so an absent cache
+        # directory resolves to STUDIO_HOME and is compared against itself.
         printf '%s\n' 'mkdir -p "$UV_CACHE_DIR"'
         printf '%s\n' '_warn_if_uv_cache_is_off_volume'
         printf '%s\n' 'printf "NOTICE_DONE\n"'
     } | "$_SH" 2>&1
 }
-# UV_NO_CACHE: uv takes a temporary cache it discards when the command ends, so nothing the old
-# environment shares its blocks with survives the install and keeping that tree costs its full
-# size. The rollback warning must fire; the cross-volume notice must not, since where the cache
-# sits is not the problem.
+# UV_NO_CACHE gives uv a cache discarded when the command ends, so keeping the old tree costs
+# full size: the rollback warning must fire, the cross-volume notice must not.
 _run_no_cache() {  # same_volume_cache
     {
         printf '%s\n' 'step() { printf "STEP %s\n" "$2"; }'
@@ -221,9 +215,8 @@ case "$_NOTICE_NO_CACHE" in
     *) ok "UV_NO_CACHE does not blame the cache location" ;;
 esac
 
-# st_dev, not the df source: the question is whether uv can hardlink, and two btrfs subvolumes or
-# two mounts of one device share a df source while `ln` between them fails EXDEV. Driven with a
-# stubbed device id rather than a second filesystem, which this host cannot create.
+# st_dev, not the df source: two btrfs subvolumes share a df source while `ln` between them fails
+# EXDEV. Stubbed device ids, since this host cannot create a second filesystem.
 _run_devids() {  # id_a  id_b
     {
         printf '%s\n' 'step() { printf "STEP %s\n" "$2"; }'
