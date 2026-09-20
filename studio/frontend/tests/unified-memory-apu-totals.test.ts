@@ -12,6 +12,8 @@ import test from "node:test";
 import {
   aggregateGpuMemoryTotalGb,
   gpuMemoryTotalsGb,
+  gpuSharedHostMemoryGb,
+  resolveMemoryCapacityGb,
   sharesHostMemory,
 } from "../src/hooks/gpu-vram.ts";
 
@@ -121,6 +123,8 @@ test("only the two flags route; nothing else about a device does", () => {
 
 test("callers that already folded the two flags get the same answer", () => {
   // use-gpu-info and memory-fit hand in an already-folded flag: that has to be a no-op.
+  // Single device only. Folding is NOT idempotent for several unified devices, which is
+  // why no caller pre-folds any more; `every call site agrees` below pins that.
   for (const device of [linuxApu, windowsApu, discrete]) {
     const preFolded = {
       memory_total_gb: device.memory_total_gb,
@@ -134,4 +138,61 @@ test("callers that already folded the two flags get the same answer", () => {
     };
     assert.deepEqual(gpuMemoryTotalsGb([preFolded]), gpuMemoryTotalsGb([device]));
   }
+});
+
+test("every call site agrees on a multi-socket unified host", () => {
+  // Reported by ItsRoy69 on #11366: the totals path read these as 96 while the capacity
+  // path pre-folded both flags into `shared_memory` and then collapsed them to 48, so the
+  // same inventory had two answers depending on who asked. A pin covering both sockets
+  // reported half its memory.
+  const devices = [
+    { memory_total_gb: 48, shared_memory: false, unified_memory: true },
+    { memory_total_gb: 48, shared_memory: false, unified_memory: true },
+  ];
+  assert.equal(gpuMemoryTotalsGb(devices).total, 96);
+  assert.equal(gpuSharedHostMemoryGb(devices), 96);
+
+  const pinned = devices.map((device) => ({
+    memoryTotalGb: device.memory_total_gb,
+    sharedMemory: device.shared_memory,
+    unifiedMemory: device.unified_memory,
+    sharedMemoryHostBackedGb: null,
+  }));
+  const capacity = resolveMemoryCapacityGb({
+    pinnedDevices: pinned,
+    hostDevices: pinned,
+    hostGpuTotalGb: 96,
+    hostDedicatedGpuTotalGb: 0,
+    hostSharesSystemRam: true,
+    systemRamTotalGb: 128,
+    unifiedMemory: false,
+  });
+  assert.equal(capacity.gpuCapacityGb, 96);
+});
+
+test("one host pool is still counted once, on every path", () => {
+  // The other half of the same rule: `shared_memory` devices ARE views of one pool
+  // (duplicate Vulkan ICD rows), so widening the unified case must not widen this one.
+  const devices = [
+    { memory_total_gb: 48, shared_memory: true },
+    { memory_total_gb: 48, shared_memory: true },
+  ];
+  assert.equal(gpuMemoryTotalsGb(devices).total, 48);
+  assert.equal(gpuSharedHostMemoryGb(devices), 48);
+
+  const pinned = devices.map((device) => ({
+    memoryTotalGb: device.memory_total_gb,
+    sharedMemory: device.shared_memory,
+    sharedMemoryHostBackedGb: null,
+  }));
+  const capacity = resolveMemoryCapacityGb({
+    pinnedDevices: pinned,
+    hostDevices: pinned,
+    hostGpuTotalGb: 48,
+    hostDedicatedGpuTotalGb: 0,
+    hostSharesSystemRam: true,
+    systemRamTotalGb: 128,
+    unifiedMemory: false,
+  });
+  assert.equal(capacity.gpuCapacityGb, 48);
 });
