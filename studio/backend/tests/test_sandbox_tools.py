@@ -4014,3 +4014,73 @@ class TestTargetsReadFromAFile:
             'r = requests.get("https://huggingface.co/api/models")\n'
             "print(r.text)"
         )
+
+
+class TestDirectlyImportedConnectors:
+    """`from psycopg2 import connect` spells the call as a bare name, and the resolved name is
+    what says what it is."""
+
+    def test_a_directly_imported_connect_is_screened(self):
+        _blocked(
+            'from psycopg2 import connect\nconnect("postgresql://u@169.254.169.254/db")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_aliased_direct_import_is_screened_too(self):
+        _blocked(
+            "from psycopg2 import connect as pgconnect\n"
+            'pgconnect("postgresql://u@evil.example/db")',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+
+class TestDatabaseTargetsChosenOffSource:
+    """A DSN read from the environment picks the host at runtime, which is the same hole a
+    request target read from the environment is."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import os, psycopg2\npsycopg2.connect(host = os.environ["H"])', id = "host_keyword"
+            ),
+            pytest.param(
+                'import os, pyodbc\npyodbc.connect(os.environ["DSN"])', id = "positional_dsn"
+            ),
+        ],
+    )
+    def test_an_external_database_target_is_refused(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")
+
+    def test_a_file_only_client_is_not_a_target_at_all_ok(self):
+        # sqlite3 opens a file whatever the string says, so an environment-chosen path is not a
+        # host the allowlist could police.
+        _ok('import os, sqlite3\nsqlite3.connect(os.environ["DB"])')
+
+
+class TestFileOnlyClientsKeepTheirPaths:
+    """A file-only client's argument is a path however it is spelled."""
+
+    def test_a_path_that_reads_like_a_dsn_is_still_a_path(self):
+        _ok('import sqlite3\nsqlite3.connect("host=cache.db")')
+
+    def test_a_duckdb_path_is_unaffected_ok(self):
+        _ok('import duckdb\nduckdb.connect("host=warehouse.duckdb")')
+
+
+class TestPoolManagerTakesAPoolCount:
+    """`urllib3.PoolManager(10)` configures pools; only the connection pools take a host."""
+
+    def test_a_pool_count_from_the_environment_is_not_a_target(self):
+        _ok(
+            "import os, urllib3\n"
+            'p = urllib3.PoolManager(int(os.environ["N"]))\n'
+            'p.request("GET", "https://huggingface.co/api/models")'
+        )
+
+    def test_a_connection_pool_host_from_the_environment_is_still_refused(self):
+        _blocked(
+            'import os, urllib3\np = urllib3.HTTPSConnectionPool(os.environ["H"])\n'
+            'p.request("GET", "/x")',
+            expect_phrase = "Blocked: request target is read",
+        )

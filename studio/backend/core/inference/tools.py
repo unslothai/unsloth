@@ -16842,6 +16842,9 @@ def _check_signal_escape_patterns(code: str):
     _DSN_HOST_RE = re.compile(r"(?:^|[;\s])(?:host|server)\s*=\s*([^;\s]+)", re.IGNORECASE)
     # Schemes that name a file rather than a host, so `sqlite:///state.db` opens nothing remote.
     _LOCAL_DSN_SCHEMES = ("sqlite", "duckdb", "file", "shm", "memory")
+    # These open a file and nothing else, so their argument is a path however it is spelled:
+    # `sqlite3.connect("host=cache.db")` is a file called host=cache.db.
+    _FILE_ONLY_CONNECT_OWNERS = frozenset({"sqlite3", "apsw", "duckdb"})
 
     def _dsn_hosts(text: str) -> "list[str]":
         """Every host a database connection string names. A libpq DSN may list failover hosts,
@@ -16935,10 +16938,32 @@ def _check_signal_escape_patterns(code: str):
             ".".join(parts[: index + 1]) in _rebound_attributes for index in range(len(parts))
         )
 
+    def _is_a_connect_call(node: ast.Call) -> bool:
+        """Whether this call is a `connect`, however it was imported. `from psycopg2 import
+        connect` spells it as a bare name, and the resolved name is what says what it is."""
+        if isinstance(node.func, ast.Attribute):
+            return node.func.attr == "connect"
+        return any(name.rpartition(".")[2] == "connect" for name in _call_fq_names(node.func, _bindings))
+
+    def _connect_owner_root(node: ast.Call) -> str:
+        """The module a `connect` call belongs to, resolved rather than as written."""
+        for name in _call_fq_names(node.func, _bindings):
+            if name.rpartition(".")[2] == "connect" and "." in name:
+                return name.split(".")[0]
+        return ""
+
+    def _database_target_is_external(node: ast.Call) -> bool:
+        """Whether the DSN or host of a database `connect` is read from outside the source."""
+        candidates = [kw.value for kw in node.keywords or [] if kw.arg in ("host", "server")]
+        candidates += list(node.args[:1])
+        return any(_externally_sourced(candidate, _bindings) for candidate in candidates)
+
     def _connect_is_exempt(node: ast.Call) -> bool:
         """Whether a `connect` call is one of the local-resource clients, still spelling what it
         was imported as. Replacing the callable, `sqlite3.connect = smtplib.SMTP().connect`,
         leaves the receiver looking like the module while the call opens a socket."""
+        if not isinstance(node.func, ast.Attribute):
+            return _connect_owner_root(node) in _LOCAL_CONNECT_OWNERS
         return _opens_a_local_resource(node.func.value) and not _any_prefix_was_rebound(
             node.func
         )
@@ -17329,6 +17354,9 @@ def _check_signal_escape_patterns(code: str):
 
     # Clients that can be handed their host once, at construction, after which a request needs
     # only a path. `urllib3` pools take a bare host, the others a whole base URL.
+    # Only the connection pools take a host positionally. `urllib3.PoolManager(10)` takes a pool
+    # count, so reading argument zero there would refuse an ordinary configuration.
+    _POSITIONAL_HOST_FQ = ("urllib3.HTTPConnectionPool", "urllib3.HTTPSConnectionPool")
     _POOL_FACTORY_FQ = (
         "urllib3.PoolManager",
         "urllib3.HTTPConnectionPool",
@@ -17367,7 +17395,7 @@ def _check_signal_escape_patterns(code: str):
         for kw in node.keywords or []:
             if kw.arg in ("base_url", "host"):
                 return kw.value
-        takes_positional = is_pool or fq == "aiohttp.ClientSession"
+        takes_positional = fq in _POSITIONAL_HOST_FQ or fq == "aiohttp.ClientSession"
         return node.args[0] if (takes_positional and node.args) else None
 
     def _configured_host(host_node) -> "str | None":
@@ -17402,21 +17430,27 @@ def _check_signal_escape_patterns(code: str):
             # Even then the exemption is only from screening the argument as a bare host. A
             # connection string can name a remote host as plainly as a URL does, and
             # `postgresql://user:pass@host/db` is the usual way to write one.
-            if (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr == "connect"
-                and _connect_is_exempt(node)
-            ):
-                database_hosts = _remote_database_hosts(node)
+            if _is_a_connect_call(node) and _connect_is_exempt(node):
+                database_hosts = (
+                    []
+                    if _connect_owner_root(node) in _FILE_ONLY_CONNECT_OWNERS
+                    else _remote_database_hosts(node)
+                )
                 if database_hosts:
                     for database_host in database_hosts:
                         _screen_host(database_host, node)
                 else:
                     _expanded, opaque = _expanded_host_arguments(node)
-                    if opaque and any(
-                        _externally_sourced(kw.value, _bindings)
-                        for kw in node.keywords or []
-                        if kw.arg is None
+                    if _connect_owner_root(node) not in _FILE_ONLY_CONNECT_OWNERS and (
+                        _database_target_is_external(node)
+                        or (
+                            opaque
+                            and any(
+                                _externally_sourced(kw.value, _bindings)
+                                for kw in node.keywords or []
+                                if kw.arg is None
+                            )
+                        )
                     ):
                         network_calls.append(
                             {
@@ -17430,8 +17464,8 @@ def _check_signal_escape_patterns(code: str):
                         )
 
             if (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr == "connect"
+                _is_a_connect_call(node)
+                and isinstance(node.func, ast.Attribute)
                 and node.args
                 and (
                     isinstance(node.args[0], ast.Tuple)
