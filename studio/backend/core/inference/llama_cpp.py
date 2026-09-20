@@ -3922,6 +3922,22 @@ def _kv_cache_cell_layout(n_ctx: int, n_parallel: int, kv_unified: bool) -> tupl
     return slots, streams, cells_per_stream
 
 
+def _positive_int_n_ctx(value: object) -> Optional[int]:
+    """A context size read out of llama-server's JSON, or None if it isn't one.
+
+    Shared by the ``/slots`` and ``/props`` probes so both reject the same
+    shapes. ``bool`` is excluded explicitly because it subclasses ``int``: a
+    JSON ``true`` would otherwise pass ``isinstance(v, int) and v > 0`` and
+    publish a ONE token window, which becomes the max_tokens ceiling and
+    rejects every real prompt. Strings stay rejected rather than coerced --
+    a server that cannot name its own context in a number is not one to
+    guess for.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value > 0 else None
+
+
 def _launch_ctx_from_args(args: Optional[Iterable[str]]) -> Optional[int]:
     """Total ``-c`` on the argv that actually spawned, or None when there is none.
 
@@ -32679,9 +32695,15 @@ class LlamaCppBackend:
         modalities = props.get("modalities")
         if isinstance(modalities, dict):
             self._has_video_input = bool(modalities.get("video"))
-        settings = props.get("default_generation_settings") or {}
-        n_ctx = settings.get("n_ctx")
-        return int(n_ctx) if n_ctx else None
+        # Everything below is attacker-adjacent only in the sense that it is
+        # another process' JSON: a non-dict settings block (.get -> AttributeError)
+        # or a non-numeric n_ctx (int() -> ValueError) would otherwise propagate
+        # out of the probe chain and fail the load itself, from the post-health
+        # call site. An unreadable /props means "unknown", not "abort".
+        settings = props.get("default_generation_settings")
+        if not isinstance(settings, dict):
+            return None
+        return _positive_int_n_ctx(settings.get("n_ctx"))
 
     _RUNTIME_N_CTX_STDOUT_RE = re.compile(r"new slot, n_ctx = (\d+)")
 
@@ -32722,8 +32744,7 @@ class LlamaCppBackend:
         slot = slots[0]
         if not isinstance(slot, dict):
             return None
-        n_ctx = slot.get("n_ctx")
-        return int(n_ctx) if isinstance(n_ctx, int) and n_ctx > 0 else None
+        return _positive_int_n_ctx(slot.get("n_ctx"))
 
     def _probe_runtime_n_ctx(self) -> Optional[int]:
         """Per-slot context llama-server actually allocated: ``/slots``, else

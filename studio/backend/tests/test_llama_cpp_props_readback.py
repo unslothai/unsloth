@@ -809,3 +809,55 @@ def test_probe_missing_binary_reports_new_capabilities_false():
     assert info["found"] is False
     assert info["supports_kv_unified"] is False
     assert info["supports_fit_ctx"] is False
+
+
+# ---------------------------------------------------------------------------
+# Probe input validation
+#
+# Both cells below are real defects found reviewing #5911, not hypotheticals:
+# a JSON bool is an int to isinstance(), and the /props parse sits outside the
+# only try that guards it.
+# ---------------------------------------------------------------------------
+
+
+def test_a_boolean_slot_n_ctx_is_not_a_context_window(monkeypatch):
+    """``isinstance(True, int)`` is True, so an unguarded check turns a JSON
+    ``true`` into a 1-token window -- which then becomes the max_tokens ceiling
+    and rejects every real prompt. Fall through to /props instead."""
+    _stub_endpoints(
+        monkeypatch,
+        slots = _FakeResponse(200, [{"id": 0, "n_ctx": True}]),
+        props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 8192}}),
+    )
+    assert _make_backend()._probe_runtime_n_ctx() == 8192
+
+
+def test_a_malformed_props_payload_still_lets_slots_answer(monkeypatch):
+    """/props is queried first for its modality side effect, so a malformed
+    payload there must not abort the chain before /slots is ever read. A
+    non-dict default_generation_settings raises AttributeError off .get, and a
+    non-numeric n_ctx raises ValueError off int() -- both outside the try that
+    guards the request itself, so both propagate into the post-health load path
+    and fail the load."""
+    for bad in (
+        {"default_generation_settings": [{"n_ctx": 8192}]},
+        {"default_generation_settings": {"n_ctx": "not-a-number"}},
+        {"default_generation_settings": {"n_ctx": [4096]}},
+    ):
+        _stub_endpoints(
+            monkeypatch,
+            slots = _FakeResponse(200, [{"id": 0, "n_ctx": 2048}]),
+            props = _FakeResponse(200, bad),
+        )
+        assert _make_backend()._probe_runtime_n_ctx() == 2048, bad
+
+
+def test_a_malformed_props_payload_alone_returns_none(monkeypatch):
+    """Same payloads with no /slots to rescue the chain: the probe reports
+    "unknown", it does not raise into the caller."""
+    _stub_endpoints(
+        monkeypatch,
+        slots = _FakeResponse(404, {}),
+        props = _FakeResponse(200, {"default_generation_settings": [{"n_ctx": 8192}]}),
+    )
+    assert _make_backend()._probe_runtime_n_ctx() is None
