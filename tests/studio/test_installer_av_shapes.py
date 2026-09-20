@@ -927,25 +927,6 @@ function Get-WinEvent {
 """
 
 
-# A new subdirectory's watch is not in place the instant the directory appears. On
-# Windows, ReadDirectoryChangesW is recursive in the kernel, so there is no gap at all.
-# Off Windows, .NET emulates IncludeSubdirectories by adding an inotify watch per
-# directory, and it adds the one for a directory it has just been told about after the
-# fact: a file written into a brand-new subdirectory microseconds later can land before
-# its watch does, and the creation is never raised.
-#
-# That is invisible to a test whose files are still on disk at the end, because the
-# listing half reports those anyway. It is the whole result for the one below, where the
-# live stream is the only detector left. Measured here, idle, 64 cores: 1 miss in 60
-# without this settle, 0 in 60 with it. A two-core hosted runner is where it actually
-# bit (Backend CI job 105986532571, `Repo tests (CPU, studio)`, COUNT:0).
-#
-# This is a property of watching a Linux filesystem, not of Watch-ForCompiler.ps1, which
-# runs on Windows in anger. csc.exe does not write its intermediates in the same
-# microsecond it creates their directory either, so waiting here is the faithful shape.
-_SETTLE_FOR_THE_SUBDIRECTORY_WATCH = "Start-Sleep -Milliseconds 500; "
-
-
 def _run_watch(
     tmp_path,
     action: str,
@@ -996,51 +977,46 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
     directory once the assembly is loaded. Comparing a listing taken before against one
     taken after cannot see a file that no longer exists, so the job failed as a broken
     detector on every run since it was added.
+
+    The directory is staged BEFORE the watch starts, and that is the whole reason this
+    test is reliable. It used to be created inside the action, which is what CodeDom
+    does, and which is unobservable here: `IncludeSubdirectories` is recursive in the
+    kernel on Windows, but off Windows .NET emulates it by adding an inotify watch per
+    directory, and it adds the one for a new subdirectory after the fact. A file written
+    into a brand-new subdirectory microseconds later can land before its watch does and
+    never be raised at all. Measured driving the same shape in a loop, idle: 1 miss in
+    60. On a two-core hosted runner it landed as COUNT:0 on a pull request that touches
+    none of this (Backend CI job 105986532571, `Repo tests (CPU, studio)`).
+
+    There is nothing to synchronise on either, so a wait is the only alternative and a
+    wait is just a wider race. The watcher's NotifyFilter is FileName, which does not
+    raise a directory's own creation: measured, 0 of 1 under FileName and 1 of 1 once
+    DirectoryName is added, so the event that would say "the subdirectory is watched
+    now" is deliberately not in the stream, and widening the production filter to put it
+    there would change what the detector records.
+
+    What is under test does not need a new directory. The claim is that a file which no
+    longer exists when the action returns is still reported, and the only detector that
+    can make it is the live stream: the before-listing is taken while the directory is
+    empty, the after-listing sees a directory that is gone. Staging the directory removes
+    the platform's timing from the measurement without touching the claim.
     """
+    setup = (
+        '$staged = Join-Path $env:TEMP "vpmyd5eq"; '
+        "New-Item -ItemType Directory -Force -Path $staged | Out-Null"
+    )
     action = (
-        '$dir = Join-Path $env:TEMP "abcd1234"; '
-        "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
-        # See _SETTLE_FOR_THE_SUBDIRECTORY_WATCH: off Windows the watch for $dir is added
-        # after $dir appears, and this is the one test with no listing half to fall back on.
-        + _SETTLE_FOR_THE_SUBDIRECTORY_WATCH
-        + 'Set-Content -LiteralPath (Join-Path $dir "abcd1234.cmdline") -Value "/noconfig"; '
-        'Set-Content -LiteralPath (Join-Path $dir "abcd1234.dll") -Value "MZ"; '
+        '$dir = Join-Path $env:TEMP "vpmyd5eq"; '
+        'Set-Content -LiteralPath (Join-Path $dir "vpmyd5eq.cmdline") -Value "/noconfig"; '
+        'Set-Content -LiteralPath (Join-Path $dir "vpmyd5eq.dll") -Value "MZ"; '
         "Start-Sleep -Milliseconds 400; "
         # The whole point: gone before the action returns, exactly as CodeDom leaves it.
         "Remove-Item -LiteralPath $dir -Recurse -Force"
     )
-    stdout, libraries = _run_watch(tmp_path, action)
-    assert libraries, f"a compile that cleaned up after itself was missed again: {stdout}"
-    assert any(lib.endswith(".cmdline") for lib in libraries), libraries
-    assert any(lib.endswith(".dll") for lib in libraries), libraries
-
-
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
-def test_a_deleted_intermediate_is_reported_with_no_subdirectory_race_to_lose(tmp_path) -> None:
-    """The same claim as above, with the platform's timing taken out of it.
-
-    The claim is that a file which no longer exists when the action returns is still
-    reported, and nothing about that claim needs the file's directory to be new. Here the
-    directory is created before the watch starts, so its watch is in place before anything
-    is written into it and the live stream is the only thing being measured. If the test
-    above ever goes quiet on a loaded runner, this one still fails when the watcher stops
-    reporting what it saw, which is the regression either of them is for.
-    """
-    setup = (
-        '$staged = Join-Path $env:TEMP "wxyz9876"; '
-        "New-Item -ItemType Directory -Force -Path $staged | Out-Null"
-    )
-    action = (
-        '$dir = Join-Path $env:TEMP "wxyz9876"; '
-        'Set-Content -LiteralPath (Join-Path $dir "wxyz9876.cmdline") -Value "/noconfig"; '
-        'Set-Content -LiteralPath (Join-Path $dir "wxyz9876.dll") -Value "MZ"; '
-        "Start-Sleep -Milliseconds 400; "
-        "Remove-Item -LiteralPath $dir -Recurse -Force"
-    )
     stdout, libraries = _run_watch(tmp_path, action, setup = setup)
     assert libraries, f"a compile that cleaned up after itself was missed again: {stdout}"
-    assert any(lib.endswith("wxyz9876.cmdline") for lib in libraries), libraries
-    assert any(lib.endswith("wxyz9876.dll") for lib in libraries), libraries
+    assert any(lib.endswith("vpmyd5eq.cmdline") for lib in libraries), libraries
+    assert any(lib.endswith("vpmyd5eq.dll") for lib in libraries), libraries
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
