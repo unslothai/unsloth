@@ -43,7 +43,7 @@ const toolGroupVariants = cva("aui-tool-group-root group/tool-group w-full", {
   variants: {
     variant: {
       outline: "corner-squircle rounded-lg border py-3",
-      ghost: "py-2",
+      ghost: "",
       muted:
         "corner-squircle rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
     },
@@ -309,9 +309,9 @@ const ToolGroupImpl: FC<
       ((hasLiveOutput && messageRunning) ||
         (forcedOpenRef.current && messageRunning)));
 
-  // With the fold preference on, this run of calls belongs to the thinking block before it and
-  // shows only while that block is open. Calls that hold their own output, and any awaiting an
-  // allow or deny, are never folded away.
+  // With the fold preference on, this run of calls belongs to the turn's first thinking block
+  // and shows only while that block is open. Calls that hold their own output, and any awaiting
+  // an allow or deny, are never folded away.
   const foldToolActivity = useChatPreferencesStore(
     (state) => state.foldToolActivityIntoThinking,
   );
@@ -351,11 +351,7 @@ const ToolGroupImpl: FC<
   return (
     <div
       data-slot="tool-run-under-thinking"
-      className={cn(
-        roundOpen
-          ? "mt-1 border-muted-foreground/25 border-l pl-3"
-          : "hidden",
-      )}
+      className={cn(!roundOpen && "hidden")}
     >
       {group}
     </div>
