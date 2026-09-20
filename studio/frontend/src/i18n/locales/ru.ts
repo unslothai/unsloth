@@ -164,6 +164,8 @@ export const ru = {
       export: "Экспорт",
       recents: "Недавние",
       noChatsYet: "Пока нет чатов",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Нет чатов",
       showMore: "Показать больше",
       showLess: "Показать меньше",
       settings: "Настройки",

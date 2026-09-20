@@ -164,6 +164,8 @@ export const ptBR = {
       export: "Exportar",
       recents: "Recentes",
       noChatsYet: "Nenhum chat ainda",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Nenhum chat",
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",

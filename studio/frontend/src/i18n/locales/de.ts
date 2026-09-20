@@ -165,6 +165,8 @@ export const de = {
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Keine Chats",
       showMore: "Mehr anzeigen",
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
