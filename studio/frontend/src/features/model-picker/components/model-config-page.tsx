@@ -387,8 +387,8 @@ function ChatTemplateSetting({
         <span className={LABEL_CLASS}>Chat Template</span>
         <InfoHint>
           {readOnly
-            ? "Preview the model's chat template. This model's backend cannot take a custom one."
-            : "Override the model's chat template with custom Jinja. Applies when the model loads."}
+            ? "Preview the model's chat template. This backend cannot take a custom one."
+            : "Replace the model's chat template with custom Jinja. Applies on load."}
         </InfoHint>
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -440,9 +440,8 @@ function MaxSeqLengthSetting({
           <span className={LABEL_CLASS}>{label}</span>
           <InfoHint>
             {isMlx
-              ? "Tokens of context the model is sized for. Whether it also caps the " +
-                "cache depends on the architecture."
-              : "Maximum context window size in tokens. Applies when the model loads."}
+              ? "Tokens of context the model is sized for."
+              : "Maximum context window in tokens. Applies on load."}
           </InfoHint>
         </div>
         <NumericValueInput
@@ -824,8 +823,7 @@ function GpuMemorySettings({
               </div>
               <div>
                 <span className="font-medium">Manual:</span> set GPU Layers
-                yourself. Leave it on Auto to let llama.cpp size the context and
-                offload overflow (including MoE experts) to RAM.
+                yourself.
               </div>
             </div>
           </InfoHint>
@@ -880,8 +878,7 @@ function GpuMemorySettings({
             info={
               <>
                 Layers to keep on the GPU (--gpu-layers); the rest run on CPU.
-                Auto lets llama.cpp size the split (and the context) to fit
-                VRAM. At the maximum, the whole model is on the GPU.
+                Auto sizes the split to fit VRAM.
               </>
             }
           />
@@ -896,8 +893,7 @@ function GpuMemorySettings({
               info={
                 <>
                   Keep the experts of this many MoE layers on the CPU
-                  (--n-cpu-moe) to save VRAM. 0 = all experts on the GPU; at the
-                  maximum, all are on the CPU.
+                  (--n-cpu-moe) to save VRAM. 0 keeps every expert on the GPU.
                 </>
               }
             />
@@ -909,11 +905,11 @@ function GpuMemorySettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>GPUs</span>
             <InfoHint>
-              By default, Unsloth chooses GPUs automatically. Editing this list
-              makes the checked GPUs the explicit candidate pool.
+              Unsloth picks GPUs automatically. Checking them here limits it to
+              those.
               {!isDiffusion &&
-                " Their order here is the order they are given to the model, so the first one takes the prompt."}{" "}
-              At least one GPU must stay selected.
+                " Their order here is the order the model gets them."}{" "}
+              Keep at least one selected.
             </InfoHint>
           </div>
           <div className="flex flex-col gap-2">
@@ -985,8 +981,7 @@ function AdvancedSettingsToggle({
           Advanced settings
         </span>
         <InfoHint>
-          Extra options for how the model loads. Unsloth already picks the best
-          settings for your device, so most setups don't need these.
+          Extra options for how the model loads. Most setups don't need these.
         </InfoHint>
       </div>
       <Switch
@@ -1025,9 +1020,8 @@ function MlxAdvancedSettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
           <InfoHint>
-            Lower KV cache precision to save memory at the cost of some
-            quality. Auto keeps full precision; 8-bit is the safest reduction,
-            and lower widths save more memory.
+            Lower KV cache precision to save memory, at some cost to quality.
+            Auto keeps full precision; 8-bit is the safest step down.
           </InfoHint>
         </div>
         <Select
@@ -1111,14 +1105,9 @@ function LoadModeRow({
           <span className={LABEL_CLASS}>Mmap/Mlock</span>
           <InfoHint>
             How the weights are read off disk (--load-mode). Auto is the
-            default: Unsloth picks None when it can prove the model fits without
-            paging, since a mapped read is slower, and otherwise leaves the
-            choice to llama.cpp, which memory-maps unless a device cannot. mmap
-            forces the mapping, mlock keeps the model in RAM rather than letting
-            it swap or compress, mmap+mlock does both, DirectIO streams the file
-            where the platform supports it, and None asks for no special mode.
-            Model Memory, in Settings, owns this when either of its toggles is
-            on.
+            default and picks for you. mmap maps the file, mlock keeps the model
+            in RAM, DirectIO streams it, and None asks for no special mode.
+            Model Memory, in Settings, overrides this when it is on.
           </InfoHint>
         </div>
         <Select
@@ -1212,9 +1201,8 @@ function GgufAdvancedSettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
           <InfoHint>
-            Lower KV cache precision to save VRAM at the cost of some quality.
-            f16 is the default; bf16 and f32 are full precision; q8_0 through
-            iq4_nl are quantized.
+            Lower KV cache precision to save VRAM, at some cost to quality. f16
+            is the default; q8_0 through iq4_nl are quantized.
           </InfoHint>
         </div>
         <Select
@@ -1249,12 +1237,9 @@ function GgufAdvancedSettings({
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
           <InfoHint>
             Faster generation. Auto picks the best strategy for the model and
-            platform: DSpark or DFlash when the model ships a drafter sidecar,
-            otherwise MTP / ngram. Pick a strategy to force it, or Off to
-            disable. DSpark downloads a sidecar of about 11 GB and DFlash one of
-            about 1.5 GB, both trading VRAM for speed; on quantized targets
-            their greedy output can differ from a non speculative run. MTP and
-            ngram do not change output.
+            platform, or choose one to force it. DSpark and DFlash download a
+            drafter sidecar (about 11 GB and 1.5 GB) and trade VRAM for speed;
+            MTP and ngram do not change output.
           </InfoHint>
         </div>
         <Select
@@ -1296,8 +1281,8 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Draft Tokens</span>
             <InfoHint>
-              Max draft tokens per step. Leave blank for the default (MTP and
-              DFlash: 2 on GPU, 3 on CPU/Mac; DSpark: 3).
+              Max draft tokens per step. Leave blank for the default (2 or 3,
+              depending on the strategy and device).
             </InfoHint>
           </div>
           <input
@@ -1329,12 +1314,9 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS_WRAP}>Spec Decoding KV Cache Dtype</span>
             <InfoHint>
-              KV cache precision for the draft model's own context
-              (--spec-draft-type-k / --spec-draft-type-v). Separate from the KV
-              Cache Dtype above, which is the target model's. f16 is the
-              default; bf16 and f32 are full precision; q8_0 through iq4_nl are
-              quantized, and a quantized draft cache saves VRAM on a drafter
-              whose output is verified by the target anyway.
+              KV cache precision for the draft model's own context, separate
+              from the KV Cache Dtype above. f16 is the default; quantizing it
+              saves VRAM on a drafter the target verifies anyway.
             </InfoHint>
           </div>
           <Select
@@ -1371,10 +1353,9 @@ function GgufAdvancedSettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Parallel Slots</span>
           <InfoHint>
-            llama-server decode slots (--parallel) for concurrent requests.
-            Leave blank for the server default. More slots share the context
-            pool and use more VRAM; if they don't fit on GPU, fewer slots are
-            launched.
+            Decode slots (--parallel) for concurrent requests. Leave blank for
+            the server default. More slots share the context pool and use more
+            VRAM.
           </InfoHint>
         </div>
         <input
@@ -1412,8 +1393,7 @@ function GgufAdvancedSettings({
               <span className={LABEL_CLASS}>Batch Size</span>
               <InfoHint>
                 Logical prompt batch size (--batch-size). Leave blank for the
-                llama.cpp default (2048). Rarely needs changing; the micro-batch
-                below is what usually matters.
+                default (2048). The micro-batch below usually matters more.
               </InfoHint>
             </div>
             <input
@@ -1458,11 +1438,10 @@ function GgufAdvancedSettings({
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Micro-batch Size</span>
               <InfoHint>
-                Physical prompt micro-batch size (--ubatch-size). Leave blank for
-                the llama.cpp default (512), raised to 1120 on Gemma 4 vision
-                models, whose images do not fit in 512. Other vision models keep
-                the 512 default. Larger values speed up prompt processing but use
-                more VRAM for the compute buffer; capped at the batch size.
+                Physical prompt micro-batch size (--ubatch-size). Leave blank
+                for the default (512, or 1120 on Gemma 4 vision models). Larger
+                values speed up prompt processing but use more VRAM; capped at
+                the batch size.
               </InfoHint>
             </div>
             <input
@@ -1506,8 +1485,8 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Tensor Parallelism</span>
             <InfoHint>
-              No effect on a single GPU. On multi-GPU setups, improves tokens/sec
-              for dense models. MoE models don't benefit.
+              Speeds up dense models across multiple GPUs. No effect on a single
+              GPU, and MoE models don't benefit.
             </InfoHint>
           </div>
           <Switch
@@ -1525,11 +1504,9 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Vision</span>
             <InfoHint>
-              Loads the vision projector so the model can read images. Turning it
-              off frees the VRAM the projector would use, which can leave room for
-              more layers on the GPU. Text generation is unaffected either way.
-              Models that ship no projector have nothing to load, so the setting
-              does nothing for them.
+              Loads the vision projector so the model can read images. Turning
+              it off frees that VRAM for more layers on the GPU. Text generation
+              is unaffected either way.
             </InfoHint>
           </div>
           <Switch
@@ -1545,8 +1522,8 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Reasoning Budget</span>
             <InfoHint>
-              Maximum thinking tokens. -1 is unrestricted, 0 ends reasoning
-              immediately, and a positive value sets a token budget.
+              Maximum thinking tokens. -1 is unlimited and 0 turns reasoning
+              off.
             </InfoHint>
           </div>
           <input
@@ -1582,8 +1559,8 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
             <InfoHint>
-              Optional text injected before the end-of-thinking tag when the
-              model reaches its reasoning budget.
+              Optional text added before the end-of-thinking tag when the budget
+              runs out.
             </InfoHint>
           </div>
           <input
@@ -1624,12 +1601,10 @@ function GgufAdvancedSettings({
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Checkpoints</span>
               <InfoHint>
-                Context checkpoints kept per slot (--ctx-checkpoints), which let
-                a sliding-window model rewind instead of re-processing the
-                prompt. Leave blank for the llama.cpp default (
-                {CTX_CHECKPOINTS_LLAMA_DEFAULT}); 0 disables them. Each one costs
-                host memory, and models without a sliding window ignore the
-                setting.
+                Checkpoints kept per slot (--ctx-checkpoints), which let a
+                sliding-window model rewind instead of re-processing the prompt.
+                Leave blank for the default ({CTX_CHECKPOINTS_LLAMA_DEFAULT}); 0
+                disables them. Each one costs host memory.
               </InfoHint>
             </div>
             <input
@@ -1664,11 +1639,10 @@ function GgufAdvancedSettings({
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Cache RAM</span>
               <InfoHint>
-                Host memory in MiB llama-server may spend caching prompt state it
-                has evicted from a slot (--cache-ram), so a returning
-                conversation is not re-processed. Leave blank for the llama.cpp
-                default ({CACHE_RAM_LLAMA_DEFAULT}); 0 disables the cache and -1
-                lifts the limit.
+                Host memory in MiB for caching prompt state evicted from a slot
+                (--cache-ram), so a returning conversation is not re-processed.
+                Leave blank for the default ({CACHE_RAM_LLAMA_DEFAULT}); 0
+                disables it and -1 lifts the limit.
               </InfoHint>
             </div>
             <input
@@ -1832,14 +1806,13 @@ function ExtraArgsRow({
         <InfoHint>
           <div className="flex flex-col gap-1.5">
             <div>
-              Passed straight to llama-server for this model, after the settings
-              above, so anything set in both is taken from here.
+              Passed straight to llama-server after the settings above, so
+              anything set in both is taken from here.
             </div>
             <div>
-              Quote a value containing spaces or backslashes, including a
-              Windows path. Nothing runs a shell, so $HOME, ; and | are ordinary
-              characters. Flags Unsloth owns, like the model, the port and the
-              API key, are refused.
+              Quote values with spaces or backslashes. Nothing runs a shell, so
+              $HOME, ; and | are ordinary characters. Flags Unsloth owns, like
+              the model and the port, are refused.
             </div>
           </div>
         </InfoHint>
@@ -3180,10 +3153,9 @@ export function ModelConfigPage({
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className={LABEL_CLASS}>Context Length</span>
                   <InfoHint>
-                    Drag all the way left for Auto, which chooses a context that
-                    fits while prioritizing GPU speed. Custom values request an
-                    exact context; higher values use more memory and may move
-                    model layers to system RAM.
+                    Drag all the way left for Auto, which picks a context that
+                    fits while keeping GPU speed. Custom values request an exact
+                    context; higher ones use more memory.
                     {contextIsAuto && activeLoadedContext != null
                       ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
                       : ""}
