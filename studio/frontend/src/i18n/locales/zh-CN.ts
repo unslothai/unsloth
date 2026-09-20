@@ -192,6 +192,7 @@ export const zhCN = {
       unpinChats: "取消置顶",
       archiveChats: "归档对话",
       markUnread: "标记为未读",
+      markRead: "标记为已读",
       deleteChats: "删除对话",
       deleteTitle: "删除对话",
       deleteDescription: "删除 {count} 个对话？此操作无法撤销。",

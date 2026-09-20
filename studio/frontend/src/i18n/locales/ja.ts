@@ -196,6 +196,7 @@ export const ja = {
       unpinChats: "ピン留めを解除",
       archiveChats: "チャットをアーカイブ",
       markUnread: "未読にする",
+      markRead: "既読にする",
       deleteChats: "チャットを削除",
       deleteTitle: "チャットを削除",
       deleteDescription: "{count} 件のチャットを削除しますか。元に戻せません。",

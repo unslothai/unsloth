@@ -197,6 +197,7 @@ export const hi = {
       unpinChats: "चैट अनपिन करें",
       archiveChats: "चैट संग्रहित करें",
       markUnread: "अपठित के रूप में चिह्नित करें",
+      markRead: "पढ़ा हुआ चिह्नित करें",
       deleteChats: "चैट हटाएँ",
       deleteTitle: "चैट हटाएँ",
       deleteDescription: "{count} चैट हटाएँ? इसे पूर्ववत नहीं किया जा सकता।",

@@ -70,23 +70,70 @@ test("double-clicking a chat title renames it in place", () => {
   );
 });
 
-// Marking one chat unread was only reachable by selecting it first and using the bulk menu.
-test("a chat row can be marked unread from its own menu", () => {
+// Marking one chat unread was only reachable by selecting it first and using the bulk menu, and
+// the dot could never be taken off again: the item was disabled on the rows that carried one.
+test("a chat row marks itself read or unread from its own menu", () => {
   assert.match(
     APP_SIDEBAR,
-    /<DropdownMenuItem\n\s*disabled=\{alreadyUnread\}\n\s*onSelect=\{\(\) => markThreadsUnread\(threadIds, rowIdByThreadId\)\}/,
+    /onSelect=\{\(\) =>\n\s*alreadyUnread\n\s*\? clearThreadsUnread\(threadIds\)\n\s*: markThreadsUnread\(threadIds, rowIdByThreadId\)\n\s*\}/,
   );
-  // The same string the bulk menu uses, so the two cannot drift apart.
-  assert.equal(
-    (APP_SIDEBAR.match(/t\("shell\.selection\.markUnread"\)/g) ?? []).length,
-    2,
-    "the row and bulk menus no longer say the same thing",
+  assert.ok(
+    !APP_SIDEBAR.includes("disabled={alreadyUnread}"),
+    "the item is still disabled on a row that carries the dot",
   );
-  // And the dot the row already draws is read off the same answer the menu disables on.
+  // The same strings the bulk menu uses, so the two cannot drift apart.
+  for (const key of ["markUnread", "markRead"]) {
+    assert.equal(
+      (APP_SIDEBAR.match(new RegExp(`t\\("shell\\.selection\\.${key}"\\)`, "g")) ?? [])
+        .length,
+      2,
+      `the row and bulk menus no longer say the same thing for ${key}`,
+    );
+  }
+  // Both go by the dot the row already draws.
   assert.match(
     APP_SIDEBAR,
     /const alreadyUnread = threadIds\.some\(\(threadId\) =>\n\s*unreadThreadIds\.has\(threadId\),\n\s*\);/,
   );
+  // An eye that is open once the row is read, crossed out while it is not.
+  assert.equal(
+    (
+      APP_SIDEBAR.match(
+        /icon=\{(alreadyUnread|allSelectedUnread) \? ViewIcon : ViewOffSlashIcon\}/g,
+      ) ?? []
+    ).length,
+    2,
+    "a read or unread item stopped naming the state it moves to",
+  );
+});
+
+// The bulk menu only ever added dots, so a selection of read rows had no way back.
+test("a selection of unread rows can be marked read", () => {
+  assert.match(
+    APP_SIDEBAR,
+    /const allSelectedUnread =\n\s*selectionCount > 0 &&\n\s*selectedChatItems\.every\(/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /function markSelectedRead\(\) \{\n\s*const threadIds = selectedChatItems\.flatMap\(getSidebarItemThreadIds\);\n\s*clearSelection\(\);\n\s*clearThreadsUnread\(threadIds\);\n\s*\}/,
+  );
+});
+
+// Two headers carrying the same pair of actions in opposite orders is the kind of thing the eye
+// catches without being able to name it.
+test("a section header puts its own action before the menu", () => {
+  const projects = APP_SIDEBAR.indexOf('aria-label="New project"');
+  const projectsMenu = APP_SIDEBAR.indexOf(
+    't("shell.organize.organizeProjects")',
+  );
+  assert.ok(projects > 0 && projectsMenu > 0);
+  assert.ok(projects < projectsMenu, "Projects still opens with its menu");
+  const newChat = APP_SIDEBAR.indexOf(
+    'aria-label={t("shell.navigation.newChat")}',
+  );
+  const recentsMenu = APP_SIDEBAR.indexOf('t("shell.organize.organizeChats")');
+  assert.ok(newChat > 0 && recentsMenu > 0);
+  assert.ok(newChat < recentsMenu, "Recents still opens with its menu");
 });
 
 // A menu opened from a chat row is already about that chat: "Pin chat" there only repeats what

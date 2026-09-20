@@ -161,6 +161,7 @@ export const it = {
       unpinChats: "Rimuovi le chat fissate",
       archiveChats: "Archivia le chat",
       markUnread: "Segna come non letta",
+      markRead: "Segna come letta",
       deleteChats: "Elimina le chat",
       deleteTitle: "Elimina le chat",
       deleteDescription: "Eliminare {count} chat? L'operazione non è reversibile.",

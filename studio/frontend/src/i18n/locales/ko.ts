@@ -194,6 +194,7 @@ export const ko = {
       unpinChats: "채팅 고정 해제",
       archiveChats: "채팅 보관",
       markUnread: "읽지 않음으로 표시",
+      markRead: "읽음으로 표시",
       deleteChats: "채팅 삭제",
       deleteTitle: "채팅 삭제",
       deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",

@@ -210,8 +210,8 @@ test("a chat row's icon is the plain bubble, not the one with dots", () => {
   );
   assert.equal(
     (APP_SIDEBAR.match(/icon=\{MessageCircleIcon\}/g) ?? []).length,
-    // The pinned row's own icon, the row menu's Mark as unread, and the bulk one.
-    3,
+    // The pinned row's own icon. The read and unread items carry an eye instead.
+    1,
     "a chat icon came or went",
   );
   // Derived by dropping that second path, so the icon set stays the source of the shape.

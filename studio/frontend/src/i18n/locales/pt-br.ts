@@ -196,6 +196,7 @@ export const ptBR = {
       unpinChats: "Desafixar conversas",
       archiveChats: "Arquivar conversas",
       markUnread: "Marcar como não lida",
+      markRead: "Marcar como lida",
       deleteChats: "Excluir conversas",
       deleteTitle: "Excluir conversas",
       deleteDescription: "Excluir {count} conversas? Esta ação não pode ser desfeita.",

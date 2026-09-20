@@ -196,6 +196,7 @@ export const es = {
       unpinChats: "Dejar de fijar chats",
       archiveChats: "Archivar chats",
       markUnread: "Marcar como no leído",
+      markRead: "Marcar como leído",
       deleteChats: "Eliminar chats",
       deleteTitle: "Eliminar chats",
       deleteDescription: "¿Eliminar {count} chats? Esta acción no se puede deshacer.",

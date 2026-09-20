@@ -197,6 +197,7 @@ export const fr = {
       unpinChats: "Détacher les discussions",
       archiveChats: "Archiver les discussions",
       markUnread: "Marquer comme non lu",
+      markRead: "Marquer comme lu",
       deleteChats: "Supprimer les discussions",
       deleteTitle: "Supprimer les discussions",
       deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",

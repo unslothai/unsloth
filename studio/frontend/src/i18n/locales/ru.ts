@@ -196,6 +196,7 @@ export const ru = {
       unpinChats: "Открепить чаты",
       archiveChats: "Архивировать чаты",
       markUnread: "Отметить как непрочитанное",
+      markRead: "Отметить как прочитанное",
       deleteChats: "Удалить чаты",
       deleteTitle: "Удалить чаты",
       deleteDescription: "Удалить чаты ({count})? Это действие необратимо.",

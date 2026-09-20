@@ -197,6 +197,7 @@ export const de = {
       unpinChats: "Chats lösen",
       archiveChats: "Chats archivieren",
       markUnread: "Als ungelesen markieren",
+      markRead: "Als gelesen markieren",
       deleteChats: "Chats löschen",
       deleteTitle: "Chats löschen",
       deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",

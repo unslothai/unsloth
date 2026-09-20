@@ -194,6 +194,7 @@ export const ar = {
       unpinChats: "إلغاء تثبيت المحادثات",
       archiveChats: "أرشفة المحادثات",
       markUnread: "وضع علامة كغير مقروءة",
+      markRead: "وضع علامة كمقروءة",
       deleteChats: "حذف المحادثات",
       deleteTitle: "حذف المحادثات",
       deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",

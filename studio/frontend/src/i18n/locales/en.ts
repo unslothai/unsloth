@@ -198,6 +198,7 @@ export const en = {
       unpinChats: "Unpin chats",
       archiveChats: "Archive chats",
       markUnread: "Mark as unread",
+      markRead: "Mark as read",
       deleteChats: "Delete chats",
       deleteTitle: "Delete chats",
       deleteDescription: "Delete {count} chats? This cannot be undone.",

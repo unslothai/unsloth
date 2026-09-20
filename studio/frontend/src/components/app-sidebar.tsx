@@ -111,6 +111,8 @@ import {
   Settings02Icon,
   Sun03Icon,
   UserCircleIcon,
+  ViewIcon,
+  ViewOffSlashIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import {
@@ -1777,6 +1779,21 @@ export function AppSidebar() {
     markThreadsUnread(threadIds, rowIdByThreadId);
   }
 
+  // Every selected row already carries a dot, so the only move left is taking them off.
+  const allSelectedUnread =
+    selectionCount > 0 &&
+    selectedChatItems.every((item) =>
+      getSidebarItemThreadIds(item).some((threadId) =>
+        unreadThreadIds.has(threadId),
+      ),
+    );
+
+  function markSelectedRead() {
+    const threadIds = selectedChatItems.flatMap(getSidebarItemThreadIds);
+    clearSelection();
+    clearThreadsUnread(threadIds);
+  }
+
   async function archiveSelected() {
     const items = selectedChatItems;
     clearSelection();
@@ -3342,9 +3359,17 @@ export function AppSidebar() {
           <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.archiveChats")}</span>
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => markSelectedUnread()}>
-          <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-icon" />
-          <span>{t("shell.selection.markUnread")}</span>
+        <ContextMenuItem
+          onSelect={() =>
+            allSelectedUnread ? markSelectedRead() : markSelectedUnread()
+          }
+        >
+          <HugeiconsIcon icon={allSelectedUnread ? ViewIcon : ViewOffSlashIcon} strokeWidth={1.75} className="size-icon" />
+          <span>
+            {allSelectedUnread
+              ? t("shell.selection.markRead")
+              : t("shell.selection.markUnread")}
+          </span>
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onSelect={() => deleteSelected()}>
@@ -3603,14 +3628,20 @@ export function AppSidebar() {
                 <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
                 <span>{isPinned ? "Unpin" : "Pin"}</span>
               </DropdownMenuItem>
-              {/* The dot a finished reply leaves, put back by hand. Disabled where the row already
-                  carries one: marking it again would do nothing and say nothing. */}
+              {/* The dot a finished reply leaves, put back or taken off by hand. */}
               <DropdownMenuItem
-                disabled={alreadyUnread}
-                onSelect={() => markThreadsUnread(threadIds, rowIdByThreadId)}
+                onSelect={() =>
+                  alreadyUnread
+                    ? clearThreadsUnread(threadIds)
+                    : markThreadsUnread(threadIds, rowIdByThreadId)
+                }
               >
-                <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-icon" />
-                <span>{t("shell.selection.markUnread")}</span>
+                <HugeiconsIcon icon={alreadyUnread ? ViewIcon : ViewOffSlashIcon} strokeWidth={1.75} className="size-icon" />
+                <span>
+                  {alreadyUnread
+                    ? t("shell.selection.markRead")
+                    : t("shell.selection.markUnread")}
+                </span>
               </DropdownMenuItem>
               {sandboxSessionId ? (
                 isTauri ? (
@@ -4449,13 +4480,6 @@ export function AppSidebar() {
                     {t("shell.navigation.projects")}
                     <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                   </CollapsibleTrigger>
-                  {renderSidebarHeaderMenu({
-                    ariaLabel: t("shell.organize.organizeProjects"),
-                    includeOrganize: true,
-                    sortLabel: t("shell.organize.sortChatsBy"),
-                    sortValue: chatSort,
-                    onSortChange: setChatSort,
-                  })}
                   <button
                     type="button"
                     aria-label="New project"
@@ -4467,6 +4491,13 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
                   </button>
+                  {renderSidebarHeaderMenu({
+                    ariaLabel: t("shell.organize.organizeProjects"),
+                    includeOrganize: true,
+                    sortLabel: t("shell.organize.sortChatsBy"),
+                    sortValue: chatSort,
+                    onSortChange: setChatSort,
+                  })}
                 </SidebarGroupLabel>
                 <CollapsibleContent>
                   <SidebarGroupContent className={unrailedRowPadding}>
@@ -4516,13 +4547,6 @@ export function AppSidebar() {
                   {t("shell.navigation.recents")}
                   <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
-                {renderSidebarHeaderMenu({
-                  ariaLabel: t("shell.organize.organizeChats"),
-                  includeOrganize: true,
-                  sortLabel: t("shell.organize.sortChatsBy"),
-                  sortValue: chatSort,
-                  onSortChange: setChatSort,
-                })}
                 {/* Starts a chat outside any project, whatever page is open. */}
                 <button
                   type="button"
@@ -4532,6 +4556,13 @@ export function AppSidebar() {
                 >
                   <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
                 </button>
+                {renderSidebarHeaderMenu({
+                  ariaLabel: t("shell.organize.organizeChats"),
+                  includeOrganize: true,
+                  sortLabel: t("shell.organize.sortChatsBy"),
+                  sortValue: chatSort,
+                  onSortChange: setChatSort,
+                })}
               </SidebarGroupLabel>
               <CollapsibleContent>
                 {/* The section as a whole takes the drop, so a chat dragged out of a folder has
