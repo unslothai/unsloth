@@ -975,6 +975,39 @@ def test_seed_hf_path_drops_the_mixed_json_glob_beside_a_compressed_file(monkeyp
     assert resolved == "datasets/org/repo/data/*.json"
 
 
+def test_seed_hf_path_keeps_a_trailing_globstar_a_whole_component(monkeypatch, tmp_path):
+    """fsspec refuses data/**.parquet outright, so the card's data/** grows a /*."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/a/train.parquet", "data/train.parquet"]
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "data/**"}]}]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    assert resolved == "datasets/org/repo/data/**/*.parquet"
+
+
+def test_seed_hf_path_leaves_hidden_folders_out_of_a_broad_card_glob(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/train.parquet", ".backup/train.parquet"]
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "**/*"}]}]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert matched == ["data/train.parquet"]
+
+
+def test_seed_hf_path_reads_a_hidden_folder_the_card_names(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/train.parquet", ".backup/train.parquet"]
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": ".backup/*"}]}]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert matched == [".backup/train.parquet"]
+
+
 def test_seed_hf_path_keeps_both_extensions_of_one_builder(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["data/a.json", "data/b.jsonl"]

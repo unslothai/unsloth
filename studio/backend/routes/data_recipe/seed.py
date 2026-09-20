@@ -293,9 +293,49 @@ def _class_end(pattern: str, start: int) -> int:
     return closing if closing > start else -1
 
 
-def _files_under_patterns(patterns: list[str], data_files: list[str]) -> list[str]:
-    matchers = [_glob_to_regex(pattern) for pattern in patterns]
-    return [f for f in data_files if any(m.match(f) for m in matchers)]
+def _hidden_to_the_loader(path: str, pattern: str) -> bool:
+    """Whether a match sits in a part the loader skips unless it was asked for.
+
+    `datasets` drops a match whose path carries a hidden or dunder component the
+    pattern does not carry itself, so `**/*` never reaches .backup/ or
+    __pycache__/ (`data_files._is_unrequested_hidden_file_or_is_inside_unrequested_hidden_dir`).
+    """
+    for prefix in (".", "__"):
+        in_path = [
+            part
+            for part in PurePosixPath(path).parts
+            if part.startswith(prefix) and set(part) != {"."}
+        ]
+        in_pattern = [
+            part
+            for part in PurePosixPath(pattern).parts
+            if part.startswith(prefix) and set(part) != {"."}
+        ]
+        if len(in_path) != len(in_pattern):
+            return True
+    return False
+
+
+def _files_under_patterns(
+    patterns: list[str],
+    data_files: list[str],
+    *,
+    as_the_loader_would: bool = False,
+) -> list[str]:
+    """The files a glob takes. Reading a card's own glob, the loader's rules apply.
+
+    Only there: a pattern this module WRITES is handed to a reader that skips
+    nothing, so it has to be judged on what it plainly matches.
+    """
+    matchers = [(pattern, _glob_to_regex(pattern)) for pattern in patterns]
+    return [
+        f
+        for f in data_files
+        if any(
+            m.match(f) and not (as_the_loader_would and _hidden_to_the_loader(f, p))
+            for p, m in matchers
+        )
+    ]
 
 
 def _common_parent(paths: list[str]) -> str:
@@ -457,6 +497,10 @@ def _with_data_extension(pattern: str, suffix: str) -> str:
         return pattern
     if current and any(char in current for char in "*?["):
         pattern = pattern[: -len(current)]
+    # `**` has to be a whole path component: fsspec refuses data/**.parquet
+    # outright, so a card's data/** becomes data/**/* before the extension.
+    if pattern.endswith("**"):
+        pattern = f"{pattern}/*"
     return f"{pattern}{suffix}"
 
 
@@ -657,7 +701,7 @@ def _resolve_seed_hf_path(
     repo_files: list[str] | None = None,
 ) -> str | None:
     declared = _declared_split_patterns(configs or [], split, subset)
-    declared_files = _files_under_patterns(declared, data_files)
+    declared_files = _files_under_patterns(declared, data_files, as_the_loader_would = True)
     # The card's own mapping beats any guess from the folder names, as long as it
     # resolves to files that are really there.
     if declared_files:
@@ -673,10 +717,10 @@ def _resolve_seed_hf_path(
         if len(declared) == 1:
             pattern = _with_data_extension(declared[0], suffix)
         # A split spread over several declared globs cannot be written as one, and
-        # neither can a rewritten pattern that no longer takes what it declared.
-        if not pattern or not set(declared_files) <= set(
-            _files_under_patterns([pattern], data_files)
-        ):
+        # neither can a rewritten pattern that takes anything other than what the
+        # card declared: the reader skips no hidden folder the loader would, so
+        # the rewrite has to exclude one itself.
+        if not pattern or set(declared_files) != set(_files_under_patterns([pattern], data_files)):
             pattern = _widened_declared_pattern(declared_files, data_files, split.lower(), suffix)
         # An unrepresentable mapping is refused, not approximated: the endpoint
         # answers 422 and the recipe is never pointed at the wrong rows.
@@ -966,7 +1010,9 @@ def inspect_seed_dataset(
     # Preview the same files the recipe will read, so the rows on screen are not
     # from a config the resolved path excludes.
     declared_files = _files_under_patterns(
-        _declared_split_patterns(configs, split, subset), data_files
+        _declared_split_patterns(configs, split, subset),
+        data_files,
+        as_the_loader_would = True,
     )
     # Same format the resolved path will read, or the rows on screen come from a
     # file the recipe never opens.
