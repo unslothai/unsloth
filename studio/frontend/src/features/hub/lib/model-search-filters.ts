@@ -49,7 +49,12 @@ export function modelContextLength(
     positiveNumber(config.max_position_embeddings) ??
     positiveNumber(config.n_positions) ??
     positiveNumber(config.max_seq_len) ??
-    positiveNumber(config.seq_length)
+    positiveNumber(config.seq_length) ??
+    positiveNumber(config.max_seq_length) ??
+    positiveNumber(config.max_sequence_length) ??
+    positiveNumber(config.n_ctx) ??
+    positiveNumber(config.context_length) ??
+    positiveNumber(config.model_max_length)
   );
 }
 

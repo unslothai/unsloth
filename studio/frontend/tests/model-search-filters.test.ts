@@ -250,3 +250,24 @@ test("rejected priority rows retain the pagination scan budget", async () => {
   );
   assert.deepEqual(rows, [accepted, null, null, null]);
 });
+
+test("context filters accept established config key aliases", async () => {
+  for (const field of [
+    "max_seq_length",
+    "max_sequence_length",
+    "n_ctx",
+    "context_length",
+    "model_max_length",
+  ]) {
+    const model = { name: "publisher/model" };
+    const rows = await collect(
+      filterModelListing(
+        listing([model]),
+        { minContext: 2048, maxContext: 2048 },
+        async () => ({ [field]: 2048 }),
+      ),
+    );
+    assert.deepEqual(rows, [model], field);
+    assert.equal(modelContextLength({ [field]: 0 }), undefined);
+  }
+});
