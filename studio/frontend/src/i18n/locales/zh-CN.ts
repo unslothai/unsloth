@@ -160,6 +160,8 @@ export const zhCN = {
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "无对话",
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",
@@ -1231,7 +1233,11 @@ export const zhCN = {
       },
       gpu: {
         title: "GPU 设备",
-        ggufInference: "GGUF 推理",
+        memory: "GPU 内存",
+        sharedWithSystemRam: "与系统 RAM 共享",
+        estimatedAvailable: "预计可用：{value}",
+        sharedEstimatedAvailable: "共享系统 RAM：预计可用 {value}",
+        ggufInference: "GGUF 模型内存",
         unavailable: "不可用",
         detecting: "正在检查 GPU...",
         unreadable: "无法读取此服务器的硬件信息。",

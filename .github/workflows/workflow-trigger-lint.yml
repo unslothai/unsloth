@@ -142,6 +142,7 @@ jobs:
             tests/studio/test_ci_shell_suite_coverage.py \
             tests/studio/test_pip_cache_naming.py \
             tests/studio/test_compile_caches_are_per_worker.py \
+            tests/studio/test_browser_simulations_retry_once.py \
             tests/studio/test_composer_rtl_bidi_attribute.py \
             tests/studio/test_frontend_dep_removal.py \
             tests/studio/test_frontend_dist_cache.py \
@@ -157,6 +158,8 @@ jobs:
             tests/studio/test_playwright_install_avoids_with_deps.py \
             tests/studio/test_macos_slots_per_commit.py \
             tests/studio/test_main_runs_survive_merge_bursts.py \
+            tests/studio/test_pull_requests_cancel_superseded_runs.py \
+            tests/studio/test_probe_cost_claim_is_measured.py \
             tests/studio/test_pester_bootstrap_hardening.py \
             tests/studio/test_playwright_suites_run_in_ci.py \
             tests/studio/test_sdk_installs_are_major_bounded.py \

@@ -17,6 +17,7 @@ const QUEUED_SETTING_KEYS = [
   "preserveThinking",
   "toolsEnabled",
   "codeToolsEnabled",
+  "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
   "artifactsEnabled",
   "mcpEnabledForChat",

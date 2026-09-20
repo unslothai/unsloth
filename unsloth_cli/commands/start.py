@@ -3534,7 +3534,9 @@ def _refresh_windows_path() -> None:
 def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
     # Best-effort: any failure here means "no managed Node", never a broken launch.
     try:
-        ensure_studio_backend_path()
+        # Discovery only: this answers "is there a managed Node", including for a launch aimed
+        # at a remote server, so it must not create the cache tree on the way past.
+        ensure_studio_backend_path(seed_cache_env = False)
         from utils.node_runtime import managed_node_binary, resolve_node_executable
         node = Path(managed_node_binary())
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):

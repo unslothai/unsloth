@@ -1136,3 +1136,43 @@ def _drop_the_settings_memo_between_tests():
         yield
     finally:
         _settings._cache.clear()
+
+
+@pytest.fixture(autouse = True)
+def _drop_the_idle_reload_stash_between_tests():
+    """Stop one test's idle-unloaded model being resurrected by another test's request.
+
+    core.inference.llama_keepwarm keeps what the idle loop freed in a module-level
+    ``_last_unloaded_model`` (with its KV manifest in ``_kv_resume``) so the next request
+    can reload exactly that. The idle tests set it through a real unload and clear it only
+    on the way IN, via their own _reset_keepwarm, so whichever of them runs last in a
+    worker leaves the stash standing for every test after it, in any module.
+
+    The chat route reads that stash before it refuses anything (routes/inference.py, "Idle
+    unload may have freed the model; reload exactly what it freed"). A later test whose
+    backends are doubles then reloads a model it never mentioned: the withheld-alias test
+    went looking for unsloth/Idle-GGUF on the Hub and died on
+    ``'_B' object has no attribute 'load_model'``, reported as ``assert 500 == 404``.
+
+    That is the same symptom the settings memo above produced and a different cause, which
+    is why this clears the stash rather than widening that fixture: both hand a later test
+    an input it never set, and under xdist --dist loadgroup which tests share a worker
+    changes between runs, so it fails in one shard and nowhere else.
+
+    The two stash fields only. The counters beside them (_inflight, _pending, _last_active)
+    are live-traffic bookkeeping, and zeroing those around every test would hide exactly the
+    leak this is here to prevent.
+
+    Through _set_last_unloaded rather than by assigning the globals: the manifest names KV
+    slot files on disk, and llama_keepwarm makes whoever takes it responsible for deleting
+    them. Assigning None drops the only reference to a real snapshot and leaves the files
+    behind, so a suite that saves KV would accumulate them run after run. That call clears
+    both fields under the module lock and unlinks the slots on its way out.
+    """
+    from core.inference import llama_keepwarm as _keepwarm
+
+    _keepwarm._set_last_unloaded(None)
+    try:
+        yield
+    finally:
+        _keepwarm._set_last_unloaded(None)
