@@ -364,6 +364,7 @@ jobs:
           persist-credentials: false
 
       - name: Download the shipped bundle
+        id: download
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -378,8 +379,15 @@ jobs:
               echo "::error::could not list desktop releases in $REL_REPO"
               exit 1
             fi
-            if ! REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
-              --repo "$REL_REPO" --asset-suffix "$asset_suffix" < "$releases_json")"; then
+            resolver_rc=0
+            REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
+              --repo "$REL_REPO" --asset-suffix "$asset_suffix" < "$releases_json")" || resolver_rc=$?
+            if [ "$resolver_rc" -ne 0 ]; then
+              if [ "$resolver_rc" -eq 1 ] && [ "$asset_suffix" = 'Ubuntu-ARM64.deb' ]; then
+                echo "::notice::no ARM64 release is available; package checks skipped"
+                echo "unreleased=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               echo "::error::no SemVer v... release with a $asset_suffix asset is visible in $REL_REPO"
               exit 1
             fi
@@ -396,13 +404,14 @@ jobs:
         # maintainer scripts, so installing first let them see the image's toolchain. That
         # install needs no masked tool -- clean-machine-env.sh moves aside only $TOOLS, and
         # the current bundle ships a postrm and no install-time script.
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
+        if: ${{ steps.download.outputs.unreleased != 'true' && (github.event_name != 'workflow_dispatch' || inputs.strip_toolchain) }}
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
           set -a; . ./clean-machine.env; set +a
           bash .github/scripts/clean-machine-assert.sh absent
 
       - name: Install with NO dev tooling, only runtime libs
+        if: steps.download.outputs.unreleased != 'true'
         # The apt preamble below is bounded by the shared helper; the `.deb` install
         # after it deliberately is not, because whether that package resolves its own
         # dependencies is the question this job asks. A step budget bounds it anyway,
@@ -458,7 +467,7 @@ jobs:
       # that adds git, cmake or a compiler to that list puts one back in /usr/bin after the
       # strip. Re-run `absent` here, before the bundled installer.
       - name: Re-assert the toolchain is still absent after the package install
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
+        if: ${{ steps.download.outputs.unreleased != 'true' && (github.event_name != 'workflow_dispatch' || inputs.strip_toolchain) }}
         run: |
           set -a; . ./clean-machine.env; set +a
           bash .github/scripts/clean-machine-assert.sh absent
@@ -476,6 +485,7 @@ jobs:
           fi
 
       - name: Run the bundled installer, the path first launch takes
+        if: steps.download.outputs.unreleased != 'true'
         run: |
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
           set -o pipefail
@@ -514,6 +524,7 @@ jobs:
           "$PY" -c "import torch; print('torch', torch.__version__)"
 
       - name: Launch under Xvfb and prove it stays up
+        if: steps.download.outputs.unreleased != 'true'
         env:
           # Without this a fatal X11 error is completely invisible. GTK3 registers
           # gdk_x_io_error() as its XSetIOErrorHandler, and that handler reports with
@@ -552,7 +563,7 @@ jobs:
           fi
 
       - name: What did its own log say?
-        if: always()
+        if: always() && steps.download.outputs.unreleased != 'true'
         run: |
           for f in "$UNSLOTH_STUDIO_HOME/tauri.log" "$HOME/.unsloth/studio/tauri.log"; do
             [ -f "$f" ] || continue
