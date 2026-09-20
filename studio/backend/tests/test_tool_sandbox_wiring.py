@@ -100,9 +100,7 @@ def test_the_executors_take_the_mode_keyword_only_and_default_it(function):
 def test_managed_account_launch_does_not_require_a_generic_sandbox_record(
     monkeypatch, function, payload
 ):
-    monkeypatch.setattr(
-        tools, "_account_confinement", lambda: _PassthroughAccountConfinement()
-    )
+    monkeypatch.setattr(tools, "_account_confinement", lambda: _PassthroughAccountConfinement())
     tools._last_tool_execution_record = None
 
     assert "MANAGED_OK" in function(payload, None, 60, _SESSION)
