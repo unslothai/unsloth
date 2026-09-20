@@ -209,7 +209,11 @@ class _LiveProvenance:
     def __getitem__(self, key):
         return (hf_tokens._recorded_request_token_repos() or {})[key]
 
-    def get(self, key, default = None):
+    def get(
+        self,
+        key,
+        default = None,
+    ):
         return (hf_tokens._recorded_request_token_repos() or {}).get(key, default)
 
     def __contains__(self, key):

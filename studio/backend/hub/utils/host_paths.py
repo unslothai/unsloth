@@ -42,13 +42,15 @@ HOST_PATH_SCALAR_FIELDS = frozenset(
 # config, and a blanked pin is FALSY, so the preflight stops pinning and re-resolves the newest
 # cached revision instead: the checkpoint then continues against different base weights, with no
 # warning, because a pin that was never asked for cannot go missing.
-HOST_PATH_HANDLE_FIELDS = frozenset({
-    "output_dir",
-    "checkpoint_path",
-    "resume_from_checkpoint",
-    "model_snapshot_path",
-    "dataset_snapshot_path",
-})
+HOST_PATH_HANDLE_FIELDS = frozenset(
+    {
+        "output_dir",
+        "checkpoint_path",
+        "resume_from_checkpoint",
+        "model_snapshot_path",
+        "dataset_snapshot_path",
+    }
+)
 
 # Scrubbed, not blanked: the only account of WHY a run failed.
 HOST_PATH_TEXT_FIELDS = frozenset({"error_message", "error", "detail", "message"})
