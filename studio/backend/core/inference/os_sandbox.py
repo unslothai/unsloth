@@ -469,11 +469,14 @@ def _unavailable(reason: str, remediation: str, identity: str) -> SandboxCapabil
 
 
 def capability_snapshot(
-    *, force: bool = False, execution_kind = None, selected_executable = None, cancel_event = None
+    *,
+    force: bool = False,
+    execution_kind = None,
+    selected_executable = None,
+    cancel_event = None,
 ) -> SandboxCapability:
     if sys.platform == "win32":
         from .sandbox_windows_mxc import capability_snapshot as windows_capability
-
         return windows_capability(
             force = force,
             execution_kind = execution_kind,
@@ -628,7 +631,6 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
 
     if sys.platform == "win32":
         from .sandbox_windows_mxc import prepare
-
         return prepare(plan, capability)
     if sys.platform == "linux":
         from . import sandbox_linux as backend
@@ -658,5 +660,4 @@ def verify_prepared_completion(prepared: PreparedSandboxLaunch, proc) -> dict | 
     if prepared.backend != "mxc-processcontainer":
         return None
     from .sandbox_windows_mxc import verify_success
-
     return verify_success(prepared, proc)

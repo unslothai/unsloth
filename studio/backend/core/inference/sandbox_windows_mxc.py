@@ -35,7 +35,11 @@ def _capability_fingerprint(identity: str, execution_kind: str, selected_executa
 
 
 def capability_snapshot(
-    *, force=False, execution_kind=None, selected_executable=None, cancel_event=None
+    *,
+    force = False,
+    execution_kind = None,
+    selected_executable = None,
+    cancel_event = None,
 ):
     if sys.platform != "win32":
         raise SandboxBuildError("MXC is Windows-only")
@@ -44,18 +48,18 @@ def capability_snapshot(
         selected_executable = selected_executable or sys.executable
     if execution_kind not in {"python", "terminal"} or not selected_executable:
         return SandboxCapability(
-            backend="mxc-processcontainer",
-            available=False,
-            reason="the MXC profile requires a selected Python or Terminal executable",
-            environment="win32",
-            remediation="Select a supported native Windows runtime.",
-            limitations=("unsupported_execution_kind",),
+            backend = "mxc-processcontainer",
+            available = False,
+            reason = "the MXC profile requires a selected Python or Terminal executable",
+            environment = "win32",
+            remediation = "Select a supported native Windows runtime.",
+            limitations = ("unsupported_execution_kind",),
         )
     available, reason = mxc_probe.probe(
         selected_executable,
-        execution_kind=execution_kind,
-        force=force,
-        cancel_event=cancel_event,
+        execution_kind = execution_kind,
+        force = force,
+        cancel_event = cancel_event,
     )
     try:
         identity = mxc_runtime.installation_identity()
@@ -63,22 +67,22 @@ def capability_snapshot(
         identity = "missing"
     fingerprint = _capability_fingerprint(identity, execution_kind, selected_executable)
     return SandboxCapability(
-        backend="mxc-processcontainer",
-        available=available,
-        reason=reason,
-        environment="win32",
-        protection_state="preview" if available else "unavailable",
-        profile_id=mxc_runtime.PROFILE_ID,
-        limitations=(
+        backend = "mxc-processcontainer",
+        available = available,
+        reason = reason,
+        environment = "win32",
+        protection_state = "preview" if available else "unavailable",
+        profile_id = mxc_runtime.PROFILE_ID,
+        limitations = (
             "mxc_preview_not_a_security_boundary",
             "wxc_exec_does_not_report_execution_tier",
             "workload_start_not_structured_by_wxc_exec",
             "network_posture_requested_not_attested",
             "nested_path_identity_may_change_during_mxc_grant_resolution",
         ),
-        probe_generation=hashlib.sha256((fingerprint + str(available)).encode()).hexdigest(),
-        environment_fingerprint=fingerprint,
-        remediation=(
+        probe_generation = hashlib.sha256((fingerprint + str(available)).encode()).hexdigest(),
+        environment_fingerprint = fingerprint,
+        remediation = (
             "Install the pinned Microsoft WXC runtime and ensure BaseContainer/PSEC is enabled; "
             "Unsloth does not enable the AppContainer DACL fallback in this Preview."
         ),
@@ -93,32 +97,32 @@ def prepare(plan, capability):
     record = _record(
         plan,
         capability,
-        effective_mode="os_isolated",
-        os_isolation=True,
-        backend="mxc-processcontainer",
-        profile_id=capability.profile_id,
-        safeguards=_OS_ISOLATION_SAFEGUARDS + ("ui_isolation",),
-        limitations=capability.limitations,
+        effective_mode = "os_isolated",
+        os_isolation = True,
+        backend = "mxc-processcontainer",
+        profile_id = capability.profile_id,
+        safeguards = _OS_ISOLATION_SAFEGUARDS + ("ui_isolation",),
+        limitations = capability.limitations,
     )
     record = replace(
         record,
-        network_policy="mxc_compatibility_requested_unverified",
-        backend_tier="unknown",
-        runtime_revision=mxc_runtime.MXC_REVISION,
-        runtime_artifact_digest=f"sha256:{mxc_runtime.WXC_EXEC_SHA256}",
-        schema_version=mxc_runtime.MXC_SCHEMA_VERSION,
-        policy_hash=request["policyHash"],
-        execution_status="planned",
-        cleanup_status="pending",
+        network_policy = "mxc_compatibility_requested_unverified",
+        backend_tier = "unknown",
+        runtime_revision = mxc_runtime.MXC_REVISION,
+        runtime_artifact_digest = f"sha256:{mxc_runtime.WXC_EXEC_SHA256}",
+        schema_version = mxc_runtime.MXC_SCHEMA_VERSION,
+        policy_hash = request["policyHash"],
+        execution_status = "planned",
+        cleanup_status = "pending",
     )
     prepared = PreparedSandboxLaunch(
-        argv=plan.argv,
-        workdir=plan.workdir,
-        env=plan.env,
-        preexec_fn=None,
-        backend="mxc-processcontainer",
-        timeout_seconds=plan.timeout_seconds,
-        execution_record=record,
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = plan.env,
+        preexec_fn = None,
+        backend = "mxc-processcontainer",
+        timeout_seconds = plan.timeout_seconds,
+        execution_record = record,
     )
 
     def launch(_prepared, kwargs):
@@ -131,7 +135,7 @@ def prepare(plan, capability):
                 raise RuntimeError(
                     "the selected MXC runtime changed after capability qualification"
                 )
-            proc = mxc_adapter.spawn(request, cancel_event=plan.cancel_event, popen_kwargs=kwargs)
+            proc = mxc_adapter.spawn(request, cancel_event = plan.cancel_event, popen_kwargs = kwargs)
         except Exception as exc:
             may_have_started = bool(getattr(exc, "may_have_started", False))
             if plan.requested_mode == "auto" and not may_have_started:
@@ -145,12 +149,12 @@ def prepare(plan, capability):
                 prepared.execution_record = _record(
                     plan,
                     capability,
-                    effective_mode="software_safeguards",
-                    os_isolation=False,
-                    backend="software-safeguards",
-                    profile_id="software-safeguards-v1",
-                    safeguards=_SOFTWARE_SAFEGUARDS,
-                    limitations=(
+                    effective_mode = "software_safeguards",
+                    os_isolation = False,
+                    backend = "software-safeguards",
+                    profile_id = "software-safeguards-v1",
+                    safeguards = _SOFTWARE_SAFEGUARDS,
+                    limitations = (
                         "no_os_isolation",
                         "host_files_readable",
                         "unrestricted_network",
@@ -159,17 +163,17 @@ def prepare(plan, capability):
                 )
                 prepared.execution_record = replace(
                     prepared.execution_record,
-                    execution_status="started",
-                    completion_status="pending",
-                    cleanup_status="pending",
+                    execution_status = "started",
+                    completion_status = "pending",
+                    cleanup_status = "pending",
                 )
                 mxc_probe.invalidate_cache()
                 return proc
             prepared.execution_record = replace(
                 prepared.execution_record,
-                execution_status="unknown_start" if may_have_started else "not_started",
-                completion_status="uncertain" if may_have_started else "not_started",
-                cleanup_status="uncertain" if may_have_started else "complete",
+                execution_status = "unknown_start" if may_have_started else "not_started",
+                completion_status = "uncertain" if may_have_started else "not_started",
+                cleanup_status = "uncertain" if may_have_started else "complete",
             )
             mxc_probe.invalidate_cache()
             raise SandboxBuildError(
@@ -177,8 +181,8 @@ def prepare(plan, capability):
             ) from exc
         prepared.execution_record = replace(
             prepared.execution_record,
-            execution_status="dispatched",
-            backend_tier=str(getattr(proc, "_mxc_backend_tier", "unknown")),
+            execution_status = "dispatched",
+            backend_tier = str(getattr(proc, "_mxc_backend_tier", "unknown")),
         )
         prepared.cleanup_callbacks.append(lambda: mxc_adapter.release_runtime(proc))
         return proc
@@ -194,20 +198,20 @@ def verify_success(prepared, proc) -> dict:
         if prepared.execution_record is not None:
             prepared.execution_record = replace(
                 prepared.execution_record,
-                completion_status="uncertain",
-                cleanup_status="uncertain",
+                completion_status = "uncertain",
+                cleanup_status = "uncertain",
             )
         mxc_probe.invalidate_cache()
         raise SandboxBuildError(f"MXC completion state is uncertain: {exc}") from exc
     prepared.execution_record = replace(
         prepared.execution_record,
-        execution_status="completed",
-        completion_status=(
+        execution_status = "completed",
+        completion_status = (
             "timed_out"
             if result.get("timedOut")
             else ("cancelled" if result.get("cancelled") else "finished")
         ),
-        cleanup_status=str(result.get("cleanup") or "unknown"),
+        cleanup_status = str(result.get("cleanup") or "unknown"),
     )
     if result.get("cleanup") != "complete":
         raise SandboxBuildError(

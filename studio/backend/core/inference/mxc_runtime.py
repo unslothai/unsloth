@@ -34,7 +34,7 @@ class MxcRuntimeUnavailable(RuntimeError):
     pass
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class RuntimeInfo:
     path: Path
     sha256: str
@@ -48,7 +48,7 @@ class RuntimeInfo:
             "sha256": self.sha256,
             "size": WXC_EXEC_SIZE,
         }
-        encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+        encoded = json.dumps(material, sort_keys = True, separators = (",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
 
@@ -135,7 +135,7 @@ def _validate_runtime(package_root: Path) -> RuntimeInfo:
     digest = _sha256_file(executable)
     if digest != WXC_EXEC_SHA256:
         raise MxcRuntimeUnavailable("the managed wxc-exec.exe digest is not approved")
-    return RuntimeInfo(path=executable.resolve(), sha256=digest)
+    return RuntimeInfo(path = executable.resolve(), sha256 = digest)
 
 
 def selected_runtime(*, package_root: Path | None = None) -> RuntimeInfo:
@@ -160,7 +160,6 @@ class _WindowsHandleGuard:
     def close(self) -> None:
         if self.handle:
             import ctypes
-
             ctypes.windll.kernel32.CloseHandle(self.handle)
             self.handle = 0
 
@@ -191,12 +190,12 @@ def _open_artifact_guard(path: Path) -> object:
 
 def acquire_runtime(*, package_root: Path | None = None) -> RuntimeLease:
     with _lock:
-        info = selected_runtime(package_root=package_root)
+        info = selected_runtime(package_root = package_root)
         guard = _open_artifact_guard(info.path)
         try:
-            if selected_runtime(package_root=package_root) != info:
+            if selected_runtime(package_root = package_root) != info:
                 raise MxcRuntimeUnavailable("the managed wxc-exec.exe changed during acquisition")
         except Exception:
             guard.close()
             raise
-        return RuntimeLease(info=info, _guard=guard)
+        return RuntimeLease(info = info, _guard = guard)

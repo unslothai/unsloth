@@ -18358,7 +18358,11 @@ def _python_exec(
             proc._unsloth_completion_reason = (
                 "timed_out"
                 if timed_out
-                else ("cancelled" if cancel_event is not None and cancel_event.is_set() else "finished")
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
             )
         completion = os_sandbox.verify_prepared_completion(prepared, proc)
         if completion is not None and completion.get("timedOut"):
@@ -18565,7 +18569,11 @@ def _bash_exec(
             proc._unsloth_completion_reason = (
                 "timed_out"
                 if timed_out
-                else ("cancelled" if cancel_event is not None and cancel_event.is_set() else "finished")
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
             )
         completion = os_sandbox.verify_prepared_completion(prepared, proc)
         if completion is not None and completion.get("timedOut"):

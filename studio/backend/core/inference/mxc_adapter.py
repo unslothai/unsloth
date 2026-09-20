@@ -31,32 +31,37 @@ def _control_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key.upper() in allowed}
 
 
-def spawn(request: dict, *, cancel_event=None, popen_kwargs: dict | None = None):
+def spawn(
+    request: dict,
+    *,
+    cancel_event = None,
+    popen_kwargs: dict | None = None,
+):
     """Verify the request and start the approved WXC executable directly."""
     if cancel_event is not None and cancel_event.is_set():
         raise MxcAdapterError(
             "MXC launch cancelled before dispatch",
-            stage="startup",
+            stage = "startup",
         )
 
     config = request.get("config")
     if not isinstance(config, dict):
-        raise MxcAdapterError("the MXC configuration is missing", stage="policy")
+        raise MxcAdapterError("the MXC configuration is missing", stage = "policy")
     encoded_config = mxc_policy.canonical_config_bytes(config)
     if encoded_config != request.get("configBytes"):
-        raise MxcAdapterError("the MXC configuration changed before dispatch", stage="policy")
+        raise MxcAdapterError("the MXC configuration changed before dispatch", stage = "policy")
     if mxc_policy.compute_policy_hash(config) != request.get("policyHash"):
-        raise MxcAdapterError("the MXC configuration hash is invalid", stage="policy")
+        raise MxcAdapterError("the MXC configuration hash is invalid", stage = "policy")
     if config.get("fallback") != {"allowDaclMutation": False}:
-        raise MxcAdapterError("MXC DACL fallback is not disabled", stage="policy")
+        raise MxcAdapterError("MXC DACL fallback is not disabled", stage = "policy")
     if config.get("ui", {}).get("disable") is not False:
-        raise MxcAdapterError("the Studio MXC UI policy is not enabled", stage="policy")
+        raise MxcAdapterError("the Studio MXC UI policy is not enabled", stage = "policy")
 
     encoded = base64.b64encode(encoded_config).decode("ascii")
     if len(encoded) > MAX_CONFIG_BASE64:
         raise MxcAdapterError(
             "the MXC configuration exceeds the safe Windows command-line bound",
-            stage="policy",
+            stage = "policy",
         )
 
     runtime_lease = None
@@ -67,17 +72,17 @@ def spawn(request: dict, *, cancel_event=None, popen_kwargs: dict | None = None)
         if cancel_event is not None and cancel_event.is_set():
             raise MxcAdapterError(
                 "MXC launch cancelled before dispatch",
-                stage="startup",
+                stage = "startup",
             )
 
         options = dict(popen_kwargs or {})
         options.pop("preexec_fn", None)
         options.pop("pass_fds", None)
         options.update(
-            stdin=subprocess.DEVNULL,
-            cwd=str(runtime_lease.info.path.parent),
-            env=_control_environment(),
-            close_fds=True,
+            stdin = subprocess.DEVNULL,
+            cwd = str(runtime_lease.info.path.parent),
+            env = _control_environment(),
+            close_fds = True,
         )
         try:
             proc = subprocess.Popen(
@@ -87,7 +92,7 @@ def spawn(request: dict, *, cancel_event=None, popen_kwargs: dict | None = None)
         except OSError as exc:
             raise MxcAdapterError(
                 f"could not start the approved wxc-exec.exe: {exc}",
-                stage="spawn",
+                stage = "spawn",
             ) from exc
 
         # From this point WXC may have created the workload. No caller may replay
@@ -103,8 +108,8 @@ def spawn(request: dict, *, cancel_event=None, popen_kwargs: dict | None = None)
     except Exception as exc:
         raise MxcAdapterError(
             str(exc),
-            stage="dispatch" if proc is not None else "startup",
-            may_have_started=proc is not None,
+            stage = "dispatch" if proc is not None else "startup",
+            may_have_started = proc is not None,
         ) from exc
     finally:
         if runtime_lease is not None:
@@ -115,21 +120,21 @@ def completion_result(proc) -> dict:
     if not getattr(proc, "_mxc_dispatched", False):
         raise MxcAdapterError(
             "the process has no WXC dispatch evidence",
-            stage="completion",
-            may_have_started=True,
+            stage = "completion",
+            may_have_started = True,
         )
     if proc.poll() is None:
         raise MxcAdapterError(
             "wxc-exec.exe has not completed",
-            stage="completion",
-            may_have_started=True,
+            stage = "completion",
+            may_have_started = True,
         )
     reason = getattr(proc, "_unsloth_completion_reason", None)
     if reason not in {"finished", "timed_out", "cancelled"}:
         raise MxcAdapterError(
             "wxc-exec.exe exited without a trusted Studio completion state",
-            stage="completion",
-            may_have_started=True,
+            stage = "completion",
+            may_have_started = True,
         )
     return {
         "exitCode": int(proc.returncode),
@@ -156,19 +161,19 @@ def abort(proc, *, grace_seconds: float = 1) -> None:
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                check=False,
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                timeout = 5,
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check = False,
             )
         except (OSError, subprocess.SubprocessError):
             pass
     if proc.poll() is None:
         proc.terminate()
         try:
-            proc.wait(timeout=grace_seconds)
+            proc.wait(timeout = grace_seconds)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait(timeout=5)
+            proc.wait(timeout = 5)

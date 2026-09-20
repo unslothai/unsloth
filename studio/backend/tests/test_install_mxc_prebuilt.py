@@ -67,7 +67,7 @@ def test_installs_only_the_official_wxc_member(tmp_path, official_release):
     assert installer.install_mxc_release(install_dir) is True
     assert sorted(path.name for path in install_dir.iterdir()) == ["wxc-exec.exe"]
     assert (install_dir / "wxc-exec.exe").read_bytes() == payload
-    assert installer.mxc_runtime.selected_runtime(package_root=install_dir).path.name == (
+    assert installer.mxc_runtime.selected_runtime(package_root = install_dir).path.name == (
         "wxc-exec.exe"
     )
 
@@ -85,16 +85,16 @@ def test_matching_install_is_reused_without_download(tmp_path, monkeypatch, offi
 
 def test_corrupt_wxc_is_replaced_safely(tmp_path, official_release):
     install_dir = tmp_path / "installed" / "windows-x86_64"
-    install_dir.mkdir(parents=True)
+    install_dir.mkdir(parents = True)
     (install_dir / "wxc-exec.exe").write_bytes(b"corrupt")
     assert installer.install_mxc_release(install_dir) is True
-    installer.mxc_runtime.selected_runtime(package_root=install_dir)
+    installer.mxc_runtime.selected_runtime(package_root = install_dir)
 
 
 def test_archive_checksum_mismatch_never_becomes_active(tmp_path, monkeypatch, official_release):
     install_dir = tmp_path / "installed" / "windows-x86_64"
     monkeypatch.setattr(installer.mxc_runtime, "RELEASE_ARCHIVE_SHA256", "0" * 64)
-    with pytest.raises(installer.MxcInstallError, match="checksum mismatch"):
+    with pytest.raises(installer.MxcInstallError, match = "checksum mismatch"):
         installer.install_mxc_release(install_dir)
     assert not install_dir.exists()
 
@@ -110,7 +110,7 @@ def test_archive_checksum_mismatch_never_becomes_active(tmp_path, monkeypatch, o
         [("../x64/wxc-exec.exe", b"official-wxc", None)],
         [(installer.mxc_runtime.RELEASE_MEMBER, b"target", stat.S_IFLNK | 0o777)],
     ],
-    ids=["missing", "duplicate", "traversal", "symlink"],
+    ids = ["missing", "duplicate", "traversal", "symlink"],
 )
 def test_unsafe_archive_shapes_are_rejected(tmp_path, monkeypatch, official_release, entries):
     archive = _archive(entries)
@@ -134,5 +134,5 @@ def test_non_windows_host_never_downloads(tmp_path, monkeypatch):
         "_download",
         lambda _destination: pytest.fail("non-Windows installer attempted a download"),
     )
-    with pytest.raises(installer.MxcInstallError, match="Windows-only"):
+    with pytest.raises(installer.MxcInstallError, match = "Windows-only"):
         installer.install_mxc_release(tmp_path / "installed")

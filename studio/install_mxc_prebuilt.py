@@ -31,15 +31,15 @@ class MxcInstallError(RuntimeError):
 def _download(destination: Path) -> None:
     request = urllib.request.Request(
         mxc_runtime.RELEASE_URL,
-        headers={"User-Agent": "unsloth-studio-mxc-prebuilt"},
+        headers = {"User-Agent": "unsloth-studio-mxc-prebuilt"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as out:
-            shutil.copyfileobj(response, out, length=1024 * 1024)
+        with urllib.request.urlopen(request, timeout = 60) as response, destination.open("wb") as out:
+            shutil.copyfileobj(response, out, length = 1024 * 1024)
             out.flush()
             os.fsync(out.fileno())
     except (OSError, urllib.error.URLError) as exc:
-        destination.unlink(missing_ok=True)
+        destination.unlink(missing_ok = True)
         raise MxcInstallError(
             f"could not download the pinned Microsoft MXC release: {exc}"
         ) from exc
@@ -91,12 +91,12 @@ def install_mxc_release(install_dir: Path) -> bool:
         raise MxcInstallError("the Microsoft MXC release supports Windows x86-64 only")
 
     install_dir = install_dir.expanduser().resolve()
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
+    install_dir.parent.mkdir(parents = True, exist_ok = True)
     with install_lock(install_lock_path(install_dir)):
         if _already_installed(install_dir):
             return False
 
-        stage = Path(tempfile.mkdtemp(prefix=f".{install_dir.name}-", dir=install_dir.parent))
+        stage = Path(tempfile.mkdtemp(prefix = f".{install_dir.name}-", dir = install_dir.parent))
         try:
             archive = stage / ".mxc-release.zip"
             _download(archive)
@@ -117,7 +117,7 @@ def install_mxc_release(install_dir: Path) -> bool:
                     entry = _validate_archive_entries(bundle)
                     executable = stage / "wxc-exec.exe"
                     with bundle.open(entry) as source, executable.open("wb") as output:
-                        shutil.copyfileobj(source, output, length=1024 * 1024)
+                        shutil.copyfileobj(source, output, length = 1024 * 1024)
                         output.flush()
                         os.fsync(output.fileno())
             except (OSError, zipfile.BadZipFile) as exc:
@@ -126,21 +126,21 @@ def install_mxc_release(install_dir: Path) -> bool:
             mxc_runtime._validate_runtime(stage)
             swap_into_place(stage, install_dir)
         finally:
-            shutil.rmtree(stage, ignore_errors=True)
+            shutil.rmtree(stage, ignore_errors = True)
     return True
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--install-dir", type=Path, required=True)
+    parser = argparse.ArgumentParser(description = __doc__)
+    parser.add_argument("--install-dir", type = Path, required = True)
     args = parser.parse_args(argv)
     try:
         changed = install_mxc_release(args.install_dir)
     except BusyInstallConflict as exc:
-        print(f"[mxc-prebuilt] install blocked by an active MXC process: {exc}", file=sys.stderr)
+        print(f"[mxc-prebuilt] install blocked by an active MXC process: {exc}", file = sys.stderr)
         return 3
     except (MxcInstallError, mxc_runtime.MxcRuntimeUnavailable) as exc:
-        print(f"[mxc-prebuilt] {exc}", file=sys.stderr)
+        print(f"[mxc-prebuilt] {exc}", file = sys.stderr)
         return 1
     print("[mxc-prebuilt] installed and validated" if changed else "[mxc-prebuilt] already matches")
     return 0

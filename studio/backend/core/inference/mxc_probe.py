@@ -71,7 +71,11 @@ def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outsi
     raise ValueError(f"the selected Windows Terminal shell is not qualified for MXC: {name}")
 
 
-def _probe(selected_executable: str, execution_kind: str, cancel_event=None) -> tuple[bool, str]:
+def _probe(
+    selected_executable: str,
+    execution_kind: str,
+    cancel_event = None,
+) -> tuple[bool, str]:
     if sys.platform != "win32":
         return False, "MXC is enabled only for native Windows Studio"
     if sys.getwindowsversion().build < 26100:
@@ -83,16 +87,16 @@ def _probe(selected_executable: str, execution_kind: str, cancel_event=None) -> 
     if cancel_event is not None and cancel_event.is_set():
         return False, "MXC capability probe was cancelled"
 
-    with tempfile.TemporaryDirectory(prefix="unsloth-mxc-probe-") as root:
+    with tempfile.TemporaryDirectory(prefix = "unsloth-mxc-probe-") as root:
         root_path = Path(root)
         workdir = root_path / "workdir"
         other = root_path / "other-chat"
         workdir.mkdir()
         other.mkdir()
         canary = other / "secret.txt"
-        canary.write_text("outside-secret", encoding="utf-8")
+        canary.write_text("outside-secret", encoding = "utf-8")
         outside_write = other / "outside-write.txt"
-        outside_write.write_text("host-positive", encoding="utf-8")
+        outside_write.write_text("host-positive", encoding = "utf-8")
         outside_write.unlink()
         if execution_kind == "python":
             script = workdir / "probe.py"
@@ -110,7 +114,7 @@ def _probe(selected_executable: str, execution_kind: str, cancel_event=None) -> 
                 "try:\n open(outside,'w',encoding='utf-8').write('bad'); result['outside_write_denied']=False\n"
                 "except OSError: result['outside_write_denied']=True\n"
                 "print('UNSLOTH_MXC_PROBE='+json.dumps(result,sort_keys=True))\n",
-                encoding="utf-8",
+                encoding = "utf-8",
             )
             probe_argv = (selected_executable, "-u", str(script))
         elif execution_kind == "terminal":
@@ -132,19 +136,19 @@ def _probe(selected_executable: str, execution_kind: str, cancel_event=None) -> 
         env["TMP"] = str(workdir)
 
         probe_plan = SimpleNamespace(
-            argv=probe_argv,
-            execution_kind=execution_kind,
-            timeout_seconds=20,
-            workdir=str(workdir),
-            env=env,
+            argv = probe_argv,
+            execution_kind = execution_kind,
+            timeout_seconds = 20,
+            workdir = str(workdir),
+            env = env,
         )
 
         try:
             request = mxc_policy.build_launch_request(probe_plan)
             proc = mxc_adapter.spawn(
                 request,
-                cancel_event=cancel_event,
-                popen_kwargs={
+                cancel_event = cancel_event,
+                popen_kwargs = {
                     "stdout": subprocess.PIPE,
                     "stderr": subprocess.STDOUT,
                     "text": True,
@@ -163,7 +167,7 @@ def _probe(selected_executable: str, execution_kind: str, cancel_event=None) -> 
                     mxc_adapter.abort(proc)
                     return False, "the live MXC probe exceeded its deadline"
                 try:
-                    output, _ = proc.communicate(timeout=min(0.1, remaining))
+                    output, _ = proc.communicate(timeout = min(0.1, remaining))
                     break
                 except subprocess.TimeoutExpired:
                     continue
@@ -183,7 +187,7 @@ def _probe(selected_executable: str, execution_kind: str, cancel_event=None) -> 
         if execution_kind == "terminal":
             captured = workdir / "outside-read.txt"
             outside_read = (
-                captured.read_text(encoding="utf-8", errors="replace") if captured.exists() else ""
+                captured.read_text(encoding = "utf-8", errors = "replace") if captured.exists() else ""
             )
             if (
                 "UNSLOTH_MXC_TERMINAL_PROBE_OK" not in output
@@ -224,7 +228,7 @@ def probe(
     *,
     execution_kind: str = "python",
     force: bool = False,
-    cancel_event=None,
+    cancel_event = None,
 ) -> tuple[bool, str]:
     try:
         identity = mxc_runtime.installation_identity()

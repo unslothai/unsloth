@@ -28,9 +28,9 @@ def test_policy_hash_is_the_exact_canonical_config_hash():
     encoded = mxc_policy.canonical_config_bytes(config)
     assert encoded == json.dumps(
         config,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+        ensure_ascii = False,
+        sort_keys = True,
+        separators = (",", ":"),
     ).encode("utf-8")
     assert mxc_policy.compute_policy_hash(config) == "sha256:" + hashlib.sha256(encoded).hexdigest()
 

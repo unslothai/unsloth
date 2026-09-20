@@ -48,7 +48,7 @@ class MxcPolicyError(RuntimeError):
 def _object_identity(path: str, *, directory: bool) -> dict[str, int]:
     """Read stable volume/file identity without following the final reparse point."""
     if os.name != "nt":
-        metadata = os.stat(path, follow_symlinks=False)
+        metadata = os.stat(path, follow_symlinks = False)
         return {"volumeSerialNumber": metadata.st_dev, "fileId": metadata.st_ino}
     import ctypes
     from ctypes import wintypes
@@ -131,7 +131,7 @@ def _safe_canonical_path(path: str, *, directory: bool) -> str:
 
 def _reject_workdir_reparse_entries(workdir: str) -> None:
     seen = 0
-    for root, directories, files in os.walk(workdir, followlinks=False):
+    for root, directories, files in os.walk(workdir, followlinks = False):
         for name in (*directories, *files):
             seen += 1
             if seen > MAX_PATH_SCAN_ENTRIES:
@@ -140,7 +140,7 @@ def _reject_workdir_reparse_entries(workdir: str) -> None:
             if _is_reparse(candidate):
                 raise MxcPolicyError(f"the MXC workdir contains a reparse point: {candidate}")
             try:
-                links = os.stat(candidate, follow_symlinks=False).st_nlink
+                links = os.stat(candidate, follow_symlinks = False).st_nlink
             except OSError as exc:
                 raise MxcPolicyError(
                     f"the MXC workdir changed during validation: {candidate}"
@@ -150,7 +150,7 @@ def _reject_workdir_reparse_entries(workdir: str) -> None:
 
 
 def _absolute_existing_directory(path: str) -> str:
-    value = _safe_canonical_path(path, directory=True)
+    value = _safe_canonical_path(path, directory = True)
     _reject_workdir_reparse_entries(value)
     return value
 
@@ -170,7 +170,7 @@ def _runtime_read_roots(executable: str) -> list[str]:
             continue
         if not os.path.isdir(root):
             continue
-        canonical = _safe_canonical_path(root, directory=True)
+        canonical = _safe_canonical_path(root, directory = True)
         drive, tail = os.path.splitdrive(canonical)
         if not tail.strip("\\/"):
             raise MxcPolicyError(f"volume-root MXC grant is forbidden: {canonical}")
@@ -184,7 +184,7 @@ def _selected_runtime(plan) -> str:
     if os.path.isabs(executable):
         selected = executable
     elif plan.execution_kind == "terminal":
-        selected = shutil.which(executable, path=plan.env.get("PATH"))
+        selected = shutil.which(executable, path = plan.env.get("PATH"))
         if selected is None and executable.casefold() in {"cmd", "cmd.exe"}:
             selected = os.environ.get("COMSPEC")
         if selected is None:
@@ -193,7 +193,7 @@ def _selected_runtime(plan) -> str:
             )
     else:
         raise MxcPolicyError("the selected Python executable must be absolute")
-    canonical = _safe_canonical_path(selected, directory=False)
+    canonical = _safe_canonical_path(selected, directory = False)
     lowered = canonical.replace("/", "\\").casefold()
     if plan.execution_kind == "terminal" and any(
         marker in lowered for marker in _WSL_TERMINAL_MARKERS
@@ -208,9 +208,9 @@ def canonical_config_bytes(config: dict) -> bytes:
     """Serialize exactly the deterministic stable-v0.8 request sent to WXC."""
     return json.dumps(
         config,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+        ensure_ascii = False,
+        sort_keys = True,
+        separators = (",", ":"),
     ).encode("utf-8")
 
 
@@ -220,9 +220,9 @@ def compute_policy_hash(config: dict) -> str:
 
 def verify_launch_identities(request: dict) -> None:
     """Re-check the selected workload and workdir immediately before WXC dispatch."""
-    if _object_identity(request["runtimePath"], directory=False) != request["runtimeIdentity"]:
+    if _object_identity(request["runtimePath"], directory = False) != request["runtimeIdentity"]:
         raise MxcPolicyError("the selected workload executable changed before WXC dispatch")
-    if _object_identity(request["cwd"], directory=True) != request["workdirIdentity"]:
+    if _object_identity(request["cwd"], directory = True) != request["workdirIdentity"]:
         raise MxcPolicyError("the MXC workdir changed before WXC dispatch")
     _absolute_existing_directory(request["cwd"])
 
@@ -285,9 +285,9 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
     }
     request = {
         "runtimePath": os.path.realpath(selected_runtime),
-        "runtimeIdentity": _object_identity(selected_runtime, directory=False),
+        "runtimeIdentity": _object_identity(selected_runtime, directory = False),
         "cwd": workdir,
-        "workdirIdentity": _object_identity(workdir, directory=True),
+        "workdirIdentity": _object_identity(workdir, directory = True),
         "config": config,
         "configBytes": canonical_config_bytes(config),
         "policyHash": compute_policy_hash(config),

@@ -15,7 +15,7 @@ _WXC = b"official-wxc-test-payload"
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     root = tmp_path / "managed" / "windows-x86_64"
-    root.mkdir(parents=True)
+    root.mkdir(parents = True)
     (root / "wxc-exec.exe").write_bytes(_WXC)
     monkeypatch.setattr(mxc_runtime.sys, "platform", "win32")
     monkeypatch.setattr(mxc_runtime, "WXC_EXEC_SIZE", len(_WXC))
@@ -28,18 +28,18 @@ def test_only_the_fixed_managed_wxc_is_selected(runtime, monkeypatch, tmp_path):
     path_runner.parent.mkdir()
     path_runner.write_bytes(b"untrusted")
     monkeypatch.setenv("PATH", str(path_runner.parent))
-    info = mxc_runtime.selected_runtime(package_root=runtime)
+    info = mxc_runtime.selected_runtime(package_root = runtime)
     assert info.path == (runtime / "wxc-exec.exe").resolve()
     assert info.sha256 == hashlib.sha256(_WXC).hexdigest()
 
 
 def test_cargo_target_wxc_is_ignored(runtime, monkeypatch, tmp_path):
     cargo_runner = tmp_path / "target" / "release" / "wxc-exec.exe"
-    cargo_runner.parent.mkdir(parents=True)
+    cargo_runner.parent.mkdir(parents = True)
     cargo_runner.write_bytes(_WXC)
     monkeypatch.chdir(cargo_runner.parents[2])
     assert (
-        mxc_runtime.selected_runtime(package_root=runtime).path
+        mxc_runtime.selected_runtime(package_root = runtime).path
         == (runtime / "wxc-exec.exe").resolve()
     )
 
@@ -47,20 +47,20 @@ def test_cargo_target_wxc_is_ignored(runtime, monkeypatch, tmp_path):
 @pytest.mark.parametrize("mutation", [b"modified", b""])
 def test_modified_or_truncated_wxc_is_rejected(runtime, mutation):
     (runtime / "wxc-exec.exe").write_bytes(mutation)
-    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match="size|digest"):
-        mxc_runtime.selected_runtime(package_root=runtime)
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "size|digest"):
+        mxc_runtime.selected_runtime(package_root = runtime)
 
 
 def test_missing_wxc_is_rejected(runtime):
     (runtime / "wxc-exec.exe").unlink()
-    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match="missing"):
-        mxc_runtime.selected_runtime(package_root=runtime)
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "missing"):
+        mxc_runtime.selected_runtime(package_root = runtime)
 
 
 def test_wrong_architecture_is_rejected(runtime, monkeypatch):
     monkeypatch.setattr(mxc_runtime.platform, "machine", lambda: "ARM64")
-    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match="x86-64"):
-        mxc_runtime.selected_runtime(package_root=runtime)
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "x86-64"):
+        mxc_runtime.selected_runtime(package_root = runtime)
 
 
 def test_runtime_lease_holds_and_revalidates_the_wxc_file(runtime, monkeypatch):
@@ -75,7 +75,7 @@ def test_runtime_lease_holds_and_revalidates_the_wxc_file(runtime, monkeypatch):
         "_open_artifact_guard",
         lambda path: opened.append(Path(path).name) or Guard(),
     )
-    lease = mxc_runtime.acquire_runtime(package_root=runtime)
+    lease = mxc_runtime.acquire_runtime(package_root = runtime)
     assert opened == ["wxc-exec.exe"]
     assert lease.info.path == (runtime / "wxc-exec.exe").resolve()
     lease.release()
@@ -85,11 +85,11 @@ def test_runtime_lease_holds_and_revalidates_the_wxc_file(runtime, monkeypatch):
 def test_reparse_runtime_directory_is_rejected(runtime, tmp_path):
     link = tmp_path / "runtime-link"
     try:
-        link.symlink_to(runtime, target_is_directory=True)
+        link.symlink_to(runtime, target_is_directory = True)
     except OSError as exc:
         pytest.skip(f"directory symlink creation unavailable: {exc}")
-    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match="non-reparse"):
-        mxc_runtime.selected_runtime(package_root=link)
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "non-reparse"):
+        mxc_runtime.selected_runtime(package_root = link)
 
 
 def test_release_identity_is_fixed_to_microsoft_v080():
@@ -115,7 +115,7 @@ def test_corrupt_managed_wxc_is_never_executed(runtime, monkeypatch):
     monkeypatch.setattr(
         mxc_runtime,
         "acquire_runtime",
-        lambda: acquire_runtime(package_root=runtime),
+        lambda: acquire_runtime(package_root = runtime),
     )
     monkeypatch.setattr(
         mxc_adapter.subprocess,
@@ -131,5 +131,5 @@ def test_corrupt_managed_wxc_is_never_executed(runtime, monkeypatch):
         "configBytes": mxc_policy.canonical_config_bytes(config),
         "policyHash": mxc_policy.compute_policy_hash(config),
     }
-    with pytest.raises(mxc_adapter.MxcAdapterError, match="size|digest"):
+    with pytest.raises(mxc_adapter.MxcAdapterError, match = "size|digest"):
         mxc_adapter.spawn(request)
