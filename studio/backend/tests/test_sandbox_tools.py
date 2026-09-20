@@ -1152,6 +1152,19 @@ class TestBashBlocklistPosition:
                 "FOO=bar coproc JOB if rm -f victim; then :; fi",
                 id = "coproc_named_after_assign_blocked",
             ),
+            # `time` is a reserved word that takes a pipeline, so it can prefix a coprocess and bash really runs it
+            # (checked against bash 5.2.21). An external wrapper cannot: `env coproc JOB if ...` is a syntax error.
+            pytest.param("rm", "time coproc rm -f victim", id = "timed_coproc_blocked"),
+            pytest.param(
+                "rm",
+                "time coproc JOB if rm -f victim; then :; fi",
+                id = "timed_named_coproc_blocked",
+            ),
+            pytest.param(
+                "rm",
+                "time -p coproc JOB if rm -f victim; then :; fi",
+                id = "timed_p_named_coproc_blocked",
+            ),
             pytest.param(
                 "rm",
                 "coproc JOB for f in x; do rm -f victim; done",
@@ -1727,6 +1740,11 @@ class TestBashBlocklistPosition:
         ) == is_high_risk_tool_call("terminal", {"command": command})
         # The optional NAME is only a name; the compound behind it is the command.
         assert self._find()(f"coproc JOB if {command}; then :; fi") == self._find()(command)
+        # `time` keeps command position for bash, so it must keep it for both classifiers too.
+        assert self._find()(f"time coproc {command}") == self._find()(f"time {command}")
+        assert is_high_risk_tool_call(
+            "terminal", {"command": f"time coproc {command}"}
+        ) == is_high_risk_tool_call("terminal", {"command": f"time {command}"})
 
     def test_quoted_operator_is_data_not_a_command_boundary(self):
         # A quoted operator reaches the command as an argument, so the word
