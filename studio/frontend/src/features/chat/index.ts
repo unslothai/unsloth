@@ -97,19 +97,27 @@ export {
   useChatNavigationStore,
   visibleChatItems,
 } from "./stores/chat-navigation-store";
+export {
+  setSidebarDragSource,
+  sidebarDragSource,
+  type SidebarDragSource,
+  type SidebarRowKind,
+} from "./stores/sidebar-drag-source";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
   applyManualOrder,
-  dropEdgeFor,
+  dropEdgeAt,
+  folderDropTarget,
+  insertIdAt,
   moveIdBy,
+  placeIdAt,
   showsInRecents,
   PINNED_ORDER_SCOPE,
   PINNED_PROJECT_ORDER_SCOPE,
   PROJECT_ORDER_SCOPE,
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
-  reorderIds,
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
 } from "./stores/sidebar-organization-store";

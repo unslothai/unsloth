@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { isTauri } from "@/lib/api-base";
+import { cn } from "@/lib/utils";
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
@@ -57,7 +58,9 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MoreHorizontalIcon } from "lucide-react";
+import { ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import type { ThreadRecord } from "./types";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -146,6 +149,13 @@ export function ProjectsPage() {
   const [importing, setImporting] = useState(false);
   // null = Recents
   const [importTargetId, setImportTargetId] = useState<string | null>(null);
+  // Rows open their own chats in place, loaded the first time they are opened.
+  const [openProjectIds, setOpenProjectIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [projectChats, setProjectChats] = useState<
+    Record<string, ThreadRecord[] | "loading">
+  >({});
 
   async function handleImport(source: ImportSource, projectId: string | null) {
     // Counts up while it runs: a large export takes minutes of writes.
@@ -312,6 +322,36 @@ export function ProjectsPage() {
     // Re-observe after each load so it keeps filling while the sentinel stays in view
     // (IntersectionObserver does not re-fire on a steady intersection).
   }, [hasMore, visibleCount]);
+
+  function toggleProjectChats(projectId: string) {
+    setOpenProjectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+    if (projectChats[projectId] !== undefined) return;
+    setProjectChats((prev) => ({ ...prev, [projectId]: "loading" }));
+    void listStoredChatThreads({ projectId, includeArchived: false })
+      .then((threads) => {
+        setProjectChats((prev) => ({
+          ...prev,
+          [projectId]: [...threads].sort(
+            (a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
+          ),
+        }));
+      })
+      .catch(() => {
+        setProjectChats((prev) => ({ ...prev, [projectId]: [] }));
+      });
+  }
+
+  function openChat(threadId: string, projectId: string) {
+    const runtime = useChatRuntimeStore.getState();
+    runtime.setActiveProjectId(projectId);
+    runtime.setActiveThreadId(threadId);
+    navigate({ to: "/chat", search: { thread: threadId } });
+  }
 
   function openProject(projectId: string) {
     const runtime = useChatRuntimeStore.getState();
@@ -575,6 +615,8 @@ export function ProjectsPage() {
           <div ref={listRef} data-tour="projects-list">
           {visibleProjects.map((project) => {
             const pinned = pinnedProjectIdSet.has(project.id);
+            const chatsOpen = openProjectIds.has(project.id);
+            const chats = projectChats[project.id];
             return (
             <div key={`wrap-${project.id}`}>
             <input
@@ -615,18 +657,54 @@ export function ProjectsPage() {
               <span className="min-w-0 flex-1 truncate text-ui-15 font-semibold text-foreground">
                 {project.name}
               </span>
+              {/* Opens the project's chats in place, without leaving the list. */}
+              <button
+                type="button"
+                aria-label={chatsOpen ? "Hide chats" : "Show chats"}
+                aria-expanded={chatsOpen}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleProjectChats(project.id);
+                }}
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-white/10",
+                  chatsOpen ? "opacity-100" : "opacity-0",
+                )}
+              >
+                <ChevronDownIcon
+                  strokeWidth={1.75}
+                  className={cn(
+                    "size-4 transition-transform",
+                    !chatsOpen && "-rotate-90",
+                  )}
+                />
+              </button>
               <span className="w-40 shrink-0 text-sm text-muted-foreground">
                 {formatModified(project.updatedAt)}
               </span>
+              {/* Pinning is one click here, as it is on a sidebar row. */}
+              <button
+                type="button"
+                aria-label={pinned ? "Unpin project" : "Pin project"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePinProject(project.id);
+                }}
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-white/10",
+                  pinned ? "opacity-100" : "opacity-0",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={pinned ? PinOffIcon : PinIcon}
+                  strokeWidth={1.75}
+                  className="size-4"
+                />
+              </button>
               <div className="relative flex w-8 shrink-0 items-center justify-end">
                 {/* Pin fades out and the kebab fades in on hover, focus, or
                     menu open. Absolute + opacity gating keeps them from
                     overlapping while leaving the button keyboard-focusable. */}
-                {pinned && (
-                  <span className="text-muted-foreground transition-opacity group-hover/project-row:opacity-0 group-focus-within/project-row:opacity-0 group-has-[[data-state=open]]/project-row:opacity-0">
-                    <HugeiconsIcon icon={PinIcon} strokeWidth={1.75} className="size-4" />
-                  </span>
-                )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
@@ -654,7 +732,7 @@ export function ProjectsPage() {
                         strokeWidth={1.75}
                         className="size-icon"
                       />
-                      <span>{pinned ? "Unpin project" : "Pin project"}</span>
+                      <span>{pinned ? "Unpin" : "Pin"}</span>
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={() => {
@@ -705,6 +783,31 @@ export function ProjectsPage() {
                 </DropdownMenu>
               </div>
             </div>
+            {chatsOpen && (
+              <div className="mb-2 flex flex-col gap-0.5 pl-[76px] pr-5">
+                {chats === undefined || chats === "loading" ? (
+                  <Skeleton className="h-6 w-48 rounded-[8px]" />
+                ) : chats.length === 0 ? (
+                  <p className="py-1 text-sm text-muted-foreground">No chats</p>
+                ) : (
+                  chats.map((chat) => (
+                    <button
+                      key={chat.id}
+                      type="button"
+                      onClick={() => openChat(chat.id, project.id)}
+                      className="flex cursor-pointer items-center gap-2 truncate rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.055]"
+                    >
+                      <HugeiconsIcon
+                        icon={MessageCircleIcon}
+                        strokeWidth={1.75}
+                        className="size-4 shrink-0"
+                      />
+                      <span className="truncate">{chat.title}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
             </div>
             );
           })}

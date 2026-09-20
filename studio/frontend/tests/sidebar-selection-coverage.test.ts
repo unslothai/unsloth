@@ -8,15 +8,15 @@ import { readSrc } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
 
-// A row is only selectable if it is handed the list it belongs to. Dropping
-// that argument still compiles, since it is optional, and the row just stops
-// responding to cmd and shift click.
+// A row is only selectable if it is handed the list it belongs to. The same argument carries the
+// ids a drag reorders, so a list that loses it stops responding to cmd and shift click and stops
+// being draggable at once.
 
 test("every chat list hands its rows a selection list", async () => {
   const source = APP_SIDEBAR;
   for (const list of [
-    /\{ scope: PINNED_ORDER_SCOPE, ids: pinnedRowIds \}/,
-    /\{ scope: RECENTS_ORDER_SCOPE, ids: recentRowIds \}/,
+    /scope: PINNED_ORDER_SCOPE,\s*ids: pinnedRowIds,/,
+    /scope: RECENTS_ORDER_SCOPE,\s*ids: recentRowIds,/,
     /scope: projectOrderScope\(project\.id\),\s*ids: projectChatIds,/,
   ]) {
     assert.match(source, list);

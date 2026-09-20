@@ -38,6 +38,7 @@ import {
 } from "@/features/chat";
 import { isRenderableRenderHtmlToolPart } from "@/features/chat/artifacts/html-fences";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
+import { formatWorkedFor } from "@/lib/format-worked-for";
 import { cn } from "@/lib/utils";
 import {
   type ReasoningGroupComponent,
@@ -193,7 +194,7 @@ function ReasoningTrigger({
         {active ? (
           <span className="text-sm">Thinking...</span>
         ) : (
-          <span>Thought for {duration ?? 0} {duration === 1 ? "second" : "seconds"}</span>
+          <span>Worked for {formatWorkedFor(duration ?? 0)}</span>
         )}
       </span>
       <ChevronDownIcon
