@@ -82,6 +82,7 @@ export async function* filterModelListing(
 ): AsyncGenerator<unknown> {
   const owners = new Map<string, Promise<boolean>>();
   async function filter(raw: unknown): Promise<ListingModel | null> {
+    if (raw === null) return null;
     const model = raw as ListingModel;
     if (
       !matchesRange(
@@ -133,7 +134,7 @@ export async function* filterModelListing(
       // preserve rejected rows so pagination's scan limit still bounds sparse searches.
       for (const model of await Promise.all(
         batch.map((raw) =>
-          pinnedName && (raw as ListingModel).name === pinnedName
+          pinnedName && (raw as ListingModel | null)?.name === pinnedName
             ? null
             : filter(raw),
         ),

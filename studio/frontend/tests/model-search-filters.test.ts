@@ -234,3 +234,19 @@ test("an incomplete pinned response does not hide a matching listing entry", asy
   );
   assert.deepEqual(output.filter(Boolean), [model]);
 });
+
+test("rejected priority rows retain the pagination scan budget", async () => {
+  const accepted = {
+    name: "unsloth/match",
+    gguf: { total: 4e9, context_length: 32768 },
+  };
+  const rows = await collect(
+    filterModelListing(
+      listing([null, null, accepted]),
+      { minContext: 32768 },
+      noFetch,
+      Promise.resolve(accepted),
+    ),
+  );
+  assert.deepEqual(rows, [accepted, null, null, null]);
+});

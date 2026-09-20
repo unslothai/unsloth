@@ -295,6 +295,10 @@ function primeFromListing(
   }
 }
 
+type ModelListingTransform = (
+  iterator: AsyncGenerator<unknown>,
+) => AsyncGenerator<unknown>;
+
 /** Merged generator yielding unsloth-owned models first, then deduped general results. */
 async function* mergedModelIterator(
   query: string,
@@ -305,6 +309,7 @@ async function* mergedModelIterator(
   direction: HfSortDirection = "desc",
   signal?: AbortSignal,
   parameterFilter = "",
+  filterPriority?: ModelListingTransform,
 ): AsyncGenerator<unknown> {
   const tasks = normalizeTaskFilter(task);
   const common = {
@@ -355,7 +360,13 @@ async function* mergedModelIterator(
   // Phase 1: unsloth models first
   const seen = new Set<string>();
   let count = 0;
-  for await (const model of unslothIter) {
+  for await (const model of filterPriority
+    ? filterPriority(unslothIter)
+    : unslothIter) {
+    if (model === null) {
+      yield null;
+      continue;
+    }
     const m = model as { name?: string };
     if (m.name) {
       seen.add(m.name);
@@ -508,6 +519,7 @@ async function* channelUnslothFirstIterator(
     accessToken?: string;
     signal: AbortSignal;
     parameterFilter?: string;
+    filterPriority?: ModelListingTransform;
   },
 ): AsyncGenerator<unknown> {
   const queryString = opts.query || channel.query || undefined;
@@ -534,7 +546,13 @@ async function* channelUnslothFirstIterator(
     ...creds,
   }) as AsyncGenerator<unknown>;
   let count = 0;
-  for await (const model of unslothIter) {
+  for await (const model of opts.filterPriority
+    ? opts.filterPriority(unslothIter)
+    : unslothIter) {
+    if (model === null) {
+      yield null;
+      continue;
+    }
     const name = (model as { name?: string }).name;
     if (name) seen.add(name);
     yield model;
@@ -687,7 +705,7 @@ export function useHubModelSearch(
   const hasFilters = !!filters && hasModelSearchFilters(filters);
   const filterRange = filters ? parameterRange(filters) : "";
   const createListing = useCallback(
-    (signal: AbortSignal) => {
+    (signal: AbortSignal, filterPriority?: ModelListingTransform) => {
       // Channel scoping bypasses the unsloth-merge iterator: a hard owner/tag filter shows that slice.
       if (channelOwner || channelTagsKey || channelQuery) {
         const channelTags = channelTagsKey
@@ -722,6 +740,7 @@ export function useHubModelSearch(
               accessToken,
               signal,
               parameterFilter: filterRange,
+              filterPriority,
             },
           );
         }
@@ -801,6 +820,7 @@ export function useHubModelSearch(
         sortDirection,
         signal,
         filterRange,
+        filterPriority,
       ) as AsyncGenerator<unknown>;
     },
     [
@@ -824,8 +844,41 @@ export function useHubModelSearch(
 
   const createIter = useCallback(
     (signal: AbortSignal) => {
-      const iterator = createListing(signal);
-      if (!filters || !hasFilters) return iterator;
+      if (!filters || !hasFilters) return createListing(signal);
+      const metadata = new Map<
+        string,
+        Promise<Record<string, unknown> | null>
+      >();
+      const requestJson = async (path: string) => {
+        const response = await fetchWithTimeout(
+          `${hfEndpoint}${path}`,
+          {
+            signal,
+            ...(accessToken
+              ? { headers: { Authorization: `Bearer ${accessToken}` } }
+              : {}),
+          },
+          HF_SEARCH_TIMEOUT_MS,
+        );
+        if ([401, 403, 404].includes(response.status)) return null;
+        if (!response.ok) {
+          throw new Error(
+            `Model filter metadata request failed (HTTP ${response.status})`,
+          );
+        }
+        return response.json();
+      };
+      const fetchJson = (path: string) => {
+        let request = metadata.get(path);
+        if (!request) {
+          request = requestJson(path);
+          metadata.set(path, request);
+        }
+        return request;
+      };
+      const filterPriority: ModelListingTransform = (iterator) =>
+        filterModelListing(iterator, filters, fetchJson);
+      const iterator = createListing(signal, filterPriority);
       const pinnedPromise =
         pinnedId &&
         !unslothOnly &&
@@ -840,30 +893,7 @@ export function useHubModelSearch(
               ...(accessToken ? { credentials: { accessToken } } : {}),
             }).catch(() => null)
           : undefined;
-      return filterModelListing(
-        iterator,
-        filters,
-        async (path) => {
-          const response = await fetchWithTimeout(
-            `${hfEndpoint}${path}`,
-            {
-              signal,
-              ...(accessToken
-                ? { headers: { Authorization: `Bearer ${accessToken}` } }
-                : {}),
-            },
-            HF_SEARCH_TIMEOUT_MS,
-          );
-          if ([401, 403, 404].includes(response.status)) return null;
-          if (!response.ok) {
-            throw new Error(
-              `Model filter metadata request failed (HTTP ${response.status})`,
-            );
-          }
-          return response.json();
-        },
-        pinnedPromise,
-      );
+      return filterModelListing(iterator, filters, fetchJson, pinnedPromise);
     },
     [
       createListing,
