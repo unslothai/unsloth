@@ -66,8 +66,15 @@ def main() -> None:
         assert login.json()["access_token"]
     finally:
         client.close()
+    # `auth/auth.db` has always been exempt here because logging in writes to it, and its contents
+    # are asserted row by row instead. `studio.db` joins it for the same reason: opening a
+    # pre-account install now runs a schema migration on it, so its bytes legitimately move. What
+    # must not move is what it holds, and that is asserted above -- the legacy thread, message,
+    # chat settings, app setting, credential and knowledge base are all read back before this
+    # point, after the migration has run.
+    unchanged_bytes = ("auth/auth.db", "studio.db")
     for name, payload in original.items():
-        if name != "auth/auth.db":
+        if name not in unchanged_bytes:
             assert (home / name).read_bytes() == payload, f"Owner read changed {name}"
     assert old_auth_row(home / "auth" / "auth.db") == auth_row
     assert not (home / "accounts").exists()
