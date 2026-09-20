@@ -657,7 +657,11 @@ def test_the_rocm_installer_bails_on_the_same_arch(stack, monkeypatch):
     assert installed["ran"] is False
 
 
-def _gpu_summary_branch(resolved: str, request: str, pinned: bool = False) -> str:
+def _gpu_summary_branch(
+    resolved: str,
+    request: str,
+    pinned: bool = False,
+) -> str:
     """Which arm the GPU detection summary takes, given the index the resolution left."""
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
@@ -706,19 +710,14 @@ def test_a_pinned_rocm_index_still_reports_the_nvidia_card():
     card to describe, so reading the resolved index alone hid the NVIDIA identity behind an
     "AMD ROCm" banner for hardware the machine does not have."""
     assert (
-        _gpu_summary_branch(
-            "https://download.pytorch.org/whl/rocm7.2", "", pinned = True
-        )
-        == "nvidia"
+        _gpu_summary_branch("https://download.pytorch.org/whl/rocm7.2", "", pinned = True) == "nvidia"
     )
 
 
 def test_an_unpinned_rocm_resolution_still_reports_amd():
     """The control: the exemption is the pin, not the index. The same URL reached by resolution
     still reports the card its wheels are for."""
-    assert (
-        _gpu_summary_branch("https://download.pytorch.org/whl/rocm7.2", "") == "amd"
-    )
+    assert _gpu_summary_branch("https://download.pytorch.org/whl/rocm7.2", "") == "amd"
 
 
 def test_the_summary_reports_cuda_after_the_cuda_restore():
