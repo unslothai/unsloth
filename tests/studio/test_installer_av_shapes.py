@@ -946,7 +946,11 @@ function Get-WinEvent {
 _SETTLE_FOR_THE_SUBDIRECTORY_WATCH = "Start-Sleep -Milliseconds 500; "
 
 
-def _run_watch(tmp_path, action: str, setup: str = "") -> tuple[str, list[str]]:
+def _run_watch(
+    tmp_path,
+    action: str,
+    setup: str = "",
+) -> tuple[str, list[str]]:
     """Drive the real Invoke-WithCompilerWatch over $Action, with TEMP pointed at tmp_path.
 
     ``setup`` runs BEFORE the watch starts, for the one case that needs a directory to
