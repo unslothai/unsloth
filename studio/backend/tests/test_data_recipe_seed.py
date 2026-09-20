@@ -532,9 +532,7 @@ def test_seed_hf_path_follows_the_dataset_card_config_mapping(
 def test_seed_hf_path_ignores_a_card_mapping_pointing_at_nothing(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     configs = [{"config_name": "main", "data_files": [{"split": "train", "path": "gone/*"}]}]
-    resolved = seed_route._resolve_seed_hf_path(
-        "org/repo", _GSM8K_FILES, "train", "main", configs
-    )
+    resolved = seed_route._resolve_seed_hf_path("org/repo", _GSM8K_FILES, "train", "main", configs)
     assert resolved == "datasets/org/repo/main/train-*.parquet"
 
 

@@ -147,7 +147,10 @@ def _declared_split_patterns(
         if name.lower() != wanted:
             continue
         for entry in config.get("data_files") or []:
-            if not isinstance(entry, dict) or str(entry.get("split") or "").lower() != split.lower():
+            if (
+                not isinstance(entry, dict)
+                or str(entry.get("split") or "").lower() != split.lower()
+            ):
                 continue
             path = entry.get("path")
             if isinstance(path, str):
@@ -257,7 +260,9 @@ def _resolve_seed_hf_path(
         prefix = None
         if stem_lower.startswith((f"{split_lower}-", f"{split_lower}_", f"{split_lower}.")):
             prefix = stem[: len(split_lower) + 1]
-        elif stem_lower == split_lower or stem_lower.endswith((f"_{split_lower}", f"-{split_lower}")):
+        elif stem_lower == split_lower or stem_lower.endswith(
+            (f"_{split_lower}", f"-{split_lower}")
+        ):
             # Keep the trailing star: the split may still be sharded as train.jsonl,
             # train_2.jsonl, so an exact file name would read only the first shard.
             prefix = stem
