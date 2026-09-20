@@ -59,14 +59,40 @@ try {
     "typer" | Set-Content -LiteralPath $spaced
     $r2 = Get-UvSafeRequirementsPath -Path $spaced
     Check "a spaced path never comes back containing a space" (-not $r2.Path.Contains(" "))
-    Check "the relocated copy carries the same content" ((Get-Content -Raw -LiteralPath $r2.Path).Trim() -eq "typer")
+    Check "the space-free path carries the same content" ((Get-Content -Raw -LiteralPath $r2.Path).Trim() -eq "typer")
 
     # 3. Only a copy may be deleted. Deleting what the helper reported must leave the user's file.
+    #    There are TWO legitimate ways to get a space-free path, and which one happens is a
+    #    property of the volume, not of the helper: where 8.3 creation is enabled the helper
+    #    returns the ALIAS OF THE USER'S OWN FILE and reports Temporary = $false, because deleting
+    #    it would delete the user's file; where 8.3 is unavailable it copies and reports
+    #    Temporary = $true. Asserting only the copy made this test fail on any Windows runner with
+    #    8.3 enabled, which is a fact about that runner rather than a defect. The invariant that
+    #    actually has to hold on both is: Temporary tells the caller whether the path is safe to
+    #    delete, and the user's file survives either way.
     if ($r2.Temporary) {
+        Check "a copy is not the user's own file" ($r2.Path -ne $spaced)
         Remove-Item -LiteralPath $r2.Path -Force
         Check "deleting the copy leaves the original in place" (Test-Path -LiteralPath $spaced)
     } else {
-        Check "a relocated path is reported as temporary" $false
+        # Not temporary means it must BE the user's file, reached by another name. Compare identity
+        # rather than the string: the whole point of the alias is that the spelling differs.
+        $sameFile = $false
+        try {
+            $sameFile = ((Get-Item -LiteralPath $r2.Path -Force).FullName -eq (Get-Item -LiteralPath $spaced -Force).FullName)
+        } catch { }
+        if (-not $sameFile) {
+            # An 8.3 alias and the long name are different strings for one file, so fall back to
+            # writing through one and reading it back through the other.
+            try {
+                "typer-probe" | Set-Content -LiteralPath $spaced
+                $sameFile = ((Get-Content -Raw -LiteralPath $r2.Path).Trim() -eq "typer-probe")
+                "typer" | Set-Content -LiteralPath $spaced
+            } catch { }
+        }
+        Check "a non-temporary path is the user's own file under another name" $sameFile
+        Check "the user's file is still there and untouched" (
+            (Test-Path -LiteralPath $spaced) -and ((Get-Content -Raw -LiteralPath $spaced).Trim() -eq "typer"))
     }
 
     # 4. Every candidate unusable: the original comes back, and the user is told why. Without the
