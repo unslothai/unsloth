@@ -1570,9 +1570,9 @@ class TestWindowsMountPointVolumes:
         helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
             "function Get-StudioTreeSizeBytes", 1
         )[0]
-        assert "Get-StudioMountedVolume" in helper, (
-            "Get-StudioFreeSpaceBytes falls straight through to the drive root"
-        )
+        assert (
+            "Get-StudioMountedVolume" in helper
+        ), "Get-StudioFreeSpaceBytes falls straight through to the drive root"
         assert "DriveInfo" in helper, "the drive-root fallback was dropped"
 
     def test_same_volume_compares_identity_not_root(self):
@@ -1586,9 +1586,9 @@ class TestWindowsMountPointVolumes:
         # CimCmdlets ships only on Windows, and this helper is reached on every platform.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         helper = text.split("function Get-StudioMountedVolume", 1)[1].split("\n    }", 1)[0]
-        assert "$IsWindows" in helper and "Windows_NT" in helper, (
-            "Get-StudioMountedVolume would call Get-CimInstance off Windows"
-        )
+        assert (
+            "$IsWindows" in helper and "Windows_NT" in helper
+        ), "Get-StudioMountedVolume would call Get-CimInstance off Windows"
 
 
 class TestDiskFullDiagnosisReachesTauri:
@@ -1617,9 +1617,9 @@ class TestDiskFullDiagnosisReachesTauri:
         block = text.split("if ($setupExit -ne 0) {", 1)[1].split("Clear-TauriInstallError", 1)[0]
         probe = block.index("$_failFree = Get-StudioFreeSpaceBytes")
         guard = block.index("if (-not $TauriMode) {")
-        assert probe < guard, (
-            "the free-space probe runs only in the non-Tauri branch, so --tauri never measures"
-        )
+        assert (
+            probe < guard
+        ), "the free-space probe runs only in the non-Tauri branch, so --tauri never measures"
 
 
 class TestDiskFullRemedyIsNotTheFlagAlreadyGiven:
@@ -1647,9 +1647,9 @@ class TestDiskFullRemedyIsNotTheFlagAlreadyGiven:
     )
     def test_the_already_discarded_case_says_so(self, path):
         text = path.read_text(encoding = "utf-8")
-        assert "already discarded by --no-rollback" in text, (
-            f"{path.name} does not tell an opted-out run that there is nothing left to reclaim"
-        )
+        assert (
+            "already discarded by --no-rollback" in text
+        ), f"{path.name} does not tell an opted-out run that there is nothing left to reclaim"
 
 
 class TestNoCacheStillCostsAFullEnvironment:
@@ -1689,9 +1689,9 @@ class TestVolumeLookupsResolveLinks:
             ("function Get-StudioFreeSpaceBytes", "function Get-StudioTreeSizeBytes"),
         ):
             helper = text.split(name, 1)[1].split(end, 1)[0]
-            assert "Resolve-StudioVolumeQueryPath" in helper, (
-                f"{name} asks the lexical path, which a junction answers for the wrong volume"
-            )
+            assert (
+                "Resolve-StudioVolumeQueryPath" in helper
+            ), f"{name} asks the lexical path, which a junction answers for the wrong volume"
 
     def test_the_driveinfo_fallback_uses_the_resolved_path(self):
         # The fallback is the path that runs off Windows and wherever CIM cannot answer.
@@ -1699,9 +1699,9 @@ class TestVolumeLookupsResolveLinks:
         helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
             "function Get-StudioTreeSizeBytes", 1
         )[0]
-        assert "GetFullPath($queryPath)" in helper, (
-            "the DriveInfo fallback still measures the unresolved path"
-        )
+        assert (
+            "GetFullPath($queryPath)" in helper
+        ), "the DriveInfo fallback still measures the unresolved path"
 
 
 class TestNoRollbackDoesNotNarrowDeviceDetection:
@@ -1713,7 +1713,7 @@ class TestNoRollbackDoesNotNarrowDeviceDetection:
     def test_the_verdict_is_taken_before_the_tree_is_deleted(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         discard = text.split("if ($script:StudioNoRollback) {", 1)[1].split(
-            "substep \"previous environment discarded", 1
+            'substep "previous environment discarded', 1
         )[0]
         probe = discard.index("Invoke-BoundedPythonProbe")
         removal = discard.index("Remove-StudioVenvTreeWithRetry")
@@ -1723,9 +1723,9 @@ class TestNoRollbackDoesNotNarrowDeviceDetection:
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert "$script:StudioPreservedXpuVerdict" in text
         scan = text.split("$_xpuProbePy = $VenvPython", 1)[0][-900:]
-        assert "$script:StudioPreservedXpuVerdict" in scan, (
-            "the Intel scan never consults the verdict taken before the discard"
-        )
+        assert (
+            "$script:StudioPreservedXpuVerdict" in scan
+        ), "the Intel scan never consults the verdict taken before the discard"
 
     def test_the_probe_is_defined_before_the_rollback_that_calls_it(self):
         # PowerShell binds a function when the statement defining it runs, so a helper defined
@@ -1747,9 +1747,9 @@ class TestTheVolumeQueryIsBounded:
         helper = text.split("function Get-StudioVolumeList", 1)[1].split(
             "function Get-StudioMountedVolume", 1
         )[0]
-        assert "Start-Job" in helper and "Wait-Job" in helper and "-Timeout" in helper, (
-            "the Win32_Volume query is not bounded by a wall-clock deadline"
-        )
+        assert (
+            "Start-Job" in helper and "Wait-Job" in helper and "-Timeout" in helper
+        ), "the Win32_Volume query is not bounded by a wall-clock deadline"
         assert "Stop-Job" in helper, "a query past its deadline is never killed"
 
     def test_nothing_queries_win32_volume_unbounded(self):
@@ -1758,15 +1758,15 @@ class TestTheVolumeQueryIsBounded:
             "function Get-StudioMountedVolume", 1
         )[0]
         # Exactly one call site, and it is the bounded one.
-        assert text.count("Win32_Volume") == helper.count("Win32_Volume") + 1, (
-            "Win32_Volume is queried somewhere other than the bounded helper"
-        )
+        assert (
+            text.count("Win32_Volume") == helper.count("Win32_Volume") + 1
+        ), "Win32_Volume is queried somewhere other than the bounded helper"
 
     def test_the_answer_is_taken_once(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert "$script:StudioVolumeList = $null" in text, (
-            "the cached volume list is never reset, so `irm | iex` reuses a previous run's answer"
-        )
+        assert (
+            "$script:StudioVolumeList = $null" in text
+        ), "the cached volume list is never reset, so `irm | iex` reuses a previous run's answer"
 
 
 class TestFreeSpaceIsNeverServedFromTheCache:
@@ -1786,9 +1786,9 @@ class TestFreeSpaceIsNeverServedFromTheCache:
         # Mount paths and volume GUIDs do not move during an install, so those keep the cache.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         helper = text.split("function Test-StudioSameVolume", 1)[1].split("\n    }", 1)[0]
-        assert "-Fresh" not in helper, (
-            "the identity comparison re-queries WMI, which the cache exists to avoid"
-        )
+        assert (
+            "-Fresh" not in helper
+        ), "the identity comparison re-queries WMI, which the cache exists to avoid"
 
 
 class TestVolumeLookupRefusesToGuess:
@@ -1807,9 +1807,9 @@ class TestVolumeLookupRefusesToGuess:
     def test_the_resolver_keeps_the_caller_path_when_resolution_is_unrooted(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         helper = text.split("function Resolve-StudioVolumeQueryPath", 1)[1].split("\n    }", 1)[0]
-        assert "IsPathRooted" in helper, (
-            "the resolver hands on an unrooted result instead of the caller's own path"
-        )
+        assert (
+            "IsPathRooted" in helper
+        ), "the resolver hands on an unrooted result instead of the caller's own path"
 
 
 class TestRemovalIsConfirmedWithLinkAwareSemantics:
@@ -1823,9 +1823,9 @@ class TestRemovalIsConfirmedWithLinkAwareSemantics:
         helper = text.split("function Remove-StudioVenvTreeWithRetry", 1)[1].split(
             "\n    function ", 1
         )[0]
-        assert "Test-StudioPathPresent" in helper, (
-            "the retry helper confirms removal with Test-Path, which a dangling link fools"
-        )
+        assert (
+            "Test-StudioPathPresent" in helper
+        ), "the retry helper confirms removal with Test-Path, which a dangling link fools"
         assert "if (-not (Test-Path -LiteralPath $Path))" not in helper
 
 
@@ -1838,9 +1838,9 @@ class TestArm64MigrationDoesNotPromiseWhatTheFlagDeletes:
     def test_the_promise_is_gated_on_the_flag_too(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         gate = text.split("the ARM64 environment is kept under", 1)[0][-400:]
-        assert "$script:StudioNoRollback" in gate, (
-            "the retention promise is printed on a run whose next call deletes the tree"
-        )
+        assert (
+            "$script:StudioNoRollback" in gate
+        ), "the retention promise is printed on a run whose next call deletes the tree"
 
     def test_a_discard_inside_the_migration_is_reported(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
