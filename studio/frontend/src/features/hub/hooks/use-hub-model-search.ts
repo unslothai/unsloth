@@ -140,6 +140,7 @@ function makeSortFetch(
   sortBy: HfSortKey | undefined,
   direction: HfSortDirection,
   signal?: AbortSignal,
+  parameterFilter = "",
 ): typeof fetch {
   return (input, init) => {
     const rawUrl =
@@ -149,6 +150,8 @@ function makeSortFetch(
           ? input.toString()
           : input.url;
     const url = new URL(rawUrl);
+    if (parameterFilter)
+      url.searchParams.set("num_parameters", parameterFilter);
 
     if (sortBy && !url.searchParams.has("sort")) {
       url.searchParams.set("sort", sortBy);
@@ -301,6 +304,7 @@ async function* mergedModelIterator(
   sortBy: HfSortKey = "downloads",
   direction: HfSortDirection = "desc",
   signal?: AbortSignal,
+  parameterFilter = "",
 ): AsyncGenerator<unknown> {
   const tasks = normalizeTaskFilter(task);
   const common = {
@@ -314,7 +318,7 @@ async function* mergedModelIterator(
       listModels({
         hubUrl: getHfEndpoint(),
         search: { query, owner: "unsloth", ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal),
+        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
         ...common,
       }) as AsyncGenerator<unknown>,
     signal,
@@ -325,7 +329,7 @@ async function* mergedModelIterator(
       listModels({
         hubUrl: getHfEndpoint(),
         search: { query, ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal),
+        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
         ...common,
       }) as AsyncGenerator<unknown>,
     signal,
@@ -395,6 +399,7 @@ async function* priorityThenListingIterator(
   sortBy: HfSortKey = "downloads",
   direction: HfSortDirection = "desc",
   signal?: AbortSignal,
+  parameterFilter = "",
 ): AsyncGenerator<unknown> {
   const tasks = normalizeTaskFilter(task);
   const common = {
@@ -430,7 +435,7 @@ async function* priorityThenListingIterator(
       listModels({
         hubUrl: getHfEndpoint(),
         search: { owner: "unsloth", ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal),
+        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
         ...common,
       }) as AsyncGenerator<unknown>,
     signal,
@@ -462,6 +467,7 @@ function createChannelIterator(
     sortDirection: HfSortDirection;
     accessToken?: string;
     signal: AbortSignal;
+    parameterFilter?: string;
   },
 ): AsyncGenerator<unknown> {
   const channelTags =
@@ -475,7 +481,12 @@ function createChannelIterator(
       ...(channelTags ? { tags: channelTags } : {}),
     },
     additionalFields: ALL_FIELDS,
-    fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal),
+    fetch: makeSortFetch(
+      opts.sortBy,
+      opts.sortDirection,
+      opts.signal,
+      opts.parameterFilter,
+    ),
     sort: opts.sortBy,
     ...(opts.accessToken
       ? { credentials: { accessToken: opts.accessToken } }
@@ -496,6 +507,7 @@ async function* channelUnslothFirstIterator(
     sortDirection: HfSortDirection;
     accessToken?: string;
     signal: AbortSignal;
+    parameterFilter?: string;
   },
 ): AsyncGenerator<unknown> {
   const queryString = opts.query || channel.query || undefined;
@@ -512,7 +524,12 @@ async function* channelUnslothFirstIterator(
       ...(channel.tags ? { tags: channel.tags } : {}),
     },
     additionalFields: ALL_FIELDS,
-    fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal),
+    fetch: makeSortFetch(
+      opts.sortBy,
+      opts.sortDirection,
+      opts.signal,
+      opts.parameterFilter,
+    ),
     sort: opts.sortBy,
     ...creds,
   }) as AsyncGenerator<unknown>;
@@ -531,7 +548,12 @@ async function* channelUnslothFirstIterator(
       ...(channel.tags ? { tags: channel.tags } : {}),
     },
     additionalFields: ALL_FIELDS,
-    fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal),
+    fetch: makeSortFetch(
+      opts.sortBy,
+      opts.sortDirection,
+      opts.signal,
+      opts.parameterFilter,
+    ),
     sort: opts.sortBy,
     ...creds,
   }) as AsyncGenerator<unknown>;
@@ -662,71 +684,10 @@ export function useHubModelSearch(
   }, [query]);
 
   const hfEndpoint = useHfEndpoint();
-  const createIter = useCallback(
+  const hasFilters = !!filters && hasModelSearchFilters(filters);
+  const filterRange = filters ? parameterRange(filters) : "";
+  const createListing = useCallback(
     (signal: AbortSignal) => {
-      if (filters && hasModelSearchFilters(filters)) {
-        const sortedFetch = makeSortFetch(sortBy, sortDirection, signal);
-        const range = parameterRange(filters);
-        const iterator = listModels({
-          hubUrl: hfEndpoint,
-          search: {
-            query:
-              (channelOwner || channelTagsKey || channelQuery
-                ? trimmed || channelQuery
-                : searchQuery) || undefined,
-            owner: channelOwner ?? (unslothOnly ? "unsloth" : undefined),
-            tags: channelTagsKey ? channelTagsKey.split("|") : undefined,
-          },
-          additionalFields: ALL_FIELDS,
-          sort: sortBy,
-          fetch: (input, init) => {
-            const url = new URL(
-              typeof input === "string"
-                ? input
-                : input instanceof URL
-                  ? input.href
-                  : input.url,
-            );
-            if (range) url.searchParams.set("num_parameters", range);
-            return sortedFetch(url, init);
-          },
-          ...(accessToken ? { credentials: { accessToken } } : {}),
-        }) as AsyncGenerator<unknown>;
-        const pinnedPromise =
-          pinnedId && !unslothOnly && !channelOwner && !channelTagsKey && !channelQuery
-            ? modelInfo({
-                hubUrl: hfEndpoint,
-                name: pinnedId,
-                additionalFields: ALL_FIELDS,
-                fetch: makeHfFetch(signal),
-                ...(accessToken ? { credentials: { accessToken } } : {}),
-              }).catch(() => null)
-            : undefined;
-        return filterModelListing(
-          iterator,
-          filters,
-          async (path) => {
-            const response = await fetchWithTimeout(
-              `${hfEndpoint}${path}`,
-              {
-                signal,
-                ...(accessToken
-                  ? { headers: { Authorization: `Bearer ${accessToken}` } }
-                  : {}),
-              },
-              HF_SEARCH_TIMEOUT_MS,
-            );
-            if ([401, 403, 404].includes(response.status)) return null;
-            if (!response.ok) {
-              throw new Error(
-                `Model filter metadata request failed (HTTP ${response.status})`,
-              );
-            }
-            return response.json();
-          },
-          pinnedPromise,
-        );
-      }
       // Channel scoping bypasses the unsloth-merge iterator: a hard owner/tag filter shows that slice.
       if (channelOwner || channelTagsKey || channelQuery) {
         const channelTags = channelTagsKey
@@ -746,6 +707,7 @@ export function useHubModelSearch(
               sortDirection,
               accessToken,
               signal,
+              parameterFilter: filterRange,
             },
           );
         }
@@ -759,6 +721,7 @@ export function useHubModelSearch(
               sortDirection,
               accessToken,
               signal,
+              parameterFilter: filterRange,
             },
           );
         }
@@ -775,6 +738,7 @@ export function useHubModelSearch(
             sortDirection,
             accessToken,
             signal,
+            parameterFilter: filterRange,
           },
         );
       }
@@ -788,6 +752,7 @@ export function useHubModelSearch(
             sortBy,
             sortDirection,
             signal,
+            filterRange,
           ) as AsyncGenerator<unknown>;
         }
         return mergeTaskIterators(
@@ -801,7 +766,12 @@ export function useHubModelSearch(
                 ...(task ? { task } : {}),
               },
               additionalFields: ALL_FIELDS,
-              fetch: makeSortFetch(sortBy, sortDirection, taskSignal),
+              fetch: makeSortFetch(
+                sortBy,
+                sortDirection,
+                taskSignal,
+                filterRange,
+              ),
               sort: sortBy,
               ...(accessToken ? { credentials: { accessToken } } : {}),
             }) as AsyncGenerator<unknown>,
@@ -814,7 +784,7 @@ export function useHubModelSearch(
           hubUrl: getHfEndpoint(),
           search: { query: searchQuery, owner: "unsloth" },
           additionalFields: ALL_FIELDS,
-          fetch: makeSortFetch(sortBy, sortDirection, signal),
+          fetch: makeSortFetch(sortBy, sortDirection, signal, filterRange),
           sort: sortBy,
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
@@ -826,10 +796,11 @@ export function useHubModelSearch(
         searchQuery,
         undefined,
         accessToken,
-        pinnedId,
+        hasFilters ? undefined : pinnedId,
         sortBy,
         sortDirection,
         signal,
+        filterRange,
       ) as AsyncGenerator<unknown>;
     },
     [
@@ -846,8 +817,65 @@ export function useHubModelSearch(
       channelQuery,
       pinUnslothFirst,
       unslothOnly,
-      hfEndpoint,
+      hasFilters,
+      filterRange,
+    ],
+  );
+
+  const createIter = useCallback(
+    (signal: AbortSignal) => {
+      const iterator = createListing(signal);
+      if (!filters || !hasFilters) return iterator;
+      const pinnedPromise =
+        pinnedId &&
+        !unslothOnly &&
+        !channelOwner &&
+        !channelTagsKey &&
+        !channelQuery
+          ? modelInfo({
+              hubUrl: hfEndpoint,
+              name: pinnedId,
+              additionalFields: ALL_FIELDS,
+              fetch: makeHfFetch(signal),
+              ...(accessToken ? { credentials: { accessToken } } : {}),
+            }).catch(() => null)
+          : undefined;
+      return filterModelListing(
+        iterator,
+        filters,
+        async (path) => {
+          const response = await fetchWithTimeout(
+            `${hfEndpoint}${path}`,
+            {
+              signal,
+              ...(accessToken
+                ? { headers: { Authorization: `Bearer ${accessToken}` } }
+                : {}),
+            },
+            HF_SEARCH_TIMEOUT_MS,
+          );
+          if ([401, 403, 404].includes(response.status)) return null;
+          if (!response.ok) {
+            throw new Error(
+              `Model filter metadata request failed (HTTP ${response.status})`,
+            );
+          }
+          return response.json();
+        },
+        pinnedPromise,
+      );
+    },
+    [
+      createListing,
       filters,
+      hasFilters,
+      pinnedId,
+      unslothOnly,
+      channelOwner,
+      channelTagsKey,
+      channelQuery,
+      hfEndpoint,
+      accessToken,
     ],
   );
 
