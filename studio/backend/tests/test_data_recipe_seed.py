@@ -907,6 +907,56 @@ def test_seed_hf_path_matches_config_names_case_sensitively(
     assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset, configs) == expected
 
 
+def test_seed_hf_path_keeps_a_hand_listed_split_off_its_neighbours(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/apple.parquet", "data/banana.parquet", "data/avocado.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_files": [
+                {"split": "train", "path": ["data/apple.parquet", "data/banana.parquet"]},
+                {"split": "test", "path": "data/avocado.parquet"},
+            ],
+        }
+    ]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert sorted(matched) == ["data/apple.parquet", "data/banana.parquet"]
+
+
+def test_seed_hf_path_never_widens_a_declared_split_over_another(monkeypatch, tmp_path):
+    """No glob names these two alone, so the recipe reads what it can name."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/ax.parquet", "data/bx.parquet", "data/cx.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_files": [
+                {"split": "train", "path": ["data/ax.parquet", "data/cx.parquet"]},
+                {"split": "test", "path": "data/bx.parquet"},
+            ],
+        }
+    ]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert "data/bx.parquet" not in matched
+    assert matched
+
+
+def test_seed_hf_path_keeps_both_extensions_of_one_builder(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/a.json", "data/b.jsonl"]
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "data/*"}]}]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    assert resolved == "datasets/org/repo/data/*.json*"
+
+
 def test_seed_hf_path_keeps_shards_spread_over_sibling_folders(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["a/train-0.parquet", "b/train-1.parquet", "a/test-0.parquet"]

@@ -464,19 +464,47 @@ def _dominant_suffix(paths: list[str]) -> str:
     # The same window the loader infers from, so a split whose formats change
     # past it is read as the loader reads it rather than as the whole listing.
     for path in sorted(voting)[:_MAX_MODULE_INFERENCE_FILES]:
-        suffix = Path(path).suffix.lower()
-        counts[suffix] = counts.get(suffix, 0) + 1
+        # By builder, not by extension: .json and .jsonl are one builder to the
+        # loader, so a split written in both is one format, not two.
+        builder = _builder_exts(Path(path).suffix.lower())[0]
+        counts[builder] = counts.get(builder, 0) + 1
     if not counts:
         return ""
     best = max(
         counts,
         key = lambda s: (counts[s], -DATA_EXTS.index(s) if s in DATA_EXTS else -99),
     )
-    return next(Path(p).suffix for p in paths if Path(p).suffix.lower() == best)
+    group = _builder_exts(best)
+    return next(Path(p).suffix for p in paths if Path(p).suffix.lower() in group)
+
+
+# Extensions one builder reads: `datasets` loads .json and .jsonl with the same one.
+_BUILDER_EXTS = ((".json", ".jsonl"),)
+
+
+def _builder_exts(suffix: str) -> tuple[str, ...]:
+    lowered = suffix.lower()
+    for group in _BUILDER_EXTS:
+        if lowered in group:
+            return group
+    return (lowered,)
 
 
 def _of_suffix(paths: list[str], suffix: str) -> list[str]:
-    return [p for p in paths if Path(p).suffix.lower() == suffix.lower()]
+    group = _builder_exts(suffix)
+    return [p for p in paths if Path(p).suffix.lower() in group]
+
+
+def _extension_glob(paths: list[str], suffix: str) -> str:
+    """What the pattern should end in to keep every file this builder reads.
+
+    A split declared over both .json and .jsonl cannot be named by one of them
+    without dropping the other, so the shared start of the two ends the glob.
+    """
+    used = {Path(path).suffix.lower() for path in paths} & set(_builder_exts(suffix))
+    if len(used) < 2:
+        return suffix
+    return f"{os.path.commonprefix(sorted(used))}*"
 
 
 def _common_name_prefix(paths: list[str]) -> str:
@@ -493,6 +521,12 @@ def _name_initials(paths: list[str]) -> str:
     if not initials or len(initials) != len({Path(path).name[:1] for path in paths}):
         return ""
     return "".join(initials)
+
+
+def _name_finals(paths: list[str]) -> str:
+    """The last characters of these names before the extension, as a class body."""
+    finals = {Path(path).stem[-1:] for path in paths}
+    return "".join(sorted(finals)) if finals and all(c.isalnum() for c in finals) else ""
 
 
 def _widened_declared_pattern(
@@ -524,14 +558,31 @@ def _widened_declared_pattern(
     # Unrelated names still start somewhere the neighbours do not. A class is the
     # only union the reader understands; it rejects `{a,b}` outright.
     initials = _name_initials(declared_files)
+    finals = _name_finals(declared_files)
     if initials:
         candidates.append(f"{prefix}**/[{initials}]*{suffix}")
+    # Names that start where a neighbour also starts may still end elsewhere:
+    # apple and banana beside avocado share their first letter with it but not
+    # their last, and one class at each end separates them.
+    if finals:
+        candidates.append(f"{prefix}**/*[{finals}]{suffix}")
+    if initials and finals:
+        candidates.append(f"{prefix}**/[{initials}]*[{finals}]{suffix}")
+    # A hand-written mapping may name files no glob can gather. Each one still
+    # names itself, so there is always something to fall back to that reads only
+    # what the card declared.
+    candidates += sorted(wanted)
+    clean, covered = "", 0
     for candidate in candidates:
-        if set(_files_under_patterns([candidate], data_files)) == wanted:
+        matched = set(_files_under_patterns([candidate], data_files))
+        if matched == wanted:
             return candidate
-    # Nothing narrower fits, so cover the folder: reading a neighbour is
-    # recoverable, dropping half the split is not.
-    return f"{base}/*{suffix}"
+        # Second best is the widest that stays inside the declaration: the card
+        # says the neighbours are another split, so reading them would be the
+        # very mix-up the split is being resolved to avoid.
+        if matched <= wanted and len(matched) > covered:
+            clean, covered = candidate, len(matched)
+    return clean or f"{base}/*{suffix}"
 
 
 def _resolve_seed_hf_path(
@@ -548,6 +599,7 @@ def _resolve_seed_hf_path(
     if declared_files:
         suffix = _dominant_suffix(declared_files)
         declared_files = _of_suffix(declared_files, suffix)
+        suffix = _extension_glob(declared_files, suffix)
         pattern = ""
         if len(declared) == 1:
             pattern = _with_data_extension(declared[0], suffix)
