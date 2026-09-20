@@ -16334,7 +16334,7 @@ def _check_signal_escape_patterns(code: str):
             # the second binding, which is where the source says it changes.
             self._alias_history: dict = {}
             self._value_positions: dict = {}
-            self._conditional_bindings: set = set()
+            self._conditional_suites: list = []
             self._exhaustive_joins: dict = {}
             self._value_spans: dict = {}
             # Names imported twice: no order-independent answer, so no alias at all.
@@ -16499,7 +16499,7 @@ def _check_signal_escape_patterns(code: str):
             # alias above it is still a value this call can see, and resolving to it only ever
             # adds a name the policy checks.
             unconditional = [
-                position for position in before if position not in self._conditional_bindings
+                position for position in before if not self._is_conditional_for(position, where)
             ]
             newest_alias = max((position for position, _target in history), default = None)
             if newest_alias is not None and newest_alias <= last:
@@ -16533,38 +16533,90 @@ def _check_signal_escape_patterns(code: str):
                     return None
             return None
 
+        @staticmethod
+        def _assigned_here(statement) -> set:
+            """Names this one statement binds, ignoring anything nested inside it."""
+            out: set = set()
+            targets = list(getattr(statement, "targets", []))
+            if isinstance(statement, (ast.AnnAssign, ast.AugAssign)) and statement.target:
+                targets.append(statement.target)
+            if isinstance(statement, (ast.With, ast.AsyncWith)):
+                targets += [item.optional_vars for item in statement.items if item.optional_vars]
+            stack = list(targets)
+            while stack:
+                target = stack.pop()
+                if isinstance(target, ast.Name):
+                    out.add(target.id)
+                elif isinstance(target, (ast.Tuple, ast.List)):
+                    stack.extend(target.elts)
+                elif isinstance(target, ast.Starred):
+                    stack.append(target.value)
+            return out
+
+        def _definitely_assigns(self, body: list) -> set:
+            """Names assigned on every path through *body*. A loop may not run and a bare `if`
+            may not be taken, so neither is definite; an `if` with an `else` is, for the names
+            both arms assign on every one of their own paths."""
+            out: set = set()
+            for statement in body:
+                out |= self._assigned_here(statement)
+                if isinstance(statement, ast.If) and statement.orelse:
+                    out |= self._definitely_assigns(statement.body) & self._definitely_assigns(
+                        statement.orelse
+                    )
+                elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                    out |= self._definitely_assigns(statement.body)
+                elif isinstance(statement, ast.Try):
+                    # finally always runs; the rest only on some path.
+                    out |= self._definitely_assigns(statement.finalbody)
+            return out
+
         def _mark_exhaustive_joins(self, tree) -> None:
-            """Where an `if` and its `else` both assign a name, nothing before the statement can
-            reach a use after it, so those earlier values stop being candidates there."""
+            """Where an `if` and its `else` both assign a name on every path, nothing before the
+            statement can reach a use after it, so those earlier values stop being candidates."""
             for statement in _tree_nodes(tree):
                 if not isinstance(statement, ast.If) or not statement.orelse:
                     continue
-                assigned = [
-                    {
-                        inner.id
-                        for branch in part
-                        for inner in ast.walk(branch)
-                        if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store)
-                    }
-                    for part in (statement.body, statement.orelse)
-                ]
-                for name in assigned[0] & assigned[1]:
+                both = self._definitely_assigns(statement.body) & self._definitely_assigns(
+                    statement.orelse
+                )
+                for name in both:
                     self._exhaustive_joins.setdefault(name, []).append(self._position(statement))
 
         def _mark_conditional_bindings(self, tree) -> None:
-            """Positions of assignments that only run if a branch is taken. Source position says
-            they came before the call, but not that they ran, so they cannot displace the value
-            an unconditional assignment left."""
-            branching = (ast.If, ast.While, ast.For, ast.AsyncFor, ast.Try, ast.With, ast.AsyncWith)
+            """The suites that only run when a branch is taken. Whether a binding inside one is
+            conditional depends on where it is read: two assignments inside the same guarded block
+            run in order for a call in that same block, while one of them seen from outside the
+            block may not have run at all."""
+            branching = (ast.If, ast.While, ast.For, ast.AsyncFor, ast.Try)
             match_statement = getattr(ast, "Match", None)
             if match_statement is not None:
                 branching = branching + (match_statement,)
             for statement in _tree_nodes(tree):
                 if not isinstance(statement, branching):
                     continue
-                for inner in ast.walk(statement):
-                    if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
-                        self._conditional_bindings.add(self._position(inner))
+                for suite in (
+                    getattr(statement, "body", None),
+                    getattr(statement, "orelse", None),
+                    getattr(statement, "finalbody", None),
+                    *[handler.body for handler in getattr(statement, "handlers", [])],
+                    *[case.body for case in getattr(statement, "cases", [])],
+                ):
+                    if not suite:
+                        continue
+                    if isinstance(statement, ast.Try) and suite is statement.finalbody:
+                        continue  # finally always runs
+                    self._conditional_suites.append(
+                        (self._position(suite[0]), self._span_of(suite[-1])[1])
+                    )
+
+        def _is_conditional_for(self, position, where) -> bool:
+            """Whether the binding at *position* sits in a suite that a use at *where* is not
+            inside, which is what makes it "may not have run" rather than "ran before this"."""
+            for start, end in self._conditional_suites:
+                if start <= position <= end and not start <= where <= end:
+                    return True
+            return False
 
         def is_bound(self, name: str, node) -> bool:
             """Whether the source binds this name anywhere the use can see, which is what says a
@@ -16606,7 +16658,7 @@ def _check_signal_escape_patterns(code: str):
                 return []
             start = 0
             for index, (position, _value) in enumerate(before):
-                if position not in self._conditional_bindings:
+                if not self._is_conditional_for(position, where):
                     start = index
             # An if / else that assigns the name on both paths replaces whatever came before it.
             for join in self._exhaustive_joins.get(key[1], ()):

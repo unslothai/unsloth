@@ -4593,3 +4593,39 @@ class TestValuesReplacedOnEveryPath:
             '    u = "https://huggingface.co/a"\nrequests.get(u)',
             expect_phrase = "Blocked: cloud-metadata host",
         )
+
+
+class TestPathsThroughBranches:
+    """Whether a binding can reach a call depends on the path, not on which statements happen to
+    enclose it."""
+
+    def test_an_arm_that_only_assigns_under_a_nested_condition_is_not_exhaustive(self):
+        _blocked(
+            f'import requests\nu = "{_METADATA_URL}"\nif flag:\n    if other:\n'
+            '        u = "https://huggingface.co/a"\nelse:\n'
+            '    u = "https://huggingface.co/b"\nrequests.get(u)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_two_assignments_in_the_same_guarded_block_run_in_order_ok(self):
+        _ok(
+            'import requests\nif __name__ == "__main__":\n'
+            f'    u = "{_METADATA_URL}"\n'
+            '    u = "https://huggingface.co/api/models"\n'
+            "    requests.get(u)"
+        )
+
+    def test_the_last_value_in_the_same_block_is_the_one_screened(self):
+        _blocked(
+            'import requests\nif __name__ == "__main__":\n'
+            '    u = "https://huggingface.co/a"\n'
+            f'    u = "{_METADATA_URL}"\n'
+            "    requests.get(u)",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_assignment_in_a_block_the_call_is_outside_of_is_still_possible(self):
+        _blocked(
+            f'import requests\nif flag:\n    u = "{_METADATA_URL}"\nrequests.get(u)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
