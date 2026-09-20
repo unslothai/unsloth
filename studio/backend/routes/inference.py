@@ -21228,6 +21228,30 @@ def _messages_have_input_audio(messages) -> bool:
     )
 
 
+def _messages_have_embedded_image(messages) -> bool:
+    """True when any message carries an image as an inline base64 data URL.
+
+    Deliberately narrower than "has an image". A remote image_url is a short string and costs
+    nothing to persist, so it has no business forcing a turn off the durable path; an inline
+    data URL is the whole blob, and durable runs persist their request verbatim, so admitting
+    one writes it into request_json again on every follow-up turn for the life of the thread.
+    That is the exact cost the media guard exists to prevent, and it is reachable without any
+    top-level image field once the gate is turn-scoped: the history image still rides along
+    inside messages[].content.
+    """
+    for msg in messages:
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if getattr(part, "type", None) != "image_url":
+                continue
+            url = getattr(getattr(part, "image_url", None), "url", None)
+            if isinstance(url, str) and url.startswith("data:"):
+                return True
+    return False
+
+
 def _normalise_chat_content_parts(payload) -> None:
     """Lift the request's ``input_audio`` part onto ``audio_base64``, in place.
 

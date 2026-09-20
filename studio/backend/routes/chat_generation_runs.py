@@ -156,6 +156,7 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
         ) from exc
     # Without this an unservable part is queued at 202 and fails where the caller cannot see it.
     from routes.inference import (
+        _messages_have_embedded_image,
         _messages_have_input_audio,
         _reject_unsupported_content_parts,
         _request_has_video,
@@ -188,10 +189,14 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
         )
     # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
     # request_json for the life of the thread. _MEDIA_FIELDS is field-shaped, so a video_url part
-    # needs _request_has_video.
+    # needs _request_has_video, and an inline image part needs _messages_have_embedded_image:
+    # turn-scoping means a TEXT-only follow-up no longer sets top-level image_base64, yet the
+    # thread's earlier screenshot still rides along inside messages[].content, so the field-shaped
+    # check alone admits it and re-persists the blob on every follow-up.
     if (
         any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
         or _messages_have_input_audio(request.messages)
+        or _messages_have_embedded_image(request.messages)
         or _request_has_video(request)
     ):
         raise HTTPException(
