@@ -80,13 +80,10 @@ def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool
 def _exact_model_name_for_load(config: ModelConfig, load_in_4bit: bool) -> Optional[str]:
     """The repo id to hand the loader verbatim, or None to let Unsloth's mapper choose.
 
-    Two answers are not None. ``config.path`` means the cached unquantized weights the
-    user picked, because the mapped repo is not on disk. The mapped repo's own cached
-    spelling means it IS on disk but under a different case, which the mapper cannot
-    say: it emits one lowercased id, cache directories are case sensitive, and
-    huggingface_hub keys the directory on the id verbatim, so asking for the mapped
-    spelling downloads a second copy of a model already there
-    (huggingface/huggingface_hub#3838).
+    ``config.path`` when the mapped repo is not on disk and the user's own weights are.
+    The mapped repo's cached spelling when it IS on disk under another case: the mapper
+    emits one lowercased id and huggingface_hub keys the cache directory on the id
+    verbatim, so asking for any other spelling re-downloads it (huggingface_hub#3838).
     """
     if config.is_local or config.is_lora or not config.path:
         return None
