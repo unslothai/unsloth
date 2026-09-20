@@ -155,13 +155,11 @@ async def get_gguf_variants(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Both identifiers can come back to us as handles: an API-key caller reading the cache
-    # inventory is handed `ref:` in place of every host path, and that reference is the only
-    # name it has for a custom local GGUF or for a copy in a secondary root. Unresolved, the
-    # lookup either misses or is answered out of the ACTIVE cache, which is a different file.
-    # Redacted on the way out for the same reason: a local listing copies its input into
-    # `repo_id`, so resolving the handle here and returning the answer unredacted would hand
-    # back the host path the inventory took the trouble to hide.
+    # Both identifiers can come back as handles: an API-key caller is handed `ref:` in place of
+    # every host path, and that reference is the only name it has for a custom local GGUF or a
+    # copy in a secondary root. Unresolved, the lookup misses or is answered out of the ACTIVE
+    # cache, a different file. Redacted on the way out because a local listing copies its input
+    # into `repo_id`, which would hand back the path the inventory took trouble to hide.
     return redact_host_paths(
         await gguf_variants.get_gguf_variants_response(
             resolve_host_path_reference(repo_id) or repo_id,

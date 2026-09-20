@@ -477,12 +477,11 @@ def check_format_response(
                             "token": hf_token,
                         }
 
-                        # Recorded against the call that can materialise rows, not against
-                        # the listing above it: a preview writes into the datasets cache,
-                        # possibly under a one-off token saved nowhere, and unrecorded a
-                        # later tokenless caller reads "none needed one". Recording before
-                        # `list_repo_files` meant a 404 or an outage left a record for a
-                        # fetch that never happened, and the first record stands.
+                        # Recorded against the call that can materialise rows, not the
+                        # listing above it: a preview writes into the datasets cache under
+                        # what may be a one-off token, and unrecorded a later tokenless
+                        # caller reads "none needed one". Recording before `list_repo_files`
+                        # left a record for a fetch a 404 or outage never made.
                         with recording_a_request_token_fetch(
                             hf_token, request.dataset_name, "dataset"
                         ):

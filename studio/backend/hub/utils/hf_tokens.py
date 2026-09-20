@@ -349,11 +349,10 @@ def _ambient_hf_token() -> "tuple[bool, Optional[str]]":
         if isinstance(token, str) and token.strip():
             return (True, token.strip())
         # An empty answer is NOT "this host holds nothing": `get_token` reads HF_TOKEN,
-        # HUGGING_FACE_HUB_TOKEN, the OIDC exchange and the token file, and nothing else.
-        # A host whose credential sits in one of the aliases this module already treats as
-        # a credential (HF_HUB_TOKEN, HUGGINGFACE_HUB_TOKEN, HUGGINGFACEHUB_API_TOKEN) read
-        # as credentialless, which authorizes a tokenless caller against a cache that
-        # credential may well have filled.
+        # HUGGING_FACE_HUB_TOKEN, the OIDC exchange and the token file, and nothing else. A
+        # credential sitting in an alias this module already honours (HF_HUB_TOKEN,
+        # HUGGINGFACE_HUB_TOKEN, HUGGINGFACEHUB_API_TOKEN) read as credentialless, which
+        # authorizes a tokenless caller against a cache that credential may have filled.
         return (True, _env_hf_token())
     # No reader at all: the environment is the only thing left to ask, and silence there is
     # "could not answer" rather than "nothing".

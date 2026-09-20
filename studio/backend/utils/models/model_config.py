@@ -566,15 +566,13 @@ def load_model_config(
         # `False` is falsy: without this it falls past both branches to the ambient call.
         # Passed as the sentinel rather than via without_hf_auth(), which mutates HF_TOKEN
         # process-wide and would strip a concurrent download's credential.
-        # token=False denies auth, not the cache: AutoConfig resolves a cached config.json
-        # without ever consulting the credential, so the read is gated here. One condition, not
-        # two: an "online, so only an ANSWERED refusal refuses" clause used to sit beside this
-        # one, and it discarded exactly the verdict the unaskable fallback exists to produce. A
-        # Hub that cannot be asked -- a mirror without /auth-check, a timeout -- leaves the
-        # metadata request failing too, and transformers then serves the cached config.json,
-        # which is the private-repo read this gate is for. A public repo on disk is not the
-        # cost: the fallback inside `cached_read_refused` refuses only where a credential could
-        # have filled that cache in the first place.
+        # token=False denies auth, not the cache: AutoConfig serves a cached config.json without
+        # consulting the credential, so the read is gated here. One condition, not two: an
+        # "online, so only an ANSWERED refusal refuses" clause used to sit beside it, and it
+        # discarded the unaskable verdict this gate exists for -- a Hub that cannot be asked
+        # fails the metadata request too, and transformers then serves the private config.json
+        # off disk. Public repos are not the cost: `cached_read_refused` refuses only where a
+        # credential could have filled that cache in the first place.
         if not is_local_path(model_name) and cached_read_refused(
             token,
             repo_id = model_name,
@@ -612,14 +610,11 @@ def load_model_config(
 
     if token:
         # config.json lands in the hub cache under what may be a one-off token; unrecorded it
-        # reads later as "nothing here needed one". Only when this call can actually fetch it:
-        # AutoConfig resolves an already-cached config without asking the Hub, and recording that
-        # marks a repo the cache may have held anonymously all along, which then withholds it
-        # from the tokenless offline caller this whole path exists for.
-        # Written BEFORE the call, since a fetch that dies half way has still filled the
-        # cache, and taken back by the context manager when the call raised having left
-        # nothing on disk -- a 404, a rejected token or an outage otherwise leaves a record
-        # for a fetch that never happened, which the first-writer rule then keeps.
+        # reads later as "nothing here needed one". Only when this call can actually fetch:
+        # recording an already-cached resolve would mark a repo the cache may have held
+        # anonymously, withholding it from the tokenless offline caller this path exists for.
+        # Written BEFORE the call, since a fetch that dies half way has still filled the cache,
+        # and taken back by the context manager when the call raised leaving nothing on disk.
         recording = (
             recording_a_request_token_fetch(token, model_name, "model")
             if not local_files_only and not _config_json_already_cached(model_name, revision)

@@ -468,9 +468,8 @@ def read_default_chat_template(
                 # Lands files in the hub cache under what may be a one-off token, but only when
                 # it really fetches: hf_hub_download returns a cached file without asking the
                 # Hub, and recording that withholds a repo the cache may have held anonymously.
-                # Around the call, not before it: a download that dies half way has still
-                # written, while one that 404s or is rejected leaves nothing, and the context
-                # manager takes the record back in exactly that case.
+                # Around the call, not before: a half-dead download has still written, while a
+                # 404 leaves nothing and the context manager takes that record back.
                 recording = (
                     recording_a_request_token_fetch(hf_token, resolved, "model")
                     if not _this_file_was_already_here(rel)
