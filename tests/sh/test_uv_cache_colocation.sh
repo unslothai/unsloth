@@ -182,12 +182,19 @@ _run_notice() {  # mode
     {
         printf '%s\n' 'step() { printf "STEP %s\n" "$2"; }'
         printf '%s\n' 'C_WARN=""'
-        # A path that cannot exist on any mounted filesystem, so the device comparison answers
-        # "different" without needing a second real volume here.
-        printf '%s\n' 'UV_CACHE_DIR="/proc/self/uv-cache-elsewhere"'
         printf "STUDIO_HOME='%s'\n" "$_TMP"
+        printf "UV_CACHE_DIR='%s/uv-cache-elsewhere'\n" "$_TMP"
         printf "_UV_CACHE_MODE='%s'\n" "$_rn_mode"
         cat "$_NOTICE_FILE"
+        # After the extraction, so it shadows the real one, exactly as the link-mode cases above
+        # do. This used to point UV_CACHE_DIR at /proc, which is a different device on Linux and
+        # does not exist at all on macOS: stat failed for both paths there, the comparison gave
+        # its deliberate "same" answer, and the notice under test never printed. Two fixed ids
+        # ask the question these checks are actually about on either platform.
+        printf '%s\n' '_path_device_id() { case "$1" in *uv-cache-elsewhere*) echo 41 ;; *) echo 42 ;; esac; }'
+        # Really there: _same_volume walks up to the nearest existing path first, so an absent
+        # cache directory resolves to STUDIO_HOME and is compared against itself.
+        printf '%s\n' 'mkdir -p "$UV_CACHE_DIR"'
         printf '%s\n' '_warn_if_uv_cache_is_off_volume'
         printf '%s\n' 'printf "NOTICE_DONE\n"'
     } | "$_SH" 2>&1

@@ -1988,6 +1988,17 @@ class TestWindowsJudgesTheTreeNotTheRun:
             "Write-StudioVenvCacheShareStamp" in commit
         ), "the commit does not record this run's verdict for the next one"
 
+    def test_the_stamp_records_this_run_and_not_the_old_tree(self):
+        """The flag describes the environment being built now and the commit stamps it onto that
+        environment. Folding the old tree's verdict into it would make this run record a fact
+        about a different tree, and the next reinstall would warn about one that was hardlinked."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        gate = text.split("function Start-StudioVenvRollback", 1)[1].split(
+            "if ((-not $script:StudioNoRollback)", 1)[0]
+        assert (
+            "$script:StudioRollbackCostsFullSize =" not in gate
+        ), "the rollback gate still writes this run's verdict from the old tree's"
+
     def test_the_recorded_verdict_outranks_the_inferred_one(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         before = text.split("if ((-not $script:StudioNoRollback) -and", 1)[0][-900:]

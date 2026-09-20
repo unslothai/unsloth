@@ -7357,12 +7357,20 @@ exit 0
         # precedes the rename, and nothing it can raise is worth failing an install that would
         # otherwise have proceeded.
         try {
+            # A local, and $script:StudioRollbackCostsFullSize is left alone: that flag describes
+            # how the environment being built NOW links to its cache, and the commit stamps it
+            # onto that environment for the next run to read. Folding the old tree's verdict into
+            # it makes this run record a fact about a different tree, and the following reinstall
+            # then warns about an environment that was hardlinked all along.
             # Recorded beats inferred: the stamp is what the run that built this tree knew about
-            # its own linking. Only when there is none does the marker comparison get a say.
+            # its own linking, and it settles the question on its own. This run's cache mode is a
+            # fact about a tree that does not exist yet, so it only stands in where nothing was
+            # recorded, alongside the marker comparison, as the best guess available.
             $owns = Test-StudioTreeOwnsItsBlocks -Path $ExistingDir
-            if ($null -eq $owns) { $owns = Test-StudioPreviousCacheIsGone }
-            $script:StudioRollbackCostsFullSize = $script:StudioRollbackCostsFullSize -or $owns
-            if ((-not $script:StudioNoRollback) -and $script:StudioRollbackCostsFullSize) {
+            if ($null -eq $owns) {
+                $owns = $script:StudioRollbackCostsFullSize -or (Test-StudioPreviousCacheIsGone)
+            }
+            if ((-not $script:StudioNoRollback) -and $owns) {
                 Write-StudioRollbackSpaceWarning -ExistingDir $ExistingDir
             }
         } catch { }

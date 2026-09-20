@@ -570,6 +570,25 @@ try {
     foreach ($c in @(Get-ChildItem -LiteralPath $StudioHome -Directory -Filter "unsloth_studio.rollback.*" -ErrorAction SilentlyContinue)) {
         Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
+
+    # And the other direction: this run copying its own wheels says nothing about a tree that was
+    # hardlinked when it was built, so a recorded "shared" settles it whatever this run is doing.
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir (Get-StudioVenvShareStampName)), "shared")
+    Reset-RollbackState $VenvDir
+    $script:StudioNoRollback = $false
+    $script:StudioRollbackCostsFullSize = $true
+    $script:said = @()
+    Start-StudioVenvRollback -ExistingDir $VenvDir
+    Check "a tree recorded as shared is not billed for this run's copy mode" (
+        ($script:said -join "`n") -notmatch 'needs about')
+    # The flag still describes the environment being built now, so the commit can stamp it.
+    Check "and this run's own verdict survives the rollback unchanged" (
+        $script:StudioRollbackCostsFullSize)
+    foreach ($c in @(Get-ChildItem -LiteralPath $StudioHome -Directory -Filter "unsloth_studio.rollback.*" -ErrorAction SilentlyContinue)) {
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
     $script:StudioNoRollback = $true
     $script:StudioRollbackCostsFullSize = $true
 
