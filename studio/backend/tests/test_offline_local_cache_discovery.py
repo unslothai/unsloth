@@ -504,9 +504,9 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
         # nobody fetched.
         admitted_at = media_load.index("def _start_")
         fetches_at = media_load.index(".begin_load(")
-        assert admitted_at < written_at < fetches_at, (
-            "the media record is outside the callback the load is admitted through"
-        )
+        assert (
+            admitted_at < written_at < fetches_at
+        ), "the media record is outside the callback the load is admitted through"
 
     assert "_note_load_fetched_with_a_request_token" not in inspect.getsource(
         inference_routes.load_model_gated

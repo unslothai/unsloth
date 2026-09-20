@@ -4503,43 +4503,46 @@ async def get_gguf_variants(
 
         # See the /hub twin: the identifier is resolved on the way in, so it has to be
         # referenced again on the way out.
-        return redact_host_paths(GgufVariantsResponse(
-            repo_id = response.repo_id,
-            variants = [
-                GgufVariantDetail(
-                    filename = v.filename,
-                    quant = v.quant,
-                    # A path-qualified key is not a label a picker can show; without this
-                    # the row reads as its whole relative path.
-                    display_label = getattr(v, "display_label", None),
-                    size_bytes = v.size_bytes,
-                    shard_count = int(getattr(v, "shard_count", 0) or 0),
-                    download_size_bytes = int(
-                        getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
-                    ),
-                    pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
-                    pending_drafter_size_bytes = int(
-                        getattr(v, "pending_drafter_size_bytes", 0) or 0
-                    ),
-                    downloaded = bool(v.downloaded),
-                    update_available = bool(getattr(v, "update_available", False)),
-                    partial = bool(getattr(v, "partial", False)),
-                    cleanable = bool(getattr(v, "cleanable", False)),
-                )
-                for v in response.variants
-            ],
-            has_vision = response.has_vision,
-            default_variant = response.default_variant,
-            context_length = (
-                await _read_native_context_length_bounded(context_model, local)
-                if context_model is not None
-                else None
+        return redact_host_paths(
+            GgufVariantsResponse(
+                repo_id = response.repo_id,
+                variants = [
+                    GgufVariantDetail(
+                        filename = v.filename,
+                        quant = v.quant,
+                        # A path-qualified key is not a label a picker can show; without this
+                        # the row reads as its whole relative path.
+                        display_label = getattr(v, "display_label", None),
+                        size_bytes = v.size_bytes,
+                        shard_count = int(getattr(v, "shard_count", 0) or 0),
+                        download_size_bytes = int(
+                            getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
+                        ),
+                        pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
+                        pending_drafter_size_bytes = int(
+                            getattr(v, "pending_drafter_size_bytes", 0) or 0
+                        ),
+                        downloaded = bool(v.downloaded),
+                        update_available = bool(getattr(v, "update_available", False)),
+                        partial = bool(getattr(v, "partial", False)),
+                        cleanable = bool(getattr(v, "cleanable", False)),
+                    )
+                    for v in response.variants
+                ],
+                has_vision = response.has_vision,
+                default_variant = response.default_variant,
+                context_length = (
+                    await _read_native_context_length_bounded(context_model, local)
+                    if context_model is not None
+                    else None
+                ),
+                resolved_locally = bool(getattr(response, "resolved_locally", False)),
+                dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
+                loadable_variants = getattr(response, "loadable_variants", None),
+                loadable = getattr(response, "loadable", None),
             ),
-            resolved_locally = bool(getattr(response, "resolved_locally", False)),
-            dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
-            loadable_variants = getattr(response, "loadable_variants", None),
-            loadable = getattr(response, "loadable", None),
-        ), via_api_key = via_api_key)
+            via_api_key = via_api_key,
+        )
     except HTTPException:
         raise
     except Exception as e:
