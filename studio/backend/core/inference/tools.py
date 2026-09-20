@@ -16185,6 +16185,10 @@ def _check_signal_escape_patterns(code: str):
         node for node in (getattr(ast, "MatchMapping", None),) if node is not None
     )
     _resolve_budget = [_MAX_RESOLVE_STEPS]
+    # Set when a resolution gave up rather than finished. An expression the analysis abandoned is
+    # not the same as one it read and found dynamic: it may be a blocked literal under 30 layers
+    # of concatenation, so the caller refuses rather than letting the limit decide.
+    _resolve_exhausted = [False]
     # "no answer", as distinct from "bound to something this analysis cannot name".
     _NOTHING_HELD = object()
 
@@ -16324,6 +16328,7 @@ def _check_signal_escape_patterns(code: str):
             self._alias_history: dict = {}
             self._value_positions: dict = {}
             self._conditional_bindings: set = set()
+            self._value_spans: dict = {}
             # Names imported twice: no order-independent answer, so no alias at all.
             self._ambiguous_aliases: set = set()
 
@@ -16467,10 +16472,11 @@ def _check_signal_escape_patterns(code: str):
                 # last binding in the source is the conservative answer: it keeps the call
                 # policed instead of letting a body placed above an import escape the check.
                 return history[-1][1]
+            where = self._position(node)
             before = [
                 position
                 for position, _alias in self._bind_positions.get(key, [])
-                if position <= self._position(node)
+                if position <= where and self._binding_applies_at(key, position, where)
             ]
             if not before:
                 # The use precedes every binding we can place. Only an unambiguous name answers:
@@ -16567,7 +16573,11 @@ def _check_signal_escape_patterns(code: str):
                 # A body runs when it is called, so every value it could see is possible.
                 return positioned
             where = self._position(node)
-            before = [entry for entry in positioned if entry[0] <= where]
+            before = [
+                entry
+                for entry in positioned
+                if entry[0] <= where and self._binding_applies_at(key, entry[0], where)
+            ]
             if not before:
                 return []
             start = 0
@@ -16629,6 +16639,23 @@ def _check_signal_escape_patterns(code: str):
         def _position(node) -> tuple:
             return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
 
+        @staticmethod
+        def _span_of(node) -> tuple:
+            start = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            end = (
+                getattr(node, "end_lineno", None) or start[0],
+                getattr(node, "end_col_offset", None) or start[1],
+            )
+            return (start, end)
+
+        def _binding_applies_at(self, key, position, where) -> bool:
+            """Whether the binding made at *position* is in force at *where*. It is not inside
+            the expression that produces its own value: that runs first."""
+            for bound_position, (start, end) in self._value_spans.get(key, ()):
+                if bound_position == position and start <= where <= end:
+                    return False
+            return True
+
         def _mark(
             self,
             name: "str | None",
@@ -16655,6 +16682,13 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(target, ast.Name):
                 # `global u` makes an assignment here a write to the module's u, not a local one.
                 scope = self._redirect.get((scope, target.id), scope)
+                if value is not None:
+                    # Python evaluates the right side first, so `r = r.get(...)` still reads the
+                    # old r inside that call. Recording where that expression is keeps a use
+                    # within it answered by what the name held before this statement.
+                    self._value_spans.setdefault((scope, target.id), []).append(
+                        (self._position(target), self._span_of(value))
+                    )
                 self._mark(target.id, scope, target)
                 self._candidates.setdefault((scope, target.id), value)
                 self._value_positions.setdefault((scope, target.id), []).append(
@@ -16831,10 +16865,13 @@ def _check_signal_escape_patterns(code: str):
         ``seen`` is the names on the current resolution path, not the names met anywhere: shared
         across siblings it would make ``x + x`` unresolvable. ``depth`` bounds a binding chain."""
         if depth > _MAX_RESOLVE_DEPTH:
+            _resolve_exhausted[0] = True
             return "", False
         if depth == 0:
             _resolve_budget[0] = _MAX_RESOLVE_STEPS
+            _resolve_exhausted[0] = False
         elif _resolve_budget[0] <= 0:
+            _resolve_exhausted[0] = True
             return "", False
         _resolve_budget[0] -= 1
         if isinstance(node, ast.Constant):
@@ -16889,6 +16926,8 @@ def _check_signal_escape_patterns(code: str):
             while isinstance(current, ast.Name):
                 links += 1
                 if current.id in names or links > _MAX_BINDING_LINKS:
+                    if links > _MAX_BINDING_LINKS:
+                        _resolve_exhausted[0] = True
                     return "", False
                 names.add(current.id)
                 bound = bindings.string_for(current.id, current)
@@ -16897,6 +16936,11 @@ def _check_signal_escape_patterns(code: str):
                 current = bound
             return _static_str_prefix(current, bindings, frozenset(names), depth + 1)
         return "", False
+
+    def _resolution_gave_up(node) -> bool:
+        """Whether reading *node* as a string ran out of depth or budget rather than finishing."""
+        _static_str_prefix(node, _bindings)
+        return _resolve_exhausted[0]
 
     def _host_from_url_node(node, bindings) -> "tuple[str | None, bool]":
         """``(host, resolved)`` for a URL argument. ``resolved`` is False only when the target
@@ -17139,6 +17183,8 @@ def _check_signal_escape_patterns(code: str):
                 steps += 1
                 if steps > _MAX_EXTERNAL_STEPS:
                     return True
+                if isinstance(sub, ast.Call) and _calls_an_external_reader(sub, bindings):
+                    return True
                 if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
                     if sub.func.id in ("input", "getpass") and not bindings.is_bound(
                         sub.func.id, sub.func
@@ -17327,6 +17373,31 @@ def _check_signal_escape_patterns(code: str):
             # pathlib only, and only a path has them.
             return True
         return _is_a_file_receiver(func.value)
+
+    def _calls_an_external_reader(call: ast.Call, bindings) -> bool:
+        """Whether a call reaches one of the external readers through a name that holds it.
+        `reader = input` and `reader = os.getenv` are the same readers under another name, and
+        following the binding loses the call, so the invocation is checked here."""
+        func = call.func
+        seen: set = set()
+        links = 0
+        while isinstance(func, ast.Name):
+            links += 1
+            if func.id in seen or links > _MAX_RESOLVE_DEPTH:
+                return False
+            seen.add(func.id)
+            if _reads_an_external_source_through_an_alias(func, bindings):
+                return True
+            if func.id in ("input", "getpass") and not bindings.is_bound(func.id, func):
+                return True
+            values = bindings.possible_values(func.id, func)
+            if len(values) != 1 or values[0] is None:
+                return False
+            func = values[0]
+        return isinstance(func, ast.Attribute) and (
+            _reads_an_external_source_through_an_alias(func, bindings)
+            or f"{_written_fq(func)}" in _EXTERNAL_SOURCE_FQ
+        )
 
     def _reads_an_external_source_through_an_alias(node: ast.AST, bindings) -> bool:
         """The alias-aware half of external-source detection. `_reads_env_or_secret` matches the
@@ -17528,7 +17599,7 @@ def _check_signal_escape_patterns(code: str):
         assignment can hold at the call."""
         if not isinstance(url_node, ast.Name):
             return []
-        values = _bindings.possible_values(url_node.id, url_node)[:_MAX_RESOLVE_DEPTH]
+        values = _bindings.possible_values(url_node.id, url_node)
         if len(values) < 2:
             # One value can hold, so the ordinary resolution already answered for it.
             return []
@@ -17752,6 +17823,24 @@ def _check_signal_escape_patterns(code: str):
                     host_arg, target_resolved = _host_from_url_node(url_node, _bindings)
 
                 if (
+                    host_arg is None
+                    and url_node is not None
+                    and _takes_a_url_argument(network_fq)
+                    and _resolution_gave_up(url_node)
+                ):
+                    # The analysis abandoned the expression rather than reading it, so it cannot
+                    # say this is not a blocked host.
+                    network_calls.append(
+                        {
+                            "type": "opaque_url_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: request target is nested too deeply to check; "
+                                "use a literal URL on an allowed informational source"
+                            ),
+                        }
+                    )
+                elif (
                     host_arg is None
                     and not target_resolved
                     and _takes_a_url_argument(network_fq)

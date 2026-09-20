@@ -4367,3 +4367,82 @@ class TestShadowedInputHelpers:
             "import requests\nrequests.get(input())",
             expect_phrase = "Blocked: request target is read",
         )
+
+
+class TestAssignmentsThatReadTheirOwnTarget:
+    """Python evaluates the right side before rebinding, so the old value is what it sees."""
+
+    def test_an_alias_survives_the_call_that_replaces_it(self):
+        _blocked(
+            f'import requests as r\nr = r.get("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_session_survives_the_call_that_replaces_it(self):
+        _blocked(
+            f'import requests\ns = requests.Session()\ns = s.get("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_building_on_a_name_from_itself_still_resolves_ok(self):
+        _ok(
+            'import requests\nu = "https://huggingface.co"\nu = u + "/api/models"\n'
+            "requests.get(u)"
+        )
+
+
+class TestManyPossibleValues:
+    """Every value a name can hold is screened, however many branches there are."""
+
+    def test_a_blocked_host_in_the_last_of_many_branches_is_found(self):
+        branches = "".join(
+            f'if flag{i}:\n    url = "https://huggingface.co/{i}"\n' for i in range(24)
+        )
+        _blocked(
+            'import requests\nurl = "https://huggingface.co/a"\n'
+            + branches
+            + f'if last:\n    url = "{_METADATA_URL}"\nrequests.get(url)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+
+class TestResolutionThatGivesUp:
+    """Abandoning an expression is not the same as reading it and finding it dynamic."""
+
+    def test_a_target_nested_beyond_the_limit_is_refused(self):
+        _blocked(
+            f'import requests\nrequests.get("{_METADATA_URL}"' + ' + ""' * 26 + ")",
+            expect_phrase = "Blocked: request target is nested too deeply",
+        )
+
+    def test_an_ordinary_concatenation_still_resolves_ok(self):
+        _ok('import requests\nrequests.get("https://huggingface.co" + "/api/models")')
+
+
+class TestAliasesOfTheExternalReaders:
+    """`reader = input` is the same reader under another name."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param("import requests\nreader = input\nrequests.get(reader())", id = "input"),
+            pytest.param(
+                'import os, requests\nreader = os.getenv\nrequests.get(reader("T"))',
+                id = "getenv",
+            ),
+            pytest.param(
+                'import os, requests\ngetter = os.environ.get\nrequests.get(getter("T"))',
+                id = "environ_get",
+            ),
+        ],
+    )
+    def test_an_aliased_reader_is_still_external(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")
+
+    def test_a_local_function_of_the_same_shape_is_not_ok(self):
+        _ok(
+            "import requests\n"
+            "def reader():\n"
+            '    return "https://huggingface.co/x"\n'
+            "requests.get(reader())"
+        )
