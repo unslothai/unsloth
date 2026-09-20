@@ -391,3 +391,73 @@ def test_plugin_resolution_survives_a_reload_and_normalizes(monkeypatch, tmp_pat
     source = tmp_path / "notes.txt"
     source.write_text("a\n\n\n\nb", encoding = "utf-8")
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\nb"
+
+
+def test_a_backend_executed_seed_resolves_the_endpoint_on_the_backend(monkeypatch):
+    """The seed is fetched in THIS process, so the endpoint must be ours.
+
+    A remote browser is told the public default for a loopback mirror (it cannot
+    reach the backend's localhost), so letting the client's value through would
+    bypass the mirror on exactly the deployments that need it. A value the user
+    typed into the seed node is still honoured.
+    """
+    pytest.importorskip("fastapi")
+    backend_root = Path(__file__).resolve().parent.parent
+    monkeypatch.syspath_prepend(str(backend_root))
+    monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+
+    from routes.data_recipe.jobs import _resolve_seed_endpoint
+
+    recipe = {"seed_config": {"source": {"seed_type": "hf", "path": "a/b", "endpoint": None}}}
+    _resolve_seed_endpoint(recipe)
+    assert recipe["seed_config"]["source"]["endpoint"] == "http://127.0.0.1:9700"
+
+    recipe = {"seed_config": {"source": {"seed_type": "hf", "path": "a/b"}}}
+    _resolve_seed_endpoint(recipe)
+    assert recipe["seed_config"]["source"]["endpoint"] == "http://127.0.0.1:9700"
+
+    explicit = {
+        "seed_config": {
+            "source": {"seed_type": "hf", "path": "a/b", "endpoint": "https://hub.internal"}
+        }
+    }
+    _resolve_seed_endpoint(explicit)
+    assert explicit["seed_config"]["source"]["endpoint"] == "https://hub.internal"
+
+    # Nothing to resolve for the other seed types, and no crash on a malformed recipe.
+    other = {"seed_config": {"source": {"seed_type": "local", "paths": []}}}
+    _resolve_seed_endpoint(other)
+    assert "endpoint" not in other["seed_config"]["source"]
+    _resolve_seed_endpoint({})
+    _resolve_seed_endpoint({"seed_config": "nope"})
+
+
+def test_validate_resolves_the_hf_seed_endpoint_like_jobs(monkeypatch):
+    pytest.importorskip("fastapi")
+    backend_root = Path(__file__).resolve().parent.parent
+    monkeypatch.syspath_prepend(str(backend_root))
+    monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+
+    from models.data_recipe import RecipePayload
+    from routes.data_recipe import validate as validate_module
+
+    seen = {}
+    monkeypatch.setattr(validate_module, "validate_recipe", lambda recipe: seen.update(recipe))
+
+    response = validate_module.validate(
+        RecipePayload(
+            recipe = {
+                "seed_config": {
+                    "source": {
+                        "seed_type": "hf",
+                        "path": "datasets/a/b/**/*.parquet",
+                        "endpoint": None,
+                    }
+                },
+                "columns": [{"column_type": "expression", "name": "x", "expr": "{{ q }}"}],
+            }
+        )
+    )
+
+    assert response.valid is True
+    assert seen["seed_config"]["source"]["endpoint"] == "http://127.0.0.1:9700"

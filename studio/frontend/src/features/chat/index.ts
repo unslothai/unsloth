@@ -26,6 +26,7 @@ export {
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
+  validateModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -104,6 +105,7 @@ export {
   moveIdBy,
   showsInRecents,
   PINNED_ORDER_SCOPE,
+  PINNED_PROJECT_ORDER_SCOPE,
   PROJECT_ORDER_SCOPE,
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
@@ -134,6 +136,7 @@ export {
 export {
   adoptPreStreamRunReservation,
   cancelPreStreamRunReservations,
+  cancelPreStreamRunForThreadIds,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -199,6 +202,14 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+// A provider catalogue lands async, so capability reads need to re-run when it does.
+export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
+// What a per-model reasoning pin displaced in the live runtime, so clearing it can put it back.
+export {
+  noteEffortDisplacedByPin,
+  reconcilePinnedReasoningEffort,
+  takeEffortDisplacedByPin,
+} from "./stores/chat-runtime-store";
 export {
   type AttachmentText,
   assertDocumentAttachmentSize,
@@ -217,6 +228,7 @@ export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
+export { EditProjectDialog } from "./components/edit-project-dialog";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
@@ -234,6 +246,7 @@ export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt"
 export {
   formatMcpToolName,
   mcpServerFromProvenance,
+  mcpToolFromProvenance,
 } from "./utils/mcp-tool-name";
 export {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
@@ -257,6 +270,7 @@ export {
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
+  listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
@@ -386,3 +400,13 @@ export {
   useSkillsCatalog,
   type SkillRecord,
 } from "./api/skills-api";
+export {
+  composerSubmitIntent,
+  composerFollowUpBehavior,
+  composerShortcutLabels,
+  followUpSubmitIntent,
+  steeringInsertionIndex,
+  type ComposerSendShortcut,
+  type ComposerFollowUpBehavior,
+  type ComposerSubmitIntent,
+} from "./utils/composer-preferences";

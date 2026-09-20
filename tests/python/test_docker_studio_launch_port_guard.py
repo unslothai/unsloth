@@ -3,7 +3,7 @@
 
 """JupyterLab must not be started on Studio's port.
 
-Studio's port is fixed at 8000 (`studio_run.sh`), so with `JUPYTER_PORT=8000`
+Studio's port is 8000 unless `UNSLOTH_STUDIO_PORT` says otherwise, so with `JUPYTER_PORT=8000`
 JupyterLab wins the bind and Studio falls back to an unpublished 8001. Both report
 RUNNING and the summary still points at 8000, where Jupyter answers 404.
 """
@@ -76,7 +76,7 @@ def test_the_check_only_exit_comes_after_the_guard():
     """The guard is the point; check-only must not skip it, and nothing before the
     check-only exit may touch the host."""
     body = LAUNCH.read_text(encoding = "utf-8")
-    guard = body.index("jupyter_port_digits == 8000")
+    guard = body.index("jupyter_port_digits == UNSLOTH_STUDIO_PORT")
     check = body.index("UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-")
     assert guard < check
     assert "> /etc/profile.d/unsloth_env.sh" not in body[:check]

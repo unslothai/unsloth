@@ -23,6 +23,8 @@ from loggers import get_logger
 from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
+from .jobs import _resolve_seed_endpoint
+
 logger = get_logger(__name__)
 router = APIRouter()
 
@@ -149,6 +151,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         require_ui_session_for_local_commands(via_api_key)
 
     _patch_local_providers(recipe)
+    _resolve_seed_endpoint(recipe)
 
     github_source = _github_seed_source(recipe)
     if github_source is not None:

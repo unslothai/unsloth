@@ -43,6 +43,7 @@ def saving(monkeypatch, tmp_path):
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     records = {
         "merges": [],
+        "adapter_saves": [],
         "uploads": [],
         "repos": [],
         "directories": [],
@@ -163,15 +164,27 @@ def saving(monkeypatch, tmp_path):
         _normalize_torchao_method = lambda method: None,
         _is_qwen3_5_vlm = lambda model: False,
         logger = SimpleNamespace(warning_once = lambda *args: None),
+        # save_method="lora" leaves this module for the adapter save rather than the merge,
+        # so record the handover instead of re-implementing it.
+        unsloth_save_model = lambda *args, **kwargs: (
+            records["adapter_saves"].append({"args": args, "kwargs": kwargs}),
+            (kwargs.get("save_directory"), None),
+        )[1],
     )
     names = {
         "_push_merged_to_hub_revision",
         "unsloth_generic_save",
         "unsloth_generic_push_to_hub_merged",
+        # Real code, not stubs: these two decide what save_method="lora" and
+        # safe_serialization=None mean, which is what several tests below assert on.
+        "_normalize_safe_serialization",
+        "_is_adapter_save_method",
     }
     nodes = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in names:
+            # _normalize_safe_serialization must be defined before the functions that call
+            # it, which the source order already gives; only the decorators go.
             node.decorator_list = []
             nodes.append(node)
         elif isinstance(node, ast.Assign) and any(

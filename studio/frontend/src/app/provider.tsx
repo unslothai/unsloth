@@ -27,8 +27,14 @@ import {
 import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
+  NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
+  NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
   applyCustomizationToDocument,
+  applyInterfaceScale,
+  getAppliedInterfaceZoom,
+  subscribeAppliedInterfaceZoom,
   useAppearanceCustomStore,
+  useInterfaceScaleStore,
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
@@ -37,6 +43,8 @@ import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
+import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { getToastOffsets } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
@@ -83,14 +91,22 @@ type TauriMonitor = NonNullable<
 const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 
 // Room the corner rail keeps around its cards so its overflow clip does not cut their shadows off (#9246).
+// Sized off the deepest card shadow, the dark-mode one: 0 8px 28px -6px reaches 22px to a card's left
+// and 14px above it, and a shorter gutter ends the halo on a hard line. Only those two edges show it:
+// the rail is flush with the bottom-right corner, so the clip there lands on the screen edge. Both
+// gutters come out of the cap, never out of the cards: 100dvh less 16 and 16 is the band they had.
 const STACK_SHADOW_GUTTER_BOTTOM = 16;
-const STACK_SHADOW_GUTTER_TOP = 8;
+const STACK_SHADOW_GUTTER_TOP = 16;
+const STACK_SHADOW_GUTTER_LEFT = 28;
+// The cards' own inset from the right edge, not a gutter: the rail is flush there.
+const STACK_CARD_INSET_RIGHT = 16;
 
-// Logical px per CSS px: webview zoom above the display scale; 1 if none.
+// macos page zoom does not change dpr; windows already includes zoom in its dpr.
 function logicalPerCssPx(monitorScale: number): number {
-  if (typeof window === "undefined" || !(monitorScale > 0)) return 1;
+  const zoom = Math.max(1, getAppliedInterfaceZoom());
+  if (typeof window === "undefined" || !(monitorScale > 0)) return zoom;
   const ratio = window.devicePixelRatio / monitorScale;
-  return Number.isFinite(ratio) && ratio > 1 ? ratio : 1;
+  return Math.max(zoom, Number.isFinite(ratio) ? ratio : 1);
 }
 
 // Autostart passes --hidden: layout still applies, but the window stays in the tray.
@@ -427,6 +443,18 @@ function TauriUpdateLayer({
     update.status === "installing" ||
     (update.status === "error" && !update.dismissed);
 
+  const wasUpdatingRef = useRef(false);
+  useEffect(() => {
+    const wasUpdating = wasUpdatingRef.current;
+    wasUpdatingRef.current = isUpdating;
+    // The backend restarted empty under a mounted chat page, whose picker still names the old model.
+    return followDesktopUpdateScreen(
+      isUpdating,
+      wasUpdating,
+      resyncInferenceStatusAfterServerModelChange,
+    );
+  }, [isUpdating]);
+
   const content = isUpdating ? (
     <UpdateScreen
       status={update.status}
@@ -440,13 +468,15 @@ function TauriUpdateLayer({
   ) : (
     <div
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
-      className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
       data-testid="overlay-rail"
-      // Block gutter in px, never a spacing utility: those are rem, and the cards would drift off the corner.
+      // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
       style={{
         paddingTop: STACK_SHADOW_GUTTER_TOP,
         paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+        paddingLeft: STACK_SHADOW_GUTTER_LEFT,
+        paddingRight: STACK_CARD_INSET_RIGHT,
         zIndex: Z_LAYER.OVERLAY_STACK,
       }}
     >
@@ -490,16 +520,16 @@ const WEB_UPDATE_HIDDEN_ROUTES = new Set([
 
 const MAC_NATIVE_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
-  "--studio-mac-titlebar-height": "34px",
-  "--studio-desktop-titlebar-height": "34px",
+  "--studio-mac-titlebar-height": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
+  "--studio-desktop-titlebar-height": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   "--studio-titlebar-navigation-margin-top": "4px",
   "--studio-titlebar-navigation-offset-y": "4px",
-  "--studio-mac-traffic-light-inset": "78px",
-  "--studio-collapsed-chat-controls-inset": "188px",
-  "--studio-startup-top-inset": "58px",
+  "--studio-mac-traffic-light-inset": NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
+  "--studio-collapsed-chat-controls-inset": `calc(110px + ${NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR})`,
+  "--studio-startup-top-inset": `calc(24px + ${NATIVE_MAC_TITLEBAR_HEIGHT_VAR})`,
   "--studio-content-top-inset": "0px",
-  "--studio-non-chat-content-top-inset": "34px",
-  "--studio-hidden-route-top-inset": "34px",
+  "--studio-non-chat-content-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
+  "--studio-hidden-route-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   "--studio-chat-header-height": "44px",
   "--studio-chat-header-padding-top": "9px",
   "--studio-media-header-left-inset": "0.5rem",
@@ -540,12 +570,19 @@ function DesktopChromeVarsEffect({
         ? el.style.removeProperty(name)
         : el.style.setProperty(name, value);
     set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
-    set("--studio-mac-titlebar-height", usesNativeMacTitlebar ? "34px" : null);
+    set(
+      "--studio-mac-titlebar-height",
+      usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
+    );
     set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
-      usesCustomTitlebar || usesNativeMacTitlebar ? "34px" : null,
+      usesCustomTitlebar
+        ? "34px"
+        : usesNativeMacTitlebar
+          ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
+          : null,
     );
     return () => {
       set("--studio-custom-titlebar-height", null);
@@ -695,7 +732,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     if (!ratioSource) return;
 
     let disposed = false;
-    const stop = observeDevicePixelRatio(ratioSource, () => {
+    const refresh = () => {
       // The setup window has no constraints to keep current.
       if (disposed || appliedWindowModeRef.current !== "app") return;
       // Read on the change, not on mount: a layout pass that starts after this
@@ -706,10 +743,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       ).catch(() => {
         /* swallow; the floor in force stands */
       });
-    });
+    };
+    const stop = observeDevicePixelRatio(ratioSource, refresh);
+    const stopZoom = subscribeAppliedInterfaceZoom(refresh);
     return () => {
       disposed = true;
       stop();
+      stopZoom();
     };
   }, []);
 
@@ -781,13 +821,15 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             push the top of the stack off screen. */}
         <div
           // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
-          className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+          className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
           // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
           data-testid="overlay-rail"
-          // Block gutter in px, never a spacing utility: those are rem, and the cards would drift off the corner.
+          // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
           style={{
             paddingTop: STACK_SHADOW_GUTTER_TOP,
             paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+            paddingLeft: STACK_SHADOW_GUTTER_LEFT,
+            paddingRight: STACK_CARD_INSET_RIGHT,
             zIndex: Z_LAYER.OVERLAY_STACK,
           }}
         >
@@ -932,6 +974,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 function AppearanceCustomizationEffect() {
   const { theme, resolved } = useTheme();
   const customization = useAppearanceCustomStore((s) => s.customization);
+  const interfaceScale = useInterfaceScaleStore((s) => s.scale);
   useEffect(() => {
     applyCustomizationToDocument(customization, resolved);
   }, [customization, resolved]);
@@ -943,6 +986,9 @@ function AppearanceCustomizationEffect() {
       )
       .catch(() => undefined);
   }, [theme]);
+  useEffect(() => {
+    void applyInterfaceScale(interfaceScale).catch(() => undefined);
+  }, [interfaceScale]);
   return null;
 }
 

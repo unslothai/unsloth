@@ -21,6 +21,8 @@ import {
   SidebarModelConfig,
   useActiveModelConfig,
   useModelConfigHandoffStore,
+  pinnedReasoningEffort,
+  useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
@@ -97,11 +99,11 @@ import {
 } from "./utils/conversation-markdown";
 import {
   Archive03Icon,
-  BookOpen01Icon,
   BubbleChatTemporaryIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  FolderAttachmentIcon,
   Folder01Icon,
   Folder02Icon,
   FolderExportIcon,
@@ -127,6 +129,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { notifyChatHistoryUpdated } from "./api/chat-api";
@@ -181,15 +184,19 @@ import {
   getTrainingCompareHandoff,
 } from "./lib/training-compare-handoff";
 import {
-  clampReasoningEffortToLevels,
+  externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  modelCatalogVersion,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
+  reasoningFieldsAfterCatalogRefresh,
+  resolveExternalReasoningEffort,
+  subscribeModelCatalog,
 } from "./provider-capabilities";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -216,7 +223,11 @@ import {
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   PENDING_CHAT_ATTACHMENT_KEY,
   loadOptionalBool,
+  noteEffortDisplacedByPin,
+  pinHoldsLiveEffort,
   readPendingAttachmentTargetClaim,
+  reconcilePinnedReasoningEffort,
+  takeEffortDisplacedByPin,
   threadScopedOverride,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -801,8 +812,10 @@ function CompareShell({
         >
           {children}
         </div>
-        <div className="shrink-0 bg-background pl-5 pr-5 md:pr-[30px] pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[48rem]">{composer}</div>
+        {/* Symmetric: the extra right inset mirrored the viewport's one-sided
+            scrollbar gutter, which is now reserved on both edges. */}
+        <div className="shrink-0 bg-background pl-5 pr-5 md:px-[30px] pb-2 pt-1">
+          <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
               LLMs can make mistakes. Double-check responses.
@@ -1954,7 +1967,8 @@ function ProjectLanding({
                               strokeWidth={1.75}
                               className="size-icon"
                             />
-                            <span>Move to project</span>
+                            {/* Same label the sidebar row menu uses. */}
+                            <span>Project</span>
                           </DropdownMenuSubTrigger>
                           <DropdownMenuSubContent className="unsloth-plus-menu w-52">
                             <DropdownMenuItem
@@ -2011,11 +2025,11 @@ function ProjectLanding({
                           onSelect={() => void handleSaveAsSource(item)}
                         >
                           <HugeiconsIcon
-                            icon={BookOpen01Icon}
+                            icon={FolderAttachmentIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
-                          <span>Save to project sources</span>
+                          <span>Project sources</span>
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -2177,6 +2191,9 @@ export function ChatPage({
   search,
   active,
 }: { search: ChatSearch; active: boolean }): ReactElement {
+  const showContextWindowUsage = useChatPreferencesStore(
+    (s) => s.showContextWindowUsage,
+  );
   const navigate = useNavigate();
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
@@ -2529,35 +2546,28 @@ export function ChatPage({
       },
     );
     const state = useChatRuntimeStore.getState();
-    const preferredEffort = state.reasoningEffort;
     const effortLevels = reasoningCaps.reasoningEffortLevels;
-    const clampedEffort = clampReasoningEffortToLevels(
-      preferredEffort,
-      effortLevels,
-    );
-    // Per-provider default effort: Anthropic gets the highest level, since Claude's adaptive thinking
-    // adjusts cost per turn; OpenAI gets "high"; everyone else "medium". Overridable via Think.
-    const isAnthropic = provider?.providerType === "anthropic";
-    const isOpenAI = provider?.providerType === "openai";
-    const anthropicTopEffort = effortLevels.includes("xhigh")
-      ? "xhigh"
-      : effortLevels.includes("high")
-        ? "high"
-        : clampedEffort;
-    const openaiDefaultEffort = effortLevels.includes("high")
-      ? "high"
-      : effortLevels.includes("medium")
-        ? "medium"
-        : clampedEffort;
-    const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? isAnthropic
-        ? anthropicTopEffort
-        : isOpenAI
-          ? openaiDefaultEffort
-          : effortLevels.includes("medium")
-            ? "medium"
-            : clampedEffort
-      : state.reasoningEffort;
+    // Through the shared resolver, pin included: this runs on reload and on every provider
+    // resync, and resolving it without the pin is what put the provider default back over a
+    // level the user had set on the model's row.
+    const pinnedEffort = externalReasoningTakesEffort(reasoningCaps)
+      ? pinnedReasoningEffort(inferenceParams.checkpoint, effortLevels)
+      : null;
+    const nextReasoningEffort = resolveExternalReasoningEffort({
+      caps: reasoningCaps,
+      providerType: provider?.providerType,
+      // Same as the switch below: a checkpoint that changed without going through it leaves the
+      // previous model's pin in the live level, which an unpinned model must not inherit.
+      current:
+        !pinnedEffort && pinHoldsLiveEffort()
+          ? (takeEffortDisplacedByPin() ?? state.reasoningEffort)
+          : state.reasoningEffort,
+      pinned: pinnedEffort,
+    });
+    // The chat's own level, before the pin takes its place, so clearing the pin can put it back.
+    if (pinnedEffort && nextReasoningEffort !== state.reasoningEffort) {
+      noteEffortDisplacedByPin(state.reasoningEffort);
+    }
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
       selection.modelId,
@@ -2653,6 +2663,71 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
+  // Another tab can change the active model's pin (the pin store listens for the storage event),
+  // and the normalization above reads the pin through a getState helper without subscribing, so
+  // the composer kept the old level until a switch. Only the effort here: the pills and the rest
+  // of that block are not this one's to rerun.
+  const activePinnedEffort = useModelReasoningEffortStore(
+    (state) => state.effortByModel[inferenceParams.checkpoint],
+  );
+  const appliedPinnedEffort = useRef(activePinnedEffort);
+  useEffect(() => {
+    if (appliedPinnedEffort.current === activePinnedEffort) return;
+    appliedPinnedEffort.current = activePinnedEffort;
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return;
+    const provider = externalProvidersForChat.find(
+      (p) => p.id === selection.providerId,
+    );
+    const caps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+      {
+        isReasoningProvider: provider?.isReasoningModel === true,
+        baseUrl: provider?.baseUrl ?? null,
+      },
+    );
+    reconcilePinnedReasoningEffort({
+      checkpoint: inferenceParams.checkpoint,
+      caps,
+      providerType: provider?.providerType,
+    });
+  }, [activePinnedEffort, externalProvidersForChat, inferenceParams.checkpoint]);
+  // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
+  // never the selection defaults above, so a chosen effort and the pills survive the refresh.
+  const modelCatalogChange = useSyncExternalStore(
+    subscribeModelCatalog,
+    modelCatalogVersion,
+  );
+  const appliedCatalogChange = useRef(modelCatalogChange);
+  useEffect(() => {
+    if (appliedCatalogChange.current === modelCatalogChange) return;
+    appliedCatalogChange.current = modelCatalogChange;
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return;
+    const { providers, connectionsEnabled: enabled } = useExternalProvidersStore.getState();
+    const provider = enabled
+      ? providers.find((p) => p.id === selection.providerId)
+      : undefined;
+    const caps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+      {
+        isReasoningProvider: provider?.isReasoningModel === true,
+        baseUrl: provider?.baseUrl ?? null,
+      },
+    );
+    useChatRuntimeStore.setState(
+      reasoningFieldsAfterCatalogRefresh(useChatRuntimeStore.getState(), caps),
+    );
+    // After the levels, not before: a pin is only applied while the catalogue calls it legal, so
+    // the refresh that publishes the level is what puts the model's own pin in force.
+    reconcilePinnedReasoningEffort({
+      checkpoint: inferenceParams.checkpoint,
+      caps,
+      providerType: provider?.providerType,
+    });
+  }, [modelCatalogChange, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
@@ -2856,6 +2931,7 @@ export function ChatPage({
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
+            presentation: selection.downloadPresentation,
             // Handed over, not raised here, so one start makes one toast.
             callerToast: {
               title: "Downloading in the background",
@@ -2982,6 +3058,7 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
+        presentation: pending.selection.downloadPresentation,
         // Notice-only: #9663 removed this surface's own toast, so it must not return on an HTTP start or
         // once the three notices are spent.
         callerToast: {
@@ -3145,35 +3222,25 @@ export function ChatPage({
             baseUrl: selectedProvider?.baseUrl ?? null,
           },
         );
-        const preferredEffort = store.reasoningEffort;
         const effortLevels = reasoningCaps.reasoningEffortLevels;
-        const clampedEffort = clampReasoningEffortToLevels(
-          preferredEffort,
-          effortLevels,
-        );
-        // Same per-provider default policy as the useEffect above: Anthropic highest level, OpenAI
-        // "high", everyone else "medium".
-        const isAnthropic = selectedProvider?.providerType === "anthropic";
-        const isOpenAI = selectedProvider?.providerType === "openai";
-        const anthropicTopEffort = effortLevels.includes("xhigh")
-          ? "xhigh"
-          : effortLevels.includes("high")
-            ? "high"
-            : clampedEffort;
-        const openaiDefaultEffort = effortLevels.includes("high")
-          ? "high"
-          : effortLevels.includes("medium")
-            ? "medium"
-            : clampedEffort;
-        const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? isAnthropic
-            ? anthropicTopEffort
-            : isOpenAI
-              ? openaiDefaultEffort
-              : effortLevels.includes("medium")
-                ? "medium"
-                : clampedEffort
-          : store.reasoningEffort;
+        const pinnedEffort = externalReasoningTakesEffort(reasoningCaps)
+          ? pinnedReasoningEffort(value, effortLevels)
+          : null;
+        const nextReasoningEffort = resolveExternalReasoningEffort({
+          caps: reasoningCaps,
+          providerType: selectedProvider?.providerType,
+          // The outgoing model's pin is what the live level holds, so an unpinned target resolves
+          // from the chat's own effort rather than inheriting one model's override.
+          current:
+            !pinnedEffort && pinHoldsLiveEffort()
+              ? (takeEffortDisplacedByPin() ?? store.reasoningEffort)
+              : store.reasoningEffort,
+          pinned: pinnedEffort,
+        });
+        // The chat's own level, before the pin takes its place, so clearing it can put it back.
+        if (pinnedEffort && nextReasoningEffort !== store.reasoningEffort) {
+          noteEffortDisplacedByPin(store.reasoningEffort);
+        }
         // Clear any cached router-picked openrouter/free model unless staying on openrouter/free, else
         // the chip keeps a stale ":<chosen>" suffix.
         const stillOnOpenRouterFree =
@@ -3286,6 +3353,9 @@ export function ChatPage({
       }
       // Local model picked: drop any cached openrouter/free chosen model.
       useChatRuntimeStore.setState({ lastOpenRouterChosenModel: null });
+      // The chat's own effort goes back where the load applies its own reasoning fields, since
+      // everything from here on can still abort or only queue a download, leaving the pinned
+      // model the one running.
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
@@ -3318,6 +3388,7 @@ export function ChatPage({
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded || isSameLoadedModel,
           expectedBytes: meta?.expectedBytes,
+          downloadPresentation: meta?.downloadPresentation,
           isGguf: meta?.isGguf,
           isDiffusion: meta?.isDiffusion,
           config: meta?.config,
@@ -3522,7 +3593,17 @@ export function ChatPage({
     },
     { enabled: active && fastModeSupported },
   );
-  const { isMobile, pinned } = useSidebar();
+  const { isMobile, pinned, setPinned } = useSidebar();
+  // The tour's orientation step spotlights the nav, so show it for that step and put the user's
+  // own pin setting back on the way out; it is persisted, so a tour must not rewrite it.
+  const sidebarWasPinnedRef = useRef(pinned);
+  const showSidebarForTour = useCallback(() => {
+    sidebarWasPinnedRef.current = pinned;
+    setPinned(true);
+  }, [pinned, setPinned]);
+  const restoreSidebarAfterTour = useCallback(() => {
+    if (!sidebarWasPinnedRef.current) setPinned(false);
+  }, [setPinned]);
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
@@ -3854,6 +3935,7 @@ export function ChatPage({
     () =>
       // eslint-disable-next-line react-hooks/refs -- buildChatTourSteps stores callbacks without invoking them during render.
       buildChatTourSteps({
+        canShowNav: !isMobile,
         canCompare,
         openModelSelector,
         closeModelSelector,
@@ -3861,21 +3943,33 @@ export function ChatPage({
         closeSettings,
         enterCompare,
         exitCompare,
-      }),
+      }).map((step) =>
+        step.target === "navbar"
+          ? {
+              ...step,
+              onEnter: showSidebarForTour,
+              onExit: restoreSidebarAfterTour,
+            }
+          : step,
+      ),
     [
       canCompare,
       closeModelSelector,
       closeSettings,
       enterCompare,
       exitCompare,
+      isMobile,
       openModelSelector,
       openSettings,
+      restoreSidebarAfterTour,
+      showSidebarForTour,
     ],
   );
 
   const tour = useGuidedTourController({
     id: "chat",
     steps: tourSteps,
+    enabled: active,
   });
 
   useEffect(() => {
@@ -4064,7 +4158,9 @@ export function ChatPage({
             ) : null}
           </div>
           <div className="pointer-events-auto ml-auto flex items-center gap-1">
-            {view.mode === "single" && (contextUsage || contextWindowKnown) ? (
+            {showContextWindowUsage &&
+            view.mode === "single" &&
+            (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
                 used={contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
