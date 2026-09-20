@@ -2,11 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 // use-tauri-backend.ts pulls in React and the Tauri APIs, so the message choice
 // lives in its own module and is driven directly here.
 import {
+  MANAGED_ENVIRONMENT_BUSY,
+  MANAGED_ENVIRONMENT_UPDATING,
   WORKING_DIRECTORY_UNAVAILABLE,
   PATH_SETTING_UNRESOLVABLE,
   preflightStaleMessage,
@@ -96,4 +99,19 @@ test("the setting that could not be resolved is named", () => {
   const unnamed = preflightStaleMessage("managed_stale", PATH_SETTING_UNRESOLVABLE);
   assert.match(unnamed, /One of Unsloth's folder settings points/);
   assert.doesNotMatch(unnamed, UPDATE_ADVICE);
+});
+
+test("the busy reasons are spelled the same in Rust", async () => {
+  const native = await readFile(
+    new URL("../../src-tauri/src/preflight/managed.rs", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    native.includes(`MANAGED_ENVIRONMENT_BUSY: &str = "${MANAGED_ENVIRONMENT_BUSY}"`),
+  );
+  assert.ok(
+    native.includes(
+      `MANAGED_ENVIRONMENT_UPDATING: &str = "${MANAGED_ENVIRONMENT_UPDATING}"`,
+    ),
+  );
 });

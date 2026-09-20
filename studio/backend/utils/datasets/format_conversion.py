@@ -21,6 +21,13 @@ def _quiet_bar_kwargs() -> dict:
         return {}
 
 
+def _normalize_role_alias(role) -> str:
+    """Stripped and lowercased, as `standardize_data_formats` and the preview do it."""
+    if role is None:
+        return ""
+    return str(role).strip().lower()
+
+
 def standardize_chat_format(
     dataset,
     tokenizer = None,
@@ -107,13 +114,14 @@ def standardize_chat_format(
     else:
         raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
 
+    # Keyed on the normalised alias: "Human" / " user " would reach the template raw.
     aliases_mapping = {}
     for x in aliases_for_system:
-        aliases_mapping[x] = "system"
+        aliases_mapping[_normalize_role_alias(x)] = "system"
     for x in aliases_for_user:
-        aliases_mapping[x] = "user"
+        aliases_mapping[_normalize_role_alias(x)] = "user"
     for x in aliases_for_assistant:
-        aliases_mapping[x] = "assistant"
+        aliases_mapping[_normalize_role_alias(x)] = "assistant"
 
     def _standardize_dataset(examples):
         convos = examples[chat_column]
@@ -131,12 +139,21 @@ def standardize_chat_format(
                 # Use the inferred keys first, falling back per-message so mixed ShareGPT/ChatML rows keep valid turns.
                 original_role = message.get(role_key)
                 original_content = message.get(content_key)
-                if original_role is None:
+                # Blank counts as absent for the ROLE, matching the preview: `is None` here
+                # trained {"role": "", "from": "gpt"} as a user turn. Content is not blank-
+                # checked, because an empty message is a legitimate value.
+                if not _normalize_role_alias(original_role):
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
                     original_content = message.get("content") or message.get("value") or ""
 
-                standard_role = aliases_mapping.get(original_role, original_role)
+                # Unknown alias left as written; blank is "user", as most templates reject one.
+                normalized_role = _normalize_role_alias(original_role)
+                standard_role = (
+                    aliases_mapping.get(normalized_role, original_role)
+                    if normalized_role
+                    else "user"
+                )
 
                 if is_vlm:
                     original_content = [{"type": "text", "text": original_content}]
@@ -178,6 +195,16 @@ def standardize_chat_format(
     return result
 
 
+def _content_text(content):
+    if isinstance(content, list):
+        return "\n".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+        )
+    return cell_text(content)
+
+
 def convert_chatml_to_alpaca(
     dataset,
     batch_size = 1000,
@@ -186,6 +213,15 @@ def convert_chatml_to_alpaca(
 ):
     """Convert ChatML to Alpaca format. Accepts a "messages" or "conversations" column with either standard "role"/"content" or ShareGPT "from"/"value" keys."""
     is_iterable = is_streaming_dataset(dataset)
+    roles = {
+        "system": "system",
+        "user": "user",
+        "human": "user",
+        "input": "user",
+        "assistant": "assistant",
+        "gpt": "assistant",
+        "output": "assistant",
+    }
 
     def _convert(examples):
         chatml_data = examples.get(chat_column) if chat_column else None
@@ -202,28 +238,40 @@ def convert_chatml_to_alpaca(
         inputs = []
 
         for convo in chatml_data:
-            instruction = ""
-            output = ""
+            turns = []
+            for msg in convo or []:
+                role = roles.get(msg.get("role") or msg.get("from"))
+                content = _content_text(msg.get("content") or msg.get("value"))
+                if role is None or not content:
+                    continue
+                if turns and turns[-1][0] == role:
+                    turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
+                else:
+                    turns.append([role, content])
 
-            for msg in convo:
-                role = msg.get("role") or msg.get("from")
-                content = msg.get("content") or msg.get("value")
-
-                if role in ["user", "human", "input"] and not instruction:
+            system = ""
+            context = []
+            instruction = None
+            for role, content in turns:
+                if role == "system":
+                    system = f"{system}\n\n{content}" if system else content
+                elif role == "user":
                     instruction = content
-                elif role in ["assistant", "gpt", "output"] and not output:
-                    output = content
-                    break
-
-            instructions.append(instruction)
-            inputs.append("")
-            outputs.append(output)
+                elif instruction is not None:
+                    instructions.append(instruction)
+                    inputs.append(
+                        "\n\n".join(part for part in (system, "\n".join(context)) if part)
+                    )
+                    outputs.append(content)
+                    context += [f"User: {instruction}", f"Assistant: {content}"]
+                    instruction = None
 
         return {"instruction": instructions, "input": inputs, "output": outputs}
 
     dataset_map_kwargs = {
         "batched": True,
         "batch_size": batch_size,
+        "remove_columns": dataset.column_names or list(next(iter(dataset), {})),
     }
 
     if not is_iterable:

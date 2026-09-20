@@ -157,6 +157,20 @@ try {
     );
     await value(page, "Parallel decode slots", "3");
     await value(page, "Prompt batch size", "1024");
+    const share = page.getByRole("button", { name: "Share", exact: true });
+    assert.equal(
+      await page.getByRole("button", { name: "Load model", exact: true }).count(),
+      1,
+    );
+    assert.equal(
+      await page.getByRole("button", { name: "Reset", exact: true }).count(),
+      1,
+    );
+    assert.equal(await share.count(), 1);
+    assert.deepEqual(
+      await share.locator("..").getByRole("button").allTextContents(),
+      ["Load model", "Reset", "Share"],
+    );
     const draft = await page.evaluate(async () => {
       const { readModelConfigDraft, modelConfigDraftKey } = await import(
         "/src/features/model-picker/model-config/model-config-draft.ts"

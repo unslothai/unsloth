@@ -22,9 +22,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import Route, expect, sync_playwright
+from playwright.sync_api import TimeoutError as PWTimeoutError
 
 from playwright_image_model_footprint import (
     BASE_URL,
+    KLEIN_ROW,
     CHECKPOINT_BYTES,
     COMPANION_BYTES,
     FILENAME,
@@ -86,6 +88,52 @@ def _entry(repo_id: str) -> dict[str, object]:
     }
 
 
+# The settings fields select their contents a frame after they take focus. select() FOCUSES a
+# blurred input in Chrome, taking focus off whatever holds it, so an unguarded select steals
+# focus back from the field the user moved to -- and since each steal fires focus on the other
+# field, whose handler queues the next steal, two of them lock into a loop that runs for as
+# long as the page is open. Everything downstream of it is unusable: the model picker opened
+# during the loop is dismissed in the frame after it opens, which is how this was found.
+#
+# Deterministic, unlike the loop's arrival in a normal run: both focuses happen in one task, so
+# the first field's queued select is still pending when focus moves on, which is the race a user
+# hits tabbing between the two. Measured against the build before the fix: 60 focus events in
+# the 500ms window, against 0 with it.
+_FOCUS_STEAL_PROBE = """() => new Promise(resolve => {
+    const box = name => document.querySelector(`input[aria-label="${name}"]`);
+    const first = box('Steps'), second = box('Guidance');
+    if (!first || !second) return resolve({error: 'Steps/Guidance inputs are not on the page'});
+    let events = 0;
+    const count = () => { events++; };
+    document.addEventListener('focusin', count, true);
+    first.focus();
+    second.focus();
+    const settled = events;
+    setTimeout(() => {
+        document.removeEventListener('focusin', count, true);
+        resolve({
+            active: document.activeElement?.getAttribute('aria-label') ?? null,
+            churn: events - settled,
+        });
+    }, 500);
+})"""
+
+
+def _assert_a_queued_select_does_not_steal_focus(page) -> None:
+    result = page.evaluate(_FOCUS_STEAL_PROBE)
+    assert not result.get("error"), result["error"]
+    # The end-of-frame answer looks right even while the loop runs, because the second field's
+    # steal is the last one in each frame. The churn is what tells them apart, so assert both.
+    assert (
+        result["active"] == "Guidance"
+    ), f"focus left the field it was moved to: {result['active']}"
+    assert result["churn"] <= 2, (
+        f"the settings fields are stealing focus from each other: {result['churn']} focus "
+        "events in 500ms after focus settled. A queued select() must not re-focus an input "
+        "the user has already left."
+    )
+
+
 def _open_quant(page, *, navigate: bool) -> None:
     if navigate:
         page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
@@ -107,7 +155,37 @@ def _open_quant(page, *, navigate: bool) -> None:
             requestAnimationFrame(frame);
         });
     }""")
-    trigger.click()
+    menu = page.locator(".unsloth-model-selector-menu")
+
+    # The picker dismisses on scroll, and in the download-only pass it is opened with the Advanced
+    # panel expanded and two fields just filled, so a late re-render can close it in the frame
+    # after it opened. Waiting on the row alone then burns the whole timeout against a menu that
+    # is no longer there and reports only "Locator.click: Timeout 30000ms exceeded". Reopen while
+    # that is what happened, and say which of the two it was if neither settles.
+    def _open() -> bool:
+        return bool(menu.count()) and menu.first.is_visible()
+
+    last = ""
+    for attempt in range(5):
+        # Clicking the trigger toggles, so an already-open picker must not be clicked shut.
+        if not _open():
+            trigger.click()
+        try:
+            menu.wait_for(state = "visible", timeout = 5_000)
+            klein_row(page).wait_for(state = "visible", timeout = 15_000)
+            break
+        except PWTimeoutError as error:
+            last = str(error).splitlines()[0]
+            if _open():
+                # Open, but without the row: reopening cannot help, so stop and report it.
+                raise AssertionError(
+                    f"the picker is open and {KLEIN_ROW.pattern} is not in it after {attempt + 1} "
+                    f"attempts: {last}"
+                ) from None
+    else:
+        raise AssertionError(
+            f"the picker did not stay open for {KLEIN_ROW.pattern} across 5 attempts: {last}"
+        )
     klein_row(page).click()
     gguf = page.get_by_text("GGUF", exact = True)
     if gguf.count() == 1:
@@ -353,6 +431,7 @@ def main() -> None:
             page.get_by_role("option", name = "Download only", exact = True).click()
             page.get_by_role("textbox", name = "Steps", exact = True).fill("17")
             page.get_by_role("textbox", name = "Guidance", exact = True).fill("2.5")
+            _assert_a_queued_select_does_not_steal_focus(page)
         _open_quant(page, navigate = not DOWNLOAD_ONLY)
         if DOWNLOAD_ONLY:
             with page.expect_request(

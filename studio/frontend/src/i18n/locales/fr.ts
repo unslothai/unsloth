@@ -20,6 +20,52 @@ export const fr = {
     settings: "Paramètres de saisie",
     preview: "Aperçu mis en forme",
   },
+  promptQueue: {
+    loading: "Chargement des messages en file d’attente",
+    listLabel: "Messages en file d’attente",
+    regionLabel: "File d’attente des messages, {current} sur {total}",
+    itemLabel: "Message en file d’attente {position} sur {total} : {prompt}",
+    reorderInstructions: "Faites glisser la poignée pour réorganiser. Lorsque la poignée a le focus, utilisez Haut ou Bas pour déplacer d’une position, ou Début ou Fin pour aller au début ou à la fin.",
+    dragTooltip: "Faire glisser pour réorganiser",
+    reorderLabel: "Réorganiser le message en file d’attente {position} sur {total}",
+    paused: "En pause",
+    steer: "Réorienter",
+    steerTooltip: "Interrompre la réponse et envoyer ce message en priorité",
+    steerLabel: "Réorienter avec le message en file d’attente {position}",
+    removeTooltip: "Retirer de la file d’attente",
+    removeLabel: "Retirer le message en file d’attente {position}",
+    moreTooltip: "Plus d’options",
+    moreLabel: "Plus d’options pour le message en file d’attente {position}",
+    editItem: "Modifier le message",
+    copyItem: "Copier le message",
+    editLabel: "Modifier le message en file d’attente {position}",
+    cancel: "Annuler",
+    save: "Enregistrer",
+    turnOffQueueing: "Désactiver la file d’attente",
+    turnOnQueueing: "Activer la file d’attente",
+    resume: "Reprendre la file d’attente",
+    queueButton: "Mettre le message en file d’attente",
+    steerButton: "Réorienter la réponse",
+    sendTooltip: "Envoyer le message ({shortcut})",
+    sendLabel: "Envoyer le message",
+    followUpTooltip: "{action} ({send}) · {opposite} pour l’inverse",
+    announceUpdated: "Message en file d’attente mis à jour.",
+    announceEditFailed: "Ce message ne peut plus être modifié car la file d’attente a changé.",
+    announceRemoved: "Message retiré de la file d’attente.",
+    announceSteered: "Ce message réorientera la réponse en priorité.",
+    announceSteerFailed: "Ce message n’a pas pu réorienter la réponse. Vérifiez la file d’attente et réessayez.",
+    announceCopied: "Message copié.",
+    announceCopyFailed: "Impossible de copier ce message. Réessayez.",
+    announceQueueingOn: "Les nouveaux messages de suivi seront mis en file d’attente après la réponse en cours.",
+    announceQueueingOff: "Les nouveaux messages de suivi réorienteront la réponse en cours.",
+    announceMoved: "Message déplacé à la position {position} sur {total}.",
+    announceMoveFailed: "La file d’attente a changé avant que ce message puisse être déplacé. Réessayez.",
+    announceDragReset: "La file d’attente a changé. Faites glisser à nouveau pour réorganiser les messages restants.",
+    editingHint: "Modification du message",
+    queueingOffHint: "Les nouveaux messages interrompent et passent ensuite.",
+    queueingOnHint: "Les nouveaux messages attendent leur tour.",
+    queueingHintShared: "La file d’attente est conservée.",
+  },
   picker: {
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
@@ -203,9 +249,19 @@ export const fr = {
   settings: {
     accounts: {
       title: "Comptes",
-      description: "Créez des comptes Studio privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
+      description: "Créez des comptes Unsloth privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
       username: "Nom d'utilisateur",
       create: "Créer un compte",
+      createDescription: "Partagez un code de configuration pour que la personne choisisse son propre mot de passe.",
+      actionsFor: "Gérer {username}",
+      actions: "Actions",
+      search: "Rechercher des comptes",
+      noResults: "Aucun compte correspondant",
+      created: "Créé le",
+      status: "Statut",
+      loginHint: "Connectez-vous en tant que {username} avec ce code comme mot de passe, puis choisissez un nouveau mot de passe.",
+      privateAccount: "Compte privé",
+      empty: "Aucun autre compte pour l'instant",
       setupCode: "Code de configuration",
       setupFor: "Code de configuration pour {username}",
       shownOnce: "Copiez ce code maintenant et transmettez-le au titulaire du compte. Il n'est affiché qu'ici et ne peut être utilisé qu'une seule fois dans les 60 minutes.",
@@ -215,13 +271,13 @@ export const fr = {
       copyFailed: "Impossible de copier. Sélectionnez et copiez le code de configuration ci-dessus.",
       dismiss: "Terminé",
       owner: "Propriétaire de l'installation",
-      active: "Actif",
-      inactive: "Inactif",
+      active: "Activé",
+      inactive: "Désactivé",
       regenerate: "Régénérer le code de configuration",
       resetTitle: "Réinitialiser le mot de passe de {username} ?",
       resetDescription: "Régénérer le code de configuration remplace le mot de passe de {username}, ferme ses sessions et révoque ses clés API. Donnez-lui le nouveau code pour qu'il choisisse à nouveau un mot de passe.",
       deactivate: "Désactiver",
-      reactivate: "Réactiver",
+      reactivate: "Activer",
       delete: "Supprimer le compte",
       deleteTitle: "Supprimer {username} ?",
       deleteDescription: "Cette action révoque les sessions de {username} et annule ses travaux en cours. Ses conversations, réglages, identifiants, envois, jeux de données, entraînements, sorties, exports, galeries, bacs à sable, projets et fichiers temporaires sont retirés. Les répertoires sont renommés à part, jamais supprimés. Recréer ce nom d'utilisateur démarre un nouveau compte sans aucune de ces données.",
@@ -258,9 +314,10 @@ export const fr = {
     },
     keyboardShortcuts: {
       title: "Raccourcis clavier",
-      description:
-        "Modifiez un raccourci, ou effacez-le pour libérer la combinaison pour le navigateur ou le système.",
       searchPlaceholder: "Rechercher des raccourcis…",
+      keystrokePlaceholder: "Appuyez sur un raccourci pour rechercher",
+      searchByKeystrokes: "Rechercher par frappe",
+      searchByName: "Rechercher par nom",
       noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
       recording: "Appuyez sur les touches…",
@@ -457,6 +514,14 @@ export const fr = {
           label: "Envoyer le message",
           description: "Envoyer le contenu de la zone de saisie",
         },
+        queueMessage: {
+          label: "Mettre le message en file",
+          description: "Envoyer le brouillon à la fin de la file",
+        },
+        steerMessage: {
+          label: "Réorienter la réponse",
+          description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
+        },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
           description: "Parcourir les niveaux d’effort de raisonnement",
@@ -523,7 +588,7 @@ export const fr = {
       openLogsFolderFailed: "Le dossier des journaux n'a pas pu être ouvert.",
       exportFailed: "Les journaux n'ont pas pu être téléchargés.",
       exportTooOld: "Le backend Unsloth en cours d'exécution est trop ancien pour exporter les journaux. Mettez-le à jour et redémarrez-le.",
-      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Studio connectée. Une clé d'API ne suffit pas.",
+      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Unsloth connectée. Une clé d'API ne suffit pas.",
       keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {
@@ -837,6 +902,9 @@ export const fr = {
         showLoadedModels: "Indicateur des modèles chargés",
         showLoadedModelsDescription:
           "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
+        showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
       },
       startup: {
         sectionTitle: "Démarrage",
@@ -1280,6 +1348,8 @@ export const fr = {
           sourceBuild: "Ce llama.cpp a été compilé depuis les sources, son backend ne peut pas être changé ici.",
           customPath: "Un dossier llama.cpp personnalisé est sélectionné. Son build détermine le backend de calcul.",
           unresolved: "Impossible de vérifier les backends disponibles. Vérifiez votre connexion et réessayez.",
+          updateChecksDisabled:
+            "Les vérifications de mise à jour sont désactivées (UNSLOTH_DISABLE_UPDATE_CHECK=1), les backends disponibles ne sont donc pas recherchés.",
         },
         // Non affiché : termes supplémentaires pour la recherche dans les réglages.
         llamaBackendKeywords:
@@ -1457,6 +1527,30 @@ export const fr = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversations" },
+        files: { title: "Fichiers et collage" },
+        display: { title: "Affichage" },
+        composer: { title: "Zone de message" },
+        menu: { title: "Menu du chat" },
+        advanced: { title: "Avancé" },
+        contextTitle: "Contexte",
+      },
+      projectAttachmentsHint:
+        "Modifiez ce réglage pour chaque chat dans son menu de pièces jointes.",
+      rememberParamsPerModelHint:
+        "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
+      autoCompactHint:
+        "Utilise la longueur de contexte définie, pas la VRAM disponible.",
+      pastedTextShortDescription:
+        "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
+      pastedTextOffDescription:
+        "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
+      compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
+      compactionDescriptionCheckpoint:
+        "Conserve le dernier échange et les instructions permanentes.",
+      compactionDescriptionRolling:
+        "Supprime les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1486,7 +1580,8 @@ export const fr = {
         exportChat: "Exporter le chat",
       },
       pastedTextThreshold: "Condenser les collages longs",
-      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message. Appuyez sur {shortcut} pour coller quand même dans le champ de message.",
+      pastedTextThresholdDescription:
+        "Appuyez sur {shortcut} pour coller directement dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
@@ -1496,13 +1591,13 @@ export const fr = {
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
       projectAttachments: "Partager les fichiers dans tout le projet",
       projectAttachmentsDescription:
-        "Valeur par defaut pour les fichiers joints dans une discussion appartenant a un projet : les indexer pour tout le projet afin que chaque discussion puisse les utiliser. Chaque discussion peut le modifier depuis le menu des pieces jointes.",
+        "Rend les nouvelles pièces jointes accessibles à toutes les discussions du projet.",
       rememberParamsPerModel: "Mémoriser les réglages par modèle",
       rememberParamsPerModelDescription:
-        "Changer de modèle restaure la température, le prompt et les autres réglages utilisés en dernier avec ce modèle. Désactivé, un seul jeu de réglages s'applique à tous les modèles.",
+        "Restaure le dernier prompt, la température et les autres réglages utilisés pour chaque modèle.",
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
-        "Lorsqu’une discussion GGUF locale atteint la longueur de contexte définie, supprimez les anciens tours au lieu de renvoyer une erreur. Ce réglage ne dépend pas de la VRAM libre.",
+        "Supprime les anciens échanges lorsqu’une discussion GGUF locale atteint sa limite de contexte.",
       compactionStyle: "Lorsque le contexte est plein",
       compactionStyleDescription:
         "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
@@ -1539,7 +1634,7 @@ export const fr = {
         title: "Recherche web",
         images: "Afficher les images de la recherche web",
         imagesDescription:
-          "Permet à la recherche web de renvoyer des images et en récupère une pour chaque élément listé dans une réponse. Unsloth télécharge et redimensionne les vignettes : le navigateur ne contacte jamais les hébergeurs d'images.",
+          "Inclut des images dans les résultats de recherche.",
       },
       artifacts: {
         title: "Canvas",
@@ -1924,7 +2019,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
+          "L’application est connectée à un serveur Studio déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",

@@ -21,6 +21,52 @@ export const ja = {
     settings: "入力欄の設定",
     preview: "書式付きプレビュー",
   },
+  promptQueue: {
+    loading: "キューのメッセージを読み込んでいます",
+    listLabel: "キューのメッセージ",
+    regionLabel: "メッセージキュー、{total} 件中 {current} 件目",
+    itemLabel: "キューのメッセージ {total} 件中 {position} 件目: {prompt}",
+    reorderInstructions: "ハンドルをドラッグすると並べ替えできます。ハンドルにフォーカスがある状態で、上下キーで 1 つ移動、Home または End で先頭または末尾に移動します。",
+    dragTooltip: "ドラッグして並べ替え",
+    reorderLabel: "キューのメッセージ {total} 件中 {position} 件目を並べ替え",
+    paused: "一時停止中",
+    steer: "方向を変更",
+    steerTooltip: "現在の応答を中断し、このメッセージを次に送信します",
+    steerLabel: "キューのメッセージ {position} で方向を変更",
+    removeTooltip: "キューから削除",
+    removeLabel: "キューのメッセージ {position} を削除",
+    moreTooltip: "その他の操作",
+    moreLabel: "キューのメッセージ {position} のその他の操作",
+    editItem: "メッセージを編集",
+    copyItem: "メッセージをコピー",
+    editLabel: "キューのメッセージ {position} を編集",
+    cancel: "キャンセル",
+    save: "保存",
+    turnOffQueueing: "キューをオフにする",
+    turnOnQueueing: "キューをオンにする",
+    resume: "キューを再開",
+    queueButton: "メッセージをキューに追加",
+    steerButton: "応答の方向を変更",
+    sendTooltip: "メッセージを送信（{shortcut}）",
+    sendLabel: "メッセージを送信",
+    followUpTooltip: "{action}（{send}）・{opposite} で逆の動作",
+    announceUpdated: "キューのメッセージを更新しました。",
+    announceEditFailed: "キューが変更されたため、このメッセージは編集できません。",
+    announceRemoved: "メッセージをキューから削除しました。",
+    announceSteered: "このメッセージで次の応答の方向を変更します。",
+    announceSteerFailed: "このメッセージで方向を変更できませんでした。キューを確認して再試行してください。",
+    announceCopied: "メッセージをコピーしました。",
+    announceCopyFailed: "このメッセージをコピーできませんでした。再試行してください。",
+    announceQueueingOn: "新しい追加メッセージは現在の応答の後にキューへ追加されます。",
+    announceQueueingOff: "新しい追加メッセージは現在の応答の方向を変更します。",
+    announceMoved: "メッセージを {total} 件中 {position} 番目に移動しました。",
+    announceMoveFailed: "移動前にキューが変更されました。再試行してください。",
+    announceDragReset: "キューが変更されました。残りのメッセージをもう一度ドラッグして並べ替えてください。",
+    editingHint: "メッセージを編集中",
+    queueingOffHint: "新しいメッセージが割り込んで実行されます。",
+    queueingOnHint: "新しいメッセージは順番待ちになります。",
+    queueingHintShared: "キューは保持されます。",
+  },
   picker: {
     onDevice: "デバイス上",
     huggingFace: "Hugging Face",
@@ -201,9 +247,19 @@ export const ja = {
   settings: {
     accounts: {
       title: "アカウント",
-      description: "個別の Studio アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
+      description: "個別の Unsloth アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
       username: "ユーザー名",
       create: "アカウントを作成",
+      createDescription: "セットアップコードを渡すと、本人がパスワードを設定できます。",
+      actionsFor: "{username} を管理",
+      actions: "操作",
+      search: "アカウントを検索",
+      noResults: "一致するアカウントはありません",
+      created: "作成日",
+      status: "状態",
+      loginHint: "{username} としてこのコードをパスワードに使ってサインインし、新しいパスワードを設定してください。",
+      privateAccount: "個別アカウント",
+      empty: "ほかのアカウントはまだありません",
       setupCode: "セットアップコード",
       setupFor: "{username} のセットアップコード",
       shownOnce: "このコードを今すぐコピーしてアカウントの持ち主に渡してください。ここにしか表示されず、60 分以内に一度だけ使えます。",
@@ -219,7 +275,7 @@ export const ja = {
       resetTitle: "{username} のパスワードをリセットしますか?",
       resetDescription: "セットアップコードを再発行すると {username} のパスワードが置き換えられ、セッションは終了し、API キーは失効します。新しいコードを渡して、もう一度パスワードを選んでもらってください。",
       deactivate: "無効化",
-      reactivate: "再有効化",
+      reactivate: "有効化",
       delete: "アカウントを削除",
       deleteTitle: "{username} を削除しますか?",
       deleteDescription: "{username} のセッションを取り消し、実行中の作業をキャンセルします。チャット、設定、認証情報、アップロード、データセット、学習の実行、出力、エクスポート、ギャラリー、サンドボックス、プロジェクト、一時ファイルは退避されます。ディレクトリは名前を変えて脇に置かれ、削除はされません。同じユーザー名を再び作成すると、これらのデータを持たない新しいアカウントになります。",
@@ -256,9 +312,10 @@ export const ja = {
     },
     keyboardShortcuts: {
       title: "キーボードショートカット",
-      description:
-        "ショートカットを変更したり、消してブラウザや OS にそのキーを譲ったりできます。",
       searchPlaceholder: "ショートカットを検索…",
+      keystrokePlaceholder: "ショートカットを押して検索",
+      searchByKeystrokes: "キー入力で検索",
+      searchByName: "名前で検索",
       noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",
       recording: "キーを押してください…",
@@ -455,6 +512,14 @@ export const ja = {
           label: "メッセージを送信",
           description: "入力欄の内容を送信します",
         },
+        queueMessage: {
+          label: "メッセージをキューに追加",
+          description: "下書きをキューの最後に送信します",
+        },
+        steerMessage: {
+          label: "応答を修正",
+          description: "現在の応答を停止して下書きを次に送信します",
+        },
         cycleReasoningEffort: {
           label: "思考の深さを順に切り替え",
           description: "思考の深さのレベルを順に切り替えます",
@@ -521,7 +586,7 @@ export const ja = {
       openLogsFolderFailed: "ログフォルダーを開けませんでした。",
       exportFailed: "ログをダウンロードできませんでした。",
       exportTooOld: "実行中の Unsloth バックエンドが古すぎるため、ログを書き出せません。バックエンドを更新して再起動してください。",
-      exportForbidden: "すべてのログをダウンロードするには、サインイン済みの Studio セッションが必要です。API キーだけでは実行できません。",
+      exportForbidden: "すべてのログをダウンロードするには、サインイン済みの Unsloth セッションが必要です。API キーだけでは実行できません。",
       keywords: "デバッグ ログ エラー クラッシュ トレースバック スタックトレース 診断 障害 調査 debug log logs error",
     },
     voice: {
@@ -810,6 +875,8 @@ export const ja = {
         showLlamaUpdatesDescription: "新しいモデルを実行するための新しい llama.cpp ビルドが利用可能になったときに通知します。トレーニングのみを行う場合はオフにしてください。",
         showLoadedModels: "読み込み済みモデルのインジケーター",
         showLoadedModelsDescription: "現在メモリ上にあるすべてのモデル（チャット、音声、画像、動画）を一覧表示する小さなカードを右下に表示します。各モデルを解放するボタンが付いています。",
+        showWhisperUpdates: "whisper.cpp のアップデート通知",
+        showWhisperUpdatesDescription: "音声認識モデル向けの新しい whisper.cpp ビルドが利用可能になったときに通知します。音声を文字起こししない場合はオフにしてください。",
       },
       startup: {
         sectionTitle: "起動",
@@ -1236,6 +1303,8 @@ export const ja = {
           sourceBuild: "この llama.cpp はソースからビルドされているため、ここではバックエンドを切り替えられません。",
           customPath: "カスタム llama.cpp フォルダーが選択されています。そのビルドによって計算バックエンドが決まります。",
           unresolved: "利用可能なバックエンドを確認できませんでした。接続を確認して再試行してください。",
+          updateChecksDisabled:
+            "更新チェックが無効になっているため (UNSLOTH_DISABLE_UPDATE_CHECK=1)、利用可能なバックエンドは確認されません。",
         },
         // 非表示: 設定検索用の追加キーワード。
         llamaBackendKeywords:
@@ -1412,6 +1481,27 @@ export const ja = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "会話" },
+        files: { title: "ファイルと貼り付け" },
+        display: { title: "表示" },
+        composer: { title: "メッセージ入力欄" },
+        menu: { title: "チャットメニュー" },
+        advanced: { title: "詳細設定" },
+        contextTitle: "コンテキスト",
+      },
+      projectAttachmentsHint: "各チャットの添付メニューで個別に変更できます。",
+      rememberParamsPerModelHint:
+        "オフの場合、すべてのモデルで同じ設定を使います。",
+      autoCompactHint: "空きVRAMではなく、設定したコンテキスト長を基準にします。",
+      pastedTextShortDescription:
+        "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
+      pastedTextOffDescription:
+        "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
+      compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
+      compactionDescriptionCheckpoint: "最新のやり取りと継続的な指示を保持します。",
+      compactionDescriptionRolling:
+        "古いターンを削除し、最近の履歴と選択した余裕分の空きを確保します。",
       projectsSection: "プロジェクトセクションを表示",
       projectsSectionDescription:
         "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
@@ -1441,7 +1531,8 @@ export const ja = {
         exportChat: "チャットをエクスポート",
       },
       pastedTextThreshold: "長い貼り付けを圧縮",
-      pastedTextThresholdDescription: "この長さを超える貼り付けテキストは、入力欄を埋める代わりに .txt 添付ファイルになります。 {shortcut} を押すと、それでも入力欄に貼り付けます。",
+      pastedTextThresholdDescription:
+        "{shortcut} を押すと、入力欄に直接貼り付けられます。",
       pastedTextThresholdOff: "オフ",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
@@ -1450,13 +1541,13 @@ export const ja = {
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
       projectAttachments: "プロジェクト全体でファイルを共有",
       projectAttachmentsDescription:
-        "プロジェクトに属するチャットで添付したファイルの既定の扱いです。プロジェクト全体にインデックスし、そのプロジェクト内のどのチャットからも利用できるようにします。チャットごとに添付メニューから変更できます。",
+        "新しく添付したファイルをプロジェクト内のすべてのチャットで利用できるようにします。",
       rememberParamsPerModel: "モデルごとに設定を記憶",
       rememberParamsPerModelDescription:
-        "モデルを切り替えると、そのモデルで最後に使った温度やプロンプトなどの設定が復元されます。オフの場合は、すべてのモデルで同じ設定を使います。",
+        "各モデルで最後に使ったプロンプト、温度、その他の設定を復元します。",
       autoCompact: "長いチャットを自動圧縮",
       autoCompactDescription:
-        "ローカル GGUF チャットが設定したコンテキスト長に達したら、エラーを返す代わりに古いターンを削除します。空き VRAM には基づきません。",
+        "ローカル GGUF チャットがコンテキスト上限に達したら、古いターンを削除します。",
       compactionStyle: "コンテキストが満杯になったとき",
       compactionStyleDescription:
         "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
@@ -1489,7 +1580,7 @@ export const ja = {
         title: "ウェブ検索",
         images: "ウェブ検索の画像を表示",
         imagesDescription:
-          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Unsloth が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
+          "検索結果に画像を含めます。",
       },
       artifacts: {
         title: "Canvas",
@@ -1843,7 +1934,7 @@ export const ja = {
         desktopAvailableDescription:
           "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
         desktopExternalServer:
-          "サーバーを起動したターミナルで `unsloth studio update` を実行してください。",
+          "アプリはすでに実行中の Studio サーバーに接続しているため、更新できません。そのサーバーを停止し、デスクトップアプリを終了してから再度開き、更新してください。",
         desktopManualInstall:
           "リリースページを開き、最新の Linux パッケージをインストールしてください。",
         desktopCheckFailed: "アップデートを確認できませんでした",

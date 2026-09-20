@@ -17,6 +17,52 @@ export const it = {
     settings: "Impostazioni di composizione",
     preview: "Anteprima formattata",
   },
+  promptQueue: {
+    loading: "Caricamento dei messaggi in coda",
+    listLabel: "Messaggi in coda",
+    regionLabel: "Coda dei messaggi, {current} di {total}",
+    itemLabel: "Messaggio in coda {position} di {total}: {prompt}",
+    reorderInstructions: "Trascina la maniglia per riordinare. Con la maniglia attiva, usa Su o Giù per spostare di una posizione, oppure Home o Fine per andare all’inizio o alla fine.",
+    dragTooltip: "Trascina per riordinare",
+    reorderLabel: "Riordina il messaggio in coda {position} di {total}",
+    paused: "In pausa",
+    steer: "Riorienta",
+    steerTooltip: "Interrompi la risposta e invia subito dopo questo messaggio",
+    steerLabel: "Riorienta con il messaggio in coda {position}",
+    removeTooltip: "Rimuovi dalla coda",
+    removeLabel: "Rimuovi il messaggio in coda {position}",
+    moreTooltip: "Altre opzioni",
+    moreLabel: "Altre opzioni per il messaggio in coda {position}",
+    editItem: "Modifica messaggio",
+    copyItem: "Copia messaggio",
+    editLabel: "Modifica il messaggio in coda {position}",
+    cancel: "Annulla",
+    save: "Salva",
+    turnOffQueueing: "Disattiva la coda",
+    turnOnQueueing: "Attiva la coda",
+    resume: "Riprendi la coda",
+    queueButton: "Metti il messaggio in coda",
+    steerButton: "Riorienta la risposta",
+    sendTooltip: "Invia messaggio ({shortcut})",
+    sendLabel: "Invia messaggio",
+    followUpTooltip: "{action} ({send}) · {opposite} per l’opposto",
+    announceUpdated: "Messaggio in coda aggiornato.",
+    announceEditFailed: "Questo messaggio non può più essere modificato perché la coda è cambiata.",
+    announceRemoved: "Messaggio rimosso dalla coda.",
+    announceSteered: "Questo messaggio riorienterà la risposta subito dopo.",
+    announceSteerFailed: "Non è stato possibile riorientare la risposta con questo messaggio. Controlla la coda e riprova.",
+    announceCopied: "Messaggio copiato.",
+    announceCopyFailed: "Non è stato possibile copiare questo messaggio. Riprova.",
+    announceQueueingOn: "I nuovi messaggi successivi verranno messi in coda dopo la risposta corrente.",
+    announceQueueingOff: "I nuovi messaggi successivi riorienteranno la risposta corrente.",
+    announceMoved: "Messaggio spostato alla posizione {position} di {total}.",
+    announceMoveFailed: "La coda è cambiata prima che questo messaggio potesse essere spostato. Riprova.",
+    announceDragReset: "La coda è cambiata. Trascina di nuovo per riordinare i messaggi rimanenti.",
+    editingHint: "Modifica del messaggio",
+    queueingOffHint: "I nuovi messaggi interrompono e vengono eseguiti subito dopo.",
+    queueingOnHint: "I nuovi messaggi attendono il turno.",
+    queueingHintShared: "La coda viene mantenuta.",
+  },
   common: {
     cancel: "Annulla",
     close: "Chiudi",
@@ -167,9 +213,19 @@ export const it = {
   settings: {
     accounts: {
       title: "Account",
-      description: "Crea account Studio privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
+      description: "Crea account Unsloth privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
       username: "Nome utente",
       create: "Crea account",
+      createDescription: "Condividi un codice di configurazione perché possa scegliere la propria password.",
+      actionsFor: "Gestisci {username}",
+      actions: "Azioni",
+      search: "Cerca account",
+      noResults: "Nessun account corrispondente",
+      created: "Creato",
+      status: "Stato",
+      loginHint: "Accedi come {username} usando questo codice come password, poi scegli una nuova password.",
+      privateAccount: "Account privato",
+      empty: "Nessun altro account",
       setupCode: "Codice di configurazione",
       setupFor: "Codice di configurazione per {username}",
       shownOnce: "Copia subito questo codice e condividilo con il titolare dell'account. Viene mostrato solo qui e può essere usato una sola volta entro 60 minuti.",
@@ -179,13 +235,13 @@ export const it = {
       copyFailed: "Impossibile copiare. Seleziona e copia il codice di configurazione qui sopra.",
       dismiss: "Fatto",
       owner: "Proprietario dell'installazione",
-      active: "Attivo",
-      inactive: "Inattivo",
+      active: "Attivato",
+      inactive: "Disattivato",
       regenerate: "Rigenera codice di configurazione",
       resetTitle: "Reimpostare la password di {username}?",
       resetDescription: "Rigenerare il codice di configurazione sostituisce la password di {username}, chiude le sue sessioni e revoca le sue chiavi API. Consegnagli il nuovo codice per scegliere di nuovo una password.",
       deactivate: "Disattiva",
-      reactivate: "Riattiva",
+      reactivate: "Attiva",
       delete: "Elimina account",
       deleteTitle: "Eliminare {username}?",
       deleteDescription: "Questa operazione revoca le sessioni di {username} e annulla il suo lavoro. Chat, impostazioni, credenziali, caricamenti, dataset, addestramenti, output, esportazioni, gallerie, sandbox, progetti e file temporanei vengono ritirati. Le directory vengono rinominate e messe da parte, mai eliminate. Creare di nuovo questo nome utente avvia un account nuovo senza questi dati.",
@@ -222,9 +278,10 @@ export const it = {
     },
     keyboardShortcuts: {
       title: "Scorciatoie da tastiera",
-      description:
-        "Modifica una scorciatoia, oppure cancellala per liberare la combinazione per il browser o il sistema.",
       searchPlaceholder: "Cerca scorciatoie…",
+      keystrokePlaceholder: "Premi una scorciatoia per cercare",
+      searchByKeystrokes: "Cerca per combinazione",
+      searchByName: "Cerca per nome",
       noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
       unassigned: "Non assegnata",
       recording: "Premi i tasti…",
@@ -421,6 +478,14 @@ export const it = {
           label: "Invia messaggio",
           description: "Invia il contenuto dell’editor",
         },
+        queueMessage: {
+          label: "Accoda messaggio",
+          description: "Invia la bozza in fondo alla coda",
+        },
+        steerMessage: {
+          label: "Reindirizza la risposta",
+          description: "Interrompi la risposta in corso e invia subito la bozza",
+        },
         cycleReasoningEffort: {
           label: "Scorri lo sforzo di ragionamento",
           description: "Passa in rassegna i livelli di sforzo di ragionamento",
@@ -487,7 +552,7 @@ export const it = {
       openLogsFolderFailed: "Non è stato possibile aprire la cartella dei log.",
       exportFailed: "Non è stato possibile scaricare i log.",
       exportTooOld: "Il backend Unsloth in esecuzione è troppo vecchio per esportare i log. Aggiornalo e riavvialo.",
-      exportForbidden: "Per scaricare tutti i log serve una sessione di Studio con accesso eseguito. Una chiave API non basta.",
+      exportForbidden: "Per scaricare tutti i log serve una sessione di Unsloth con accesso eseguito. Una chiave API non basta.",
       keywords: "debug log logs registro registri errore errori crash traccia diagnostica risoluzione dei problemi",
     },
     voice: {
@@ -810,6 +875,9 @@ export const it = {
         showLoadedModels: "Indicatore dei modelli caricati",
         showLoadedModelsDescription:
           "Mostra una piccola scheda in basso a destra con tutti i modelli attualmente in memoria (chat, voce, immagini, video), con un pulsante per rimuovere ciascuno.",
+        showWhisperUpdates: "Notifiche di aggiornamento di whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Avvisa quando è disponibile una build più recente di whisper.cpp per i modelli di trascrizione vocale. Disattiva le notifiche se non trascrivi mai l'audio.",
       },
       startup: {
         sectionTitle: "Avvio",
@@ -1247,6 +1315,8 @@ export const it = {
           sourceBuild: "Questo llama.cpp è stato compilato dai sorgenti, quindi il backend non è modificabile da qui.",
           customPath: "È selezionata una cartella llama.cpp personalizzata. La sua build determina il backend di calcolo.",
           unresolved: "Non è stato possibile controllare i backend disponibili. Verifica la connessione e riprova.",
+          updateChecksDisabled:
+            "I controlli degli aggiornamenti sono disattivati (UNSLOTH_DISABLE_UPDATE_CHECK=1), quindi i backend disponibili non vengono cercati.",
         },
         // Non visualizzato: termini aggiuntivi per la ricerca nelle impostazioni.
         llamaBackendKeywords:
@@ -1424,6 +1494,30 @@ export const it = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversazioni" },
+        files: { title: "File e incolla" },
+        display: { title: "Visualizzazione" },
+        composer: { title: "Casella del messaggio" },
+        menu: { title: "Menu della chat" },
+        advanced: { title: "Avanzate" },
+        contextTitle: "Contesto",
+      },
+      projectAttachmentsHint:
+        "Modifica questa impostazione per ogni chat dal relativo menu degli allegati.",
+      rememberParamsPerModelHint:
+        "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
+      autoCompactHint:
+        "Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
+      pastedTextShortDescription:
+        "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
+      pastedTextOffDescription:
+        "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
+      compactionDescriptionInherit: "Segue la politica del contesto del server.",
+      compactionDescriptionCheckpoint:
+        "Mantiene l’ultimo scambio e le istruzioni permanenti.",
+      compactionDescriptionRolling:
+        "Rimuove i turni più vecchi per conservare la cronologia recente e lo spazio aggiuntivo selezionato.",
       projectsSection: "Mostra la sezione Progetti",
       projectsSectionDescription:
         "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
@@ -1454,7 +1548,8 @@ export const it = {
         exportChat: "Esporta chat",
       },
       pastedTextThreshold: "Condensa incolla lunghi",
-      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio. Premi {shortcut} per incollare comunque nel campo del messaggio.",
+      pastedTextThresholdDescription:
+        "Premi {shortcut} per incollare direttamente nel campo del messaggio.",
       pastedTextThresholdOff: "Disattivato",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
@@ -1464,13 +1559,13 @@ export const it = {
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
       projectAttachments: "Condividi i file nel progetto",
       projectAttachmentsDescription:
-        "Impostazione predefinita per i file allegati in una chat che appartiene a un progetto: indicizzarli per l'intero progetto in modo che ogni chat possa usarli. Ogni chat puo cambiarlo dal menu degli allegati.",
+        "Rende i nuovi allegati disponibili in tutte le chat del progetto.",
       rememberParamsPerModel: "Ricorda le impostazioni per modello",
       rememberParamsPerModelDescription:
-        "Cambiando modello vengono ripristinati temperatura, prompt e le altre impostazioni usate l'ultima volta con quel modello. Disattivato, resta un unico set di impostazioni per tutti i modelli.",
+        "Ripristina l’ultimo prompt, la temperatura e le altre impostazioni usate con ogni modello.",
       autoCompact: "Compatta automaticamente le chat lunghe",
       autoCompactDescription:
-        "Quando una chat GGUF locale raggiunge la lunghezza di contesto impostata, elimina i turni precedenti invece di restituire un errore. Questa impostazione non dipende dalla VRAM libera.",
+        "Rimuove i turni più vecchi quando una chat GGUF locale raggiunge il limite del contesto.",
       compactionStyle: "Quando il contesto è pieno",
       compactionStyleDescription:
         "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
@@ -1507,7 +1602,7 @@ export const it = {
         title: "Ricerca web",
         images: "Mostra immagini dalla ricerca web",
         imagesDescription:
-          "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Unsloth, quindi il browser non contatta mai gli host delle immagini.",
+          "Include immagini nei risultati di ricerca.",
       },
       artifacts: {
         title: "Canvas",
@@ -1888,7 +1983,7 @@ export const it = {
         desktopAvailableDescription:
           "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
         desktopExternalServer:
-          "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
+          "L’app si è connessa a un server Studio già in esecuzione e non può aggiornarlo. Arresta quel server, poi chiudi e riapri l’app desktop per aggiornare.",
         desktopManualInstall:
           "Apri la pagina della release per installare il pacchetto Linux più recente.",
         desktopCheckFailed:

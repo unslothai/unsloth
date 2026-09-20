@@ -76,8 +76,10 @@ def _extract_sh_function_body(source: str, name: str) -> str:
     """Return a shell function body from `source` by brace matching."""
     needle = f"{name}() {{"
     start = source.find(needle)
-    if start < 0:
-        return ""
+    # Raise rather than return "". Every caller names a function that install.sh defines,
+    # so a miss is a rename, and an empty body makes each caller fail on its own subject
+    # -- a vendor_id check reported as missing when the vendor_id check is still there.
+    assert start >= 0, f"install.sh defines no {name}()"
     depth = 0
     i = start + len(needle) - 1  # land on the opening brace
     n = len(source)
@@ -108,6 +110,22 @@ def _gpu_record_helpers(source: str) -> str:
             "_amd_smi_hip_order",
         )
     )
+
+
+def _visibility_mask_names(source: str) -> tuple[str, ...]:
+    """Every GPU visibility mask install.sh's gfx block honours.
+
+    Read out of the script rather than written down here. The block treats
+    CUDA_VISIBLE_DEVICES as HIP's alias, so a probe test that clears only the masks it
+    happens to remember inherits the rest from whatever host it runs on and selects that
+    host's GPU index. Sourcing the list means a mask added to production cannot go on
+    being inherited silently: it starts being cleared here the moment it is named there.
+    """
+    match = re.search(r'^\s*_vis_masks="([^"]+)"', source, re.M)
+    assert match, "could not find _vis_masks in install.sh -- did the gfx block move?"
+    names = tuple(match.group(1).split())
+    assert names, "_vis_masks is empty"
+    return ("ROCR_VISIBLE_DEVICES", *names)
 
 
 # A dpkg-query -W stand-in that renders whichever showformat string it is handed,
@@ -445,6 +463,13 @@ class TestRuntimePatterns:
                 repo = "", tag = "", name = "", url = "", source_label = "", install_kind = kind
             )
             assert name in runtime_patterns_for_choice(choice)
+
+    def test_fit_params_kept_on_macos(self):
+        for kind in ("macos-arm64", "macos-x64"):
+            choice = AssetChoice(
+                repo = "", tag = "", name = "", url = "", source_label = "", install_kind = kind
+            )
+            assert "llama-fit-params" in runtime_patterns_for_choice(choice)
 
 
 # TEST: install_llama_prebuilt.py -- HostInfo.has_rocm field
@@ -2434,12 +2459,15 @@ class TestHasRocmGpuKfdVendorGuard:
         ), "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
 
     def test_install_sh_has_vendor_check(self):
-        """_has_amd_rocm_gpu in install.sh sysfs fallback must also check vendor_id 4098."""
+        """The install.sh sysfs fallback must also check vendor_id 4098.
+
+        The probe and the NVIDIA veto live in one function: tests/sh lifts helpers out of
+        install.sh one at a time by name, so a wrapper over a private helper leaves those
+        harnesses calling something undefined.
+        """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        func_start = source.find("_has_amd_rocm_gpu()")
-        func_end = source.find("\n}", func_start)
-        func_body = source[func_start:func_end]
+        func_body = _extract_sh_function_body(source, "_has_amd_rocm_gpu")
         assert "vendor_id" in func_body, "_has_amd_rocm_gpu sysfs fallback must check vendor_id"
         assert "4098" in func_body, "_has_amd_rocm_gpu must require AMD vendor_id 4098 (0x1002)"
 
@@ -3101,12 +3129,10 @@ class TestInstallShStructure:
         assert "export UNSLOTH_TORCH_BACKEND" in source
 
     def test_kfd_sysfs_amd_vendor_check_in_has_amd_rocm_gpu(self):
-        """_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (nvidia-open registers KFD nodes too)."""
+        """The sysfs fallback must require AMD vendor_id 4098 (nvidia-open registers KFD nodes too)."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        func_start = source.find("_has_amd_rocm_gpu()")
-        func_end = source.find("\n}", func_start)
-        func_body = source[func_start:func_end]
+        func_body = _extract_sh_function_body(source, "_has_amd_rocm_gpu")
         assert (
             "vendor_id" in func_body
         ), "_has_amd_rocm_gpu sysfs fallback must check vendor_id to exclude NVIDIA KFD nodes"
@@ -3127,9 +3153,7 @@ class TestInstallShStructure:
         """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        func_start = source.find("_has_amd_rocm_gpu()")
-        func_end = source.find("\n}", func_start)
-        func_body = source[func_start:func_end]
+        func_body = _extract_sh_function_body(source, "_has_amd_rocm_gpu")
         assert "$2 == 4098" in func_body, (
             "_has_amd_rocm_gpu KFD awk must match `vendor_id 4098` as a single-line "
             "condition so no per-node state can leak across KFD nodes"
@@ -6118,7 +6142,12 @@ class TestHipSdkEnvPathResolution:
     def _assert_accepts_partial_hipinfo_output(source: str):
         hipout_idx = source.find("$hipOut = & $hipinfoExe.Source")
         assert hipout_idx != -1
-        hipinfo_block = source[hipout_idx : hipout_idx + 1600]
+        # Bound the probe at the `catch` closing its own try, not at a character
+        # count: the block grows whenever the hipinfo parse gains a branch, and a
+        # fixed slice then drops the diagnostic off the end and fails on correct code.
+        end_idx = source.find("} catch {", hipout_idx)
+        assert end_idx != -1
+        hipinfo_block = source[hipout_idx:end_idx]
         assert 'if ($hipOut -match "(?i)gcnArchName")' in hipinfo_block
         assert "$LASTEXITCODE -eq 0 -and $hipOut -match" not in hipinfo_block
         assert "but reported gcnArchName" in hipinfo_block
@@ -6794,9 +6823,16 @@ class TestStrixRocm71Override:
             )
 
             def run(**extra):
-                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""), **extra)
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
                 env.pop("UNSLOTH_ROCM_GFX_ARCH", None)
-                env.pop("HIP_VISIBLE_DEVICES", None)
+                # Clear every mask the block honours before applying this case's own, not
+                # just the two that used to be named here. CUDA_VISIBLE_DEVICES is HIP's
+                # alias and production reads it, so on any host that sets it -- a GPU box,
+                # a CUDA runner -- the probe picked that host's index and the test failed
+                # for the machine it ran on rather than for the code.
+                for name in _visibility_mask_names(source):
+                    env.pop(name, None)
+                env.update(extra)
                 return subprocess.run(
                     [shell, "-c", script], env = env, capture_output = True, text = True
                 )
@@ -6815,6 +6851,25 @@ class TestStrixRocm71Override:
             r2 = run(ROCR_VISIBLE_DEVICES = "1")
             assert r2.returncode == 0, f"partial-mask probe aborted: {r2.stderr}"
             assert "OK:gfx1201" in r2.stdout, f"partial mask selection lost: {r2.stdout!r}"
+
+    def test_the_probe_clears_every_visibility_mask_production_reads(self):
+        """The masks the probe tests neutralise must be the ones install.sh honours.
+
+        CUDA_VISIBLE_DEVICES was read by production and left set by the tests, so the
+        reroute test selected whatever index the host had exported. Pin the coupling so
+        a mask added to _vis_masks cannot quietly go back to being inherited.
+        """
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        names = _visibility_mask_names(source)
+        assert set(names) == {
+            "ROCR_VISIBLE_DEVICES",
+            "HIP_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+        }, names
+        # Each one is really consulted by the block, so this is not a list of names that
+        # production has stopped caring about.
+        for name in names:
+            assert name in source, name
 
     def test_strix_routing_helpers_cover_rocm714(self):
         # Reroute for any generic pytorch.org index below the 7.13 arch floor (7.0,
@@ -7963,6 +8018,24 @@ class TestRocmMiscomputingArchDemotion:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_the_shell_extractor_says_so_when_a_function_is_gone():
+    """A rename must fail as a rename. Three checks here read the ROCm probe with find()
+    and an empty body on a miss, so folding _amd_rocm_gpu_visible back into
+    _has_amd_rocm_gpu made all three report a missing vendor_id check that was still
+    there. The helper now refuses the name instead."""
+    source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+    with pytest.raises(AssertionError, match = "_amd_rocm_gpu_visible"):
+        _extract_sh_function_body(source, "_amd_rocm_gpu_visible")
+
+
+def test_the_extractor_still_returns_the_probe_it_does_define():
+    """The control: the surviving name must still come back with a body, or the check
+    above would pass on a helper that refuses everything."""
+    source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+    body = _extract_sh_function_body(source, "_has_amd_rocm_gpu")
+    assert body.startswith("_has_amd_rocm_gpu() {") and "vendor_id" in body
 
 
 # ─────────────────────────────────────────────────────────────────────────────

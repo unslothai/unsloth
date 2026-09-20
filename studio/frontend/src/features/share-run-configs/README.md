@@ -77,7 +77,6 @@ The root layout mounts the receiver behind the existing credential bootstrap. Th
 | `features/deep-links/deep-link-intent.ts` | Clear the previous Hub duplicate marker after handling a shared link, while preserving the navigation sequence |
 | `features/model-picker/components/model-config-page.tsx` | Add Share controls, wait for the receiving editor's saved settings, and cancel pending imports on newer edits |
 | `features/model-picker/components/model-selector.tsx` | Protect shared-link editors and an open Share dialog from background focus changes |
-| `scripts/check-bundle-budget.ts` | Account for this feature's measured startup bytes |
 
 This branch contains no general editor fixes, backend changes, model-loader changes, persistence rewrites, dependency updates or unrelated cleanup. Import cancellation does nothing without a matching pending shared link. The resident sidebar uses the existing shared draft; it cannot consume a pending import. The tests include the boundary between normal editing and shared-link behavior. Desktop listener simulations also cover ordinary Hub routing with and without the shared-link callback, mixed Hub/run batches, repeat Hub links after a shared link, delayed startup intents, and listener disposal. These simulations execute the shipped handler and receiver with mocked Tauri APIs; they do not launch an OS protocol handler.
 
@@ -98,7 +97,7 @@ Native OS protocol-launch behavior requires separate Windows, WSL2, macOS and Li
 
 ## Startup size
 
-A same-toolchain production build of local `main` at `af4e98e2f` measures 5,390.4 KiB of eager JavaScript and 1,611.3 KiB transferred. With this feature, the measurements are 5,408.2 KiB and 1,617.2 KiB, with the same 84 eager chunks. The existing raw budget had only 0.2 KiB remaining, so its allowance increases by 20,000 bytes to cover the measured 17.8 KiB addition. The transfer budget stays unchanged. Dynamically importing the Share dialog increased total startup bytes and chunk count in this build, so the smaller static integration is retained.
+A same-toolchain production build of `origin/main` at `606d87e76` measures 5,495.3 KiB of eager JavaScript and 1,634.5 KiB transferred. With this feature, the measurements are 5,513.1 KiB and 1,640.3 KiB, with the same 85 eager chunks. Both builds use the dependencies from that commit's lockfile. The feature fits upstream's unchanged raw and transfer budgets, with 82.6 KiB and 34.5 KiB remaining respectively.
 
 Run `npm run build` and `npm run bundle:check` to remeasure with the installed toolchain.
 

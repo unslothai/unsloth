@@ -33,6 +33,15 @@ BATCH_MAX = 65536
 CTX_CHECKPOINTS_MAX = 256
 CACHE_RAM_MAX_MIB = 1024 * 1024
 
+# llama.cpp allocates this default even when Studio emits no flag.
+LLAMA_CTX_CHECKPOINTS_DEFAULT = 32
+
+# Recurrent checkpoints live in host RAM and can be much larger than SWA snapshots.
+CTX_CHECKPOINT_HOST_BUDGET_FRACTION = 0.05
+CTX_CHECKPOINT_HOST_BUDGET_FLOOR_BYTES = 1024**3
+# Keep rollback available; zero forces a full prompt re-ingest after divergence.
+CTX_CHECKPOINTS_MIN_USEFUL = 2
+
 # Slot-count aliases in one place: the denial below, its #9510 hint and the single-sequence retry must cover the same
 # set, or a spelling one of them misses reaches llama-server unnoticed.
 _PARALLEL_FLAGS: frozenset[str] = frozenset({"-np", "--parallel", "--n-parallel"})
@@ -518,6 +527,10 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--chat-template",
         "--chat-template-file",
         "--chat-template-kwargs",
+        # enable_thinking's new spelling (#7526); a template override recomputes the default,
+        # so both must strip. Takes a value, so NOT in _BOOLEAN_SHADOWING_FLAGS.
+        "--reasoning",
+        "-rea",
         "--jinja",
         "--no-jinja",
     }
@@ -669,9 +682,67 @@ def parse_ctx_checkpoints_override(args: Optional[Iterable[str]]) -> Optional[in
 
 
 def resolve_ctx_checkpoints(args: Optional[Iterable[str]], requested: Optional[int]) -> int:
-    """The checkpoint count the launch will actually run: extras beat the field."""
+    """Resolve explicit counts only, with extra arguments taking precedence."""
     override = parse_ctx_checkpoints_override(args)
     return int(override if override is not None else (requested or 0))
+
+
+def ctx_checkpoints_within_host_budget(
+    per_checkpoint_bytes: int,
+    n_parallel: int,
+    total_host_bytes: Optional[int],
+    *,
+    upstream_default: Optional[int] = None,
+) -> int:
+    """Fit checkpoints per slot within the host budget and this build's own default.
+
+    Unknown sizes keep the default. The minimum useful count may exceed the target budget
+    but never the default: this caps what the child would keep, it never raises it.
+    """
+    default = (
+        LLAMA_CTX_CHECKPOINTS_DEFAULT if upstream_default is None else max(0, int(upstream_default))
+    )
+    if per_checkpoint_bytes <= 0 or not total_host_bytes or total_host_bytes <= 0:
+        return default
+    budget = max(
+        CTX_CHECKPOINT_HOST_BUDGET_FLOOR_BYTES,
+        int(total_host_bytes * CTX_CHECKPOINT_HOST_BUDGET_FRACTION),
+    )
+    per_round = int(per_checkpoint_bytes) * max(1, int(n_parallel))
+    affordable = budget // per_round
+    if affordable >= default:
+        return default
+    return min(default, max(CTX_CHECKPOINTS_MIN_USEFUL, int(affordable)))
+
+
+def effective_ctx_checkpoints(
+    args: Optional[Iterable[str]],
+    requested: Optional[int],
+    *,
+    supports_flag: bool,
+    per_checkpoint_bytes: int = 0,
+    n_parallel: int = 1,
+    total_host_bytes: Optional[int] = None,
+    upstream_default: Optional[int] = None,
+    inherited: Optional[int] = None,
+) -> int:
+    """Resolve the child count: extras, field, an inherited env value, then the budget.
+
+    ``inherited`` is llama.cpp's own LLAMA_ARG_CTX_CHECKPOINTS, which it applies before
+    argv, so argv beats it and it beats the build default.
+    """
+    if not supports_flag:
+        return 0
+    override = resolve_ctx_checkpoints(args, requested)
+    if override:
+        return override
+    if parse_ctx_checkpoints_override(args) == 0 or requested == 0:
+        return 0
+    if inherited is not None:
+        return inherited
+    return ctx_checkpoints_within_host_budget(
+        per_checkpoint_bytes, n_parallel, total_host_bytes, upstream_default = upstream_default
+    )
 
 
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:

@@ -21,6 +21,7 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import { showLoadWarning } from "../utils/load-warning-toast";
 import type {
   MessageRecord,
   ModelType,
@@ -299,6 +300,7 @@ export async function loadModel(
       // passed -- a cached Hub candidate is requested by its loadId while the runtime
       // keeps `loaded.model`, and the unload is issued with the second.
       showCarveoutAdvice(loaded.carveout_advice, loaded.model, payload.model_path);
+      showLoadWarning(loaded.memory_warning);
       return loaded;
     },
   );
@@ -863,6 +865,18 @@ export class ChatThreadDeletedError extends Error {
   }
 }
 
+/** Carries the response status, so a caller can tell a rejected row from a backend that was
+ *  merely unreachable. Only the write paths that have something different to do about the two
+ *  need it; everything else keeps catching a plain Error with the same message. */
+export class ChatThreadWriteError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ChatThreadWriteError";
+    this.status = status;
+  }
+}
+
 export async function saveChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
@@ -874,6 +888,13 @@ export async function saveChatThread(
   if (response.status === 410) {
     const body = await response.json().catch(() => null);
     throw new ChatThreadDeletedError(parseErrorText(response.status, body));
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new ChatThreadWriteError(
+      parseErrorText(response.status, body),
+      response.status,
+    );
   }
   const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
   notifyChatHistoryUpdated({ thread: savedThread });

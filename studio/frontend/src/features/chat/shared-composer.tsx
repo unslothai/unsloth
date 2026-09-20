@@ -116,7 +116,6 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
-import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -494,6 +493,7 @@ function PendingImageThumb({
   return (
     <div
       data-reload-snapshot-sensitive
+      data-composer-attachment="image"
       className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted"
     >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
@@ -2014,6 +2014,20 @@ export function SharedComposer({
       textFieldException: COMPOSER_INPUT_SELECTOR,
     },
   );
+  // Compare has no follow-up behaviour of its own: a send waits for the run to
+  // finish, so there is nothing to queue behind or steer. Both chords still
+  // register here, or they would be dead on the only composer on screen.
+  const sendFollowUp = () => {
+    if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+    sendRef.current?.();
+  };
+  const followUpOptions = {
+    enabled: chatActive && canSend,
+    skipInTextFields: true,
+    textFieldException: COMPOSER_INPUT_SELECTOR,
+  };
+  useShortcut("queueMessage", sendFollowUp, followUpOptions);
+  useShortcut("steerMessage", sendFollowUp, followUpOptions);
   useShortcut(
     "attachFiles",
     () => {
@@ -2156,7 +2170,6 @@ export function SharedComposer({
         ) : null}
       </DropdownMenuItem>
     ) : null,
-    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -2260,36 +2273,44 @@ export function SharedComposer({
         />
         <span className="text-sm font-medium text-primary">Drop files here</span>
       </div>
-      {(pendingImages.length > 0 || pendingAudio) && (
-        <div className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1">
-          {pendingImages.map(({ id, file }) => (
-            <PendingImageThumb
-              key={id}
-              file={file}
-              onRemove={() => removePendingImage(id)}
-            />
-          ))}
-          {pendingAudio && (
-            <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
-              <HeadphonesIcon className="size-3.5 text-muted-foreground" />
-              <span data-reload-snapshot-sensitive className="max-w-48 truncate">
-                {pendingAudio.name}
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setPendingAudio(null);
-                  clearPendingAudioStore();
-                }}
-                className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
-                aria-label="Remove audio"
-              >
-                <XIcon className="size-3" />
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Always mounted and hidden while empty, the way the assistant-ui composer's own
+          attachment strip is, so "no attachments" and "this markup moved" are different
+          observations rather than the same absent node. `empty:hidden` keeps the rendered
+          result identical to the previous conditional. */}
+      <div
+        data-composer-attachments=""
+        className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1 empty:hidden"
+      >
+        {pendingImages.map(({ id, file }) => (
+          <PendingImageThumb
+            key={id}
+            file={file}
+            onRemove={() => removePendingImage(id)}
+          />
+        ))}
+        {pendingAudio && (
+          <div
+            data-composer-attachment="audio"
+            className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs"
+          >
+            <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+            <span data-reload-snapshot-sensitive className="max-w-48 truncate">
+              {pendingAudio.name}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setPendingAudio(null);
+                clearPendingAudioStore();
+              }}
+              className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
+              aria-label="Remove audio"
+            >
+              <XIcon className="size-3" />
+            </button>
+          </div>
+        )}
+      </div>
       {skillMentions.popover}
       <ComposerDraftPreview text={text} />
 
@@ -2490,28 +2511,26 @@ export function SharedComposer({
               {pinnedPlusItems.map((id) => (
                 <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
               ))}
-              {overflowPlusItems.length > 0 ? (
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <MoreHorizontalIcon className="size-4" />
-                    More
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-                    {overflowPlusItems.map((id) => (
-                      <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ) : null}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
-                  scrollTarget: "chat-composer",
-                })}
-              >
-                <SlidersHorizontalIcon className="size-4" />
-                {t("composerSettings.settings")}
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MoreHorizontalIcon className="size-4" />
+                  More
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                  {overflowPlusItems.map((id) => (
+                    <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                  ))}
+                  {overflowPlusItems.length > 0 && <DropdownMenuSeparator />}
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
+                      scrollTarget: "chat-composer",
+                    })}
+                  >
+                    <SlidersHorizontalIcon className="size-4" />
+                    {t("composerSettings.settings")}
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}
@@ -2903,14 +2922,17 @@ export function SharedComposer({
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip={sendUnavailableReason ?? `Send message (${shortcutLabels.send})`}
+              tooltip={
+                sendUnavailableReason ??
+                t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
+              }
               side="bottom"
               variant="default"
               size="icon"
               className="ml-1.5 size-9 rounded-full"
               onClick={send}
               disabled={!canSend}
-              aria-label="Send message"
+              aria-label={t("promptQueue.sendLabel")}
             >
               <ArrowUpIcon className="unsloth-send-icon size-[22px] stroke-2" />
             </TooltipIconButton>

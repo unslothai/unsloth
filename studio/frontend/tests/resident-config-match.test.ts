@@ -219,7 +219,8 @@ const FIELDS: {
   {
     name: "GPU placement",
     config: { selectedGpuIds: [0, 2] },
-    same: { requested_gpu_ids: [2, 0] },
+    // Same ORDER, not merely the same cards: the reordered pair is a reload now.
+    same: { requested_gpu_ids: [0, 2] },
     differs: { requested_gpu_ids: [0, 1] },
   },
 ];
@@ -245,11 +246,20 @@ for (const field of FIELDS) {
 }
 
 /** Ordering is the backend's to choose: it narrows and reorders placement at fit time. */
-test("GPU placement compares as a set, not as an order", () => {
+test("GPU placement compares as an order, not as a set", () => {
+  // The picker hands the list to the backend in order and position decides which
+  // card takes the prompt, so a reorder is a different placement and must reload.
   assert.equal(
     matches(
       { requested_gpu_ids: [3, 1, 0] },
       { ...BLANK, selectedGpuIds: [0, 1, 3] },
+    ),
+    false,
+  );
+  assert.equal(
+    matches(
+      { requested_gpu_ids: [3, 1, 0] },
+      { ...BLANK, selectedGpuIds: [3, 1, 0] },
     ),
     true,
   );

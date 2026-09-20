@@ -25,8 +25,10 @@ import {
   loadedGpuMemoryFields,
   normalizeSpeculativeType,
   noteLoadedModelReasoningMode,
+  pinHoldsLiveEffort,
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
+  takeEffortDisplacedByPin,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -34,6 +36,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import type { ChatModelRow } from "../types/runtime";
+import { showLoadWarning } from "../utils/load-warning-toast";
 import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
@@ -186,6 +189,9 @@ export function applyActiveModelStatusToStore(
   const hydratingExistingModel =
     previousCheckpoint !== checkpointId ||
     previousGgufVariant !== (status.gguf_variant ?? null);
+  if (hydratingExistingModel) {
+    showLoadWarning(status.memory_warning);
+  }
   const supportsReasoning = status.supports_reasoning ?? false;
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
@@ -201,14 +207,18 @@ export function applyActiveModelStatusToStore(
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
+  // The chat's own level when the model this replaces was running a per-model pin's: the clamp
+  // narrows the chat's level to this model's ladder, and a pin is one model's, not the chat's.
+  // Taken here rather than where the model was picked, because this is a model that has actually
+  // become resident: everything from the pick to here can still abort, or only queue a download.
+  const effortToClamp =
+    (pinHoldsLiveEffort() ? takeEffortDisplacedByPin() : null) ??
+    prevState.reasoningEffort;
   const clampedReasoningEffort =
     reasoningStyle === "enable_thinking_effort" ||
     reasoningStyle === "reasoning_effort"
-      ? clampReasoningEffortToLevels(
-          prevState.reasoningEffort,
-          reasoningEffortLevels,
-        )
-      : clampLocalReasoningEffort(prevState.reasoningEffort);
+      ? clampReasoningEffortToLevels(effortToClamp, reasoningEffortLevels)
+      : clampLocalReasoningEffort(effortToClamp);
   const nextDefaultChatTemplate =
     status.chat_template === undefined
       ? prevState.defaultChatTemplate

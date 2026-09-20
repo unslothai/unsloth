@@ -20,6 +20,52 @@ export const de = {
     settings: "Eingabeeinstellungen",
     preview: "Formatierte Vorschau",
   },
+  promptQueue: {
+    loading: "Eingereihte Nachrichten werden geladen",
+    listLabel: "Eingereihte Nachrichten",
+    regionLabel: "Nachrichtenwarteschlange, {current} von {total}",
+    itemLabel: "Eingereihte Nachricht {position} von {total}: {prompt}",
+    reorderInstructions: "Ziehe den Griff, um die Reihenfolge zu ändern. Wenn der Griff fokussiert ist, verschiebst du mit Auf oder Ab um eine Position und mit Pos1 oder Ende an den Anfang oder das Ende.",
+    dragTooltip: "Zum Umsortieren ziehen",
+    reorderLabel: "Eingereihte Nachricht {position} von {total} umsortieren",
+    paused: "Pausiert",
+    steer: "Umlenken",
+    steerTooltip: "Die Antwort unterbrechen und diese Nachricht als Nächstes senden",
+    steerLabel: "Mit eingereihter Nachricht {position} umlenken",
+    removeTooltip: "Aus der Warteschlange entfernen",
+    removeLabel: "Eingereihte Nachricht {position} entfernen",
+    moreTooltip: "Weitere Optionen",
+    moreLabel: "Weitere Optionen für eingereihte Nachricht {position}",
+    editItem: "Nachricht bearbeiten",
+    copyItem: "Nachricht kopieren",
+    editLabel: "Eingereihte Nachricht {position} bearbeiten",
+    cancel: "Abbrechen",
+    save: "Speichern",
+    turnOffQueueing: "Einreihen ausschalten",
+    turnOnQueueing: "Einreihen einschalten",
+    resume: "Warteschlange fortsetzen",
+    queueButton: "Nachricht einreihen",
+    steerButton: "Antwort umlenken",
+    sendTooltip: "Nachricht senden ({shortcut})",
+    sendLabel: "Nachricht senden",
+    followUpTooltip: "{action} ({send}) · {opposite} für das Gegenteil",
+    announceUpdated: "Eingereihte Nachricht aktualisiert.",
+    announceEditFailed: "Diese Nachricht kann nicht mehr bearbeitet werden, weil sich die Warteschlange geändert hat.",
+    announceRemoved: "Nachricht aus der Warteschlange entfernt.",
+    announceSteered: "Diese Nachricht lenkt die Antwort als Nächstes um.",
+    announceSteerFailed: "Diese Nachricht konnte die Antwort nicht umlenken. Prüfe die Warteschlange und versuche es erneut.",
+    announceCopied: "Nachricht kopiert.",
+    announceCopyFailed: "Diese Nachricht konnte nicht kopiert werden. Versuche es erneut.",
+    announceQueueingOn: "Neue Folgenachrichten werden nach der aktuellen Antwort eingereiht.",
+    announceQueueingOff: "Neue Folgenachrichten lenken die aktuelle Antwort um.",
+    announceMoved: "Nachricht an Position {position} von {total} verschoben.",
+    announceMoveFailed: "Die Warteschlange hat sich geändert, bevor diese Nachricht verschoben werden konnte. Versuche es erneut.",
+    announceDragReset: "Die Warteschlange hat sich geändert. Ziehe erneut, um die übrigen Nachrichten umzusortieren.",
+    editingHint: "Nachricht wird bearbeitet",
+    queueingOffHint: "Neue Nachrichten unterbrechen und laufen als Nächstes.",
+    queueingOnHint: "Neue Nachrichten warten auf ihren Platz.",
+    queueingHintShared: "Die Warteschlange bleibt erhalten.",
+  },
   picker: {
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
@@ -203,9 +249,19 @@ export const de = {
   settings: {
     accounts: {
       title: "Konten",
-      description: "Private Studio-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
+      description: "Private Unsloth-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
       username: "Benutzername",
       create: "Konto anlegen",
+      createDescription: "Teilen Sie einen Einrichtungscode, damit die Person ihr eigenes Passwort wählen kann.",
+      actionsFor: "{username} verwalten",
+      actions: "Aktionen",
+      search: "Konten suchen",
+      noResults: "Keine passenden Konten",
+      created: "Erstellt",
+      status: "Status",
+      loginHint: "Melden Sie sich als {username} mit diesem Code als Passwort an und wählen Sie dann ein neues Passwort.",
+      privateAccount: "Privates Konto",
+      empty: "Noch keine weiteren Konten",
       setupCode: "Einrichtungscode",
       setupFor: "Einrichtungscode für {username}",
       shownOnce: "Kopieren Sie diesen Code jetzt und geben Sie ihn an den Kontoinhaber weiter. Er wird nur hier angezeigt und kann innerhalb von 60 Minuten einmal verwendet werden.",
@@ -215,13 +271,13 @@ export const de = {
       copyFailed: "Kopieren nicht möglich. Markieren und kopieren Sie den Einrichtungscode oben.",
       dismiss: "Fertig",
       owner: "Installationsinhaber",
-      active: "Aktiv",
-      inactive: "Inaktiv",
+      active: "Aktiviert",
+      inactive: "Deaktiviert",
       regenerate: "Einrichtungscode neu erstellen",
       resetTitle: "Passwort von {username} zurücksetzen?",
       resetDescription: "Ein neu erstellter Einrichtungscode ersetzt das Passwort von {username}, meldet die Person ab und widerruft ihre API-Schlüssel. Geben Sie ihr den neuen Code, damit sie wieder ein Passwort wählen kann.",
       deactivate: "Deaktivieren",
-      reactivate: "Reaktivieren",
+      reactivate: "Aktivieren",
       delete: "Konto löschen",
       deleteTitle: "{username} löschen?",
       deleteDescription: "Dadurch werden die Sitzungen von {username} widerrufen und laufende Arbeiten abgebrochen. Chats, Einstellungen, Zugangsdaten, Uploads, Datensätze, Trainingsläufe, Ausgaben, Exporte, Galerien, Sandboxes, Projekte und temporäre Dateien werden stillgelegt. Verzeichnisse werden beiseite umbenannt, nie gelöscht. Wird dieser Benutzername erneut angelegt, beginnt ein neues Konto ohne diese Daten.",
@@ -258,9 +314,10 @@ export const de = {
     },
     keyboardShortcuts: {
       title: "Tastenkürzel",
-      description:
-        "Ändere ein Kürzel oder lösche es, um die Tastenkombination für Browser oder Betriebssystem freizugeben.",
       searchPlaceholder: "Kürzel suchen…",
+      keystrokePlaceholder: "Kürzel drücken, um zu suchen",
+      searchByKeystrokes: "Nach Tastendruck suchen",
+      searchByName: "Nach Name suchen",
       noResults: "Keine Kürzel passen zu dieser Suche.",
       unassigned: "Nicht zugewiesen",
       recording: "Tasten drücken…",
@@ -457,6 +514,14 @@ export const de = {
           label: "Nachricht senden",
           description: "Den Inhalt des Eingabefelds senden",
         },
+        queueMessage: {
+          label: "Nachricht einreihen",
+          description: "Den Entwurf ans Ende der Warteschlange senden",
+        },
+        steerMessage: {
+          label: "Antwort steuern",
+          description: "Die laufende Antwort stoppen und den Entwurf als Nächstes senden",
+        },
         cycleReasoningEffort: {
           label: "Denkaufwand durchschalten",
           description: "Durch die Stufen des Denkaufwands blättern",
@@ -523,7 +588,7 @@ export const de = {
       openLogsFolderFailed: "Der Protokollordner konnte nicht geöffnet werden.",
       exportFailed: "Die Protokolle konnten nicht heruntergeladen werden.",
       exportTooOld: "Das laufende Unsloth-Backend ist zu alt für den Protokollexport. Aktualisieren Sie dieses Backend und starten Sie es neu.",
-      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Studio-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
+      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Unsloth-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
       keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {
@@ -839,6 +904,9 @@ export const de = {
         showLoadedModels: "Anzeige geladener Modelle",
         showLoadedModelsDescription:
           "Zeigt unten rechts eine kleine Karte mit allen derzeit im Speicher befindlichen Modellen (Chat, Sprache, Bild, Video) und einer Schaltfläche, um jedes einzeln zu entladen.",
+        showWhisperUpdates: "whisper.cpp-Update-Benachrichtigungen",
+        showWhisperUpdatesDescription:
+          "Benachrichtigt, wenn ein neuerer whisper.cpp-Build für Speech-to-Text-Modelle verfügbar ist. Deaktivieren Sie dies, wenn Sie nie Audio transkribieren.",
       },
       startup: {
         sectionTitle: "Autostart",
@@ -1281,6 +1349,8 @@ export const de = {
           sourceBuild: "Dieses llama.cpp wurde aus dem Quellcode gebaut; sein Backend lässt sich hier nicht wechseln.",
           customPath: "Ein benutzerdefinierter llama.cpp-Ordner ist ausgewählt. Dessen Build bestimmt das Compute-Backend.",
           unresolved: "Die verfügbaren Backends konnten nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.",
+          updateChecksDisabled:
+            "Update-Prüfungen sind deaktiviert (UNSLOTH_DISABLE_UPDATE_CHECK=1), daher werden die verfügbaren Backends nicht abgefragt.",
         },
         // Wird nicht angezeigt: zusätzliche Begriffe für die Einstellungssuche.
         llamaBackendKeywords:
@@ -1460,6 +1530,30 @@ export const de = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Gespräche" },
+        files: { title: "Dateien und Einfügen" },
+        display: { title: "Anzeige" },
+        composer: { title: "Nachrichtenfeld" },
+        menu: { title: "Chatmenü" },
+        advanced: { title: "Erweitert" },
+        contextTitle: "Kontext",
+      },
+      projectAttachmentsHint:
+        "Diese Einstellung lässt sich im Anhangmenü jedes Chats einzeln ändern.",
+      rememberParamsPerModelHint:
+        "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
+      autoCompactHint:
+        "Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+      pastedTextShortDescription:
+        "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
+      pastedTextOffDescription:
+        "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
+      compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
+      compactionDescriptionCheckpoint:
+        "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei.",
+      compactionDescriptionRolling:
+        "Entfernt die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
@@ -1489,7 +1583,8 @@ export const de = {
         exportChat: "Chat exportieren",
       },
       pastedTextThreshold: "Lange Einfügungen verdichten",
-      pastedTextThresholdDescription: "Eingefügter Text, der länger ist, wird zu einem .txt-Anhang, statt das Nachrichtenfeld zu füllen. Mit {shortcut} wird trotzdem in das Nachrichtenfeld eingefügt.",
+      pastedTextThresholdDescription:
+        "Mit {shortcut} direkt in das Nachrichtenfeld einfügen.",
       pastedTextThresholdOff: "Aus",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
@@ -1499,13 +1594,13 @@ export const de = {
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
       projectAttachments: "Dateien projektweit teilen",
       projectAttachmentsDescription:
-        "Standard für Dateien, die in einem Chat innerhalb eines Projekts angehängt werden: für das gesamte Projekt indizieren, damit jeder Chat darin sie nutzen kann. Jeder Chat kann dies im Anhangsmenü überschreiben.",
+        "Stellt neue Chat-Anhänge allen Chats im Projekt zur Verfügung.",
       rememberParamsPerModel: "Einstellungen pro Modell merken",
       rememberParamsPerModelDescription:
-        "Beim Modellwechsel werden Temperatur, Prompt und die weiteren Einstellungen wiederhergestellt, die Sie zuletzt mit diesem Modell verwendet haben. Aus: ein Satz Einstellungen für alle Modelle.",
+        "Stellt den zuletzt verwendeten Prompt, die Temperatur und weitere Einstellungen pro Modell wieder her.",
       autoCompact: "Lange Chats automatisch komprimieren",
       autoCompactDescription:
-        "Wenn ein lokaler GGUF-Chat die festgelegte Kontextlänge erreicht, werden ältere Gesprächsrunden verworfen, statt einen Fehler zurückzugeben. Dies richtet sich nicht nach freiem VRAM.",
+        "Entfernt ältere Gesprächsrunden, wenn ein lokaler GGUF-Chat sein Kontextlimit erreicht.",
       compactionStyle: "Wenn der Kontext voll ist",
       compactionStyleDescription:
         "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und dauerhafte Anweisungen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
@@ -1542,7 +1637,7 @@ export const de = {
         title: "Websuche",
         images: "Bilder aus der Websuche anzeigen",
         imagesDescription:
-          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Unsloth, der Browser kontaktiert keine Bildhosts.",
+          "Bilder in Suchergebnisse aufnehmen.",
       },
       artifacts: {
         title: "Canvas",
@@ -1921,7 +2016,7 @@ export const de = {
         desktopAvailableDescription:
           "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
-          "Führen Sie `unsloth studio update` in dem Terminal aus, über das Sie Ihren Server gestartet haben.",
+          "Die App ist mit einem bereits laufenden Studio-Server verbunden und kann ihn nicht aktualisieren. Stoppen Sie diesen Server, beenden Sie die Desktop-App und öffnen Sie sie erneut, um das Update zu installieren.",
         desktopManualInstall:
           "Öffnen Sie die Release-Seite, um das neueste Linux-Paket zu installieren.",
         desktopCheckFailed: "Die Suche nach Updates ist fehlgeschlagen",

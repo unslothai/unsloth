@@ -20,6 +20,52 @@ export const zhCN = {
     settings: "输入设置",
     preview: "格式化预览",
   },
+  promptQueue: {
+    loading: "正在加载排队的消息",
+    listLabel: "排队的消息",
+    regionLabel: "消息队列，第 {current} 条，共 {total} 条",
+    itemLabel: "排队消息 {position}/{total}：{prompt}",
+    reorderInstructions: "拖动手柄可重新排序。手柄获得焦点时，按上下方向键可移动一个位置，按 Home 或 End 可移到开头或末尾。",
+    dragTooltip: "拖动以重新排序",
+    reorderLabel: "重新排序排队消息 {position}/{total}",
+    paused: "已暂停",
+    steer: "调整方向",
+    steerTooltip: "中断当前回复并优先发送此消息",
+    steerLabel: "用排队消息 {position} 调整方向",
+    removeTooltip: "从队列中移除",
+    removeLabel: "移除排队消息 {position}",
+    moreTooltip: "更多选项",
+    moreLabel: "排队消息 {position} 的更多选项",
+    editItem: "编辑消息",
+    copyItem: "复制消息",
+    editLabel: "编辑排队消息 {position}",
+    cancel: "取消",
+    save: "保存",
+    turnOffQueueing: "关闭排队",
+    turnOnQueueing: "开启排队",
+    resume: "恢复队列",
+    queueButton: "将消息排队",
+    steerButton: "调整回复方向",
+    sendTooltip: "发送消息（{shortcut}）",
+    sendLabel: "发送消息",
+    followUpTooltip: "{action}（{send}）· {opposite} 执行相反操作",
+    announceUpdated: "排队消息已更新。",
+    announceEditFailed: "队列已变更，无法再编辑此消息。",
+    announceRemoved: "消息已从队列中移除。",
+    announceSteered: "此消息将用于调整下一步回复方向。",
+    announceSteerFailed: "无法用此消息调整回复方向。请检查队列后重试。",
+    announceCopied: "消息已复制。",
+    announceCopyFailed: "无法复制此消息。请重试。",
+    announceQueueingOn: "新的后续消息将排在当前回复之后。",
+    announceQueueingOff: "新的后续消息将调整当前回复的方向。",
+    announceMoved: "消息已移至第 {position} 位，共 {total} 位。",
+    announceMoveFailed: "移动前队列已发生变更。请重试。",
+    announceDragReset: "队列已变更。请重新拖动以排序其余消息。",
+    editingHint: "正在编辑消息",
+    queueingOffHint: "新消息会打断当前回复并优先执行。",
+    queueingOnHint: "新消息会排队并按顺序执行。",
+    queueingHintShared: "队列会保留。",
+  },
   picker: {
     onDevice: "本机",
     huggingFace: "Hugging Face",
@@ -197,9 +243,19 @@ export const zhCN = {
   settings: {
     accounts: {
       title: "账户",
-      description: "创建独立的 Studio 账户。新用户使用一次性设置码登录并设置密码。",
+      description: "创建独立的 Unsloth 账户。新用户使用一次性设置码登录并设置密码。",
       username: "用户名",
       create: "创建账户",
+      createDescription: "把设置码交给对方，让其自行设置密码。",
+      actionsFor: "管理 {username}",
+      actions: "操作",
+      search: "搜索账户",
+      noResults: "没有匹配的账户",
+      created: "创建时间",
+      status: "状态",
+      loginHint: "以 {username} 身份用此设置码作为密码登录，然后设置新密码。",
+      privateAccount: "独立账户",
+      empty: "暂无其他账户",
       setupCode: "设置码",
       setupFor: "{username} 的设置码",
       shownOnce: "请立即复制此设置码并交给账户持有人。它只在此处显示一次，60 分钟内可使用一次。",
@@ -215,7 +271,7 @@ export const zhCN = {
       resetTitle: "重置 {username} 的密码？",
       resetDescription: "重新生成设置码会替换 {username} 的密码、结束其会话并吊销其 API 密钥。请把新的设置码交给对方，让其重新设置密码。",
       deactivate: "停用",
-      reactivate: "重新启用",
+      reactivate: "启用",
       delete: "删除账户",
       deleteTitle: "删除 {username}？",
       deleteDescription: "这将撤销 {username} 的会话并取消其进行中的工作。其聊天、设置、凭据、上传、数据集、训练运行、输出、导出、图库、沙箱、项目和临时文件都会被退役。目录只会重命名移开，绝不删除。再次创建该用户名将开始一个不包含这些数据的新账户。",
@@ -252,9 +308,10 @@ export const zhCN = {
     },
     keyboardShortcuts: {
       title: "键盘快捷键",
-      description:
-        "可以更改任意快捷键，或将其清除，把该组合让给浏览器或操作系统。",
       searchPlaceholder: "搜索快捷键…",
+      keystrokePlaceholder: "按下快捷键进行搜索",
+      searchByKeystrokes: "按键搜索",
+      searchByName: "按名称搜索",
       noResults: "没有匹配的快捷键。",
       unassigned: "未分配",
       recording: "请按下按键…",
@@ -451,6 +508,14 @@ export const zhCN = {
           label: "发送消息",
           description: "发送输入框中的内容",
         },
+        queueMessage: {
+          label: "将消息排队",
+          description: "把草稿发送到队列末尾",
+        },
+        steerMessage: {
+          label: "引导回复",
+          description: "停止当前回复并接着发送草稿",
+        },
         cycleReasoningEffort: {
           label: "循环切换推理强度",
           description: "在各推理强度等级之间循环",
@@ -517,7 +582,7 @@ export const zhCN = {
       openLogsFolderFailed: "无法打开日志文件夹。",
       exportFailed: "无法下载日志。",
       exportTooOld: "正在运行的 Unsloth 后端版本过旧，无法导出日志。请更新该后端并重新启动。",
-      exportForbidden: "下载全部日志需要已登录的 Studio 会话，仅有 API 密钥不够。",
+      exportForbidden: "下载全部日志需要已登录的 Unsloth 会话，仅有 API 密钥不够。",
       keywords: "调试 日志 错误 崩溃 堆栈 跟踪 诊断 排查 故障 debug log logs error",
     },
     voice: {
@@ -801,6 +866,9 @@ export const zhCN = {
         showLoadedModels: "已加载模型指示器",
         showLoadedModelsDescription:
           "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
+        showWhisperUpdates: "whisper.cpp 更新通知",
+        showWhisperUpdatesDescription:
+          "当有可用于语音识别模型的新版 whisper.cpp 构建时通知你。如果不需要转写音频，可以关闭此项。",
       },
       startup: {
         sectionTitle: "启动",
@@ -1226,6 +1294,8 @@ export const zhCN = {
           sourceBuild: "此 llama.cpp 由源码编译，无法在这里切换后端。",
           customPath: "已选择自定义 llama.cpp 文件夹。其构建决定计算后端。",
           unresolved: "无法检查可用的后端。请检查网络连接后重试。",
+          updateChecksDisabled:
+            "更新检查已禁用（UNSLOTH_DISABLE_UPDATE_CHECK=1），因此不会查询可用的后端。",
         },
         // 不显示：用于设置搜索的额外词条。
         llamaBackendKeywords:
@@ -1393,6 +1463,26 @@ export const zhCN = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "对话" },
+        files: { title: "文件与粘贴" },
+        display: { title: "显示" },
+        composer: { title: "消息输入框" },
+        menu: { title: "聊天菜单" },
+        advanced: { title: "高级" },
+        contextTitle: "上下文",
+      },
+      projectAttachmentsHint: "可在各聊天的附件菜单中单独调整此设置。",
+      rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
+      autoCompactHint: "依据你设置的上下文长度，而不是可用显存。",
+      pastedTextShortDescription:
+        "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
+      pastedTextOffDescription:
+        "无论长度如何，粘贴的文本都会保留在消息输入框中。",
+      compactionDescriptionInherit: "遵循服务器的上下文策略。",
+      compactionDescriptionCheckpoint: "保留最新一轮对话和持续生效的指令。",
+      compactionDescriptionRolling:
+        "移除最早的对话轮次，保留近期记录并预留所选的额外空间。",
       projectsSection: "显示项目分区",
       projectsSectionDescription:
         "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
@@ -1422,7 +1512,8 @@ export const zhCN = {
         exportChat: "导出聊天",
       },
       pastedTextThreshold: "压缩长粘贴内容",
-      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。 按 {shortcut} 仍可粘贴到消息输入框。",
+      pastedTextThresholdDescription:
+        "按 {shortcut} 直接粘贴到消息输入框。",
       pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
@@ -1431,13 +1522,13 @@ export const zhCN = {
         "在聊天框下方显示“LLM 可能会出错”。",
       projectAttachments: "在项目内共享文件",
       projectAttachmentsDescription:
-        "属于某个项目的聊天中所附文件的默认行为：为整个项目建立索引，使该项目中的每个聊天都能使用。每个聊天都可以在附件菜单中单独更改。",
+        "让项目内的所有聊天都能使用新添加的聊天附件。",
       rememberParamsPerModel: "按模型记住设置",
       rememberParamsPerModelDescription:
-        "切换模型时会恢复你上次在该模型上使用的温度、提示词等设置。关闭后，所有模型共用一套设置。",
+        "恢复每个模型上次使用的提示词、温度等设置。",
       autoCompact: "自动压缩长聊天",
       autoCompactDescription:
-        "当本地 GGUF 聊天达到你设置的上下文长度时，丢弃较早的轮次而不是返回错误。此设置与可用显存无关。",
+        "本地 GGUF 聊天达到上下文上限时，移除较早的轮次。",
       compactionStyle: "上下文已满时",
       compactionStyleDescription:
         "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
@@ -1470,7 +1561,7 @@ export const zhCN = {
         title: "网页搜索",
         images: "显示网页搜索图片",
         imagesDescription:
-          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Unsloth 获取并缩放，浏览器不会直接访问图片来源。",
+          "在搜索结果中包含图片。",
       },
       artifacts: {
         title: "Canvas",
@@ -1827,7 +1918,7 @@ export const zhCN = {
         desktopAvailable: "桌面应用 {version} 已可用",
         desktopAvailableDescription: "立即更新，完成后桌面应用将自动重启。",
         desktopExternalServer:
-          "请在启动服务器的终端中运行 `unsloth studio update`。",
+          "应用已连接到正在运行的 Studio 服务器，无法更新该服务器。请先停止该服务器，再退出并重新打开桌面应用以进行更新。",
         desktopManualInstall: "打开发布页面，安装最新的 Linux 软件包。",
         desktopCheckFailed: "无法检查更新",
         desktopCheckFailedDescription: "请检查网络连接后重试。",

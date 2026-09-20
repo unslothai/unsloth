@@ -307,7 +307,7 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const compactionHeadroomRatio = sanitizeCompactionHeadroomRatio(
     value.compactionHeadroomRatio,
   );
-  const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
+  const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 0);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
   if (inferenceParams) settings.inferenceParams = inferenceParams;
@@ -444,7 +444,7 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   const allowArtifactNetworkAccess = loadBool(ALLOW_ARTIFACT_NETWORK_ACCESS_KEY);
   const autoHealToolCalls = loadBool(AUTO_HEAL_TOOL_CALLS_KEY);
   const nudgeToolCalls = loadBool(NUDGE_TOOL_CALLS_KEY);
-  const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 1);
+  const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 0);
   const toolCallTimeout = loadInt(TOOL_CALL_TIMEOUT_KEY, 1);
   const allCustomPresets = sanitizeCustomPresets([
     ...(customPresets ?? []),

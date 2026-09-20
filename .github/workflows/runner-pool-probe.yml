@@ -8,6 +8,19 @@ on:
     paths:
       - .github/workflows/runner-pool-probe.yml
 
+# Latest-only, like every other pull-request workflow here. This one fans out to ten
+# runners, four of them macOS at 10x the minute rate, so a second push to the same pull
+# request was leaving a full ten-runner matrix measuring a commit nobody will merge.
+#
+# Superseding does not weaken the measurement. The probe compares labels WITHIN one
+# dispatch -- the ten cells leave the queue in the same second, and that is the only
+# comparison it makes -- so a cancelled older matrix takes a whole self-contained
+# measurement with it rather than half of the current one. Two dispatches were never
+# comparable to each other anyway: the queue they sampled is not the same queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

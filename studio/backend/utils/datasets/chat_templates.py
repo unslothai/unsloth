@@ -27,7 +27,7 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 {}"""
 
 _CUSTOM_PROMPT_TEMPLATE_ERROR = (
-    "custom_prompt_template is deprecated and unsupported because Studio cannot persist a "
+    "custom_prompt_template is deprecated and unsupported because Unsloth Studio cannot persist a "
     "matching template for inference. Pass None to continue without a custom prompt template."
 )
 

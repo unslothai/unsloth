@@ -9,6 +9,7 @@ import base64
 import io
 import json as _json
 import mimetypes
+import random
 import re
 import threading
 import time
@@ -163,8 +164,8 @@ _ANTHROPIC_MODEL_VERSION = re.compile(
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 # Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
-_GEMINI3_FAMILY = re.compile(r"^gemini-3(?:\.\d+)?-")
-_GEMINI3_PRO = re.compile(r"^gemini-3(?:\.\d+)?-pro")
+_GEMINI3_FAMILY = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-")
+_GEMINI3_PRO = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-pro")
 
 
 def _anthropic_text_is_sendable(value: Any) -> bool:
@@ -452,14 +453,54 @@ _ANTHROPIC_THINKING_SPECS = (
         kind = "manual",
         efforts = ("none", "low", "medium", "high"),
     ),
+    # Earlier Claude 4 models and 3.7 Sonnet only take manual budget_tokens; adaptive thinking returns a 400 there.
+    _AnthropicThinkingSpec(
+        prefixes = (
+            "claude-opus-4-1",
+            "claude-opus-4-0",
+            "claude-opus-4-2025",
+            "claude-sonnet-4-0",
+            "claude-sonnet-4-2025",
+            "claude-3-7-sonnet",
+        ),
+        kind = "manual",
+        efforts = ("none", "low", "medium", "high"),
+    ),
 )
 
 
+def _anthropic_spec_prefix_matches(model_lc: str, prefix: str) -> bool:
+    """A version prefix ("claude-opus-4-1") must stop at a boundary or it swallows
+    "claude-opus-4-15"; a truncated release date ("claude-opus-4-2025") has to run on, so only a
+    4-digit tail may."""
+    if model_lc == prefix:
+        return True
+    if not model_lc.startswith(prefix):
+        return False
+    rest = model_lc[len(prefix) :]
+    if rest.startswith("-"):
+        return True
+    trailing_digits = re.search(r"\d+$", prefix)
+    return bool(trailing_digits and len(trailing_digits.group()) >= 4 and rest[0].isdigit())
+
+
 def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
+    # Normalized like the version helpers, so a capitalized id keeps its efforts and its
+    # default-on / can-disable flags instead of falling through to no thinking field at all.
+    model_lc = model.strip().lower()
     for spec in _ANTHROPIC_THINKING_SPECS:
-        if model.startswith(spec.prefixes):
+        if any(_anthropic_spec_prefix_matches(model_lc, p) for p in spec.prefixes):
             return spec
     return None
+
+
+# A Claude id the spec table does not list yet takes adaptive thinking only when it is numbered after 4.6.
+def _anthropic_model_newer_than_specs(model: str) -> bool:
+    match = _ANTHROPIC_MODEL_VERSION.match(model.strip().lower())
+    if match is None:
+        return False
+    major, minor = int(match.group("major")), int(match.group("minor") or 0)
+    return major >= 5 or (major == 4 and minor >= 6)
 
 
 # Anthropic ships date-pinned tool versions per model family: the newer `_20260209`/`_20260120` variants only run on
@@ -611,7 +652,20 @@ _MISTRAL_THINKING_SPECS = (
         style = "prompt_mode",
     ),
     _MistralThinkingSpec(
-        models = ("mistral-small-latest", "mistral-vibe-cli-latest"),
+        # Every id the catalog marks reasoning-capable with an effort list, so the composer's
+        # Thinking control and this allowlist cannot disagree and render a dead control. The
+        # catalog's own ladders are clamped to Mistral's documented pair before they reach the UI,
+        # so nothing here can send a third value. zai-glm-5-2 is a partner model in models.dev's
+        # mistral bucket rather than a Mistral release, hence the separate line.
+        models = (
+            "mistral-small-latest",
+            "mistral-small-2603",
+            "mistral-medium-latest",
+            "mistral-medium-2604",
+            "mistral-medium-3-5",
+            "mistral-vibe-cli-latest",
+            "zai-glm-5-2",
+        ),
         style = "reasoning_effort",
         efforts = ("none", "high"),
     ),
@@ -643,8 +697,8 @@ def _apply_mistral_reasoning_controls(
 ) -> None:
     """Translate generic reasoning controls into Mistral's model-specific shape:
     magistral-medium-latest takes baseline or `prompt_mode="reasoning"`; mistral-small-latest /
-    mistral-vibe-cli-latest take `reasoning_effort` in {"none", "high"}; all other tested Mistral
-    models take no reasoning params."""
+    mistral-vibe-cli-latest / mistral-medium-3-5 take `reasoning_effort` in {"none", "high"}; all
+    other tested Mistral models take no reasoning params."""
     model_for_matching = model.rsplit("/", 1)[-1].strip().lower()
     spec = _mistral_thinking_spec(model_for_matching)
     body.pop("prompt_mode", None)
@@ -658,12 +712,59 @@ def _apply_mistral_reasoning_controls(
         return
 
     if spec.style == "reasoning_effort":
+        # Two documented values, so the intermediate levels of the shared UI scale collapse to
+        # "high"; only an explicit opt-out sends "none".
         if reasoning_effort in spec.efforts:
             body["reasoning_effort"] = reasoning_effort
+        elif reasoning_effort in _REASONING_EFFORT_LEVELS or enable_thinking is True:
+            body["reasoning_effort"] = "high"
         elif enable_thinking is False:
             body["reasoning_effort"] = "none"
-        elif enable_thinking is True:
-            body["reasoning_effort"] = "high"
+        return
+
+    # Nothing for the rest: mistral-large, codestral and the older mistral-medium releases are not
+    # in Mistral's reasoning docs and reject the parameter, so an effort the caller sent for a model
+    # the catalog got wrong must be dropped here rather than forwarded.
+
+
+_REASONING_EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
+_DEEPSEEK_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "high"}
+_LOCAL_SERVER_EFFORT_ALIASES = {"minimal": "low", "xhigh": "high", "max": "high"}
+
+
+def _apply_deepseek_reasoning_controls(
+    body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> None:
+    effort = (reasoning_effort or "").strip().lower()
+    if effort == "none" or (not effort and enable_thinking is False):
+        body["thinking"] = {"type": "disabled"}
+        return
+    if effort in _REASONING_EFFORT_LEVELS:
+        body["thinking"] = {"type": "enabled"}
+        body["reasoning_effort"] = _DEEPSEEK_EFFORT_ALIASES.get(effort, effort)
+        return
+    if enable_thinking is True:
+        body["thinking"] = {"type": "enabled"}
+
+
+def _apply_qwen_reasoning_controls(body: dict[str, Any], enable_thinking: Optional[bool]) -> None:
+    if enable_thinking is not None:
+        body["enable_thinking"] = bool(enable_thinking)
+
+
+def _apply_passthrough_reasoning_effort(
+    body: dict[str, Any],
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+    aliases: dict[str, str] | None = None,
+) -> None:
+    effort = (reasoning_effort or "").strip().lower()
+    if aliases:
+        effort = aliases.get(effort, effort)
+    if effort == "none" or (not effort and enable_thinking is False):
+        body["reasoning_effort"] = "none"
+    elif effort in _REASONING_EFFORT_LEVELS:
+        body["reasoning_effort"] = effort
 
 
 # ollama's openai-compatible /v1/chat/completions accepts these five values.
@@ -771,61 +872,84 @@ def _client() -> httpx.AsyncClient:
 # Cap per-image fetch well below Gemini's ~20 MB total request budget.
 _GEMINI_REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _GEMINI_REMOTE_IMAGE_TIMEOUT_S = 15.0
+# The socket timeout bounds one operation; a server dripping bytes needs a whole-fetch bound.
+_REMOTE_IMAGE_FETCH_DEADLINE_S = 30.0
 
 
-def _safe_fetch_image_for_gemini_sync(
+def safe_fetch_remote_image_sync(
     url: str,
     fallback_mime: str,
     max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
+    label: str = "Remote image fetch",
+    deadline: Optional[float] = None,
+    require_image_content_type: bool = True,
 ) -> Optional[tuple[str, str]]:
-    """Synchronous IP-pinned HTTPS image fetch with SSRF guards. Uses the same pinned-IP + SNI
-    pattern as `tools._fetch_page_text` so DNS rebinding between validation and the connection
-    cannot redirect us to a private/metadata address. Follows up to 4 hops, re-validating each
-    redirect target. Returns (mime, base64) or None. `max_bytes` is clamped to the per-image cap
-    and also lets the caller pass the remaining per-request budget, so an over-budget URL is
-    rejected via Content-Length instead of being fully downloaded then discarded."""
+    """Fetch an HTTPS image through a validated, pinned public IP.
+
+    Redirects are revalidated and the response is capped by ``max_bytes``. ``deadline`` is a
+    ``time.monotonic`` cutoff for the whole fetch. A caller that decodes the bytes itself can
+    pass ``require_image_content_type=False`` to accept any declared type as ``fallback_mime``.
+    All failures return ``None`` so callers do not expose details about the host network.
+    """
+    import http.client
     import urllib.error
     import urllib.request
-    from urllib.parse import urljoin, urlunparse
+    from urllib.parse import quote, urljoin, urlunparse
 
-    # Refuse upfront if the per-request budget is already spent.
     _byte_limit = min(max(0, int(max_bytes)), _GEMINI_REMOTE_IMAGE_MAX_BYTES)
     if _byte_limit <= 0:
         return None
 
     # Reuse tools.py's pinned-IP hardening: validate-once-then-pin.
     from .tools import (
+        _IRI_PATH_SAFE,
+        _IRI_QUERY_SAFE,
         _explicit_proxy_applies,
+        _fetch_budget_exceeded,
+        _fetch_hop_timeout,
         _NoRedirect,
         _pinned_netloc,
+        _read_capped_body,
+        _resolve_with_budget,
         _SNIHTTPSHandler,
-        _validate_and_resolve_host,
+        _USER_AGENTS,
     )
 
+    # Image hosts refuse a request with no User-Agent (Wikimedia answers 403), and until this
+    # fetch moved here llama-server sent its own. Picked once, as _fetch_url_raw does.
+    user_agent = random.choice(_USER_AGENTS)
+    if deadline is None:
+        deadline = time.monotonic() + _REMOTE_IMAGE_FETCH_DEADLINE_S
+
     def _safe_parse_https(raw_url: str) -> Optional[tuple[Any, str, int]]:
-        """Validate https + hostname + port. Returns (parsed, host, port) or None. Handles
-        malformed-port and malformed-bracketed-IPv6 URLs that would else raise ValueError
-        mid-build."""
+        """Return a parsed HTTPS URL, hostname and port, or ``None``."""
         try:
             parsed_url = urlparse(raw_url)
             host_value = parsed_url.hostname
             port_value = parsed_url.port or 443
         except (ValueError, UnicodeError) as _err:
             logger.info(
-                "Gemini image fetch: refusing malformed url err=%s",
+                f"{label}: refusing malformed url err=%s",
                 type(_err).__name__,
             )
             return None
         scheme_value = (parsed_url.scheme or "").lower()
         if scheme_value != "https":
             logger.info(
-                "Gemini image fetch: refusing non-https scheme=%s",
+                f"{label}: refusing non-https scheme=%s",
                 scheme_value,
             )
             return None
         if not host_value:
-            logger.info("Gemini image fetch: refusing url with no hostname")
+            logger.info(f"{label}: refusing url with no hostname")
             return None
+        if not host_value.isascii():
+            # http.client writes Host as ASCII, so an internationalized name travels as its A-label.
+            try:
+                host_value = host_value.encode("idna").decode("ascii")
+            except UnicodeError:
+                logger.info(f"{label}: refusing unencodable hostname")
+                return None
         return parsed_url, host_value, port_value
 
     parsed_info = _safe_parse_https(url)
@@ -833,42 +957,59 @@ def _safe_fetch_image_for_gemini_sync(
         return None
     parsed, current_host, current_port = parsed_info
     current_url = url
-    ok, reason, pinned_ips = _validate_and_resolve_host(current_host, current_port)
+    ok, reason, pinned_ips = _resolve_with_budget(current_host, current_port, deadline, None)
     if not ok:
         logger.warning(
-            "Gemini image fetch: refusing host=%s reason=%s",
+            f"{label}: refusing host=%s reason=%s",
             current_host,
             reason,
         )
         return None
 
     for _hop in range(4):
+        budget_error = _fetch_budget_exceeded(deadline, None)
+        if budget_error is not None:
+            logger.info(f"{label}: {budget_error} host=%s", current_host)
+            return None
         # Pin to validated IP; SNI + cert still use the hostname via _SNIHTTPSHandler.
         cp_info = _safe_parse_https(current_url)
         if cp_info is None:
             return None
         cp, _cp_host, _cp_port = cp_info
+        # http.client refuses a non-ASCII or spaced selector; encode it as _fetch_url_raw does.
+        try:
+            cp = cp._replace(
+                path = quote(cp.path, safe = _IRI_PATH_SAFE),
+                params = quote(cp.params, safe = _IRI_PATH_SAFE),
+                query = quote(cp.query, safe = _IRI_QUERY_SAFE),
+            )
+        except UnicodeError:
+            logger.info(f"{label}: refusing unencodable url host=%s", current_host)
+            return None
         pinned_url = urlunparse(cp._replace(netloc = _pinned_netloc(pinned_ips[0], cp.port)))
 
         # Route on the hostname, as _fetch_url_raw does: no NO_PROXY entry matches the
         # pinned URL's IP. A proxied request reaches the origin through the proxy.
-        proxied = _explicit_proxy_applies("https", _pinned_netloc(current_host, cp.port))
+        authority = _pinned_netloc(current_host, cp.port)
+        proxied = _explicit_proxy_applies("https", authority)
         handlers = [_NoRedirect, _SNIHTTPSHandler(current_host, () if proxied else pinned_ips)]
         if not proxied:
             handlers.append(urllib.request.ProxyHandler({}))
         opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(
             pinned_url,
-            headers = {"Host": current_host},
+            headers = {"Host": authority, "User-Agent": user_agent},
             method = "GET",
         )
 
         try:
-            resp = opener.open(req, timeout = _GEMINI_REMOTE_IMAGE_TIMEOUT_S)
+            resp = opener.open(
+                req, timeout = _fetch_hop_timeout(_GEMINI_REMOTE_IMAGE_TIMEOUT_S, deadline)
+            )
         except urllib.error.HTTPError as e:
             if e.code not in (301, 302, 303, 307, 308):
                 logger.info(
-                    "Gemini image fetch: status=%d host=%s",
+                    f"{label}: status=%d host=%s",
                     e.code,
                     current_host,
                 )
@@ -880,7 +1021,7 @@ def _safe_fetch_image_for_gemini_sync(
                 current_url = urljoin(current_url, location)
             except (ValueError, UnicodeError) as _err:
                 logger.info(
-                    "Gemini image fetch: refusing malformed redirect err=%s",
+                    f"{label}: refusing malformed redirect err=%s",
                     type(_err).__name__,
                 )
                 return None
@@ -888,18 +1029,20 @@ def _safe_fetch_image_for_gemini_sync(
             if rp_info is None:
                 return None
             _rp, current_host, current_port = rp_info
-            ok2, reason2, pinned_ips = _validate_and_resolve_host(current_host, current_port)
+            ok2, reason2, pinned_ips = _resolve_with_budget(
+                current_host, current_port, deadline, None
+            )
             if not ok2:
                 logger.warning(
-                    "Gemini image fetch: refusing redirect host=%s reason=%s",
+                    f"{label}: refusing redirect host=%s reason=%s",
                     current_host,
                     reason2,
                 )
                 return None
             continue
-        except (urllib.error.URLError, OSError) as _err:
+        except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as _err:
             logger.warning(
-                "Gemini image fetch failed host=%s err=%s",
+                f"{label} failed host=%s err=%s",
                 current_host,
                 type(_err).__name__,
             )
@@ -908,13 +1051,15 @@ def _safe_fetch_image_for_gemini_sync(
         with resp:
             status = getattr(resp, "status", None) or resp.getcode()
             if status != 200:
-                logger.info("Gemini image fetch: status=%s host=%s", status, current_host)
+                logger.info(f"{label}: status=%s host=%s", status, current_host)
                 return None
             _hdr_mime = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
-            # Declared non-image MIME is refused; missing MIME uses the caller's.
+            # A declared non-image MIME is refused unless the caller decodes the bytes itself.
+            if _hdr_mime and not _hdr_mime.startswith("image/") and not require_image_content_type:
+                _hdr_mime = ""
             if _hdr_mime and not _hdr_mime.startswith("image/"):
                 logger.info(
-                    "Gemini image fetch: non-image content-type=%s host=%s",
+                    f"{label}: non-image content-type=%s host=%s",
                     _hdr_mime,
                     current_host,
                 )
@@ -922,32 +1067,58 @@ def _safe_fetch_image_for_gemini_sync(
             _final_mime_pre = _hdr_mime if _hdr_mime else fallback_mime
             if not isinstance(_final_mime_pre, str) or not _final_mime_pre.startswith("image/"):
                 logger.info(
-                    "Gemini image fetch: missing content-type and no image fallback host=%s",
+                    f"{label}: missing content-type and no image fallback host=%s",
                     current_host,
                 )
                 return None
             _hdr_len = resp.headers.get("content-length")
             if _hdr_len and _hdr_len.isdigit() and int(_hdr_len) > _byte_limit:
                 logger.info(
-                    "Gemini image fetch: declared %s bytes exceeds cap=%s host=%s",
+                    f"{label}: declared %s bytes exceeds cap=%s host=%s",
                     _hdr_len,
                     _byte_limit,
                     current_host,
                 )
                 return None
             # Read cap+1 to detect oversize without buffering unbounded data.
-            raw = resp.read(_byte_limit + 1)
+            try:
+                body_error, raw = _read_capped_body(
+                    resp, _byte_limit + 1, _GEMINI_REMOTE_IMAGE_TIMEOUT_S, deadline, None
+                )
+            except (OSError, http.client.HTTPException, ValueError) as _err:
+                logger.warning(
+                    f"{label} failed host=%s err=%s",
+                    current_host,
+                    type(_err).__name__,
+                )
+                return None
+            if body_error is not None:
+                logger.info(f"{label}: {body_error} host=%s", current_host)
+                return None
             if len(raw) > _byte_limit:
                 logger.info(
-                    "Gemini image fetch: streamed bytes exceed cap=%s host=%s",
+                    f"{label}: streamed bytes exceed cap=%s host=%s",
                     _byte_limit,
                     current_host,
                 )
                 return None
             return _final_mime_pre, base64.b64encode(raw).decode("ascii")
 
-    logger.info("Gemini image fetch: too many redirects host=%s", current_host)
+    logger.info(f"{label}: too many redirects host=%s", current_host)
     return None
+
+
+_GEMINI_IMAGE_FETCH_LABEL = "Gemini image fetch"
+
+
+def _safe_fetch_image_for_gemini_sync(
+    url: str,
+    fallback_mime: str,
+    max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
+) -> Optional[tuple[str, str]]:
+    return safe_fetch_remote_image_sync(
+        url, fallback_mime, max_bytes, label = _GEMINI_IMAGE_FETCH_LABEL
+    )
 
 
 async def _safe_fetch_image_for_gemini(
@@ -1284,14 +1455,28 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
-        elif provider_info.get("supports_chat_template_kwargs") and enable_thinking is not None:
+        elif self.provider_type == "deepseek":
+            _apply_deepseek_reasoning_controls(body, enable_thinking, reasoning_effort)
+        elif self.provider_type == "qwen":
+            _apply_qwen_reasoning_controls(body, enable_thinking)
+        elif self.provider_type == "huggingface":
+            _apply_passthrough_reasoning_effort(body, enable_thinking, reasoning_effort)
+        elif provider_info.get("supports_chat_template_kwargs"):
             # chat_template_kwargs is the only route to a template's enable_thinking variable, and a strict gateway
-            # 400s on the unknown key, so it is opt-in per registry entry rather than by provider family.
-            tpl_kw = body.get("chat_template_kwargs")
-            if not isinstance(tpl_kw, dict):
-                tpl_kw = {}
-            tpl_kw["enable_thinking"] = bool(enable_thinking)
-            body["chat_template_kwargs"] = tpl_kw
+            # 400s on the unknown key, so it is opt-in per registry entry rather than by provider family. Off rides on
+            # that kwarg alone: vLLM through 0.16 types the top-level reasoning_effort as low | medium | high and 400s
+            # on "none".
+            effort = (reasoning_effort or "").strip().lower()
+            effort = _LOCAL_SERVER_EFFORT_ALIASES.get(effort, effort)
+            thinking = False if effort == "none" else enable_thinking
+            if thinking is not None:
+                tpl_kw = body.get("chat_template_kwargs")
+                if not isinstance(tpl_kw, dict):
+                    tpl_kw = {}
+                tpl_kw["enable_thinking"] = bool(thinking)
+                body["chat_template_kwargs"] = tpl_kw
+            if effort in ("low", "medium", "high"):
+                body["reasoning_effort"] = effort
         elif self.provider_type == "ollama":
             _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
 
@@ -2253,12 +2438,16 @@ class ExternalProviderClient:
                 last_msg["content"] = head
         thinking_spec = _anthropic_thinking_spec(model)
         allowed_efforts = (
-            thinking_spec.efforts if thinking_spec else ("none", "low", "medium", "high")
+            thinking_spec.efforts
+            if thinking_spec
+            else ("none", "low", "medium", "high", "xhigh", "max")
         )
         effort = reasoning_effort if reasoning_effort in allowed_efforts else None
         # Claude 4.6 takes top-tier adaptive effort as "max" only ("xhigh" is 4.7-only), so map "xhigh" -> "max" for
         # 4.6 outbound requests.
-        if effort == "xhigh" and model.startswith(("claude-opus-4-6", "claude-sonnet-4-6")):
+        if effort == "xhigh" and model.strip().lower().startswith(
+            ("claude-opus-4-6", "claude-sonnet-4-6")
+        ):
             effort = "max"
         if effort is None:
             if enable_thinking is False:
@@ -2284,9 +2473,13 @@ class ExternalProviderClient:
             if not sampling_removed:
                 body["temperature"] = 1
             body.pop("top_p", None)
-            if thinking_spec and thinking_spec.kind == "adaptive":
+            adaptive = (thinking_spec is not None and thinking_spec.kind == "adaptive") or (
+                thinking_spec is None and _anthropic_model_newer_than_specs(model)
+            )
+            if adaptive:
                 # Force display="summarized": it defaults to "omitted" on Opus 4.7, which emits an empty thinking
-                # block and leaves the panel blank. Harmless no-op on 4.6.
+                # block and leaves the panel blank. Harmless no-op on 4.6. An unlisted id older than that gets no
+                # thinking field, since Claude 4.5 and earlier reject the adaptive shape.
                 body["thinking"] = {"type": "adaptive", "display": "summarized"}
                 # Adaptive effort lives under `output_config.effort`, not top-level (top-level 400s "Extra inputs are
                 # not permitted"). Allowed: low|medium|high|xhigh|max.
@@ -3753,7 +3946,15 @@ class ExternalProviderClient:
             model_lc == p or model_lc.startswith(p + "-") for p in _PRO_THINKING_PREFIXES
         )
         effort_lc = (reasoning_effort or "").strip().lower()
-        if not is_image_model_strict and is_gemini3_thinking:
+        is_gemma_thinking = bool(re.match(r"^gemma-(?:[4-9]|\d{2,})(?:\.\d+)?-", model_lc))
+        if not is_image_model_strict and is_gemma_thinking:
+            # Gemma 4 on the Gemini API is on/off only, as thinkingLevel "high" or "minimal"; it takes no budget.
+            # https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api
+            if effort_lc in ("none", "off") or enable_thinking is False:
+                gen_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
+            elif effort_lc or enable_thinking is True:
+                gen_config["thinkingConfig"] = {"thinkingLevel": "high"}
+        elif not is_image_model_strict and is_gemini3_thinking:
             # Gemini 3.x thinkingLevel matrix: 3.1+ Pro low/medium/high; 3 Pro low/high (deprecated 2026-03-09); 3.x
             # Flash* minimal/low/medium/high. Coerce minimal->low on Pro, medium->high on legacy 3-Pro.
             _G3_LEVELS = {"minimal", "low", "medium", "high"}
