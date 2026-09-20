@@ -636,6 +636,29 @@ def _note_host_credential_identities(tokens: Iterable[str]) -> None:
             continue
 
 
+# A credential this host held but could not read back. Its digest cannot be computed, and
+# "could not decrypt it" must not read as "there was never one": the ledger takes this instead,
+# which is an identity no caller can ever match, so the fallback refuses.
+_UNREADABLE_CREDENTIAL_IDENTITY = "a-credential-this-host-could-not-read"
+
+
+def note_host_credential_identity(
+    token: Optional[str], *, a_credential_was_held: bool = False
+) -> None:
+    """Enter a credential this host HELD in the ledger, while Studio still has it to hash.
+
+    Called from the save and the delete paths, not only from the authorization gate that reads
+    the ledger: on an upgraded install the ledger starts empty, and an operator who replaced or
+    cleared the saved token before any unaskable probe ever ran left no trace of the old one at
+    all. A later outage then found "this host has never held a credential" and handed a
+    tokenless caller everything that credential had downloaded.
+    """
+    if isinstance(token, str) and token:
+        _note_host_credential_identities((token,))
+    elif a_credential_was_held:
+        _note_host_credential_identities((_UNREADABLE_CREDENTIAL_IDENTITY,))
+
+
 def _no_other_credential_ever_held(tokens: Iterable[str]) -> Optional[bool]:
     """``None`` when unreadable; a ledger predating a rotation cannot report what it never saw."""
     seen = _host_credential_identities()

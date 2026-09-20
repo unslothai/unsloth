@@ -32,6 +32,7 @@ from utils.models import model_config as model_config_module
 # Captured before the autouse fixture replaces it, so the test ABOUT the reader reaches it.
 _REAL_AMBIENT_HF_TOKEN = hf_tokens._ambient_hf_token
 _REAL_SAVED_STUDIO_HF_TOKEN = hf_tokens._saved_studio_hf_token
+_REAL_HOST_CREDENTIAL_IDENTITIES = hf_tokens._host_credential_identities
 
 ON_DISK = "acme/downloaded-model"
 ABSENT = "acme/never-downloaded"
@@ -610,6 +611,78 @@ def test_a_text_load_records_in_its_finally_and_the_preview_records_at_both_tier
     text_load = _SITES["text-load"]
     assert text_load.rindex("finally:") < text_load.index("_note_load_fetched_with_a_request_token")
     assert _SITES["dataset-preview"].count("recording_a_request_token_fetch") == 2
+
+
+@pytest.fixture
+def live_ledger(monkeypatch):
+    """The REAL ledger under this test's own studio home, since what is under test is whether
+    anything writes to it at all."""
+    monkeypatch.setattr(hf_tokens, "_host_credential_identities", _REAL_HOST_CREDENTIAL_IDENTITIES)
+    hf_tokens._noted_credential_identities.clear()
+    yield lambda: _REAL_HOST_CREDENTIAL_IDENTITIES() or {}
+    hf_tokens._noted_credential_identities.clear()
+
+
+def test_a_credential_is_entered_in_the_ledger_when_it_is_saved_and_when_it_goes(live_ledger):
+    """On an upgraded install the ledger starts empty and used to be written only where an
+    unaskable probe happened to read it, so an operator who replaced or cleared the saved token
+    first left no trace of the old one."""
+    from storage import credential_secrets
+
+    assert live_ledger() == {}
+
+    credential_secrets.save_hf_token(HOST_CREDENTIAL)
+    assert hf_tokens._credential_identity(HOST_CREDENTIAL) in live_ledger()
+
+    # Replaced: BOTH are in it afterwards, or the successor inherits the predecessor's downloads.
+    credential_secrets.save_hf_token(ROTATED_AWAY)
+    assert {
+        hf_tokens._credential_identity(HOST_CREDENTIAL),
+        hf_tokens._credential_identity(ROTATED_AWAY),
+    } <= set(live_ledger())
+
+    credential_secrets.delete_hf_token()
+    assert hf_tokens._credential_identity(ROTATED_AWAY) in live_ledger()
+
+
+def test_a_credential_that_cannot_be_decrypted_is_still_a_credential_this_host_held(
+    monkeypatch, live_ledger
+):
+    from storage import credential_secrets
+
+    monkeypatch.setattr(credential_secrets, "get_hf_token", lambda: None)
+    monkeypatch.setattr(credential_secrets, "hf_token_row_exists", lambda: True)
+
+    credential_secrets.delete_hf_token()
+
+    ledger = live_ledger()
+    assert ledger, "an unreadable credential left the ledger empty, which reads as 'never held'"
+    assert hf_tokens._no_other_credential_ever_held(()) is False
+
+
+def test_a_tokenless_caller_does_not_inherit_a_credential_that_has_since_been_removed(
+    monkeypatch, tmp_path, live_ledger
+):
+    """The whole point of the ledger, through the gate that consults it: the repo is on disk,
+    nothing recorded WHICH credential fetched it (a cache older than the record), and the host
+    holds nothing now. Whether that cache is the operator's own or a removed credential's is
+    exactly what the ledger answers."""
+    from storage import credential_secrets
+
+    _no_host_credential(monkeypatch)
+    _hf_state(monkeypatch, recorded = {}, present = True)
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+
+    # Nothing was ever held: the tokenless caller may read its own cache.
+    assert _filled_by(None, ON_DISK) is True
+
+    # The operator had a token and cleared it, with no probe in between.
+    credential_secrets.save_hf_token(HOST_CREDENTIAL)
+    credential_secrets.delete_hf_token()
+
+    assert _filled_by(None, ON_DISK) is False, "a removed credential's downloads were inherited"
+    assert hf_tokens._resolve_unaskable(ON_DISK, "model", token = None) is False
 
 
 def test_every_credentialed_fetch_is_recorded_not_only_a_foreign_one(monkeypatch, writes):
