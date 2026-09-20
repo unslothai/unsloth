@@ -116,11 +116,10 @@ function Slider({
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}
-          // The thumb is the element carrying role="slider", so the name and the
-          // spoken value belong here. Everything else spreads onto Root, which is
-          // a plain div: an aria-label passed to this component reached that div
-          // and left the actual control unnamed, and Radix only fills in a label
-          // of its own for multi-thumb ranges.
+          // The thumb is the element carrying role="slider", so the name and the spoken value
+          // belong here. Everything else spreads onto Root, which is a plain div: an aria-label
+          // passed to this component reached that div and left the actual control unnamed, and
+          // Radix only fills in a label of its own for multi-thumb ranges.
           aria-label={props["aria-label"]}
           aria-labelledby={props["aria-labelledby"]}
           aria-valuetext={thumbValueText?.(values[index] ?? min, index)}

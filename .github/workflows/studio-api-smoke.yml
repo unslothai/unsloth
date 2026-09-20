@@ -20,12 +20,24 @@ name: Unsloth API CI
 on:
   pull_request:
     paths:
-      - 'studio/**'
-      - 'unsloth/**'
+      # What the test boots: the FastAPI backend, the installer that lays it down and
+      # the CLI that launches it. Not studio/** plus unsloth/**, which fired the job for
+      # edits it cannot observe: the install is --no-torch, so nothing under unsloth/**
+      # is importable here, the frontend is built but never served (UNSLOTH_API_ONLY),
+      # and src-tauri never enters the picture.
+      - 'studio/backend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      # install_node_prebuilt.py trusts the archives pinned here (setup.sh:1243).
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
-      - 'tests/studio/**'
+      # Named, not globbed: the rest of tests/studio is Playwright drivers this
+      # workflow never runs.
+      - 'tests/studio/studio_api_smoke.py'
       - '.github/workflows/studio-api-smoke.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
       # Every server boot in this workflow shells out to that script, so an edit
@@ -33,14 +45,16 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # And for the GGUF download that primes HF_HOME.
+      - '.github/scripts/hf-download-with-retry.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
-      # The dist cache moved out of install-unsloth-local so the Windows jobs could
-      # share one definition of its key; a change to it still has to re-run the jobs
-      # that depend on it.
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   push:
     branches: [main]
   workflow_dispatch:

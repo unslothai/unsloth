@@ -5,7 +5,6 @@
 # `shell: bash`: the scrub drops every `*\Git\*` PATH entry the bash version needs
 # sed/grep/tr/sort from, and it also runs inside the servercore container, which has no
 # bash. Both Windows lanes call this one file so the sdist allowlist cannot drift.
-#
 # Usage: assert-nobuild.ps1 -LogPath logs/install.log   (exit 1 = a source build)
 [CmdletBinding()]
 param([Parameter(Mandatory = $true)][string] $LogPath)

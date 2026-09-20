@@ -625,8 +625,9 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // flags the launch did not use.
   assert.match(body, /llamaExtraArgs: stored/);
   // And the key is marked only once a response is in hand, or StrictMode's replayed
-  // effect cancels the first fetch and skips the second.
-  const marked = body.indexOf("extraArgsHydrated.current = identity");
+  // effect cancels the first fetch and skips the second. The mark is on the shared draft, so
+  // the second host reads it rather than fetching again.
+  const marked = body.indexOf("markExtraArgsHydratedForDraft(draftKey)");
   assert.ok(
     marked > body.indexOf("if (cancelled) { return; }"),
     "mark after the response",
@@ -706,8 +707,21 @@ test("the box follows a config change it did not make", () => {
   // Reset and the parent's hydration both replace llamaExtraArgs while this row is
   // mounted. Without this the textarea keeps its old text and disagrees with what
   // Load sends; with a plain re-seed on every change it re-quotes a half-typed line.
-  assert.match(body, /if \(external === selfWritten\.current\) \{ return; \}/);
-  assert.match(body, /selfWritten\.current = formatExtraArgs\(/);
+  assert.match(
+    body,
+    /const text = edit && edit\.source === external \? edit\.text : external;/,
+  );
+  assert.match(body, /source: formatExtraArgs\(tokens\.length > 0 \? tokens : null\),/);
+});
+
+test("the two editors type into one box", () => {
+  const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
+  const body = row.slice(0, row.indexOf("\n}\n")).replace(/\s+/g, " ");
+  // commit publishes tokens on every keystroke. Held per row, an unclosed quote left the
+  // OTHER editor showing a balanced re-quote of them and judging it loadable.
+  assert.match(body, /readExtraArgsEditForDraft\(draftKey\)/);
+  assert.match(body, /setExtraArgsEditForDraft\(draftKey, \{/);
+  assert.doesNotMatch(body, /useState\(\(\) => formatExtraArgs/);
 });
 
 test("load waits for the stored arguments to be read", () => {

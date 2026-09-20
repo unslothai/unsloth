@@ -28,6 +28,113 @@ from core.inference.video import (
 from core.inference.video_families import VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG
 
 
+def _shared_setup_1(tmp_path):
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    return backend, video_mod
+
+
+def _shared_setup_2():
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    return base64, decode_h3_reference_video
+
+
+def _shared_setup_3():
+    from core.inference.video_minimax_h3 import (
+        H3_COMPONENT_REPO,
+        H3_GGUF_REPO,
+        H3_LEGACY_COMPONENT_REPO,
+    )
+    return H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO
+
+
+def _shared_setup_4(monkeypatch, tmp_path):
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    return managed
+
+
+def _shared_setup_5(backend, fam):
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+
+
+def _shared_setup_6(backend, monkeypatch):
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+
+
+def _shared_setup_7(monkeypatch, video_mod):
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+    )
+
+
+def _shared_setup_8(_download, gpu_arbiter, monkeypatch):
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+
+    backend = _run_h3_native_load()
+
+    assert backend._state is not None
+    return backend
+
+
+def _shared_setup_9(monkeypatch):
+    from core.inference.video_families import detect_video_family
+
+    scale = _allow_te_prequant(monkeypatch)
+    transformer_gb, text_encoder_gb, vae_gb = detect_video_family(
+        "Lightricks/LTX-2"
+    ).bf16_components_gb
+    return scale, text_encoder_gb, transformer_gb, vae_gb
+
+
+def _shared_setup_10(backend, monkeypatch):
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+    return records
+
+
+def _shared_setup_11(monkeypatch, sd_cpp_backend):
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: "/existing/sd-cli",
+    )
+
+
+def _shared_setup_12(_download, monkeypatch):
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    return backend, fam
+
+
 @pytest.fixture(autouse = True)
 def _assume_the_restricted_load_is_available(monkeypatch):
     """A checkpoint only deserializes where torchao is importable, which here it may not be. These
@@ -143,6 +250,11 @@ class _FakeTransformer:
 # experts. The MoE __call__ carries guidance_scale_2 and the single-DiT one omits it, so the cfg2 gate is exercised.
 
 
+class FirstBlockCacheConfig:  # noqa: N801 - the name diffusers exports, and what the cache layer matches on
+    def __init__(self, threshold = None) -> None:
+        self.threshold = threshold
+
+
 class _FakeWanDiT:
     """One Wan denoiser. Records which optimisation helpers touched it (the loader
     applies each once per expert on an MoE load), so a test can prove BOTH experts
@@ -159,9 +271,18 @@ class _FakeWanDiT:
 
     def enable_cache(self, config) -> None:
         self.cache_config = config
+        # diffusers records the live config on the module itself, and the cache layer reads THAT
+        # (never our own marker) to tell a cache it installed from one adopted through the
+        # low-level apply_first_block_cache. A fake that skips it models a transformer whose
+        # teardown can never be accounted for, which is not what a real DiT looks like after a
+        # successful enable_cache.
+        self._cache_config = config
+        self.is_cache_enabled = True
 
     def disable_cache(self) -> None:
         self.cache_config = None
+        self._cache_config = None
+        self.is_cache_enabled = False
 
     def set_attention_backend(self, backend) -> None:
         self.attention = backend
@@ -184,6 +305,19 @@ class _FakeWanVae:
     def __init__(self) -> None:
         self.tiled = False
         self.decoder = _FakeWanDecoder()
+        self.decodes = 0
+        # Test hooks fired from INSIDE the real decode, where the reported phase must already say
+        # "decode": that is the whole stretch the progress used to report as the last denoise step.
+        self.on_decode = None
+        self.decode_raises = None
+
+    def decode(self, *args, **kwargs):
+        self.decodes += 1
+        if self.on_decode is not None:
+            self.on_decode()
+        if self.decode_raises is not None:
+            raise self.decode_raises
+        return object()
 
     def enable_tiling(self) -> None:
         self.tiled = True
@@ -224,6 +358,9 @@ class _FakeWanPipeBase:
                 callback_on_step_end(self, step, 0, {})
                 if self._interrupt:
                     break
+        if not self._interrupt:
+            # Like every other family, the decode runs inside __call__ with no callback around it.
+            self.vae.decode(object())
         frames = [[object() for _ in range(int(num_frames or 1))]]
         return types.SimpleNamespace(frames = frames, audio = None)
 
@@ -376,6 +513,9 @@ class _FakeHV15Pipe:
             pass
         for _ in range(int(num_inference_steps or 1)):
             self.scheduler.step()
+        # The real pipeline decodes inside __call__ with no callback around it, which is why the
+        # decode phase has to come from the decoder itself.
+        self.vae.decode(object())
         frames = [[object() for _ in range(int(num_frames or 1))]]
         return types.SimpleNamespace(frames = frames, audio = None)
 
@@ -507,7 +647,10 @@ def fake_runtime(monkeypatch):
     diffusers.WanTransformer3DModel = _FakeTransformer
     diffusers.HunyuanVideo15Pipeline = _FakeHV15Pipeline
     diffusers.HunyuanVideo15Transformer3DModel = _FakeTransformer
-    diffusers.FirstBlockCacheConfig = lambda threshold = None: ("fbcache", threshold)
+    # A CLASS, and named the way diffusers names it: the cache layer matches on
+    # type(...).__name__ to tell its own FBCache config from a MagCache / PAB one, so a lambda
+    # returning a tuple reads as "some other cache" and makes the teardown unverifiable.
+    diffusers.FirstBlockCacheConfig = FirstBlockCacheConfig
 
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
@@ -1007,14 +1150,7 @@ def test_load_records_engaged_speed_optims(fake_runtime, tmp_path, monkeypatch):
 
 def test_generate_defaults_from_variant(fake_runtime, tmp_path):
     # A distilled GGUF pick defaults to the few-step no-CFG schedule.
-    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
-    backend = VideoBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
-        base_repo = "Lightricks/LTX-2",
-        family_override = "ltx-2",
-    )
+    backend = _load_ltx23_from_dir(tmp_path)
     backend.generate(prompt = "a sloth")
     call = backend._state.pipe.last_kwargs
     assert call["num_inference_steps"] == 8
@@ -1029,14 +1165,7 @@ def test_generate_defaults_from_variant(fake_runtime, tmp_path):
 def test_generate_seeds_metal_from_a_cpu_generator(fake_runtime, tmp_path, device, expected):
     # Metal reproduces a seed only through a CPU generator, and this also keeps the path off
     # whatever torch.Generator(device="mps") does on the older torch releases install.sh keeps.
-    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
-    backend = VideoBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
-        base_repo = "Lightricks/LTX-2",
-        family_override = "ltx-2",
-    )
+    backend = _load_ltx23_from_dir(tmp_path)
     backend._state = dataclasses.replace(backend._state, device = device)
     backend.generate(prompt = "a sloth", seed = 7)
     assert backend._state.pipe.last_kwargs["generator"].device == expected
@@ -1078,14 +1207,7 @@ def test_ltx23_load_forwards_the_precast_encoder(fake_runtime, tmp_path, monkeyp
 
 def test_generate_distilled_custom_steps_keep_scheduler_spacing(fake_runtime, tmp_path):
     # A non-default step count has no calibrated list, so the scheduler spacing applies and no sigmas kwarg is injected.
-    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
-    backend = VideoBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
-        base_repo = "Lightricks/LTX-2",
-        family_override = "ltx-2",
-    )
+    backend = _load_ltx23_from_dir(tmp_path)
     backend.generate(prompt = "a sloth", steps = 12)
     call = backend._state.pipe.last_kwargs
     assert call["num_inference_steps"] == 12
@@ -1142,14 +1264,7 @@ def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
     # crash on stale state. generate must reset them when a cache is engaged, and transformer_2 too when present.
     import dataclasses
 
-    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
-    backend = VideoBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
-        base_repo = "Lightricks/LTX-2",
-        family_override = "ltx-2",
-    )
+    backend = _load_ltx23_from_dir(tmp_path)
     resets = []
     backend._state.pipe.transformer = types.SimpleNamespace(
         _reset_stateful_cache = lambda: resets.append("transformer")
@@ -1942,12 +2057,7 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     # The CPU fake target never plans an offload, so force one at the plan seam and stub the apply step.
     import dataclasses
 
-    real_plan = video_mod.plan_diffusion_memory
-    monkeypatch.setattr(
-        video_mod,
-        "plan_diffusion_memory",
-        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
-    )
+    _shared_setup_7(monkeypatch, video_mod)
     placements = _stub_apply_memory_plan(monkeypatch, video_mod)
 
     backend = VideoBackend()
@@ -1983,12 +2093,7 @@ def test_the_video_load_places_on_the_selected_card_not_a_bare_device(fake_runti
         return dataclasses.replace(real_target(self, ordinal), ordinal = 1)
 
     monkeypatch.setattr(VideoBackend, "_device_target", _selected)
-    real_plan = video_mod.plan_diffusion_memory
-    monkeypatch.setattr(
-        video_mod,
-        "plan_diffusion_memory",
-        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
-    )
+    _shared_setup_7(monkeypatch, video_mod)
     placements = _stub_apply_memory_plan(monkeypatch, video_mod)
 
     VideoBackend().load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")
@@ -2011,12 +2116,7 @@ def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
         "quantize_transformer",
         lambda view, target, *, mode, family, logger = None: pytest.fail("must not quantise"),
     )
-    real_plan = video_mod.plan_diffusion_memory
-    monkeypatch.setattr(
-        video_mod,
-        "plan_diffusion_memory",
-        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
-    )
+    _shared_setup_7(monkeypatch, video_mod)
     backend = VideoBackend()
     with pytest.raises(RuntimeError) as excinfo:
         backend.load_pipeline(
@@ -2550,6 +2650,62 @@ _LTX23_REPO_SIBLINGS = [
 ]
 
 
+def _run_h3_native_load(backend = None):
+    """Drive the MiniMax-H3 native load path the way every H3 test does."""
+    backend = backend or VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+    return backend
+
+
+def _load_ltx23_from_dir(tmp_path):
+    """Materialize the LTX-2.3 GGUF in `tmp_path` and load a pipeline off it."""
+    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    return backend
+
+
+def _plan_api_ltx23(monkeypatch):
+    """The LTX-2.3 GGUF repo plus its LTX-2 base, the pair most plan tests resolve against."""
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+
+
+def _ltx23_download_plan(**kwargs):
+    return VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+        **kwargs,
+    )
+
+
+def _force_device_target(monkeypatch, video_mod, backend):
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = backend, device = backend, dtype = None),
+    )
+
+
 def _plan_api(monkeypatch, repos):
     class _Api:
         def model_info(
@@ -2587,20 +2743,10 @@ def _plan_cache(monkeypatch, cached):
 def test_download_plan_omits_cached_video_files_but_keeps_the_footprint(monkeypatch):
     # The Video page plans every hub pick, so an unfiltered plan would re-stage a model that is
     # already on disk. required_bytes stays the full footprint either way.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     _plan_cache(monkeypatch, lambda name: name.endswith(".gguf"))
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     staged = {f for e in plan["entries"] for f in e["files"]}
     assert "ltx-2.3-22b-distilled.gguf" in staged, "the scoped claim stays stable as the repo warms"
@@ -2614,20 +2760,10 @@ def test_download_plan_omits_cached_video_files_but_keeps_the_footprint(monkeypa
 
 
 def test_download_plan_is_empty_when_the_whole_video_pick_is_cached(monkeypatch):
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     _plan_cache(monkeypatch, lambda name: True)
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     assert plan["entries"] == [] and plan["total_bytes"] == 0
     # Nothing to fetch, but the load still needs every one of those bytes on disk.
@@ -2642,13 +2778,7 @@ def test_download_plan_restages_a_video_file_shadowed_in_the_live_cache(monkeypa
     #
     # Every OTHER file here lives wholly in the import-time root, so the split branch cannot stage
     # anything on its own: only recognising the shadow makes this repo straddle the two roots.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     from core.inference.diffusion import DiffusionBackend
 
     shadowed = "vae/ltx-2.3-22b-distilled_video_vae.safetensors"
@@ -2668,11 +2798,7 @@ def test_download_plan_restages_a_video_file_shadowed_in_the_live_cache(monkeypa
     monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(_cached))
     monkeypatch.setattr("core.inference.video.hub_cache_dir", lambda: "live")
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     staged = {f for e in plan["entries"] for f in e["files"]}
     assert shadowed in staged, "a shadowed file must be restaged, not trusted"
@@ -2688,13 +2814,7 @@ def test_download_plan_restages_a_video_base_split_across_cache_roots(monkeypatc
     # base straddling both roots cannot be handed to from_pretrained as a snapshot:
     # _predownload_base returns nothing and the assembly is pinned to hub_cache_dir(), so the
     # other-root subset is refetched inline, or the load fails offline.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     from core.inference.diffusion import DiffusionBackend
 
     live_root = "live"
@@ -2718,11 +2838,7 @@ def test_download_plan_restages_a_video_base_split_across_cache_roots(monkeypatc
     monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(_cached))
     monkeypatch.setattr("core.inference.video.hub_cache_dir", lambda: live_root)
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     entry = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
     expected_scope = {s.rfilename for s in _LTX23_REPO_SIBLINGS} - {
@@ -2736,13 +2852,7 @@ def test_download_plan_restages_a_video_base_split_across_cache_roots(monkeypatc
 def test_download_plan_keeps_a_video_base_that_lives_wholly_in_the_other_root(monkeypatch):
     # Not a split: reuse_other_cache_root resolves the whole repo from the other root, so staging
     # any of it would re-download a model that is entirely on disk.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     from core.inference.diffusion import DiffusionBackend
 
     monkeypatch.setattr(
@@ -2756,11 +2866,7 @@ def test_download_plan_keeps_a_video_base_that_lives_wholly_in_the_other_root(mo
     )
     monkeypatch.setattr("core.inference.video.hub_cache_dir", lambda: "live")
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     assert plan["entries"] == [] and plan["required_bytes"] > 0
 
@@ -2770,20 +2876,10 @@ def test_a_companion_only_entry_is_not_labelled_the_checkpoint(monkeypatch):
     # extras missing, the stable download scope still names the checkpoint for job adoption,
     # but only the companion files contribute bytes. Labelling that work as the model file
     # would misdescribe what the panel is downloading.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     _plan_cache(monkeypatch, lambda name: name.endswith(".gguf"))
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     entry = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
     assert "ltx-2.3-22b-distilled.gguf" in entry["files"]
@@ -2793,20 +2889,10 @@ def test_a_companion_only_entry_is_not_labelled_the_checkpoint(monkeypatch):
 
 def test_the_checkpoint_entry_is_labelled_when_its_file_is_staged(monkeypatch):
     # The other half of the same rule: nothing cached, so the GGUF itself is in the entry.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     _plan_cache(monkeypatch, lambda name: False)
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     entry = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
     assert "ltx-2.3-22b-distilled.gguf" in entry["files"]
@@ -3277,11 +3363,8 @@ def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypa
     # is not revoked by claiming the repos later.
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
-    from core.inference.video_minimax_h3 import (
-        H3_COMPONENT_REPO,
-        H3_GGUF_REPO,
-        H3_LEGACY_COMPONENT_REPO,
-    )
+
+    H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
 
     class _Api:
         def __init__(self, **_kwargs):
@@ -3291,11 +3374,7 @@ def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypa
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
 
     seen: list[tuple[str, ...]] = []
@@ -3357,11 +3436,7 @@ def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
     import threading
     from types import SimpleNamespace
 
-    from core.inference.video_minimax_h3 import (
-        H3_COMPONENT_REPO,
-        H3_GGUF_REPO,
-        H3_LEGACY_COMPONENT_REPO,
-    )
+    H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
 
     backend = VideoBackend()
     # Never started: the window under test is before the load thread is scheduled.
@@ -3387,11 +3462,7 @@ def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, 
     import threading
     from types import SimpleNamespace
 
-    from core.inference.video_minimax_h3 import (
-        H3_COMPONENT_REPO,
-        H3_GGUF_REPO,
-        H3_LEGACY_COMPONENT_REPO,
-    )
+    H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
 
     backend = VideoBackend()
     monkeypatch.setattr(
@@ -3452,16 +3523,7 @@ def test_h3_native_load_honors_install_switch_and_maps_xpu_to_vulkan(monkeypatch
 
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
 
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
-    backend._run_load_h3_native(
-        fam = fam,
-        token = None,
-        cancel_event = threading.Event(),
-        repo_id = "leejet/MiniMax-H3-GGUF",
-        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-    )
+    backend = _run_h3_native_load()
 
     assert install_calls == [(False, "vulkan"), (False, "cpu")]
     assert backend._state is not None
@@ -3484,11 +3546,7 @@ def test_h3_native_cpu_fallback_releases_the_video_gpu_claim(monkeypatch, tmp_pa
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -3510,21 +3568,7 @@ def test_h3_native_cpu_fallback_releases_the_video_gpu_claim(monkeypatch, tmp_pa
         path.write_bytes(b"x")
         return str(path)
 
-    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
-    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
-
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
-    backend._run_load_h3_native(
-        fam = fam,
-        token = None,
-        cancel_event = threading.Event(),
-        repo_id = "leejet/MiniMax-H3-GGUF",
-        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-    )
-
-    assert backend._state is not None
+    backend = _shared_setup_8(_download, gpu_arbiter, monkeypatch)
     assert backend._state.device == "cpu"
     assert gpu_arbiter.current_owner() is None
 
@@ -3544,17 +3588,9 @@ def test_h3_native_accelerator_load_keeps_the_video_gpu_claim(monkeypatch, tmp_p
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
-    monkeypatch.setattr(
-        sd_cpp_backend,
-        "ensure_sd_cpp_binary",
-        lambda *, allow_install, accelerator: "/existing/sd-cli",
-    )
+    _shared_setup_11(monkeypatch, sd_cpp_backend)
 
     class _Engine:
         def __init__(self, binary):
@@ -3570,21 +3606,7 @@ def test_h3_native_accelerator_load_keeps_the_video_gpu_claim(monkeypatch, tmp_p
         path.write_bytes(b"x")
         return str(path)
 
-    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
-    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
-
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
-    backend._run_load_h3_native(
-        fam = fam,
-        token = None,
-        cancel_event = threading.Event(),
-        repo_id = "leejet/MiniMax-H3-GGUF",
-        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-    )
-
-    assert backend._state is not None
+    backend = _shared_setup_8(_download, gpu_arbiter, monkeypatch)
     assert backend._state.device == "cuda"
     assert gpu_arbiter.current_owner() == gpu_arbiter.VIDEO
 
@@ -3601,11 +3623,7 @@ def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
 
-    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
-    (root / "sd-bin").mkdir(parents = True)
-    (root / ".unsloth-studio-owned").touch()
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
-    managed = root / "sd-bin" / "sd-cli"
+    managed = _shared_setup_4(monkeypatch, tmp_path)
     managed.write_bytes(b"managed")
 
     class _Api:
@@ -3616,11 +3634,7 @@ def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -3658,16 +3672,7 @@ def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch
     # module; patching the video module misses it entirely and the test would pass vacuously.
     monkeypatch.setattr(sd_cpp_backend, "sd_cpp_lists_accelerator_device", _watching_probe)
 
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
-    backend._run_load_h3_native(
-        fam = fam,
-        token = None,
-        cancel_event = threading.Event(),
-        repo_id = "leejet/MiniMax-H3-GGUF",
-        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-    )
+    backend = _run_h3_native_load()
 
     # First two entries are the load-time probe; the claimed recheck later in the load adds its
     # own pair, so assert on the opening ones rather than the whole list.
@@ -3701,11 +3706,7 @@ def _load_h3_native_offload(
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -3822,18 +3823,10 @@ def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path)
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     # The reuse itself: the already-installed binary comes back for every accelerator.
-    monkeypatch.setattr(
-        sd_cpp_backend,
-        "ensure_sd_cpp_binary",
-        lambda *, allow_install, accelerator: "/existing/sd-cli",
-    )
+    _shared_setup_11(monkeypatch, sd_cpp_backend)
 
     def _probe(_binary, *args):
         if args == ("--list-devices",):
@@ -3862,21 +3855,7 @@ def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path)
         path.write_bytes(b"x")
         return str(path)
 
-    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
-    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
-
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
-    backend._run_load_h3_native(
-        fam = fam,
-        token = None,
-        cancel_event = threading.Event(),
-        repo_id = "leejet/MiniMax-H3-GGUF",
-        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-    )
-
-    assert backend._state is not None
+    backend = _shared_setup_8(_download, gpu_arbiter, monkeypatch)
     assert backend._state.device == "cpu"
     assert backend._state.offload_policy == "none"
     # Reaching "cpu" is what lets the existing release_if drop the claim on this path too.
@@ -3907,11 +3886,7 @@ def _h3_managed_cpu_fallback_load(monkeypatch, tmp_path, *, swap_on_fallback):
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
 
     swapped: list = []
@@ -4001,11 +3976,8 @@ def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypa
     another mirror as here, the GGUF companion) out from under the running download."""
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
-    from core.inference.video_minimax_h3 import (
-        H3_COMPONENT_REPO,
-        H3_GGUF_REPO,
-        H3_LEGACY_COMPONENT_REPO,
-    )
+
+    H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
 
     class _Api:
         def __init__(self, **_kwargs):
@@ -4015,17 +3987,9 @@ def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypa
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
-    monkeypatch.setattr(
-        sd_cpp_backend,
-        "ensure_sd_cpp_binary",
-        lambda *, allow_install, accelerator: "/existing/sd-cli",
-    )
+    _shared_setup_11(monkeypatch, sd_cpp_backend)
 
     class _Engine:
         def __init__(self, binary):
@@ -4086,11 +4050,7 @@ def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path)
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -4131,19 +4091,9 @@ def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path)
         path.write_bytes(b"x")
         return str(path)
 
-    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
-
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
+    backend, fam = _shared_setup_12(_download, monkeypatch)
     with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3"):
-        backend._run_load_h3_native(
-            fam = fam,
-            token = None,
-            cancel_event = threading.Event(),
-            repo_id = "leejet/MiniMax-H3-GGUF",
-            gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-        )
+        _shared_setup_5(backend, fam)
 
     assert backend._state is None
     # Not one byte of the bundle: the binary is vetted before the four files are resolved.
@@ -4166,11 +4116,7 @@ def test_h3_native_load_refuses_a_missing_binary_before_downloading(monkeypatch,
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: False)
     monkeypatch.setattr(sd_cpp_backend, "ensure_h3_sd_cpp_binary", lambda **_kwargs: None)
 
@@ -4182,19 +4128,9 @@ def test_h3_native_load_refuses_a_missing_binary_before_downloading(monkeypatch,
         path.write_bytes(b"x")
         return str(path)
 
-    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
-
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
+    backend, fam = _shared_setup_12(_download, monkeypatch)
     with pytest.raises(RuntimeError, match = "could not be installed or started"):
-        backend._run_load_h3_native(
-            fam = fam,
-            token = None,
-            cancel_event = threading.Event(),
-            repo_id = "leejet/MiniMax-H3-GGUF",
-            gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-        )
+        _shared_setup_5(backend, fam)
 
     assert backend._state is None
     assert downloads == []
@@ -4208,11 +4144,7 @@ def test_h3_native_load_checks_cancellation_before_the_binary_preflight(monkeypa
     from core.inference import sd_cpp_backend
 
     ensures: list[str] = []
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(
         sd_cpp_backend,
         "ensure_h3_sd_cpp_binary",
@@ -4253,11 +4185,7 @@ def test_h3_native_load_refuses_a_binary_that_is_not_sd_cpp_before_downloading(
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -4289,19 +4217,9 @@ def test_h3_native_load_refuses_a_binary_that_is_not_sd_cpp_before_downloading(
         path.write_bytes(b"x")
         return str(path)
 
-    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
-
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
+    backend, fam = _shared_setup_12(_download, monkeypatch)
     with pytest.raises(RuntimeError, match = "is not stable-diffusion.cpp"):
-        backend._run_load_h3_native(
-            fam = fam,
-            token = None,
-            cancel_event = threading.Event(),
-            repo_id = "leejet/MiniMax-H3-GGUF",
-            gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-        )
+        _shared_setup_5(backend, fam)
 
     assert backend._state is None
     assert downloads == []
@@ -4343,11 +4261,8 @@ def test_h3_native_loaded_repo_ids_cover_the_companion_repos():
     # mirror (Qwen encoder) and the component repo (both VAEs) and re-reads them every generation,
     # so deleting either On Device while H3 is loaded must be refused.
     from core.inference.video import _VideoLoadState
-    from core.inference.video_minimax_h3 import (
-        H3_COMPONENT_REPO,
-        H3_GGUF_REPO,
-        H3_LEGACY_COMPONENT_REPO,
-    )
+
+    H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
 
     backend = VideoBackend()
     assert backend.loaded_repo_ids() == ()
@@ -4444,8 +4359,10 @@ def test_h3_modular_generation_ticks_and_cancels_through_the_scheduler(fake_runt
     pipe.scheduler.on_step = lambda n: steps_seen.append(backend._gen.get("step"))
     result = backend.generate(prompt = "a fox", steps = 4)
     assert "callback_on_step_end" not in pipe.last_kwargs
-    # One wrapped tick per denoise step, then the original method back in place.
-    assert steps_seen == [1, 2, 3, 4]
+    # One wrapped tick per denoise step, then the original method back in place. The reading taken
+    # from INSIDE step n is n-1, not n: scheduler.step is what enqueues the step's latent update,
+    # so the tick for step n lands after the original returns rather than before it.
+    assert steps_seen == [0, 1, 2, 3]
     assert pipe.scheduler.step.__func__ is _FakeH3Scheduler.step
     assert result["num_frames"] == 124 and result["has_audio"] is False
 
@@ -4528,19 +4445,9 @@ def test_h3_native_transcode_is_torch_free_and_keeps_audio(monkeypatch, tmp_path
 def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     # A 2.3 checkpoint brings its own VAEs, vocoder and connectors, so staging the 2.0 base copies downloads gigabytes the
     # pipeline never opens -- and the companions it DOES read were missing from the plan, so they were pulled inline.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
     # Checkpoint and extras share one repo, so they must be ONE entry: two jobs for the same repo would collide on the scoped job key.
@@ -4648,19 +4555,9 @@ def test_download_plan_keeps_dense_encoder_for_a_custom_family_pipeline(monkeypa
 def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):
     # No fp8 request means the dense encoder IS the encoder: dropping it would break the load.
     _cuda_bf16_target(monkeypatch)
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
     assert "unsloth/LTX-2-FP8" not in by_repo
@@ -4670,13 +4567,7 @@ def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatc
 def test_download_plan_keeps_the_dense_encoder_when_the_precast_repo_is_missing(monkeypatch):
     # The hosted artifact can be unpublished, gated or renamed. That must neither drop the dense encoder nor sink the whole plan, which is what an unguarded lookup did.
     _cuda_bf16_target(monkeypatch)
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
 
     plan = VideoBackend().download_plan(
         "unsloth/LTX-2.3-GGUF",
@@ -6514,10 +6405,7 @@ def test_h3_reference_video_decodes_onto_the_models_own_clock():
 
 
 def test_h3_reference_video_refuses_a_clip_below_the_trained_window():
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(_reference_video_data_url(seconds = 0.5).split(",", 1)[1])
     with pytest.raises(ValueError, match = "2 to 15 seconds"):
@@ -6525,10 +6413,7 @@ def test_h3_reference_video_refuses_a_clip_below_the_trained_window():
 
 
 def test_h3_reference_video_refuses_instead_of_silently_truncating_a_long_clip():
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(
         _reference_video_data_url(seconds = 15.1, fps = 24, with_audio = True).split(",", 1)[1]
@@ -6538,10 +6423,7 @@ def test_h3_reference_video_refuses_instead_of_silently_truncating_a_long_clip()
 
 
 def test_h3_reference_video_decodes_an_explicit_trim_with_matching_audio():
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(_reference_video_data_url(seconds = 20.0, fps = 24).split(",", 1)[1])
     frames, waveform, sample_rate = decode_h3_reference_video(
@@ -6599,10 +6481,7 @@ def test_h3_reference_video_trim_preserves_an_embedded_audio_timeline_offset():
 
 @pytest.mark.parametrize("duration", [2.0, 15.0])
 def test_h3_reference_video_trim_keeps_exact_boundary_frame_and_sample_counts(duration):
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(_reference_video_data_url(seconds = duration, fps = 24).split(",", 1)[1])
     frames, waveform, sample_rate = decode_h3_reference_video(
@@ -6618,10 +6497,7 @@ def test_h3_reference_video_trim_keeps_exact_boundary_frame_and_sample_counts(du
 
 @pytest.mark.parametrize("duration", [2.0, 15.0])
 def test_h3_reference_video_without_trim_discards_aac_padding(duration):
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(_reference_video_data_url(seconds = duration, fps = 24).split(",", 1)[1])
     frames, waveform, sample_rate = decode_h3_reference_video(blob)
@@ -6638,10 +6514,7 @@ def test_h3_reference_video_without_trim_clamps_audio_past_the_video(audio_secon
     Longer tracks decoded fine before trimming existed, and a codec frame of overshoot is
     ordinary padding, so refusing one rejects media that already worked.
     """
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(
         _reference_video_data_url(seconds = 15.0, fps = 24, audio_seconds = audio_seconds).split(",", 1)[
@@ -6714,10 +6587,7 @@ def test_h3_reference_video_trim_outlasting_a_short_soundtrack_stays_silent():
     A video carrying no audio at all is accepted, so one whose track merely ends early must
     be too; the untrimmed path clamps the same mismatch rather than refusing it.
     """
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(
         _reference_video_data_url(seconds = 10.0, fps = 24, audio_seconds = 6.0).split(",", 1)[1]
@@ -6735,10 +6605,7 @@ def test_h3_reference_video_trim_outlasting_a_short_soundtrack_stays_silent():
 
 
 def test_h3_reference_video_trim_entirely_past_the_soundtrack_drops_the_audio():
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(
         _reference_video_data_url(seconds = 12.0, fps = 24, audio_seconds = 3.0).split(",", 1)[1]
@@ -6758,10 +6625,7 @@ def test_h3_reference_video_trim_before_an_offset_soundtrack_drops_the_audio():
     sample inside the interval, so both must report no soundtrack: a silent waveform would be
     a fabricated track, and would hide the gap from stage_h3_references' positional pairing.
     """
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(
         _reference_video_data_url(
@@ -6778,10 +6642,7 @@ def test_h3_reference_video_trim_before_an_offset_soundtrack_drops_the_audio():
 
 def test_h3_reference_video_trim_reaching_an_offset_soundtrack_keeps_the_audio():
     """The same offset track is still decoded by a trim that does overlap it."""
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(
         _reference_video_data_url(
@@ -6804,10 +6665,7 @@ def test_h3_reference_video_trim_tolerates_a_container_longer_than_its_video():
     longer than it can show, and a browser hands Unsloth that duration. The last frame is held
     across the shortfall instead of refusing a clip that decodes fine untrimmed.
     """
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(
         _reference_video_data_url(seconds = 14.9, fps = 24, audio_seconds = 15.2).split(",", 1)[1]
@@ -6818,10 +6676,7 @@ def test_h3_reference_video_trim_tolerates_a_container_longer_than_its_video():
 
 def test_h3_reference_video_trim_still_refuses_a_real_overshoot():
     """The slack covers container metadata, not a range that genuinely is not there."""
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(
         _reference_video_data_url(seconds = 6.0, fps = 24, with_audio = False).split(",", 1)[1]
@@ -6831,10 +6686,7 @@ def test_h3_reference_video_trim_still_refuses_a_real_overshoot():
 
 
 def test_h3_reference_video_trim_must_be_complete_bounded_and_inside_the_source():
-    pytest.importorskip("av")
-    import base64
-
-    from core.inference.video_minimax_h3 import decode_h3_reference_video
+    base64, decode_h3_reference_video = _shared_setup_2()
 
     blob = base64.b64decode(
         _reference_video_data_url(seconds = 3.0, with_audio = False).split(",", 1)[1]
@@ -7083,8 +6935,16 @@ def test_h3_begin_generate_reuses_preflight_resolved_references(monkeypatch):
         return expected
 
     class _DeferredThread:
-        def __init__(self, *, target, kwargs, daemon):
-            captured.update(target = target, kwargs = kwargs, daemon = daemon)
+        def __init__(
+            self,
+            *,
+            target,
+            args = (),
+            kwargs,
+            daemon,
+        ):
+            # The worker is pinned to its account: the thread target is run_as, the real target rides last in args.
+            captured.update(target = args[-1] if args else target, kwargs = kwargs, daemon = daemon)
 
         def start(self):
             return None
@@ -7124,8 +6984,15 @@ def test_a_v1_videos_job_id_stays_out_of_the_replayable_worker_kwargs(monkeypatc
     captured = {}
 
     class _DeferredThread:
-        def __init__(self, *, target, kwargs, daemon):
-            captured.update(target = target, kwargs = kwargs, daemon = daemon)
+        def __init__(
+            self,
+            *,
+            target,
+            args = (),
+            kwargs,
+            daemon,
+        ):
+            captured.update(target = args[-1] if args else target, kwargs = kwargs, daemon = daemon)
 
         def start(self):
             return None
@@ -7650,15 +7517,8 @@ def test_a_failed_generation_logs_the_resolved_request(fake_runtime, tmp_path, m
     # The reported bug: the entire server-side record of the OOM in #8225 was the exception string,
     # so the resolution and frame count behind a 66.54 GiB allocation had to be recovered by
     # dividing it by the head count. Log the request that produced it.
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-    monkeypatch.setattr(
-        type(backend._state.pipe),
-        "__call__",
-        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
-    )
+    backend, video_mod = _shared_setup_1(tmp_path)
+    _shared_setup_6(backend, monkeypatch)
     monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
     records = _capture_generate_failures(monkeypatch)
 
@@ -7679,10 +7539,7 @@ def test_a_rejected_request_is_not_recorded_as_a_server_failure(
     # _run_generate maps every ValueError from the pipeline to client input feedback and gives it
     # no video.generate_failed record, so the request-shape log must not turn the same rejection
     # into an ERROR entry: a user asking for a shape the pipeline refuses is not a server failure.
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     monkeypatch.setattr(
         type(backend._state.pipe),
         "__call__",
@@ -7699,10 +7556,7 @@ def test_a_rejected_request_is_not_recorded_as_a_server_failure(
 def test_the_failure_log_carries_no_prompt_text(fake_runtime, tmp_path, monkeypatch):
     # A length distinguishes an empty prompt from a long one, which is all a bug report needs; the
     # server log is not the place for user content.
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     monkeypatch.setattr(
         type(backend._state.pipe), "__call__", _failing_pipe_call(RuntimeError("kaboom"))
     )
@@ -7720,20 +7574,10 @@ def test_the_failure_log_carries_no_prompt_text(fake_runtime, tmp_path, monkeypa
 def test_an_oom_on_a_math_only_device_names_the_quadratic_cost(fake_runtime, tmp_path, monkeypatch):
     # The whole point of #8225: the model was not too big, the score matrix was. When the device
     # has no fused kernel, an OOM should arrive with that diagnosis attached.
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-    monkeypatch.setattr(
-        type(backend._state.pipe),
-        "__call__",
-        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
-    )
+    backend, video_mod = _shared_setup_1(tmp_path)
+    _shared_setup_6(backend, monkeypatch)
     monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
-    records = _capture_generate_failures(monkeypatch)
-
-    with pytest.raises(RuntimeError):
-        backend.generate(prompt = "a clip")
+    records = _shared_setup_10(backend, monkeypatch)
 
     assert len(records) == 2
     assert "score matrix" in records[1] and "SQUARE" in records[1]
@@ -7742,20 +7586,14 @@ def test_an_oom_on_a_math_only_device_names_the_quadratic_cost(fake_runtime, tmp
 def test_a_non_oom_failure_does_not_blame_attention(fake_runtime, tmp_path, monkeypatch):
     # Math-only is a real condition, but it did not cause a scheduler bug. Only allocator failures
     # get the diagnosis, or it becomes noise on every unrelated crash.
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     monkeypatch.setattr(
         type(backend._state.pipe),
         "__call__",
         _failing_pipe_call(RuntimeError("scheduler produced NaN sigmas")),
     )
     monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
-    records = _capture_generate_failures(monkeypatch)
-
-    with pytest.raises(RuntimeError):
-        backend.generate(prompt = "a clip")
+    records = _shared_setup_10(backend, monkeypatch)
 
     assert len(records) == 1
     assert "score matrix" not in records[0]
@@ -7781,10 +7619,7 @@ def test_a_cancel_is_not_logged_as_a_failure(fake_runtime, tmp_path, monkeypatch
 def test_a_failure_before_the_request_resolves_logs_nothing(fake_runtime, tmp_path, monkeypatch):
     # There is nothing truthful to report until the shape is snapped, and a half-bound record
     # would be worse than none.
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     records = _capture_generate_failures(monkeypatch)
 
     def _broken(fam, w, h):
@@ -7800,15 +7635,8 @@ def test_a_failure_before_the_request_resolves_logs_nothing(fake_runtime, tmp_pa
 
 def test_a_broken_diagnostic_never_replaces_the_real_failure(fake_runtime, tmp_path, monkeypatch):
     # If the probe or the formatting raises, the caller must still see the original exception.
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-    monkeypatch.setattr(
-        type(backend._state.pipe),
-        "__call__",
-        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
-    )
+    backend, video_mod = _shared_setup_1(tmp_path)
+    _shared_setup_6(backend, monkeypatch)
 
     def _boom(target):
         raise RuntimeError("the probe itself is broken")
@@ -7842,10 +7670,7 @@ def test_the_oom_diagnosis_is_skipped_when_an_external_backend_ran(
     """AITER / xFormers replace torch's own dispatch, so probing native SDPA answers about code the
     generation never executed. On a ROCm card with AITER engaged that turned every OOM into a
     confident false statement that attention ran on the quadratic math backend."""
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     backend._state = replace(backend._state, attention_backend = "aiter")
     monkeypatch.setattr(
         type(backend._state.pipe),
@@ -7859,10 +7684,7 @@ def test_the_oom_diagnosis_is_skipped_when_an_external_backend_ran(
         return True
 
     monkeypatch.setattr(video_mod, "sdpa_math_only", _never)
-    records = _capture_generate_failures(monkeypatch)
-
-    with pytest.raises(RuntimeError):
-        backend.generate(prompt = "a clip")
+    records = _shared_setup_10(backend, monkeypatch)
 
     assert probed == [], "an engaged external backend must not be diagnosed as native SDPA"
     assert not any(video_mod.SDPA_MATH_ONLY_MESSAGE in line for line in records)
@@ -7876,22 +7698,12 @@ def test_the_oom_probe_uses_the_dtype_the_run_actually_used(fake_runtime, tmp_pa
     precision the run never used."""
     import torch
 
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     backend._state = replace(backend._state, dtype = "float32", attention_backend = None)
-    monkeypatch.setattr(
-        type(backend._state.pipe),
-        "__call__",
-        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
-    )
+    _shared_setup_6(backend, monkeypatch)
     seen: list = []
     monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: seen.append(target) or True)
-    records = _capture_generate_failures(monkeypatch)
-
-    with pytest.raises(RuntimeError):
-        backend.generate(prompt = "a clip")
+    records = _shared_setup_10(backend, monkeypatch)
 
     # The run's dtype reaches the record, which is what the probe target is built from.
     assert any("dtype=float32" in line for line in records)
@@ -7959,12 +7771,7 @@ def _allow_te_prequant(monkeypatch, *, injects = True):
 def test_gguf_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(
     fake_runtime, monkeypatch, tmp_path
 ):
-    from core.inference.video_families import detect_video_family
-
-    scale = _allow_te_prequant(monkeypatch)
-    transformer_gb, text_encoder_gb, vae_gb = detect_video_family(
-        "Lightricks/LTX-2"
-    ).bf16_components_gb
+    scale, text_encoder_gb, transformer_gb, vae_gb = _shared_setup_9(monkeypatch)
 
     calls = _capture_plan(monkeypatch)
     backend = VideoBackend()
@@ -8004,12 +7811,7 @@ def test_gguf_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(
 
 
 def test_pipeline_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(fake_runtime, monkeypatch):
-    from core.inference.video_families import detect_video_family
-
-    scale = _allow_te_prequant(monkeypatch)
-    transformer_gb, text_encoder_gb, vae_gb = detect_video_family(
-        "Lightricks/LTX-2"
-    ).bf16_components_gb
+    scale, text_encoder_gb, transformer_gb, vae_gb = _shared_setup_9(monkeypatch)
 
     calls = _capture_plan(monkeypatch)
     VideoBackend().load_pipeline(
@@ -8083,12 +7885,8 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
     # scaled encoder, or it re-introduces the over-estimate the first plan just dropped.
     import core.inference.video as video_mod
     from core.inference.diffusion_auto_policy import _QUANT_STEADY_FACTOR
-    from core.inference.video_families import detect_video_family
 
-    scale = _allow_te_prequant(monkeypatch)
-    transformer_gb, text_encoder_gb, vae_gb = detect_video_family(
-        "Lightricks/LTX-2"
-    ).bf16_components_gb
+    scale, text_encoder_gb, transformer_gb, vae_gb = _shared_setup_9(monkeypatch)
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
         video_mod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
@@ -8304,11 +8102,7 @@ def test_a_managed_h3_native_run_holds_the_install_off(monkeypatch, tmp_path):
     pytest.importorskip("PIL.Image")
     import core.inference.sd_cpp_backend as bk
 
-    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
-    (root / "sd-bin").mkdir(parents = True)
-    (root / ".unsloth-studio-owned").touch()
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
-    managed = root / "sd-bin" / "sd-cli"
+    managed = _shared_setup_4(monkeypatch, tmp_path)
     managed.write_bytes(b"managed")
 
     calls: list = []
@@ -8369,11 +8163,7 @@ def test_an_in_place_binary_swap_stops_the_h3_run(monkeypatch, tmp_path):
 
     import core.inference.sd_cpp_backend as bk
 
-    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
-    (root / "sd-bin").mkdir(parents = True)
-    (root / ".unsloth-studio-owned").touch()
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
-    managed = root / "sd-bin" / "sd-cli"
+    managed = _shared_setup_4(monkeypatch, tmp_path)
     managed.write_bytes(b"the build the load checked")
 
     calls: list = []
@@ -8419,11 +8209,7 @@ def test_a_cancelled_h3_install_wait_reads_as_a_cancellation(monkeypatch, tmp_pa
     import core.inference.sd_cpp_backend as bk
     from core.inference.video_families import VIDEO_CANCELLED_MSG
 
-    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
-    (root / "sd-bin").mkdir(parents = True)
-    (root / ".unsloth-studio-owned").touch()
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
-    managed = root / "sd-bin" / "sd-cli"
+    managed = _shared_setup_4(monkeypatch, tmp_path)
     managed.write_bytes(b"managed")
 
     calls: list = []
@@ -8745,10 +8531,7 @@ def test_the_h3_modular_refusal_reruns_when_the_prequant_checkpoint_does_not_lan
 
 
 def test_generation_in_flight_tracks_a_background_job(fake_runtime, tmp_path, monkeypatch):
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     monkeypatch.setattr(video_mod, "_backend", backend)
 
     rendering = threading.Event()
@@ -8836,10 +8619,7 @@ def test_a_worker_that_never_started_does_not_hold_the_job_open(
     reservation no worker will ever release: generate stays refused for the rest of the
     session, and liveness reports this backend as rendering to a watchdog that answers a
     busy backend by waiting longer, not by restarting it."""
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     monkeypatch.setattr(video_mod, "_backend", backend)
 
     real_start = threading.Thread.start
@@ -8874,10 +8654,7 @@ def test_a_worker_killed_outright_does_not_hold_the_job_open(fake_runtime, tmp_p
     """The worker names ValueError, RuntimeError and Exception. SystemExit and
     KeyboardInterrupt are none of those, so before the finally they unwound past every
     terminal path and left the marker lit for good; unload() does not clear it either."""
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     monkeypatch.setattr(video_mod, "_backend", backend)
 
     entered = threading.Event()
@@ -8982,10 +8759,7 @@ def test_the_backstop_leaves_a_cancelled_job_reported_as_cancelled(
 ):
     """Cancellation is a RuntimeError carrying a sentinel the route maps to its own status.
     A backstop that overwrote it would turn every cancel into a generic failure."""
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     monkeypatch.setattr(video_mod, "_backend", backend)
 
     entered = threading.Event()
@@ -9018,10 +8792,7 @@ def test_an_interrupted_spawn_leaves_a_live_worker_its_reservation(
     that wait unwinds with the worker already running. Rolling the reservation back there
     would retire a live render's token: liveness would call it idle, cancel and unload could
     not reach it, and the next request could reserve the slot underneath it."""
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     monkeypatch.setattr(video_mod, "_backend", backend)
 
     rendering = threading.Event()
@@ -9088,10 +8859,7 @@ def test_a_direct_worker_call_keeps_the_outcome_it_recorded(fake_runtime, tmp_pa
 def test_a_direct_worker_call_keeps_its_cancellation(fake_runtime, tmp_path, monkeypatch):
     """Same path, the outcome that matters most: a cancellation carries a sentinel the route
     maps to its own status, and turning it into a generic failure loses that."""
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend, video_mod = _shared_setup_1(tmp_path)
     monkeypatch.setattr(video_mod, "_backend", backend)
 
     def _cancelled(**kwargs):
@@ -9108,15 +8876,22 @@ def test_a_direct_worker_call_keeps_its_cancellation(fake_runtime, tmp_path, mon
 
 
 def test_cuda_graph_is_a_per_family_opt_in():
-    from core.inference.video_families import detect_video_family
+    """No video family opts in. Every one measured so far is GPU-bound at its shipped grid, so the capture buys
+    no wall and costs VRAM: H3 measured 1.0018x for 3.93 GB held, Wan measured 9.4% SLOWER. The opt-in stays a
+    field rather than being deleted because it is the only way a future launch-bound video family gets graphs,
+    and because deleting it would silently hand video the image backend's opt-OUT default."""
+    from core.inference.video_families import _FAMILIES, detect_video_family
 
     h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert h3 is not None and h3.name == "minimax-h3"
-    assert h3.supports_cuda_graph is True
+    assert h3.supports_cuda_graph is False
 
     wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     assert wan is not None and wan.name == "wan2.2-ti2v-5b"
     assert wan.supports_cuda_graph is False
+
+    opted_in = [f.name for f in _FAMILIES if f.supports_cuda_graph]
+    assert opted_in == [], f"{opted_in} opts into CUDA graphs with no measurement on record"
 
 
 def test_every_rebuilt_speed_target_carries_the_backend():
@@ -9180,3 +8955,623 @@ def test_h3_generate_non_oom_error_leaves_the_graphs_alone(fake_runtime):
     with pytest.raises(RuntimeError, match = "shape mismatch"):
         backend.generate(prompt = "a fox", steps = 4)
     assert handle.resets == 0
+
+
+# ── Progress truth: the bar must track the GPU, not the host queue ─────────────
+# Measured on MiniMax-H3 (960x544x124, 30 steps, int8 DiT + int8 TE, speed=default with a captured
+# CUDA graph, B200): the 29 host-side scheduler.step calls land in 0.9 s and the GPU is still
+# 25.9 s from finishing the denoise, then spends another 2.6 s in the video VAE decode and 1.3 s in
+# post-processing. The bar used to reach "step 29/30, ~1s left" in a second and then sit there for
+# half a minute.
+
+
+class _FakeCudaEvent:
+    """A ``torch.cuda.Event`` stand-in whose completion the test controls."""
+
+    def __init__(self) -> None:
+        self.done = False
+        self.queries = 0
+
+    def query(self) -> bool:
+        self.queries += 1
+        return self.done
+
+
+class _ClassDecoder:
+    """A decoder whose ``decode`` lives on the CLASS, as an untouched diffusers VAE's does."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def decode(self, *args, **kwargs):
+        self.calls += 1
+        return "decoded"
+
+
+def _ticker(monkeypatch, total):
+    """A ticker whose events the test owns, plus the list they land in."""
+    import core.inference.video as video_mod
+
+    events: list = []
+
+    def _fake_event():
+        event = _FakeCudaEvent()
+        events.append(event)
+        return event
+
+    monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    return video_mod._CompletedStepTicker(total), events
+
+
+def test_ticker_reports_only_steps_the_gpu_finished(monkeypatch):
+    ticker, events = _ticker(monkeypatch, 8)
+    for step in range(1, 9):
+        ticker.record(step)
+        # The host has enqueued `step` steps and the GPU has finished none of them.
+        assert ticker.completed() == 0
+    assert ticker.event_backed is True
+    events[0].done = True
+    events[1].done = True
+    assert ticker.completed() == 2
+    # Still nothing beyond the contiguous run of finished events, even if a later one lands first.
+    events[5].done = True
+    assert ticker.completed() == 2
+    for event in events:
+        event.done = True
+    assert ticker.completed() == 8
+
+
+def test_ticker_never_walks_backwards_or_past_the_total(monkeypatch):
+    ticker, events = _ticker(monkeypatch, 4)
+    for step in range(1, 5):
+        ticker.record(step)
+    for event in events:
+        event.done = True
+    assert ticker.completed() == 4
+    # A duplicated tick, and an event that starts failing its query, must not lower the bar.
+    ticker.record(2)
+    for event in events:
+        event.done = False
+    assert ticker.completed() == 4
+    # Records past the total are counted as enqueued but mark no further events.
+    ticker.record(9)
+    assert len(events) == 4
+    assert ticker.completed() == 4
+
+
+def test_ticker_falls_back_to_the_host_count_without_cuda_events(monkeypatch):
+    # A CPU or MPS host has no events to poll, and there is no graph to run ahead of either, so
+    # the host count IS the progress. This is exactly the pre-existing behaviour.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "_record_cuda_event", lambda: None)
+    ticker = video_mod._CompletedStepTicker(5)
+    for step in range(1, 6):
+        ticker.record(step)
+        assert ticker.completed() == step
+    assert ticker.event_backed is False
+
+
+def test_ticker_unmarkable_step_does_not_shift_the_ones_after_it(monkeypatch):
+    # A step whose event could not be recorded (a capture was in flight) costs its own tick and
+    # nothing more: the step number travels with the event.
+    import core.inference.video as video_mod
+
+    events: list = []
+    refuse = {"step": 2}
+
+    def _fake_event():
+        if len(events) + 1 == refuse["step"]:
+            refuse["step"] = None
+            return None
+        event = _FakeCudaEvent()
+        events.append(event)
+        return event
+
+    monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    ticker = video_mod._CompletedStepTicker(4)
+    for step in range(1, 5):
+        ticker.record(step)
+    assert len(events) == 3  # steps 1, 3, 4
+    events[0].done = True
+    assert ticker.completed() == 1
+    events[1].done = True
+    assert ticker.completed() == 3  # the event carries its own step number, so 3, never 2
+
+
+def test_completed_step_poller_advances_with_no_host_ticks(monkeypatch):
+    # The whole point: the host stops ticking the moment it has enqueued the last step, so
+    # something has to keep asking the GPU.
+    import core.inference.video as video_mod
+
+    ticker, events = _ticker(monkeypatch, 3)
+    for step in range(1, 4):
+        ticker.record(step)
+    seen: list = []
+    with video_mod._completed_step_poller(lambda: seen.append(ticker.completed()), 0.01):
+        for event in events:
+            event.done = True
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and 3 not in seen:
+            time.sleep(0.01)
+    assert 3 in seen
+    # And the thread is gone with the context.
+    assert not [t for t in threading.enumerate() if t.name == "video-denoise-progress"]
+
+
+def test_completed_step_poller_stands_back_during_a_graph_capture(monkeypatch):
+    # cudaEventQuery is one of the calls CUDA prohibits from EVERY thread while a capture begun in
+    # the default global mode is recording, and the denoiser captures during the first steps.
+    import core.inference.video as video_mod
+
+    ticker, events = _ticker(monkeypatch, 2)
+    for step in (1, 2):
+        ticker.record(step)
+    for event in events:
+        event.done = True
+    from core.inference import diffusion_cuda_graph as cg
+
+    seen: list = []
+    with cg._capturing():  # a capture really is recording for the whole poll window
+        with video_mod._completed_step_poller(lambda: seen.append(ticker.completed()), 0.01):
+            time.sleep(0.2)
+    assert seen == []
+    assert all(event.queries == 0 for event in events)
+
+
+def test_cuda_graph_capture_flag_tracks_the_recording_window():
+    from core.inference import diffusion_cuda_graph as cg
+
+    assert cg.capture_in_progress() is False
+    with cg._capturing():
+        assert cg.capture_in_progress() is True
+        with cg._capturing():  # nothing says two pipelines cannot capture at once
+            assert cg.capture_in_progress() is True
+        assert cg.capture_in_progress() is True
+    assert cg.capture_in_progress() is False
+    # And it is released when the capture raises.
+    with pytest.raises(RuntimeError, match = "capture failed"):
+        with cg._capturing():
+            raise RuntimeError("capture failed")
+    assert cg.capture_in_progress() is False
+
+
+def test_decode_phase_fires_once_and_restores_a_class_decode():
+    import core.inference.video as video_mod
+
+    vae = _ClassDecoder()
+    pipe = types.SimpleNamespace(vae = vae)
+    fired: list = []
+    with video_mod._decode_phase(pipe, lambda: fired.append("decode")):
+        assert vae.decode(1) == "decoded"
+        assert vae.decode(2) == "decoded"
+    assert fired == ["decode"]  # at most once per generation
+    assert vae.calls == 2
+    # Nothing left shadowing the class method: a bound method parked in a module's __dict__ is a
+    # reference cycle back to the module.
+    assert "decode" not in vae.__dict__
+    assert vae.decode(3) == "decoded"
+
+
+def test_decode_phase_restores_a_compiled_decode_it_found():
+    # The speed layer puts torch.compile(vae.decode) in the instance __dict__ for U-Net families
+    # (_compile_vae_decode), so the wrapper must put THAT back, not fall through to the class.
+    import core.inference.video as video_mod
+
+    vae = _ClassDecoder()
+    compiled = lambda *a, **k: "compiled"  # noqa: E731 - a stand-in for the compiled callable
+    vae.decode = compiled
+    pipe = types.SimpleNamespace(vae = vae)
+    with video_mod._decode_phase(pipe, lambda: None):
+        assert vae.decode() == "compiled"
+    assert vae.decode is compiled
+
+
+def test_decode_phase_restores_the_wrapper_when_the_decode_raises():
+    import core.inference.video as video_mod
+
+    vae = _ClassDecoder()
+    pipe = types.SimpleNamespace(vae = vae)
+    fired: list = []
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("out of memory in decode")
+
+    vae.decode = _boom
+    with pytest.raises(RuntimeError, match = "out of memory in decode"):
+        with video_mod._decode_phase(pipe, lambda: fired.append("decode")):
+            vae.decode()
+    # The phase was reported before the decode blew up, and the wrapper came off anyway.
+    assert fired == ["decode"]
+    assert vae.decode is _boom
+
+
+def test_decode_phase_covers_the_audio_decoder_too():
+    # MiniMax-H3 decodes video then audio; whichever runs first names the phase.
+    import core.inference.video as video_mod
+
+    audio_vae = _ClassDecoder()
+    pipe = types.SimpleNamespace(vae = None, audio_vae = audio_vae)
+    fired: list = []
+    with video_mod._decode_phase(pipe, lambda: fired.append("decode")):
+        audio_vae.decode()
+    assert fired == ["decode"]
+    assert "decode" not in audio_vae.__dict__
+
+
+def _patch_events(monkeypatch, *, done: bool = False):
+    """Hand out fake CUDA events, optionally already complete. Returns the list they land in."""
+    import core.inference.video as video_mod
+
+    events: list = []
+
+    def _fake_event():
+        event = _FakeCudaEvent()
+        event.done = done
+        events.append(event)
+        return event
+
+    monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    return events
+
+
+def test_step_marker_goes_down_after_the_scheduler_step_not_before(fake_runtime, monkeypatch):
+    # scheduler.step is what enqueues the step's latent update (and H3's audio scheduler update
+    # after it), so a marker recorded before it sits AHEAD of kernels that step still owes and can
+    # signal while the step is still running. The tick must come after the original returns.
+    events = _patch_events(monkeypatch)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    marked_when_step_ran: list = []
+    # The fake fires this from INSIDE the original scheduler.step, i.e. while step n's latent
+    # update is being submitted.
+    pipe.scheduler.on_step = lambda n: marked_when_step_ran.append((n, len(events)))
+
+    backend.generate(prompt = "a fox", steps = 5, num_frames = 9, fps = 24)
+
+    # While step n is submitting, only the n-1 steps BEFORE it are marked. The old ordering made
+    # this (n, n): step n was already marked before its own work was enqueued.
+    assert marked_when_step_ran == [(1, 0), (2, 1), (3, 2), (4, 3), (5, 4)]
+    assert len(events) == 6  # five steps plus the end-of-denoise boundary marker
+
+
+def test_cancellation_is_still_checked_before_the_step_runs(fake_runtime, monkeypatch):
+    # Moving the tick after the call must not move the cancel check with it: cancelling has to
+    # unwind before the next step's work is submitted, not after it has run.
+    events = _patch_events(monkeypatch)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    pipe.scheduler.on_step = lambda n: backend.cancel_generate() if n == 1 else None
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(prompt = "a fox", steps = 4)
+    # Step 2 never ran: the pre-hook raised ahead of it.
+    assert pipe.scheduler.calls == 1
+    # And exactly one step was marked, the one that really was submitted. No boundary marker
+    # either, since the decoder was never reached.
+    assert len(events) == 1
+
+
+def test_hv15_bar_never_outruns_the_gpu_and_holds_the_phase(fake_runtime, monkeypatch):
+    # End to end on the scheduler-wrap path (HunyuanVideo-1.5 exposes no step callback, like H3's
+    # modular workflow). The host enqueues every step and enters the decoder while the GPU has
+    # finished nothing, which is exactly the Wan / LTX-2 shape.
+    events = _patch_events(monkeypatch)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    seen: list = []
+
+    def _watch(enqueued):
+        seen.append((enqueued, int(backend._gen.get("step") or 0), sum(e.done for e in events)))
+
+    pipe.scheduler.on_step = _watch
+    at_decode: dict = {}
+    pipe.vae.on_decode = lambda: at_decode.update(backend._gen)
+
+    backend.generate(prompt = "a fox", steps = 8, num_frames = 9, fps = 24)
+
+    assert [enqueued for enqueued, _, _ in seen] == list(range(1, 9))
+    # The invariant: never more steps reported than the GPU has actually completed.
+    for enqueued, reported, finished in seen:
+        assert reported <= finished, (enqueued, reported, finished)
+    # With the GPU finishing nothing, the bar stayed at 0 through the whole host-side loop, where
+    # it used to read 8/8 while no denoising had happened.
+    assert {reported for _, reported, _ in seen} == {0}
+    # And entering the decoder did NOT complete the bar or flip the phase, because the boundary
+    # marker has not completed: the GPU is still denoising.
+    assert at_decode.get("phase") == "denoise"
+    assert at_decode.get("step") == 0
+
+
+def test_decode_phase_lands_once_the_gpu_reaches_the_boundary(fake_runtime, monkeypatch):
+    # Same path, but now the device keeps up with the host, so the boundary marker is complete when
+    # the decoder is entered and the phase flips there.
+    _patch_events(monkeypatch, done = True)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    at_decode: dict = {}
+    pipe.vae.on_decode = lambda: _settle(backend, at_decode)
+
+    backend.generate(prompt = "a fox", steps = 8, num_frames = 9, fps = 24)
+
+    assert at_decode.get("phase") == "decode"
+    assert at_decode.get("step") == 8
+    assert at_decode.get("total") == 8
+    assert at_decode.get("eta_seconds") is None
+
+
+def _settle(
+    backend,
+    out,
+    timeout = 5.0,
+):
+    """Wait for the poller to publish the decode phase, then snapshot it.
+
+    The flip is the poller's job precisely because the decoder-entry position cannot know whether
+    the GPU has caught up, so a test that reads _gen the instant the decoder is entered is racing
+    the poll interval rather than testing anything.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if backend._gen.get("phase") == "decode":
+            break
+        time.sleep(0.01)
+    out.update(backend._gen)
+
+
+def test_a_capture_cannot_start_while_an_event_query_is_in_flight(monkeypatch):
+    # The TOCTOU this replaced: a poll read "no capture", the capture began, and the poll's
+    # prohibited cudaEventQuery landed inside it. The lock has to span the query itself.
+    import core.inference.video as video_mod
+    from core.inference import diffusion_cuda_graph as cg
+
+    in_query = threading.Event()
+    finish_query = threading.Event()
+
+    class _BlockingEvent:
+        def query(self):
+            in_query.set()
+            finish_query.wait(5.0)
+            return True
+
+    monkeypatch.setattr(video_mod, "_record_cuda_event", lambda: _BlockingEvent())
+    ticker = video_mod._CompletedStepTicker(1)
+    ticker.record(1)
+
+    entered_capture = threading.Event()
+
+    def _capture():
+        with cg._capturing():
+            entered_capture.set()
+
+    with video_mod._completed_step_poller(ticker.completed, 0.01):
+        assert in_query.wait(5.0), "the poller never reached the query"
+        capturer = threading.Thread(target = _capture, daemon = True)
+        capturer.start()
+        # A capture must not be able to raise the depth, and so must not be able to enter
+        # torch.cuda.graph, while a query is in flight.
+        assert not entered_capture.wait(0.5)
+        finish_query.set()
+        assert entered_capture.wait(5.0)
+        capturer.join(timeout = 5.0)
+    assert cg.capture_in_progress() is False
+
+
+def test_hold_off_capture_yields_false_rather_than_waiting_on_a_capture():
+    from core.inference import diffusion_cuda_graph as cg
+
+    with cg.hold_off_capture() as clear:
+        assert clear is True
+    with cg._capturing():
+        with cg.hold_off_capture() as clear:
+            assert clear is False
+    with cg.hold_off_capture() as clear:
+        assert clear is True
+
+
+def test_denoise_completes_even_when_the_loop_ticks_fewer_times_than_steps(fake_runtime):
+    # MiniMax-H3's loop makes 29 scheduler.step calls for a 30-step render, so a bar driven purely
+    # by ticks stops at 29/30 forever. Reaching the decode proves the denoise finished.
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    seen: dict = {}
+    original_call = pipe.__class__.__call__
+
+    def _one_tick_short(
+        self,
+        *,
+        num_inference_steps = None,
+        **kwargs,
+    ):
+        out = original_call(self, num_inference_steps = int(num_inference_steps) - 1, **kwargs)
+        seen["at_end_of_loop"] = int(backend._gen.get("step") or 0)
+        return out
+
+    pipe.__class__.__call__ = _one_tick_short
+    try:
+        backend.generate(prompt = "a fox", steps = 30, num_frames = 9, fps = 24)
+    finally:
+        pipe.__class__.__call__ = original_call
+    assert pipe.scheduler.calls == 29
+    assert seen["at_end_of_loop"] < 30
+    # generate() completed the bar once the pipeline returned, so the user never sees 29/30 stick.
+    assert backend._gen == {"active": False}
+
+
+def test_hv15_cancel_still_unwinds_and_leaves_nothing_installed(fake_runtime):
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    pipe.scheduler.on_step = lambda n: backend.cancel_generate() if n == 1 else None
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert pipe.scheduler.calls == 1
+    assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
+    # The decode never ran, its wrapper is off, and the poller thread is gone.
+    assert pipe.vae.decodes == 0
+    assert "decode" not in pipe.vae.__dict__
+    assert not [t for t in threading.enumerate() if t.name == "video-denoise-progress"]
+
+
+def test_decode_failure_surfaces_and_leaves_nothing_installed(fake_runtime):
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    pipe.vae.decode_raises = RuntimeError("CUDA out of memory in decode")
+    with pytest.raises(RuntimeError, match = "CUDA out of memory in decode"):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert "decode" not in pipe.vae.__dict__
+    assert not [t for t in threading.enumerate() if t.name == "video-denoise-progress"]
+
+
+def test_callback_family_keeps_its_own_callback(fake_runtime, monkeypatch):
+    # Wan exposes callback_on_step_end, so nothing wraps its scheduler. Only the tick changed:
+    # the reported step now comes from completed events rather than the callback's index.
+    import core.inference.video as video_mod
+
+    events = _patch_events(monkeypatch, done = True)
+    wrapped: list = []
+    original_wrap = video_mod._scheduler_step_progress
+    monkeypatch.setattr(
+        video_mod,
+        "_scheduler_step_progress",
+        lambda *a, **kw: wrapped.append(a[0]) or original_wrap(*a, **kw),
+    )
+
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe = backend._state.pipe
+    at_decode: dict = {}
+    pipe.vae.on_decode = lambda: _settle(backend, at_decode)
+
+    backend.generate(prompt = "a sloth", steps = 6, num_frames = 9, fps = 24)
+
+    # The scheduler was never wrapped: this family drives its own callback and still does.
+    assert wrapped == []
+    # One marker per callback tick, so the callback really ran, plus the boundary marker.
+    assert len(events) == 7
+    assert pipe.vae.decodes == 1
+    assert at_decode.get("phase") == "decode"
+    assert at_decode.get("step") == 6
+
+
+# ── the step tick and the boundary marker are CUDA calls too ────────────────────────────────
+
+
+def test_a_capture_in_another_pipeline_stops_the_tick_from_touching_events(
+    fake_runtime, monkeypatch
+):
+    # torch captures in cudaStreamCaptureModeGlobal, under which a capture recording in ANY
+    # thread bars every thread from potentially unsafe calls -- recording and querying an event
+    # among them. is_current_stream_capturing only sees this pipeline's own capture, so a second
+    # pipeline capturing while this one ticks is exactly the case the poller is guarded for, and
+    # the tick and the boundary marker have to take the same hold-off.
+    import core.inference.video as video_mod
+
+    events = _patch_events(monkeypatch, done = True)
+
+    @contextlib.contextmanager
+    def _capture_running():
+        yield False
+
+    monkeypatch.setattr(video_mod, "_hold_off_cuda_graph_capture", _capture_running)
+
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    # Read inside the decode, since _gen is cleared once generate() returns.
+    at_decode: dict = {}
+    pipe.vae.on_decode = lambda: at_decode.update(backend._gen)
+
+    backend.generate(prompt = "a fox", steps = 5, num_frames = 9, fps = 24)
+
+    # Not one event was recorded: neither the five step markers nor the end-of-denoise boundary.
+    assert events == []
+    # And the bar is still honest at the end. With no marker to wait on there is nothing to wait
+    # FOR, so the decode flip falls back to the host position, which is what this family did
+    # before any of this and is correct when the queue cannot be measured.
+    assert at_decode.get("phase") == "decode"
+    assert at_decode.get("step") == 5
+
+
+def test_the_tick_marks_every_step_again_once_the_capture_is_over(fake_runtime, monkeypatch):
+    # The control for the test above: the guard must not cost a marker when nothing is capturing,
+    # or it would quietly turn the whole feature off.
+    events = _patch_events(monkeypatch, done = True)
+
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    backend.generate(prompt = "a fox", steps = 5, num_frames = 9, fps = 24)
+
+    assert len(events) == 6  # five steps plus the boundary
+
+
+def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeypatch):
+    # hold_off_capture acquires without blocking, so a refusal can mean nothing worse than the
+    # poller holding the lock for its own queries at that instant. Giving up on the first refusal
+    # would flip the bar to steps/steps with the queue still draining, so the marker retries.
+    import core.inference.video as video_mod
+
+    _patch_events(monkeypatch, done = True)
+
+    # Refuses everything for a window that covers the decode entry, then frees up. Shorter than
+    # the retry budget (20 x 20 ms), so a marker that waits gets its event and one that gives up
+    # never calls mark_boundary at all.
+    busy_until = {"t": 0.0}
+
+    @contextlib.contextmanager
+    def _busy_window():
+        yield time.monotonic() >= busy_until["t"]
+
+    marks = {"calls": 0, "ok": None}
+    original_mark = video_mod._CompletedStepTicker.mark_boundary
+
+    def _counted(self):
+        marks["calls"] += 1
+        marks["ok"] = original_mark(self)
+        return marks["ok"]
+
+    monkeypatch.setattr(video_mod._CompletedStepTicker, "mark_boundary", _counted)
+
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    at_decode: dict = {}
+    pipe.vae.on_decode = lambda: _settle(backend, at_decode)
+
+    def _contend(n):
+        # Armed on the last step, so the lock is busy exactly across the decode entry.
+        if n == 5:
+            busy_until["t"] = time.monotonic() + 0.2
+            monkeypatch.setattr(video_mod, "_hold_off_cuda_graph_capture", _busy_window)
+
+    pipe.scheduler.on_step = _contend
+
+    backend.generate(prompt = "a fox", steps = 5, num_frames = 9, fps = 24)
+
+    # It waited the lock out and marked a real boundary instead of flipping blind. Before the
+    # retry, a refusal at this instant meant mark_boundary was never called at all.
+    assert marks["calls"] == 1
+    assert marks["ok"] is True
+    assert at_decode.get("phase") == "decode"

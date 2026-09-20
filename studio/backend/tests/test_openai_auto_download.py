@@ -2046,3 +2046,190 @@ def test_speech_download_admission(hub, monkeypatch, sidecar, probe, code):
         if probe is None
         else [("unsloth/tts-GGUF", "model-Q8_0-00001-of-00002.gguf", None, hub["info"].sha)]
     )
+
+
+def _unavailable_message(
+    requested,
+    *,
+    downloaded,
+    servable,
+    monkeypatch,
+    rows = None,
+    listing = None,
+):
+    """``_unavailable_model_message`` against a catalog holding *downloaded* and a
+    ``GET /v1/models`` listing holding *servable*.
+
+    ``rows`` and ``listing`` override either side with explicit objects, for the cases where the
+    shape matters rather than the ids: a scanner row that carries no ``model_id``, a partial
+    download, or a row listed under a non-chat ``task``.
+    """
+    from types import SimpleNamespace
+
+    async def _catalog():
+        if rows is not None:
+            return rows
+        return [SimpleNamespace(model_id = mid, id = mid, path = f"/models/{mid}") for mid in downloaded]
+
+    async def _objects():
+        if listing is not None:
+            return listing
+        return [{"id": mid} for mid in servable]
+
+    monkeypatch.setattr(inference_route, "_cached_local_catalog", _catalog)
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _objects)
+    monkeypatch.setattr(
+        resolver, "describe_local_miss", lambda name: (resolver.MISS_MODEL_NOT_FOUND, ())
+    )
+    return asyncio.run(inference_route._unavailable_model_message(requested))
+
+
+def test_a_downloaded_but_unservable_model_is_not_reported_as_missing(monkeypatch):
+    """The reported confusion: an installed model that this backend withholds was told it was not
+    downloaded, which sends the caller to download something they already have."""
+    message = _unavailable_message(
+        "ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit",
+        # Last, not first: a lookup that only ever reads row zero would pass either way.
+        downloaded = ["unsloth/A-GGUF", "org/Other", "ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit"],
+        servable = ["unsloth/A-GGUF"],
+        monkeypatch = monkeypatch,
+    )
+    assert "is not downloaded" not in message
+    assert "is downloaded, but this server cannot serve it" in message
+    # Still says what can serve the request.
+    assert "unsloth/A-GGUF" in message
+
+
+def test_a_model_that_is_really_absent_still_says_it_is_not_downloaded(monkeypatch):
+    message = _unavailable_message(
+        "some-org/never-fetched",
+        downloaded = ["unsloth/A-GGUF"],
+        servable = ["unsloth/A-GGUF"],
+        monkeypatch = monkeypatch,
+    )
+    assert "is not downloaded on this server" in message
+    assert "cannot serve it" not in message
+
+
+def test_the_downloaded_check_ignores_id_case(monkeypatch):
+    """Scan folders and the HF cache disagree about case, and the resolver index is casefolded, so
+    a case-variant request must not read as a model nobody downloaded."""
+    message = _unavailable_message(
+        "Ornith-AI/Ornith-1.5-35B-A3B-MLX-4bit",
+        downloaded = ["ornith-ai/ornith-1.5-35b-a3b-mlx-4bit"],
+        servable = [],
+        monkeypatch = monkeypatch,
+    )
+    assert "is downloaded, but this server cannot serve it" in message
+
+
+def test_a_loaded_model_is_never_called_unservable(monkeypatch):
+    """Anything the listing serves is not withheld, so the servable set is what decides, not the
+    catalog alone."""
+    message = _unavailable_message(
+        "unsloth/A-GGUF",
+        downloaded = ["unsloth/A-GGUF"],
+        servable = ["unsloth/A-GGUF"],
+        monkeypatch = monkeypatch,
+    )
+    assert "cannot serve it" not in message
+
+
+def _row(
+    *,
+    model_id = None,
+    id = None,
+    path = "/models/x",
+    partial = False,
+):
+    from types import SimpleNamespace
+    return SimpleNamespace(model_id = model_id, id = id, path = path, partial = partial)
+
+
+def test_a_scanner_row_without_a_model_id_still_counts_as_downloaded(monkeypatch):
+    """The ./models and LM Studio scanners report an absolute path as the id and set no model_id,
+    so the public-id fallback is what names those rows. Without it a scanned model reads as one
+    nobody downloaded."""
+    message = _unavailable_message(
+        "Ornith-1.5-35B-A3B-MLX-4bit",
+        downloaded = [],
+        servable = [],
+        rows = [_row(id = "/srv/models/Ornith-1.5-35B-A3B-MLX-4bit")],
+        monkeypatch = monkeypatch,
+    )
+    assert "is downloaded, but this server cannot serve it here" in message
+    # And never the host path the row was keyed by.
+    assert "/srv/" not in message
+
+
+def test_a_partial_download_is_not_called_downloaded(monkeypatch):
+    """An interrupted download is not something this server has, and blaming its architecture would
+    send the caller away from the thing that actually fixes it."""
+    message = _unavailable_message(
+        "org/Half-Fetched",
+        downloaded = [],
+        servable = [],
+        rows = [_row(model_id = "org/Half-Fetched", partial = True)],
+        monkeypatch = monkeypatch,
+    )
+    assert "cannot serve it here" not in message
+    assert "is not downloaded on this server" in message
+
+
+def test_a_quant_tagged_name_still_gets_the_downloaded_diagnosis(monkeypatch):
+    """The wrong-quant branch only fires for an indexed repo carrying variants, so a tagged name
+    reaches here whenever the repo is withheld, and the tag must not hide that it is on disk."""
+    for tag in (":Q4_K_M", ":latest"):
+        message = _unavailable_message(
+            f"org/Withheld{tag}",
+            downloaded = ["org/Withheld"],
+            servable = [],
+            monkeypatch = monkeypatch,
+        )
+        assert "is downloaded, but this server cannot serve it here" in message, tag
+        assert "org/Withheld'" in message, tag
+
+
+def test_a_model_listed_only_for_another_task_is_not_called_available(monkeypatch):
+    """Whisper on an MLX host is listed for transcription and withheld from the chat loader, so the
+    listing alone would report it available for a chat request it cannot answer."""
+    message = _unavailable_message(
+        "openai/whisper-tiny",
+        downloaded = ["openai/whisper-tiny"],
+        servable = [],
+        listing = [{"id": "openai/whisper-tiny", "task": "automatic-speech-recognition"}],
+        monkeypatch = monkeypatch,
+    )
+    assert "is downloaded, but this server cannot serve it here" in message
+
+
+def test_the_diagnosis_does_not_report_a_model_this_account_cannot_see(monkeypatch):
+    """The raw catalog spans every account's private directories. Confirming "that one is
+    downloaded" for a row the listing filters out would disclose another account's inventory."""
+
+    def _only_granted(rows, **_kw):
+        return [row for row in rows if getattr(row, "model_id", None) == "org/Granted"]
+
+    monkeypatch.setattr(inference_route.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(inference_route.account_access, "filter_model_rows", _only_granted)
+
+    hidden = _unavailable_message(
+        "someone-else/Private",
+        downloaded = [],
+        servable = [],
+        rows = [_row(model_id = "org/Granted"), _row(model_id = "someone-else/Private")],
+        monkeypatch = monkeypatch,
+    )
+    assert "is downloaded" not in hidden
+    assert "is not downloaded on this server" in hidden
+
+    # The other direction: a row the filter keeps must still be diagnosed, or a managed account is
+    # told nothing it owns is downloaded.
+    granted = _unavailable_message(
+        "org/Granted",
+        downloaded = [],
+        servable = [],
+        rows = [_row(model_id = "org/Granted"), _row(model_id = "someone-else/Private")],
+        monkeypatch = monkeypatch,
+    )
+    assert "is downloaded, but this server cannot serve it here" in granted

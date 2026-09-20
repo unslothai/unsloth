@@ -12,6 +12,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+// eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -216,7 +218,9 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
-        <span className="flex min-w-0 flex-1 items-baseline">
+        {/* Hellix carries more descent than the caps use, so a box-centred label reads ~0.05em
+            low against the icons. Lift name and description together to keep their baseline. */}
+        <span className="relative -top-[0.05em] flex min-w-0 flex-1 items-baseline">
           <span
             className={cn(
               "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white",
@@ -320,6 +324,7 @@ function ModelSelectorContent({
   onEject,
   onFoldersChange,
   onBrowseHub,
+  onConfigureConnection,
   onModelsChange,
   deleteDisabled,
   className,
@@ -348,6 +353,7 @@ function ModelSelectorContent({
   onEject?: () => void;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
+  onConfigureConnection?: (providerId: string) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   className?: string;
@@ -610,6 +616,7 @@ function ModelSelectorContent({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
               onBrowseHub={onBrowseHub}
+              onConfigureConnection={onConfigureConnection}
               onModelsChange={onModelsChange}
               onConfigure={openConfigPage}
               deleteDisabled={deleteDisabled}
@@ -802,6 +809,13 @@ export function ModelSelector({
     void navigate({ to: "/hub", search: { tab: "discover" } });
   }
 
+  // A Connected group's gear. What is configurable about a remote model lives on its connection,
+  // so open that form rather than ModelConfigPage's local load settings.
+  function handleConfigureConnection(providerId: string) {
+    setOpen(false);
+    useSettingsDialogStore.getState().openConnectionSettings(providerId);
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -841,6 +855,7 @@ export function ModelSelector({
         onBrowseHub={
           task && communityModelPolicy === "none" ? undefined : handleBrowseHub
         }
+        onConfigureConnection={handleConfigureConnection}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}

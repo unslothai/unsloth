@@ -21,6 +21,9 @@ import {
   MessageResponseDetailsSheet,
   MessageResponseModelBadge,
 } from "@/components/assistant-ui/message-response-details-sheet";
+import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
+import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
+import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
@@ -43,18 +46,27 @@ import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
+import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
+import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
-  PROMPT_QUEUE_DRAG_TYPE,
+  ChatSkillsDialog,
+  composerSubmitIntent,
+  composerFollowUpBehavior,
+  composerShortcutLabels,
+  followUpSubmitIntent,
+  steeringInsertionIndex,
+  cancelPreStreamRunForThreadIds,
+  type ComposerSendShortcut,
+  type ComposerSubmitIntent,
+  type ComposerFollowUpBehavior,
   attachmentsPastedText,
   hasPendingPromptQueueStart,
   isPastedTextFile,
-  isPromptQueueChord,
-  isPromptQueueDragTypes,
   pastedTextQueueKey,
   promptQueueActiveItemChanged,
   reorderPromptQueueItems,
@@ -69,6 +81,7 @@ import {
   stripSearchImageTokens,
   useChatActive,
   useInComparePane,
+  refreshSkillsCatalog,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -156,11 +169,21 @@ import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-ac
 import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceInForeground,
+  shortcutMatchingEvent,
+  useKeyboardShortcutsStore,
   useShortcut,
+  useSettingsDialogStore,
+  isMacPlatform,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
+import { useT } from "@/i18n";
 import { create } from "zustand";
-import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import {
+  clampReasoningEffortToLevels,
+  getExternalReasoningCapabilities,
+  modelCatalogVersion,
+  subscribeModelCatalog,
+} from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
@@ -302,8 +325,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
-  CornerDownRightIcon,
-  FastForwardIcon,
+  SlidersHorizontalIcon,
   GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
@@ -321,6 +343,7 @@ import {
   type ChangeEvent,
   type CompositionEvent,
   type ClipboardEvent,
+  type CSSProperties,
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
@@ -333,6 +356,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -345,6 +369,33 @@ import { useIsMobile } from "@/hooks/use-mobile";
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
 const PageDragContext = createContext(false);
+
+/** The follow-up each of the two chords names. */
+const FOLLOW_UP_SHORTCUTS = {
+  queueMessage: "queue",
+  steerMessage: "steer",
+} as const satisfies Record<string, ComposerFollowUpBehavior>;
+
+const FOLLOW_UP_SHORTCUT_IDS = Object.keys(
+  FOLLOW_UP_SHORTCUTS,
+) as (keyof typeof FOLLOW_UP_SHORTCUTS)[];
+
+/** The behaviour a bound queue or steer chord names, if this event fires one. */
+function followUpShortcutBehavior(event: {
+  code: string;
+  key?: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}): ComposerFollowUpBehavior | null {
+  const id = shortcutMatchingEvent(
+    useKeyboardShortcutsStore.getState().overrides,
+    FOLLOW_UP_SHORTCUT_IDS,
+    event,
+  );
+  return id ? FOLLOW_UP_SHORTCUTS[id] : null;
+}
 
 // Prompt queues live at module level so they survive Composer remounts,
 // including the first queued message that creates a new thread. Each chat gets
@@ -378,6 +429,7 @@ type PromptQueueItem = {
   target: PromptQueueTarget;
   dispatched: boolean;
   dispatchRetries: number;
+  blockedByModelFailure?: boolean;
 };
 
 type PromptQueueRun = {
@@ -630,7 +682,7 @@ function isActivePromptQueueItem(
   if (promptQueueRuns.get(run.id) !== run || generation !== run.generation) {
     return false;
   }
-  return getActivePromptQueueItem(run) === item;
+  return getActivePromptQueueItem(run) === item && !item.blockedByModelFailure;
 }
 
 function scheduleQueuedPromptDispatch(
@@ -654,6 +706,7 @@ function isPromptQueueRunReadyToDispatch(run: PromptQueueRun) {
     item &&
       run.index >= 0 &&
       !item.dispatched &&
+      !item.blockedByModelFailure &&
       !run.waitingForTargetIdle &&
       !run.paused &&
       !run.retryTimer &&
@@ -734,6 +787,11 @@ async function dispatchQueuedPrompt(
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
+  // Keep prompts editable until the local model finishes loading.
+  if (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading) {
+    scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
+    return;
+  }
   if (
     isPromptQueueTargetRunning(
       item.target,
@@ -756,7 +814,11 @@ async function dispatchQueuedPrompt(
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  if (hasIndexingDocuments) {
+  // Recheck loading after the document probe.
+  if (
+    hasIndexingDocuments ||
+    (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading)
+  ) {
     promptQueueActiveRunIds.delete(run.id);
     scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_INDEXING_RETRY_MS);
     return;
@@ -885,6 +947,7 @@ function getPromptQueueItemStatus(
   index: number,
   activeItemIndex: number,
 ): PromptQueueUIItemStatus {
+  if (run.items[index]?.blockedByModelFailure) return "paused";
   if (run.paused && run.index >= 0 && index === activeItemIndex) {
     return "paused";
   }
@@ -951,7 +1014,7 @@ function syncPromptQueueUI() {
       local: promptQueueRunUsesLocalModel(run),
       temporary: promptQueueRunIsTemporary(run),
       dispatched: Boolean(getActivePromptQueueItem(run)?.dispatched),
-      paused: run.paused,
+      paused: run.paused || run.items.some((item) => item.blockedByModelFailure),
     };
     for (const id of ids) {
       byThreadId[id] = entry;
@@ -1232,24 +1295,81 @@ function ensurePromptQueueSubscription() {
   });
 }
 
+function steerPromptQueueTarget(target: PromptQueueTarget) {
+  const targetIds = getPromptQueueTargetIds(target);
+  const run = findPromptQueueRunByTarget(target);
+  const active = run && run.index >= 0 ? getActivePromptQueueItem(run) : null;
+  const cancelledTarget = active?.dispatched ? active.target : null;
+  pausePromptQueueRun(targetIds);
+  cancelPreStreamRunForThreadIds(targetIds);
+  try {
+    // Pausing already cancels the dispatched target once.
+    if (cancelledTarget !== target) target.cancelActiveRun();
+  } catch {
+    toast.info("Your follow-up is queued next", {
+      description: "The current response could not be interrupted.",
+    });
+  }
+  // Dispatch waits for cancellation to finish.
+  resumePromptQueueRun(targetIds);
+}
+
+function steerPromptQueueItem(itemId: string) {
+  const match = findPromptQueueRunByItemId(itemId);
+  if (!match) return false;
+  const { run, itemIndex, item } = match;
+  if (
+    item.dispatched ||
+    itemIndex < Math.max(run.index, 0) ||
+    getPromptQueueTargetIds(item.target).length === 0
+  ) {
+    return false;
+  }
+  if (item.target.researchStarted()) {
+    toast.info("Research is still running", {
+      description: "Stop research before steering with a queued prompt.",
+    });
+    return false;
+  }
+  // Move the existing item so its captured settings and identity stay intact.
+  run.items.splice(itemIndex, 1);
+  run.items.splice(steeringInsertionIndex(run.items, run.index), 0, item);
+  steerPromptQueueTarget(item.target);
+  return true;
+}
+
 function startPromptQueue(
   items: string[],
   target: PromptQueueTarget,
   waitForCurrentRun = false,
+  behavior: ComposerFollowUpBehavior = "queue",
 ) {
   const filtered = items.map((item) => item.trim()).filter(Boolean);
   if (filtered.length === 0) {
     return;
   }
 
+  const steering = behavior === "steer";
+  const targetIds = getPromptQueueTargetIds(target);
+  if (steering && targetIds.length === 0) {
+    throw new Error("The chat is no longer available for steering.");
+  }
   const existingRun = findPromptQueueRunByTarget(target);
   if (existingRun) {
     if (existingRun.deepResearchConsumed) {
       target.consumeDeepResearch();
     }
-    existingRun.items.push(
-      ...filtered.map((prompt) => createQueuedPrompt(prompt, target)),
-    );
+    const newItems = filtered.map((prompt) => createQueuedPrompt(prompt, target));
+    if (steering) {
+      existingRun.items.splice(
+        steeringInsertionIndex(existingRun.items, existingRun.index),
+        0,
+        ...newItems,
+      );
+      steerPromptQueueTarget(target);
+      return;
+    }
+    existingRun.items.push(...newItems);
     syncPromptQueueUI();
     requestPromptQueuePump();
     return;
@@ -1257,7 +1377,7 @@ function startPromptQueue(
 
   const runningByThreadId = useChatRuntimeStore.getState().runningByThreadId;
   const shouldWaitForCurrentRun =
-    waitForCurrentRun &&
+    (waitForCurrentRun || steering) &&
     isPromptQueueTargetRunning(target, runningByThreadId);
   const run: PromptQueueRun = {
     id: createPromptQueueRunId(),
@@ -1274,6 +1394,10 @@ function startPromptQueue(
   promptQueueRunOrder.push(run.id);
   syncPromptQueueUI();
   ensurePromptQueueSubscription();
+  if (steering) {
+    steerPromptQueueTarget(target);
+    return;
+  }
   if (shouldWaitForCurrentRun) {
     handlePromptQueueRunState(
       run,
@@ -1352,6 +1476,10 @@ function pausePromptQueueRun(threadIds?: string[]) {
 
 function resumePromptQueueRun(threadIds?: string[]) {
   for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
+    if (run.items.some((item) => item.blockedByModelFailure)) {
+      for (const item of run.items) item.blockedByModelFailure = false;
+      syncPromptQueueUI();
+    }
     if (!run.paused) {
       continue;
     }
@@ -1532,15 +1660,32 @@ function stopAllPromptQueueRuns() {
   }
 }
 
-function handlePromptQueueRunFailed(threadId?: string | null) {
+function handlePromptQueueRunFailed(threadId?: string | null, localOnly = false) {
+  if (localOnly) {
+    for (const run of promptQueueRuns.values()) {
+      for (const item of run.items.slice(Math.max(run.index, 0))) {
+        if (item.target.usesLocalModel && !item.dispatched) {
+          item.blockedByModelFailure = true;
+        }
+      }
+      if (getActivePromptQueueItem(run)?.blockedByModelFailure) {
+        // Invalidate the failed local attempt without disturbing external work.
+        run.generation += 1;
+        clearPromptQueueRetryTimer(run);
+        promptQueueDispatchingRunIds.delete(run.id);
+        promptQueueActiveRunIds.delete(run.id);
+      }
+    }
+    syncPromptQueueUI();
+    return;
+  }
   if (threadId) {
     const failedRun = findPromptQueueRunByThreadIds([threadId]);
     if (failedRun) {
       if (!retainPendingPromptQueueItemsAfterFailure(failedRun)) {
-        // A direct-send preflight failure invalidates follow-ups that were
-        // waiting for that run to establish a usable thread.
+        // Keep accepted follow-ups editable after a failed load or preflight.
         discardQueuedChatRunSettingsForThread(threadId);
-        deletePromptQueueRun(failedRun);
+        pausePromptQueueRun([threadId]);
       }
     } else {
       discardQueuedChatRunSettingsForThread(threadId);
@@ -1569,9 +1714,9 @@ if (typeof window !== "undefined") {
     stopAllPromptQueueRuns();
   });
   window.addEventListener(PROMPT_QUEUE_RUN_FAILED_EVENT, (event) => {
-    const { threadId } =
+    const { threadId, localOnly } =
       (event as CustomEvent<PromptQueueRunFailedEventDetail>).detail ?? {};
-    handlePromptQueueRunFailed(threadId);
+    handlePromptQueueRunFailed(threadId, localOnly);
   });
 }
 
@@ -1856,7 +2001,7 @@ export const Thread: FC<{
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
         style={{
-          ["--thread-max-width" as string]: "48rem",
+          ["--thread-max-width" as string]: "var(--custom-chat-max-width, 48rem)",
           ["--thread-content-max-width" as string]:
             "calc(var(--thread-max-width) - 1.5rem)",
         }}
@@ -2121,7 +2266,9 @@ const ThreadComposerDock: FC<{
     <div
       ref={dockRef}
       className={cn(
-        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px]",
+        // Inset both sides, not just the right: the offset keeps the bottom
+        // fade off the scrollbar, and a one-sided one also moves the centre.
+        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[10px] md:right-[10px]",
         overlay ? "z-40" : "z-20",
       )}
     >
@@ -2135,7 +2282,9 @@ const ThreadComposerDock: FC<{
             : "top-[10px]",
         )}
       />
-      <div className="relative px-5 pb-2">
+      {/* Narrow panes spend the gutter on the composer instead; index.css
+          trims it off the pane's width, not the window's. */}
+      <div className="unsloth-composer-dock-inner relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
           <ComposerAnimated
             disabled={disabled}
@@ -2245,14 +2394,15 @@ const ThreadWelcome: FC<{
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
-        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
+        {/* Matches the docked composer's gutter; index.css trims both. */}
+        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-[var(--custom-chat-welcome-padding,1rem)]">
           {/* Center the greeting (sloth + title) over the composer. */}
-          <div className="flex flex-row items-center justify-center gap-[15px]">
+          <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[15px]">
             {/* Temporary chat keeps the title on its own, no mascot. */}
             {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
-                className="size-[44px] -translate-y-[2px]"
+                className="unsloth-welcome-sloth size-[44px] -translate-y-[2px]"
               />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
@@ -2297,7 +2447,12 @@ const ComposerAnimated: FC<{
   disableQueue?: boolean;
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   return (
-    <div className="relative mx-auto min-w-0 w-full max-w-[46rem]">
+    // unsloth-composer-shell is the size container the tight (mobile) layout
+    // in index.css queries. It sits outside the surface so those rules can
+    // trim the surface's own padding.
+    // Its own width variable: every parent here is already capped by the width
+    // setting, so re-reading that one would apply the cap twice.
+    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,46rem)]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}
@@ -2359,6 +2514,8 @@ const Composer: FC<{
     (s) => s.setImageToolsEnabled,
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
@@ -2428,22 +2585,26 @@ const Composer: FC<{
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
-  // Set by Cmd/Ctrl+Enter and read once by the handleSubmit that requestSubmit
-  // reaches synchronously. Armed only when that call will happen: with no form,
-  // or no requestSubmit, it would stay armed and queue whatever submit came
-  // next.
-  const forceQueueRef = useRef(false);
-  const queueOnModEnter = useCallback(
-    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+  const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const submitIntentRef = useRef<ComposerSubmitIntent>("default");
+  const submitOnKey = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>, intent: ComposerSubmitIntent) => {
       const form = event.currentTarget.form;
-      if (typeof form?.requestSubmit !== "function") {
-        return;
-      }
-      forceQueueRef.current = true;
+      if (typeof form?.requestSubmit !== "function") return;
+      // A queue or steer chord bound onto an Enter combination lands here
+      // first, and preventDefault keeps it from ever reaching useShortcut. Run
+      // the behaviour it names, rather than the one the send chord implies.
+      const named = followUpShortcutBehavior(event);
+      submitIntentRef.current = named
+        ? followUpSubmitIntent(
+            useChatPreferencesStore.getState().followUpBehavior,
+            named,
+          )
+        : intent;
       try {
         form.requestSubmit();
-      } catch {
-        forceQueueRef.current = false;
+      } finally {
+        submitIntentRef.current = "default";
       }
     },
     [],
@@ -2454,10 +2615,22 @@ const Composer: FC<{
   // Thread on screen, so the guard can tell whether a write belongs to the
   // thread that sent. Kept in step by the effect alongside pasteDraftKeyRef.
   const draftKeyRef = useRef<string | null>(null);
+  // True while the @skill picker has a row to pick, so Enter selects it instead of sending.
+  const mentionConsumesEnterRef = useRef(false);
+  const setMentionConsumesEnter = useCallback((consumesEnter: boolean) => {
+    mentionConsumesEnterRef.current = consumesEnter;
+  }, []);
+  // True while the @skill picker is open, so Escape closes it without collapsing the composer.
+  const mentionOpenRef = useRef(false);
+  const setMentionOpen = useCallback((open: boolean) => {
+    mentionOpenRef.current = open;
+  }, []);
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({
       submitOnEnter: true,
-      onModEnter: queueOnModEnter,
+      skipEnterRef: mentionConsumesEnterRef,
+      sendShortcut,
+      onSubmitKey: submitOnKey,
       justSentRef,
       draftKeyRef,
     });
@@ -2475,6 +2648,8 @@ const Composer: FC<{
       plainPasteAtRef.current = isPlainPasteChord(event)
         ? performance.now()
         : 0;
+      // A fresh @ re-reads the skill folders, so a skill written since page load is offered.
+      if (event.key === "@") refreshSkillsCatalog();
     },
     [],
   );
@@ -2592,6 +2767,14 @@ const Composer: FC<{
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const inputId = useId();
+  const [editorHeight, setEditorHeight] = useState(40);
+  const [isWritingExpanded, setIsWritingExpanded] = useState(false);
+  const toggleWritingExpanded = () => {
+    setIsWritingExpanded((expanded) => !expanded);
+    inputRef.current?.focus({ preventScroll: true });
+  };
   // Cache line metrics so getComputedStyle runs once, not per keystroke.
   const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(
     null,
@@ -2620,6 +2803,28 @@ const Composer: FC<{
     const contentHeight = el.scrollHeight - padding;
     if (contentHeight > lineHeight * 1.5) setIsMultiline(true);
   }, [composerText, isMultiline]);
+  // Autosize's own count: it measures a detached clone, so the expanded
+  // editor's min/max-height can't inflate it the way scrollHeight would.
+  const [editorRows, setEditorRows] = useState(1);
+  const handleEditorHeightChange = useCallback(
+    (height: number, meta: { rowHeight: number }) => {
+      setEditorHeight(height);
+      if (meta.rowHeight <= 0) return;
+      const el = inputRef.current;
+      if (el && !lineMetricsRef.current) {
+        const cs = getComputedStyle(el);
+        const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
+        const padTop = Number.parseFloat(cs.paddingTop) || 0;
+        const padBottom = Number.parseFloat(cs.paddingBottom) || 0;
+        lineMetricsRef.current = { lineHeight, padding: padTop + padBottom };
+      }
+      const padding = lineMetricsRef.current?.padding ?? 0;
+      setEditorRows(Math.round((height - padding) / meta.rowHeight));
+    },
+    [],
+  );
+  // Only once the draft outgrows the compact box: a hard break, or past row 3.
+  const showWritingToggle = composerText.includes("\n") || editorRows > 3;
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
   );
@@ -3372,6 +3577,9 @@ const Composer: FC<{
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
     justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
+    // Here, not beside send(): handleSubmit returns early on the three queueing
+    // paths, which empty the composer too.
+    setIsWritingExpanded(false);
   }, []);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
@@ -3443,6 +3651,8 @@ const Composer: FC<{
         threadId: string | null;
         localModelBoundaryGeneration: number;
         queuedSettingsEpoch: number;
+        waitForCurrentRun: boolean;
+        behavior: ComposerFollowUpBehavior;
       }
     >(),
   );
@@ -3501,10 +3711,8 @@ const Composer: FC<{
   }, [aui, referenceThreadId]);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
-  // Whether the parked send is a queue gesture. A chord pressed while this
-  // chat's settings load parks like any other send, and the release path would
-  // otherwise send the prompt the user asked to stack.
-  const pendingSendForceQueueRef = useRef(false);
+  // Retain follow-up behavior across preflight waits.
+  const pendingFollowUpBehaviorRef = useRef<ComposerFollowUpBehavior>("queue");
   const waitToastRef = useRef<string | number | null>(null);
   // This chat's own settings are still on their way; a send now would run on the
   // installation defaults showing in their place.
@@ -3556,8 +3764,20 @@ const Composer: FC<{
     const usesKnowledgeBaseAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "kb";
-    const runSettingsAtQueueStart =
-      snapshotQueuedChatRunSettings(chatStateAtQueueStart);
+    const runSettingsAtQueueStart = snapshotQueuedChatRunSettings(
+      chatStateAtQueueStart,
+      {
+        // Resolve the incoming model at dispatch; retain the prompt's settings.
+        deferModelResolution:
+          chatStateAtQueueStart.modelLoading &&
+          parseExternalModelId(
+            chatStateAtQueueStart.loadingModelPick &&
+            !chatStateAtQueueStart.loadingModelPick.selectionSuperseded
+              ? chatStateAtQueueStart.loadingModelPick.id
+              : chatStateAtQueueStart.params.checkpoint,
+          ) === null,
+      },
+    );
     const getThreadListItemState = () => {
       const runtime =
         assistantRuntime ?? aui.threads().__internal_getAssistantRuntime?.();
@@ -3842,16 +4062,16 @@ const Composer: FC<{
         queuedSettingsEpoch: number;
         temporary: boolean;
       },
+      behavior: ComposerFollowUpBehavior = "queue",
     ) => {
-      const reservationKey = JSON.stringify([
-        referenceThreadId,
-        items,
-        waitForCurrentRun,
-      ]);
+      const reservationKey = JSON.stringify([referenceThreadId, items]);
       // A reservation that is still going to start owns this prompt. One that
       // is already invalid is replaced, so the retry is the one that queues.
       const existing = promptQueueStartPendingRef.current.get(reservationKey);
       if (existing && !pendingQueueStartIsStale(existing)) {
+        // A new shortcut updates the pending draft instead of sending it twice.
+        existing.waitForCurrentRun = waitForCurrentRun;
+        existing.behavior = behavior;
         return false;
       }
       const reservation = {
@@ -3865,6 +4085,8 @@ const Composer: FC<{
         queuedSettingsEpoch:
           capturedAt?.queuedSettingsEpoch ??
           useChatRuntimeStore.getState().queuedSettingsEpoch,
+        waitForCurrentRun,
+        behavior,
       };
       promptQueueStartPendingRef.current.set(reservationKey, reservation);
       void createPromptQueueTarget()
@@ -3875,7 +4097,6 @@ const Composer: FC<{
                 capturedGeneration:
                   reservation.localModelBoundaryGeneration,
                 usesLocalModel: target.usesLocalModel,
-                modelLoading: currentQueueSettings.modelLoading,
               })
             : false;
           const settingsInvalidated =
@@ -3893,7 +4114,12 @@ const Composer: FC<{
             promptQueueStartPendingRef.current.get(reservationKey) ===
               reservation
           ) {
-            startPromptQueue(items, target, waitForCurrentRun);
+            startPromptQueue(
+              items,
+              target,
+              reservation.waitForCurrentRun,
+              reservation.behavior,
+            );
             onStarted?.();
           } else if (
             promptQueueStartPendingRef.current.get(reservationKey) ===
@@ -3927,7 +4153,10 @@ const Composer: FC<{
   // The queue carries text, and a long paste is text the composer parked in a
   // chip, so fold it back in rather than refusing to queue it as a file.
   const queuePastedTextPrompt = useCallback(
-    (waitForCurrentRun: boolean): boolean => {
+    (
+      waitForCurrentRun: boolean,
+      behavior: ComposerFollowUpBehavior = "queue",
+    ): boolean => {
       const composer = aui.composer();
       const attachments = composer.getState().attachments;
       const files: File[] = [];
@@ -3981,6 +4210,7 @@ const Composer: FC<{
             });
           },
           capturedAt,
+          behavior,
         );
       };
 
@@ -4068,23 +4298,30 @@ const Composer: FC<{
   // live composer, not the rendered text, which at release time can be a commit
   // behind.
   const queueComposerText = useCallback(
-    (waitForCurrentRun: boolean) => {
+    (waitForCurrentRun: boolean, behavior: ComposerFollowUpBehavior = "queue") => {
       const queuedPrompt = aui.composer().getState().text.trim();
       if (!queuedPrompt) {
         return;
       }
-      startHydratedPromptQueue([queuedPrompt], waitForCurrentRun, () => {
-        // Guard the untrimmed text too: that is what a late write carries.
-        const cleared = aui.composer().getState().text;
-        if (cleared.trim() !== queuedPrompt) {
-          return;
-        }
-        flushResourcesSync(() => {
-          aui.composer().setText("");
-        });
-        clearStoredDraft();
-        armJustSent(queuedPrompt, cleared);
-      });
+      startHydratedPromptQueue(
+        [queuedPrompt],
+        waitForCurrentRun,
+        () => {
+          // Guard the untrimmed text too: that is what a late write carries.
+          const cleared = aui.composer().getState().text;
+          if (cleared.trim() !== queuedPrompt) {
+            return;
+          }
+          flushResourcesSync(() => {
+            aui.composer().setText("");
+          });
+          clearStoredDraft();
+          armJustSent(queuedPrompt, cleared);
+        },
+        undefined,
+        undefined,
+        behavior,
+      );
     },
     [armJustSent, aui, clearStoredDraft, startHydratedPromptQueue],
   );
@@ -4103,7 +4340,7 @@ const Composer: FC<{
 
   const cancelQueuedSend = useCallback(() => {
     pendingSendRef.current = false;
-    pendingSendForceQueueRef.current = false;
+    pendingFollowUpBehaviorRef.current = "queue";
     setPendingSend(false);
     // A dictation send held behind the same block would otherwise fire alone.
     sendAfterDictationRef.current = false;
@@ -4310,9 +4547,9 @@ const Composer: FC<{
       return;
     }
     const { text, attachments } = aui.composer().getState();
-    const forceQueue = pendingSendForceQueueRef.current;
+    const behavior = pendingFollowUpBehaviorRef.current;
     pendingSendRef.current = false;
-    pendingSendForceQueueRef.current = false;
+    pendingFollowUpBehaviorRef.current = "queue";
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
@@ -4334,7 +4571,10 @@ const Composer: FC<{
       if (isResearchActive) {
         return;
       }
-      if (waitForCurrentRun) {
+      const queueAlreadyActive = Boolean(
+        findPromptQueueEntry(usePromptQueueUI.getState(), preStreamThreadIds),
+      );
+      if (waitForCurrentRun || queueAlreadyActive) {
         // Queueing on the project new-chat composer binds the follow-up to a
         // thread that does not exist yet.
         if (disableQueue) {
@@ -4344,12 +4584,15 @@ const Composer: FC<{
         // queueComposerText clears the draft from its onStarted callback, so a
         // queue that never starts leaves the text recoverable.
         if (canQueueCurrentPrompt) {
-          queueComposerText(true);
+          queueComposerText(waitForCurrentRun, behavior);
           return;
         }
         // A long paste lives in an attachment, so queueing the text alone
         // queues nothing when that is all there is.
-        if (canQueuePastedTextPrompt && queuePastedTextPrompt(true)) {
+        if (
+          canQueuePastedTextPrompt &&
+          queuePastedTextPrompt(waitForCurrentRun, behavior)
+        ) {
           return;
         }
         // Nothing queueable while a run is live: keep it and say why. Sending
@@ -4362,17 +4605,10 @@ const Composer: FC<{
         }
         return;
       }
-      // Nothing running: the chord still queues up front, as it does live.
-      if (forceQueue && !disableQueue) {
-        if (canQueueCurrentPrompt) {
-          queueComposerText(false);
-          return;
-        }
-        if (canQueuePastedTextPrompt && queuePastedTextPrompt(false)) {
-          return;
-        }
-      }
       clearStoredDraft();
+      // Stays synchronous: deferring lets the run state above go stale, and the
+      // send is then refused after the wait toast is already gone.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- see above
       sendReservedComposer();
     }
   }, [
@@ -4402,7 +4638,7 @@ const Composer: FC<{
   useEffect(
     () => () => {
       pendingSendRef.current = false;
-      pendingSendForceQueueRef.current = false;
+      pendingFollowUpBehaviorRef.current = "queue";
       if (waitToastRef.current !== null) toast.dismiss(waitToastRef.current);
     },
     [],
@@ -4431,6 +4667,27 @@ const Composer: FC<{
   // a new chat first persists, which is the same composer.
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
+  useEffect(() => {
+    setIsWritingExpanded(false);
+  }, [composerIdentity]);
+  // Window capture runs before the document listeners where the @-mention popover
+  // closes and cancelOnEscape preventDefaults every Escape (canCancel is a runtime
+  // capability, not a live run), so defaultPrevented cannot tell them apart.
+  useEffect(() => {
+    const collapseOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        !event.isComposing &&
+        !mentionOpenRef.current &&
+        event.target instanceof Node &&
+        editorRef.current?.contains(event.target)
+      ) {
+        setIsWritingExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", collapseOnEscape, true);
+    return () => window.removeEventListener("keydown", collapseOnEscape, true);
+  }, []);
   // Keep the mic clickable: if the engine can't run here, explain and point to
   // the local model instead of disabling the button.
   const startDictation = useCallback(() => {
@@ -4514,6 +4771,41 @@ const Composer: FC<{
       textFieldException: COMPOSER_INPUT_SELECTOR,
     },
   );
+  // Same send as above, with the follow-up named rather than left to the
+  // preference. handleSubmit reads the intent ref, so ask it for the opposite
+  // whenever the preference is not already the behaviour wanted here.
+  const submitWithFollowUp = useCallback(
+    (behavior: ComposerFollowUpBehavior) => {
+      // No dictation branch: the recording bar replaces the composer, so the
+      // foreground gate below already turns these into a no-op there.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      submitIntentRef.current = followUpSubmitIntent(
+        useChatPreferencesStore.getState().followUpBehavior,
+        behavior,
+      );
+      try {
+        formRef.current?.requestSubmit();
+      } finally {
+        submitIntentRef.current = "default";
+      }
+    },
+    [],
+  );
+  const followUpShortcutOptions = {
+    enabled: chatActive && !disabled,
+    skipInTextFields: true,
+    textFieldException: COMPOSER_INPUT_SELECTOR,
+  };
+  useShortcut(
+    "queueMessage",
+    () => submitWithFollowUp("queue"),
+    followUpShortcutOptions,
+  );
+  useShortcut(
+    "steerMessage",
+    () => submitWithFollowUp("steer"),
+    followUpShortcutOptions,
+  );
   const wasDictatingRef = useRef(false);
   useEffect(() => {
     if (isDictating) {
@@ -4575,9 +4867,12 @@ const Composer: FC<{
       preventDefault: () => void;
       stopPropagation?: () => void;
     }) => {
-      // Read once per submit: a rejected send must not leave it armed.
-      const forceQueue = forceQueueRef.current;
-      forceQueueRef.current = false;
+      const behavior = composerFollowUpBehavior(
+        useChatPreferencesStore.getState().followUpBehavior,
+        submitIntentRef.current,
+      );
+      submitIntentRef.current = "default";
+      pendingFollowUpBehaviorRef.current = behavior;
       if (isResearchActive) {
         event.preventDefault();
         return;
@@ -4592,10 +4887,6 @@ const Composer: FC<{
       // defaults on screen, so a chat stored as "ask" would queue as "off".
       if (threadScopedSettingsPending && !overlay) {
         event.preventDefault();
-        // The intent rides with the parked send; the release reads it back.
-        if (forceQueue) {
-          pendingSendForceQueueRef.current = true;
-        }
         enqueueSend("settings");
         return;
       }
@@ -4638,7 +4929,10 @@ const Composer: FC<{
         if (!canQueueCurrentPrompt) {
           if (
             canQueuePastedTextPrompt &&
-            queuePastedTextPrompt(liveThreadIsRunning || livePreStreamRunActive)
+            queuePastedTextPrompt(
+              liveThreadIsRunning || livePreStreamRunActive,
+              behavior,
+            )
           ) {
             return;
           }
@@ -4655,25 +4949,11 @@ const Composer: FC<{
           }
           return;
         }
-        queueComposerText(liveThreadIsRunning || livePreStreamRunActive);
+        queueComposerText(
+          liveThreadIsRunning || livePreStreamRunActive,
+          behavior,
+        );
         return;
-      }
-
-      // Cmd/Ctrl+Enter queues even with nothing running, so prompts can be
-      // stacked up front. The queue dispatches this one immediately; the next
-      // Cmd/Ctrl+Enter lands behind it.
-      if (forceQueue && !disableQueue) {
-        if (canQueueCurrentPrompt) {
-          event.preventDefault();
-          queueComposerText(false);
-          return;
-        }
-        if (canQueuePastedTextPrompt) {
-          event.preventDefault();
-          if (queuePastedTextPrompt(false)) {
-            return;
-          }
-        }
       }
 
       if (interceptSend(event)) return;
@@ -4815,6 +5095,7 @@ const Composer: FC<{
           onIndexingChange={handleIndexingChange}
         />
       </div>
+      {!isDictating ? <ComposerDraftPreview text={composerText} /> : null}
       {!isDictating ? <ToolStatusDisplay /> : null}
       <div
         className="unsloth-composer-line"
@@ -4866,28 +5147,74 @@ const Composer: FC<{
           />
         ) : (
           <>
-            <ComposerPrimitive.Input
-              placeholder={
-                overlay ? "Type your edits for your image" : "Ask anything"
+            <div
+              ref={editorRef}
+              className="unsloth-composer-editor"
+              style={
+                {
+                  "--composer-editor-height": `${composerText.length === 0 ? 40 : Math.max(40, editorHeight)}px`,
+                } as CSSProperties
               }
-              ref={inputRef}
-              className="aui-composer-input unsloth-composer-input"
-              minRows={1}
-              maxRows={12}
-              autoFocus={!disabled}
-              disabled={disabled}
-              aria-label={overlay ? "Image edit instructions" : "Message input"}
-              // dir="auto": browser picks LTR/RTL from the first strong char;
-              // no effect on Latin / CJK / Devanagari.
-              dir="auto"
-              {...inputProps}
-              // Capture, so inputProps keeps the handlers it already owns.
-              onKeyDownCapture={notePlainPasteChord}
-              onKeyUpCapture={endPlainPasteChord}
-              onBlurCapture={endPlainPasteChord}
-              addAttachmentOnPaste={false}
-              onPaste={handleFilePaste}
-            />
+            >
+              <ComposerPrimitive.Input
+                id={inputId}
+                submitMode="none"
+                placeholder={
+                  overlay ? "Type your edits for your image" : "Ask anything"
+                }
+                ref={inputRef}
+                className="aui-composer-input unsloth-composer-input"
+                minRows={1}
+                maxRows={12}
+                onHeightChange={handleEditorHeightChange}
+                autoFocus={!disabled}
+                disabled={disabled}
+                aria-label={overlay ? "Image edit instructions" : "Message input"}
+                // dir="auto": browser picks LTR/RTL from the first strong char;
+                // no effect on Latin / CJK / Devanagari.
+                dir="auto"
+                {...inputProps}
+                // Capture, so inputProps keeps the handlers it already owns.
+                onKeyDownCapture={notePlainPasteChord}
+                onKeyUpCapture={endPlainPasteChord}
+                onBlurCapture={endPlainPasteChord}
+                addAttachmentOnPaste={false}
+                onPaste={handleFilePaste}
+              />
+              {(showWritingToggle || isWritingExpanded) && (
+                <TooltipIconButton
+                  type="button"
+                  tooltip={
+                    isWritingExpanded ? "Collapse composer" : "Expand composer"
+                  }
+                  aria-expanded={isWritingExpanded}
+                  aria-controls={inputId}
+                  disabled={disabled}
+                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={toggleWritingExpanded}
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2.25}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="size-4"
+                    aria-hidden={true}
+                  >
+                    <path
+                      d={
+                        isWritingExpanded
+                          ? "M13 2v5h5M2 13h5v5"
+                          : "M11 4h5v5M4 11v5h5"
+                      }
+                    />
+                  </svg>
+                </TooltipIconButton>
+              )}
+            </div>
             <ComposerRightControls
               disabled={
                 disabled ||
@@ -4901,36 +5228,7 @@ const Composer: FC<{
                 disableQueue ||
                 !(canQueueCurrentPrompt || canQueuePastedTextPrompt)
               }
-              onQueueClick={() => {
-                if (disableQueue) return;
-                // Same pasted-text path the Enter key takes, or the button
-                // would refuse what submitting the form accepts.
-                if (
-                  canQueuePastedTextPrompt &&
-                  queuePastedTextPrompt(true)
-                ) {
-                  return;
-                }
-                const queuedPrompt = composerText.trim();
-                if (queuedPrompt.length === 0) {
-                  return;
-                }
-                startHydratedPromptQueue(
-                  [queuedPrompt],
-                  true,
-                  () => {
-                    const cleared = aui.composer().getState().text;
-                    if (cleared.trim() !== queuedPrompt) {
-                      return;
-                    }
-                    flushResourcesSync(() => {
-                      aui.composer().setText("");
-                    });
-                    clearStoredDraft();
-                    armJustSent(queuedPrompt, cleared);
-                  },
-                );
-              }}
+              onQueueClick={() => formRef.current?.requestSubmit()}
               // ComposerPrimitive.Send handles clicks itself rather than
               // submitting the form, so run the complete queue/capacity path.
               onSendClick={handleSubmit}
@@ -4953,6 +5251,12 @@ const Composer: FC<{
 
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
+    <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      <SkillMentionPopover
+        enabled={supportsTools}
+        onConsumesEnterChange={setMentionConsumesEnter}
+        onOpenChange={setMentionOpen}
+      />
     <ComposerPrimitive.Root
       ref={attachComposer}
       // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
@@ -4960,6 +5264,9 @@ const Composer: FC<{
       // on the toolbar instead of on the conversation.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-composer-root relative flex w-full flex-col"
+      data-writing-expanded={
+        isWritingExpanded && !isDictating ? "true" : undefined
+      }
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
@@ -4993,7 +5300,7 @@ const Composer: FC<{
               no layout shift and the drop still lands. */}
           <div
             className={cn(
-              "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
+              "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
               pageDragging && "opacity-100",
             )}
           >
@@ -5009,6 +5316,7 @@ const Composer: FC<{
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
+    </ComposerPrimitive.Unstable_TriggerPopoverRoot>
     </PromptQueueContext.Provider>
   );
 };
@@ -5065,13 +5373,21 @@ const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers({
   submitOnEnter = false,
-  onModEnter,
+  skipEnterRef,
+  onSubmitKey,
+  sendShortcut = "enter",
   justSentRef,
   draftKeyRef,
 }: {
   submitOnEnter?: boolean;
-  /** Cmd/Ctrl+Enter without Shift, claimed before the plain-Enter submit. */
-  onModEnter?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  /** Set while a composer popover will consume plain Enter itself. */
+  skipEnterRef?: RefObject<boolean>;
+  /** The selected send chord, carrying the one-message follow-up override. */
+  onSubmitKey?: (
+    event: KeyboardEvent<HTMLTextAreaElement>,
+    intent: ComposerSubmitIntent,
+  ) => void;
+  sendShortcut?: ComposerSendShortcut;
   // Guard armed by the last send or queue. See setComposerText below.
   justSentRef?: RefObject<SentTextGuard | null>;
   // Thread on screen. The composer outlives a thread switch, so this is what
@@ -5225,21 +5541,22 @@ function useImeComposerInputHandlers({
         // rather than waiting for the 2500ms watchdog.
         setCompositionState(false);
       }
-      if (onModEnter && isPromptQueueChord(e)) {
-        e.preventDefault();
-        onModEnter(e);
-        return;
-      }
-      if (submitOnEnter && e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        e.currentTarget.form?.requestSubmit();
+      if (submitOnEnter && !skipEnterRef?.current) {
+        const intent = composerSubmitIntent(e, sendShortcut);
+        if (intent) {
+          e.preventDefault();
+          if (onSubmitKey) onSubmitKey(e, intent);
+          else e.currentTarget.form?.requestSubmit();
+        }
       }
     },
     [
       justSentRef,
-      onModEnter,
+      onSubmitKey,
+      sendShortcut,
       refreshStuckTimer,
       setCompositionState,
+      skipEnterRef,
       submitOnEnter,
     ],
   );
@@ -5306,9 +5623,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     (s) => s.reasoningEffortLevels,
   );
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
-  const lastOpenRouterChosenModel = useChatRuntimeStore(
-    (s) => s.lastOpenRouterChosenModel,
-  );
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
   );
@@ -5327,17 +5641,13 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   );
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
-  const effectiveExternalModelId =
-    selectedExternalProvider?.providerType === "openrouter" &&
-    externalSelection?.modelId === "openrouter/free" &&
-    lastOpenRouterChosenModel
-      ? lastOpenRouterChosenModel
-      : externalSelection?.modelId;
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const externalReasoningCaps =
     externalSelection != null
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
-          effectiveExternalModelId,
+          // The adapter resolves reasoning for the selected id; openrouter/free can route each turn elsewhere.
+          externalSelection?.modelId,
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
@@ -5360,8 +5670,14 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
+  // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
+  // drops the stored level is shown truthfully without overwriting the choice.
+  const displayedEffort =
+    effectiveReasoningEffortLevels.length > 0
+      ? clampReasoningEffortToLevels(reasoningEffort, effectiveReasoningEffortLevels)
+      : reasoningEffort;
   const effectiveReasoningVisualEnabled =
-    effectiveReasoningEnabled && reasoningEffort !== "none";
+    effectiveReasoningEnabled && displayedEffort !== "none";
   const disabled = !(modelLoaded && effectiveSupportsReasoning);
   const formatEffortLabel = (level: typeof reasoningEffort): string => {
     if (level !== "xhigh")
@@ -5375,7 +5691,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     }
     return "Extra High";
   };
-  const effortLabel = formatEffortLabel(reasoningEffort);
+  const effortLabel = formatEffortLabel(displayedEffort);
 
   // Only rendered for models that can reason.
   if (!effectiveSupportsReasoning) {
@@ -5411,7 +5727,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             aria-label={thinkEffortAriaLabel({
               modelLoaded,
               reasoningDisabled: disabled,
-              reasoningEffort,
+              reasoningEffort: displayedEffort,
             })}
           >
             <ThinkIcon />
@@ -5475,7 +5791,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                       "unsloth-tick size-4",
                       !(
                         effectiveReasoningVisualEnabled &&
-                        reasoningEffort === level
+                        displayedEffort === level
                       ) && "opacity-0",
                     )}
                   />
@@ -5865,6 +6181,7 @@ const ComposerToolsMenu: FC<{
   side?: "top" | "bottom";
   researchAvailable: boolean;
 }> = ({ side = "bottom", researchAvailable }) => {
+  const t = useT();
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
@@ -5884,6 +6201,8 @@ const ComposerToolsMenu: FC<{
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   // Shared gate so the menu row agrees with the RAG pill.
   const ragDisabled = useRagToolDisabled();
+  // The permission pill is hidden while recording, so the menu carries it then.
+  const isDictating = useAuiState((s) => s.composer.dictation != null);
   // Capability gating mirrors the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
@@ -5965,6 +6284,7 @@ const ComposerToolsMenu: FC<{
   }, [navigate]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
@@ -6075,6 +6395,12 @@ const ComposerToolsMenu: FC<{
         ) : null}
       </DropdownMenuItem>
     ),
+    skills: (
+      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+        <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={2} />
+        Agent Skills
+      </DropdownMenuItem>
+    ),
     savedPrompts: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -6182,7 +6508,6 @@ const ComposerToolsMenu: FC<{
         ) : null}
       </DropdownMenuItem>
     ) : null,
-    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -6219,6 +6544,7 @@ const ComposerToolsMenu: FC<{
 
   return (
     <>
+    <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
@@ -6362,22 +6688,30 @@ const ComposerToolsMenu: FC<{
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
+        {isDictating ? <BypassPermissionsMenuItem /> : null}
         {pinnedPlusItems.map((id) => (
           <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
         ))}
-        {overflowPlusItems.length > 0 ? (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>
-              <MoreHorizontalIcon className="size-4" />
-              More
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-              {overflowPlusItems.map((id) => (
-                <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        ) : null}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <MoreHorizontalIcon className="size-4" />
+            More
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+            {overflowPlusItems.map((id) => (
+              <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+            ))}
+            {overflowPlusItems.length > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuItem
+              onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
+                scrollTarget: "chat-composer",
+              })}
+            >
+              <SlidersHorizontalIcon className="size-4" />
+              {t("composerSettings.settings")}
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
       <NewProjectDialog
@@ -6388,30 +6722,6 @@ const ComposerToolsMenu: FC<{
   );
 };
 
-function promptQueueStatusLabel(status: PromptQueueUIItemStatus) {
-  switch (status) {
-    case "running":
-      return "Running now";
-    case "waiting":
-      return "Waiting";
-    case "next":
-      return "Next";
-    case "paused":
-      return "Paused";
-    case "queued":
-      return "Queued";
-    default: {
-      const exhaustiveStatus: never = status;
-      throw new Error(`Unhandled prompt queue status: ${exhaustiveStatus}`);
-    }
-  }
-}
-
-// dataTransfer.getData is blocked during dragover, but types is always readable.
-function isPromptQueueDrag(event: ReactDragEvent): boolean {
-  return isPromptQueueDragTypes(event.dataTransfer?.types);
-}
-
 const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
   queueThreadIds,
 }) => {
@@ -6419,223 +6729,23 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
     findPromptQueueEntry(s, queueThreadIds),
   );
   const items = usePromptQueueUI((s) => s.items);
-  const [editingItemId, setEditingItemId] = useState<string | null>(null);
-  const [draftPrompt, setDraftPrompt] = useState("");
-  const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
-  const [dragOverItemId, setDragOverItemId] = useState<string | null>(null);
-  const editInputRef = useRef<HTMLTextAreaElement>(null);
   const visibleItems = queueEntry
     ? items.filter((item) => item.runId === queueEntry.runId)
     : [];
-  const editingItem = visibleItems.find((item) => item.id === editingItemId);
-  const activeEditingItemId = editingItem ? editingItemId : null;
 
-  useEffect(() => {
-    if (!activeEditingItemId) {
-      return;
-    }
-    editInputRef.current?.focus();
-    editInputRef.current?.select();
-  }, [activeEditingItemId]);
-
-  if (!queueEntry || visibleItems.length === 0) {
-    return null;
-  }
-
-  const { current, total } = queueEntry;
-
-  const startEditing = (item: PromptQueueUIItem) => {
-    if (!item.canEdit) {
-      return;
-    }
-    setEditingItemId(item.id);
-    setDraftPrompt(item.prompt);
-  };
-  const saveEditing = () => {
-    if (!activeEditingItemId) {
-      return;
-    }
-    if (editPromptQueueItem(activeEditingItemId, draftPrompt)) {
-      setEditingItemId(null);
-      setDraftPrompt("");
-    }
-  };
-  const cancelEditing = () => {
-    setEditingItemId(null);
-    setDraftPrompt("");
-  };
-  const endDrag = () => {
-    setDraggingItemId(null);
-    setDragOverItemId(null);
-  };
-  // Keyboard equivalent of a drag, since HTML5 drag events never fire for keys.
-  const moveByOffset = (index: number, offset: number) => {
-    const target = visibleItems[index + offset];
-    if (!target) {
-      return;
-    }
-    movePromptQueueItem(visibleItems[index].id, target.id);
-  };
-  const reorderable = visibleItems.length > 1;
+  if (!queueEntry || visibleItems.length === 0) return null;
 
   return (
-    <div
-      className="relative z-0 mx-7 mb-[-8px] max-h-[28dvh] overflow-y-auto rounded-t-[18px] rounded-b-none border border-border/45 bg-background/90 px-5 py-2 text-muted-foreground shadow-none backdrop-blur-md dark:bg-card/85"
-      aria-label={`Prompt queue, ${current} of ${total}`}
-    >
-      <div className="divide-y divide-border/25">
-        {visibleItems.map((item, visibleIndex) => {
-          const isEditing = item.id === activeEditingItemId;
-          const visiblePosition = visibleIndex + 1;
-          return (
-            <div
-              key={item.id}
-              className={cn(
-                "min-h-10",
-                isEditing ? "h-auto" : "h-10",
-                draggingItemId === item.id && "opacity-40",
-                dragOverItemId === item.id &&
-                  draggingItemId !== item.id &&
-                  "rounded-md ring-1 ring-ring/60",
-              )}
-              draggable={reorderable && !isEditing}
-              onDragStart={(event) => {
-                setDraggingItemId(item.id);
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData(PROMPT_QUEUE_DRAG_TYPE, item.id);
-              }}
-              onDragEnd={endDrag}
-              onDragOver={(event) => {
-                // Own type only: a file dragged over a row must reach the page
-                // dropzone, which skips events already prevented here.
-                if (!isPromptQueueDrag(event) || draggingItemId === item.id) {
-                  return;
-                }
-                event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
-                setDragOverItemId(item.id);
-              }}
-              onDragLeave={() => {
-                setDragOverItemId((id) => (id === item.id ? null : id));
-              }}
-              onDrop={(event) => {
-                if (!isPromptQueueDrag(event)) {
-                  return;
-                }
-                event.preventDefault();
-                const sourceId =
-                  event.dataTransfer.getData(PROMPT_QUEUE_DRAG_TYPE) ||
-                  draggingItemId;
-                if (sourceId) {
-                  movePromptQueueItem(sourceId, item.id);
-                }
-                endDrag();
-              }}
-              aria-label={`${promptQueueStatusLabel(item.status)} prompt ${visiblePosition} of ${visibleItems.length}: ${item.prompt}`}
-            >
-              {isEditing ? (
-                <div className="grid min-h-10 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2.5 py-1">
-                  <textarea
-                    ref={editInputRef}
-                    value={draftPrompt}
-                    rows={1}
-                    onChange={(event) =>
-                      setDraftPrompt(event.currentTarget.value)
-                    }
-                    onKeyDown={(event) => {
-                      if (
-                        event.key === "Enter" &&
-                        (event.metaKey || event.ctrlKey)
-                      ) {
-                        event.preventDefault();
-                        saveEditing();
-                      } else if (event.key === "Escape") {
-                        event.preventDefault();
-                        cancelEditing();
-                      }
-                    }}
-                    className="max-h-20 min-h-8 min-w-0 resize-none rounded-md border border-border/45 bg-transparent px-2 py-1.5 text-sm leading-5 text-foreground outline-none transition-colors focus-visible:border-ring"
-                    aria-label={`Edit queued prompt ${visiblePosition}`}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs text-muted-foreground"
-                    onClick={cancelEditing}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    disabled={draftPrompt.trim().length === 0}
-                    onClick={saveEditing}
-                  >
-                    Save
-                  </Button>
-                </div>
-              ) : (
-                <div className="grid h-10 grid-cols-[minmax(0,1fr)_auto_2rem] items-center gap-2.5">
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    {reorderable ? (
-                      <button
-                        type="button"
-                        className="shrink-0 cursor-grab text-muted-foreground/50 outline-none hover:text-muted-foreground focus-visible:text-foreground active:cursor-grabbing"
-                        aria-label={`Reorder queued prompt ${visiblePosition} of ${visibleItems.length}`}
-                        onKeyDown={(event) => {
-                          if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
-                            return;
-                          }
-                          event.preventDefault();
-                          moveByOffset(
-                            visibleIndex,
-                            event.key === "ArrowUp" ? -1 : 1,
-                          );
-                        }}
-                      >
-                        <CornerDownRightIcon className="size-4" />
-                      </button>
-                    ) : (
-                      <CornerDownRightIcon className="size-4 shrink-0 text-muted-foreground/50" />
-                    )}
-                    <div className="truncate text-sm text-muted-foreground">
-                      {item.prompt}
-                    </div>
-                  </div>
-                  {item.canEdit ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-[5.25rem] justify-center gap-1 px-0 text-sm font-normal text-muted-foreground/80 hover:text-foreground"
-                      onClick={() => startEditing(item)}
-                    >
-                      <HugeiconsIcon icon={Edit03Icon} strokeWidth={2} />
-                      Edit
-                    </Button>
-                  ) : null}
-                  <TooltipIconButton
-                    tooltip="Remove from queue"
-                    side="bottom"
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="col-start-3 size-7 justify-self-center text-muted-foreground/70 hover:text-destructive"
-                    aria-label={`Remove queued prompt ${visiblePosition}`}
-                    disabled={!item.canRemove}
-                    onClick={() => removePromptQueueItem(item.id)}
-                  >
-                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} />
-                  </TooltipIconButton>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    <PromptQueueList
+      key={queueEntry.runId}
+      entry={queueEntry}
+      items={visibleItems}
+      onEdit={editPromptQueueItem}
+      onRemove={removePromptQueueItem}
+      onMove={movePromptQueueItem}
+      onSteer={steerPromptQueueItem}
+      onResume={() => resumePromptQueueRun(queueThreadIds)}
+    />
   );
 };
 
@@ -6662,6 +6772,20 @@ const ComposerRightControls: FC<{
   menuSide,
   queueThreadIds,
 }) => {
+  const t = useT();
+  const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
+  const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
+  const followUpLabel = t(
+    followUpBehavior === "queue"
+      ? "promptQueue.queueButton"
+      : "promptQueue.steerButton",
+  );
+  const followUpTooltip = t("promptQueue.followUpTooltip", {
+    action: followUpLabel,
+    send: shortcutLabels.send,
+    opposite: shortcutLabels.opposite,
+  });
   const queueEntry = usePromptQueueUI((s) =>
     findPromptQueueEntry(s, queueThreadIds),
   );
@@ -6736,11 +6860,10 @@ const ComposerRightControls: FC<{
           aria-label="Dictate"
           type="button"
           variant="ghost"
-          className="size-8 rounded-full text-foreground"
+          className="size-9 rounded-full text-foreground"
           onClick={onDictateClick}
         >
-          {/* size-[22px] is the fallback; unsloth-dictate-icon sets the size. */}
-          <MicIcon className="unsloth-dictate-icon size-[22px]" />
+          <MicIcon className="unsloth-dictate-icon size-6" />
         </TooltipIconButton>
       </ComposerPrimitive.If>
       <AuiIf
@@ -6750,7 +6873,11 @@ const ComposerRightControls: FC<{
       >
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
-            tooltip={pendingSend ? "Waiting for documents…" : "Send message"}
+            tooltip={
+              pendingSend
+                ? "Waiting for documents…"
+                : t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
+            }
             side="bottom"
             type="submit"
             variant="default"
@@ -6760,7 +6887,7 @@ const ComposerRightControls: FC<{
             disabled={disabled || pendingSend}
             onClick={(event) => onSendClick?.(event)}
             className="aui-composer-send ml-1.5 size-9 rounded-full"
-            aria-label="Send message"
+            aria-label={t("promptQueue.sendLabel")}
           >
             {pendingSend ? (
               <Spinner className="size-[18px]" />
@@ -6783,7 +6910,8 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              <FastForwardIcon className="size-[18px] stroke-2" />
+              {/* Solid glyph, so it is smaller than the stroked send arrow. */}
+              <QueueResumeIcon className="size-4" />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
@@ -6798,7 +6926,7 @@ const ComposerRightControls: FC<{
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip="Queue message"
+              tooltip={followUpTooltip}
               side="bottom"
               type="button"
               variant="default"
@@ -6806,7 +6934,7 @@ const ComposerRightControls: FC<{
               disabled={disabled || queueDisabled}
               onClick={onQueueClick}
               className="aui-composer-send ml-1.5 size-9 rounded-full"
-              aria-label="Queue message"
+              aria-label={followUpLabel}
             >
               <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
@@ -6831,7 +6959,9 @@ const ComposerRightControls: FC<{
         </Button>
       ) : (
         <AuiIf condition={({ thread }) => thread.isRunning}>
-          <div className="ml-1.5 flex items-center">
+          {/* Classed so the narrow-screen rules can treat this like the
+              sibling send/stop buttons; it is the flex item, not the button. */}
+          <div className="aui-composer-run-controls ml-1.5 flex items-center">
             {queueDisabled ? (
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
@@ -6847,7 +6977,7 @@ const ComposerRightControls: FC<{
             </ComposerPrimitive.Cancel>
             ) : (
             <TooltipIconButton
-              tooltip="Queue message"
+              tooltip={followUpTooltip}
               side="bottom"
               type="button"
               variant="default"
@@ -6855,7 +6985,7 @@ const ComposerRightControls: FC<{
               disabled={queueDisabled}
               onClick={onQueueClick}
               className="aui-composer-send size-9 rounded-full"
-              aria-label="Queue message"
+              aria-label={followUpLabel}
             >
               <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
@@ -7224,8 +7354,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
           className="h-7 shrink-0 gap-1.5 text-xs"
           onClick={handleContinue}
         >
-          <FastForwardIcon strokeWidth={1.75} className="size-3.5" />
-          Continue
+          <QueueResumeIcon className="size-3.5" />
+          Resume
         </Button>
       )}
     </div>
@@ -7243,6 +7373,10 @@ const ImageGenerationToolUIConfirmable = withToolConfirmation(
   ImageGenerationToolUI,
 );
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
+// Read at render time, not module scope: the skill modules reach the chat barrel.
+const ReadSkillToolUIConfirmable = withToolConfirmation((props) => (
+  <ReadSkillToolUI {...props} />
+));
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
 
 /**
@@ -7264,6 +7398,7 @@ const ASSISTANT_PART_COMPONENTS = {
     by_name: {
       web_search: WebSearchToolUIConfirmable,
       search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+      read_skill: ReadSkillToolUIConfirmable,
       python: PythonToolUIConfirmable,
       terminal: TerminalToolUIConfirmable,
       code_execution: CodeExecutionToolUIConfirmable,
@@ -7273,6 +7408,7 @@ const ASSISTANT_PART_COMPONENTS = {
     Fallback: ToolFallbackConfirmable,
   },
 } as const;
+
 
 // Live in-place denoising canvas for DiffusionGemma: while generating, render the
 // latest per-step canvas snapshot in the bubble so the user watches the answer resolve
@@ -8338,6 +8474,7 @@ const UserActionBar: FC = () => {
 
 const EditComposer: FC = () => {
   const aui = useAui();
+  const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
   const researchActive = useThreadResearchActive();
@@ -8354,6 +8491,7 @@ const EditComposer: FC = () => {
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
       <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted">
         <ComposerPrimitive.Input
+          submitMode={sendShortcut === "mod-enter" ? "ctrlEnter" : "enter"}
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
           autoFocus={true}
           // See main composer above for the dir="auto" rationale.

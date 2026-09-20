@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Imports Open WebUI JSON arrays, OpenAI/ShareGPT JSONL, and role/content CSV. JSON records
- *  stream individually so large exports never become one JS string. */
+/** Imports Studio chat backups, Open WebUI JSON arrays, OpenAI/ShareGPT JSONL, and role/content
+ *  CSV. JSON records stream individually so large exports never become one JS string. */
 
-import { notifyChatHistoryUpdated } from "../api/chat-api";
+import {
+  ChatThreadWriteError,
+  listChatProjects,
+  notifyChatHistoryUpdated,
+  saveChatProject,
+} from "../api/chat-api";
 import type { MessageRecord, ParsedConversation, ThreadRecord } from "../types";
 import {
   deleteStoredChatThreads,
@@ -27,6 +32,11 @@ import {
   isOpenAIMessageRecord,
   messageJsonlConversationRecord,
 } from "./ndjson";
+import {
+  isStudioChatBackup,
+  studioBackupProjects,
+  studioBackupToConversations,
+} from "./studio-backup-import";
 
 /** CSV has no record framing to stream on, so it is still read whole. */
 const CSV_MAX_BYTES = 64 * 1024 * 1024;
@@ -206,6 +216,14 @@ function oaiMessagesToRecords(
   return records;
 }
 
+const SHAREGPT_ROLES = new Map<string, MessageRecord["role"]>([
+  ["human", "user"],
+  ["user", "user"],
+  ["gpt", "assistant"],
+  ["assistant", "assistant"],
+  ["system", "system"],
+]);
+
 function sharegptToRecords(
   conversations: unknown[],
   threadId: string,
@@ -219,7 +237,7 @@ function sharegptToRecords(
     const from = typeof conv.from === "string" ? conv.from : "";
     const value = typeof conv.value === "string" ? conv.value : "";
     if (!value.trim()) continue;
-    const role: MessageRecord["role"] = from === "human" ? "user" : from === "system" ? "system" : "assistant";
+    const role = SHAREGPT_ROLES.get(from.trim().toLowerCase()) ?? "assistant";
     const id = crypto.randomUUID();
     records.push({
       id,
@@ -314,6 +332,10 @@ export function parseImportText(
       continue;
     }
     index++;
+    if (isStudioChatBackup(record)) {
+      results.push(...studioBackupToConversations(record, basename));
+      continue;
+    }
     if (isOpenAIMessageRecord(record)) {
       messageRecords.push(record);
       continue;
@@ -333,18 +355,39 @@ export function parseImportText(
 
 async function writeConversation(
   conversation: ParsedConversation,
-  projectId: string | null,
+  projectId: string | null | undefined,
 ): Promise<void> {
   const { title, threadId, messages } = conversation;
   const thread: ThreadRecord = {
     id: threadId,
     title,
     modelType: "base",
-    projectId: projectId ?? null,
     archived: conversation.archived ?? false,
     createdAt: messages[0]?.createdAt ?? conversation.createdAt ?? Date.now(),
+    ...conversation.thread,
+    // undefined is "the caller did not choose", which is the only case where the backup's own
+    // grouping decides. null is a choice: the projects page offers Recents as a destination and
+    // says so in its toast, so a backup must not quietly file the chats under projects instead.
+    projectId:
+      projectId === undefined
+        ? (conversation.thread?.projectId ?? null)
+        : projectId,
   };
-  await saveStoredChatThread(thread);
+  try {
+    await saveStoredChatThread(thread);
+  } catch (error) {
+    // A settings snapshot is the one field a backup can carry that this build may not accept:
+    // the thread endpoint validates it strictly, so one knob added by a newer Studio fails the
+    // whole write. The chat matters more than its settings, so drop them and try once more.
+    // Only for a rejection, though: a timeout or a 5xx is not the snapshot's fault and dropping
+    // it would lose the user's temperature and seed to an unrelated failure, silently, while
+    // reporting the chat imported.
+    const { settings, ...withoutSettings } = thread;
+    const rejected =
+      error instanceof ChatThreadWriteError && error.status === 422;
+    if (!rejected || settings === undefined || settings === null) throw error;
+    await saveStoredChatThread(withoutSettings);
+  }
   try {
     await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
   } catch (error) {
@@ -355,9 +398,29 @@ async function writeConversation(
   }
 }
 
+async function restoreBackupProjects(
+  backup: Record<string, unknown>,
+): Promise<Set<string>> {
+  const projects = studioBackupProjects(backup);
+  if (projects.length === 0) return new Set();
+  const known = new Set(
+    (await listChatProjects({ includeArchived: true })).map(({ id }) => id),
+  );
+  for (const project of projects) {
+    if (known.has(project.id)) continue;
+    try {
+      await saveChatProject(project);
+      known.add(project.id);
+    } catch {
+      // Its chats still import, ungrouped.
+    }
+  }
+  return known;
+}
+
 export async function importConversationsFromSource(
   source: ImportSource,
-  projectId: string | null = null,
+  projectId?: string | null,
   options: ImportOptions = {},
 ): Promise<ImportResult> {
   const basename = source.name.replace(/\.[^.]+$/, "");
@@ -405,23 +468,33 @@ export async function importConversationsFromSource(
         messageRecords.push(record);
         continue;
       }
-      const conversation = recordToConversation(record, `${basename} ${index}`);
-      if (!conversation) continue;
+      const conversations = isStudioChatBackup(record)
+        ? studioBackupToConversations(
+            record,
+            basename,
+            projectId === undefined
+              ? await restoreBackupProjects(record).catch(() => new Set<string>())
+              : undefined,
+          )
+        : [recordToConversation(record, `${basename} ${index}`)];
 
-      const task = writeConversation(conversation, projectId)
-        .then(() => {
-          progress.imported++;
-        })
-        .catch(() => {
-          // Keep importing after one conversation fails to save.
-          progress.failed++;
-        })
-        .finally(() => {
-          inFlight.delete(task);
-          if ((progress.imported + progress.failed) % 25 === 0) report();
-        });
-      inFlight.add(task);
-      if (inFlight.size >= WRITE_CONCURRENCY) await Promise.race(inFlight);
+      for (const conversation of conversations) {
+        if (!conversation) continue;
+        const task = writeConversation(conversation, projectId)
+          .then(() => {
+            progress.imported++;
+          })
+          .catch(() => {
+            // Keep importing after one conversation fails to save.
+            progress.failed++;
+          })
+          .finally(() => {
+            inFlight.delete(task);
+            if ((progress.imported + progress.failed) % 25 === 0) report();
+          });
+        inFlight.add(task);
+        if (inFlight.size >= WRITE_CONCURRENCY) await Promise.race(inFlight);
+      }
     }
   } catch (error) {
     // A read that dies partway still leaves earlier chats saved.
@@ -462,7 +535,7 @@ export async function importConversationsFromSource(
 
 export async function importConversationsFromFile(
   file: File,
-  projectId: string | null = null,
+  projectId?: string | null,
   options: ImportOptions = {},
 ): Promise<ImportResult> {
   return importConversationsFromSource(

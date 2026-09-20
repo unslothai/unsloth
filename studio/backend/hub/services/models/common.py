@@ -34,8 +34,7 @@ LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "herm
 
 
 def _safe_is_dir(path) -> bool:
-    # Py >= 3.12 propagates PermissionError (EACCES) from is_dir(), and folder scans probe root-owned
-    # system dirs, so treat un-stat-able paths as not-a-dir.
+    # Py >= 3.12 propagates PermissionError (EACCES) from is_dir(), and folder scans probe root-owned system dirs, so treat un-stat-able paths as not-a-dir.
     try:
         return Path(path).is_dir()
     except OSError:
@@ -249,8 +248,7 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
         "squeezebert",
         "vision-text-dual-encoder",
         "xlm-roberta",
-        # Vision and audio backbones: their bare *Model names carry no task suffix, so only the model type
-        # identifies them.
+        # Vision and audio backbones: their bare *Model names carry no task suffix, so only the model type identifies them.
         "beit",
         "convnext",
         "convnextv2",
@@ -283,33 +281,24 @@ _MAX_LOCAL_JSON_BYTES = 1 << 20
 
 
 def _read_local_json_object(path: Path) -> dict:
-    """Config metadata, or ``{}``. Never raises: one unreadable file must not
-    fail the whole scan."""
+    """Config metadata, or ``{}``. Never raises: one unreadable file must not fail the whole scan."""
     try:
         # is_file() also skips a FIFO, whose read would block the scan forever.
         if not path.is_file() or path.stat().st_size > _MAX_LOCAL_JSON_BYTES:
             return {}
         data = json.loads(path.read_text(encoding = "utf-8"))
         return data if isinstance(data, dict) else {}
-    # ValueError covers JSONDecodeError and UnicodeDecodeError; deeply nested JSON raises
-    # RecursionError, which is neither.
+    # ValueError covers JSONDecodeError and UnicodeDecodeError; deeply nested JSON raises RecursionError, which is neither.
     except (ValueError, OSError, RecursionError):
         return {}
 
 
 def _local_transformers_can_chat(path: Path) -> Optional[bool]:
-    """False for a locally identifiable non-generative Transformers row.
-
-    ``None`` means inconclusive and the format capability stands, so a custom
-    architecture is never hidden. Without this, an embedding export is
-    chat-capable on file format alone, and those are small enough that chat
-    auto-load spends its whole attempt budget on them.
-    """
+    """False for a locally identifiable non-generative Transformers row. ``None`` means inconclusive and the format capability stands, so a custom architecture is never hidden. Without this, an embedding export is chat-capable on file format alone, and those are small enough that chat auto-load spends its whole attempt budget on them."""
     if not _safe_is_dir(path):
         return None
 
-    # Before every architecture test below: a TTS model is an ordinary causal LM wearing a codec
-    # vocabulary (Orpheus is LlamaForCausalLM), so the suffix rules answer True and auto-load picks it.
+    # Before every architecture test below: a TTS model is an ordinary causal LM wearing a codec vocabulary (Orpheus is LlamaForCausalLM), so the suffix rules answer True and auto-load picks it.
     if detect_local_tts_audio_type(path) is not None:
         return False
 
@@ -347,8 +336,7 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
         return True
     if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
         return False
-    # AutoModel.save_pretrained on a chat family writes the backbone name, which has no LM head. Listed
-    # explicitly, not shape-matched, so an unfamiliar FooModel still fails open.
+    # AutoModel.save_pretrained on a chat family writes the backbone name, which has no LM head. Listed explicitly, not shape-matched, so an unfamiliar FooModel still fails open.
     if names and all(name in _BARE_TEXT_BACKBONE_ARCHITECTURES for name in names):
         return False
 
@@ -386,16 +374,13 @@ def _base_transformers_can_chat(
     except (OSError, RuntimeError, ValueError):
         return None
 
-    # The scan covers legacy and previously configured roots, so an adapter can be listed from an
-    # inactive root with its base cached beside it; the active root alone answered None, which is
-    # inconclusive and left encoder LoRAs in the chat picker.
+    # The scan covers legacy and previously configured roots, so an adapter can be listed from an inactive root with its base cached beside it; the active root alone answered None, which is inconclusive and left encoder LoRAs in the chat picker.
     try:
         from huggingface_hub import try_to_load_from_cache
     except Exception:
         return None
 
-    # Each source collected independently: under one try, a failure enumerating the OPTIONAL extra roots
-    # discarded the adapter's own root too and answered None.
+    # Each source collected independently: under one try, a failure enumerating the OPTIONAL extra roots discarded the adapter's own root too and answered None.
     roots: list[Path] = []
 
     def _add(root: Optional[Path]) -> None:
@@ -428,8 +413,7 @@ def _base_transformers_can_chat(
             )
         except Exception:
             continue
-        # A non-str is _CACHED_NO_EXIST ("we know it is absent here") or None ("unknown"), and neither rules the base
-        # out of a different root.
+        # A non-str is _CACHED_NO_EXIST ("we know it is absent here") or None ("unknown"), and neither rules the base out of a different root.
         if isinstance(found, str):
             config_path = found
             break
@@ -544,8 +528,7 @@ def _apply_format_aware_partial(
         if not target:
             rewritten.append(row)
             continue
-        # GGUF row-level transport is ambiguous, since variants may differ; per-variant detail lives on
-        # GgufVariantDetail.partial_transport.
+        # GGUF row-level transport is ambiguous, since variants may differ; per-variant detail lives on GgufVariantDetail.partial_transport.
         partial_transport = None if row.model_format == "gguf" else snapshot_partial_transport
         rewritten.append(
             row.model_copy(

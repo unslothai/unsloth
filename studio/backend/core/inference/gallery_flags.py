@@ -100,7 +100,6 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
     try:
         with open(_store_path(directory), encoding = "utf-8-sig") as f:
             data = json.load(f)
-        # validate the shape, not just the version
         # Validate the shape, not just the version: a hand-edited ``items`` that is not a dict (e.g. ``[]``) would
         # otherwise crash every lookup instead of failing safe.
         if (
@@ -111,11 +110,10 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
             # Written over an illegible store, so what it does NOT say is not evidence.
             if data.get(_TAINT_KEY):
                 return data, False
-            # every ENTRY must be readable too: a malformed value is dropped by the readers
             # Every ENTRY has to be readable too, not just the container. A malformed value is dropped by the readers
             # below, which reads as "this id is not archived" -- enough for clear() to delete an archived file. So one
-            # bad entry costs the store its trust, but the surviving entries are still returned: listing should keep the
-            # flags it can read, and only destructive callers need to refuse.
+            # bad entry costs the store its trust, but the surviving entries are still returned: listing should keep
+            # the flags it can read, and only destructive callers need to refuse.
             if all(_valid_entry(v) for v in data["items"].values()):
                 return data, True
             logger.warning(
@@ -331,11 +329,10 @@ def set_flags_locked(
     write land as one step. Separate for the same per-descriptor lock reason as ``forget_locked``."""
     import time
 
-    # a write REPAIRS the store: merging the bad entry back would leave every later clear() refused
-    # A write REPAIRS the store rather than preserving what made it untrusted. Merging the bad entry straight back would
-    # leave every later clear() refused until someone fixed the file by hand, and refusing here instead would leave the
-    # user unable to pin anything at all. Dropping only the unreadable entries keeps the flags that still mean
-    # something.
+    # A write REPAIRS the store rather than preserving what made it untrusted. Merging the bad entry straight back
+    # would leave every later clear() refused until someone fixed the file by hand, and refusing here instead would
+    # leave the user unable to pin anything at all. Dropping only the unreadable entries keeps the flags that still
+    # mean something.
     data = _carry_taint(*_load(directory))
     items: dict[str, Any] = {}
     for key, value in data.get("items", {}).items():
@@ -346,10 +343,9 @@ def set_flags_locked(
     entry = dict(_entry(items, item_id))
     if pinned is not None:
         if pinned:
-            # strictly ahead of every stored stamp, not just the wall clock
             # Strictly ahead of every stamp stored, not just the wall clock: Windows advances time.time() in ~16 ms
-            # steps, so two pins a click apart landed on the same value and "most recently pinned leads" stopped holding
-            # for exactly the case the client serializes its PATCHes to preserve.
+            # steps, so two pins a click apart landed on the same value and "most recently pinned leads" stopped
+            # holding for exactly the case the client serializes its PATCHes to preserve.
             latest = max(
                 (_pinned_at(v) for v in items.values() if _pinned_at(v) is not None),
                 default = float("-inf"),
