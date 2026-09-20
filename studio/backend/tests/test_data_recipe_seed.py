@@ -1064,6 +1064,41 @@ def test_seed_hf_path_stops_at_the_sharded_names_the_loader_reads_first(monkeypa
     assert matched == ["data/train-00000-of-00001.parquet"]
 
 
+@pytest.mark.parametrize(
+    "configs",
+    [
+        [
+            {
+                "config_name": "default",
+                "data_dir": "./data",
+                "data_files": [
+                    {"split": "train", "path": "a.parquet"},
+                    {"split": "test", "path": "b.parquet"},
+                ],
+            }
+        ],
+        [
+            {
+                "config_name": "default",
+                "data_dir": ".",
+                "data_files": [
+                    {"split": "train", "path": "./data/a.parquet"},
+                    {"split": "test", "path": "./data/b.parquet"},
+                ],
+            }
+        ],
+    ],
+)
+def test_seed_hf_path_reads_a_card_that_spells_paths_with_a_dot(monkeypatch, tmp_path, configs):
+    """The listing has no ./ in it, so a card carrying one has to lose it."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/a.parquet", "data/b.parquet"]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    assert resolved == "datasets/org/repo/data/a.parquet"
+
+
 def test_seed_hf_path_unions_an_exact_and_a_qualified_split_folder(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["train/0.parquet", "sets/train_a/1.parquet", "sets/test_b/2.parquet"]

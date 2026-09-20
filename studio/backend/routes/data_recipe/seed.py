@@ -196,7 +196,10 @@ def _declared_split_patterns(
     config = _pick_config(configs, subset)
     if config is None:
         return []
-    patterns = _patterns_for_split(config.get("data_files"), split.lower())
+    patterns = [
+        _normalized_glob(pattern)
+        for pattern in _patterns_for_split(config.get("data_files"), split.lower())
+    ]
     folder = _config_folder(config)
     # `data_dir` scopes the config, and its `data_files` are relative to it.
     return (
@@ -206,9 +209,20 @@ def _declared_split_patterns(
     )
 
 
+def _normalized_glob(pattern: str) -> str:
+    """The pattern as the listing spells it: no leading ./ and no bare dot.
+
+    `datasets` runs `os.path.normpath` over `data_dir` before it resolves
+    anything (`builder.py`), while `list_repo_files` returns data/train.parquet
+    with no dot at all, so ./data has to lose it here or match nothing.
+    """
+    parts = [part for part in pattern.strip().split("/") if part not in ("", ".")]
+    return "/".join(parts)
+
+
 def _config_folder(config: dict[str, Any]) -> str:
     folder = config.get("data_dir")
-    return folder.strip().strip("/") if isinstance(folder, str) and folder.strip() else ""
+    return _normalized_glob(folder) if isinstance(folder, str) else ""
 
 
 def _config_scope(configs: list[dict[str, Any]], subset: str | None) -> str:
