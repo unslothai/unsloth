@@ -274,6 +274,29 @@ try {
     Check "a path and its own child are still one volume" (
         Test-StudioSameVolume -PathA $StudioHome -PathB (Join-Path $StudioHome "child"))
 
+    Write-Host "picking the volume that holds a path, including a directory mount point"
+    # The matching, with the volume list supplied rather than read from CIM, so the mount-point
+    # cases run on a host that has no mount points. Paths are POSIX here because GetFullPath is,
+    # but the question under test is which Name wins, which is the same either way.
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    $rootVol  = [pscustomobject]@{ Name = "$sep";                 DeviceID = "root";  FreeSpace = 1GB }
+    $mountVol = [pscustomobject]@{ Name = "${sep}studio$sep";     DeviceID = "mount"; FreeSpace = 2GB }
+    $otherVol = [pscustomobject]@{ Name = "${sep}studiofoo$sep";  DeviceID = "other"; FreeSpace = 3GB }
+    $vols = @($rootVol, $mountVol, $otherVol)
+    Check "a path under a mount point picks the mounted volume" (
+        (Select-StudioVolumeForPath -Path "${sep}studio${sep}cache" -Volumes $vols).DeviceID -eq "mount")
+    # The regression this section exists for: the mount point itself has no trailing separator.
+    Check "the mount point itself picks the mounted volume, not the drive root" (
+        (Select-StudioVolumeForPath -Path "${sep}studio" -Volumes $vols).DeviceID -eq "mount")
+    Check "a sibling whose name merely starts the same does not match it" (
+        (Select-StudioVolumeForPath -Path "${sep}studiofoo" -Volumes $vols).DeviceID -eq "other")
+    Check "a path under neither falls to the root volume" (
+        (Select-StudioVolumeForPath -Path "${sep}elsewhere${sep}x" -Volumes $vols).DeviceID -eq "root")
+    Check "nothing to choose from is not an error" (
+        $null -eq (Select-StudioVolumeForPath -Path "${sep}studio" -Volumes @()))
+    Check "an empty path chooses nothing" (
+        $null -eq (Select-StudioVolumeForPath -Path "" -Volumes $vols))
+
     Write-Host "the free-space warning names both figures and the opt-out, and never aborts"
     # Stub the two measurements rather than filling a real disk.
     [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null

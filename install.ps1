@@ -2769,21 +2769,36 @@ exit 1
     # they are mounted at, so the longest Name that prefixes a path names the volume really
     # holding it. Best effort: off Windows, or wherever CIM cannot answer, every caller falls
     # back to the drive-root logic this shipped with, which is right for a lettered volume.
+    # Split out so the matching can be exercised without a mount point to mount: no host in CI
+    # has one, and it is the part with the edge cases.
+    function Select-StudioVolumeForPath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+              [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Volumes)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        $full = [System.IO.Path]::GetFullPath($Path)
+        # Name carries a trailing separator and GetFullPath does not, so a path that IS the mount
+        # point (UNSLOTH_STUDIO_HOME set to C:\studio itself, the natural way to use one) would
+        # miss its own volume and fall back to the drive root. Append one and both ends agree,
+        # while C:\studiofoo still cannot match a volume mounted at C:\studio.
+        if (-not $full.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+            $full += [System.IO.Path]::DirectorySeparatorChar
+        }
+        $best = $null
+        foreach ($vol in $Volumes) {
+            if (-not $vol -or -not $vol.Name) { continue }
+            if (-not $full.StartsWith($vol.Name, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ((-not $best) -or $vol.Name.Length -gt $best.Name.Length) { $best = $vol }
+        }
+        return $best
+    }
+
     function Get-StudioMountedVolume {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
         if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) { return $null }
         try {
-            $full = [System.IO.Path]::GetFullPath($Path)
-            $best = $null
-            foreach ($vol in @(Get-CimInstance -ClassName Win32_Volume -ErrorAction Stop)) {
-                if (-not $vol.Name) { continue }
-                # Name carries its trailing separator, so this cannot match C:\studiofoo against
-                # a volume mounted at C:\studio.
-                if (-not $full.StartsWith($vol.Name, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-                if ((-not $best) -or $vol.Name.Length -gt $best.Name.Length) { $best = $vol }
-            }
-            return $best
+            return (Select-StudioVolumeForPath -Path $Path `
+                -Volumes @(Get-CimInstance -ClassName Win32_Volume -ErrorAction Stop))
         } catch { return $null }
     }
 
