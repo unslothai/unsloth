@@ -22,7 +22,11 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastA
 
 from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
-from hub.services.datasets.local_options import _SEP, _SPLIT_KEYWORDS
+from hub.services.datasets.local_options import (
+    _MAX_MODULE_INFERENCE_FILES,
+    _SEP,
+    _SPLIT_KEYWORDS,
+)
 from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from loggers import get_logger
@@ -411,7 +415,9 @@ def _dominant_suffix(paths: list[str]) -> str:
     (`local_options._one_module`).
     """
     counts: dict[str, int] = {}
-    for path in paths:
+    # The same window the loader infers from, so a split whose formats change
+    # past it is read as the loader reads it rather than as the whole listing.
+    for path in sorted(paths)[:_MAX_MODULE_INFERENCE_FILES]:
         suffix = Path(path).suffix.lower()
         counts[suffix] = counts.get(suffix, 0) + 1
     if not counts:
@@ -428,9 +434,8 @@ def _of_suffix(paths: list[str], suffix: str) -> list[str]:
 
 
 def _common_name_prefix(paths: list[str]) -> str:
-    names = [Path(path).name for path in paths]
-    shared = os.path.commonprefix(names) if names else ""
-    return shared if len(set(Path(p).parent.as_posix() for p in paths)) == 1 else ""
+    """What the file names share before the extension, which the glob supplies."""
+    return os.path.commonprefix([Path(path).stem for path in paths]) if paths else ""
 
 
 def _widened_declared_pattern(
@@ -453,8 +458,12 @@ def _widened_declared_pattern(
     candidates = [f"{base}/*{label}*{suffix}" for label in _split_labels(split_lower)]
     candidates += [f"{prefix}**/*{label}*/**/*{suffix}" for label in _split_labels(split_lower)]
     # Declared files that say nothing about the split may still share a name the
-    # neighbouring splits do not, as data/part-a beside data/part-b.
-    candidates.append(f"{prefix}{_common_name_prefix(declared_files)}*{suffix}")
+    # neighbouring splits do not, as data/part-a beside data/part-b, or
+    # sets/a/part beside sets/b/part with a test file in sets/c.
+    shared_name = _common_name_prefix(declared_files)
+    if shared_name:
+        candidates.append(f"{prefix}{shared_name}*{suffix}")
+        candidates.append(f"{prefix}**/{shared_name}*{suffix}")
     for candidate in candidates:
         if set(_files_under_patterns([candidate], data_files)) == wanted:
             return candidate
