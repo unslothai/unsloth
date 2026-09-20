@@ -162,6 +162,8 @@ export const ko = {
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "채팅 없음",
       showMore: "더 보기",
       showLess: "간략히 보기",
       settings: "설정",
@@ -1253,7 +1255,11 @@ export const ko = {
       },
       gpu: {
         title: "GPU 장치",
-        ggufInference: "GGUF 추론",
+        memory: "GPU 메모리",
+        sharedWithSystemRam: "시스템 RAM과 공유",
+        estimatedAvailable: "예상 사용 가능: {value}",
+        sharedEstimatedAvailable: "공유 시스템 RAM: 예상 사용 가능 {value}",
+        ggufInference: "GGUF 모델 메모리",
         unavailable: "사용할 수 없음",
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",

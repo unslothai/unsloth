@@ -6,6 +6,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AttachmentIcon,
   FileDatabaseIcon,
+  FolderAttachmentIcon,
   Folder02Icon,
 } from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -135,7 +136,7 @@ function InheritedProjectSources({
         className="composer-pill-btn shrink-0 cursor-default !text-foreground/60"
         title="This chat retrieves from its project's sources. Manage them in the project's Sources tab."
       >
-        <HugeiconsIcon icon={Folder02Icon} strokeWidth={2} className="size-3.5" />
+        <HugeiconsIcon icon={FolderAttachmentIcon} strokeWidth={2} className="size-3.5" />
         <span>Project sources</span>
       </span>
       {/* Same cap as the editable list: a linked folder can carry hundreds of

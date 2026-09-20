@@ -99,11 +99,11 @@ import {
 } from "./utils/conversation-markdown";
 import {
   Archive03Icon,
-  BookOpen01Icon,
   BubbleChatTemporaryIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  FolderAttachmentIcon,
   Folder01Icon,
   Folder02Icon,
   FolderExportIcon,
@@ -1967,7 +1967,8 @@ function ProjectLanding({
                               strokeWidth={1.75}
                               className="size-icon"
                             />
-                            <span>Move to project</span>
+                            {/* Same label the sidebar row menu uses. */}
+                            <span>Project</span>
                           </DropdownMenuSubTrigger>
                           <DropdownMenuSubContent className="unsloth-plus-menu w-52">
                             <DropdownMenuItem
@@ -2024,11 +2025,11 @@ function ProjectLanding({
                           onSelect={() => void handleSaveAsSource(item)}
                         >
                           <HugeiconsIcon
-                            icon={BookOpen01Icon}
+                            icon={FolderAttachmentIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
-                          <span>Save to project sources</span>
+                          <span>Project sources</span>
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
