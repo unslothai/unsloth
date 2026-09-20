@@ -7,6 +7,8 @@ Drives the real DDGS engine selector through ``execute_tool``; only each engine'
 replaced, so the tier strings really are resolved by ddgs and a fan-out cannot hide.
 """
 
+import time
+
 import pytest
 
 from ddgs.engines import ENGINES
@@ -165,6 +167,49 @@ def test_disabled_engines_are_dropped_from_a_tier(monkeypatch, engine_calls):
     # code, because its shuffle sometimes filled the result budget before reaching Yandex.
     assert contacted <= set(TIER1) - {"duckduckgo"}, f"an engine outside tier 1 ran: {contacted}"
     assert "yandex" not in contacted
+
+
+def test_the_caller_timeout_is_one_budget_for_both_tiers(monkeypatch, engine_calls):
+    """Tier 2 must inherit what is LEFT of the timeout, not a fresh copy of it.
+
+    ddgs applies `timeout` per client, as both the engine HTTP timeout and the fan-out wait, so
+    handing tier 2 the original value doubles what the caller asked for.
+    """
+    from ddgs.ddgs import DDGS
+
+    budgets = []
+    real_init = DDGS.__init__
+
+    def recording_init(self, *args, **kwargs):
+        budgets.append(kwargs.get("timeout"))
+        return real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(DDGS, "__init__", recording_init)
+    # Tier 1 burns most of the budget before coming back empty, so tier 2 runs with what is left.
+    def slow_tier_one(name):
+        if name in TIER1:
+            return "empty"
+        return "results"
+    engine_calls.install(slow_tier_one)
+    for name in TIER1:
+        cls = ENGINES["text"].get(name)
+        if cls is not None:
+            inner = cls.search
+            monkeypatch.setattr(
+                cls, "search", lambda self, q, _i = inner, **k: (time.sleep(0.3), _i(self, q, **k))[1]
+            )
+
+    tools.execute_tool("web_search", {"query": "unsloth", "timeout": 3})
+
+    tier_budgets = [b for b in budgets if isinstance(b, (int, float))]
+    assert len(tier_budgets) >= 3, f"expected a client per tier, saw {budgets}"
+    # Each value is the budget REMAINING when that tier starts, so the invariant is that it shrinks
+    # and never exceeds what the caller asked for. Summing them would be summing overlapping windows.
+    assert tier_budgets == sorted(tier_budgets, reverse = True), f"budget did not shrink: {tier_budgets}"
+    assert tier_budgets[-1] < tier_budgets[0], (
+        f"tier 2 was handed {tier_budgets[-1]}, not the remainder of {tier_budgets[0]}"
+    )
+    assert max(tier_budgets) <= tier_budgets[0], "a tier was handed more than the original budget"
 
 
 def test_the_resolver_never_names_an_engine_outside_the_tiers():
