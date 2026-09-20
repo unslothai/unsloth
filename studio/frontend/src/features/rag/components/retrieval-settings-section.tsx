@@ -118,7 +118,7 @@ export function RetrievalSettingsSection() {
   );
 
   return (
-    <div className="flex flex-col gap-5 pt-1">
+    <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-2">
         <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Search mode
