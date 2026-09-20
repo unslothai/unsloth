@@ -98,7 +98,8 @@ class _Trainer:
 def _run(source: str, inputs: dict):
     """Rewrite `source`, exec it, and call it. Returns whatever `max_left_pad` ended up as."""
     rewritten = grpo_trainer__generate_and_score_completions(
-        "_generate_and_score_completions", source,
+        "_generate_and_score_completions",
+        source,
     )
     # The rewriter also injects calls to helpers rl.py supplies at module scope. Only the
     # left-pad probe is under test here, so the rest are no-ops that pass their input through.
@@ -110,13 +111,15 @@ def _run(source: str, inputs: dict):
         "_unsloth_grpo_vision_inputs": lambda inputs: {},
         "sanitize_logprob": lambda x: x,
     }
-    exec(compile(re.sub(r"^    ", "", rewritten, flags = re.MULTILINE), "<rewritten>", "exec"), namespace)
+    exec(
+        compile(re.sub(r"^    ", "", rewritten, flags = re.MULTILINE), "<rewritten>", "exec"),
+        namespace,
+    )
     return namespace["_generate_and_score_completions"](_Trainer(), inputs)
 
 
 def _sentinel_tensor():
     import torch
-
     return torch.tensor([7])
 
 
@@ -162,7 +165,9 @@ def test_the_window_still_binds_what_this_probe_expects() -> None:
         source = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
         assert source is not None, f"{tag}: grpo_trainer.py not found"
         method = re.search(
-            r"\n    def _generate_and_score_completions\(.*?(?=\n    def |\Z)", source, re.S,
+            r"\n    def _generate_and_score_completions\(.*?(?=\n    def |\Z)",
+            source,
+            re.S,
         )
         assert method, f"{tag}: no _generate_and_score_completions"
         before_anchor = method.group(0).split(ANCHOR)[0]
