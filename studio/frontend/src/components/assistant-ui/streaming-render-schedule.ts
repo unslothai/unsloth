@@ -143,8 +143,59 @@ function isCodeBlock(block: string): boolean {
   const backtick = BACKTICK_OPENER_RE.exec(block);
   return backtick === null || !backtick[1].includes("`");
 }
+// The reference half of the same pair, and it has to admit exactly what the definition probe
+// above admits or the widening there is unreachable: a label only resolves when BOTH ends
+// carry it, so a 201-character label failed here and the reply stayed on the blocks path with
+// the reference still literal (unslothai/unsloth#9540). Same class, same cap, same `u`.
 const LINK_REFERENCE_RE =
-  /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
+  /!?\[(?:\\[\s\S]|[^\]\\]){1,999}\]\[(?:\\[\s\S]|[^\]\\]){0,999}\]/u;
+// Label side as above, plus `[` and the optional `!`; the reference side needs no `!`.
+const LINK_REFERENCE_WINDOW = 999 * 3 + 3;
+
+// First `]` at or after `from` that closes rather than being escaped, or -1.
+function unescapedClose(text: string, from: number): number {
+  for (let i = text.indexOf("]", from); i >= 0; i = text.indexOf("]", i + 1)) {
+    if (!isEscaped(text, i)) {
+      return i;
+    }
+  }
+  return -1;
+}
+// Same predicate as the regex over the whole reply, for the same reason as `hasLinkDefinition`:
+// widening the cap to 999 multiplies the backtracking budget at every start position, so the
+// scan runs from the rare `][` instead. Neither label admits a bare `]`, which bounds a
+// candidate on both sides: it opens after the last unescaped `]` before the seam and closes at
+// the first one after it. Both cursors only advance, so the escape walks stay linear overall.
+// A seam whose closing `]` sits past the cap cannot match at all and is skipped without a test.
+function hasLinkReference(text: string): boolean {
+  let close = -1;
+  let nextClose = text.indexOf("]");
+  let after = -1;
+  for (let mid = text.indexOf("]["); mid >= 0; mid = text.indexOf("][", mid + 1)) {
+    while (nextClose >= 0 && nextClose < mid) {
+      if (!isEscaped(text, nextClose)) {
+        close = nextClose;
+      }
+      nextClose = text.indexOf("]", nextClose + 1);
+    }
+    if (after < mid + 2) {
+      after = unescapedClose(text, mid + 2);
+    }
+    if (after < 0 || after - mid - 2 > LINK_REFERENCE_WINDOW) {
+      continue;
+    }
+    let start = mid < LINK_REFERENCE_WINDOW ? 0 : mid - LINK_REFERENCE_WINDOW;
+    if (close > start) {
+      start = close + 1;
+    }
+    // `start`, not the last `[`: the class admits `[` inside a label, so an earlier one can
+    // match where the last one fails. Skip test only, as in `hasLinkDefinition`.
+    if (LINK_REFERENCE_RE.test(text.slice(start, after + 1))) {
+      return true;
+    }
+  }
+  return false;
+}
 // Still the first line of a single block, for `updateLinkDefinitionParity` below.
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
@@ -189,7 +240,7 @@ function blocksOf(markdown: string): readonly string[] {
 // a normalised copy misses it and costs a CRLF reply two splits per render.
 function documentProse(markdown: string): string | null {
   const normalized = normalizeLineEndings(markdown);
-  if (!LINK_REFERENCE_RE.test(normalized) || !hasLinkDefinition(normalized)) {
+  if (!hasLinkReference(normalized) || !hasLinkDefinition(normalized)) {
     return null;
   }
   const prose = normalizeLineEndings(
@@ -197,7 +248,7 @@ function documentProse(markdown: string): string | null {
       .filter((block) => !isCodeBlock(block))
       .join("\n"),
   );
-  return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
+  return LINK_DEFINITION_LINE_RE.test(prose) && hasLinkReference(prose)
     ? prose
     : null;
 }

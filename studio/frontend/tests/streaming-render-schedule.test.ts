@@ -897,3 +897,39 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
   assert.ok(invalidMedian < 100,
     `500k of \`[]:\` cost ${invalidMedian.toFixed(1)}ms; invalid candidates are being rescanned`);
 });
+
+test("a reference label past the old cap still resolves against its definition", () => {
+  // The two probes have to agree on what a label is. The definition probe was widened to
+  // Marked's 999, the reference probe was left at 200, and a label only resolves when BOTH
+  // ends carry it -- so every label in 201..999 kept the reply on the blocks path with the
+  // reference rendered literally (unslothai/unsloth#9540).
+  for (const length of [200, 201, 400, 999]) {
+    const label = "L".repeat(length);
+    const reply = `See [guide][${label}].\n\n[${label}]: https://x.test/a\n`;
+    assert.equal(markdownRenderScope(reply), "document",
+      `a ${length}-character label did not reach the document path`);
+    assert.equal(markdownRenderKey(reply), `document:[${label}]: https://x.test/a`);
+  }
+  // 999 is Marked's cap, so a longer label is not a reference and must not widen the scope.
+  const tooLong = "L".repeat(1000);
+  assert.equal(markdownRenderScope(`See [guide][${tooLong}].\n\n[${tooLong}]: /u\n`), "blocks");
+});
+
+test("a run of `[` before a reference does not walk the widened label budget", () => {
+  // Widening the cap to 999 multiplies the backtracking budget at every start position, and a
+  // long run of `[` supplies one per character: measured over the whole reply the widened regex
+  // costs 1743ms at 500k against 385ms for the old narrow one, so the widening alone would have
+  // been a 4.5x regression on this shape. Bounding each `][` seam instead costs 7.7ms.
+  // Absolute and loose, so a much slower runner still separates it from either.
+  const run = `${"[".repeat(500000)}][x]`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(run + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(run + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 150,
+    `500k of \`[\` cost ${median.toFixed(1)}ms; the reference probe is walking every start position`);
+});
