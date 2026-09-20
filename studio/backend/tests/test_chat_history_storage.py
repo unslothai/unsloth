@@ -2598,22 +2598,39 @@ def test_a_first_turn_that_registered_before_its_row_still_holds_the_project(
         assert active_generations.active_project_ids() == [], "the row existed too early"
 
         # The row lands mid-run ...
-        studio_db.upsert_chat_thread({
-            "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
-            "projectId": project["id"], "archived": 0, "createdAt": 1, "updatedAt": 1,
-        })
+        studio_db.upsert_chat_thread(
+            {
+                "id": thread_id,
+                "title": "t",
+                "modelType": "gguf",
+                "modelId": "m",
+                "projectId": project["id"],
+                "archived": 0,
+                "createdAt": 1,
+                "updatedAt": 1,
+            }
+        )
         assert project["id"] in active_generations.active_project_ids()
 
         # ... and is then moved out, which used to take the run out of both answers.
-        studio_db.upsert_chat_thread({
-            "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
-            "projectId": None, "archived": 0, "createdAt": 1, "updatedAt": 2,
-        })
+        studio_db.upsert_chat_thread(
+            {
+                "id": thread_id,
+                "title": "t",
+                "modelType": "gguf",
+                "modelId": "m",
+                "projectId": None,
+                "archived": 0,
+                "createdAt": 1,
+                "updatedAt": 2,
+            }
+        )
         assert studio_db.project_thread_ids(project["id"]) == []
 
         changed, _ = tools.update_project_workspace_when_idle(
             project["id"],
             lambda: studio_db.set_chat_project_workspace(
-                project["id"], external_workspace_path = str(second)),
+                project["id"], external_workspace_path = str(second)
+            ),
         )
         assert not changed, "a first turn lost its project and the workspace rotated"
