@@ -104,3 +104,45 @@ def test_format_and_template_dataset_passes_the_dropped_rows_warning_through():
     assert result["success"] is True
     assert len(result["dataset"]) == 5
     assert result["dropped_rows_warning"].startswith("Dropped 3 of 8 rows")
+
+
+def test_a_column_named_like_the_marker_is_not_clobbered():
+    """A dataset may already carry a column named like the internal marker."""
+    dataset = _mixed_dataset().add_column(
+        "__chat_template_error", [f"user-data-{i}" for i in range(8)]
+    )
+
+    result = apply_chat_template_to_dataset(_dataset_info(dataset), _StrictTokenizer())
+
+    assert result["success"] is True
+    formatted = result["dataset"]
+    assert len(formatted) == 5
+    assert sorted(formatted.column_names) == ["__chat_template_error", "messages", "text"]
+    assert formatted["__chat_template_error"] == [
+        f"user-data-{i}" for i in (0, 2, 3, 6, 7)
+    ]
+
+
+def test_all_rows_failing_still_returns_the_dropped_rows_key():
+    dataset = Dataset.from_dict({"messages": [_convo(i, with_system = True) for i in range(3)]})
+
+    result = apply_chat_template_to_dataset(_dataset_info(dataset), _StrictTokenizer())
+
+    assert result["success"] is False
+    assert result["dropped_rows_warning"] is None
+
+
+def test_a_template_that_renders_empty_is_not_treated_as_a_failure():
+    """Only a raised exception drops a row; a legitimately empty render stays."""
+
+    class _BlankTokenizer(_StrictTokenizer):
+        def apply_chat_template(self, conversation, **_kwargs):
+            return ""
+
+    dataset = Dataset.from_dict({"messages": [_convo(i) for i in range(3)]})
+
+    result = apply_chat_template_to_dataset(_dataset_info(dataset), _BlankTokenizer())
+
+    assert result["success"] is True
+    assert len(result["dataset"]) == 3
+    assert result["dropped_rows_warning"] is None

@@ -337,6 +337,13 @@ def apply_chat_template_to_dataset(
 
         streamed_failures = []
 
+        # Never clobber a real column: a dataset is allowed to already carry one named
+        # like our marker, and remove_columns would then delete the user's own data.
+        existing_columns = set(getattr(dataset, "column_names", None) or ())
+        error_column = _TEMPLATE_ERROR_COLUMN
+        while error_column in existing_columns:
+            error_column += "_"
+
         def _format_chatml(examples):
             convos = examples[chat_column]
             texts = []
@@ -360,7 +367,7 @@ def apply_chat_template_to_dataset(
                     texts.append("")
                     row_errors.append(str(e) or type(e).__name__)
 
-            return {"text": texts, _TEMPLATE_ERROR_COLUMN: row_errors}
+            return {"text": texts, error_column: row_errors}
 
         def _keep_streamed_row(row_error):
             if row_error and not streamed_failures:
@@ -419,10 +426,10 @@ def apply_chat_template_to_dataset(
             dropped_rows_warning = None
             if is_iterable:
                 formatted_dataset = formatted_dataset.filter(
-                    _keep_streamed_row, input_columns = [_TEMPLATE_ERROR_COLUMN]
-                ).remove_columns(_TEMPLATE_ERROR_COLUMN)
+                    _keep_streamed_row, input_columns = [error_column]
+                ).remove_columns(error_column)
             elif len(formatted_dataset):
-                row_errors = list(formatted_dataset[_TEMPLATE_ERROR_COLUMN])
+                row_errors = list(formatted_dataset[error_column])
                 failed = [row_error for row_error in row_errors if row_error]
                 if failed and len(failed) == len(row_errors):
                     errors.append(
@@ -432,7 +439,8 @@ def apply_chat_template_to_dataset(
                         "dataset": dataset,
                         "success": False,
                         "warnings": warnings,
-                        "errors": errors
+                        "errors": errors,
+                        "dropped_rows_warning": None,
                     }
                 if failed:
                     formatted_dataset = formatted_dataset.select(
@@ -443,7 +451,7 @@ def apply_chat_template_to_dataset(
                         f"chat template failed: {failed[0]}"
                     )
                     warnings.append(dropped_rows_warning)
-                formatted_dataset = formatted_dataset.remove_columns(_TEMPLATE_ERROR_COLUMN)
+                formatted_dataset = formatted_dataset.remove_columns(error_column)
 
             return {
                 "dataset": formatted_dataset,

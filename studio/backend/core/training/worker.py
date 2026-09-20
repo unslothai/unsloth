@@ -2748,6 +2748,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
+            else:
+                errors = info.get("errors", [])
+                raise ValueError(
+                    f"Dataset format conversion failed: {'; '.join(errors)}"
+                )
             if info.get("dropped_rows_warning"):
                 _send("warning", message = info["dropped_rows_warning"])
             dataset_final_format = str(info.get("final_format", "") or "").lower()
@@ -2763,6 +2768,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
+                else:
+                    eval_errors = ev.get("errors", [])
+                    raise ValueError(
+                        f"Eval dataset format conversion failed: {'; '.join(eval_errors)}"
+                    )
+                if ev.get("dropped_rows_warning"):
+                    _send("warning", message = f"Eval dataset: {ev['dropped_rows_warning']}")
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
