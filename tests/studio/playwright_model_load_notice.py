@@ -253,6 +253,27 @@ async def layout(fixture, artifacts):
     assert not fixture.errors, fixture.errors
 
 
+async def media_actions(fixture, artifacts):
+    page = fixture.page
+    await fixture.open()
+    show = page.get_by_role("button", name = "Show media model load", exact = True)
+    await show.click()
+    toast = page.locator(".chat-model-load-toast")
+    await expect(toast).to_have_count(1)
+    await expect(toast.locator("[data-close-button]")).to_have_count(0)
+    await expect(toast.get_by_role("button", name = "Cancel loading", exact = True)).to_have_count(1)
+    await expect(toast.get_by_role("button", name = "Hide", exact = True)).to_have_count(1)
+    await toast.screenshot(path = str(artifacts / "media-loading.png"))
+    await toast.get_by_role("button", name = "Hide", exact = True).click()
+    await expect(toast).to_have_count(0)
+
+    await show.click()
+    await expect(toast).to_have_count(1)
+    await toast.get_by_role("button", name = "Cancel loading", exact = True).click()
+    await expect(toast).to_have_count(0)
+    assert not fixture.errors, fixture.errors
+
+
 CASES = {
     "cancel": cancel_aborts,
     "hide": hide_then_stop,
@@ -261,6 +282,7 @@ CASES = {
     "success": settled,
     "failure": lambda *a: settled(*a, failure = True),
     "layout": layout,
+    "media-actions": media_actions,
 }
 
 

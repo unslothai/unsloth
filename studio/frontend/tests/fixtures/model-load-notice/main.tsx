@@ -4,9 +4,14 @@
 /* eslint-disable no-restricted-imports -- Exercise the real hook and UI without the feature barrel. */
 
 import { Toaster } from "@/components/ui/sonner";
-import { ModelLoadInlineStatus } from "@/features/chat/components/model-load-status";
+import {
+  ModelLoadDescription,
+  ModelLoadInlineStatus,
+} from "@/features/chat/components/model-load-status";
+import { mediaModelLoadToastOptions } from "@/features/chat/lib/model-load-toast-options";
 import { useChatModelRuntime } from "@/features/chat/hooks/use-chat-model-runtime";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { toast } from "@/lib/toast";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -31,6 +36,27 @@ function App() {
         }
       >
         Load model
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          const id = toast(
+            null,
+            mediaModelLoadToastOptions({
+              description: (
+                <ModelLoadDescription
+                  title="Downloading model requirements…"
+                  progressPercent={20}
+                  progressLabel="200 MB of 1 GB"
+                />
+              ),
+              onCancel: () => toast.dismiss(id),
+              onHide: () => toast.dismiss(id),
+            }),
+          );
+        }}
+      >
+        Show media model load
       </button>
       <p data-testid="lifecycle">{loading ? "Busy" : "Idle"}</p>
       <div data-testid="inline-status">
