@@ -186,18 +186,20 @@ def test_default_sft_construction_does_not_trip_the_guard(tmp_path, trl_has_guar
 
 
 def test_explicit_max_length_resolves_the_same_on_every_trl(tmp_path, trl_has_guard):
-    """The swap only moves the already-resolved length across to `max_seq_length`;
-    it must never reinstate the raw user `max_length`."""
+    """An explicit limit below the model cap survives the padding-free handoff.
+
+    Every TRL must truncate to the user's limit, even when `max_length` is cleared.
+    """
     trainer = _build(tmp_path, max_length = _USER_MAX_LENGTH)
     args = trainer.args
 
     assert args.padding_free is True
-    assert args.max_seq_length == _MODEL_MAX_SEQ_LENGTH
+    assert args.max_seq_length == _USER_MAX_LENGTH
     if trl_has_guard:
         assert args.max_length is None
     else:
-        assert args.max_length == _MODEL_MAX_SEQ_LENGTH
-    assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH
+        assert args.max_length == _USER_MAX_LENGTH
+    assert _longest(trainer) == _USER_MAX_LENGTH
 
 
 def test_max_seq_length_still_beats_max_length(tmp_path, trl_has_guard):
