@@ -672,14 +672,14 @@ space_case() {  # label  free_kb_stub  expect_warning(yes|no)  [extra_harness_li
 }
 # Every case below is a cache on ANOTHER filesystem, which is the only arrangement where keeping
 # the old environment costs its own size; the co-located case is the last one.
-space_case "less free than the venv needs" "echo 524288" yes "_UV_CACHE_OFF_VOLUME=true"
-space_case "plenty of room" "echo 104857600" no "_UV_CACHE_OFF_VOLUME=true"
+space_case "less free than the venv needs" "echo 524288" yes "_ROLLBACK_COSTS_FULL_SIZE=true"
+space_case "plenty of room" "echo 104857600" no "_ROLLBACK_COSTS_FULL_SIZE=true"
 # An unmeasurable disk is not a warning: du or df missing must print nothing, not "about  MB".
-space_case "unmeasurable free space" "return 0" no "_UV_CACHE_OFF_VOLUME=true"
+space_case "unmeasurable free space" "return 0" no "_ROLLBACK_COSTS_FULL_SIZE=true"
 # The warning's payload is the name of the opt-out, so printing it to someone who already passed
 # that flag advises an action they have taken, about a copy discarded three lines later.
 space_case "short on space, but --no-rollback already set" "echo 524288" no "_NO_ROLLBACK=true
-_UV_CACHE_OFF_VOLUME=true"
+_ROLLBACK_COSTS_FULL_SIZE=true"
 # uv hardlinks a wheel within one filesystem, so the old venv shares its blocks with the cache and
 # discarding it frees nothing -- while du over the venv alone still charges every one of those
 # inodes in full, which is exactly how this warning would recommend an opt-out that does nothing.

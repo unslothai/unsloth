@@ -337,7 +337,7 @@ try {
     Reset-RollbackState $VenvDir
     $script:StudioNoRollback = $true
     # Off-volume, so the only thing keeping the warning quiet here is the flag.
-    $script:StudioUvCacheOffVolume = $true
+    $script:StudioRollbackCostsFullSize = $true
     Start-StudioVenvRollback -ExistingDir $VenvDir
     $joined = ($script:said -join "`n")
     Check "--no-rollback does not advise the flag it was already given" (
@@ -351,7 +351,7 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
     Reset-RollbackState $VenvDir
     $script:StudioNoRollback = $false
-    $script:StudioUvCacheOffVolume = $false
+    $script:StudioRollbackCostsFullSize = $false
     $script:said = @()
     Start-StudioVenvRollback -ExistingDir $VenvDir
     $joined = ($script:said -join "`n")
@@ -362,7 +362,7 @@ try {
         Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
     $script:StudioNoRollback = $true
-    $script:StudioUvCacheOffVolume = $true
+    $script:StudioRollbackCostsFullSize = $true
 
     # A tree the retry helper could not remove. It shadows the extracted definition, so
     # Start-StudioVenvRollback resolves to this one at call time.

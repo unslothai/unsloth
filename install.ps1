@@ -1932,7 +1932,7 @@ function Install-UnslothStudio {
     # Initialised here rather than beside the other rollback state, which is reset AFTER that
     # notice runs and would therefore clear it. Under `irm | iex` the script scope IS the caller's
     # session, so a stale value from a previous run has to be cleared somewhere.
-    $script:StudioUvCacheOffVolume = $false
+    $script:StudioRollbackCostsFullSize = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -6949,10 +6949,16 @@ exit 0
     # install. Test-StudioSameVolume already answers "same volume" for anything it cannot resolve,
     # so this only catches what it cannot catch itself, such as a parameter it will not bind.
     try {
-        if ($env:UV_CACHE_DIR -and -not (Test-StudioSameVolume -PathA $env:UV_CACHE_DIR -PathB $StudioHome)) {
+        # No persistent cache at all. UV_NO_CACHE hands uv a temporary cache it discards when the
+        # command ends, so nothing the old environment's files could be shared with survives the
+        # install and keeping that tree costs its full size. No notice for this one: where the
+        # cache sits is not what is wrong here. install.sh gates its twin the same way.
+        if (Test-StudioUvNoCache) {
+            $script:StudioRollbackCostsFullSize = $true
+        } elseif ($env:UV_CACHE_DIR -and -not (Test-StudioSameVolume -PathA $env:UV_CACHE_DIR -PathB $StudioHome)) {
             # Read by Start-StudioVenvRollback, which runs later: the cost its own warning
             # describes is only real across this boundary.
-            $script:StudioUvCacheOffVolume = $true
+            $script:StudioRollbackCostsFullSize = $true
             # A caller's own UV_CACHE_DIR wins in Set-StudioUvCacheEnvironment and returns before
             # -Isolated is ever read, so naming that flag here sends the user back for a
             # byte-identical run that prints this same line again. install.sh varies its twin the
@@ -7136,7 +7142,7 @@ exit 0
         # costs metadata rather than megabytes, while summing each file's logical length still
         # bills every one of those links in full and would recommend an opt-out that frees
         # nothing. Unset counts as same, the quiet direction. install.sh gates its twin the same way.
-        if ((-not $script:StudioNoRollback) -and $script:StudioUvCacheOffVolume) {
+        if ((-not $script:StudioNoRollback) -and $script:StudioRollbackCostsFullSize) {
             try { Write-StudioRollbackSpaceWarning -ExistingDir $ExistingDir } catch { }
         }
         # Publish the rollback state before the atomic rename so interruption

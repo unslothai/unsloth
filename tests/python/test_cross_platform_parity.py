@@ -1542,8 +1542,8 @@ class TestOffVolumeCacheNoticeParity:
     @pytest.mark.parametrize(
         "path, flag",
         [
-            (INSTALL_SH, "_UV_CACHE_OFF_VOLUME"),
-            (INSTALL_PS1, "$script:StudioUvCacheOffVolume"),
+            (INSTALL_SH, "_ROLLBACK_COSTS_FULL_SIZE"),
+            (INSTALL_PS1, "$script:StudioRollbackCostsFullSize"),
         ],
         ids = ["install.sh", "install.ps1"],
     )
@@ -1650,3 +1650,26 @@ class TestDiskFullRemedyIsNotTheFlagAlreadyGiven:
         assert "already discarded by --no-rollback" in text, (
             f"{path.name} does not tell an opted-out run that there is nothing left to reclaim"
         )
+
+
+class TestNoCacheStillCostsAFullEnvironment:
+    """uv's --no-cache / UV_NO_CACHE gives uv a TEMPORARY cache it discards when the command
+    ends (docs.astral.sh/uv/concepts/cache: "a temporary cache directory if --no-cache was
+    requested"). Nothing the old environment's files could be shared with survives the install,
+    so keeping that tree costs its full size and the rollback-space warning has to fire even
+    though the cache path looks co-located."""
+
+    @pytest.mark.parametrize(
+        "path, probe",
+        [
+            (INSTALL_SH, "_uv_no_cache_requested"),
+            (INSTALL_PS1, "Test-StudioUvNoCache"),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_no_cache_sets_the_full_size_flag(self, path, probe):
+        text = path.read_text(encoding = "utf-8")
+        flag = "_ROLLBACK_COSTS_FULL_SIZE" if path is INSTALL_SH else "StudioRollbackCostsFullSize"
+        window = text.split("is on a different", 1)[0][-1600:]
+        assert probe in window, f"{path.name} does not consider no-cache mode before gating"
+        assert flag in window, f"{path.name} does not set the full-size flag for no-cache mode"
