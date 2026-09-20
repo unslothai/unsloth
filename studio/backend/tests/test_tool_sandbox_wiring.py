@@ -33,6 +33,14 @@ from core.inference.os_sandbox import (
 _SESSION = "__LOCALID_sandbox_wiring"
 
 
+class _PassthroughAccountConfinement:
+    preexec = None
+
+    @staticmethod
+    def wrap(argv):
+        return argv
+
+
 def test_execute_tool_keeps_every_parameter_it_had_in_the_same_order():
     parameters = inspect.signature(tools.execute_tool).parameters
     positional = [
@@ -79,6 +87,26 @@ def test_the_executors_take_the_mode_keyword_only_and_default_it(function):
         "session_id",
         "disable_sandbox",
     ]
+
+
+@pytest.mark.parametrize(
+    "function,payload",
+    [
+        (tools._python_exec, "print('MANAGED_OK')"),
+        (tools._bash_exec, "echo MANAGED_OK"),
+    ],
+    ids = ["python", "terminal"],
+)
+def test_managed_account_launch_does_not_require_a_generic_sandbox_record(
+    monkeypatch, function, payload
+):
+    monkeypatch.setattr(
+        tools, "_account_confinement", lambda: _PassthroughAccountConfinement()
+    )
+    tools._last_tool_execution_record = None
+
+    assert "MANAGED_OK" in function(payload, None, 60, _SESSION)
+    assert tools._last_tool_execution_record is None
 
 
 def test_a_caller_that_passes_nothing_new_behaves_as_auto():

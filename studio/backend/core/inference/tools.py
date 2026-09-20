@@ -18364,10 +18364,11 @@ def _python_exec(
                     else "finished"
                 )
             )
-        completion = os_sandbox.verify_prepared_completion(prepared, proc)
-        if completion is not None and completion.get("timedOut"):
-            timed_out = True
-        _note_tool_execution(prepared.execution_record)
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
@@ -18575,10 +18576,11 @@ def _bash_exec(
                     else "finished"
                 )
             )
-        completion = os_sandbox.verify_prepared_completion(prepared, proc)
-        if completion is not None and completion.get("timedOut"):
-            timed_out = True
-        _note_tool_execution(prepared.execution_record)
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
