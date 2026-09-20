@@ -9414,6 +9414,30 @@ _LAUNCHER_FAILURE_MARKERS = {
 }
 
 
+def _warn_about_unreverted_host_state(prepared, _log = None) -> None:
+    """Say so when cleanup could not put the host back.
+
+    cleanup() records every failure and returns normally, because it runs in a
+    `finally` and raising there would replace a real tool result with an
+    exception. That left the one case a user needs to hear about silent: a
+    Windows Tier 3 launch writes DENY and ALLOW ACEs onto real paths for the
+    life of the call, and if the reconciliation fails they are still on the
+    user's own workdir while the tool reports its ordinary result. Logged at
+    ERROR rather than raised, and deliberately only for host state, not for a
+    private mount the sandbox could not unlink.
+    """
+    for diagnostic in getattr(prepared, "unreverted_host_state", ()):
+        message = (
+            f"The {prepared.backend} sandbox could not undo a change it made to "
+            f"this host: {diagnostic}. File permissions on the session workdir "
+            "may still be modified."
+        )
+        if _log is not None:
+            _log(message)
+        else:
+            logger.error("%s", message)
+
+
 def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
     """``prepare()`` only builds an argv, so a stale probe verdict is not found
     until bwrap exits at exec. Dropping it bounds the damage to that one call
@@ -18450,6 +18474,7 @@ def _python_exec(
         # Private mounts and descriptors, released on every exit path.
         if prepared is not None:
             prepared.cleanup()
+            _warn_about_unreverted_host_state(prepared)
         _forget_tool_pid(locals().get("proc"))
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -18632,6 +18657,7 @@ def _bash_exec(
         # Private mounts and descriptors, released on every exit path.
         if prepared is not None:
             prepared.cleanup()
+            _warn_about_unreverted_host_state(prepared)
         _forget_tool_pid(locals().get("proc"))
         if _scratch_name:
             with _scratch_lock:

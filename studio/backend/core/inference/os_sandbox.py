@@ -148,6 +148,12 @@ class PreparedSandboxLaunch:
     terminate_descendants: bool = True
     cleanup_callbacks: list[Callable[[], None]] = field(default_factory = list)
     cleanup_diagnostics: list[str] = field(default_factory = list)
+    # The subset of the above that means HOST state this launch changed may not
+    # have been changed back: on Windows Tier 3 that is DENY and ALLOW ACEs on
+    # the user's own workdir. Kept apart from the rest because a private mount
+    # that could not be unlinked is the sandbox's own litter and nobody outside
+    # needs telling, while a permission change left on a user's files does.
+    unreverted_host_state: list[str] = field(default_factory = list)
     # Earned by THIS launch, on top of the backend's static set: what was true
     # of this call and may not be true of the next one.
     launch_limitations: tuple[str, ...] = ()
@@ -160,7 +166,8 @@ class PreparedSandboxLaunch:
             except Exception as exc:  # noqa: BLE001 - cleanup continues in LIFO order
                 diagnostic = f"{type(exc).__name__}: {exc}"
                 self.cleanup_diagnostics.append(diagnostic)
-                logger.warning("Sandbox cleanup failed: %s", diagnostic, exc_info = True)
+                self.unreverted_host_state.append(diagnostic)
+                logger.error("Sandbox cleanup failed: %s", diagnostic, exc_info = True)
         while self.owned_files:
             try:
                 self.owned_files.pop().close()

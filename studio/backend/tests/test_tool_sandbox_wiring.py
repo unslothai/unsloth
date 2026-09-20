@@ -746,3 +746,38 @@ def test_an_unknown_execution_mode_is_refused_whatever_the_account(monkeypatch):
     assert tools._requested_execution_mode("auto", False) == "auto"
     assert tools._requested_execution_mode("required", False) == "required"
     assert tools._requested_execution_mode("auto", True) == "full"
+
+
+def test_a_cleanup_that_could_not_undo_host_state_is_recorded_apart(caplog):
+    """cleanup() runs in a `finally` and must not raise, or a real tool result
+    would be replaced by an exception. But a Windows Tier 3 launch writes DENY
+    and ALLOW ACEs onto real paths for the life of the call, so a failed
+    reconciliation leaves them on the user's own workdir. That has to be
+    distinguishable from a private mount the sandbox could not unlink.
+    """
+    import logging
+
+    prepared = PreparedSandboxLaunch(
+        argv = ("wxc-exec.exe",), workdir = "/work", env = {},
+        preexec_fn = None, backend = "mxc-processcontainer",
+    )
+
+    def failing_reconcile():
+        raise RuntimeError("MXC could not reconcile container unsloth-test (exit 3)")
+
+    prepared.cleanup_callbacks.append(failing_reconcile)
+    prepared.cleanup_paths.append("/definitely/not/a/path/that/exists")
+
+    prepared.cleanup()
+
+    assert len(prepared.unreverted_host_state) == 1, (
+        "the failed reconciliation was not separated from ordinary cleanup litter"
+    )
+    assert "could not reconcile" in prepared.unreverted_host_state[0]
+    # The unremovable private path is litter, not host state.
+    assert len(prepared.cleanup_diagnostics) == 2
+
+    logged = []
+    tools._warn_about_unreverted_host_state(prepared, _log = logged.append)
+
+    assert logged and "could not undo a change it made to this host" in logged[0]
