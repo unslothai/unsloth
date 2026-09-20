@@ -177,7 +177,8 @@ def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, 
             # enough, which is the opposite of what the descent is for.
             logger.warning(
                 "Not binding %s read-only: Studio's own state is nested too "
-                "deeply inside it to exclude", root,
+                "deeply inside it to exclude",
+                root,
             )
             continue
         try:
