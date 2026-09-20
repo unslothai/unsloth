@@ -16192,6 +16192,9 @@ def _check_signal_escape_patterns(code: str):
         is never mistaken for a hidden target."""
         if fq in ("urllib.request.urlopen", "urllib.request.urlretrieve", "urllib.request.Request"):
             return True
+        if fq in _SOCKET_TARGET_FQ:
+            # socket.create_connection((host, port)) names its host as plainly as a URL does.
+            return True
         owner, _, method = fq.rpartition(".")
         if not owner or owner not in _URL_OWNERS:
             return False
@@ -16820,6 +16823,7 @@ def _check_signal_escape_patterns(code: str):
         return None, False
 
     _SOCKET_FACTORY_FQ = ("socket.socket", "socket.create_connection", "socket.socketpair")
+    _SOCKET_TARGET_FQ = ("socket.create_connection",)
 
     def _is_a_socket_receiver(node) -> bool:
         """Whether *node* evaluates to a socket: `socket.socket(...)` inline, or a name bound to
@@ -16899,15 +16903,25 @@ def _check_signal_escape_patterns(code: str):
                 return hosts
         return []
 
-    _rebound_attributes = {
-        _written_fq(target)
-        for statement in _tree_nodes(tree)
-        for target in (
-            list(getattr(statement, "targets", []))
-            + ([statement.target] if isinstance(statement, (ast.AnnAssign, ast.AugAssign)) else [])
-        )
-        if isinstance(target, ast.Attribute) and _written_fq(target)
-    }
+    def _assigned_attributes(target, out: set) -> None:
+        """Every attribute a target assigns, through tuple, list and starred destructuring.
+        `(sqlite3.connect,) = (...)` replaces the callable just as plainly as a bare assignment."""
+        if isinstance(target, ast.Attribute):
+            written = _written_fq(target)
+            if written:
+                out.add(written)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                _assigned_attributes(element, out)
+        elif isinstance(target, ast.Starred):
+            _assigned_attributes(target.value, out)
+
+    _rebound_attributes: set = set()
+    for _statement in _tree_nodes(tree):
+        for _target in list(getattr(_statement, "targets", [])) + (
+            [_statement.target] if isinstance(_statement, (ast.AnnAssign, ast.AugAssign)) else []
+        ):
+            _assigned_attributes(_target, _rebound_attributes)
 
     def _any_prefix_was_rebound(node) -> bool:
         """Whether the source assigned this attribute or anything it hangs off. `sqlite3.x` being
@@ -17006,6 +17020,8 @@ def _check_signal_escape_patterns(code: str):
                 if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
                     if sub.value.id == "sys" and sub.attr in ("argv", "stdin"):
                         return True
+                if _reads_a_file(sub):
+                    return True
                 if _reads_env_or_secret(sub):
                     return True
                 if _reads_an_external_source_through_an_alias(sub, bindings):
@@ -17133,6 +17149,21 @@ def _check_signal_escape_patterns(code: str):
             "subprocess.getstatusoutput",
         }
     )
+
+    # Reading a file is reading something the source does not show: a URL in a workspace file is
+    # chosen wherever that file came from, which is the same hole as reading the environment.
+    _FILE_READ_METHODS = frozenset(
+        {"read", "readline", "readlines", "read_text", "read_bytes"}
+    )
+
+    def _reads_a_file(node: ast.AST) -> bool:
+        """Whether *node* opens or reads a file."""
+        if not isinstance(node, ast.Call):
+            return False
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "open":
+            return True
+        return isinstance(func, ast.Attribute) and func.attr in _FILE_READ_METHODS
 
     def _reads_an_external_source_through_an_alias(node: ast.AST, bindings) -> bool:
         """The alias-aware half of external-source detection. `_reads_env_or_secret` matches the
@@ -17419,6 +17450,17 @@ def _check_signal_escape_patterns(code: str):
                         host_lit = _host_from_url_node(host_node, _bindings)[0]
                     else:
                         host_lit = text
+                if not host_lit and _externally_sourced(host_node, _bindings):
+                    network_calls.append(
+                        {
+                            "type": "opaque_url_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: request target is read from the environment or input; "
+                                "use a literal URL on an allowed informational source"
+                            ),
+                        }
+                    )
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
@@ -17485,6 +17527,9 @@ def _check_signal_escape_patterns(code: str):
                 if isinstance(url_node, ast.Tuple) and url_node.elts:
                     text, complete = _static_str_prefix(url_node.elts[0], _bindings)
                     host_arg = text if (complete and text) else None
+                    # A host the tuple computes is no more readable than one a URL computes.
+                    target_resolved = bool(complete)
+                    url_node = url_node.elts[0]
                 elif url_node is not None:
                     host_arg, target_resolved = _host_from_url_node(url_node, _bindings)
 

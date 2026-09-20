@@ -3937,3 +3937,80 @@ class TestReplacedConnectCallables:
     )
     def test_a_rebound_prefix_is_not_the_module_either(self, code):
         _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+
+class TestTupleHostsChosenAtRuntime:
+    """A host the tuple computes is no more readable than one a URL computes."""
+
+    def test_a_socket_target_read_from_input_is_refused(self):
+        _blocked(
+            "import socket\nsocket.create_connection((input(), 80))",
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_a_socket_target_read_from_the_environment_is_refused(self):
+        _blocked(
+            'import os, socket\ns = socket.socket()\ns.connect((os.environ["H"], 80))',
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_a_literal_metadata_tuple_is_still_blocked(self):
+        _blocked(
+            'import socket\ns = socket.socket()\ns.connect(("169.254.169.254", 80))',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_allowed_tuple_host_keeps_working_ok(self):
+        _ok('import socket\ns = socket.socket()\ns.connect(("huggingface.co", 443))')
+
+
+class TestDestructuredRebinds:
+    """`(sqlite3.connect,) = (...)` replaces the callable as plainly as a bare assignment."""
+
+    def test_a_tuple_target_counts_as_a_rebind(self):
+        _blocked(
+            "import sqlite3, smtplib\n"
+            "(sqlite3.connect,) = (smtplib.SMTP().connect,)\n"
+            'sqlite3.connect("169.254.169.254", 80)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_list_target_counts_too(self):
+        _blocked(
+            "import sqlite3, smtplib\n"
+            "[sqlite3.connect] = [smtplib.SMTP().connect]\n"
+            'sqlite3.connect("evil.example", 25)',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+
+class TestTargetsReadFromAFile:
+    """A URL in a workspace file was chosen wherever that file came from, which is the same hole
+    as reading the environment."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nrequests.get(open("target.txt").read())', id = "open_read"
+            ),
+            pytest.param(
+                "from pathlib import Path\nimport requests\n"
+                'requests.get(Path("t.txt").read_text())',
+                id = "path_read_text",
+            ),
+            pytest.param(
+                'import requests\nu = open("target.txt").readline()\nrequests.get(u)',
+                id = "through_a_binding",
+            ),
+        ],
+    )
+    def test_a_target_read_from_a_file_is_refused(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")
+
+    def test_reading_a_response_afterwards_is_not_a_target_ok(self):
+        _ok(
+            "import requests\n"
+            'r = requests.get("https://huggingface.co/api/models")\n'
+            "print(r.text)"
+        )
