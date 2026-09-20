@@ -2844,9 +2844,7 @@ class TestRequestMethodAndWrapperArguments:
                 f'import requests\ns = requests.Session()\ns.request("GET", "{_METADATA_URL}")',
                 id = "session",
             ),
-            pytest.param(
-                f'import httpx\nhttpx.request("GET", "{_METADATA_URL}")', id = "httpx"
-            ),
+            pytest.param(f'import httpx\nhttpx.request("GET", "{_METADATA_URL}")', id = "httpx"),
             pytest.param(
                 f'import requests\nrequests.request("GET", url = "{_METADATA_URL}")',
                 id = "url_keyword",
