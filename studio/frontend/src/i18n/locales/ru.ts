@@ -164,6 +164,8 @@ export const ru = {
       export: "Экспорт",
       recents: "Недавние",
       noChatsYet: "Пока нет чатов",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Нет чатов",
       showMore: "Показать больше",
       showLess: "Показать меньше",
       settings: "Настройки",
@@ -1262,7 +1264,11 @@ export const ru = {
       },
       gpu: {
         title: "Устройства GPU",
-        ggufInference: "Инференс GGUF",
+        memory: "Память GPU",
+        sharedWithSystemRam: "Общая с оперативной памятью системы",
+        estimatedAvailable: "Примерно доступно: {value}",
+        sharedEstimatedAvailable: "Общая оперативная память системы: примерно {value} доступно",
+        ggufInference: "Память для моделей GGUF",
         unavailable: "недоступно",
         detecting: "Поиск GPU...",
         unreadable: "Не удалось прочитать оборудование этого сервера.",
@@ -1987,7 +1993,7 @@ export const ru = {
         desktopAvailableDescription:
           "Установите обновление сейчас. После установки настольное приложение перезапустится.",
         desktopExternalServer:
-          "Выполните `unsloth studio update` в терминале, из которого был запущен сервер.",
+          "Приложение подключилось к уже запущенному серверу Studio и не может его обновить. Остановите этот сервер, затем закройте и снова откройте настольное приложение для обновления.",
         desktopManualInstall:
           "Откройте страницу выпуска, чтобы установить последнюю версию пакета для Linux.",
         desktopCheckFailed: "Не удалось проверить наличие обновлений",

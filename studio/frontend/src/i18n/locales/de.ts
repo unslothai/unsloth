@@ -165,6 +165,8 @@ export const de = {
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Keine Chats",
       showMore: "Mehr anzeigen",
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
@@ -1283,7 +1285,11 @@ export const de = {
       },
       gpu: {
         title: "GPU-Geräte",
-        ggufInference: "GGUF-Inferenz",
+        memory: "GPU-Speicher",
+        sharedWithSystemRam: "Mit dem System-RAM geteilt",
+        estimatedAvailable: "Geschätzt verfügbar: {value}",
+        sharedEstimatedAvailable: "Gemeinsamer System-RAM: geschätzt {value} verfügbar",
+        ggufInference: "Speicher für GGUF-Modelle",
         unavailable: "nicht verfügbar",
         detecting: "Suche nach GPUs...",
         unreadable: "Die Hardware dieses Servers konnte nicht gelesen werden.",
@@ -2016,7 +2022,7 @@ export const de = {
         desktopAvailableDescription:
           "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
-          "Führen Sie `unsloth studio update` in dem Terminal aus, über das Sie Ihren Server gestartet haben.",
+          "Die App ist mit einem bereits laufenden Studio-Server verbunden und kann ihn nicht aktualisieren. Stoppen Sie diesen Server, beenden Sie die Desktop-App und öffnen Sie sie erneut, um das Update zu installieren.",
         desktopManualInstall:
           "Öffnen Sie die Release-Seite, um das neueste Linux-Paket zu installieren.",
         desktopCheckFailed: "Die Suche nach Updates ist fehlgeschlagen",

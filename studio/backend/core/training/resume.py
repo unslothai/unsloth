@@ -94,6 +94,16 @@ def _valid_state_file(path: Path, require_tensor: bool = True) -> bool:
         return False
 
 
+def session_eta_seconds(
+    elapsed_seconds: Optional[float], step: int, start_step: int, total_steps: int
+) -> Optional[float]:
+    steps_done = step - start_step
+    steps_remaining = total_steps - step
+    if elapsed_seconds is None or steps_done <= 0 or steps_remaining <= 0:
+        return None
+    return (elapsed_seconds / steps_done) * steps_remaining
+
+
 def _checkpoint_state(path: Path) -> Optional[int]:
     try:
         state = json.loads((path / "trainer_state.json").read_text(encoding = "utf-8"))

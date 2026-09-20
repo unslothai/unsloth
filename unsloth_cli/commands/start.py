@@ -2754,6 +2754,8 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
         "ANTHROPIC_AUTH_TOKEN": key,
         "ANTHROPIC_MODEL": model_id,
         "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+        # Per-tool countdown reminders change the system prefix on local models.
+        "CLAUDE_CODE_TOTAL_TOKENS_REMINDER": "off",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
         "CLAUDE_CODE_NO_FLICKER": "1",
@@ -3532,7 +3534,9 @@ def _refresh_windows_path() -> None:
 def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
     # Best-effort: any failure here means "no managed Node", never a broken launch.
     try:
-        ensure_studio_backend_path()
+        # Discovery only: this answers "is there a managed Node", including for a launch aimed
+        # at a remote server, so it must not create the cache tree on the way past.
+        ensure_studio_backend_path(seed_cache_env = False)
         from utils.node_runtime import managed_node_binary, resolve_node_executable
         node = Path(managed_node_binary())
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):

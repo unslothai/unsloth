@@ -22,7 +22,9 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { FolderSyncIcon, MoreHorizontalIcon, RotateCwIcon } from "lucide-react";
+import { FolderSyncIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { MoreHorizontalIcon, RotateCwIcon } from "lucide-react";
 import { useState } from "react";
 import type { FolderSyncJob, LinkedFolderScope } from "../types/rag";
 import { useLinkedFolders } from "./use-linked-folders";
@@ -92,7 +94,7 @@ export function LinkedFoldersManager({
             {manager.mutating ? (
               <Spinner className="size-3.5" />
             ) : (
-              <FolderSyncIcon className="size-3.5" />
+              <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="size-3.5" />
             )}
             Link folder
           </Button>
@@ -119,7 +121,7 @@ export function LinkedFoldersManager({
                 key={folder.id}
                 className="flex min-w-0 items-start gap-3 rounded-xl border border-border/70 bg-background px-3 py-2.5"
               >
-                <FolderSyncIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
                     <span
@@ -184,7 +186,7 @@ export function LinkedFoldersManager({
                       disabled={running}
                       onSelect={() => void manager.sync(folder.id)}
                     >
-                      <FolderSyncIcon className="size-3.5" /> Sync changes
+                      <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="size-3.5" /> Sync changes
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       disabled={running}

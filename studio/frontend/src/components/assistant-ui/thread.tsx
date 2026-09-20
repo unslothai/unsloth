@@ -188,6 +188,7 @@ import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled"
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import {
+  codeToolsOn,
   settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
@@ -308,6 +309,7 @@ import {
   Download01Icon,
   Edit03Icon,
   FileDatabaseIcon,
+  FolderAttachmentIcon,
   Folder01Icon,
   FolderAddIcon,
   HelpCircleIcon,
@@ -5973,7 +5975,7 @@ const CodeToolsToggle: FC = () => {
   const supportsBuiltinCodeExecution = useChatRuntimeStore(
     (s) => s.supportsBuiltinCodeExecution,
   );
-  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
@@ -6185,7 +6187,7 @@ const ComposerToolsMenu: FC<{
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
@@ -6201,6 +6203,8 @@ const ComposerToolsMenu: FC<{
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   // Shared gate so the menu row agrees with the RAG pill.
   const ragDisabled = useRagToolDisabled();
+  // The permission pill is hidden while recording, so the menu carries it then.
+  const isDictating = useAuiState((s) => s.composer.dictation != null);
   // Capability gating mirrors the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
@@ -6506,7 +6510,6 @@ const ComposerToolsMenu: FC<{
         ) : null}
       </DropdownMenuItem>
     ) : null,
-    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -6687,6 +6690,7 @@ const ComposerToolsMenu: FC<{
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
+        {isDictating ? <BypassPermissionsMenuItem /> : null}
         {pinnedPlusItems.map((id) => (
           <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
         ))}
@@ -8369,7 +8373,7 @@ const AssistantActionBar: FC = () => {
                 className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
               >
                 <HugeiconsIcon
-                  icon={BookOpen01Icon}
+                  icon={FolderAttachmentIcon}
                   strokeWidth={1.75}
                   className="size-icon"
                 />

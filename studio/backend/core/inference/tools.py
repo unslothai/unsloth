@@ -14181,6 +14181,9 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
     # Best-effort handle on the underlying socket so its timeout tightens as the deadline nears; absent on test
     # doubles, where the between-chunk budget check still bounds the read.
     sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    # A buffered read(n) keeps receiving until n bytes arrive, so a drip never reaches the
+    # budget check; read1 returns after one receive.
+    read = getattr(resp, "read1", None) or resp.read
     chunks = []
     remaining = max_bytes
     while remaining > 0:
@@ -14196,7 +14199,7 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
                 sock.settimeout(_fetch_hop_timeout(timeout, deadline))
             except Exception:
                 pass
-        chunk = resp.read(min(65536, remaining))
+        chunk = read(min(65536, remaining))
         if not chunk:
             break
         chunks.append(chunk)

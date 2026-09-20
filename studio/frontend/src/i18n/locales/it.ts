@@ -129,6 +129,8 @@ export const it = {
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Nessuna chat",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
@@ -1249,7 +1251,11 @@ export const it = {
       },
       gpu: {
         title: "Dispositivi GPU",
-        ggufInference: "Inferenza GGUF",
+        memory: "Memoria GPU",
+        sharedWithSystemRam: "Condivisa con la RAM di sistema",
+        estimatedAvailable: "Disponibilità stimata: {value}",
+        sharedEstimatedAvailable: "RAM di sistema condivisa: disponibilità stimata di {value}",
+        ggufInference: "Memoria per i modelli GGUF",
         unavailable: "non disponibile",
         detecting: "Ricerca di GPU...",
         unreadable: "Impossibile leggere l'hardware di questo server.",
@@ -1983,7 +1989,7 @@ export const it = {
         desktopAvailableDescription:
           "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
         desktopExternalServer:
-          "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
+          "L’app si è connessa a un server Studio già in esecuzione e non può aggiornarlo. Arresta quel server, poi chiudi e riapri l’app desktop per aggiornare.",
         desktopManualInstall:
           "Apri la pagina della release per installare il pacchetto Linux più recente.",
         desktopCheckFailed:

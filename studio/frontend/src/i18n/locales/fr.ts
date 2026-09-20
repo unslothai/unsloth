@@ -165,6 +165,8 @@ export const fr = {
       export: "Exporter",
       recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Aucune discussion",
       showMore: "Afficher plus",
       showLess: "Afficher moins",
       settings: "Paramètres",
@@ -1282,7 +1284,11 @@ export const fr = {
       },
       gpu: {
         title: "Périphériques GPU",
-        ggufInference: "Inférence GGUF",
+        memory: "Mémoire GPU",
+        sharedWithSystemRam: "Partagée avec la RAM système",
+        estimatedAvailable: "Disponibilité estimée : {value}",
+        sharedEstimatedAvailable: "RAM système partagée : disponibilité estimée de {value}",
+        ggufInference: "Mémoire pour les modèles GGUF",
         unavailable: "indisponible",
         detecting: "Recherche de GPU...",
         unreadable: "Impossible de lire le matériel de ce serveur.",
@@ -2019,7 +2025,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
+          "L’application est connectée à un serveur Studio déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",

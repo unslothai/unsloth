@@ -165,6 +165,8 @@ export const en = {
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "No chats",
       showMore: "Show more",
       showLess: "Show less",
       settings: "Settings",
@@ -1256,7 +1258,11 @@ export const en = {
       },
       gpu: {
         title: "GPU devices",
-        ggufInference: "GGUF inference",
+        memory: "GPU memory",
+        sharedWithSystemRam: "Shared with system RAM",
+        estimatedAvailable: "Estimated available: {value}",
+        sharedEstimatedAvailable: "Shared system RAM: estimated {value} available",
+        ggufInference: "GGUF model memory",
         unavailable: "unavailable",
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
@@ -1959,7 +1965,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "Run `unsloth studio update` from the terminal that started your server.",
+          "The app connected to an already-running Studio server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",
