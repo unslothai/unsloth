@@ -396,8 +396,6 @@ def test_the_models_folder_is_not_disclosed(monkeypatch):
     assert _hub(via_api_key = False).get("/api/hub/models-folder").json()["path"] == HOST_ROOT
 
 
-
-
 # A raised detail is walked like a payload: the message survives, the layout does not.
 
 
@@ -451,8 +449,6 @@ def test_the_models_folder_error_is_not_disclosed_either(
         session = _hub(via_api_key = False).get("/api/hub/models-folder")
         assert session.status_code == 500
         assert HOST_ROOT in session.json()["detail"]
-
-
 
 
 def test_the_hidden_model_matchers_keep_their_ids_and_drop_their_paths(monkeypatch):

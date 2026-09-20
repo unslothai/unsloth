@@ -472,7 +472,6 @@ def test_the_provenance_key_is_case_folded_like_every_other_repo_lookup():
 
 def _source(target) -> str:
     import inspect
-
     return inspect.getsource(target)
 
 
@@ -514,14 +513,29 @@ _SITES = _fetch_sites()
 # A text load compares the cache before and after, since its fetch has happened by then; a media
 # route cannot, because `begin_load` returns before the worker moves a byte.
 _PRESENT = [
-    ("text-load", "_note_load_fetched_with_a_request_token(request.model_path", "_load_fetched_bytes("),
-    ("diffusion-load", "_repo_is_in_the_hub_cache(ref) is not True", "_note_load_fetched_with_a_request_token(_ref"),
-    ("video-load", "_repo_is_in_the_hub_cache(ref) is not True", "_note_load_fetched_with_a_request_token(_ref"),
+    (
+        "text-load",
+        "_note_load_fetched_with_a_request_token(request.model_path",
+        "_load_fetched_bytes(",
+    ),
+    (
+        "diffusion-load",
+        "_repo_is_in_the_hub_cache(ref) is not True",
+        "_note_load_fetched_with_a_request_token(_ref",
+    ),
+    (
+        "video-load",
+        "_repo_is_in_the_hub_cache(ref) is not True",
+        "_note_load_fetched_with_a_request_token(_ref",
+    ),
     # Each of these WRAPS its fetch rather than writing beside it: the record has to exist
     # before the call, because a download that dies half way has still filled the cache, and it
     # has to be taken back when the call raised having left nothing.
     ("download-lifecycle", "note_repo_fetched_with_a_request_token(hf_token, repo_id, repo_type)"),
-    ("dataset-preview", "recording_a_request_token_fetch(\n                            hf_token, request.dataset_name"),
+    (
+        "dataset-preview",
+        "recording_a_request_token_fetch(\n                            hf_token, request.dataset_name",
+    ),
     ("picker-template", "recording_a_request_token_fetch(hf_token, resolved"),
     ("config-read", "recording_a_request_token_fetch(token, model_name"),
     # And only where the call can actually fetch: both of these resolve an already-cached file
@@ -532,10 +546,26 @@ _PRESENT = [
 ]
 
 _ABSENT = [
-    ("chat-route", "_note_load_fetched_with_a_request_token", "the route records again, before the load is admitted"),
-    ("download-service", "note_repo_fetched_with_a_request_token", "the download service records what its caller already did"),
-    ("diffusion-load", "_load_fetched_bytes", "a media route cannot compare before and after: its fetch has not happened yet"),
-    ("video-load", "_load_fetched_bytes", "a media route cannot compare before and after: its fetch has not happened yet"),
+    (
+        "chat-route",
+        "_note_load_fetched_with_a_request_token",
+        "the route records again, before the load is admitted",
+    ),
+    (
+        "download-service",
+        "note_repo_fetched_with_a_request_token",
+        "the download service records what its caller already did",
+    ),
+    (
+        "diffusion-load",
+        "_load_fetched_bytes",
+        "a media route cannot compare before and after: its fetch has not happened yet",
+    ),
+    (
+        "video-load",
+        "_load_fetched_bytes",
+        "a media route cannot compare before and after: its fetch has not happened yet",
+    ),
 ]
 
 # Read as "this marker must appear before the next one".
@@ -543,34 +573,63 @@ _ORDERED = [
     (
         "diffusion-load",
         "the media record lands after the 400-able validation and before the launch",
-        ["_repo_is_in_the_hub_cache(ref) is not True", "validate_load_request",
-         "_note_load_fetched_with_a_request_token(_ref", "status_dict = await asyncio.to_thread("],
+        [
+            "_repo_is_in_the_hub_cache(ref) is not True",
+            "validate_load_request",
+            "_note_load_fetched_with_a_request_token(_ref",
+            "status_dict = await asyncio.to_thread(",
+        ],
     ),
     (
         "video-load",
         "the media record lands after the 400-able validation and before the launch",
-        ["_repo_is_in_the_hub_cache(ref) is not True", "validate_load_request",
-         "_note_load_fetched_with_a_request_token(_ref", "status_dict = await asyncio.to_thread("],
+        [
+            "_repo_is_in_the_hub_cache(ref) is not True",
+            "validate_load_request",
+            "_note_load_fetched_with_a_request_token(_ref",
+            "status_dict = await asyncio.to_thread(",
+        ],
     ),
     # INSIDE the admitted start callback, not on the way to it: the busy guard 409s, the arbiter
     # refuses and the retirement check rejects a tombstoned account, none of them starting a
     # worker, and a record any of them leaves behind withholds a repo nobody fetched.
-    ("diffusion-load", "the media record is inside the callback the load is admitted through",
-     ["def _start_", "_note_load_fetched_with_a_request_token(_ref", ".begin_load("]),
-    ("video-load", "the media record is inside the callback the load is admitted through",
-     ["def _start_", "_note_load_fetched_with_a_request_token(_ref", ".begin_load("]),
-    ("download-lifecycle", "the fetch was recorded only after making it",
-     ["note_repo_fetched_with_a_request_token", "proc = spawn()"]),
-    ("picker-template", "the fetch was recorded only after making it",
-     ["recording_a_request_token_fetch", "path = hf_hub_download("]),
-    ("config-read", "the fetch was recorded only after making it",
-     ["recording_a_request_token_fetch", "AutoConfig.from_pretrained("]),
+    (
+        "diffusion-load",
+        "the media record is inside the callback the load is admitted through",
+        ["def _start_", "_note_load_fetched_with_a_request_token(_ref", ".begin_load("],
+    ),
+    (
+        "video-load",
+        "the media record is inside the callback the load is admitted through",
+        ["def _start_", "_note_load_fetched_with_a_request_token(_ref", ".begin_load("],
+    ),
+    (
+        "download-lifecycle",
+        "the fetch was recorded only after making it",
+        ["note_repo_fetched_with_a_request_token", "proc = spawn()"],
+    ),
+    (
+        "picker-template",
+        "the fetch was recorded only after making it",
+        ["recording_a_request_token_fetch", "path = hf_hub_download("],
+    ),
+    (
+        "config-read",
+        "the fetch was recorded only after making it",
+        ["recording_a_request_token_fetch", "AutoConfig.from_pretrained("],
+    ),
     # A cache-only preview reads the cache or 404s without a round trip, and `list_repo_files`
     # caches nothing, so a 404 there used to leave a record for a fetch that never happened.
-    ("dataset-preview", "a cache-only preview records a fetch it never made",
-     ["_LOCAL_CACHE_MISS_ERROR_CODE", "recording_a_request_token_fetch"]),
-    ("dataset-preview", "a failed listing records a fetch that never started",
-     ["list_repo_files", "recording_a_request_token_fetch", "load_dataset(**load_kwargs)"]),
+    (
+        "dataset-preview",
+        "a cache-only preview records a fetch it never made",
+        ["_LOCAL_CACHE_MISS_ERROR_CODE", "recording_a_request_token_fetch"],
+    ),
+    (
+        "dataset-preview",
+        "a failed listing records a fetch that never started",
+        ["list_repo_files", "recording_a_request_token_fetch", "load_dataset(**load_kwargs)"],
+    ),
 ]
 
 
