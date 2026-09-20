@@ -120,6 +120,44 @@ def test_underscore_sharded_safetensors_still_skip_the_bin_copy():
     }
 
 
+def test_a_bin_only_dtype_variant_survives():
+    # model.safetensors cannot serve a variant="fp16" load, so the fp16 bin is not a duplicate.
+    bin_only_variant = {
+        "config.json": 2,
+        "model.safetensors": 500,
+        "pytorch_model.bin": 500,
+        "pytorch_model.fp16.bin": 250,
+    }
+    kept = _kept(bin_only_variant)
+    assert "pytorch_model.bin" not in kept
+    assert "pytorch_model.fp16.bin" in kept
+
+    # Once the variant ships as safetensors too, the bin copy IS redundant.
+    both = dict(bin_only_variant, **{"model.fp16.safetensors": 250})
+    assert "pytorch_model.fp16.bin" not in _kept(both)
+
+
+def test_a_variant_index_never_outlives_its_shards():
+    # openai/whisper-large-v3's real shape. The fp32 variant ships as safetensors, so the bin
+    # shards go -- and their index must go with them rather than dangle over absent files.
+    whisper = {
+        "config.json": 2,
+        "model.safetensors": 3_090,
+        "model.fp32-00001-of-00002.safetensors": 3_000,
+        "model.fp32-00002-of-00002.safetensors": 3_000,
+        "model.safetensors.index.fp32.json": 1,
+        "pytorch_model.bin": 3_090,
+        "pytorch_model.fp32-00001-of-00002.bin": 3_000,
+        "pytorch_model.fp32-00002-of-00002.bin": 3_000,
+        "pytorch_model.bin.index.fp32.json": 1,
+    }
+    kept = _kept(whisper)
+    assert not any(name.startswith("pytorch_model") for name in kept), sorted(kept)
+    # The safetensors side, including its own variant index, is untouched.
+    assert "model.fp32-00001-of-00002.safetensors" in kept
+    assert "model.safetensors.index.fp32.json" in kept
+
+
 def test_indexless_shards_do_not_open_the_gate():
     # Numbered shards are resolved through model.safetensors.index.json; with no index a
     # load falls back to looking for a single file and raises, so the .bin checkpoint here

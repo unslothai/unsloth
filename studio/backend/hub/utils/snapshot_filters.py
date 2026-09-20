@@ -22,13 +22,23 @@ DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
     "original/*",
     "metal/*",
     "coreml/*",
-    "pytorch_model*.bin",
-    "pytorch_model.bin.index.json",
     "tf_model*.h5",
     "tf_model.h5.index.json",
     "flax_model*.msgpack",
     "flax_model.msgpack.index.json",
     "rust_model.ot",
+)
+# The torch checkpoints are resolved per repo rather than globbed, because a dtype variant is
+# only redundant when the SAME variant ships as safetensors: "model.safetensors" does not
+# satisfy a variant="fp16" load, a rule this codebase already pins in
+# tests/test_prefetch_snapshot_scope.py::test_variant_keeps_bin_when_only_default_safetensors.
+# A glob also kept openai/whisper-large-v3's "pytorch_model.bin.index.fp32.json" while dropping
+# the shards it indexes.
+_BIN_WEIGHT_RE = re.compile(
+    r"pytorch_model(?:\.(?P<variant>[A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin"
+)
+_BIN_INDEX_RE = re.compile(
+    r"pytorch_model(?:\.(?P<pre>[A-Za-z0-9_]+))?\.bin\.index(?:\.(?P<post>[A-Za-z0-9_]+))?\.json"
 )
 # [0-9] rather than \d: Python's \d also matches non-ASCII digits while JavaScript's does not, and the
 # frontend mirror in studio/frontend/src/features/hub/lib/dataset-size.ts has to answer this identically.
@@ -90,6 +100,36 @@ def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
     )
 
 
+def _variant_ships_as_safetensors(names: list[str], variant: str | None) -> bool:
+    """Whether `variant` is already covered by a safetensors checkpoint.
+
+    ``None`` is the canonical checkpoint, which the root-safetensors gate has established.
+    A named variant needs its OWN safetensors (``model.fp32-00001-of-00002.safetensors``);
+    the default ``model.safetensors`` cannot serve a ``variant=`` load.
+    """
+    if variant is None:
+        return True
+    pattern = re.compile(rf"model\.{re.escape(variant)}(?:[-_][0-9]+-of-[0-9]+)?\.safetensors")
+    return any(pattern.fullmatch(name) for name in names)
+
+
+def redundant_torch_bin_files(filenames: Iterable[str]) -> list[str]:
+    """The pytorch_model .bin files, and their indexes, a safetensors copy makes redundant."""
+    names = list(filenames)
+    redundant = []
+    for name in names:
+        match = _BIN_WEIGHT_RE.fullmatch(name)
+        variant = match.group("variant") if match else None
+        if not match:
+            match = _BIN_INDEX_RE.fullmatch(name)
+            if not match:
+                continue
+            variant = match.group("pre") or match.group("post")
+        if _variant_ships_as_safetensors(names, variant):
+            redundant.append(name)
+    return redundant
+
+
 def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list[str]:
     names = list(filenames)
     ignore = list(SNAPSHOT_IGNORE_PATTERNS)
@@ -97,6 +137,8 @@ def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list
         ignore.append(CONSOLIDATED_PATTERN)
     if repo_ships_root_safetensors(names):
         ignore.extend(DUPLICATE_WEIGHT_FORMAT_PATTERNS)
+        # Exact names, not globs: fnmatch treats "." literally, so each entry matches only itself.
+        ignore.extend(redundant_torch_bin_files(names))
     return ignore
 
 

@@ -29,8 +29,6 @@ _TS_COUNTERPARTS = {
     "original/*": "original",
     "metal/*": "metal",
     "coreml/*": "coreml",
-    "pytorch_model*.bin": r"pytorch_model.*\.bin",
-    "pytorch_model.bin.index.json": r"pytorch_model\.bin",
     "tf_model*.h5": r"tf_model.*\.h5",
     "tf_model.h5.index.json": r"tf_model\.h5",
     "flax_model*.msgpack": r"flax_model.*\.msgpack",
@@ -70,8 +68,19 @@ def test_both_gates_require_the_index_before_trusting_numbered_shards():
     assert "SAFETENSORS_INDEX" in _ts_source()
 
 
+def test_the_torch_bin_family_is_resolved_per_repo_on_both_sides():
+    # Globbing pytorch_model*.bin dropped dtype variants a default safetensors cannot serve,
+    # so both sides resolve the family against the repo's own file list instead.
+    src = _ts_source()
+    assert "redundantTorchBinFiles(" in src
+    assert "variantShipsAsSafetensors(" in src
+    assert not any(p.startswith("pytorch_model") for p in DUPLICATE_WEIGHT_FORMAT_PATTERNS)
+    assert r"pytorch_model.*\.bin" not in src
+
+
 def test_the_frontend_still_gates_the_duplicate_rules_on_root_safetensors():
     # A repo without a root checkpoint must download exactly as before on both sides.
     src = _ts_source()
     assert "function shipsRootSafetensors(" in src
-    assert "skipDuplicateFormats && DUPLICATE_WEIGHT_FORMAT_RE.test(filename)" in src
+    assert "skipDuplicateFormats &&" in src
+    assert "DUPLICATE_WEIGHT_FORMAT_RE.test(filename) || redundantBins.has(filename)" in src

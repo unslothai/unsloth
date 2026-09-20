@@ -88,6 +88,42 @@ test("underscore-sharded root safetensors still skip the bin copy", async () => 
   });
 });
 
+test("a bin-only dtype variant is still counted", async () => {
+  // model.safetensors cannot serve a variant="fp16" load, so the fp16 bin is not a duplicate.
+  stubSiblings({
+    "config.json": 2,
+    "model.safetensors": 500,
+    "pytorch_model.bin": 500,
+    "pytorch_model.fp16.bin": 250,
+  });
+  assert.deepEqual(await fetchModelSize("acme/bin-only-variant"), {
+    totalBytes: 2 + 500 + 250,
+    weightsBytes: 500 + 250,
+  });
+});
+
+test("a variant index never outlives its shards", async () => {
+  // whisper-large-v3's real shape: the fp32 variant ships as safetensors, so the bin shards
+  // and their index both go.
+  stubSiblings({
+    "config.json": 2,
+    "model.safetensors": 3_090,
+    "model.fp32-00001-of-00002.safetensors": 3_000,
+    "model.fp32-00002-of-00002.safetensors": 3_000,
+    "model.safetensors.index.fp32.json": 1,
+    "pytorch_model.bin": 3_090,
+    "pytorch_model.fp32-00001-of-00002.bin": 3_000,
+    "pytorch_model.fp32-00002-of-00002.bin": 3_000,
+    "pytorch_model.bin.index.fp32.json": 1,
+  });
+  // A repoId of its own: the module-level LRU is keyed on it, and reusing
+  // "acme/whisper-shaped" from the earlier test served that test's cached answer here.
+  assert.deepEqual(await fetchModelSize("acme/whisper-fp32-variant"), {
+    totalBytes: 2 + 3_090 + 3_000 + 3_000 + 1,
+    weightsBytes: 3_090 + 3_000 + 3_000,
+  });
+});
+
 test("indexless shards do not open the gate", async () => {
   // Numbered shards are resolved through model.safetensors.index.json; with no index the
   // bin copy is the only loadable checkpoint, so it must still be counted.

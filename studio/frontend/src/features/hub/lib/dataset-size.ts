@@ -277,7 +277,40 @@ const SNAPSHOT_BIN_WEIGHT_PREFIX_RE = /^(model|pytorch_model|adapter_model).*\.b
 const SHARDED_SAFETENSORS_RE = /^model[-_][0-9]+-of-[0-9]+\.safetensors$/;
 const SAFETENSORS_INDEX = "model.safetensors.index.json";
 const DUPLICATE_WEIGHT_FORMAT_RE =
-  /^(?:(?:original|metal|coreml)\/|(?:pytorch_model.*\.bin|tf_model.*\.h5|flax_model.*\.msgpack)$|(?:pytorch_model\.bin|tf_model\.h5|flax_model\.msgpack)\.index\.json$|rust_model\.ot$)/s;
+  /^(?:(?:original|metal|coreml)\/|(?:tf_model.*\.h5|flax_model.*\.msgpack)$|(?:tf_model\.h5|flax_model\.msgpack)\.index\.json$|rust_model\.ot$)/s;
+// Mirrors redundant_torch_bin_files in snapshot_filters.py. A dtype variant is redundant only
+// when the SAME variant ships as safetensors: model.safetensors does not satisfy a
+// variant="fp16" load, and a glob also kept whisper-large-v3's pytorch_model.bin.index.fp32.json
+// while dropping the shards it indexes.
+const BIN_WEIGHT_RE =
+  /^pytorch_model(?:\.([A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin$/;
+const BIN_INDEX_RE =
+  /^pytorch_model(?:\.([A-Za-z0-9_]+))?\.bin\.index(?:\.([A-Za-z0-9_]+))?\.json$/;
+
+function variantShipsAsSafetensors(names: string[], variant: string | undefined): boolean {
+  if (!variant) return true;
+  const re = new RegExp(
+    `^model\\.${variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[-_][0-9]+-of-[0-9]+)?\\.safetensors$`,
+  );
+  return names.some((n) => re.test(n));
+}
+
+function redundantTorchBinFiles(names: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const name of names) {
+    let variant: string | undefined;
+    const weight = BIN_WEIGHT_RE.exec(name);
+    if (weight) {
+      variant = weight[1];
+    } else {
+      const index = BIN_INDEX_RE.exec(name);
+      if (!index) continue;
+      variant = index[1] ?? index[2];
+    }
+    if (variantShipsAsSafetensors(names, variant)) out.add(name);
+  }
+  return out;
+}
 
 function basename(path: string): string {
   return path.split("/").pop() ?? path;
@@ -310,6 +343,7 @@ function isSnapshotIgnored(
   filename: string,
   skipConsolidated: boolean,
   skipDuplicateFormats: boolean,
+  redundantBins: Set<string>,
 ): boolean {
   const lower = filename.toLowerCase();
   return (
@@ -320,7 +354,8 @@ function isSnapshotIgnored(
     lower.startsWith("mlx/") ||
     lower.endsWith(".bin.index.json.bak") ||
     (skipConsolidated && lower.startsWith("consolidated")) ||
-    (skipDuplicateFormats && DUPLICATE_WEIGHT_FORMAT_RE.test(filename))
+    (skipDuplicateFormats &&
+      (DUPLICATE_WEIGHT_FORMAT_RE.test(filename) || redundantBins.has(filename)))
   );
 }
 
@@ -355,6 +390,9 @@ export function fetchModelSize(
       const siblings = data.siblings ?? [];
       const skipConsolidated = shipsTransformersWeights(siblings);
       const skipDuplicateFormats = shipsRootSafetensors(siblings);
+      const redundantBins = redundantTorchBinFiles(
+        siblings.map((s) => s.rfilename ?? ""),
+      );
       let total = 0;
       let weights = 0;
       for (const s of siblings) {
@@ -362,7 +400,12 @@ export function fetchModelSize(
         const filename = s.rfilename ?? "";
         if (
           filename &&
-          isSnapshotIgnored(filename, skipConsolidated, skipDuplicateFormats)
+          isSnapshotIgnored(
+            filename,
+            skipConsolidated,
+            skipDuplicateFormats,
+            redundantBins,
+          )
         ) {
           continue;
         }
