@@ -1008,3 +1008,22 @@ def test_the_file_hold_closes_with_a_full_width_handle(monkeypatch):
 
     assert closed == [handle], "the handle was not closed intact"
     assert recorded["argtypes"] is not None, "CloseHandle was called without argtypes"
+
+
+def test_a_registered_model_folder_is_granted_on_windows(plan, tmp_path, monkeypatch):
+    """Parity with Linux and macOS: the approval gate lets a tool read the
+    folders the user registered, so the container has to as well."""
+    from core.inference import os_sandbox
+
+    library = tmp_path / "library" / "models"
+    library.mkdir(parents = True)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: (str(library),))
+    monkeypatch.setattr(sandbox_windows, "model_library_roots", lambda: (str(library),))
+
+    policy = sandbox_windows.build_policy(plan, str(workdir), "unsloth-test")
+    granted = {os.path.normcase(path) for path in policy["filesystem"]["readonlyPaths"]}
+
+    assert os.path.normcase(str(library)) in granted
+    assert str(library) not in policy["filesystem"]["readwritePaths"]

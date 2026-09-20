@@ -48,6 +48,7 @@ from .os_sandbox import (
     SandboxUnavailableError,
     ToolLaunchPlan,
     editable_source_roots,
+    model_library_roots,
     scan_workdir_for_host_channels,
 )
 
@@ -328,6 +329,10 @@ def _readonly_roots(plan: ToolLaunchPlan, workdir: str) -> list[str]:
         *editable_source_roots(),
         *_runtime_roots(),
         *_launch_program_roots(plan),
+        # The model folders the approval gate already lets a tool read without
+        # asking, granted here for the same reason as on Linux and macOS: the
+        # read passes the gate silently and would then fail in the container.
+        *model_library_roots(),
     )
     # Case-insensitively, because PATH entries and sysconfig paths routinely
     # spell the same Windows directory differently and MXC would be handed the
