@@ -32,7 +32,8 @@ DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
 )
 # [0-9] rather than \d: Python's \d also matches non-ASCII digits while JavaScript's does not, and the
 # frontend mirror in studio/frontend/src/features/hub/lib/dataset-size.ts has to answer this identically.
-ROOT_SAFETENSORS_RE = re.compile(r"model([-_][0-9]+-of-[0-9]+)?\.safetensors")
+SHARDED_SAFETENSORS_RE = re.compile(r"model[-_][0-9]+-of-[0-9]+\.safetensors")
+SAFETENSORS_INDEX = "model.safetensors.index.json"
 SNAPSHOT_WEIGHT_EXTENSIONS = (
     ".safetensors",
     ".bin",
@@ -74,7 +75,19 @@ def repo_ships_transformers_weights(filenames: Iterable[str]) -> bool:
 
 
 def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
-    return any(ROOT_SAFETENSORS_RE.fullmatch(name) for name in filenames)
+    """Whether a load would find a COMPLETE root safetensors checkpoint.
+
+    Numbered shards are not loadable on their own: transformers resolves them through
+    model.safetensors.index.json and, with no index, falls back to looking for a single
+    file and raises. So one shard is not evidence a checkpoint is there, and treating it
+    as such would drop a working pytorch_model.bin the load still needed.
+    """
+    names = list(filenames)
+    if any(name == "model.safetensors" for name in names):
+        return True
+    return SAFETENSORS_INDEX in names and any(
+        SHARDED_SAFETENSORS_RE.fullmatch(name) for name in names
+    )
 
 
 def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list[str]:

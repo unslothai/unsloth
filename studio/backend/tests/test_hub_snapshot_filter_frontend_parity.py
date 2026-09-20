@@ -58,10 +58,16 @@ def test_every_backend_duplicate_pattern_has_a_frontend_counterpart():
 def test_both_gates_spell_the_shard_number_with_ascii_digits():
     # Python's \d matches non-ASCII digits and JavaScript's does not, so \d here would have
     # the two gates disagree about whether a repo ships a root checkpoint at all.
-    assert r"model([-_][0-9]+-of-[0-9]+)?\.safetensors" in (
+    assert r"model[-_][0-9]+-of-[0-9]+\.safetensors" in (
         Path(__file__).resolve().parents[1] / "hub" / "utils" / "snapshot_filters.py"
     ).read_text(encoding = "utf-8")
-    assert r"^model([-_][0-9]+-of-[0-9]+)?\.safetensors$" in _ts_source()
+    assert r"^model[-_][0-9]+-of-[0-9]+\.safetensors$" in _ts_source()
+
+
+def test_both_gates_require_the_index_before_trusting_numbered_shards():
+    # A lone shard is not a loadable checkpoint, so neither side may open the gate on one.
+    assert "model.safetensors.index.json" in _ts_source()
+    assert "SAFETENSORS_INDEX" in _ts_source()
 
 
 def test_the_frontend_still_gates_the_duplicate_rules_on_root_safetensors():

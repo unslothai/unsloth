@@ -272,9 +272,10 @@ const SNAPSHOT_WEIGHT_FILE_RE =
 const SNAPSHOT_NON_BIN_WEIGHT_FILE_RE =
   /\.(safetensors|pt|pth|ckpt|h5|msgpack|npz)$/i;
 const SNAPSHOT_BIN_WEIGHT_PREFIX_RE = /^(model|pytorch_model|adapter_model).*\.bin$/i;
-// [0-9] rather than \d, to stay identical to the backend's ROOT_SAFETENSORS_RE in
+// [0-9] rather than \d, to stay identical to the backend's SHARDED_SAFETENSORS_RE in
 // studio/backend/hub/utils/snapshot_filters.py, where \d would also match non-ASCII digits.
-const ROOT_SAFETENSORS_RE = /^model([-_][0-9]+-of-[0-9]+)?\.safetensors$/;
+const SHARDED_SAFETENSORS_RE = /^model[-_][0-9]+-of-[0-9]+\.safetensors$/;
+const SAFETENSORS_INDEX = "model.safetensors.index.json";
 const DUPLICATE_WEIGHT_FORMAT_RE =
   /^(?:(?:original|metal|coreml)\/|(?:pytorch_model.*\.bin|tf_model.*\.h5|flax_model.*\.msgpack)$|(?:pytorch_model\.bin|tf_model\.h5|flax_model\.msgpack)\.index\.json$|rust_model\.ot$)/s;
 
@@ -293,8 +294,16 @@ function shipsTransformersWeights(siblings: ModelSibling[]): boolean {
   });
 }
 
+// Numbered shards are not loadable on their own: transformers resolves them through
+// model.safetensors.index.json, so one shard is not evidence a checkpoint is there.
+// Mirrors repo_ships_root_safetensors in snapshot_filters.py.
 function shipsRootSafetensors(siblings: ModelSibling[]): boolean {
-  return siblings.some((s) => ROOT_SAFETENSORS_RE.test(s.rfilename ?? ""));
+  const names = siblings.map((s) => s.rfilename ?? "");
+  if (names.some((n) => n === "model.safetensors")) return true;
+  return (
+    names.includes(SAFETENSORS_INDEX) &&
+    names.some((n) => SHARDED_SAFETENSORS_RE.test(n))
+  );
 }
 
 function isSnapshotIgnored(

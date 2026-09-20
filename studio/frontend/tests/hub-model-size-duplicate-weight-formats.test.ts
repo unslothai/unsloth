@@ -88,6 +88,35 @@ test("underscore-sharded root safetensors still skip the bin copy", async () => 
   });
 });
 
+test("indexless shards do not open the gate", async () => {
+  // Numbered shards are resolved through model.safetensors.index.json; with no index the
+  // bin copy is the only loadable checkpoint, so it must still be counted.
+  stubSiblings({
+    "config.json": 2,
+    "model-00001-of-00002.safetensors": 500,
+    "model-00002-of-00002.safetensors": 500,
+    "pytorch_model.bin": 990,
+  });
+  assert.deepEqual(await fetchModelSize("acme/indexless-shards"), {
+    totalBytes: 2 + 500 + 500 + 990,
+    weightsBytes: 500 + 500 + 990,
+  });
+});
+
+test("the same repo with an index does skip the bin copy", async () => {
+  stubSiblings({
+    "config.json": 2,
+    "model-00001-of-00002.safetensors": 500,
+    "model-00002-of-00002.safetensors": 500,
+    "model.safetensors.index.json": 1,
+    "pytorch_model.bin": 990,
+  });
+  assert.deepEqual(await fetchModelSize("acme/indexed-shards"), {
+    totalBytes: 2 + 500 + 500 + 1,
+    weightsBytes: 500 + 500,
+  });
+});
+
 test("a non-ascii shard number does not open the gate", async () => {
   // The backend's ROOT_SAFETENSORS_RE is the authority on what gets downloaded. Python's
   // \d matches these digits and JavaScript's does not, so spelling either side \d would

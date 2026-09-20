@@ -120,6 +120,28 @@ def test_underscore_sharded_safetensors_still_skip_the_bin_copy():
     }
 
 
+def test_indexless_shards_do_not_open_the_gate():
+    # Numbered shards are resolved through model.safetensors.index.json; with no index a
+    # load falls back to looking for a single file and raises, so the .bin checkpoint here
+    # is the only loadable one and must survive.
+    indexless = {
+        "config.json": 2,
+        "model-00001-of-00002.safetensors": 500,
+        "model-00002-of-00002.safetensors": 500,
+        "pytorch_model.bin": 990,
+    }
+    assert _kept(indexless) == set(indexless)
+    assert "pytorch_model*.bin" not in resolve_snapshot_ignore_patterns_for_files(indexless)
+
+    # The same repo WITH the index is a complete checkpoint, so the bin copy goes.
+    indexed = dict(indexless, **{"model.safetensors.index.json": 1})
+    assert "pytorch_model.bin" not in _kept(indexed)
+
+    # An unsharded model.safetensors needs no index to be loadable.
+    unsharded = {"config.json": 2, "model.safetensors": 500, "pytorch_model.bin": 500}
+    assert "pytorch_model.bin" not in _kept(unsharded)
+
+
 def test_a_non_ascii_shard_number_does_not_open_the_gate():
     # Python's \d matches non-ASCII digits and JavaScript's does not, so a \d here would
     # have this repo lose its .bin copy in the backend while the frontend still sized it
