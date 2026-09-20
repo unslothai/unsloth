@@ -272,13 +272,16 @@ export function useTauriUpdate(isExternalServer = false) {
         // Self-gates on the real target_os, so it is authoritative even if policy is a guess.
         if (await checkManualUpdate(policy)) return;
         if (resolved) {
-          // latest.json has no deb/rpm key, so the in-app updater would offer an AppImage this install cannot apply.
+          // Reaching here means the Rust side resolved the mode and still said manual, so this
+          // install has no in-app path: rpm, a plain tarball, or a .deb whose updater checks
+          // failed. latest.json carries linux-x86_64-deb now, but only linux-x86_64 otherwise,
+          // and that is an AppImage none of those installs can apply.
           updateRef.current = null;
           replaceInfo(null);
           updateStatus("idle");
           return;
         }
-        // Guessed policy, no manual offer: macOS, Windows and AppImage do have an in-app path.
+        // Guessed policy, no manual offer: macOS, Windows, AppImage and .deb do have an in-app path.
       }
 
       const update = await checkDesktopUpdate();

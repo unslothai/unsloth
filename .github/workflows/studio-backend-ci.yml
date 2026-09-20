@@ -47,7 +47,16 @@ on:
       - 'install.ps1'
       - 'scripts/**'
       - 'pyproject.toml'
+      # Nine tests under tests/studio read .github/actions/*/action.yml and assert
+      # properties of those composite actions: cache naming, install phase timing, uv and
+      # pip cache discipline, and the unsloth_zoo revision notice. This is the suite that
+      # covers them, and without this entry an action-only change ran Core, which does not
+      # execute tests/studio, and skipped Backend CI, which does. The guards were then
+      # absent for exactly the change they guard. Same reason as install.sh above.
+      - '.github/actions/**'
       - '.github/workflows/studio-backend-ci.yml'
+      # tests/python/test_amd_extras_contract.py asserts against this file.
+      - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
 
@@ -330,6 +339,7 @@ jobs:
         # fails that guard instead of flaking here.
         #
         # test_media_auto_switch has a 0.4s budget that xdist scheduling can exceed.
+        # test_pr5624_regressions exceeded its 1s R1 parser bound in two contended runs.
         #
         # --timeout: a per-test wall-clock cap, so a test that never returns fails with its
         # own name in the summary instead of taking the job's 45 minutes down with it and
@@ -364,7 +374,7 @@ jobs:
         # yet. It only ever gets looser as the work per shard drops.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
-          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --dist loadgroup --timeout=330 \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
             --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
@@ -378,6 +388,7 @@ jobs:
             --ignore=tests/test_anthropic_messages.py \
             --ignore=tests/test_profile_stats.py \
             --ignore=tests/test_media_auto_switch.py \
+            --ignore=tests/test_pr5624_regressions.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
@@ -403,7 +414,8 @@ jobs:
             tests/test_scan_loras_off_event_loop.py \
             tests/test_anthropic_messages.py \
             tests/test_profile_stats.py \
-            tests/test_media_auto_switch.py
+            tests/test_media_auto_switch.py \
+            tests/test_pr5624_regressions.py
 
       - name: Pre-3.12 branches, on the newest interpreter that takes them
         if: matrix.scope == 'floor-spot-check'
@@ -646,7 +658,7 @@ jobs:
         # under the job cap, so this fires first and says where it was stuck.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --dist loadgroup --timeout=330 \
             -m 'not server and not e2e'
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)

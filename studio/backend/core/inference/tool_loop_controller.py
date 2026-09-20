@@ -20,6 +20,12 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
+from core.inference.llama_tool_schema import unrelaxed
+from core.inference.mcp_images import split_images as split_mcp_images
+
+# Stamped by mcp_client on every tool it registers; the provenance the envelope
+# is trusted on.
+MCP_TOOL_PREFIX = "mcp__"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 
@@ -289,10 +295,13 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
+        # Not only in model_message(): the frontend PERSISTS this payload and serializes it back
+        # into a role="tool" message on the next turn, so an unmasked key is replayed then.
+        result = self.result
         return {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.card_id,
-            "result": self.result,
+            "result": redact_studio_credentials(result) if isinstance(result, str) else result,
             "provenance": self.decision.provenance,
         }
 
@@ -327,6 +336,17 @@ class ToolCallCompletion:
         if self.decision.tool_call_id:
             message["tool_call_id"] = self.decision.tool_call_id
         return message
+
+    def mcp_images(self) -> list[dict]:
+        """Images this call returned, and only for a call an MCP server served.
+
+        The envelope is a plain suffix, so any tool whose output happens to end in
+        one -- terminal output, a fetched page -- would otherwise have its bytes
+        decoded and attached as model image input.
+        """
+        if not self.executed or not self.decision.tool_name.startswith(MCP_TOOL_PREFIX):
+            return []
+        return split_mcp_images(self.result)[1]
 
 
 @dataclass(frozen = True)
@@ -478,6 +498,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
     ``(None, ...)`` leaves it alone. A union collapses to its single non-null branch, so
     every branch must name one: reading the integer branch of ``anyOf: [{integer}, {$ref}]``
     would turn ``"001"`` into 1."""
+    spec = unrelaxed(spec)
     if not _readable(spec):
         return None, None, False
     union = _UNION_KEYWORDS & spec.keys()
@@ -495,6 +516,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
             return None, None, False
         named = []
         for branch in branches:
+            branch = unrelaxed(branch)
             name = branch.get("type") if _readable(branch) else None
             if not isinstance(name, str) or _UNION_KEYWORDS & branch.keys():
                 return None, None, False
@@ -718,12 +740,14 @@ def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
     if len(parts) < 3 or not parts[1] or not parts[2]:
         return None
     try:
+        from core.inference.tools import _mcp_raw_tool_name
         from storage import mcp_servers_db
+
         server = mcp_servers_db.get_server_for_tool(parts[1])
+        display = (server or {}).get("display_name")
+        return (str(display), _mcp_raw_tool_name(tool_name)) if display else None
     except Exception:  # noqa: BLE001
         return None
-    display = (server or {}).get("display_name")
-    return (str(display), parts[2]) if display else None
 
 
 def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
@@ -733,6 +757,7 @@ def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
     return tool_event_provenance(
         provisional = True,
         mcp_server = mcp[0] if mcp else None,
+        mcp_tool = mcp[1] if mcp else None,
     )
 
 
@@ -806,29 +831,6 @@ def awaiting_approval_status(tool_name: str) -> str:
 
 def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
-
-
-def _strip_mcp_image_suffix(result: str) -> str:
-    """Drop a trailing __MCP_IMAGES__ envelope only when it is the valid JSON
-    image array appended by _flatten_result, so legit tool text that merely
-    mentions the marker is not truncated."""
-    head, sep, payload = result.rpartition("\n__MCP_IMAGES__:")
-    if not sep:
-        return result
-    try:
-        images = json.loads(payload)
-    except (ValueError, RecursionError):
-        return result
-    if not isinstance(images, list) or not images:
-        return result
-    if not all(
-        isinstance(img, dict)
-        and isinstance(img.get("data"), str)
-        and isinstance(img.get("mimeType"), str)
-        for img in images
-    ):
-        return result
-    return head.rstrip()
 
 
 def _strip_files_sentinel(result: str) -> str:
@@ -942,20 +944,56 @@ _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
 _WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 
 
-def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
-    """Remove frontend-only sentinels (image paths, RAG source map) before
-    feeding the result back to the model."""
+# `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
+# the way to the model, which is where it would leave the machine. The mask carries neither prefix,
+# so re-running is a no-op.
+_STUDIO_API_KEY_RE = re.compile(
+    # 8, not 32: a result cut to fit the window ends mid-key, and half a key is still one. Bare
+    # `sk-unsloth-` (prose about the format) still reads through.
+    # Hex, not alphanumeric: the token is `token_hex`, and the wider alphabet rewrote this repo's
+    # own `sk-unsloth-internal-workflow` to `[redacted]-workflow`.
+    r"sk-unsloth-[0-9a-fA-F]{8,}"
+    # `desktop-` + token_urlsafe(48); the floor keeps "desktop-app" out of it.
+    r"|desktop-[A-Za-z0-9_-]{40,}"
+)
+_STUDIO_SECRET_MASK = "[redacted]"
+
+
+def redact_studio_credentials(text: str) -> str:
+    """Mask any Unsloth Studio credential in text bound for the model/provider."""
+    # Two substring scans first: the alternation has no literal to anchor on and costs ~20x per MB.
+    if "sk-unsloth-" not in text and "desktop-" not in text:
+        return text
+    return _STUDIO_API_KEY_RE.sub(_STUDIO_SECRET_MASK, text)
+
+
+def strip_result_for_model(
+    result: str,
+    tool_name: "str | None" = None,
+    *,
+    redact: bool = True,
+) -> str:
+    """Remove frontend-only sentinels (image paths, RAG source map) and mask Studio credentials
+    before feeding the result back to the model.
+
+    ``redact = False`` is for the one caller that needs the strip to stay suffix-only
+    (`tools._split_frontend_suffix` re-derives the removed envelope from `startswith`); masking
+    rewrites bytes inside the body, which that comparison cannot survive. That path feeds the model
+    through `model_message` afterwards, so the mask is applied either way."""
     if tool_name is None or tool_name == "web_search":
         from .search_images import strip_images_suffix
         result = strip_images_suffix(result)
-    result = _strip_mcp_image_suffix(result)
+    # Always, whoever produced it: these bytes run to megabytes and the model must
+    # never be shown them as text. Provenance decides whether they become IMAGE
+    # input, which is a separate question answered in mcp_images._promote.
+    result = split_mcp_images(result)[0]
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
     if tool_name is None or tool_name in _IMAGE_SENTINEL_TOOLS:
         result = _strip_images_sentinel(result)
     if tool_name is None or tool_name in _SOURCE_MAP_TOOLS:
         result = _strip_rag_sources_sentinel(result)
-    return result
+    return redact_studio_credentials(result) if redact else result
 
 
 def deferred_nudge_text(msgs: Sequence[dict]) -> str:
@@ -975,6 +1013,50 @@ def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
     """
     if msgs:
         conversation.append({"role": "user", "content": deferred_nudge_text(msgs)})
+
+
+def tool_call_limit_nudge(
+    tool_calls: Sequence[Mapping[str, Any]],
+    limit: int,
+    *,
+    final: bool = False,
+    unavailable_tools: Collection[str] = (),
+) -> dict:
+    described = []
+    for tool_call in tool_calls:
+        function = tool_call.get("function") or {}
+        arguments = function.get("arguments", {})
+        if not isinstance(arguments, str):
+            arguments = canonical_arguments_text(arguments)
+        described.append(f"{function.get('name', '')} {arguments}")
+    follow_up = (
+        "Do not describe results you did not receive."
+        if final
+        else "Call them again if you still need their results, and do not describe results "
+        "you did not receive."
+    )
+    if not final and unavailable_tools:
+        retryable_names = sorted(
+            {(call.get("function") or {}).get("name", "") for call in tool_calls}
+            - set(unavailable_tools)
+        )
+        follow_up = (
+            f"Do not retry {', '.join(sorted(unavailable_tools))}; "
+            "these tools are no longer available."
+        )
+        if retryable_names:
+            follow_up += (
+                f" You may retry the skipped calls for {', '.join(retryable_names)} "
+                "if you still need their results."
+            )
+        follow_up += " Do not describe results you did not receive."
+    return {
+        "role": "user",
+        "content": (
+            f"{len(tool_calls)} more tool call(s) in this batch were not executed because "
+            f"at most {limit} tool calls run per turn: {'; '.join(described)}. {follow_up}"
+        ),
+    }
 
 
 def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
@@ -1090,6 +1172,7 @@ class ToolLoopController:
             forced = forced,
             provisional = provisional,
             mcp_server = mcp[0] if mcp else None,
+            mcp_tool = mcp[1] if mcp else None,
         )
         action: ToolAction = "execute"
         noop = ""

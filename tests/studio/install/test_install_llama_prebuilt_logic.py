@@ -4531,6 +4531,9 @@ function Write-LlamaFailureLog { param($Output) }
 function Mark-StudioOwned { param($Path) }
 function Get-InstalledLlamaPrebuiltRelease { param($InstallDir) return $null }
 function Test-PathQuiet { param($p) return $false }
+# Nothing to keep, as in the bash mirror where the guard is absent: exit 2 falls back to a compile.
+function Get-GpuPrebuiltToKeepOverSourceBuild { param($InstallDir) return "" }
+function Get-LlamaUpdateFailReason { param($Output) return "network" }
 function Exit-SetupFailure {
     param($Message, $Code = 1)
     Write-Output "setup_fail: $Code"
@@ -7005,6 +7008,23 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
     _, plans = module._fork_manifest_release_plans("latest", host, "unslothai/llama.cpp", "")
     assert plans[0].release_tag == "r2"
     assert plans[0].walk_back is None
+
+
+def test_a_late_rocm_listing_failure_keeps_the_vulkan_plan(monkeypatch):
+    module = INSTALL_LLAMA_PREBUILT
+    vulkan = release_plan([asset_choice(install_kind = "linux-vulkan")], release_checksums())
+
+    def rocm_plans():
+        yield vulkan
+        raise urllib.error.URLError("CDN down, API timed out")
+
+    monkeypatch.setattr(
+        module,
+        "resolve_simple_install_release_plans",
+        lambda *args: ("latest", module.LazyReleasePlans(rocm_plans())),
+    )
+    kept = module._with_rocm_behind_vulkan([vulkan], "latest", linux_host(), "", "")
+    assert [plan.release_tag for plan in kept] == [vulkan.release_tag]
 
 
 def test_a_reused_marker_takes_the_walk_back_this_run_made():

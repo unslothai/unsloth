@@ -48,6 +48,8 @@ SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
 
 LOCAL_RANK_KEYS = ("LOCAL_RANK", "RANK")
 WORLD_SIZE_KEYS = ("WORLD_SIZE",)
+# Only the node-local one. torchrun documents RANK as "The global rank" and LOCAL_RANK as "The local rank", and torch.distributed.get_rank() is global too, so neither of those may index a device.
+LOCAL_RANK_ONLY_KEYS = ("LOCAL_RANK",)
 
 BAD_MAPPINGS = {
     "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit".lower(),  # 32B dynamic quant is way too big
@@ -92,19 +94,53 @@ def is_distributed():
     return (world_size or 1) > 1 or (rank is not None and rank > 0)
 
 
+def _visible_device_count():
+    """Devices this process can actually address, 0 when the backend has none."""
+    try:
+        module = getattr(torch, DEVICE_TYPE_TORCH, None)
+        counter = getattr(module, "device_count", None)
+        return int(counter()) if callable(counter) else 0
+    except Exception:
+        return 0
+
+
+def _infer_local_rank(rank):
+    """The device index this rank owns *on this host*.
+
+    `rank` is global: `torch.distributed.get_rank()` is "a unique identifier assigned to each
+    process within a distributed process group ... 0 to world_size", and torchrun's RANK is
+    documented as the global rank. Indexing a device with it names cuda:8 on the second node of
+    a 2 x 8 job, which is an invalid ordinal, so read LOCAL_RANK first -- torchrun, accelerate
+    launch and deepspeed all set it. The modulo is the last resort for a launcher that sets
+    neither, and for a per-rank CUDA_VISIBLE_DEVICES where only one card is visible and the
+    local rank still counts from the launcher's point of view.
+    """
+    local_rank = _get_env_int(LOCAL_RANK_ONLY_KEYS)
+    if local_rank is None:
+        local_rank = 0 if rank is None else rank
+    if local_rank < 0:
+        return 0
+    count = _visible_device_count()
+    if count > 0 and local_rank >= count:
+        local_rank = local_rank % count
+    return local_rank
+
+
 def prepare_device_map():
     rank, world_size = _infer_distributed_ranks()
     distributed = (world_size or 1) > 1 or (rank is not None and rank > 0)
     if not distributed:
         return None, False
 
-    local_rank = 0 if rank is None else rank
+    local_rank = _infer_local_rank(rank)
     device_map = {"": f"{DEVICE_TYPE_TORCH}:{local_rank}"}
     try:
         if DEVICE_TYPE_TORCH == "cuda":
             torch.cuda.set_device(local_rank)
         elif DEVICE_TYPE_TORCH == "xpu" and hasattr(torch, "xpu"):
             torch.xpu.set_device(local_rank)
+        elif DEVICE_TYPE_TORCH == "npu" and hasattr(torch, "npu"):
+            torch.npu.set_device(local_rank)
     except Exception:
         pass
     return device_map, True
@@ -169,6 +205,29 @@ def requested_device_map(device_map):
     if device_map is DEFAULT_DEVICE_MAP and os.environ.get("UNSLOTH_AUTO_DEVICE_MAP", "1") == "1":
         return UNSLOTH_DEVICE_MAP
     return device_map
+
+
+# transformers routes exactly these four through infer_auto_device_map; every other string becomes `{"": torch.device(value)}` (modeling_utils.from_pretrained), i.e. a device the caller named.
+TRANSFORMERS_PLACEMENT_STRATEGIES = frozenset({"auto", "balanced", "balanced_low_0", "sequential"})
+
+AUTOMATIC_DEVICE_MAPS = TRANSFORMERS_PLACEMENT_STRATEGIES | {
+    UNSLOTH_DEVICE_MAP,
+    UNSLOTH_BALANCED_DEVICE_MAP,
+}
+
+
+def is_automatic_device_map(device_map):
+    """True when the placement is still ours to pick, so a distributed launch may pin it to the rank's own card.
+
+    A strategy name spreads one model over whatever devices it finds, which is exactly what every rank must not do (#3459). A device the caller named -- "cpu", "cuda:2", "mps" -- is a choice, and rewriting it loads the model on hardware they deliberately avoided. A bare accelerator type is the in-between: they named the type, never the index, so filling in the rank's index honours it.
+    """
+    if isinstance(device_map, _DefaultDeviceMap):
+        return True
+    if not isinstance(device_map, str):
+        return False
+    if device_map in AUTOMATIC_DEVICE_MAPS:
+        return True
+    return DEVICE_TYPE_TORCH != "cpu" and device_map == DEVICE_TYPE_TORCH
 
 
 def planner_quantization_kwargs(

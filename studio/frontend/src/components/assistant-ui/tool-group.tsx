@@ -28,6 +28,7 @@ import {
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
+import { hasCreatedFiles } from "./sandbox-files";
 import { syncToolActivityPreference } from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
@@ -240,7 +241,9 @@ const ToolGroupImpl: FC<
       .some(
         (part) =>
           part.type === "tool-call" &&
-          (part.toolName === "render_html" || part.toolName === "python"),
+          (part.toolName === "render_html" ||
+            part.toolName === "python" ||
+            hasCreatedFiles(part.toolName, part.result)),
       ),
   );
   // A blocking allow/deny prompt must never be hidden inside a collapsed
@@ -300,8 +303,8 @@ const ToolGroupImpl: FC<
       ((hasLiveOutput && messageRunning) ||
         (forcedOpenRef.current && messageRunning)));
 
-  // Render single calls, canvases, and Python scripts directly so their
-  // persistent content never hides in a collapsed group.
+  // Render single calls, canvases, Python scripts, and calls that created files
+  // directly so their persistent content never hides in a collapsed group.
   if (toolCount <= 1 || containsUngroupedTool) {
     return <>{children}</>;
   }

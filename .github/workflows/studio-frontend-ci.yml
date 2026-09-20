@@ -22,10 +22,12 @@ on:
       - 'tests/studio/playwright_composer_icons.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
+      - 'tests/studio/playwright_research_review.py'
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_nonmodal_menus.py'
       - 'tests/studio/playwright_settings_tabs.py'
+      - 'tests/studio/playwright_data_settings.py'
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_tool_activity.py'
@@ -410,6 +412,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
+      - name: Browser smoke for reopening the research plan
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_research_review.py
+
       # A gate, not a measurement. The released and streamdown variants are positive controls
       # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
       # that the flicker stopped. Chromium only on a PR, the engine whose content-visibility
@@ -460,6 +466,10 @@ jobs:
       - name: Browser smoke for the settings tab panels
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_settings_tabs.py
+
+      - name: Data settings deletion choices
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_data_settings.py
 
       # A listener is not a pure function: what a chord does to a focused button, to a
       # text field, on auto-repeat, or under AltGr is only answerable in a browser, and
@@ -526,6 +536,7 @@ jobs:
             logs/playwright-*
             logs/settings_tabs_report.json
             logs/settings_tabs_blocked_report.json
+            logs/data_settings*
             logs/nonmodal_menus_report.json
             logs/pw/
           retention-days: 3
@@ -570,7 +581,15 @@ jobs:
   windows:
     name: Frontend unit tests (Windows)
     runs-on: windows-latest
-    timeout-minutes: 15
+    # 30, not 15. The cap stopped fitting the job's own steps once the browser smokes
+    # joined it, and the overrun is deterministic rather than flaky: measured on run
+    # 35166979977, setup and npm ci 1m10s, unit tests 4m12s, browser install 32s,
+    # composer icons 39s, data settings in Chromium 4m21s, and then Firefox was cut off
+    # at 4m13s having needed about the same as Chromium. That is roughly 15m30s of work
+    # under a 15m cap, so every run that reaches the Firefox step dies there and reports
+    # itself as "cancelled" -- the failure mode the comment at the alignment job below
+    # already describes. The Linux sibling of this job allows 40.
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -620,11 +639,24 @@ jobs:
         timeout-minutes: 3
         run: python tests/studio/playwright_composer_icons.py chromium firefox
 
+      - name: Data settings deletion choices in Chromium
+        working-directory: ${{ github.workspace }}
+        run: python tests/studio/playwright_data_settings.py
+
+      - name: Data settings deletion choices in Firefox
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_ENGINE: firefox
+          PW_OUT: logs/data_settings_firefox_report.json
+        run: python tests/studio/playwright_data_settings.py
+
       - name: Upload alignment failure artifacts
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-composer-icons
-          path: logs/playwright-composer-icons
+          path: |
+            logs/playwright-composer-icons
+            logs/data_settings*
           retention-days: 1
           if-no-files-found: ignore

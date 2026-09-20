@@ -23,6 +23,7 @@ const {
   createAutoContinueLeaseKeeper,
   createAutoContinueTab,
   budgetImpliesTruncation,
+  hasRenderableContent,
   incompleteLabel,
   incompleteRemedy,
   isContinuableContent,
@@ -191,6 +192,70 @@ test("every stop reason has a label", () => {
     incompleteLabel("context_window"),
     "Response filled the model's context window",
   );
+  assert.equal(
+    incompleteLabel("empty"),
+    "The model returned an empty response",
+  );
+});
+
+test("only text has to carry weight for a turn to count as rendered", () => {
+  assert.equal(hasRenderableContent([]), false);
+  assert.equal(hasRenderableContent([{ type: "text", text: "" }]), false);
+  assert.equal(hasRenderableContent([{ type: "text", text: " \n\t" }]), false);
+  assert.equal(hasRenderableContent([{ type: "text", text: "hi" }]), true);
+  // A turn that only called a tool or drew an image still answered.
+  assert.equal(hasRenderableContent([{ type: "tool-call" }]), true);
+  assert.equal(hasRenderableContent([{ type: "image" }]), true);
+  assert.equal(
+    hasRenderableContent([{ type: "text", text: "" }, { type: "source" }]),
+    true,
+  );
+});
+
+test("an empty turn is reported, and offers a retry rather than a resume", () => {
+  // No partial means the bar's Resume button would resume nothing, so the remedy
+  // replaces it. Every other reason resumes, bar the one that cannot fit.
+  assert.equal(incompleteRemedy("empty"), "Try again, or pick a different model");
+  assert.equal(incompleteRemedy("cancelled"), null);
+  assert.equal(incompleteRemedy("length"), null);
+  assert.deepEqual(
+    readIncompleteInfo({ custom: { incomplete: { reason: "empty" } } }),
+    { reason: "empty" },
+  );
+});
+
+test("a reloaded empty turn keeps its reason instead of reading as a Stop", () => {
+  // The bar drops the stamped reason whenever the status says cancelled, so mapping
+  // `empty` there would restore as a bare "Cancelled": no label, no way out, and no
+  // partial to make it resumable either.
+  const metadata = { custom: { incomplete: { reason: "empty" as const } } };
+  const status = restoredAssistantStatus(metadata);
+  const stamped = readIncompleteInfo(metadata);
+  assert.notEqual(status.type === "incomplete" && status.reason, "cancelled");
+
+  // The bar's own precedence, run over the restored pair.
+  const cancelled = status.type === "incomplete" && status.reason === "cancelled";
+  const reason =
+    cancelled && !isProviderReportedReason(stamped?.reason)
+      ? "cancelled"
+      : stamped?.reason;
+  assert.equal(reason, "empty");
+  assert.notEqual(incompleteRemedy(reason!), null);
+
+  // A Stop during an empty run is still a Stop: the abort stamps its own reason first.
+  assert.equal(resolveIncompleteReason("cancelled", false), "cancelled");
+});
+
+test("the adapter marks a finish that rendered nothing", () => {
+  // The run can stop on its first token with nothing to show. Saved as complete that is a
+  // blank bubble, and a queue dispatching behind it moves straight on.
+  const ending = CHAT_ADAPTER.slice(
+    CHAT_ADAPTER.indexOf("const finalContent = ["),
+  );
+  const reason = ending.slice(0, ending.indexOf("yield {"));
+  assert.match(reason, /hasRenderableContent\(finalContent\) \? null : "empty"/);
+  // Read off the parts that are actually yielded, not the raw stream text.
+  assert.match(ending, /yield \{\s*content: finalContent,/);
 });
 
 test("the provider's own reason outranks every reason the client infers", () => {
@@ -261,7 +326,7 @@ test("the adapter latches the backend window-exhaustion event", () => {
   );
   assert.match(
     adapter,
-    /resolveIncompleteReason\(\s*incompleteReason,\s*contextWindowExceeded,\s*\)/,
+    /resolveIncompleteReason\(\s*incompleteReason,\s*contextWindowExceeded,?\s*\)/,
     "the latched signal no longer reaches the stamped reason",
   );
   assert.match(
@@ -337,7 +402,7 @@ test("the bar offers the way out in place of a Continue that cannot help", () =>
     /if \(!reason \|\| \(!remedy && !resumable\)\) \{\n\s*return null;/,
     "the way out is gated on the turn being resumable again",
   );
-  // Reading the cancelled status first shows "Response stopped" and offers Continue.
+  // Reading the cancelled status first shows "Response stopped" and offers Resume.
   assert.match(
     thread,
     /cancelled && !isProviderReportedReason\(stamped\?\.reason\)/,
@@ -350,8 +415,8 @@ test("the bar offers the way out in place of a Continue that cannot help", () =>
   );
   assert.match(
     thread,
-    /\{remedy \? null : \([\s\S]{0,400}Continue\n\s*<\/Button>/,
-    "Continue is offered again for a cut it cannot help",
+    /\{remedy \? null : \([\s\S]{0,400}Resume\n\s*<\/Button>/,
+    "the resume button is offered again for a cut it cannot help",
   );
 });
 

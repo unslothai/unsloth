@@ -1724,8 +1724,11 @@ def _detect_audio_from_tokenizer(
     from urllib.parse import quote
 
     revision_path = "main" if revision is None else quote(revision, safe = "")
+    from utils.hf_endpoint import get_hf_endpoint
+
+    hf_endpoint = get_hf_endpoint()
     for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
-        url = f"https://huggingface.co/{model_name}/resolve/{revision_path}/{tok_path}"
+        url = f"{hf_endpoint}/{model_name}/resolve/{revision_path}/{tok_path}"
         try:
             resp = requests.get(url, headers = headers, timeout = 15)
         except Exception as e:
@@ -1777,14 +1780,15 @@ def _is_imatrix_path(path: str) -> bool:
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS. dflash/ holds real weights, so it is a drafter by prefix only.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
 def _is_mtp_drafter(path: str) -> bool:
     """True for a separate-file drafter, a companion to the main model rather
     than a selectable quant: the repo-root ``mtp-*.gguf``, the ``MTP/`` subdir
-    copies (Gemma 4) or the ``dspark/`` drafters (DeepSeek V4 Flash).
+    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash) or the
+    ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss).
 
     Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub). Must be
     excluded everywhere mmproj is, or the drafter leaks into variant menus (a
@@ -2166,6 +2170,7 @@ from utils.models.drafters import (  # noqa: E402
     _drafter_total_size,
     detect_dflash_file,
     dspark_precision_rank,
+    is_published_drafter_filename,
 )
 from utils.models.drafters import (  # noqa: E402
     dspark_preference_key as _drafters_dspark_preference_key,
@@ -2262,8 +2267,7 @@ def detect_mtp_file(
             except OSError:
                 continue
             for f in entries:
-                name = f.name.lower()
-                if not (name.startswith("mtp-") and name.endswith(".gguf")):
+                if not is_published_drafter_filename(f.name, kind = "mtp", allow_legacy_suffix = False):
                     continue
                 if not _matches_weight(f):
                     continue
@@ -2303,13 +2307,7 @@ def detect_mtp_file(
                 # _is_mtp_drafter accepts everything under MTP/ by design (it excludes them from variant
                 # menus). Too broad to include here: a weight copy would launch as --model-draft. Require
                 # a published drafter name: mtp-<model> or <model>-MTP.
-                lower = f.name.lower()
-                if not lower.endswith(".gguf"):
-                    continue
-                # Drop the shard suffix first: an old-scheme split copy is named
-                # <model>-Q8_0-MTP-00001-of-00002.gguf, whose stem does not end in -mtp.
-                stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
-                if not (lower.startswith("mtp-") or stem.endswith("-mtp")):
+                if not is_published_drafter_filename(f.name, kind = "mtp"):
                     continue
                 if not _matches_weight(f):
                     continue

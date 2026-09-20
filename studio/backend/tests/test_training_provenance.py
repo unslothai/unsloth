@@ -635,6 +635,45 @@ def test_exact_model_snapshot_accepts_own_blob_symlink(tmp_path):
     assert exact_model_snapshot_path(str(snapshot), "org/model") == str(snapshot.resolve())
 
 
+def _shared_store_blob_symlink(repo: Path, link: Path, payload: bytes) -> Path:
+    sha = "c791637d" * 8
+    shared = repo.parent / "blobs" / sha[:2] / sha
+    shared.parent.mkdir(parents = True, exist_ok = True)
+    shared.write_bytes(payload)
+    (shared.parent / f"{sha}.lock").touch()
+    (repo / "blobs").mkdir(exist_ok = True)
+    repo_blob = repo / "blobs" / ("fe5874" + "0" * 58)
+    repo_blob.symlink_to(os.path.relpath(shared, repo_blob.parent))
+    link.symlink_to(os.path.relpath(repo_blob, link.parent))
+    return shared
+
+
+def test_exact_model_snapshot_accepts_hub_shared_blob_store(tmp_path):
+    snapshot = _model_snapshot(tmp_path, "org/model", "xet-backed", weights = False)
+    _shared_store_blob_symlink(snapshot.parent.parent, snapshot / "model.safetensors", b"weights")
+
+    assert exact_model_snapshot_path(str(snapshot), "org/model") == str(snapshot.resolve())
+
+
+@pytest.mark.parametrize("target", ["outside-cache", "other-repo-blobs"])
+def test_exact_model_snapshot_rejects_blob_symlink_escaping_repo(
+    tmp_path, tmp_path_factory, target
+):
+    snapshot = _model_snapshot(tmp_path, "org/model", "escaping", weights = False)
+    if target == "outside-cache":
+        escaped = tmp_path_factory.mktemp("elsewhere") / "blobs" / "c7" / "weights"
+    else:
+        escaped = tmp_path / "models--org--other" / "blobs" / "weights"
+    escaped.parent.mkdir(parents = True)
+    escaped.write_bytes(b"weights")
+    repo_blob = snapshot.parent.parent / "blobs" / "weight-blob"
+    repo_blob.parent.mkdir()
+    repo_blob.symlink_to(escaped)
+    (snapshot / "model.safetensors").symlink_to(os.path.relpath(repo_blob, snapshot))
+
+    assert exact_model_snapshot_path(str(snapshot), "org/model") is None
+
+
 @pytest.mark.parametrize("filename", ["model.safetensors", "config.json"])
 def test_exact_model_snapshot_rejects_external_file_symlink(tmp_path, filename):
     snapshot = _model_snapshot(tmp_path, "org/model", "external-link")
@@ -839,6 +878,17 @@ def test_loaded_hub_dataset_accepts_snapshot_blob_symlink(tmp_path):
     loaded = _loaded_dataset(str(snapshot / "train.parquet"))
 
     assert attest_loaded_dataset("org/dataset", loaded) == (str(snapshot.resolve()), None)
+
+
+def test_loaded_hub_dataset_accepts_hub_shared_blob_store(tmp_path):
+    repo = tmp_path / "datasets--org--dataset"
+    snapshot = repo / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    _shared_store_blob_symlink(repo, snapshot / "train.parquet", b"dataset")
+    loaded = _loaded_dataset(str(snapshot / "train.parquet"))
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (str(snapshot.resolve()), None)
+    assert exact_dataset_snapshot_path(str(snapshot), "org/dataset") == str(snapshot.resolve())
 
 
 def test_loaded_hub_dataset_rejects_local_source_symlink_outside_repo(tmp_path):

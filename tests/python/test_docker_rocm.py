@@ -25,6 +25,8 @@ _ENTRYPOINT = os.path.join(_DOCKER, "entrypoint-rocm.sh")
 _DOCKERFILE = os.path.join(_DOCKER, "Dockerfile.rocm")
 _SMOKE = os.path.join(_DOCKER, "smoke_test_rocm.py")
 _WORKFLOW = os.path.join(_REPO, ".github", "workflows", "docker-publish-rocm.yml")
+_HUB_PAGE = os.path.join(_DOCKER, "DOCKERHUB-ROCM.md")
+_README = os.path.join(_REPO, "README.md")
 
 _posix_shell = pytest.mark.skipif(
     os.name != "posix" or shutil.which("bash") is None,
@@ -47,6 +49,9 @@ def _run_sh(
     *,
     kfd = True,
     dri = True,
+    dxg = False,
+    librocdxg = False,
+    wsl_lib = True,
     nvidia = False,
     groups = "both",
     extra_env = None,
@@ -83,6 +88,14 @@ def _run_sh(
         (dev_root / "dev" / "kfd").write_text("")
         if dri:
             (dev_root / "dev" / "dri").mkdir()
+    if dxg:
+        (dev_root / "dev" / "dxg").write_text("")
+    if librocdxg:
+        lib = dev_root / "opt" / "rocm" / "lib"
+        lib.mkdir(parents = True)
+        (lib / "librocdxg.so.1.2.1").write_text("")
+    if wsl_lib:
+        (dev_root / "usr" / "lib" / "wsl" / "lib").mkdir(parents = True)
     env = dict(os.environ)
     env["PATH"] = str(bindir) + ":/usr/bin:/bin"
     env["UNSLOTH_DEV_ROOT"] = str(dev_root)
@@ -116,7 +129,16 @@ def _run_sh(
 def _image_and_cmd(argv):
     """The positional tail of `docker run`: image, then the container command."""
     # every option run.sh emits takes a value or is a known flag
-    flags_with_value = {"--device", "--group-add", "--ulimit", "-v", "-e", "-p", "--gpus"}
+    flags_with_value = {
+        "--device",
+        "--group-add",
+        "--ulimit",
+        "-v",
+        "-e",
+        "-p",
+        "--gpus",
+        "--stop-timeout",
+    }
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -168,12 +190,54 @@ class TestRunShRocm:
         assert image == "unsloth/unsloth-rocm:latest"
         assert "/dev/kfd" in argv
 
-    def test_no_kfd_warns_and_starts_without_devices(self, tmp_path):
-        """Docker Desktop has no /dev/kfd; the entrypoint then explains, so the
-        container must still start rather than docker failing on a missing node."""
+    def test_no_kfd_and_no_dxg_warns_and_starts_without_devices(self, tmp_path):
+        """A host with neither node has no GPU to pass: the container must still start
+        rather than docker failing on a missing device."""
         argv, stderr = _run_sh(tmp_path, ["--rocm", "true"], kfd = False)
         assert "--device" not in argv and "--gpus" not in argv, argv
-        assert "/dev/kfd is not present" in stderr and "Docker Desktop" in stderr, stderr
+        assert "/dev/kfd is not present" in stderr, stderr
+        assert "/dev/dxg" in stderr, stderr
+
+    def test_wsl_passes_dxg_instead_of_kfd(self, tmp_path):
+        """WSL2 has no /dev/kfd: the card is reached over the DXG bridge, so the flags
+        are the device plus the runtime's opt-in, and librocdxg off the host (its cmake
+        build needs Windows SDK headers, so no Linux image build can carry it)."""
+        argv, stderr = _run_sh(
+            tmp_path,
+            ["--rocm", "true"],
+            kfd = False,
+            dxg = True,
+            librocdxg = True,
+        )
+        assert "/dev/dxg" in argv, argv
+        assert "/dev/kfd" not in argv, argv
+        assert "HSA_ENABLE_DXG_DETECTION=1" in argv, argv
+        assert any("librocdxg.so" in a for a in argv), argv
+        # librocdxg dlopens libdxcore from here; without the mount hsa_init fails
+        # (measured on an R9700: "Failed to load libdxcore.so")
+        assert "/usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" in argv, argv
+        assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in argv, argv
+        assert "--gpus" not in argv, argv
+        assert "DXG" in stderr or "dxg" in stderr, stderr
+
+    def test_a_missing_wsl_lib_dir_is_named_not_silently_dropped(self, tmp_path):
+        argv, stderr = _run_sh(
+            tmp_path,
+            ["--rocm", "true"],
+            kfd = False,
+            dxg = True,
+            librocdxg = True,
+            wsl_lib = False,
+        )
+        assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" not in argv, argv
+        assert "/usr/lib/wsl/lib is missing" in stderr, stderr
+
+    def test_dxg_without_librocdxg_warns_and_points_at_the_helper(self, tmp_path):
+        """/dev/dxg alone is not enough: without the bridge library the runtime cannot
+        reach the card, and the fix is the WSL ROCm helper, not a docker flag."""
+        argv, stderr = _run_sh(tmp_path, ["--rocm", "true"], kfd = False, dxg = True)
+        assert "librocdxg" in stderr, stderr
+        assert "install_rocm_wsl_strixhalo.sh" in stderr, stderr
 
     def test_a_mixed_host_is_not_offered_the_nvidia_toolkit(self, tmp_path):
         """An NVIDIA + AMD box under --rocm runs the ROCm image through the AMD nodes;
@@ -360,6 +424,37 @@ class TestBuildShRocm:
         assert "org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only" in body
 
 
+class TestTheUserFacingDocsCoverWsl:
+    """docker/DOCKERHUB-ROCM.md is synced to the Docker Hub page and README.md is the
+    first thing a Windows user reads. Both said the image needs native Linux, and the
+    Hub quick start passed --device /dev/kfd unconditionally, which the daemon rejects
+    on WSL before the entrypoint runs."""
+
+    def test_the_hub_page_gives_the_same_wsl_flags_as_run_sh(self):
+        text = open(_HUB_PAGE, encoding = "utf-8").read()
+        for needle in (
+            "--device /dev/dxg",
+            "HSA_ENABLE_DXG_DETECTION=1",
+            "librocdxg.so.1:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro",
+            "-v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro",
+            "LD_LIBRARY_PATH=/usr/lib/wsl/lib",
+            "ROCM_GFX=<your gfx> bash docker/build.sh --rocm",
+            # run.sh defaults to the published image, which is refused on DXG
+            "UNSLOTH_IMAGE=unsloth-rocm:latest bash run.sh --rocm",
+            # Dockerfile.rocm maps no RDNA3 arch to a per-arch index, so the page must not
+            # promise one
+            "RDNA3 cards (`gfx1100` to `gfx1103`) have no bridge path yet",
+        ):
+            assert needle in text, needle
+
+    def test_the_readme_no_longer_says_native_linux_only(self):
+        text = open(_README, encoding = "utf-8").read()
+        assert "needs native Linux" not in text
+        assert "/dev/dxg" in text and "docker/run.sh --rocm" in text
+        assert "UNSLOTH_IMAGE=unsloth-rocm:latest" in text
+        assert "RDNA3 cards have no bridge path yet" in text
+
+
 # ── entrypoint-rocm.sh ───────────────────────────────────────────────────────
 
 
@@ -368,6 +463,7 @@ def _entrypoint(
     *,
     kfd = True,
     readable = True,
+    dxg = False,
     smi_sees_gpu = True,
     python_body = None,
     env_extra = None,
@@ -382,6 +478,8 @@ def _entrypoint(
         (dev_root / "dev" / "kfd").write_text("")
         if not readable:
             os.chmod(dev_root / "dev" / "kfd", 0)
+    if dxg:
+        (dev_root / "dev" / "dxg").write_text("")
     _stub(
         str(bindir / "rocm-smi"),
         'echo "GPU[0] : GPU ID: 0x1586"\n' if smi_sees_gpu else "echo 'No AMD GPUs specified'\n",
@@ -409,6 +507,33 @@ def _entrypoint(
 
 
 @_posix_shell
+def _fake_rocm_torch(
+    tmp_path,
+    libnames,
+    available = True,
+):
+    """A ROCm torch on a supported arch whose lib/ holds exactly `libnames`."""
+    fake = tmp_path / "fake"
+    (fake / "torch" / "cuda").mkdir(parents = True)
+    (fake / "torch" / "lib").mkdir()
+    for name in libnames:
+        (fake / "torch" / "lib" / name).write_text("")
+    (fake / "torch" / "__init__.py").write_text(
+        "__version__ = '2.11.0+rocm7.2'\n"
+        "class version:\n    hip = '7.2.53211'\n"
+        "from . import cuda\n"
+    )
+    (fake / "torch" / "cuda" / "__init__.py").write_text(
+        "class _P:\n    gcnArchName = 'gfx1201'\n"
+        f"def is_available(): return {available}\n"
+        "def device_count(): return 1\n"
+        "def get_device_name(i): return 'AMD Radeon AI PRO R9700'\n"
+        "def get_device_properties(i): return _P()\n"
+        "def is_bf16_supported(): return True\n"
+    )
+    return f'PYTHONPATH="{fake}" exec python3 "$@"\n'
+
+
 class TestRocmEntrypoint:
     def test_no_kfd_refuses_and_names_docker_desktop(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path, kfd = False)
@@ -437,6 +562,103 @@ class TestRocmEntrypoint:
 
     def test_a_happy_host_runs_the_command(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path)
+        assert rc == 0 and ran, err
+
+    def test_dxg_is_accepted_when_kfd_is_absent(self, tmp_path):
+        """WSL2 never has /dev/kfd. /dev/dxg plus librocdxg is the same GPU evidence
+        install.sh gates a WSL host on, so the run must proceed, not refuse."""
+        lib = tmp_path / "rocmlib"
+        lib.mkdir()
+        (lib / "librocdxg.so.1").write_text("")
+        rc, ran, err = _entrypoint(
+            tmp_path,
+            kfd = False,
+            dxg = True,
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
+        )
+        assert rc == 0 and ran, err
+        assert "DXG bridge" in err, err
+
+    def test_dxg_skips_the_rocm_smi_advice(self, tmp_path):
+        """rocm-smi reads the amdgpu sysfs, which the bridge has none of (measured in the
+        container: "Driver not initialized"), and its advice is /dev/dri and group ids,
+        neither of which exists on WSL."""
+        lib = tmp_path / "rocmlib"
+        lib.mkdir()
+        (lib / "librocdxg.so.1").write_text("")
+        rc, ran, err = _entrypoint(
+            tmp_path,
+            kfd = False,
+            dxg = True,
+            smi_sees_gpu = False,
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
+        )
+        assert rc == 0 and ran, err
+        assert "--group-add" not in err and "/dev/dri" not in err, err
+
+    def test_dxg_without_the_bridge_library_refuses(self, tmp_path):
+        """/dev/dxg alone cannot reach the card: the HSA runtime needs librocdxg."""
+        rc, ran, err = _entrypoint(
+            tmp_path,
+            kfd = False,
+            dxg = True,
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(tmp_path / "empty")},
+        )
+        assert rc == 1 and not ran
+        assert "librocdxg" in err, err
+        # librocdxg dlopens libdxcore from WSL's lib dir: the hand-run recovery must
+        # mount it and put it on the search path, or hsa_init fails after this check.
+        assert "-v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" in err, err
+        assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in err, err
+        # run.sh defaults to the published image, which the bridge refuses: the
+        # recovery has to name the per-arch build, or it sends the user there
+        assert "UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm" in err, err
+        assert "unsloth/unsloth-rocm:latest" not in err, err
+
+    def _dxg_with_torch(
+        self,
+        tmp_path,
+        libnames,
+        available = True,
+    ):
+        lib = tmp_path / "dxglib"
+        lib.mkdir()
+        (lib / "librocdxg.so.1").write_text("")
+        return _entrypoint(
+            tmp_path,
+            kfd = False,
+            dxg = True,
+            python_body = _fake_rocm_torch(tmp_path, libnames, available),
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
+        )
+
+    def test_dxg_torch_failure_gives_bridge_advice_not_amdgpu_advice(self, tmp_path):
+        """WSL has no host amdgpu stack, so the rocm-smi / dkms / rebuild-against-the-host
+        advice is wrong there; the bridge has its own two causes (measured: the libdxcore
+        mount, and the Windows driver)."""
+        rc, ran, err = self._dxg_with_torch(
+            tmp_path,
+            ["librocprofiler-register.so"],
+            available = False,
+        )
+        assert rc == 1 and not ran, err
+        assert "libdxcore" in err and "Windows AMD driver" in err, err
+        assert "dkms" not in err and "amdgpu driver has to be" not in err, err
+
+    def test_dxg_refuses_a_torch_bundling_librocprofiler_sdk(self, tmp_path):
+        """That library enumerates GPUs from a KFD topology WSL does not have, and aborts."""
+        rc, ran, err = self._dxg_with_torch(
+            tmp_path,
+            ["librocprofiler-register.so", "librocprofiler-sdk.so"],
+        )
+        assert rc == 1 and not ran, err
+        assert "librocprofiler-sdk.so" in err, err
+        assert "UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm" in err, err
+
+    def test_dxg_accepts_a_torch_carrying_only_librocprofiler_register(self, tmp_path):
+        """torch 2.11+rocm7.2 ships -register.so and runs on the bridge (measured on an
+        R9700), so matching every "rocprof" name refused a build that works."""
+        rc, ran, err = self._dxg_with_torch(tmp_path, ["librocprofiler-register.so"])
         assert rc == 0 and ran, err
 
     def test_a_failing_torch_check_stops_before_the_command(self, tmp_path):
