@@ -174,7 +174,9 @@ def prepare(plan, capability):
                 prepared.execution_record,
                 execution_status = "unknown_start" if may_have_started else "not_started",
                 completion_status = (
-                    "uncertain" if may_have_started else ("cancelled" if cancelled else "not_started")
+                    "uncertain"
+                    if may_have_started
+                    else ("cancelled" if cancelled else "not_started")
                 ),
                 cleanup_status = "uncertain" if may_have_started else "complete",
             )
