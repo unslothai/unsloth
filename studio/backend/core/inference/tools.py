@@ -16213,9 +16213,7 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(node, ast.ClassDef):
                 outer = list(node.decorator_list) + list(node.bases)
                 outer += [kw.value for kw in node.keywords]
-                return [(child, scope) for child in outer] + [
-                    (child, inner) for child in node.body
-                ]
+                return [(child, scope) for child in outer] + [(child, inner) for child in node.body]
             if isinstance(node, ast.arg):
                 # The parameter name belongs to the function; its annotation is evaluated outside.
                 if node.annotation is None:
@@ -16843,10 +16841,7 @@ def _check_signal_escape_patterns(code: str):
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "connect"
                 and node.args
-                and (
-                    isinstance(node.args[0], ast.Tuple)
-                    or _is_a_socket_receiver(node.func.value)
-                )
+                and (isinstance(node.args[0], ast.Tuple) or _is_a_socket_receiver(node.func.value))
             ):
                 a0 = node.args[0]
                 host_lit = None
