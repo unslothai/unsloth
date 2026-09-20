@@ -15,7 +15,7 @@ export interface MemoryTotalDevice {
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
   /** `hardware.py` sets `shared_memory` only on Windows, so a Linux ROCm APU arrives
-   *  as `unified_memory: true, shared_memory: false` (as `MemoryCapacityDevice`). */
+   *  as `unified_memory: true, shared_memory: false`. */
   unified_memory?: boolean;
 }
 
@@ -32,8 +32,6 @@ export interface VramReportingGpu {
   vram_used_gb_aggregate?: number | null;
 }
 
-/** `sharesHostMemory` in the wire shape, so the totals and the capacity resolver
- *  cannot drift apart. */
 function sharesHostMemoryDevice(device: MemoryTotalDevice): boolean {
   return sharesHostMemory({
     sharedMemory: device.shared_memory === true,
@@ -57,8 +55,7 @@ export function gpuMemoryTotalsGb(
     const total = device.memory_total_gb ?? 0;
     return Number.isFinite(total) && total > 0 ? total : 0;
   };
-  // Folding the two flags here fixes the callers that never learned to, and is a
-  // no-op for the ones that fold on their way in (use-gpu-info, memory-fit).
+  // A no-op for callers that already fold on their way in (use-gpu-info, memory-fit).
   const dedicatedDevices = roundToDevicePrecision(
     devices
       .filter((device) => !sharesHostMemoryDevice(device))
@@ -78,9 +75,8 @@ export function gpuMemoryTotalsGb(
           : total;
         return {
           // `shared_memory` means "this budget IS the host pool", so several are views
-          // of one thing and the largest is it. `unified_memory` alone means only that
-          // a device shares memory with its OWN cpu, which on a multi-socket node
-          // (MI300A) is a pool per socket: collapsing those reports it as one card.
+          // of one and the largest is it. `unified_memory` alone means only shared with
+          // its OWN cpu: a pool per socket, and collapsing those reports MI300A as one card.
           hostBacked:
             device.shared_memory === true
               ? Math.max(totals.hostBacked, hostBacked)

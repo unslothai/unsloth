@@ -2,12 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * `hardware.py` sets `shared_memory` only on Windows, so a Linux ROCm APU arrives as
- * `unified_memory: true, shared_memory: false` and its GTT window was counted as
- * dedicated VRAM standing beside the system RAM it is a view into.
- *
- * The split moves; the TOTAL must not. Fit verdicts are measured against the
- * aggregate, so a change there changes what the app agrees to load.
+ * A Linux ROCm APU's GTT window was counted as dedicated VRAM standing beside the
+ * system RAM it is a view into. The split moves; the TOTAL must not, since fit
+ * verdicts are measured against the aggregate.
  */
 
 import assert from "node:assert/strict";
@@ -46,8 +43,7 @@ test("a discrete card beside an APU keeps its own VRAM separate", () => {
     { memory_total_gb: 16, shared_memory: false },
     { memory_total_gb: 48, shared_memory: false, unified_memory: true },
   ]);
-  // Previously 64 dedicated, which reads as a 64 GiB card on a machine whose only
-  // VRAM is the 16 GiB one.
+  // Previously 64 dedicated: a 64 GiB card on a machine whose only VRAM is 16 GiB.
   assert.equal(totals.dedicated, 16);
   assert.equal(totals.shared, 48);
   assert.equal(totals.total, 64);
@@ -76,7 +72,6 @@ test("devices that already carried the shared flag are still one pool", () => {
 });
 
 test("the aggregate survives the reclassification in every shape", () => {
-  // Identical to what the old dedicated-sum produced for the same inventory.
   const inventories = [
     [{ memory_total_gb: 64, shared_memory: false, unified_memory: true }],
     [
@@ -125,8 +120,7 @@ test("only the two flags route; nothing else about a device does", () => {
 });
 
 test("callers that already folded the two flags get the same answer", () => {
-  // use-gpu-info and memory-fit hand in `shared_memory: sharesHostMemory(...)` and no
-  // `unified_memory`: folding an already-folded flag has to be a no-op.
+  // use-gpu-info and memory-fit hand in an already-folded flag: that has to be a no-op.
   for (const device of [linuxApu, windowsApu, discrete]) {
     const preFolded = {
       memory_total_gb: device.memory_total_gb,
