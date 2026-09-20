@@ -1062,7 +1062,14 @@ function scheduleGenerationRecovery(
             // The run's session is known now, and the decision is resolved against it. A call that
             // parked before the tab closed has no frame left to re-fold, so this is the only thing
             // that puts its Approve/Deny back in front of the user.
-            toolRecovery.armSeededApprovals(update.run.requestPayload?.session_id);
+            //
+            // Only while the run can still be answered. A run that settled while parked (a backend
+            // restart terminalises surviving rows) has no _pending slot left, and no tool_end is
+            // coming to disarm the card, so arming from the seed would leave permanent Approve/Deny
+            // buttons whose confirm can only 404.
+            if (!isTerminalChatGenerationRun(update.run)) {
+              toolRecovery.armSeededApprovals(update.run.requestPayload?.session_id);
+            }
             identityValidated = true;
           }
           // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
