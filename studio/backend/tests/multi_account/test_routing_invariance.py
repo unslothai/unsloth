@@ -57,7 +57,12 @@ def _steady(readings: list) -> dict:
     that really did grow grew in all of them, and the minimum grows with it.
     """
     keys = set().union(*readings) if readings else set()
-    return {key: min(reading.get(key, 0) for reading in readings) for key in keys}
+    steady = {key: min(reading.get(key, 0) for reading in readings) for key in keys}
+    # A counter only present in the noisy reading has a minimum of zero, and a zero is the
+    # same statement as the key being absent: Counter never records one. Keeping it would
+    # turn the noise back into a difference under the `==` below, which is the whole thing
+    # this is trying to stop.
+    return {key: value for key, value in steady.items() if value}
 
 
 def _vector(client, headers, path) -> dict:
@@ -163,7 +168,15 @@ def test_steady_cost_keeps_a_persistent_increase_and_drops_a_one_off():
         "swallowed it this guard would pass a per-account regression"
     )
 
-    # A counter that appears in only one reading is absent from the others, which is a
-    # zero rather than a missing key, or a one-off mkdir would read as permanent.
+    # A counter that appears in only one reading is absent from the others, so its minimum
+    # is zero, and a zero has to be dropped rather than reported. Counter never records a
+    # zero, so a reading that never saw the mkdir has no `mkdir` key at all, and keeping
+    # `{"mkdir": 0}` would fail the `==` against it just as surely as `{"mkdir": 1}` would.
     appears_once = [{"connections": 2}, {"connections": 2, "mkdir": 1}, {"connections": 2}]
-    assert _steady(appears_once) == {"connections": 2, "mkdir": 0}
+    never_appears = [{"connections": 2}] * _REPEATS
+    assert _steady(appears_once) == {"connections": 2}
+    assert _steady(appears_once) == _steady(never_appears), (
+        "a one-off counter has to leave the steady vector, not sit in it at zero: the "
+        "comparisons above are exact, and a key the other side has never heard of "
+        "differs whatever its value"
+    )
