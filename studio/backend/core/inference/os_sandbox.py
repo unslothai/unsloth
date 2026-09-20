@@ -4,6 +4,7 @@
 """Studio tool launch contract and the OS-isolation backends (bwrap, Seatbelt)."""
 
 from __future__ import annotations
+import errno
 import functools
 import hashlib
 import os
@@ -202,6 +203,10 @@ _SCAN_JOIN_GRACE_SECONDS = 0.5
 # it, and the scan below has to know which entries under the workdir Studio
 # itself owns.
 TOOL_TEMP_DIRNAME = "unsloth-tmp"
+# How tools.py creates that directory: os.mkdir(path, 0o700), as the user
+# Studio runs as. An adopted directory that came from the user's own tree is
+# almost never both, and nothing may be swept out of one that is not.
+TOOL_TEMP_MODE = 0o700
 
 
 class _ScanBudgetExceeded(Exception):
@@ -329,6 +334,87 @@ def _hazard_within_wall_clock(root: str, max_entries: int, seconds: float) -> st
     return answer[0]
 
 
+def _looks_like_our_scratch_dir(path: str) -> bool:
+    """Whether this directory was created the way tools.py creates one.
+
+    0700 and owned by the user Studio runs as. Not proof of authorship, and it
+    is not asked to be: it is the cheap half of a two-part test whose other
+    half, that the endpoint itself is dead, is the one doing the work. On
+    Windows the mode is not meaningful and neither are the endpoints this
+    sweeps, so only the ownership half applies there.
+    """
+    try:
+        info = os.stat(path)
+    except OSError:
+        return False
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        return False
+    if sys.platform == "win32":
+        return True
+    return stat.S_IMODE(info.st_mode) == TOOL_TEMP_MODE
+
+
+def _ipc_endpoint_is_dead(path: str, mode: int) -> bool:
+    """Whether nothing is using this socket or FIFO, proved rather than assumed.
+
+    False for anything the probe cannot settle, including an unexpected errno
+    and a name the probe cannot express, because the cost of being wrong is one
+    refused launch in one direction and a broken running tool call in the other.
+    """
+    if stat.S_ISFIFO(mode):
+        try:
+            # A writer that would block is a writer with no reader: ENXIO says
+            # the other end is gone. O_NONBLOCK so this cannot hang on a FIFO
+            # somebody IS reading.
+            handle = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            return exc.errno == errno.ENXIO
+        os.close(handle)
+        return False
+
+    verdict = _unix_socket_is_refused(path)
+    if verdict is None:
+        # sun_path is 108 bytes and a session workdir can be longer than that,
+        # so the endpoint gets a short alias through a temporary symlink to its
+        # directory rather than being declared undecidable on path length.
+        import tempfile
+
+        alias_dir = None
+        try:
+            alias_dir = tempfile.mkdtemp(prefix = "unsloth-ipc-")
+            alias = os.path.join(alias_dir, "d")
+            os.symlink(os.path.dirname(path), alias)
+            verdict = _unix_socket_is_refused(os.path.join(alias, os.path.basename(path)))
+        except OSError:
+            verdict = None
+        finally:
+            if alias_dir is not None:
+                shutil.rmtree(alias_dir, ignore_errors = True)
+    return bool(verdict)
+
+
+def _unix_socket_is_refused(path: str) -> bool | None:
+    """True if nothing is listening, False if something is, None if undecided."""
+    import socket
+
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.2)
+        probe.connect(path)
+    except OSError as exc:
+        if exc.errno == errno.ECONNREFUSED:
+            return True
+        # errno is None for "AF_UNIX path too long", which CPython raises from
+        # its own length check before the syscall, so a long session workdir
+        # must not read as a live endpoint.
+        if exc.errno is None or exc.errno in (errno.ENAMETOOLONG, errno.ENOENT):
+            return None
+        return False
+    finally:
+        probe.close()
+    return False
+
+
 def clear_stale_tool_ipc(workdir: str) -> tuple[str, ...]:
     """Remove sockets and FIFOs left behind in Studio's own scratch directory.
 
@@ -341,12 +427,31 @@ def clear_stale_tool_ipc(workdir: str) -> tuple[str, ...]:
     anything, every later Python and Terminal call in that chat is refused with
     no way back. One `Ctrl+C` bricked the session.
 
-    Unlinking is not a way past the check. It removes the entry rather than
-    accepting it, so whatever the file was, it is gone before the walk runs and
-    no sandboxed process can reach it; a hard link to a host socket loses its
-    link here too. Anything that will not unlink is left alone and the scan
-    still refuses it. Sockets and FIFOs only: a device node or a nested mount in
-    there is not something a crashed tool leaves, and it stays fatal.
+    Two things are proved before anything is removed, because "left behind" is
+    the whole justification and neither half can be assumed.
+
+    That the directory is ours. ``_sandbox_temp_dir`` ADOPTS an existing
+    ``unsloth-tmp`` rather than failing, so a project that already had a
+    directory by that name would otherwise have its own endpoints swept. Only a
+    directory created the way Studio creates one, 0700 and owned by the user
+    Studio runs as, is touched. This is evidence rather than a marker file on
+    purpose: the scratch directory is required to be empty when a call ends,
+    and residue in it would show up as a file card on every call.
+
+    That the endpoint is dead. Two tool calls can run in one session and share
+    this directory, so a live listener here may belong to a call that is still
+    running. A socket is removed only when connecting to it is refused, and a
+    FIFO only when opening it for writing reports no reader. Anything live, or
+    anything the probe could not settle, is left alone, and the walk then
+    refuses this launch, which ends when the other call does rather than
+    lasting the rest of the chat.
+
+    Unlinking is not a way past the check: the entry is gone before the walk
+    runs, so nothing in the sandbox can reach it, and a hard link to a host
+    socket loses its link here too. Anything that will not unlink is left alone
+    and the scan still refuses it. Sockets and FIFOs only: a device node or a
+    nested mount in there is not something a crashed tool leaves, and it stays
+    fatal.
 
     Returns what was removed, for the log.
     """
@@ -355,15 +460,26 @@ def clear_stale_tool_ipc(workdir: str) -> tuple[str, ...]:
     try:
         if not os.path.isdir(scratch) or os.path.islink(scratch):
             return ()
+        if not _looks_like_our_scratch_dir(scratch):
+            return ()
         for base, dirs, names in os.walk(scratch, followlinks = False):
             dirs[:] = [name for name in dirs if not os.path.ismount(os.path.join(base, name))]
             for name in names:
                 path = os.path.join(base, name)
                 try:
-                    mode = os.lstat(path).st_mode
+                    entry = os.lstat(path)
                 except OSError:
                     continue
+                mode = entry.st_mode
                 if not (stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode)):
+                    continue
+                if entry.st_nlink > 1:
+                    # Another name for the same endpoint exists somewhere, and
+                    # the walk's hard-link rule is the one that should answer
+                    # for it. Removing this name would hide the finding.
+                    continue
+                if not _ipc_endpoint_is_dead(path, mode):
+                    logger.info("Leaving a live IPC endpoint in the tool scratch directory: %s", path)
                     continue
                 try:
                     os.unlink(path)
