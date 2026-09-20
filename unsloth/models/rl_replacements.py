@@ -2868,6 +2868,16 @@ def grpo_trainer_compute_loss(function_name, function):
                 logit_scale_divide = 0
 
         max_left_pad = inputs.get("max_left_pad", 0)
+        # GSPO's importance_sampling_level landed in TRL 0.20.0, as a GRPOConfig field the
+        # trainer copies onto itself in __init__. 0.18.2 and 0.19.1 have neither the field nor
+        # the attribute and are token level by construction, so reading self.importance_sampling_level
+        # unconditionally raised AttributeError at the bottom of the declared window and took
+        # GRPO training down. Resolve through both bindings, then fall back to the floor's level.
+        importance_sampling_level = getattr(
+            self,
+            "importance_sampling_level",
+            getattr(self.args, "importance_sampling_level", "token"),
+        )
         if per_token_logps is not None:
             loss_mask = completion_mask
             if tool_mask is not None:
@@ -2899,7 +2909,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 pixel_values = pixel_values,
                 image_grid_thw = image_grid_thw,
                 loss_type = self.args.loss_type,
-                importance_sampling_level = self.importance_sampling_level,
+                importance_sampling_level = importance_sampling_level,
                 epsilon_low = self.epsilon_low,
                 epsilon_high = self.epsilon_high,
                 max_completion_length = self.args.max_completion_length,
@@ -3019,7 +3029,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     ref_logps = ref_logps,
                     n_chunks = self.args.unsloth_num_chunks,
                     loss_type = self.args.loss_type,
-                    importance_sampling_level = self.importance_sampling_level,
+                    importance_sampling_level = importance_sampling_level,
                     epsilon_low = self.epsilon_low,
                     epsilon_high = self.epsilon_high,
                     max_completion_length = self.args.max_completion_length,
