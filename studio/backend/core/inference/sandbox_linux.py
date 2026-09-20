@@ -149,6 +149,58 @@ def _within(path: str, root: str) -> bool:
         return False
 
 
+def _studio_state_roots() -> tuple[str, ...]:
+    """Where Studio keeps ``auth/auth.db`` and the rest of its persisted state.
+
+    The default is under ``$HOME``, which no system root binds, but the shipped
+    Docker layout puts it at ``/opt/unsloth-studio`` (docker/run.sh mounts the
+    volume there and studio_launch.sh exports it), and ``/opt`` IS a system
+    root. tools.py guards the literal path, so the sandbox must not be the
+    thing that hands the file over.
+    """
+    roots: list[str] = []
+    try:
+        from utils.paths.storage_roots import studio_root
+        roots.append(os.path.realpath(str(studio_root())))
+    except Exception:  # noqa: BLE001 - a launch never fails over this
+        pass
+    for name in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            roots.append(os.path.realpath(os.path.expanduser(value)))
+    return tuple(dict.fromkeys(path for path in roots if path and path != os.sep))
+
+
+def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, ...]:
+    """Bind a system root's children instead of the root when Studio's own
+    state lives inside it.
+
+    Dropping ``/opt`` outright would take away toolchains that legitimately
+    install there, and keeping it whole exposes the auth database read-only to
+    model-authored code, which is secret disclosure and token forgery even in
+    `required` mode. Descending keeps both: everything else under the root is
+    still readable, the state directory is simply never a bind source.
+    """
+    state = _studio_state_roots()
+    if not state:
+        return roots
+    kept: list[str] = []
+    for root in roots:
+        real = os.path.realpath(root)
+        if any(_within(real, path) for path in state):
+            continue                       # the root IS Studio state
+        if not any(_within(path, real) for path in state) or depth <= 0:
+            kept.append(root)
+            continue
+        try:
+            children = sorted(os.path.join(root, name) for name in os.listdir(root))
+        except OSError:
+            continue                       # unreadable: bind nothing rather than everything
+        kept.extend(_without_studio_state(
+            tuple(path for path in children if os.path.isdir(path)), depth - 1))
+    return tuple(dict.fromkeys(kept))
+
+
 @lru_cache(maxsize = 8)
 def _bwrap_long_options(identity: tuple[str, int, int]) -> frozenset[str]:
     """Keyed by file identity so a package upgrade under a running Studio is
@@ -553,7 +605,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     # The spelling the CALLER used, since tools.py built the scratch script path
     # from it. The canonical form stays the bind SOURCE and what is checked.
     inner = os.path.abspath(plan.workdir)
-    system_roots = tuple(path for path in _SYSTEM_ROOTS if os.path.isdir(path))
+    system_roots = _without_studio_state(
+        tuple(path for path in _SYSTEM_ROOTS if os.path.isdir(path)))
     if os.path.isdir(_NIX_STORE) and _within(os.path.realpath(sys.executable), _NIX_STORE):
         system_roots += (_NIX_STORE,)
     runtime_paths = _runtime_read_paths(workdir, system_roots, inner)
