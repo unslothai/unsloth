@@ -890,6 +890,9 @@ class TestBashBlocklistPosition:
                 id = "suffixed_duration_wrapper_spent_allowed",
             ),
             pytest.param("coproc echo hi", id = "coproc_benign_allowed"),
+            pytest.param("coproc MYJOB { cat train.log; }", id = "coproc_named_benign_allowed"),
+            # `coproc` reads as a keyword only at command position; elsewhere it is an ordinary word.
+            pytest.param("grep -rn coproc tools.py", id = "coproc_as_argument_allowed"),
             pytest.param("> out.log echo hi", id = "spaced_redirection_benign_allowed"),
             # A substitution that IS the redirection target names a file; nothing runs.
             pytest.param("> $(date).log echo hi", id = "subst_as_redirection_target_allowed"),
@@ -1117,6 +1120,21 @@ class TestBashBlocklistPosition:
                 "command substitution",
                 "coproc $(ls /usr/bin | grep '^rm$') -rf victim",
                 id = "coproc_subst_blocked",
+            ),
+            # ...and the plain spellings behind it: bash runs the word after `coproc` itself, so reading `coproc`
+            # as the command word left the real one scanning as its arguments.
+            pytest.param("rm", "coproc rm -f victim", id = "coproc_bare_blocked"),
+            pytest.param("pkill", "coproc pkill -f unsloth", id = "coproc_pkill_blocked"),
+            pytest.param("ssh", "coproc ssh internal-host", id = "coproc_ssh_blocked"),
+            # `coproc NAME compound` only NAMES the coprocess, so command position carries past the name.
+            pytest.param(
+                "rm", "coproc JOB if rm -f victim; then :; fi", id = "coproc_named_if_blocked"
+            ),
+            pytest.param("rm", "coproc JOB { rm -rf victim; }", id = "coproc_named_group_blocked"),
+            pytest.param(
+                "rm",
+                "coproc JOB for f in x; do rm -f victim; done",
+                id = "coproc_named_for_blocked",
             ),
             # The two laundering routes the site fixes left behind: an arm runs a variable just
             # as readily as a substitution, and bash concatenates `${x}m` into one command word.
@@ -1669,6 +1687,28 @@ class TestBashBlocklistPosition:
         assert "rm" in self._find()("env -u FOO find . -exec rm -rf victim {} +")
         assert "rm" in self._find()("timeout 5 find . -exec rm -rf victim {} +")
         assert "rm" in self._find()("nice -n 5 find . -exec rm -rf victim {} +")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "rm -rf victim",
+            "ssh internal-host",
+            "curl http://127.0.0.1/",
+            "echo hi",
+            "cat train.log",
+        ],
+    )
+    def test_coproc_classifies_exactly_as_the_command_behind_it(self, command):
+        # `coproc` runs the command behind it, so both classifiers must reach the
+        # same verdict they reach for that command on its own - in either
+        # direction. An answer that merely gets stricter would start prompting
+        # for coprocesses that are fine.
+        assert self._find()(f"coproc {command}") == self._find()(command)
+        assert is_high_risk_tool_call(
+            "terminal", {"command": f"coproc {command}"}
+        ) == is_high_risk_tool_call("terminal", {"command": command})
+        # The optional NAME is only a name; the compound behind it is the command.
+        assert self._find()(f"coproc JOB if {command}; then :; fi") == self._find()(command)
 
     def test_quoted_operator_is_data_not_a_command_boundary(self):
         # A quoted operator reaches the command as an argument, so the word

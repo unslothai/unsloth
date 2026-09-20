@@ -198,8 +198,35 @@ _BLOCKED_COMMANDS = (
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position. `if`/`while`/`until` are followed by a CONDITION the shell executes,
-# so a command right after them is at command position.
-_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!"})
+# so a command right after them is at command position. `coproc` is the same: bash runs the command behind it
+# asynchronously, so reading `coproc` as the command word left `coproc rm -rf x` scanning as arguments and it really
+# deletes.
+_SHELL_KEYWORDS_AS_SEP = frozenset(
+    {"then", "do", "else", "elif", "if", "while", "until", "!", "coproc"}
+)
+# `coproc NAME compound-command` names the coprocess, so the NAME is not the command; the compound behind it is. Bash
+# accepts the optional name ONLY before a compound command, which is what tells the two forms apart: in `coproc rm -f
+# x` the same position holds the command itself.
+_COPROC_COMPOUND_STARTERS = frozenset(
+    {"{", "(", "((", "[[", "if", "while", "until", "for", "case", "select"}
+)
+_COPROC_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
+
+
+def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
+    """Whether ``tokens[index]`` is the optional NAME of a `coproc NAME compound-command`.
+
+    The name is not a command word, so command position carries past it to the compound behind it.
+    """
+    return (
+        index > 0
+        and tokens[index - 1] == "coproc"
+        and index + 1 < len(tokens)
+        and tokens[index + 1] in _COPROC_COMPOUND_STARTERS
+        and _COPROC_NAME_RE.match(tokens[index]) is not None
+    )
+
+
 # Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
@@ -1230,8 +1257,8 @@ def _exec_scan_layout(
             exec_flags.add(here)
             in_action = True
             continue
-        if at_command and token in _SHELL_KEYWORDS_AS_SEP:
-            continue  # `then find ...` / `do find ...`: still a command position
+        if (at_command and token in _SHELL_KEYWORDS_AS_SEP) or _is_coproc_name(tokens, here):
+            continue  # `then find ...` / `do find ...` / `coproc JOB { find ... }`: still a command position
         if skip_operand:
             skip_operand = False  # a wrapper option's value (env -u NAME)
             continue
@@ -1311,7 +1338,9 @@ def _is_start_title(token: str) -> bool:
 # 0.60s of 3.9s. None only if the set is empty.
 _BLOCKED_WORD_RE = (
     re.compile(
-        r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
+        # `coproc [NAME] ` is a command boundary bash honours but punctuation does not spell, so the raw-text pass
+        # needs it too: the lexer's view of it is fixed above, this is the screen behind that.
+        r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*|\bcoproc\s+(?:[A-Za-z_]\w*\s+)?)"
         r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
         r"(" + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS)) + r")"
         r"(?:\.(?:exe|com|bat|cmd))?\b"
@@ -1440,8 +1469,10 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         # A keyword only separates where a COMMAND may start. A quoted operator is DATA the command receives, not a
         # separator, so it leaves command position alone: `grep '|&' rm file` runs nothing and must not be refused.
-        if (_looks_like_separator(token) and token_index not in quoted_separators) or (
-            token in _SHELL_KEYWORDS_AS_SEP and expect_command
+        if (
+            (_looks_like_separator(token) and token_index not in quoted_separators)
+            or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
+            or _is_coproc_name(tokens, token_index)
         ):
             expect_command = True
             prefix_pending = False
@@ -5483,12 +5514,13 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     current_command = ""
     positional_args = 0
     pending_flag_value = False
-    for token in tokens:
+    for _tok_idx, token in enumerate(tokens):
         # Runs of punctuation (";;", ";&") lex as one token; any token made purely of separator characters still
         # separates commands.
         if (
             token in _SHELL_SEPARATORS
             or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
+            or _is_coproc_name(tokens, _tok_idx)
             or not set(token) - set(";&|()")
         ):
             expect_command = True
@@ -7854,6 +7886,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
+                or _is_coproc_name(tokens, _tok_idx)
                 or not set(token) - set(";&|()")
             ):
                 expect_command = True
