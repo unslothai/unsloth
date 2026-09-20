@@ -3932,10 +3932,9 @@ def _positive_int_n_ctx(value: object) -> Optional[int]:
     if isinstance(value, bool):
         return None
     if isinstance(value, str):
-        # isdigit() is not "int() will accept this": "\u00b2".isdigit() is True and
-        # int("\u00b2") raises, as does a digit string past CPython's 4300-digit cap.
-        # Both arrive from another process' JSON, and an uncaught raise here aborts
-        # the post-health reconciliation and fails the load.
+        # isdigit() is not "int() will accept this": "\u00b2".isdigit() is True and int("\u00b2")
+        # raises, as does a digit string past CPython's 4300-digit cap. Both arrive
+        # from another process' JSON, and a raise here would fail the load.
         try:
             value = int(value) if value.isdigit() else None
         except ValueError:
@@ -3953,25 +3952,19 @@ def _launch_ctx_from_args(
     Read off the argv, not Studio's estimate, so a pass-through ``--ctx-size``
     last-wins. ``-c 0`` names no total, so it returns None like a malformed flag.
 
-    Falls back to ``LLAMA_ARG_CTX_SIZE`` when argv carries no context flag at all,
-    because llama.cpp reads its environment before argv and Manual + Auto omits
-    ``-c`` on purpose: the env var is then the only thing naming the total
-    (test_a_positive_inherited_context_is_kept). Argv-only, an Auto-layers launch
-    reported no launch total, so no --fit reduction was reported and a same-model
-    reload fell back to one slot's share and shrank the server again -- the exact
-    defect this reporting exists to prevent. Checked on b11057: no ``-c`` with
-    LLAMA_ARG_CTX_SIZE=8192 and ``--parallel 4 --no-kv-unified`` allocates
-    n_ctx_slot 2048, so the 8192 is a real total and not a per-slot value.
+    Falls back to ``LLAMA_ARG_CTX_SIZE`` when argv carries no context flag: llama.cpp
+    reads its environment before argv, and Manual + Auto omits ``-c`` on purpose, so
+    the env var is then the only thing naming the total. Argv-only, such a launch
+    reported no total, hiding a --fit reduction and letting a reload shrink the server
+    again. Verified on b11057 that the env value is a total, not a per-slot share.
     """
     try:
         override = parse_ctx_override(args)
     except ValueError:
         return None
-    # `is not None`, not truthiness: parse_ctx_override returns None for "argv
-    # named nothing" and 0 for an EXPLICIT `-c 0`, and conflating them lets an
-    # inherited value answer for a launch that asked for automatic sizing.
-    # Measured on b11057: LLAMA_ARG_CTX_SIZE=8192 with `-c 0` on the argv
-    # allocates 40960, the native window, so argv wins and 0 names no total.
+    # `is not None`, not truthiness: None means argv named nothing, 0 means an
+    # EXPLICIT `-c 0`. Conflating them lets an inherited value answer a launch that
+    # asked for automatic sizing (b11057: `-c 0` wins over the env var).
     if override is not None:
         return override if override > 0 else None
     return _positive_int_n_ctx(((env or {}).get("LLAMA_ARG_CTX_SIZE") or "").strip())
@@ -7487,11 +7480,9 @@ class LlamaCppBackend:
     def effective_context_total(self) -> Optional[int]:
         """Context actually allocated across every slot, or None before readback.
 
-        The aggregate ``_reconcile_effective_ctx_with_server`` already computes as
-        ``n_ctx * slots``. Published because a reload is sized in totals and the
-        two values that could stand in for one both fail: ``context_length`` is a
-        single slot's share, and ``launch_context_length`` is null for an
-        auto-sized launch and is a REQUEST rather than an allocation when --fit
+        Published because a reload is sized in totals and neither stand-in works:
+        ``context_length`` is one slot's share, and ``launch_context_length`` is null
+        for an auto-sized launch and a REQUEST rather than an allocation where --fit
         reduced it."""
         return self._kv_cache_context_total
 

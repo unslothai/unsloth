@@ -353,11 +353,10 @@ export function resolveLoadMaxSeqLength({
   isGguf?: boolean | null;
   customContextLength: number | null;
   loadedContextLength: number | null;
-  /** Total -c the resident server launched with; null where the backend does not report one. */
+  /** Total -c the resident server launched with; null when the backend reports none. */
   launchContextLength?: number | null;
-  /** Context the server actually ALLOCATED across its slots. Preferred over the launch
-   *  request: it survives an auto-sized launch that named no total, and it is what the
-   *  server ran at rather than what --fit had to refuse. */
+  /** Context the server ALLOCATED across its slots. Preferred over the launch request:
+   *  it survives an auto-sized launch and is what the server ran at, not what --fit refused. */
   effectiveContextTotal?: number | null;
   currentCheckpoint: string;
   activeGgufVariant?: string | null;
@@ -381,10 +380,8 @@ export function resolveLoadMaxSeqLength({
   }
   if (isReloadingCurrentGguf) {
     // max_seq_length is the TOTAL -c; loadedContextLength is one slot's share, so
-    // reloading a --parallel server from the share shrinks it every time. The
-    // ALLOCATED aggregate is preferred over the launch request: it survives an
-    // auto-sized launch that named no total, and where --fit reduced the window it
-    // is the size the server actually ran at rather than the one it refused.
+    // reloading from the share shrinks a --parallel server every time. The allocated
+    // aggregate wins: it survives an auto-sized launch and is what the server ran at.
     if (effectiveContextTotal != null && effectiveContextTotal > 0) {
       return effectiveContextTotal;
     }

@@ -1356,11 +1356,9 @@ export function useChatModelRuntime() {
                 stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                 stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
                 stateBeforeUnload.loadedCustomContextLength,
-                // The rollback restores the old n_parallel too, so sizing from one
-                // slot's share would quarter a four-slot server on a rollback that
-                // otherwise succeeded. The ALLOCATED aggregate first: it is what the
-                // server ran at, and it is the only one of the three that survives an
-                // auto-sized launch, where the launch total is null by design.
+                // Rollback restores the old n_parallel, so one slot's share would
+                // quarter a four-slot server. Allocated aggregate first: it also
+                // survives an auto-sized launch, which names no total.
                 stateBeforeUnload.effectiveContextTotal ??
                   stateBeforeUnload.launchContextLength ??
                   stateBeforeUnload.loadedContextLength ??
@@ -1395,14 +1393,12 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.customContextLength ??
             stateBeforeUnload.customContextLength;
           const loadContextLength = stateBeforeUnload.loadedContextLength;
-          // The TOTAL -c the resident server launched with. loadContextLength is one
-          // slot's share of it, and the reload request is sized in totals.
+          // Reloads are sized in TOTALS; loadContextLength is one slot's share.
           const loadLaunchContextLength = stateBeforeUnload.launchContextLength;
-          // Set only when --fit SHRANK the window, which makes the launch total a
-          // request the server refused rather than a size it ran at: replaying it
-          // with --fit off would ask for memory that did not fit.
+          // Set only when --fit shrank the window, making the launch total a size
+          // the server refused rather than one it ran at.
           const loadPreFitContextLength = stateBeforeUnload.preFitContextLength;
-          // What the server ALLOCATED across its slots, which is what a reload is sized in.
+          // What the server allocated across its slots.
           const loadEffectiveContextTotal = stateBeforeUnload.effectiveContextTotal;
           const loadTensorParallel = targetIsDiffusion
             ? false
@@ -1776,14 +1772,10 @@ export function useChatModelRuntime() {
               loadCustomContextLength == null &&
               (loadContextLength ?? 0) > 0
             ) {
-              // The preserved value is sent as the total -c, while loadContextLength
-              // is one slot's share, so a split server would reload at a quarter of
-              // its window. Prefer the launch total, but ONLY when --fit did not
-              // shrink the window: fixed layers make the backend emit --fit off, so
-              // replaying a total the fitter had to reduce asks for memory that did
-              // not fit, which is the OOM this whole branch exists to avoid. When it
-              // did shrink, fall back to the per-slot share, which is what this
-              // branch sent before the launch total existed.
+              // Sized in totals, so one slot's share would shrink a split server.
+              // The launch total only when --fit did not reduce it: fixed layers
+              // emit --fit off, and replaying a refused total is the OOM this
+              // branch exists to avoid.
               loadCustomContextLength =
                 loadEffectiveContextTotal ??
                 (loadPreFitContextLength == null ? loadLaunchContextLength : null) ??
