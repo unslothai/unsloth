@@ -120,7 +120,7 @@ def _exact_model_name_for_load(config: ModelConfig, load_in_4bit: bool) -> Optio
 
     cached_target = active_hf_cache_repo_spelling(target)
     if cached_target == target:
-        return None      # on disk under the name the mapper will ask for: nothing to do
+        return None  # on disk under the name the mapper will ask for: nothing to do
     if cached_target is not None:
         logger.info(f"Loading cached {cached_target} instead of downloading {target} again")
         return cached_target

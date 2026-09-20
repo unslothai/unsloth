@@ -298,7 +298,8 @@ def test_load_model_hands_the_verdict_to_both_loaders():
         }
 
     verdicts = assigned_from(
-        lambda v: isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
+        lambda v: isinstance(v, ast.Call)
+        and isinstance(v.func, ast.Name)
         and v.func.id == "_exact_model_name_for_load"
     )
     assert verdicts, "load_model never calls _exact_model_name_for_load"

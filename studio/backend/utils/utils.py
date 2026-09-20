@@ -698,6 +698,7 @@ def active_hf_cache_repo_spelling(repo_id: str) -> Optional[str]:
         return repo_id
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
+
         exact = _repo_folder_name(repo_id)
         wanted = exact.lower()
         prefix = len("models--")
