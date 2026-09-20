@@ -758,8 +758,11 @@ def test_a_cleanup_that_could_not_undo_host_state_is_recorded_apart(caplog):
     import logging
 
     prepared = PreparedSandboxLaunch(
-        argv = ("wxc-exec.exe",), workdir = "/work", env = {},
-        preexec_fn = None, backend = "mxc-processcontainer",
+        argv = ("wxc-exec.exe",),
+        workdir = "/work",
+        env = {},
+        preexec_fn = None,
+        backend = "mxc-processcontainer",
     )
 
     def failing_reconcile():
@@ -770,9 +773,9 @@ def test_a_cleanup_that_could_not_undo_host_state_is_recorded_apart(caplog):
 
     prepared.cleanup()
 
-    assert len(prepared.unreverted_host_state) == 1, (
-        "the failed reconciliation was not separated from ordinary cleanup litter"
-    )
+    assert (
+        len(prepared.unreverted_host_state) == 1
+    ), "the failed reconciliation was not separated from ordinary cleanup litter"
     assert "could not reconcile" in prepared.unreverted_host_state[0]
     # The unremovable private path is litter, not host state.
     assert len(prepared.cleanup_diagnostics) == 2
@@ -801,7 +804,8 @@ def test_a_managed_account_without_confinement_still_refuses_required(monkeypatc
     from core.inference.tool_confinement import Confinement
 
     monkeypatch.setattr(
-        tools, "_account_confinement",
+        tools,
+        "_account_confinement",
         lambda: Confinement(mechanism = "unconfined-by-owner"),
     )
     _declining_backend(

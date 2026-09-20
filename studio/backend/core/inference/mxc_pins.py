@@ -96,7 +96,6 @@ class FileHold:
         handle, self._handle = self._handle, None
         try:
             import ctypes
-
             if hasattr(ctypes, "WinDLL"):
                 ctypes.WinDLL("kernel32", use_last_error = True).CloseHandle(handle)
         except Exception:  # noqa: BLE001 - a released handle is not worth a failed call
@@ -133,11 +132,15 @@ def hold_file(path: str) -> "FileHold | None":
     kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
     kernel32.CreateFileW.restype = ctypes.c_void_p
     kernel32.CreateFileW.argtypes = (
-        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-        wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
     )
-    handle = kernel32.CreateFileW(
-        path, generic_read, file_share_read, None, open_existing, 0, None)
+    handle = kernel32.CreateFileW(path, generic_read, file_share_read, None, open_existing, 0, None)
     if handle == invalid_handle:
         raise OSError(ctypes.get_last_error(), f"WinError {ctypes.get_last_error()}")
     return FileHold(handle)

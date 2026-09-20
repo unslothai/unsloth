@@ -195,8 +195,7 @@ def available() -> tuple[bool, str]:
     try:
         if not mxc_pins.matches_pin(executor, mxc_pins.EXECUTOR_SHA256):
             return False, (
-                "the MXC sandbox executor changed after it was verified; "
-                "refusing to run it"
+                "the MXC sandbox executor changed after it was verified; refusing to run it"
             )
         probe = subprocess.run(
             [executor, "--probe"],
@@ -465,8 +464,9 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise
 
 
-def _prepare_held(plan: ToolLaunchPlan, executor: str,
-                  hold: object | None) -> PreparedSandboxLaunch:
+def _prepare_held(
+    plan: ToolLaunchPlan, executor: str, hold: object | None
+) -> PreparedSandboxLaunch:
     # Re-checked WHILE held: only now is the verdict about a file that cannot
     # change underneath the launch.
     if not mxc_pins.matches_pin(executor, mxc_pins.EXECUTOR_SHA256):

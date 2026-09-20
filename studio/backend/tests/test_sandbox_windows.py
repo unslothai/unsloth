@@ -21,11 +21,9 @@ from core.inference import os_sandbox, sandbox_windows  # noqa: E402
 from core.inference.os_sandbox import ToolLaunchPlan  # noqa: E402
 
 
-
 def _pin(monkeypatch, path):
     """Register ``path`` as the pinned executor for this architecture."""
     from core.inference import mxc_pins
-
     monkeypatch.setitem(mxc_pins.EXECUTOR_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(path))
 
 
@@ -845,7 +843,8 @@ def test_the_executor_hold_is_released_after_the_reconciliation(monkeypatch, pla
     monkeypatch.setattr(sandbox_windows, "executable_path", lambda: str(executor))
     monkeypatch.setattr(sandbox_windows, "_hold_executor", lambda path: Hold())
     monkeypatch.setattr(
-        sandbox_windows, "_reconcile_container",
+        sandbox_windows,
+        "_reconcile_container",
         lambda executor, container_id: order.append("reconciled"),
     )
 
@@ -871,8 +870,7 @@ def test_the_elevated_helper_is_held_across_process_creation(tmp_path, monkeypat
     dest.mkdir()
     prep = dest / "wxc-host-prep.exe"
     prep.write_bytes(b"the pinned helper")
-    monkeypatch.setitem(
-        installer.HOST_PREP_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(prep)))
+    monkeypatch.setitem(installer.HOST_PREP_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(prep)))
 
     held = []
 
@@ -885,21 +883,27 @@ def test_the_elevated_helper_is_held_across_process_creation(tmp_path, monkeypat
 
     monkeypatch.setattr(installer.pins, "hold_file", Hold)
     monkeypatch.setattr(
-        installer.subprocess, "run",
-        lambda argv, **kwargs: (held.append(("ran", argv[1]))
-                                or sp.CompletedProcess(argv, 0, b"", b"")),
+        installer.subprocess,
+        "run",
+        lambda argv, **kwargs: (
+            held.append(("ran", argv[1])) or sp.CompletedProcess(argv, 0, b"", b"")
+        ),
     )
 
     installer.prepare_host(str(dest))
 
     # Held, then run, then released, for each of the two elevated steps.
     assert [entry[0] for entry in held] == [
-        "held", "ran", "released", "held", "ran", "released",
+        "held",
+        "ran",
+        "released",
+        "held",
+        "ran",
+        "released",
     ], held
 
 
-def test_the_helper_hold_is_released_even_when_the_prompt_is_never_answered(
-    tmp_path, monkeypatch):
+def test_the_helper_hold_is_released_even_when_the_prompt_is_never_answered(tmp_path, monkeypatch):
     """The timeout path continues the loop, so the release has to be in a
     finally or the second step would run against a still-held handle."""
     import subprocess as sp
@@ -911,8 +915,7 @@ def test_the_helper_hold_is_released_even_when_the_prompt_is_never_answered(
     dest.mkdir()
     prep = dest / "wxc-host-prep.exe"
     prep.write_bytes(b"the pinned helper")
-    monkeypatch.setitem(
-        installer.HOST_PREP_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(prep)))
+    monkeypatch.setitem(installer.HOST_PREP_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(prep)))
 
     released = []
 
@@ -950,11 +953,13 @@ def test_the_probe_does_not_run_an_executor_swapped_after_hashing(tmp_path, monk
     monkeypatch.setattr(sandbox_windows, "executable_path", lambda: str(executor))
 
     ran = []
+
     def record(argv, **kwargs):
         ran.append(argv)
         raise AssertionError("the probe should not have run")
 
     monkeypatch.setattr(sandbox_windows.subprocess, "run", record)
+
     # Swapped between executable_path()'s hash and the probe.
     def swap_then_hold(path):
         executor.write_bytes(b"swapped before the probe")
