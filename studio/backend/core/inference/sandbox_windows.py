@@ -109,10 +109,35 @@ def executable_path() -> str | None:
     configured = os.environ.get(_EXECUTABLE_ENV)
     if configured:
         return configured if os.path.isfile(configured) else None
-    from utils.studio_paths import studio_home  # local: Windows-only import path
-
-    candidate = os.path.join(str(studio_home()), "mxc", _EXECUTABLE_NAME)
+    candidate = os.path.join(managed_mxc_dir(), _EXECUTABLE_NAME)
     return candidate if os.path.isfile(candidate) else None
+
+
+def managed_mxc_dir() -> str:
+    """Where Studio setup installs the executor.
+
+    Follows ``utils.node_runtime.managed_node_dir``, which solves exactly this
+    problem for the Node runtime: the studio root in custom mode, the legacy
+    ``~/.unsloth`` otherwise. Lazily imported and degraded the same way, so a
+    host where ``utils.paths`` cannot be loaded still gets a path back rather
+    than raising into the launch planner.
+    """
+    legacy = os.path.join(os.path.expanduser("~"), ".unsloth", "mxc")
+    try:
+        from utils.paths.storage_roots import studio_root
+
+        resolved = str(studio_root())
+        legacy_studio = os.path.join(os.path.expanduser("~"), ".unsloth", "studio")
+        if os.path.normcase(resolved) == os.path.normcase(legacy_studio):
+            return legacy
+        return os.path.join(resolved, "mxc")
+    except (ImportError, OSError, ValueError):
+        override = (
+            os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
+        ).strip()
+        if override:
+            return os.path.join(os.path.expanduser(override), "mxc")
+        return legacy
 
 
 def available() -> tuple[bool, str]:

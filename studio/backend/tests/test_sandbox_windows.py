@@ -273,3 +273,39 @@ def test_a_caller_supplied_value_wins_over_the_host(monkeypatch):
 
     assert "SystemRoot=D:\\Custom" in env
     assert "SystemRoot=C:\\Windows" not in env
+
+
+def test_a_windows_host_without_the_executor_refuses_cleanly(monkeypatch):
+    """The default path must not raise into the launch planner.
+
+    The first version imported `utils.studio_paths`, which does not exist in
+    this repo, so on any Windows host that had not set UNSLOTH_MXC_EXEC the
+    planner got a ModuleNotFoundError instead of a clean "not installed"
+    refusal. CI never saw it because the workflow always sets the variable.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("UNSLOTH_MXC_EXEC", raising = False)
+
+    ok, reason = sandbox_windows.available()
+
+    assert ok is False
+    assert "not installed" in reason
+
+
+def test_the_install_directory_resolves_without_utils_paths(monkeypatch):
+    """Degraded environments still get a path, mirroring node_runtime."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_storage_roots(name, *args, **kwargs):
+        if name == "utils.paths.storage_roots":
+            raise ImportError("simulated degraded environment")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_storage_roots)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", os.path.join("C:", "Studio"))
+
+    directory = sandbox_windows.managed_mxc_dir()
+
+    assert directory.endswith("mxc")
