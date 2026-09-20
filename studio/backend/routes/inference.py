@@ -334,6 +334,8 @@ def _friendly_gen_stream_error(value) -> str:
     text = str(value)
     if getattr(value, "public", False):
         return text
+    # The only record: callers replace it with a generic message.
+    logger.error("Local generation failed: %s", text)
     return safe_error_detail(RuntimeError(text), fallback = "An internal error occurred.")
 
 

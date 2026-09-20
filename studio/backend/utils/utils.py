@@ -734,6 +734,16 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
 
 
 # ── Client-safe error helpers ───────────────────────────────────
+_METAL_QUEUE_DEAD_MARKERS = ("gpu timeout", "submissionsignored")
+
+
+def is_metal_queue_dead(error: Exception) -> bool:
+    """The watchdog kill and the refusal after it -- not mlx's ``Command buffer execution
+    failed:`` wrapper, which also carries a recoverable ``Insufficient Memory``."""
+    text = str(error).lower()
+    return any(marker in text for marker in _METAL_QUEUE_DEAD_MARKERS)
+
+
 # Never return raw exception text to clients; log server-side, return generic.
 def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
     """Map an exception to a generic, client-safe message (never raw ``str(error)``, which can leak paths). Log the real exception server-side."""
@@ -745,6 +755,17 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
     except Exception:  # noqa: BLE001 -- fall through to the generic mapping below
         pass
     text = str(error).lower()
+    # Before the connection test, which "GPU Timeout Error" would match.
+    if is_metal_queue_dead(error):
+        return "The GPU stopped responding. Reload the model to recover."
+    # mlx says neither "out of memory" nor "cuda error".
+    if (
+        "out of memory" in text
+        or "cuda error" in text
+        or "unable to allocate" in text
+        or "insufficient memory" in text
+    ):
+        return "Ran out of memory. Try a smaller model or shorter input."
     if (
         isinstance(error, (ConnectionError, TimeoutError))
         or "connection" in text
@@ -752,8 +773,6 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
         or "timeout" in text
     ):
         return "Could not reach an upstream service. Please try again."
-    if "out of memory" in text or "cuda error" in text:
-        return "Ran out of memory. Try a smaller model or shorter input."
     return fallback
 
 

@@ -51,6 +51,7 @@ from core.inference.mcp_images import (
     trim_image_turns,
 )
 from utils.models.model_config import is_audio_input_type
+from utils.utils import is_metal_queue_dead
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -601,7 +602,9 @@ def _mlx_inference_patch(name):
 def _mlx_optional_fusion(name, model):
     """Hold an optional Zoo fusion scope, or yield the model unfused. Guard ENTRY only:
     an open scope must unwind through the ExitStack as an unguarded `with` would, or an
-    interrupted generation stops restoring the module tree."""
+    interrupted generation stops restoring the module tree.
+
+    A dead Metal queue is not guarded: no unfused path survives it."""
     patch = _mlx_inference_patch(name)
     with ExitStack() as scope:
         active = model
@@ -609,6 +612,8 @@ def _mlx_optional_fusion(name, model):
             try:
                 entered = scope.enter_context(patch(model))
             except Exception as error:
+                if is_metal_queue_dead(error):
+                    raise
                 _mlx_fusion_unavailable(name, error)
             else:
                 if entered is not None:
