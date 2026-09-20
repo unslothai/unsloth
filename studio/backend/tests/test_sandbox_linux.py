@@ -1865,16 +1865,23 @@ def _stub_capable_backend(monkeypatch, limitations):
     from core.inference import os_sandbox, sandbox_linux
 
     capability = os_sandbox.SandboxCapability(
-        backend = "stub", available = True, reason = "stub",
-        environment = "linux", protection_state = "qualified",
-        profile_id = "stub", limitations = (),
+        backend = "stub",
+        available = True,
+        reason = "stub",
+        environment = "linux",
+        protection_state = "qualified",
+        profile_id = "stub",
+        limitations = (),
     )
     monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda *a, **k: capability)
 
     def build(plan):
         return os_sandbox.PreparedSandboxLaunch(
-            argv = plan.argv, workdir = plan.workdir, env = dict(plan.env),
-            preexec_fn = None, backend = "stub",
+            argv = plan.argv,
+            workdir = plan.workdir,
+            env = dict(plan.env),
+            preexec_fn = None,
+            backend = "stub",
             launch_limitations = limitations,
         )
 
@@ -1899,14 +1906,17 @@ def test_required_refuses_a_workdir_it_could_not_finish_checking(monkeypatch, tm
     monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
 
     limitations = os_sandbox.scan_workdir_for_host_channels(str(workdir))
-    assert limitations == (os_sandbox.WORKDIR_SCAN_INCOMPLETE,), (
-        "the budget did not trip, so this test proves nothing"
-    )
+    assert limitations == (
+        os_sandbox.WORKDIR_SCAN_INCOMPLETE,
+    ), "the budget did not trip, so this test proves nothing"
     _stub_capable_backend(monkeypatch, limitations)
 
     plan = os_sandbox.ToolLaunchPlan(
-        argv = ("/bin/true",), workdir = str(workdir), env = {},
-        requested_mode = "required", timeout_seconds = 10,
+        argv = ("/bin/true",),
+        workdir = str(workdir),
+        env = {},
+        requested_mode = "required",
+        timeout_seconds = 10,
     )
 
     with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "too large to check"):
@@ -1926,8 +1936,11 @@ def test_auto_still_launches_on_the_same_workdir(monkeypatch, tmp_path):
     _stub_capable_backend(monkeypatch, (os_sandbox.WORKDIR_SCAN_INCOMPLETE,))
 
     plan = os_sandbox.ToolLaunchPlan(
-        argv = ("/bin/true",), workdir = str(workdir), env = {},
-        requested_mode = "auto", timeout_seconds = 10,
+        argv = ("/bin/true",),
+        workdir = str(workdir),
+        env = {},
+        requested_mode = "auto",
+        timeout_seconds = 10,
     )
 
     prepared = os_sandbox.prepare_tool_launch(plan)
