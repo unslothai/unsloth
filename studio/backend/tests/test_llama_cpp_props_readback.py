@@ -707,8 +707,6 @@ def test_probe_missing_binary_reports_new_capabilities_false():
     assert info["supports_fit_ctx"] is False
 
 
-
-
 # ---------------------------------------------------------------------------
 # /props input validation
 #

@@ -32703,7 +32703,6 @@ class LlamaCppBackend:
             return None
         return _positive_int_n_ctx(settings.get("n_ctx"))
 
-
     def _record_launch_vs_per_slot_ctx(
         self, launch_cmd: Optional[Iterable[str]], actual_n_ctx: Optional[int]
     ) -> None:
