@@ -231,7 +231,9 @@ def test_the_system_roots_are_never_writable(monkeypatch, tmp_path):
     workdir.mkdir()
 
     plan = ToolLaunchPlan(
-        argv = ("python.exe", "-c", "pass"), workdir = str(workdir), env = {},
+        argv = ("python.exe", "-c", "pass"),
+        workdir = str(workdir),
+        env = {},
         requested_mode = "required",
     )
     filesystem = sandbox_windows.build_policy(plan, str(workdir), "t")["filesystem"]

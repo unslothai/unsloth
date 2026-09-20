@@ -1606,7 +1606,8 @@ def test_the_cache_verdict_is_memoized_between_launches(tmp_path, monkeypatch):
     calls = []
     real = sandbox_linux._cache_hazard_uncached
     monkeypatch.setattr(
-        sandbox_linux, "_cache_hazard_uncached",
+        sandbox_linux,
+        "_cache_hazard_uncached",
         lambda name, path: (calls.append(path), real(name, path))[1],
     )
     sandbox_linux.reset_cache_verdicts()
@@ -1629,7 +1630,8 @@ def test_a_changed_cache_is_re_inspected_rather_than_trusted(tmp_path, monkeypat
     calls = []
     real = sandbox_linux._cache_hazard_uncached
     monkeypatch.setattr(
-        sandbox_linux, "_cache_hazard_uncached",
+        sandbox_linux,
+        "_cache_hazard_uncached",
         lambda name, path: (calls.append(path), real(name, path))[1],
     )
     sandbox_linux.reset_cache_verdicts()
@@ -1653,7 +1655,8 @@ def test_a_failed_launch_drops_every_cache_verdict(tmp_path, monkeypatch):
     calls = []
     real = sandbox_linux._cache_hazard_uncached
     monkeypatch.setattr(
-        sandbox_linux, "_cache_hazard_uncached",
+        sandbox_linux,
+        "_cache_hazard_uncached",
         lambda name, path: (calls.append(path), real(name, path))[1],
     )
     sandbox_linux.reset_cache_verdicts()

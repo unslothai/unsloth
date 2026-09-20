@@ -519,9 +519,12 @@ def test_a_cached_verdict_outlives_the_old_sixty_second_window(monkeypatch, tmp_
 
     # Seed the cache directly: this is about expiry, not about probing.
     from core.inference import os_sandbox as _os_sandbox
+
     key = (Backend.BACKEND_NAME, _os_sandbox._runtime_identity())
     sandbox_probe._cache[key] = (
-        clock["now"] + sandbox_probe._CACHE_TTL_SECONDS, True, "seeded",
+        clock["now"] + sandbox_probe._CACHE_TTL_SECONDS,
+        True,
+        "seeded",
     )
 
     clock["now"] += 70.0  # the window that used to have expired
