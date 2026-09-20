@@ -42,7 +42,7 @@ env:
     **Windows**: Download `Unsloth-Desktop-Windows.exe`, or `Unsloth-Desktop-Windows-ARM64.exe` on a Windows on ARM machine.
     **Linux**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
-    > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+    > Linux in-app updates cover `.deb` and AppImage installs. A `.deb` installed before in-app updates shipped needs one manual update first.
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
     > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
     > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
