@@ -75,6 +75,14 @@ _IGNORE_SCAN_EXACT_FILES = frozenset(
         "pnpm-lock.yml",
         "npm-shrinkwrap.json",
         "pipfile.lock",
+        "poetry.lock",
+        "cargo.lock",
+        "yarn.lock",
+        "composer.lock",
+        "gemfile.lock",
+        "flake.lock",
+        "bun.lockb",
+        "bun.lock",
     }
 )
 
@@ -1016,7 +1024,7 @@ def _scan(
                 if entry.is_symlink():
                     continue
                 if entry.is_dir(follow_symlinks=False):
-                    if entry.name in _IGNORE_SCAN_DIRS:
+                    if entry.name.lower() in _IGNORE_SCAN_DIRS:
                         continue
                     resolved = os.path.realpath(full)
                     if (

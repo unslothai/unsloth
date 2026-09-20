@@ -275,10 +275,7 @@ test("frontend RAG source extensions are completely covered by backend ALL_UPLOA
   const frontendSourceExts = RAG_SOURCE_UPLOAD_ACCEPT.split(",").map((s) =>
     s.trim().toLowerCase(),
   );
-  const backendSource = readFileSync(
-    new URL("../../backend/core/rag/config.py", import.meta.url),
-    "utf8",
-  );
+  const backendSource = readText("../../backend/core/rag/config.py");
   const backendExts = new Set(
     [...backendSource.matchAll(DOTTED_EXTENSION_RE)].map((m) => m[1]),
   );

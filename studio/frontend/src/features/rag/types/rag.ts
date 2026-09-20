@@ -230,7 +230,7 @@ export const SOURCE_CODE_EXTENSIONS = [
   ".pas", ".pp", ".ada", ".adb", ".ads", ".cob", ".cbl",
   ".f", ".for", ".f90", ".f95", ".f03",
   ".sas", ".awk", ".sed", ".m4",
-  ".sol", ".move", ".cairo", ".mojo", ".gd",
+  ".sol", ".move", ".cairo", ".mojo", ".gd", ".sqf",
   // Shells
   ".sh", ".bash", ".zsh", ".fish", ".ksh", ".csh", ".tcsh", ".nu",
   ".ps1", ".psm1", ".psd1", ".bat", ".cmd",

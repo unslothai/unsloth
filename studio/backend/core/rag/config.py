@@ -270,6 +270,7 @@ SOURCE_TEXT_EXTS = frozenset(
         ".cairo",
         ".mojo",
         ".gd",
+        ".sqf",
         # Shells
         ".sh",
         ".bash",
