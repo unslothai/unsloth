@@ -90,6 +90,31 @@ def _studio_root_without_master() -> Path:
     return Path.home() / ".unsloth" / "studio"
 
 
+def _is_legacy_default_root(master: Path) -> bool:
+    """Whether a RECORDED root is the one every reader already finds without a note.
+
+    Both uninstallers refuse this value outright, note or environment alike
+    (`case "$_mr" in "$HOME/.unsloth"|/|"") return 0`, and `_MasterRoot`'s `USERPROFILE\\.unsloth`
+    bail-out). Honouring it here is what split the four readers apart: `UNSLOTH_HOME=$HOME/.unsloth`
+    set once, for one command, naming the directory the install was already in, left a note that
+    every later BARE launch read back, so `portable_mode()` stayed true and `HF_HUB_CACHE` moved
+    off `~/.cache/huggingface` -- the one cache this module promises not to move -- while the
+    uninstaller went on treating the same note as absent.
+
+    The write side is gated in setup.sh and setup.ps1, and they sweep an old one away, but only
+    when setup runs again, and the user who hit this set the variable once. So the reader has to
+    decline it too, or the repair never reaches them.
+
+    Recorded roots only. An explicit UNSLOTH_HOME never gets here: `unsloth_home()` returns the
+    override before calling this, which is the user speaking rather than a file on disk.
+    """
+    try:
+        legacy = (Path.home() / ".unsloth").resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return master == legacy
+
+
 def _recorded_master_root() -> Path | None:
     """The master root setup recorded inside the studio tree, or None.
 
@@ -101,10 +126,11 @@ def _recorded_master_root() -> Path | None:
     writes the root to share/.unsloth-master-root for the uninstallers; read it here so the rest
     of the process agrees with the install on disk.
 
-    Only a note that still describes reality is honoured: the recorded root must exist and the
-    Studio directory the note was read from must lie INSIDE it. A note left behind by a tree
-    that has since moved, or copied from one master root to another, names a root this process
-    would otherwise adopt for caches and runtimes both. Containment rather than an exact
+    Only a note that still describes reality is honoured: the recorded root must exist, the Studio
+    directory the note was read from must lie INSIDE it, and it must not be the legacy default,
+    which every reader finds without help and both uninstallers refuse. A note left behind by a
+    tree that has since moved, or copied from one master root to another, names a root this
+    process would otherwise adopt for caches and runtimes both. Containment rather than an exact
     <root>/studio match, because the flat layout, UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming
     one directory, is supported and would fail that; the uninstallers apply the same rule.
     """
@@ -133,7 +159,8 @@ def _recorded_master_root() -> Path | None:
         master = _resolved(recorded)
         try:
             here = studio.resolve()
-            if master.is_dir() and (here == master or master in here.parents):
+            if master.is_dir() and (here == master or master in here.parents) \
+                    and not _is_legacy_default_root(master):
                 found = master
         except (OSError, ValueError):
             found = None

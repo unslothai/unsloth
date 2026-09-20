@@ -1354,3 +1354,108 @@ def test_a_write_probe_that_cannot_close_its_handle_is_a_no_not_a_crash(monkeypa
 
     monkeypatch.setattr(sr.os, "close", real_close)
     assert sr._usable_dir(str(tmp_path)) is True
+
+
+def test_a_note_naming_the_legacy_default_root_is_declined(monkeypatch, tmp_path):
+    """The reader has to decline it, not just the writer.
+
+    setup.sh and setup.ps1 refuse to record `$HOME/.unsloth` and sweep an old one away, but only
+    when setup runs again, and the user who hit this set UNSLOTH_HOME once for one command. Until
+    the reader declines it too, every bare launch keeps reading the note back, portable_mode()
+    stays true and HF_HUB_CACHE stays off ~/.cache/huggingface. Both uninstallers already refuse
+    exactly this value, so honouring it here is the four readers disagreeing.
+    """
+    home = tmp_path / "home"
+    studio = home / ".unsloth" / "studio"
+    (studio / "share").mkdir(parents = True)
+    (studio / "share" / ".unsloth-master-root").write_text(
+        str(home / ".unsloth") + "\n", encoding = "utf-8",
+    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() is None
+    assert sr.portable_mode() is False
+
+    sr._setup_cache_env()
+
+    # The shared cache stays shared, which is what this module promises for a non-portable install.
+    assert os.environ["HF_HUB_CACHE"] == str(home / ".cache" / "huggingface" / "hub")
+    assert "TORCH_HOME" not in os.environ
+
+
+def test_a_note_naming_a_real_master_root_is_still_honoured(monkeypatch, tmp_path):
+    """The other side of the rule above: the feature has to keep working. A recorded root that is
+    not the legacy default, and that contains this Studio tree, is what the note is for."""
+    master = tmp_path / "portable"
+    studio = master / "studio"
+    (studio / "share").mkdir(parents = True)
+    (studio / "share" / ".unsloth-master-root").write_text(str(master) + "\n", encoding = "utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() == master
+    assert sr.portable_mode() is True
+
+
+def test_an_explicit_legacy_unsloth_home_is_still_the_user_speaking(monkeypatch, tmp_path):
+    """Only the RECORDED root is declined. `unsloth_home()` returns an explicit UNSLOTH_HOME
+    before it ever reads the note, and narrowing that would change what the variable means
+    rather than what a stale file on disk is allowed to claim."""
+    home = tmp_path / "home"
+    (home / ".unsloth" / "studio" / "share").mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home / ".unsloth" / "studio"))
+    monkeypatch.setenv("UNSLOTH_HOME", str(home / ".unsloth"))
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() == (home / ".unsloth")
+    assert sr.portable_mode() is True
+
+
+# Reverting only the production hunks and keeping this file green in 25 of 113 cases is what
+# these two close. Every one of the 25 asserts that some variable is ABSENT, which is also true
+# when no pinning code exists at all, so none of them could fail on the merge base: they are
+# assertions, not negative controls. Pairing each decline with the pins that must STILL happen in
+# the same run makes the family falsifiable without rewriting twenty-five tests.
+_DECLINE_SIBLINGS = ("TORCHINDUCTOR_CACHE_DIR", "NUMBA_CACHE_DIR", "CUDA_CACHE_PATH",
+                     "UV_CACHE_DIR", "UNSLOTH_COMPILE_LOCATION")
+
+
+@pytest.mark.parametrize("declined", ["MPLCONFIGDIR", "DATA_DESIGNER_HOME"])
+def test_declining_one_pin_never_means_the_resolver_did_nothing(tmp_path, declined):
+    """A decline is only meaningful next to a pin. If the resolver were absent, or returned early,
+    the sibling assertions below would fail and the decline would stop proving anything."""
+    home = tmp_path / "home"
+    if declined == "MPLCONFIGDIR":
+        config = _matplotlib_config_dir(home)
+        config.mkdir(parents = True)
+        (config / "matplotlibrc").write_text("figure.dpi: 123\n", encoding = "utf-8")
+    else:
+        (home / ".data-designer" / "recipes").mkdir(parents = True)
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert declined not in os.environ, f"{declined} displaced user files"
+    root = str(tmp_path / "studio")
+    for sibling in _DECLINE_SIBLINGS:
+        value = os.environ.get(sibling)
+        assert value, f"{sibling} unpinned: the decline of {declined} proves nothing"
+        assert value.startswith(root), f"{sibling} escaped the studio root: {value}"
+
+
+def test_an_uninspectable_probe_declines_and_still_pins_everything_else(tmp_path):
+    """Same rule for the os.lstat/os.scandir failure paths, which are the subtlest of the 25:
+    an unreadable matplotlib config must leave MPLCONFIGDIR alone AND leave the rest pinned."""
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.parent.mkdir(parents = True, exist_ok = True)
+    config.write_text("", encoding = "utf-8")  # a file where a directory belongs: ENOTDIR
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "MPLCONFIGDIR" not in os.environ
+    for sibling in _DECLINE_SIBLINGS:
+        assert os.environ.get(sibling, "").startswith(str(tmp_path / "studio")), sibling

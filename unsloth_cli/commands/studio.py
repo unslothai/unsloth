@@ -144,8 +144,19 @@ def _recorded_master_root() -> Optional[Path]:
     try:
         master = Path(recorded).expanduser().resolve()
         here = STUDIO_HOME.resolve()
-        if master.is_dir() and (here == master or master in here.parents):
-            return master
+        if not (master.is_dir() and (here == master or master in here.parents)):
+            return None
+        # The legacy default is the root every reader finds without a note, and both uninstallers
+        # refuse it outright. storage_roots._is_legacy_default_root declines it for the same
+        # reason; see test_unsloth_home_root_agreement.py, which holds the two together. Without
+        # this the CLI would export UNSLOTH_HOME for a note the backend has already declined,
+        # which is the split that function exists to close.
+        try:
+            if master == (Path.home() / ".unsloth").resolve():
+                return None
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return master
     except (OSError, ValueError):
         return None
     return None
