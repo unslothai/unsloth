@@ -10,7 +10,10 @@ PW_BROWSER_EXECUTABLE optionally selects an installed Chromium executable.
 
 For a negative control, point Vite's PW_SOURCE_FRONTEND_DIR at the base checkout's
 studio/frontend directory and run --case late-load-progress. The original hook
-recreates the cancelled toast when the held progress response arrives.
+recreates the cancelled toast when the held progress response arrives. Vite resolves
+bare imports from that directory, so the base checkout needs its own node_modules or a
+symlink to this one; without it the dependency scan fails instead of the assertion, and
+the control proves nothing.
 """
 
 from __future__ import annotations
@@ -55,7 +58,11 @@ class LoadFixture:
         self.page.on("requestfailed", self.request_failed)
         await self.page.route(f"{self.base_url}/api/**", self.route)
         await self.page.goto(self.base_url + ("/?download=1" if download else "/"))
-        await expect(self.page.get_by_role("button", name = "Load model", exact = True)).to_be_visible()
+        # Generous: this fixture has its own vite config, so the first run in a job pays a cold
+        # dependency pre-bundle and a full reload before React mounts. The 5s default loses there.
+        await expect(
+            self.page.get_by_role("button", name = "Load model", exact = True)
+        ).to_be_visible(timeout = 60_000)
 
     def request_failed(self, request):
         if urlsplit(request.url).path == "/api/inference/load":
@@ -246,18 +253,21 @@ async def layout(fixture, artifacts):
     assert not fixture.errors, fixture.errors
 
 
+CASES = {
+    "cancel": cancel_aborts,
+    "hide": hide_then_stop,
+    "late-load-progress": late_progress,
+    "late-download-progress": lambda *a: late_progress(*a, download = True),
+    "success": settled,
+    "failure": lambda *a: settled(*a, failure = True),
+    "layout": layout,
+}
+
+
 async def main(args):
     artifacts = Path(args.artifacts)
     artifacts.mkdir(parents = True, exist_ok = True)
-    cases = {
-        "cancel": cancel_aborts,
-        "hide": hide_then_stop,
-        "late-load-progress": late_progress,
-        "late-download-progress": lambda *a: late_progress(*a, download = True),
-        "success": settled,
-        "failure": lambda *a: settled(*a, failure = True),
-        "layout": layout,
-    }
+    cases = CASES
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
             headless = True,
@@ -286,7 +296,9 @@ if __name__ == "__main__":
     parser.add_argument("--url")
     parser.add_argument("--port", type = int, default = 5197)
     parser.add_argument("--artifacts", default = "/tmp/unsloth-model-load-notice")
-    parser.add_argument("--case")
+    # choices, so a mistyped case fails here instead of matching nothing, running nothing
+    # and exiting 0 -- which would let a broken CI invocation read as a pass.
+    parser.add_argument("--case", choices = sorted(CASES))
     args = parser.parse_args()
     server = None
     try:
