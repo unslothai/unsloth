@@ -25,6 +25,8 @@ _ENTRYPOINT = os.path.join(_DOCKER, "entrypoint-rocm.sh")
 _DOCKERFILE = os.path.join(_DOCKER, "Dockerfile.rocm")
 _SMOKE = os.path.join(_DOCKER, "smoke_test_rocm.py")
 _WORKFLOW = os.path.join(_REPO, ".github", "workflows", "docker-publish-rocm.yml")
+_STUDIO_LAUNCH = os.path.join(_DOCKER, "studio_launch_rocm.sh")
+_STUDIO_DOCKERFILE = os.path.join(_DOCKER, "Dockerfile.studio-rocm")
 _HUB_PAGE = os.path.join(_DOCKER, "DOCKERHUB-ROCM.md")
 _README = os.path.join(_REPO, "README.md")
 
@@ -878,6 +880,50 @@ class TestRocmEntrypoint:
         entry = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
 
+    def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
+        """docker/Dockerfile.studio-rocm is built by the same run as the base, on the
+        base by digest (a tag can already be a newer run's) with the refs the base
+        baked, and takes the base's tags with a -studio leaf under the same gates."""
+        import yaml
+
+        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+        build = wf["jobs"]["build-studio"]
+        assert build["needs"] == ["prepare", "build"]
+        step = next(s for s in build["steps"] if s.get("id") == "build")
+        assert step["with"]["file"] == "./docker/Dockerfile.studio-rocm"
+        args = dict(ln.split("=", 1) for ln in step["with"]["build-args"].splitlines() if ln)
+        assert args["BASE_IMAGE"].endswith("@${{ needs.build.outputs.digest }}"), args
+        assert args["UNSLOTH_STUDIO_REF"] == "${{ needs.prepare.outputs.unsloth_ref }}"
+        assert args["UNSLOTH_STUDIO_ZOO_REF"] == "${{ needs.prepare.outputs.zoo_ref }}"
+
+        # no stable tag moves until both digests exist, and both manifests are created in ONE
+        # job, back to back. That orders the two writes WITHIN a run; it does not order two
+        # RUNS, which the per-run concurrency group deliberately lets overlap. Same shape as
+        # docker-publish.yml for latest + core, so the pairing window is repo-wide rather
+        # than this workflow's, and closing it needs a real lock: a shared concurrency group
+        # cancels a PENDING job (tests/studio/test_main_runs_survive_merge_bursts.py), which
+        # would drop a whole run's tags instead.
+        tag = wf["jobs"]["tag"]
+        assert tag["needs"] == ["prepare", "build", "build-studio"]
+        ids = [s.get("id") for s in tag["steps"]]
+        names = [s.get("name") for s in tag["steps"]]
+        assert ids.index("meta") < ids.index("meta_studio")
+        assert names.index("Create manifest") < names.index("Create Studio manifest")
+        assert "tag-studio" not in wf["jobs"]
+
+        def tag_lines(step_id):
+            meta = next(s for s in tag["steps"] if s.get("id") == step_id)
+            return [ln for ln in meta["with"]["tags"].splitlines() if ln.strip()]
+
+        studio, base = tag_lines("meta_studio"), tag_lines("meta")
+        assert len(studio) == len(base) == 5
+        for s_ln, b_ln in zip(studio, base):
+            assert "studio" in s_ln, s_ln
+            # the same enable= gate as the base line it mirrors
+            assert s_ln.split(",enable=", 1)[1:] == b_ln.split(",enable=", 1)[1:], (s_ln, b_ln)
+        create = next(s for s in tag["steps"] if s.get("name") == "Create Studio manifest")
+        assert create["env"]["DIGEST"] == "${{ needs.build-studio.outputs.digest }}"
+
     def test_the_gfx_tag_needs_every_other_input_at_its_default(self):
         """A feature-branch ref plus rocm_gfx=gfx1151 must not replace the public
         gfx1151 image: the gfx tag is gated like latest, minus the gfx itself."""
@@ -902,3 +948,96 @@ class TestRocmEntrypoint:
 
         assert not re.search(r"RX\s*\d{4}", body), "marketing names in the entrypoint's arch table"
         assert "gfx906" in body and "6.3" in body, "gfx906 needs the version-aware note"
+
+
+# ── studio_launch_rocm.sh ────────────────────────────────────────────────────
+
+
+def _studio_launch(
+    tmp_path,
+    *,
+    password = None,
+    stored = False,
+):
+    """Drive the launcher with unsloth-studio-run stubbed: `--stored` answers from a
+    marker, and the real call records the env and the initial-password file it saw."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    initial = tmp_path / "initial-password"
+    seen = tmp_path / "seen"
+    if stored:
+        (tmp_path / "stored").write_text("")
+    _stub(str(bindir / "unsloth-studio-home"), "echo home-linked\n")
+    _stub(
+        str(bindir / "unsloth-studio-run"),
+        f'if [[ "${{1:-}}" == "--stored" ]]; then [[ -e "{tmp_path / "stored"}" ]]; exit; fi\n'
+        f"printf 'env=%s\\nfile=%s\\n' \"${{UNSLOTH_STUDIO_PASSWORD:-unset}}\" "
+        f'"$(cat "{initial}" 2>/dev/null || echo none)" > "{seen}"\n',
+    )
+    env = {
+        "PATH": str(bindir) + ":/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE": str(initial),
+        "UNSLOTH_STUDIO_PORT": "8123",
+    }
+    if password is not None:
+        env["UNSLOTH_STUDIO_PASSWORD"] = password
+    proc = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", _STUDIO_LAUNCH],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    recorded = (
+        dict(ln.split("=", 1) for ln in seen.read_text().splitlines()) if seen.exists() else {}
+    )
+    return proc, recorded, initial
+
+
+@_posix_shell
+class TestStudioLaunchRocm:
+    """UNSLOTH_STUDIO_PASSWORD only sets the FIRST admin password and `unsloth studio`
+    exits 1 when handed one afterwards, so the launcher must hand it over through the
+    file unsloth-studio-run reads while nothing is stored, and never as env."""
+
+    def test_the_first_boot_hands_the_password_over_by_file_not_env(self, tmp_path):
+        proc, seen, initial = _studio_launch(tmp_path, password = "s3cret pw")
+        assert proc.returncode == 0, proc.stderr
+        assert seen == {"env": "unset", "file": "s3cret pw"}, seen
+        assert stat.S_IMODE(os.stat(initial).st_mode) == 0o600
+        assert "password from UNSLOTH_STUDIO_PASSWORD env" in proc.stdout
+        assert "http://localhost:8123" in proc.stdout
+
+    def test_a_restart_with_the_variable_still_set_does_not_replay_it(self, tmp_path):
+        proc, seen, initial = _studio_launch(tmp_path, password = "s3cret pw", stored = True)
+        assert proc.returncode == 0, proc.stderr
+        assert seen == {"env": "unset", "file": "none"}, seen
+        assert not initial.exists()
+        assert "set on an earlier boot" in proc.stdout
+
+    def test_no_password_starts_studio_and_says_one_is_generated(self, tmp_path):
+        proc, seen, initial = _studio_launch(tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        assert seen == {"env": "unset", "file": "none"}, seen
+        assert not initial.exists()
+        assert "generated on first boot" in proc.stdout
+
+    def test_a_stale_file_from_an_earlier_boot_is_cleared_first(self, tmp_path):
+        (tmp_path / "initial-password").write_text("old")
+        proc, seen, initial = _studio_launch(tmp_path, stored = True)
+        assert proc.returncode == 0, proc.stderr
+        assert not initial.exists() and seen["file"] == "none"
+
+    def test_the_image_runs_the_launcher_and_ships_the_run_helper(self):
+        body = open(_STUDIO_DOCKERFILE, encoding = "utf-8").read()
+        assert 'CMD ["/usr/local/bin/unsloth-studio-launch"]' in body
+        assert "COPY studio_run.sh /usr/local/bin/unsloth-studio-run" in body
+        assert "COPY studio_launch_rocm.sh /usr/local/bin/unsloth-studio-launch" in body
+        # the CUDA image's studio-password program waits on JupyterLab, which this
+        # image does not run; nothing here may invoke or ship it
+        assert "studio_password" not in body
+        # the gfx906 base removes bitsandbytes; the Studio venv must be told the arch
+        assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in body
+        ignore = open(os.path.join(_DOCKER, ".dockerignore"), encoding = "utf-8").read()
+        assert "!studio_launch_rocm.sh" in ignore and "!studio_run.sh" in ignore
