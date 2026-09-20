@@ -141,7 +141,9 @@ MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]"
 # recovers an envelope by subtracting the strip from the original, so the strip
 # stays suffix-only. Mirrors MAX_TOOL_TEXT_CHARS in mcp-images.ts.
 MAX_TOOL_TEXT_CHARS = 256_000
-_TOOL_TEXT_TRUNCATION_NOTICE = "\n\n[Tool result text truncated for the model; the full output is shown in the tool card.]"
+_TOOL_TEXT_TRUNCATION_NOTICE = (
+    "\n\n[Tool result text truncated for the model; the full output is shown in the tool card.]"
+)
 
 
 def cap_tool_text(text: str) -> str:
@@ -168,7 +170,9 @@ def sanitize_tool_text(result: str, tool_name: "str | None" = None) -> str:
         logger.warning(
             "Tool %r returned a result that mentions %r but does not parse into image "
             "entries; %d chars withheld from the model.",
-            tool_name, SENTINEL, len(result),
+            tool_name,
+            SENTINEL,
+            len(result),
         )
         return MCP_IMAGE_PARSE_ERROR_TEXT
     return result
@@ -1213,7 +1217,9 @@ def _promote(
                     logger.warning(
                         "Replay of tool result (name=%r) mentions %r but does not parse "
                         "into image entries; %d chars withheld from the model.",
-                        name, SENTINEL, len(content),
+                        name,
+                        SENTINEL,
+                        len(content),
                     )
                     text = MCP_IMAGE_PARSE_ERROR_TEXT
                 else:

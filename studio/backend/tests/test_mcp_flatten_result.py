@@ -615,7 +615,10 @@ def test_valid_mcp_envelope_is_still_stripped_for_an_mcp_tool():
         "Took a screenshot\n[1 image returned]"
         '\n__MCP_IMAGES__:[{"data": "AAAA", "mimeType": "image/png"}]'
     )
-    assert strip_result_for_model(text, "mcp__fs__screenshot") == "Took a screenshot\n[1 image returned]"
+    assert (
+        strip_result_for_model(text, "mcp__fs__screenshot")
+        == "Took a screenshot\n[1 image returned]"
+    )
 
 
 def test_cap_tool_text_bounds_any_tool_text_marker_or_not():
@@ -632,10 +635,12 @@ def test_sanitize_stays_suffix_only_for_the_envelope_recovery_split():
     # tools._split_frontend_suffix subtracts the strip from the original to recover
     # the envelope, so sanitize must edit only a suffix.
     text = (
-        "short\n[1 image returned]"
-        '\n__MCP_IMAGES__:[{"data": "AAAA", "mimeType": "image/png"}]'
+        "short\n[1 image returned]" '\n__MCP_IMAGES__:[{"data": "AAAA", "mimeType": "image/png"}]'
     )
-    assert mcp_images.sanitize_tool_text(text, "mcp__fs__read_media_file") == "short\n[1 image returned]"
+    assert (
+        mcp_images.sanitize_tool_text(text, "mcp__fs__read_media_file")
+        == "short\n[1 image returned]"
+    )
     assert text.startswith(mcp_images.sanitize_tool_text(text, "mcp__fs__read_media_file"))
 
 
@@ -704,6 +709,11 @@ def test_promote_history_keeps_in_budget_text_byte_identical():
                 }
             ],
         },
-        {"role": "tool", "tool_call_id": "call_0", "name": "mcp__fs__read", "content": "plain text"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "mcp__fs__read",
+            "content": "plain text",
+        },
     ]
     assert mcp_images.promote_history(messages, vision = False)[-1] is messages[-1]
