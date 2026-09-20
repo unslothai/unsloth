@@ -140,8 +140,21 @@ def _clause_before(text: str, position: int) -> str:
     return text[boundary + 1 : position]
 
 
+# A POSITIVE hanging qualifier. Hyphens and the surrounding words both matter: "a
+# non-hung cell holds its runner for ten minutes" contains the substring `hung` and is
+# the exact claim this guard exists to reject, so the boundary excludes a preceding
+# hyphen and an explicit negation disqualifies the clause outright.
+_HANGS = re.compile(r"(?<![\w-])(?:hangs?|hanging|hung)(?![\w-])", re.I)
+_NEGATED = re.compile(r"(?<![\w-])(?:not|never|non|no|without)(?![\w-])|n't", re.I)
+
+
 def _about_a_hung_cell(text: str, position: int) -> bool:
-    return bool(re.search(r"hang\w*|hung", _clause_before(text, position), re.I))
+    """Is the thing doing the holding a cell that hangs, said positively?"""
+    clause = _clause_before(text, position)
+    hangs = _HANGS.search(clause)
+    if not hangs:
+        return False
+    return not _NEGATED.search(clause[: hangs.start()])
 
 
 def test_the_rationale_and_the_timeout_are_both_still_there():
