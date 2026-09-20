@@ -249,7 +249,7 @@ export const de = {
   settings: {
     accounts: {
       title: "Konten",
-      description: "Private Unsloth Studio-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
+      description: "Private Unsloth-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
       username: "Benutzername",
       create: "Konto anlegen",
       createDescription: "Teilen Sie einen Einrichtungscode, damit die Person ihr eigenes Passwort wählen kann.",
@@ -588,7 +588,7 @@ export const de = {
       openLogsFolderFailed: "Der Protokollordner konnte nicht geöffnet werden.",
       exportFailed: "Die Protokolle konnten nicht heruntergeladen werden.",
       exportTooOld: "Das laufende Unsloth-Backend ist zu alt für den Protokollexport. Aktualisieren Sie dieses Backend und starten Sie es neu.",
-      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Unsloth Studio-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
+      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Unsloth-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
       keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {
@@ -2016,7 +2016,7 @@ export const de = {
         desktopAvailableDescription:
           "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
-          "Führen Sie `unsloth studio update` in dem Terminal aus, über das Sie Ihren Server gestartet haben.",
+          "Die App ist mit einem bereits laufenden Studio-Server verbunden und kann ihn nicht aktualisieren. Stoppen Sie diesen Server, beenden Sie die Desktop-App und öffnen Sie sie erneut, um das Update zu installieren.",
         desktopManualInstall:
           "Öffnen Sie die Release-Seite, um das neueste Linux-Paket zu installieren.",
         desktopCheckFailed: "Die Suche nach Updates ist fehlgeschlagen",

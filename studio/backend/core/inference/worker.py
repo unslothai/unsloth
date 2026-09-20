@@ -676,6 +676,10 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     request_id = cmd.get("request_id", "")
 
     try:
+        image = None
+        image_b64 = cmd.get("image_base64")
+        if image_b64:
+            image = _resize_image(_decode_image(image_b64))
         images = [
             _resize_image(_decode_image(encoded))
             for encoded in cmd.get("images_base64") or ()
@@ -685,6 +689,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         gen_kwargs = {
             "messages": cmd["messages"],
             "system_prompt": cmd.get("system_prompt", ""),
+            "image": image,
             "images": images,
             "temperature": cmd.get("temperature", 0.7),
             "top_p": cmd.get("top_p", 0.9),
@@ -706,6 +711,9 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         ):
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
+
+        if cmd.get("image_ordinal") is not None and _backend_declares(backend, "image_ordinal"):
+            gen_kwargs["image_ordinal"] = cmd["image_ordinal"]
 
         # Not every backend declares these (transformers declares only ``stop``)
         # and none takes **kwargs, so forwarding unconditionally would turn a

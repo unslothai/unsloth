@@ -245,7 +245,7 @@ export const ar = {
   settings: {
     accounts: {
       title: "الحسابات",
-      description: "أنشئ حسابات Unsloth Studio خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
+      description: "أنشئ حسابات Unsloth خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
       username: "اسم المستخدم",
       create: "إنشاء حساب",
       createDescription: "شارك رمز إعداد ليختار صاحب الحساب كلمة مروره بنفسه.",
@@ -584,7 +584,7 @@ export const ar = {
       openLogsFolderFailed: "تعذّر فتح مجلد السجلات.",
       exportFailed: "تعذّر تنزيل السجلات.",
       exportTooOld: "خادم Unsloth العامل أقدم من أن يدعم تصدير السجلات. حدِّثه وأعد تشغيله.",
-      exportForbidden: "يتطلب تنزيل كل السجلات جلسة Unsloth Studio مسجّل الدخول إليها. لا يكفي مفتاح API.",
+      exportForbidden: "يتطلب تنزيل كل السجلات جلسة Unsloth مسجّل الدخول إليها. لا يكفي مفتاح API.",
       keywords: "تصحيح الأخطاء سجل السجلات خطأ أخطاء تعطل تتبع تشخيص استكشاف الأخطاء debug log logs error",
     },
     voice: {
@@ -1969,7 +1969,7 @@ export const ar = {
         desktopAvailableDescription:
           "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
-          "شغّل الأمر `unsloth studio update` في الطرفية التي شغّلت الخادم.",
+          "اتصل التطبيق بخادم Studio يعمل مسبقًا ولا يمكنه تحديثه. أوقف ذلك الخادم، ثم أغلق تطبيق سطح المكتب وأعد فتحه للتحديث.",
         desktopManualInstall:
           "افتح صفحة الإصدار لتثبيت أحدث حزمة لنظام Linux.",
         desktopCheckFailed: "تعذّر التحقق من وجود تحديثات",
