@@ -100,11 +100,8 @@ EMPTY_SEARCH_RESULTS = (
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
 
-# Text search runs an ALLOWLIST, tier by tier, and never ddgs's own "auto" set: auto dispatches to
-# every enabled engine including Yandex, which some networks block outright. Tier 1 is tried first
-# and tier 2 only if it produced nothing; members WITHIN a tier run in parallel, because that is
-# what ddgs does with a comma-delimited backend. Anything absent from both tiers (yandex, bing, the
-# mullvad_* mirrors) is never named, and naming is the only way an engine is reached.
+# Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
+# an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
 _SEARCH_ENGINE_TIERS = (
     ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
     ("grokipedia", "google", "yahoo"),
@@ -15141,14 +15138,10 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
 def _resolve_engine_tiers(text_engines) -> list:
     """``_SEARCH_ENGINE_TIERS`` reduced to the engines this ddgs actually has, in tier order.
 
-    Filtering before the call is the whole guarantee, because naming an engine the registry lacks is
-    not an error in ddgs. Measured on both pinned versions: 9.14.4 drops the unknown names, warns and
-    keeps the rest, while 9.8.0 raises ``KeyError`` on the first one and silently re-runs the request
-    as ``auto`` -- the Yandex fan-out the allowlist exists to prevent. Tier 1 as written trips exactly
-    that on 9.8.0, which has no ``startpage``.
-
-    An empty tier is dropped rather than passed down, since a tier that resolves to nothing would be
-    the all-unknown case that falls back to ``auto`` on BOTH versions.
+    Naming an engine the registry lacks is not an error: ddgs 9.8.0 raises ``KeyError`` on the first
+    unknown name and silently re-runs the request as ``auto``, the Yandex fan-out this exists to
+    prevent, and tier 1 trips it there because 9.8.0 ships no ``startpage``. An empty tier is dropped
+    for the same reason.
     """
     engines = text_engines or {}
     resolved = []
@@ -15249,9 +15242,6 @@ def _web_search(
 
         from .web_access_policy import check_url_access, scope_search_query
 
-        # DDGS defaults to every enabled provider including Yandex, and even an explicit backend falls
-        # back to auto when nothing it names is in the registry. Resolve the allowlist first, so the
-        # only engines that can be reached are ones this ddgs really has AND we approved.
         engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
         if not engine_tiers:
             return "Search failed: no approved search engine is available."
@@ -15265,10 +15255,8 @@ def _web_search(
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
         client = DDGS(timeout = timeout)
-        # Tier at a time: tier 2 is only asked when tier 1 yielded nothing, so the usual search costs
-        # one sweep. ddgs signals an empty sweep by RAISING, so a tier's exception is a reason to try
-        # the next tier, not the answer; the last one is re-raised for _search_failure_message to
-        # classify exactly as a single-tier failure would have been.
+        # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
+        # last is re-raised for _search_failure_message to classify as a single-tier failure would be.
         results, last_error = [], None
         for backend in engine_tiers:
             if cancel_event is not None and cancel_event.is_set():
