@@ -891,6 +891,14 @@
       "evidence_hash": "2d5cf3effabb28b1410203deed71a621301cce15e09dc1485b3b538b183184f8"
     },
     {
+      "package": "trl",
+      "file": "trl/generation/vllm_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L179:         while True: sha256:618a8410e4ed18d0486f68db559bc9f842d00f7e6926096c3e13602d7b8329ae",
+      "evidence_hash": "6990d68d4bf3b5ffdcec612b4de9de6d2383ef9b1f0e80bc6a9ffc971b11c1b0"
+    },
+    {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
