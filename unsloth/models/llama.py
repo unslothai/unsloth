@@ -1458,7 +1458,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         lm_head = self.lm_head.weight
         lm_head_device = lm_head.device
 
-        # Both loss branches below resolve the transforms themselves, via resolve_logit_transforms().
         dtype = lm_head.dtype
         # Skip int max() if either is a tensor (HF selective-decode form).
         if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
@@ -1499,10 +1498,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if n_items is None:
                     n_items = kwargs.get("n_items", None)
 
-                # Same logit transforms the non-fused branch below applies, read the same way
-                # (cohere logit_scale multiplies, granite logits_scaling divides). The fused
-                # kernel takes them as kwargs, and without them training sees a different loss
-                # than both the reference implementation and the branch below.
+                # Without these the fused branch optimizes a different loss than both the
+                # reference implementation and the materialized branch below.
                 logit_softcapping, logit_scale_multiply, logit_scale_divide = (
                     resolve_logit_transforms(self.config)
                 )

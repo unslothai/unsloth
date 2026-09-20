@@ -71,7 +71,6 @@ def _run(block, config):
     )
 
 
-# (name, config, (softcapping, multiply, divide), why)
 _CASES = [
     (
         "granite",
