@@ -2423,3 +2423,57 @@ def test_a_fork_keeps_the_managed_files_a_switch_left_behind(
 
     run_delete()
     assert made_while_managed.exists(), "the delete took files a fork still has cards for"
+
+
+def test_moving_a_generating_chat_out_does_not_unlock_the_folder_change(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """Membership is mutable; the generation's captured session is not.
+
+    The sidebar lets a chat be moved to Recents or to another project while it is
+    generating. A guard that joins active thread ids against CURRENT membership
+    stops seeing that run, rotates the workspace, and its next tool call still
+    carries the session captured before the move.
+    """
+    import threading
+
+    from core.inference import tools
+    from state import active_generations
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    first = workspace_projects_home / "folder-a"
+    second = workspace_projects_home / "folder-b"
+    for folder in (first, second):
+        folder.mkdir()
+
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(first))
+    thread_id = f"thread-of-{project['id']}"
+    studio_db.upsert_chat_thread({
+        "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
+        "projectId": project["id"], "archived": 0, "createdAt": 1, "updatedAt": 1,
+    })
+
+    with active_generations.ActiveGeneration(
+        threading.Event(), thread_id = thread_id, run_id = "run-1"
+    ):
+        # The user drags the generating chat out to Recents.
+        studio_db.upsert_chat_thread({
+            "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
+            "projectId": None, "archived": 0, "createdAt": 1, "updatedAt": 2,
+        })
+        assert studio_db.project_thread_ids(project["id"]) == [], "the move did not take"
+
+        changed, _ = tools.update_project_workspace_when_idle(
+            project["id"],
+            lambda: studio_db.set_chat_project_workspace(
+                project["id"], external_workspace_path = str(second)),
+        )
+        assert not changed, "the move let the folder change rotate under a running generation"
+
+    # Once the run is over the change goes through, moved chat and all.
+    changed, _ = tools.update_project_workspace_when_idle(
+        project["id"],
+        lambda: studio_db.set_chat_project_workspace(
+            project["id"], external_workspace_path = str(second)),
+    )
+    assert changed

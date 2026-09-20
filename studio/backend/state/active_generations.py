@@ -93,6 +93,7 @@ class ActiveGeneration:
             _ACTIVE[self._handle] = {
                 "handle": self._handle,
                 "thread_id": self.thread_id,
+                "project_id": _project_of(self.thread_id),
                 "run_id": self.run_id,
                 "model": self.model,
                 "kind": self.kind,
@@ -115,6 +116,40 @@ class ActiveGeneration:
         return False
 
 
+def _project_of(thread_id: Optional[str]) -> Optional[str]:
+    """The project a chat belonged to when its generation started.
+
+    Frozen here on purpose. Membership is mutable: a chat can be moved to Recents or
+    to another project mid-run, and a guard that re-reads membership then stops
+    seeing the generation whose workspace it is protecting. Best effort, because a
+    generation must start whatever the database says.
+    """
+    if not thread_id:
+        return None
+    try:
+        from storage.studio_db import get_chat_thread
+
+        thread = get_chat_thread(thread_id)
+    except Exception:
+        return None
+    project_id = (thread or {}).get("projectId")
+    return str(project_id) if project_id else None
+
+
+def active_project_ids(account_id: Optional[str] = None) -> list[str]:
+    """Distinct projects a generation was running in when it started."""
+    with _LOCK:
+        entries = [
+            e for e in _ACTIVE.values() if account_id is None or e["account_id"] == account_id
+        ]
+    seen: list[str] = []
+    for entry in entries:
+        project_id = entry.get("project_id")
+        if project_id and project_id not in seen:
+            seen.append(project_id)
+    return seen
+
+
 def snapshot(account_id: Optional[str] = None) -> list[dict[str, Any]]:
     """In-flight generations, newest last; ``account_id`` None (all) is shutdown/arbiter only."""
     with _LOCK:
@@ -126,6 +161,7 @@ def snapshot(account_id: Optional[str] = None) -> list[dict[str, Any]]:
         {
             "handle": e["handle"],
             "thread_id": e["thread_id"],
+            "project_id": e.get("project_id"),
             "run_id": e["run_id"],
             "model": e["model"],
             "kind": e["kind"],

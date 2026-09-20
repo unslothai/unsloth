@@ -11430,6 +11430,12 @@ def _project_generation_in_flight(project_id: str) -> bool:
     call carrying an id the project no longer has, and the run dies with
     "Project workspace changed" part way through.
 
+    The project each generation was running in is captured when it starts, because
+    membership is mutable: moving the chat to Recents or to another project mid-run
+    would otherwise take it out of this answer while its captured session still
+    points here. Current membership is asked too, so a generation that recorded no
+    project is still seen.
+
     Unreadable state counts as in flight: making the user retry the folder change
     costs them a moment, and breaking a running generation costs them the run.
     """
@@ -11437,6 +11443,8 @@ def _project_generation_in_flight(project_id: str) -> bool:
         from state import active_generations
         from storage.studio_db import project_thread_ids
 
+        if project_id in set(active_generations.active_project_ids()):
+            return True
         running = set(active_generations.active_thread_ids())
         if not running:
             return False
