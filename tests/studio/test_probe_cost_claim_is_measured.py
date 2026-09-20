@@ -67,10 +67,18 @@ def _timeout_minutes() -> int:
 # claim, and "holds" sitting near a number does not mean it governs that number: in
 # "a cell holds a runner for five seconds; timeout-minutes is a cutoff at ten minutes if
 # hung" the verb governs the five, and rejecting the ten would fail CI on a true comment.
+#
+# The value is matched as ANY word, not against a list of numbers this file knows. A
+# list is a spelling contest the comment wins: "for fifteen minutes" walked straight past
+# a pattern that stopped at ten, while the test claimed to validate every claim. So the
+# FORM is recognised here and the number is parsed separately, and a duration that cannot
+# be parsed fails rather than going unseen.
 _HOLD_CLAIM = re.compile(
     r"\b(?:hold\w*|occup\w*|tie[sd]?\s+up)\b[^.;]{0,80}?\bfor\s+"
-    r"(?:about\s+|roughly\s+|around\s+|up\s+to\s+|at\s+most\s+|as\s+(?:much|long)\s+as\s+|~\s*)*"
-    r"(?P<value>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*"
+    r"(?:about\s+|roughly\s+|around\s+|nearly\s+|almost\s+|approximately\s+|"
+    r"up\s+to\s+|at\s+least\s+|at\s+most\s+|no\s+more\s+than\s+|over\s+|under\s+|"
+    r"as\s+(?:much|long)\s+as\s+|~\s*)*"
+    r"(?P<value>[\w-]+)\s*"
     r"(?P<unit>seconds?|s\b|minutes?|mins?\b|hours?|hrs?\b)",
     re.I,
 )
@@ -81,6 +89,8 @@ _SECONDS = re.compile(r"^(seconds?|s)$", re.I)
 _MEASURED = re.compile(r"\bmedian\s+(?P<value>\d+)\s*(?:s\b|seconds?\b)", re.I)
 
 _AS_A_NUMBER = {
+    "a": 1,
+    "an": 1,
     "one": 1,
     "two": 2,
     "three": 3,
@@ -91,11 +101,29 @@ _AS_A_NUMBER = {
     "eight": 8,
     "nine": 9,
     "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "ninety": 90,
 }
 
 
-def _value(text: str) -> int:
-    return int(text) if text.isdigit() else _AS_A_NUMBER[text.lower()]
+def _value(text: str) -> int | None:
+    """None where the number cannot be read, which every caller treats as a failure."""
+    if text.isdigit():
+        return int(text)
+    return _AS_A_NUMBER.get(text.lower().replace("-", ""))
 
 
 def _clause_before(text: str, position: int) -> str:
@@ -232,6 +260,7 @@ def test_every_occupancy_claim_is_a_measured_one():
         f"how 'about five seconds' could have read 600 and still passed"
     )
     observed = _value(measured.group("value"))
+    assert observed is not None, f"unreadable median: {measured.group(0)!r}"
     grounded = [
         claim
         for claim in claims
@@ -243,13 +272,20 @@ def test_every_occupancy_claim_is_a_measured_one():
         f"it is decoration"
     )
     for claim in claims:
+        claimed = _value(claim.group("value"))
+        assert claimed is not None, (
+            f"this occupancy claim states a duration this guard cannot read: "
+            f"{claim.group(0)!r}. Spelling the number out is how 'for fifteen minutes' "
+            f"once walked past a list that stopped at ten, so an unreadable duration "
+            f"fails here rather than being skipped. Use digits, or add the word to "
+            f"_AS_A_NUMBER"
+        )
         unit = claim.group("unit")
         assert _SECONDS.match(unit), (
             f"an occupancy claim is {claim.group('value')} {unit}: {claim.group(0)!r}. A "
             f"cell runs one echo and was measured at {observed}s, so anything but seconds "
             f"here is the overstatement this guard exists to catch"
         )
-        claimed = _value(claim.group("value"))
         assert observed <= claimed * 3 and claimed <= observed * 3, (
             f"an occupancy claim says {claimed}s where the comment reports measuring "
             f"{observed}s: {claim.group(0)!r}. Seconds is not enough on its own -- an "
