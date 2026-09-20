@@ -2689,21 +2689,22 @@ class TestResolverRobustness:
         code = 'import requests\na0 = "https://huggingface.co"\n' + chain + "requests.get(a4999)"
         assert _check_code_safety(code) is None
 
-    @pytest.mark.parametrize(
-        "code",
-        [
-            pytest.param(
-                "import requests as r\nimport socket as r\nr.get(input())", id = "requests_first"
-            ),
-            pytest.param(
-                "import socket as r\nimport requests as r\nr.get(input())", id = "socket_first"
-            ),
-        ],
-    )
-    def test_a_name_imported_twice_resolves_to_nothing_either_way(self, code):
-        # ast.walk order is unspecified, so a doubly bound alias must not be resolved at all
-        # rather than resolved to whichever import the walk reached last.
-        assert _check_code_safety(code) is None, code
+    def test_a_name_imported_twice_reads_as_the_import_above_the_call(self):
+        # Source order decides, not ast.walk order: the call sees the nearest import above it.
+        _blocked(
+            "import socket as r\nimport requests as r\nr.get(input())",
+            expect_phrase = "Blocked: request target is read from the environment or input",
+        )
+
+    def test_an_import_below_the_call_does_not_answer_for_it(self):
+        _ok("import socket as r\nimport socket as r\nr.getaddrinfo(input(), 80)")
+
+    def test_a_call_between_two_imports_reads_as_the_first(self):
+        # The second import is below the call, so it cannot retrospectively unpolice it.
+        _blocked(
+            f'import requests as r\nr.get("{_METADATA_URL}")\nimport socket as r',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
 
     def test_an_import_in_another_scope_does_not_collide(self):
         # The module-level r is requests whatever an unused function imported, so the call resolves
@@ -3433,3 +3434,66 @@ class TestAliasedExternalSources:
             'o.makedirs("d", exist_ok = True)\n'
             'requests.get("https://huggingface.co/api/models")'
         )
+
+
+class TestABindingHoldsUntilItIsRebound:
+    """A later rebind must not reach back and unpolice the calls above it: that is a one-line
+    bypass. Each binding answers for the calls between itself and the next one."""
+
+    def test_an_import_below_the_call_does_not_unpolice_it(self):
+        _blocked(
+            f'import requests as r\nr.get("{_METADATA_URL}")\nimport httpx as r',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_session_rebound_afterwards_is_still_a_session_at_the_call(self):
+        _blocked(
+            f'import requests\ns = requests.Session()\ns.get("{_METADATA_URL}")\ns = object()',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_session_upload_is_not_laundered_by_a_later_rebind(self):
+        _blocked(
+            "import requests\n"
+            "s = requests.Session()\n"
+            's.post("https://huggingface.co/u", files = {"f": open("a.bin", "rb")})\n'
+            "s = object()",
+            expect_phrase = "Blocked: file upload disallowed in sandbox",
+        )
+
+    def test_a_name_reassigned_before_the_call_is_not_the_session_ok(self):
+        _ok(f'import requests\ns = requests.Session()\ns = object()\ns.get("{_METADATA_URL}")')
+
+    def test_a_session_still_works_where_nothing_rebinds_it_ok(self):
+        _ok('import requests\ns = requests.Session()\ns.get("https://huggingface.co/api/models")')
+
+
+class TestLocalConnectorsAreJudgedByOrigin:
+    """The local-resource exemption reads where the receiver came from, never how it is spelled."""
+
+    def test_a_network_client_under_a_reserved_name_is_still_screened(self):
+        _blocked(
+            'import smtplib\nsqlite3 = smtplib.SMTP()\nsqlite3.connect("169.254.169.254", 80)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_second_reserved_name_does_not_help_either(self):
+        _blocked(
+            'import ftplib\nmysql = ftplib.FTP()\nmysql.connect("evil.example", 21)',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param('import sqlite3\nsqlite3.connect("state.db")', id = "module"),
+            pytest.param('import sqlite3 as db\ndb.connect("state.db")', id = "aliased_module"),
+            pytest.param(
+                'import sqlalchemy\nengine = sqlalchemy.create_engine("sqlite:///x.db")\n'
+                "engine.connect()",
+                id = "engine",
+            ),
+        ],
+    )
+    def test_a_real_local_client_is_left_alone_ok(self, code):
+        _ok(code)

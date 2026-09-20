@@ -16059,7 +16059,22 @@ def _check_signal_escape_patterns(code: str):
     # Modules whose aliases are tracked. The network ones so a renamed import is still policed, and
     # the process-state ones so `import os as o` cannot hide where a target came from.
     _EXTERNAL_SOURCE_MODULES = frozenset({"os", "sys", "subprocess", "getpass"})
-    _ALIASED_MODULES = _NET_MODULES | _EXTERNAL_SOURCE_MODULES
+    # A `connect` that opens a local resource rather than a host. Everything else spelling
+    # `connect` is treated as a network client, which is what ftplib, smtplib, imaplib, socketio
+    # and friends are. Their aliases are tracked too, so `import sqlite3 as db` is the same client.
+    _LOCAL_CONNECT_OWNERS = frozenset(
+        {
+            "sqlite3",
+            "apsw",
+            "duckdb",
+            "psycopg",
+            "psycopg2",
+            "pyodbc",
+            "sqlalchemy",
+            "mysql",
+        }
+    )
+    _ALIASED_MODULES = _NET_MODULES | _EXTERNAL_SOURCE_MODULES | _LOCAL_CONNECT_OWNERS
     # Constructor FQ -> the canonical prefix its instance methods are attributed to. The synthesised
     # name ("requests.Session.get") is already covered by the "requests.Session" entry in
     # _NETWORK_FQ_PREFIXES, since that test is a startswith.
@@ -16249,6 +16264,11 @@ def _check_signal_escape_patterns(code: str):
             self._bind_positions: dict = {}
             # Aliases dropped for a later rebind, kept for the calls that precede it.
             self._dropped_aliases: dict = {}
+            # Every binding that gives a name a resolvable target, with the position that made it.
+            # A name bound twice is not unresolvable everywhere: it holds the first target until
+            # the second binding, which is where the source says it changes.
+            self._alias_history: dict = {}
+            self._value_positions: dict = {}
             # Names imported twice: no order-independent answer, so no alias at all.
             self._ambiguous_aliases: set = set()
 
@@ -16362,24 +16382,43 @@ def _check_signal_escape_patterns(code: str):
                     continue
                 if key in table:
                     return table[key]
-                if self._alias_holds_here(key, node):
-                    return self._dropped_aliases[key]
+                held = self._target_held_here(table, key, node)
+                if held is not None:
+                    return held
                 if key in self._counts:
                     # Bound nearer than the alias, so the alias is not what this name holds.
                     return None
             return None
 
-        def _alias_holds_here(self, key, node) -> bool:
-            """Whether an alias dropped for being rebound still describes a call at *node*: the
-            last binding of that name before this point is the import itself."""
-            if key not in self._dropped_aliases or key in self._ambiguous_aliases:
-                return False
-            positions = self._bind_positions.get(key, [])
-            before = [entry for entry in positions if entry[0] <= self._position(node)]
+        def _target_held_here(self, table: dict, key, node):
+            """What a name bound more than once holds at *node*: the target recorded by the last
+            binding at or before this point, and nothing when that binding recorded none.
+
+            Dropping such a name everywhere would let a later rebind retrospectively unpolice the
+            calls above it, which is a one-line bypass: `import requests as r`, the call, then
+            `import httpx as r`."""
+            history = [
+                (position, target)
+                for position, target, table_id in self._alias_history.get(key, ())
+                if table_id == id(table)
+            ]
+            if not history:
+                return None
+            before = [
+                position
+                for position, _alias in self._bind_positions.get(key, [])
+                if position <= self._position(node)
+            ]
             if not before:
-                # The use precedes every binding we can place, so the import is the best answer.
-                return True
-            return max(before)[1]
+                # The use precedes every binding we can place. Only an unambiguous name answers:
+                # a call above two different imports of its own name resolves to neither.
+                targets = {target for _position, target in history}
+                return targets.pop() if len(targets) == 1 else None
+            last = max(before)
+            for position, target in history:
+                if position == last:
+                    return target
+            return None
 
         def _class_binding_applies(self, scope, key, node) -> bool:
             """A class body is read in order: an attribute assigned further down is not what a use
@@ -16423,10 +16462,14 @@ def _check_signal_escape_patterns(code: str):
                 candidate = self._scope_parent.get(candidate)
             return self._scope_parent.get(scope)
 
-        def _record_alias(self, table: dict, key: tuple, target: str) -> None:
+        def _record_alias(self, table: dict, key: tuple, target: str, node = None) -> None:
             if key in table and table[key] != target:
                 self._ambiguous_aliases.add(key)
             table[key] = target
+            if node is not None:
+                self._alias_history.setdefault(key, []).append(
+                    (self._position(node), target, id(table))
+                )
 
         @staticmethod
         def _position(node) -> tuple:
@@ -16460,6 +16503,9 @@ def _check_signal_escape_patterns(code: str):
                 scope = self._redirect.get((scope, target.id), scope)
                 self._mark(target.id, scope, target)
                 self._candidates.setdefault((scope, target.id), value)
+                self._value_positions.setdefault((scope, target.id), []).append(
+                    (self._position(target), value)
+                )
                 if value is not None:
                     self.all_values.setdefault((scope, target.id), []).append(value)
                 return
@@ -16547,7 +16593,7 @@ def _check_signal_escape_patterns(code: str):
                         )
                         # Without `as`, the bound name is already the canonical head of the FQ name.
                         if alias.asname and alias.name in _ALIASED_MODULES:
-                            self._record_alias(self.modules, (scope, alias.asname), alias.name)
+                            self._record_alias(self.modules, (scope, alias.asname), alias.name, node)
                 elif isinstance(node, ast.ImportFrom):
                     for alias in node.names:
                         local = alias.asname or alias.name
@@ -16556,9 +16602,9 @@ def _check_signal_escape_patterns(code: str):
                             continue
                         fq = f"{node.module}.{alias.name}"
                         if fq in _ALIASED_MODULES:
-                            self._record_alias(self.modules, (scope, local), fq)
+                            self._record_alias(self.modules, (scope, local), fq, node)
                         elif node.module in _ALIASED_MODULES:
-                            self._record_alias(self.funcs, (scope, local), fq)
+                            self._record_alias(self.funcs, (scope, local), fq, node)
             self._scan_bindings(scoped)
             # An alias entry is only good while the name means one thing in its own scope. `import
             # requests as r` followed by `import socket as r`, or by an assignment to `r`, leaves
@@ -16597,6 +16643,18 @@ def _check_signal_escape_patterns(code: str):
                         grew = True
                 if not grew:
                     break
+            # A rebind ends a session, it does not unmake the calls above it. Every assignment of
+            # a session factory is recorded at its own position, so `s = requests.Session()`,
+            # `s.get(...)`, `s = object()` still polices the call in the middle.
+            for key, positioned in self._value_positions.items():
+                for position, value in positioned:
+                    if not isinstance(value, ast.Call):
+                        continue
+                    factory = _SESSION_FACTORY_FQ.get(_canonical_fq(value.func, self))
+                    if factory is not None:
+                        self._alias_history.setdefault(key, []).append(
+                            (position, factory, id(self.sessions))
+                        )
             self.sessions.update(factories)
             return self
 
@@ -16683,22 +16741,6 @@ def _check_signal_escape_patterns(code: str):
         return None, False
 
     _SOCKET_FACTORY_FQ = ("socket.socket", "socket.create_connection", "socket.socketpair")
-    # A `connect` that opens a local resource rather than a host. Everything else spelling
-    # `connect` is treated as a network client, which is what ftplib, smtplib, imaplib,
-    # socketio and friends are.
-    _LOCAL_CONNECT_OWNERS = frozenset(
-        {
-            "sqlite3",
-            "apsw",
-            "duckdb",
-            "psycopg",
-            "psycopg2",
-            "pyodbc",
-            "sqlalchemy",
-            "mysql",
-        }
-    )
-
     def _is_a_socket_receiver(node) -> bool:
         """Whether *node* evaluates to a socket: `socket.socket(...)` inline, or a name bound to
         one. A tuple argument looks socket-shaped too, but the receiver is what settles it."""
@@ -16708,6 +16750,25 @@ def _check_signal_escape_patterns(code: str):
             bound = _bindings.string_for(node.id, node)
             if isinstance(bound, ast.Call):
                 return _canonical_fq(bound.func, _bindings) in _SOCKET_FACTORY_FQ
+        return False
+
+    def _opens_a_local_resource(receiver) -> bool:
+        """Whether a `connect` receiver is one of the local-resource clients. Judged on where the
+        value came from, never on the name: `sqlite3 = smtplib.SMTP()` spells a reserved head and
+        still opens a socket, so a name that holds a value is answered by that value."""
+        if isinstance(receiver, ast.Call):
+            return _canonical_fq(receiver.func, _bindings).split(".")[0] in _LOCAL_CONNECT_OWNERS
+        if isinstance(receiver, ast.Name):
+            values = _bindings.values_for(receiver.id, receiver)
+            if values:
+                # Every value it can hold has to be local, and a value we cannot name is not.
+                return all(_opens_a_local_resource(value) for value in values)
+            # Bound by nothing assignable: an imported module. Read through the import, so
+            # `import sqlite3 as db` is the same client under a different name.
+            imported = _bindings.alias_for(_bindings.modules, receiver.id, receiver)
+            return (imported or receiver.id).split(".")[0] in _LOCAL_CONNECT_OWNERS
+        if isinstance(receiver, ast.Attribute):
+            return _written_fq(receiver).split(".")[0] in _LOCAL_CONNECT_OWNERS
         return False
 
     _external_memo: set = set()
@@ -17061,7 +17122,7 @@ def _check_signal_escape_patterns(code: str):
                 and (
                     isinstance(node.args[0], ast.Tuple)
                     or _is_a_socket_receiver(node.func.value)
-                    or _written_fq(node.func).split(".")[0] not in _LOCAL_CONNECT_OWNERS
+                    or not _opens_a_local_resource(node.func.value)
                 )
             ):
                 a0 = node.args[0]
