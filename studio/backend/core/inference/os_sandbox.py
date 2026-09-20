@@ -285,7 +285,12 @@ _scan_lock = threading.Lock()
 _scan_pending: dict[str, threading.Thread] = {}
 
 
-def _hazard_within_wall_clock(root: str, max_entries: int, seconds: float) -> str | None:
+def _hazard_within_wall_clock(
+    root: str,
+    max_entries: int,
+    seconds: float,
+    prepare: "Callable[[float], None] | None" = None,
+) -> str | None:
     """``_host_channel_hazard`` with a deadline that holds even when it cannot.
 
     The walk checks the clock between entries, which is only a deadline while
@@ -299,6 +304,11 @@ def _hazard_within_wall_clock(root: str, max_entries: int, seconds: float) -> st
     wedged mount reads as an unfinished scan rather than as a clean one. The
     worker is left to finish on its own; it holds no lock and owns nothing, and
     a second one is not started for the same root while the first is stuck.
+
+    ``prepare`` runs on the same worker, under the same budget, and is given
+    the deadline. Work done before the walk is exactly as able to block on a
+    wedged mount as the walk is, so doing it on the caller's thread would put
+    back the hang this exists to remove.
     """
     with _scan_lock:
         pending = _scan_pending.get(root)
@@ -313,9 +323,19 @@ def _hazard_within_wall_clock(root: str, max_entries: int, seconds: float) -> st
         answer: list[str | None] = []
         budget: list[str] = []
 
+        deadline = time.monotonic() + seconds
+
         def inspect() -> None:
             try:
-                answer.append(_host_channel_hazard(root, max_entries, seconds))
+                if prepare is not None:
+                    prepare(deadline)
+                # What is LEFT of the budget, not a fresh copy of it: the walk
+                # and anything before it share one deadline.
+                answer.append(
+                    _host_channel_hazard(
+                        root, max_entries, max(0.1, deadline - time.monotonic())
+                    )
+                )
             except _ScanBudgetExceeded as exc:
                 budget.append(str(exc))
             except Exception as exc:  # noqa: BLE001 - reported, never raised at the caller
@@ -422,7 +442,7 @@ def _unix_socket_is_refused(path: str) -> bool | None:
     return False
 
 
-def clear_stale_tool_ipc(workdir: str) -> tuple[str, ...]:
+def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple[str, ...]:
     """Remove sockets and FIFOs left behind in Studio's own scratch directory.
 
     A socket under the workdir is a genuine hazard and stays fatal, with one
@@ -460,6 +480,11 @@ def clear_stale_tool_ipc(workdir: str) -> tuple[str, ...]:
     nested mount in there is not something a crashed tool leaves, and it stays
     fatal.
 
+    ``deadline`` is a ``time.monotonic`` stamp to stop at. The scratch directory
+    can be large or can sit on the same stalled mount as everything else under
+    the workdir, so this runs inside the scan's wall-clock budget rather than
+    ahead of it; stopping early simply leaves the rest for the walk to refuse.
+
     Returns what was removed, for the log.
     """
     scratch = os.path.join(workdir, TOOL_TEMP_DIRNAME)
@@ -472,6 +497,9 @@ def clear_stale_tool_ipc(workdir: str) -> tuple[str, ...]:
         for base, dirs, names in os.walk(scratch, followlinks = False):
             dirs[:] = [name for name in dirs if not os.path.ismount(os.path.join(base, name))]
             for name in names:
+                if deadline is not None and time.monotonic() > deadline:
+                    logger.info("Stopped sweeping the tool scratch directory at its deadline")
+                    return tuple(removed)
                 path = os.path.join(base, name)
                 try:
                     entry = os.lstat(path)
@@ -520,9 +548,13 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
     killed tool's leftover listener is removed rather than held against the
     next call.
     """
-    clear_stale_tool_ipc(workdir)
     try:
-        hazard = _hazard_within_wall_clock(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+        hazard = _hazard_within_wall_clock(
+            workdir,
+            WORKDIR_SCAN_ENTRIES,
+            WORKDIR_SCAN_SECONDS,
+            prepare = lambda deadline: clear_stale_tool_ipc(workdir, deadline),
+        )
     except _ScanBudgetExceeded as exc:
         logger.warning("The session workdir %s: %s", workdir, exc)
         return (WORKDIR_SCAN_INCOMPLETE,)

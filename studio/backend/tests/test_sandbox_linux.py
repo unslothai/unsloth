@@ -2223,3 +2223,52 @@ def test_a_stale_fifo_is_removed_and_one_with_a_reader_is_not(tmp_path):
         os.close(writer)
         for fd in reader_fd:
             os.close(fd)
+
+
+def test_the_stale_ipc_sweep_runs_inside_the_scan_budget(monkeypatch, tmp_path):
+    """The sweep walks the same workdir, so it can block on the same wedged
+    mount. Doing it on the caller's thread put back the hang the bounded scan
+    exists to remove."""
+    import threading
+    import time
+
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    released = threading.Event()
+
+    def wedged_sweep(_workdir, _deadline = None):
+        released.wait(8)
+        return ()
+
+    monkeypatch.setattr(os_sandbox, "clear_stale_tool_ipc", wedged_sweep)
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_SECONDS", 0.3)
+
+    started = time.monotonic()
+    try:
+        limitations = os_sandbox.scan_workdir_for_host_channels(str(workdir))
+        waited = time.monotonic() - started
+    finally:
+        released.set()
+
+    assert limitations == (os_sandbox.WORKDIR_SCAN_INCOMPLETE,)
+    assert waited < 5, f"the caller waited {waited:.1f}s on a wedged sweep"
+
+
+def test_the_sweep_stops_at_its_deadline(tmp_path):
+    """Past the deadline it leaves the rest for the walk to refuse rather than
+    spending the call's time on a directory it may never finish."""
+    import time
+
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(parents = True)
+    os.chmod(scratch, 0o700)
+    _bind_unix_socket(str(scratch / "listener-0"))
+
+    assert os_sandbox.clear_stale_tool_ipc(str(workdir), time.monotonic() - 1) == ()
+    assert (scratch / "listener-0").exists()
+    assert os_sandbox.clear_stale_tool_ipc(str(workdir)) == (str(scratch / "listener-0"),)
