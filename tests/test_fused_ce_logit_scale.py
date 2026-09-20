@@ -15,11 +15,17 @@ import torch
 import torch.nn.functional as F
 from transformers import (
     CohereConfig,
-    FalconH1Config,
     Gemma2Config,
     GraniteConfig,
     MistralConfig,
 )
+
+try:
+    from transformers import FalconH1Config
+except ImportError:
+    # Absent before transformers 4.53, and the declared floor is 4.51.3. A module-scope
+    # import would cost the whole file, not just the Falcon-H1 cases.
+    FalconH1Config = None
 from transformers.modeling_outputs import BaseModelOutputWithPast
 
 import pytest
@@ -118,6 +124,8 @@ def _config(cls, **kwargs):
     turns one unconstructable class into a collection error for the whole file."""
 
     def build():
+        if cls is None:
+            pytest.skip("this transformers predates the model this case needs")
         try:
             return cls(
                 hidden_size = HIDDEN_SIZE,
