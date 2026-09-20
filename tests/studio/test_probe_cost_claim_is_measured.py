@@ -187,10 +187,12 @@ def _names_the_cutoff(clause: str) -> bool:
     not a qualification here either: "a superseded working matrix that never hangs costs
     ten minutes" mentions hanging only to deny it, and is the false claim in full.
     """
-    for found in (_HANGS.search(clause), _CUTOFF.search(clause)):
-        if found and not _NEGATED.search(clause[: found.start()]):
-            return True
-    return False
+    if not (_HANGS.search(clause) or _CUTOFF.search(clause)):
+        return False
+    # Anywhere in the clause, not merely before the word. "is NOT the cutoff for a cell
+    # that HANGS" puts the denial after the noun it denies, and reading only backwards
+    # from the word accepted it.
+    return not _NEGATED.search(clause)
 
 
 def _about_a_hung_cell(text: str, position: int) -> bool:
@@ -270,10 +272,22 @@ def test_the_timeout_is_still_explained_as_the_hung_cell_bound():
         f"{WORKFLOW.name} no longer says what timeout-minutes is for, so the next reader "
         f"has nothing to stop them reading it as the expected cost again"
     )
-    window = rationale[rationale.index("timeout-minutes") :][:400]
-    assert re.search(r"hang|hung|cutoff", window, re.I), (
-        f"{WORKFLOW.name} mentions timeout-minutes without saying it bounds a cell that "
-        f"hangs: {window!r}"
+    # The same positive, non-negated rule the other two use. A raw substring accepts
+    # "`timeout-minutes` below is NOT the cutoff for a cell that HANGS", which denies the
+    # invariant this test exists to keep.
+    # Its own clause, because a 400-character window spans several and would find a
+    # negation belonging to none of them.
+    start = rationale.index("timeout-minutes")
+    stop = min(
+        (offset for offset in (rationale.find(mark, start) for mark in (".", ";")) if offset != -1),
+        default = len(rationale),
+    )
+    # After the key itself: `timeout-minutes` contains "timeout", so reading from the
+    # start of the clause let the name of the thing stand in for the explanation of it.
+    window = rationale[start + len("timeout-minutes") : stop]
+    assert _names_the_cutoff(window), (
+        f"{WORKFLOW.name} mentions timeout-minutes without saying, positively, that it "
+        f"bounds a cell that hangs: {window!r}"
     )
 
 
