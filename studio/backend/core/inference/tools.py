@@ -16982,7 +16982,9 @@ def _check_signal_escape_patterns(code: str):
         connect` spells it as a bare name, and the resolved name is what says what it is."""
         if isinstance(node.func, ast.Attribute):
             return node.func.attr == "connect"
-        return any(name.rpartition(".")[2] == "connect" for name in _call_fq_names(node.func, _bindings))
+        return any(
+            name.rpartition(".")[2] == "connect" for name in _call_fq_names(node.func, _bindings)
+        )
 
     def _connect_owner_root(node: ast.Call) -> str:
         """The module a `connect` call belongs to, resolved rather than as written."""
@@ -17003,9 +17005,7 @@ def _check_signal_escape_patterns(code: str):
         leaves the receiver looking like the module while the call opens a socket."""
         if not isinstance(node.func, ast.Attribute):
             return _connect_owner_root(node) in _LOCAL_CONNECT_OWNERS
-        return _opens_a_local_resource(node.func.value) and not _any_prefix_was_rebound(
-            node.func
-        )
+        return _opens_a_local_resource(node.func.value) and not _any_prefix_was_rebound(node.func)
 
     def _names_a_local_client_module(node) -> bool:
         """Whether *node* is a reference to one of the local-client modules as imported. A name
@@ -17216,9 +17216,7 @@ def _check_signal_escape_patterns(code: str):
 
     # Reading a file is reading something the source does not show: a URL in a workspace file is
     # chosen wherever that file came from, which is the same hole as reading the environment.
-    _FILE_READ_METHODS = frozenset(
-        {"read", "readline", "readlines", "read_text", "read_bytes"}
-    )
+    _FILE_READ_METHODS = frozenset({"read", "readline", "readlines", "read_text", "read_bytes"})
 
     def _reads_a_file(node: ast.AST) -> bool:
         """Whether *node* opens or reads a file."""

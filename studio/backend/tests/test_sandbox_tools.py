@@ -3797,7 +3797,11 @@ class TestLongChainsResolveRatherThanLapse:
 
     def test_a_long_chain_of_allowed_literals_keeps_working_ok(self):
         chain = "".join(f"a{i} = a{i - 1}\n" for i in range(1, 500))
-        _ok('import requests\na0 = "https://huggingface.co/api/models"\n' + chain + "requests.get(a499)")
+        _ok(
+            'import requests\na0 = "https://huggingface.co/api/models"\n'
+            + chain
+            + "requests.get(a499)"
+        )
 
 
 class TestAuthoritiesThatReachTwoHosts:
