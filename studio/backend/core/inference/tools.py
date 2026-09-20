@@ -16056,6 +16056,10 @@ def _check_signal_escape_patterns(code: str):
             "aiohttp",
         }
     )
+    # Modules whose aliases are tracked. The network ones so a renamed import is still policed, and
+    # the process-state ones so `import os as o` cannot hide where a target came from.
+    _EXTERNAL_SOURCE_MODULES = frozenset({"os", "sys", "subprocess", "getpass"})
+    _ALIASED_MODULES = _NET_MODULES | _EXTERNAL_SOURCE_MODULES
     # Constructor FQ -> the canonical prefix its instance methods are attributed to. The synthesised
     # name ("requests.Session.get") is already covered by the "requests.Session" entry in
     # _NETWORK_FQ_PREFIXES, since that test is a startswith.
@@ -16067,6 +16071,9 @@ def _check_signal_escape_patterns(code: str):
         "httpx.Client": "httpx.Client",
         "httpx.AsyncClient": "httpx.AsyncClient",
         "aiohttp.ClientSession": "aiohttp.ClientSession",
+        "urllib3.PoolManager": "urllib3.PoolManager",
+        "urllib3.HTTPConnectionPool": "urllib3.HTTPConnectionPool",
+        "urllib3.HTTPSConnectionPool": "urllib3.HTTPSConnectionPool",
     }
     _URL_KWARGS = ("url", "fullurl")
     _HTTP_METHOD_NAMES = frozenset(
@@ -16077,11 +16084,20 @@ def _check_signal_escape_patterns(code: str):
         "httpx.Client",
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
+        "urllib3.PoolManager",
+        "urllib3.HTTPConnectionPool",
+        "urllib3.HTTPSConnectionPool",
     )
     _URL_OWNERS = frozenset(
         {
             "requests",
             "httpx",
+            # urllib3.request("GET", url) and pool.request(...) are network calls by the prefix
+            # table already; without an owner entry the target checks would skip their URL.
+            "urllib3",
+            "urllib3.PoolManager",
+            "urllib3.HTTPConnectionPool",
+            "urllib3.HTTPSConnectionPool",
             "requests.Session",
             "httpx.Client",
             "httpx.AsyncClient",
@@ -16530,7 +16546,7 @@ def _check_signal_escape_patterns(code: str):
                             is_alias = True,
                         )
                         # Without `as`, the bound name is already the canonical head of the FQ name.
-                        if alias.asname and alias.name in _NET_MODULES:
+                        if alias.asname and alias.name in _ALIASED_MODULES:
                             self._record_alias(self.modules, (scope, alias.asname), alias.name)
                 elif isinstance(node, ast.ImportFrom):
                     for alias in node.names:
@@ -16539,9 +16555,9 @@ def _check_signal_escape_patterns(code: str):
                         if node.level or node.module is None:
                             continue
                         fq = f"{node.module}.{alias.name}"
-                        if fq in _NET_MODULES:
+                        if fq in _ALIASED_MODULES:
                             self._record_alias(self.modules, (scope, local), fq)
-                        elif node.module in _NET_MODULES:
+                        elif node.module in _ALIASED_MODULES:
                             self._record_alias(self.funcs, (scope, local), fq)
             self._scan_bindings(scoped)
             # An alias entry is only good while the name means one thing in its own scope. `import
@@ -16730,6 +16746,8 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
                 if sub.value.id == "sys" and sub.attr in ("argv", "stdin"):
                     return True
+            if _reads_an_external_source_through_an_alias(sub, bindings):
+                return True
             if isinstance(sub, ast.Name) and sub.id not in seen:
                 for bound in bindings.values_for(sub.id, sub):
                     if _externally_sourced(bound, bindings, seen | {sub.id}, depth + 1):
@@ -16832,6 +16850,39 @@ def _check_signal_escape_patterns(code: str):
         "create_commit": "operations",
         "preupload_lfs_files": "additions",
     }
+
+    # The names an aliased import can still be reading. Spelled as full names because that is what
+    # the alias resolves to: `import os as o` makes `o.environ` the name `os.environ`.
+    _EXTERNAL_SOURCE_FQ = frozenset(
+        {
+            "os.environ",
+            "os.environb",
+            "os.getenv",
+            "os.getenvb",
+            "sys.argv",
+            "sys.stdin",
+            "getpass.getpass",
+            "subprocess.run",
+            "subprocess.Popen",
+            "subprocess.check_output",
+            "subprocess.getoutput",
+            "subprocess.getstatusoutput",
+        }
+    )
+
+    def _reads_an_external_source_through_an_alias(node: ast.AST, bindings) -> bool:
+        """The alias-aware half of external-source detection. `_reads_env_or_secret` matches the
+        names as written, which misses `import os as o` and `from os import getenv as env`: the
+        target is just as externally chosen when the module was renamed on import."""
+        if isinstance(node, ast.Call):
+            node = node.func
+        if isinstance(node, ast.Name):
+            resolved = bindings.alias_for(bindings.funcs, node.id, node)
+            return bool(resolved) and resolved in _EXTERNAL_SOURCE_FQ
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            owner = bindings.alias_for(bindings.modules, node.value.id, node)
+            return bool(owner) and f"{owner}.{node.attr}" in _EXTERNAL_SOURCE_FQ
+        return False
 
     def _is_os_environ(node: ast.AST) -> bool:
         return (

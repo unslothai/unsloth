@@ -3347,3 +3347,89 @@ class TestScalarHostConnectMethods:
             'import socket\ns = socket.socket()\ns.connect(("169.254.169.254", 80))',
             expect_phrase = "Blocked: cloud-metadata host",
         )
+
+
+class TestUrllib3Targets:
+    """urllib3 reaches the network through the prefix table, so its URL argument has to be read
+    like any other: `urllib3.request("GET", url)` takes the method first."""
+
+    def test_an_env_target_is_refused(self):
+        _blocked(
+            'import os, urllib3\nurllib3.request("GET", os.environ["TARGET"])',
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_a_pool_manager_target_is_refused(self):
+        _blocked(
+            "import os, urllib3\n"
+            "pool = urllib3.PoolManager()\n"
+            'pool.request("GET", os.environ["TARGET"])',
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_a_metadata_host_is_still_blocked(self):
+        _blocked(
+            f'import urllib3\nurllib3.request("GET", "{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_allowed_host_keeps_working_ok(self):
+        _ok('import urllib3\nurllib3.request("GET", "https://huggingface.co/api/models")')
+
+
+class TestAliasedExternalSources:
+    """Renaming os or sys on import does not make the target any less externally chosen."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import os as o\nimport requests\nrequests.get(o.environ["TARGET"])',
+                id = "module_alias_environ",
+            ),
+            pytest.param(
+                'import os as o\nimport requests\nrequests.get(o.getenv("TARGET"))',
+                id = "module_alias_getenv",
+            ),
+            pytest.param(
+                "from os import getenv as env\nimport requests\nrequests.get(env('TARGET'))",
+                id = "function_alias",
+            ),
+            pytest.param(
+                'from os import environ as e\nimport requests\nrequests.get(e["TARGET"])',
+                id = "mapping_alias",
+            ),
+            pytest.param(
+                "import sys as s\nimport requests\nrequests.get(s.argv[1])",
+                id = "argv_alias",
+            ),
+            pytest.param(
+                "import subprocess as sp\n"
+                "import requests\n"
+                'requests.get(sp.check_output(["printenv", "TARGET"]).decode())',
+                id = "subprocess_alias",
+            ),
+            pytest.param(
+                'import os as o\nimport requests\nu = o.environ["TARGET"]\nrequests.get(u)',
+                id = "through_a_binding",
+            ),
+        ],
+    )
+    def test_an_aliased_external_target_is_refused(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")
+
+    def test_a_local_name_that_merely_looks_like_os_is_not_an_external_read_ok(self):
+        _ok(
+            "import requests\n"
+            "class o:\n"
+            '    environ = {"TARGET": "https://huggingface.co/api/models"}\n'
+            'requests.get(o.environ["TARGET"])'
+        )
+
+    def test_an_aliased_os_used_for_something_else_changes_nothing_ok(self):
+        _ok(
+            "import os as o\n"
+            "import requests\n"
+            'o.makedirs("d", exist_ok = True)\n'
+            'requests.get("https://huggingface.co/api/models")'
+        )
