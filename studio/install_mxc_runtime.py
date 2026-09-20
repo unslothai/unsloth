@@ -151,7 +151,9 @@ def prepare_host(dest: str, timeout: float = 120.0) -> dict:
     for subcommand in ("prepare-system-drive", "prepare-null-device"):
         try:
             completed = subprocess.run(
-                [prep, subcommand], capture_output = True, timeout = timeout,
+                [prep, subcommand],
+                capture_output = True,
+                timeout = timeout,
             )
         except subprocess.TimeoutExpired:
             # requireAdministrator in the manifest means the loader raises a UAC
@@ -180,10 +182,17 @@ def prepare_host(dest: str, timeout: float = 120.0) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description = __doc__)
     parser.add_argument("--dest", default = None, help = "where to install (default: Studio home)")
-    parser.add_argument("--prepare-host-timeout", type = float, default = 120.0,
-                        help = "seconds to wait for each elevated step before reporting no response")
-    parser.add_argument("--prepare-host", action = "store_true",
-                        help = "run MXC's elevated host preparation (prompts for UAC)")
+    parser.add_argument(
+        "--prepare-host-timeout",
+        type = float,
+        default = 120.0,
+        help = "seconds to wait for each elevated step before reporting no response",
+    )
+    parser.add_argument(
+        "--prepare-host",
+        action = "store_true",
+        help = "run MXC's elevated host preparation (prompts for UAC)",
+    )
     parser.add_argument(
         "--verify-only", action = "store_true", help = "report an existing install without downloading"
     )
