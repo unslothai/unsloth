@@ -472,6 +472,18 @@ def _runtime_identity() -> str:
     return digest.hexdigest()
 
 
+# Windows isolation is opt-in while MXC is an early preview upstream. This is
+# eligibility for the BACKEND, deliberately a separate axis from the execution
+# mode: a model-authored tool argument must never be able to select a backend or
+# relax a policy, so it is read from the environment Studio was started with and
+# never from a request.
+WINDOWS_PREVIEW_ENV = "UNSLOTH_WINDOWS_SANDBOX_PREVIEW"
+
+
+def windows_preview_enabled() -> bool:
+    return os.environ.get(WINDOWS_PREVIEW_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _unavailable(reason: str, remediation: str, identity: str) -> SandboxCapability:
     return SandboxCapability(
         backend = "none",
@@ -494,9 +506,22 @@ def capability_snapshot(*, force: bool = False) -> SandboxCapability:
     elif sys.platform == "darwin":
         from . import sandbox_macos
         backend = sandbox_macos
+    elif sys.platform == "win32" and windows_preview_enabled():
+        from . import sandbox_windows
+        backend = sandbox_windows
+    elif sys.platform == "win32":
+        return _unavailable(
+            "OS isolation for Studio tools on Windows is an opt-in preview.",
+            (
+                "Windows isolation uses Microsoft's MXC ProcessContainer, which upstream "
+                f"still labels an early preview and not a security boundary. Set "
+                f"{WINDOWS_PREVIEW_ENV}=1 to enable it. {_FALLBACK_NOTE}"
+            ),
+            identity,
+        )
     else:
         return _unavailable(
-            "OS isolation for Studio tools is available on Linux and macOS only.",
+            "OS isolation for Studio tools is available on Linux, macOS and Windows only.",
             f"No sandbox backend exists for this platform. {_FALLBACK_NOTE}",
             identity,
         )
@@ -518,7 +543,9 @@ def capability_snapshot(*, force: bool = False) -> SandboxCapability:
         environment = sys.platform,
         protection_state = "preview",
         profile_id = backend.PROFILE_ID,
-        limitations = backend.LIMITATIONS,
+        # A backend may narrow its static set for the host it is actually on, so
+        # a limitation that is not true here is not claimed here.
+        limitations = getattr(backend, "host_limitations", lambda: backend.LIMITATIONS)(),
         probe_generation = hashlib.sha256((identity + "available").encode()).hexdigest(),
         environment_fingerprint = identity,
         remediation = (
@@ -626,6 +653,8 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
 
     if sys.platform == "linux":
         from . import sandbox_linux as backend
+    elif sys.platform == "win32":
+        from . import sandbox_windows as backend
     else:
         from . import sandbox_macos as backend
 
