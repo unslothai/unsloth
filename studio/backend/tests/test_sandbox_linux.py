@@ -1594,3 +1594,75 @@ def test_an_editable_namespace_package_is_granted_without_an_init(tmp_path, monk
         assert str(source) not in granted, granted
     finally:
         os_sandbox.editable_source_roots.cache_clear()
+
+
+def test_the_cache_verdict_is_memoized_between_launches(tmp_path, monkeypatch):
+    """The walk is O(entries) and was re-paid on every launch.
+
+    Without this the memo can be removed and every suite still passes, which is
+    how it shipped unguarded: measured 2.1ms against an empty cache and 44.2ms
+    at 15,000 entries, re-paid per call.
+    """
+    calls = []
+    real = sandbox_linux._cache_hazard_uncached
+    monkeypatch.setattr(
+        sandbox_linux, "_cache_hazard_uncached",
+        lambda name, path: (calls.append(path), real(name, path))[1],
+    )
+    sandbox_linux.reset_cache_verdicts()
+    component = tmp_path / "hub"
+    component.mkdir()
+    (component / "a.bin").write_text("")
+
+    first = sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+    walked_once = len(calls)
+    second = sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+
+    assert second == first
+    assert len(calls) == walked_once, "the second launch re-walked the cache"
+
+
+def test_a_changed_cache_is_re_inspected_rather_than_trusted(tmp_path, monkeypatch):
+    """The memo key is the component root's identity and mtime, so a change made
+    through the root must invalidate it. A memo that never expires is a stale
+    security verdict, not an optimisation."""
+    calls = []
+    real = sandbox_linux._cache_hazard_uncached
+    monkeypatch.setattr(
+        sandbox_linux, "_cache_hazard_uncached",
+        lambda name, path: (calls.append(path), real(name, path))[1],
+    )
+    sandbox_linux.reset_cache_verdicts()
+    component = tmp_path / "hub"
+    component.mkdir()
+    sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+    before = len(calls)
+
+    # A new model directory changes the root's mtime.
+    os.utime(component, (0, 0))
+    (component / "models--org--new").mkdir()
+    sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+
+    assert len(calls) > before, "a changed cache reused its old verdict"
+
+
+def test_a_failed_launch_drops_every_cache_verdict(tmp_path, monkeypatch):
+    """tools.py calls this when a launch dies, for the same reason it drops the
+    capability probe: a failed launch is the one signal that something the
+    planner believed about this host has changed."""
+    calls = []
+    real = sandbox_linux._cache_hazard_uncached
+    monkeypatch.setattr(
+        sandbox_linux, "_cache_hazard_uncached",
+        lambda name, path: (calls.append(path), real(name, path))[1],
+    )
+    sandbox_linux.reset_cache_verdicts()
+    component = tmp_path / "hub"
+    component.mkdir()
+    sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+    before = len(calls)
+
+    sandbox_linux.reset_cache_verdicts()
+    sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+
+    assert len(calls) > before, "reset_cache_verdicts did not invalidate the memo"

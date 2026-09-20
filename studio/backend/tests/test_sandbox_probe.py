@@ -488,3 +488,43 @@ def test_the_landlock_helper_imports_where_it_will_never_be_used():
     finally:
         sandbox_landlock._libc = real
         sandbox_landlock.abstract_scope_supported.cache_clear()
+
+
+def test_a_cached_verdict_outlives_the_old_sixty_second_window(monkeypatch, tmp_path):
+    """The TTL was 60s, so an idle chat paid the cold probe again on its next
+    message: a call 70s after the last one cost 1.24s against 0.040s
+    unsandboxed. Correctness does not rest on the TTL, but the cost does, and
+    without this the constant can be lowered again with every suite green.
+    """
+    from core.inference import sandbox_probe
+
+    assert sandbox_probe._CACHE_TTL_SECONDS >= 600, (
+        "the probe TTL is back under 10 minutes; an idle chat pays the cold "
+        "probe again on its next message"
+    )
+
+    calls = []
+
+    class Backend:
+        BACKEND_NAME = "ttl-probe"
+
+        @staticmethod
+        def prepare(plan):
+            calls.append(plan)
+            raise AssertionError("the probe should not have re-run inside the TTL")
+
+    sandbox_probe.reset_probe_cache()
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(sandbox_probe.time, "monotonic", lambda: clock["now"])
+
+    # Seed the cache directly: this is about expiry, not about probing.
+    from core.inference import os_sandbox as _os_sandbox
+    key = (Backend.BACKEND_NAME, _os_sandbox._runtime_identity())
+    sandbox_probe._cache[key] = (
+        clock["now"] + sandbox_probe._CACHE_TTL_SECONDS, True, "seeded",
+    )
+
+    clock["now"] += 70.0  # the window that used to have expired
+    available, reason = sandbox_probe.probe(Backend)
+    assert (available, reason) == (True, "seeded")
+    assert calls == [], "the probe re-ran 70s later, which is the cost this fixed"

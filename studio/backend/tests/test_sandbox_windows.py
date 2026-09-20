@@ -203,3 +203,73 @@ def test_cleanup_reconciles_the_container(monkeypatch, plan):
     prepared = sandbox_windows.prepare(plan)
     prepared.cleanup()
     assert len(called) == 1
+
+
+def test_the_windows_system_roots_are_granted_read_only(monkeypatch, tmp_path):
+    """MXC grants nothing implicitly: "Omitted = no filesystem access beyond the
+    default sandbox root". Without these, python.exe cannot resolve ntdll or the
+    CRT and the launch fails before the payload runs. Guarded because the whole
+    grant can be dropped and every suite still passes on a non-Windows box.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    (tmp_path / "System32").mkdir()
+
+    roots = sandbox_windows._readonly_roots(str(tmp_path / "workdir"))
+
+    assert str(tmp_path) in roots, "the Windows system root is not granted"
+    assert str(tmp_path / "System32") in roots, "System32 is not granted"
+
+
+def test_the_system_roots_are_never_writable(monkeypatch, tmp_path):
+    """Read-only is the whole point: this widens what a tool call can READ, and
+    must not widen what it can write."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    (tmp_path / "System32").mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+
+    plan = ToolLaunchPlan(
+        argv = ("python.exe", "-c", "pass"), workdir = str(workdir), env = {},
+        requested_mode = "required",
+    )
+    filesystem = sandbox_windows.build_policy(plan, str(workdir), "t")["filesystem"]
+
+    assert str(tmp_path) not in filesystem["readwritePaths"]
+    assert str(tmp_path / "System32") not in filesystem["readwritePaths"]
+
+
+def test_windows_gets_the_environment_it_needs_to_start_a_process(monkeypatch):
+    """MXC replaces the environment rather than layering onto it, so whatever
+    the policy carries is the whole environment. A plan env without SystemRoot
+    leaves the interpreter unable to initialise, which looks exactly like
+    confinement from the outside."""
+    monkeypatch.setenv("SystemRoot", "C:\\Windows")
+    monkeypatch.setenv("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
+
+    # Through build_policy, not the helper directly: testing the helper alone
+    # leaves the WIRING unguarded, and the wiring is the part that can be
+    # dropped by a refactor while every assertion still passes.
+    plan = ToolLaunchPlan(
+        argv = ("python.exe", "-c", "pass"),
+        workdir = "C:\\work",
+        env = {"PATH": "C:\\Windows\\System32"},
+        requested_mode = "required",
+    )
+    env = sandbox_windows.build_policy(plan, "C:\\work", "t")["process"]["env"]
+
+    assert "SystemRoot=C:\\Windows" in env
+    assert "COMSPEC=C:\\Windows\\System32\\cmd.exe" in env
+    assert "PATH=C:\\Windows\\System32" in env
+
+
+def test_a_caller_supplied_value_wins_over_the_host(monkeypatch):
+    """Filled in only when absent, so a deliberately overridden value still
+    wins and the sanitized env tools.py built is not quietly undone."""
+    monkeypatch.setenv("SystemRoot", "C:\\Windows")
+
+    env = sandbox_windows._policy_environment({"SystemRoot": "D:\\Custom"})
+
+    assert "SystemRoot=D:\\Custom" in env
+    assert "SystemRoot=C:\\Windows" not in env
