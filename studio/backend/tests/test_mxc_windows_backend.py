@@ -145,6 +145,7 @@ def test_selected_python_spelling_is_preserved_in_trusted_policy(monkeypatch, tm
     assert request["config"]["processContainer"]["ui"]["isolation"] == "container"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "requires Windows MXC launch routing")
 def test_dacl_refusal_after_successful_probe_is_never_replayed(monkeypatch, tmp_path):
     from core.inference import sandbox_windows_mxc
 
@@ -212,6 +213,7 @@ def test_capability_probe_is_single_flight_and_keyed_by_runtime(monkeypatch, tmp
     assert len(calls) == 2
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "requires Windows MXC launch routing")
 def test_runner_replacement_after_probe_is_refused_before_spawn(monkeypatch, tmp_path):
     from core.inference import sandbox_windows_mxc
 
@@ -281,6 +283,7 @@ def test_wsl_bash_is_refused_before_execution(monkeypatch, tmp_path):
         mxc_policy.build_launch_request(plan)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "requires Windows junction semantics")
 def test_workdir_junction_escape_is_refused(monkeypatch, tmp_path):
     from core.inference import mxc_policy
 
@@ -345,6 +348,7 @@ def test_workdir_hard_link_to_outside_object_is_refused(monkeypatch, tmp_path):
         "C:\\workdir\\e\u0301",
     ],
 )
+@pytest.mark.skipif(sys.platform != "win32", reason = "requires Windows path semantics")
 def test_unsupported_windows_path_namespaces_are_refused(monkeypatch, path):
     from core.inference import mxc_policy
     monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
@@ -438,6 +442,7 @@ def test_launch_failure_is_not_replayed(monkeypatch, tmp_path):
     assert calls == ["mxc"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "requires Windows MXC launch routing")
 def test_auto_spawn_failure_before_dispatch_uses_software_safeguards(monkeypatch, tmp_path):
     from core.inference import mxc_adapter, sandbox_windows_mxc
 
@@ -516,6 +521,7 @@ def test_auto_cancellation_before_dispatch_never_replays_on_host(monkeypatch, tm
     assert prepared.execution_record.cleanup_status == "complete"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "requires Windows MXC launch routing")
 def test_auto_failure_after_possible_dispatch_never_replays_on_host(monkeypatch, tmp_path):
     from core.inference import mxc_adapter, sandbox_windows_mxc
 
