@@ -279,6 +279,18 @@ def _label_in_name(name: str, label: str) -> bool:
     return re.search(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})", name) is not None
 
 
+def _split_folder(lowered_path: str, labels: tuple[str, ...]) -> bool:
+    """A folder standing for this split, qualified or not: train, train_a, en-train.
+
+    The loader reads a separator-qualified folder as the split too
+    (`local_options._DIR_NAME_KEYWORD_PATTERNS`), so an exact component match
+    would leave train_a ranking as nothing.
+    """
+    return any(
+        _label_in_name(part, label) for part in lowered_path.split("/")[:-1] for label in labels
+    )
+
+
 def _split_labels(split_lower: str) -> tuple[str, ...]:
     """The names `datasets` accepts for this split: dev is validation, training is train."""
     for canonical, aliases in _SPLIT_KEYWORDS.items():
@@ -296,7 +308,7 @@ def _split_rank(path: str, split_lower: str) -> int:
     """
     lowered = path.lower()
     labels = _split_labels(split_lower)
-    if any(f"/{label}/" in f"/{lowered}" for label in labels):
+    if _split_folder(lowered, labels):
         return 0
     # Only the final extension comes off: questions.train.parquet keeps its split.
     stem = Path(lowered).stem
@@ -412,13 +424,14 @@ def _widened_declared_pattern(
     wanted = set(declared_files)
     # The split may be written into the file names or into the folders between
     # here and them, so try both before giving up on keeping it.
-    for candidate in (
-        f"{base}/*{split_lower}*{suffix}",
-        f"{prefix}**/*{split_lower}*/**/*{suffix}",
-        # Declared files that say nothing about the split may still share a name
-        # the neighbouring splits do not, as data/part-a beside data/part-b.
-        f"{prefix}{_common_name_prefix(declared_files)}*{suffix}",
-    ):
+    # Whichever of the split's names the files use: a validation set may well be
+    # declared as dev-*.parquet.
+    candidates = [f"{base}/*{label}*{suffix}" for label in _split_labels(split_lower)]
+    candidates += [f"{prefix}**/*{label}*/**/*{suffix}" for label in _split_labels(split_lower)]
+    # Declared files that say nothing about the split may still share a name the
+    # neighbouring splits do not, as data/part-a beside data/part-b.
+    candidates.append(f"{prefix}{_common_name_prefix(declared_files)}*{suffix}")
+    for candidate in candidates:
         if set(_files_under_patterns([candidate], data_files)) == wanted:
             return candidate
     # Nothing narrower fits, so cover the folder: reading a neighbour is
@@ -469,7 +482,7 @@ def _resolve_seed_hf_path(
         base = f"{base}/{parent}"
 
     split_lower = split.lower()
-    if f"/{split_lower}/" not in f"/{selected.lower()}":
+    if not _split_folder(selected.lower(), _split_labels(split_lower)):
         stem = Path(selected).name[: -len(suffix)]
         for candidate in _candidate_patterns(stem, suffix, split_lower):
             if _pattern_fits_the_split(scoped, parent, candidate, split_lower):

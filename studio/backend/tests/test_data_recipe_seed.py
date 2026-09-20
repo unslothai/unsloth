@@ -664,6 +664,44 @@ def test_seed_hf_path_follows_the_split_aliases_datasets_uses(
     assert seed_route._resolve_seed_hf_path("org/repo", files, split) == expected
 
 
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        # A folder qualified by a separator is the split folder too.
+        (["train_a/0.parquet", "test/0.parquet"], "datasets/org/repo/train_a/**/*.parquet"),
+        (
+            ["data/train/0.parquet", "data/test/0.parquet"],
+            "datasets/org/repo/data/train/**/*.parquet",
+        ),
+        # "pretrain" is a different word, so train/ still wins.
+        (["pretrain/0.parquet", "train/0.parquet"], "datasets/org/repo/train/**/*.parquet"),
+    ],
+)
+def test_seed_hf_path_reads_a_qualified_split_folder(monkeypatch, tmp_path, files, expected):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train") == expected
+
+
+def test_seed_hf_path_widens_through_an_alias_named_split(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["sets/a/dev-0.parquet", "sets/b/dev-0.parquet", "sets/a/train-0.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_files": [
+                {"split": "validation", "path": ["sets/a/dev-*.parquet", "sets/b/dev-*.parquet"]},
+                {"split": "train", "path": "sets/a/train-*.parquet"},
+            ],
+        }
+    ]
+    # The files say dev, not validation, so the widened form has to say dev too
+    # or it takes the train shard with it.
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "validation", None, configs)
+        == "datasets/org/repo/sets/**/*dev*.parquet"
+    )
+
+
 def test_seed_hf_path_counts_a_digit_as_a_label_separator(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     # The loader's own separators include digits, so train1 is train.
