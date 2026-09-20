@@ -520,41 +520,61 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
     from hub.services.datasets import formatting
     from picker import service as picker_module
 
-    for source, call, fetches_at in (
-        (inspect.getsource(download_lifecycle), "(hf_token, repo_id, repo_type)", "proc = spawn()"),
+    # Each of these WRAPS its fetch, rather than writing beside it: the record has to exist
+    # before the call, because a download that dies half way has still filled the cache, and
+    # it has to be taken back when the call raised having left nothing, or a 404 withholds a
+    # repo a later anonymous fetch fills.
+    for source, writer, call, fetches_at in (
+        (
+            inspect.getsource(download_lifecycle),
+            "note_repo_fetched_with_a_request_token",
+            "(hf_token, repo_id, repo_type)",
+            "proc = spawn()",
+        ),
         (
             inspect.getsource(formatting.check_format_response),
+            "recording_a_request_token_fetch",
             "(\n                            hf_token, request.dataset_name",
             "load_dataset(**load_kwargs)",
         ),
-        (inspect.getsource(picker_module), "(hf_token, resolved", "path = hf_hub_download("),
+        (
+            inspect.getsource(picker_module),
+            "recording_a_request_token_fetch",
+            "(hf_token, resolved",
+            "path = hf_hub_download(",
+        ),
+        (
+            inspect.getsource(model_config_module),
+            "recording_a_request_token_fetch",
+            "(token, model_name",
+            "AutoConfig.from_pretrained(",
+        ),
     ):
-        assert f"note_repo_fetched_with_a_request_token{call}" in source
-        assert source.index("note_repo_fetched_with_a_request_token") < source.index(
+        assert f"{writer}{call}" in source
+        assert source.index(writer) < source.index(
             fetches_at
         ), "the fetch was recorded only after making it"
 
     config_read = inspect.getsource(model_config_module)
-    assert "note_repo_fetched_with_a_request_token(token, model_name" in config_read
     # And only where the call can actually fetch: both of these resolve an already-cached file
     # without asking the Hub, so an unconditional record marks a repo the cache may have held
     # anonymously and withholds it from the tokenless offline caller.
     assert "not _config_json_already_cached(model_name, revision)" in config_read
-    assert "if not _this_file_was_already_here(rel):" in inspect.getsource(picker_module)
+    assert "if not _this_file_was_already_here(rel)" in inspect.getsource(picker_module)
     # Same rule on the preview: the record sits BELOW the prefer-local branches, which read
     # the cache or 404 without a round trip.
     preview = inspect.getsource(formatting.check_format_response)
     assert preview.index("_LOCAL_CACHE_MISS_ERROR_CODE") < preview.index(
-        "note_repo_fetched_with_a_request_token"
+        "recording_a_request_token_fetch"
     ), "a cache-only preview records a fetch it never made"
     # And below the listing call: `list_repo_files` fetches nothing into the cache, so a 404 or
     # an outage there used to leave a record for a fetch that never happened, which the
     # first-writer rule then keeps forever.
     assert preview.index("list_repo_files") < preview.index(
-        "note_repo_fetched_with_a_request_token"
+        "recording_a_request_token_fetch"
     ), "a failed listing records a fetch that never started"
     # Both download call sites, since tier 2 reaches the network whether or not tier 1 ran.
-    assert preview.count("note_repo_fetched_with_a_request_token") == 2
+    assert preview.count("recording_a_request_token_fetch") == 2
 
 
 def test_every_credentialed_fetch_is_recorded_not_only_a_foreign_one(monkeypatch, writes):
@@ -941,8 +961,10 @@ def test_a_credentialed_config_read_records_only_what_it_could_fetch(
     repo the cache may have held anonymously, which then withholds it from the tokenless offline
     caller this path exists for."""
     recorded: list = []
+    # Patched on hf_tokens, not on the caller: the call goes through
+    # `recording_a_request_token_fetch`, so this drives the real context manager.
     monkeypatch.setattr(
-        model_config_module,
+        hf_tokens,
         "note_repo_fetched_with_a_request_token",
         lambda token, repo, kind: recorded.append((token, repo, kind)),
     )
@@ -976,7 +998,7 @@ def test_a_dataset_preview_records_only_where_it_could_fetch(
 
     recorded: list = []
     monkeypatch.setattr(
-        formatting,
+        hf_tokens,
         "note_repo_fetched_with_a_request_token",
         lambda token, repo, kind: recorded.append((token, repo, kind)),
     )
@@ -1116,6 +1138,42 @@ def test_a_repo_two_different_credentials_fetched_belongs_to_neither(provenance)
         _filled_by(HOST_CREDENTIAL, "acme/shared") is False
     ), "a repo more than one credential fetched was claimed by one of them"
     assert _fetched_with_a_token("acme/shared") is True
+
+
+@pytest.mark.parametrize(
+    ("landed", "kept"),
+    [(False, False), (True, True)],
+    ids = ("nothing landed, so the record goes", "bytes landed, so the record stands"),
+)
+def test_a_fetch_that_raised_keeps_its_record_only_if_it_wrote_something(
+    monkeypatch, provenance, landed, kept
+):
+    """The write has to happen BEFORE the call, since a download that dies half way has still
+    filled the cache and an unrecorded repo reads later as "nobody needed a credential". The
+    cost is a 404 or an outage leaving a record for a fetch that never happened, which the
+    first-writer rule then keeps, so the record is taken back exactly when the disk says the
+    call moved nothing."""
+    _hf_state(monkeypatch, present = landed)
+
+    with pytest.raises(RuntimeError):
+        with hf_tokens.recording_a_request_token_fetch(ONE_OFF, "acme/attempted", "model"):
+            assert _key("acme/attempted") in provenance, "the record must exist during the call"
+            raise RuntimeError("404 from the hub")
+
+    assert (_key("acme/attempted") in provenance) is kept
+
+
+def test_a_take_back_leaves_another_writers_record_alone(monkeypatch, provenance):
+    """Only while it is still the record this call wrote: a second credential collapsing the
+    attribution replaces the entry, and taking that one back would drop somebody else's."""
+    _hf_state(monkeypatch, present = False)
+
+    record = hf_tokens.note_repo_fetched_with_a_request_token(ONE_OFF, "acme/shared", "model")
+    _noted(None, "acme/shared")
+    assert provenance[_key("acme/shared")]["by"] is None
+
+    hf_tokens.forget_a_fetch_that_moved_nothing(record, "acme/shared", "model")
+    assert _key("acme/shared") in provenance, "a collapsed record was removed by the first writer"
 
 
 def test_a_provenance_write_that_failed_is_not_read_as_nothing_to_record(monkeypatch):
@@ -1477,8 +1535,11 @@ def test_a_flood_does_not_take_the_offline_fallback_away_from_everyone_else(monk
     assert _reads(OPERATOR_TOKEN, ON_DISK) is True
 
 
-# `load_model_config`'s anonymous branch closes an ONLINE read the Hub answered no to. Silence
-# is not that answer: reading it as one refused a PUBLIC repo already on disk.
+# `load_model_config`'s anonymous branch closes a read the Hub did not say yes to. Silence is
+# not a yes EITHER: a Hub that cannot be asked leaves the metadata request failing too, and
+# transformers then serves the cached config.json. What keeps a downloaded PUBLIC model from
+# disappearing on a DNS blip is the provenance rule underneath, not the reachability of the
+# probe: nothing is refused unless a credential could have filled that cache.
 
 
 def _anonymous_config_read(monkeypatch, tmp_path, probe, env_offline):
@@ -1493,15 +1554,25 @@ def _anonymous_config_read(monkeypatch, tmp_path, probe, env_offline):
 @pytest.mark.parametrize(
     ("host_holds_a_credential", "probe", "env_offline", "served"),
     [
-        # A DNS blip must not take a downloaded PUBLIC model away.
-        (True, _ProbeUnreachable(), False, True),
+        # Unaskable and online is the same position as unaskable and offline: the credential
+        # this host holds could have filled that cache, and the Hub is not there to say.
+        (True, _ProbeUnreachable(), False, False),
+        # BOUNDARY. The DNS blip that must NOT take a downloaded model away: no credential on
+        # this host, so nothing could have fetched it under one.
+        (False, _ProbeUnreachable(), False, True),
         # BOUNDARY. The reverse hole #10264 left open: an answered no must stay refused.
         (True, False, False, False),
         # BOUNDARY. Declared offline is narrowed on purpose: either could have filled the cache.
         (True, _ProbeUnreachable(), True, False),
         (False, _ProbeUnreachable(), True, True),
     ],
-    ids = ("unaskable-online", "an-answered-no", "declared-offline", "offline-no-credential"),
+    ids = (
+        "unaskable-online",
+        "unaskable-online-no-credential",
+        "an-answered-no",
+        "declared-offline",
+        "offline-no-credential",
+    ),
 )
 def test_an_anonymous_cached_config_read_turns_only_on_an_answered_no(
     monkeypatch, tmp_path, host_holds_a_credential, probe, env_offline, served

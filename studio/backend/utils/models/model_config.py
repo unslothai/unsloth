@@ -17,8 +17,10 @@ from utils.paths import (
     resolve_output_dir,
     resolve_export_dir,
 )
+from contextlib import nullcontext
+
 from hub.utils.hf_tokens import (
-    note_repo_fetched_with_a_request_token,
+    recording_a_request_token_fetch,
     ANONYMOUS_CACHE_IDENTITY,
     cached_read_refused,
     hub_answered_no,
@@ -566,24 +568,20 @@ def load_model_config(
         # Passed as the sentinel rather than via without_hf_auth(), which mutates HF_TOKEN
         # process-wide and would strip a concurrent download's credential.
         # token=False denies auth, not the cache: AutoConfig resolves a cached config.json
-        # without ever consulting the credential, so the read is gated here. The second clause
-        # keeps that narrow: offline or cache-only, the provenance rule decides; online, only an
-        # ANSWERED refusal refuses, since treating a failed probe as one denies a PUBLIC repo
-        # already on disk.
-        if (
-            not is_local_path(model_name)
-            and cached_read_refused(
-                token,
-                repo_id = model_name,
-                is_cached = lambda: _config_json_already_cached(model_name, revision),
-                # The caller's own cache-only contract, as in the explicit-token gate below.
-                offline = bool(local_files_only),
-            )
-            and (
-                local_files_only
-                or _env_offline()
-                or hub_answered_no(token, repo_id = model_name, offline = bool(local_files_only))
-            )
+        # without ever consulting the credential, so the read is gated here. One condition, not
+        # two: an "online, so only an ANSWERED refusal refuses" clause used to sit beside this
+        # one, and it discarded exactly the verdict the unaskable fallback exists to produce. A
+        # Hub that cannot be asked -- a mirror without /auth-check, a timeout -- leaves the
+        # metadata request failing too, and transformers then serves the cached config.json,
+        # which is the private-repo read this gate is for. A public repo on disk is not the
+        # cost: the fallback inside `cached_read_refused` refuses only where a credential could
+        # have filled that cache in the first place.
+        if not is_local_path(model_name) and cached_read_refused(
+            token,
+            repo_id = model_name,
+            is_cached = lambda: _config_json_already_cached(model_name, revision),
+            # The caller's own cache-only contract, as in the explicit-token gate below.
+            offline = bool(local_files_only),
         ):
             raise OSError(
                 f"config.json for {model_name} is not available to an unauthorized caller"
@@ -619,16 +617,24 @@ def load_model_config(
         # AutoConfig resolves an already-cached config without asking the Hub, and recording that
         # marks a repo the cache may have held anonymously all along, which then withholds it
         # from the tokenless offline caller this whole path exists for.
-        if not local_files_only and not _config_json_already_cached(model_name, revision):
-            note_repo_fetched_with_a_request_token(token, model_name, "model")
-        return AutoConfig.from_pretrained(
-            model_name,
-            trust_remote_code = trust_remote_code,
-            token = token,
-            local_files_only = local_files_only,
-            cache_dir = active_hf_hub_cache(),
-            **revision_kwargs,
+        # Written BEFORE the call, since a fetch that dies half way has still filled the
+        # cache, and taken back by the context manager when the call raised having left
+        # nothing on disk -- a 404, a rejected token or an outage otherwise leaves a record
+        # for a fetch that never happened, which the first-writer rule then keeps.
+        recording = (
+            recording_a_request_token_fetch(token, model_name, "model")
+            if not local_files_only and not _config_json_already_cached(model_name, revision)
+            else nullcontext()
         )
+        with recording:
+            return AutoConfig.from_pretrained(
+                model_name,
+                trust_remote_code = trust_remote_code,
+                token = token,
+                local_files_only = local_files_only,
+                cache_dir = active_hf_hub_cache(),
+                **revision_kwargs,
+            )
 
     if not use_auth:
         # No auth, for public model checks

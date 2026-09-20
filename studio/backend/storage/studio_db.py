@@ -4477,6 +4477,7 @@ def upsert_app_setting_map_entry(
     coupled_fields: tuple[tuple[str, ...], ...] = (),
     keep_first_writer: bool = False,
     ambiguous_field: str | None = None,
+    delete_if_entry_equals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued app setting,
     atomically under BEGIN IMMEDIATE so concurrent writers to other sub-entries cannot drop each
@@ -4497,7 +4498,11 @@ def upsert_app_setting_map_entry(
     the incoming one. The comparison happens inside this transaction on purpose: a caller that
     read the map first and decided outside it loses the race it is there to detect, since two
     writers can both read "absent" and then each write its own value, and the last one wins with
-    an attribution that is no longer true."""
+    an attribution that is no longer true.
+
+    ``delete_if_entry_equals`` removes the entry only when it is still exactly the one the
+    caller wrote, which is how a writer takes back a record for a call that then failed without
+    taking back a later writer's."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -4535,6 +4540,11 @@ def upsert_app_setting_map_entry(
         elif entry_value:
             current[entry_key] = entry_value
         else:
+            if delete_if_entry_equals is not None and (
+                current.get(entry_key) != delete_if_entry_equals
+            ):
+                conn.rollback()
+                return current
             current.pop(entry_key, None)
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(

@@ -7,13 +7,14 @@ import json
 import logging
 import os
 import re
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
 from hub.utils.hf_tokens import (
     cache_reads_authorized,
     cached_read_refused,
-    note_repo_fetched_with_a_request_token,
+    recording_a_request_token_fetch,
 )
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
@@ -467,14 +468,21 @@ def read_default_chat_template(
                 # Lands files in the hub cache under what may be a one-off token, but only when
                 # it really fetches: hf_hub_download returns a cached file without asking the
                 # Hub, and recording that withholds a repo the cache may have held anonymously.
-                if not _this_file_was_already_here(rel):
-                    note_repo_fetched_with_a_request_token(hf_token, resolved, "model")
-                path = hf_hub_download(
-                    resolved,
-                    rel,
-                    token = hf_token,
-                    cache_dir = active_hf_hub_cache(),
+                # Around the call, not before it: a download that dies half way has still
+                # written, while one that 404s or is rejected leaves nothing, and the context
+                # manager takes the record back in exactly that case.
+                recording = (
+                    recording_a_request_token_fetch(hf_token, resolved, "model")
+                    if not _this_file_was_already_here(rel)
+                    else nullcontext()
                 )
+                with recording:
+                    path = hf_hub_download(
+                        resolved,
+                        rel,
+                        token = hf_token,
+                        cache_dir = active_hf_hub_cache(),
+                    )
                 return _read_bounded_text(Path(path), MAX_TEMPLATE_METADATA_BYTES)
             except Exception:
                 return None

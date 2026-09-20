@@ -10,6 +10,7 @@ import hmac
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from typing import Iterable, Literal, MutableMapping, Optional, Union
 
 logger = logging.getLogger(__name__)
@@ -435,23 +436,26 @@ def note_repo_fetched_with_a_request_token(
     token: HfTokenArg,
     repo_id: str,
     repo_type: Optional[str] = "model",
-) -> None:
+) -> "Optional[dict]":
     """Record that *repo_id* was fetched under a credential, and WHICH one. Never raises.
 
     Over-broad on purpose: an extra record withholds bytes the caller can still fetch, a missing
     one leaks a private repo. ``by`` is ``None`` when the fetch cannot be attributed to exactly
     one credential, which authorizes nobody.
+
+    Returns the entry it wrote, for a caller that may have to take it back; None when it wrote
+    nothing, or when the entry that stands is an earlier writer's.
     """
     if is_anonymous(token) or not repo_id:
-        return
+        return None
     if token is not None and (not isinstance(token, str) or not token):
-        return
+        return None
     try:
         fetched_by: Optional[str] = None
         if token is None:
             known, host_tokens = _host_hf_credentials()
             if known and not host_tokens:
-                return
+                return None
             if known and len(set(host_tokens)) == 1:
                 fetched_by = _credential_identity(host_tokens[0])
         else:
@@ -467,19 +471,25 @@ def note_repo_fetched_with_a_request_token(
             # fetch is not.
             if len(recorded) >= _REQUEST_TOKEN_REPOS_MAX:
                 logger.debug("the request-token provenance map is full; not recording %s", key)
-                return
+                return None
         # The first record stands, and a second credential claiming what the first filled
         # collapses the attribution. Decided INSIDE the write's transaction: two requests with
         # different credentials for the same uncached repo both read "absent" otherwise, and the
         # last writer then stores its own identity where the truth is "two of them could have".
-        _as_owner(
+        entry = {"at": time.time(), "by": fetched_by}
+        stored = _as_owner(
             upsert_app_setting_map_entry,
             _REQUEST_TOKEN_REPOS_SETTING_KEY,
             key,
-            {"at": time.time(), "by": fetched_by},
+            entry,
             keep_first_writer = True,
             ambiguous_field = "by",
         )
+        # Returned so the caller can take it back if the fetch it was written for turns out to
+        # have moved nothing; only when the stored entry IS ours, since an earlier writer's
+        # record is not this call's to remove.
+        if isinstance(stored, dict) and stored.get(key) == entry:
+            return entry
     except Exception:  # noqa: BLE001 -- a download must never fail on its own bookkeeping
         logger.debug("could not record the credential a download used", exc_info = True)
         # The read side must not take this missing record for the absence an unfetched repo leaves.
@@ -487,6 +497,58 @@ def note_repo_fetched_with_a_request_token(
             _unrecorded_fetches.add(_request_token_repo_key(repo_id, repo_type))
         except Exception:  # noqa: BLE001 -- bookkeeping about bookkeeping, still never raises
             logger.debug("could not note the provenance write that failed", exc_info = True)
+    return None
+
+
+def forget_a_fetch_that_moved_nothing(
+    record: "Optional[dict]",
+    repo_id: str,
+    repo_type: Optional[str] = "model",
+) -> None:
+    """Take back ``record`` when the call it was written for failed leaving NOTHING on disk.
+
+    Written before the call rather than after it on purpose: a fetch that dies half way has
+    still filled the cache, and an unrecorded repo reads later as "nobody needed a credential
+    for this". The cost is the other direction -- a 404, a rejected token or an outage leaves a
+    record for a fetch that never happened, the first-writer rule keeps it, and a repo a later
+    anonymous download fills is then withheld from the tokenless offline caller. So the record
+    is taken back only where the disk says the call really did move nothing, and only while it
+    is still the record this call wrote.
+    """
+    if not record or not repo_id:
+        return
+    try:
+        if _repo_present_on_disk(repo_id, repo_type or "model"):
+            return
+        from storage.studio_db import upsert_app_setting_map_entry
+
+        key = _request_token_repo_key(repo_id, repo_type)
+        _as_owner(
+            upsert_app_setting_map_entry,
+            _REQUEST_TOKEN_REPOS_SETTING_KEY,
+            key,
+            None,
+            delete_if_entry_equals = record,
+        )
+        _unrecorded_fetches.discard(key)
+    except Exception:  # noqa: BLE001 -- bookkeeping, and the over-broad record is the safe side
+        logger.debug("could not take back a provenance record", exc_info = True)
+
+
+@contextmanager
+def recording_a_request_token_fetch(
+    token: HfTokenArg,
+    repo_id: str,
+    repo_type: Optional[str] = "model",
+):
+    """Record the fetch around the call that performs it, and take the record back if that call
+    raised without leaving anything on disk. See ``forget_a_fetch_that_moved_nothing``."""
+    record = note_repo_fetched_with_a_request_token(token, repo_id, repo_type)
+    try:
+        yield
+    except BaseException:
+        forget_a_fetch_that_moved_nothing(record, repo_id, repo_type)
+        raise
 
 
 _REQUEST_TOKEN_REPOS_MAX = 4096
