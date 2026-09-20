@@ -84,6 +84,7 @@ export {
 export { Shortcut } from "./components/shortcut";
 export {
   currentBinding,
+  shortcutMatchingEvent,
   useKeyboardShortcutsStore,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";

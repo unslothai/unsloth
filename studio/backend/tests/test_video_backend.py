@@ -250,6 +250,11 @@ class _FakeTransformer:
 # experts. The MoE __call__ carries guidance_scale_2 and the single-DiT one omits it, so the cfg2 gate is exercised.
 
 
+class FirstBlockCacheConfig:  # noqa: N801 - the name diffusers exports, and what the cache layer matches on
+    def __init__(self, threshold = None) -> None:
+        self.threshold = threshold
+
+
 class _FakeWanDiT:
     """One Wan denoiser. Records which optimisation helpers touched it (the loader
     applies each once per expert on an MoE load), so a test can prove BOTH experts
@@ -266,9 +271,18 @@ class _FakeWanDiT:
 
     def enable_cache(self, config) -> None:
         self.cache_config = config
+        # diffusers records the live config on the module itself, and the cache layer reads THAT
+        # (never our own marker) to tell a cache it installed from one adopted through the
+        # low-level apply_first_block_cache. A fake that skips it models a transformer whose
+        # teardown can never be accounted for, which is not what a real DiT looks like after a
+        # successful enable_cache.
+        self._cache_config = config
+        self.is_cache_enabled = True
 
     def disable_cache(self) -> None:
         self.cache_config = None
+        self._cache_config = None
+        self.is_cache_enabled = False
 
     def set_attention_backend(self, backend) -> None:
         self.attention = backend
@@ -633,7 +647,10 @@ def fake_runtime(monkeypatch):
     diffusers.WanTransformer3DModel = _FakeTransformer
     diffusers.HunyuanVideo15Pipeline = _FakeHV15Pipeline
     diffusers.HunyuanVideo15Transformer3DModel = _FakeTransformer
-    diffusers.FirstBlockCacheConfig = lambda threshold = None: ("fbcache", threshold)
+    # A CLASS, and named the way diffusers names it: the cache layer matches on
+    # type(...).__name__ to tell its own FBCache config from a MagCache / PAB one, so a lambda
+    # returning a tuple reads as "some other cache" and makes the teardown unverifiable.
+    diffusers.FirstBlockCacheConfig = FirstBlockCacheConfig
 
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)

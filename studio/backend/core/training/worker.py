@@ -716,6 +716,21 @@ def _load_embedding_hf_dataset(
     return dataset
 
 
+def _pre_detect_load_in_4bit(config: dict, model_load_target: str, hf_token: str | None) -> bool:
+    """The mode the real load will use, so pre-detect reads the repo the loader fetches.
+
+    The load calls _effective_training_load_in_4bit, which also REFUSES an exact-resource
+    4-bit resume once the sidecar is active. That refusal belongs to the load, not to a
+    metadata read, so the flip is read directly here and the refusal is left to raise where
+    it already does.
+    """
+    if not bool(config.get("load_in_4bit", True)):
+        return False
+    from utils.transformers_version import latest_tier_active_for
+
+    return not latest_tier_active_for(model_load_target, hf_token)
+
+
 def _pre_detect_training_model(
     trainer,
     config: dict,
@@ -735,6 +750,7 @@ def _pre_detect_training_model(
         model_load_name = model_load_name,
         local_files_only = local_files_only,
         model_revision = model_revision,
+        load_in_4bit = _pre_detect_load_in_4bit(config, model_load_name, hf_token),
     )
     _check_finetune_targets_after_detect(trainer, config)
 
@@ -884,6 +900,16 @@ def _reload_dataset_with_remote_model_tokenizer(
     return reload_dataset()
 
 
+def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
+    """unsloth.models.loader._strip_unsloth_bnb_4bit_suffix, copied rather than imported: that
+    module pulls in torch, and this runs before the worker is allowed to."""
+    stripped = model_name
+    for suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
+        if len(stripped) >= len(suffix) and stripped.lower().endswith(suffix):
+            stripped = stripped[: -len(suffix)]
+    return stripped
+
+
 def _model_load_security_error(config: dict, load_target: str, hf_token: str | None) -> dict | None:
     from utils.models.model_config import get_base_model_from_lora_identifier
     from utils.security import (
@@ -900,6 +926,66 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
             requested_targets.append(base_model)
     except Exception as error:
         logger.debug("Could not resolve LoRA base for security scan: %s", error)
+
+    # Scan the repo the loader SUBSTITUTES too. The mapper can send the download somewhere
+    # other than the name the user picked, and scanning only the picked name would let the
+    # bytes that are actually fetched, and any custom code they carry, past both the malware
+    # scan and the trust_remote_code consent fingerprint.
+    #
+    # BOTH modes, and nothing heavier than utils.models.unsloth_mirror. This runs early in
+    # run_training_process, after the MLX fast path's "before any torch import" guarantee and
+    # before the Windows ROCm torchao stub, so it must not reach anything that imports torch
+    # or unsloth: not core.training.trainer, and not ALLOW_BITSANDBYTES. The 4-bit and 16-bit
+    # candidates together are a superset of whichever the run picks, which is the safe
+    # direction for a scan and needs no load mode at all.
+    #
+    # And only where the TORCH loader runs. _run_mlx_training hands the name straight to
+    # FastMLXModel.from_pretrained and _run_embedding_training to SentenceTransformer, and
+    # neither consults this mapper, so on those paths a mirror is a repo that will never be
+    # fetched: scanning it can block a valid run on an unrelated repo's files and fingerprints
+    # remote-code consent against something that is never loaded. core.training.training is
+    # safe to import here - the MLX fast path above already imports it for its own guard.
+    try:
+        from core.training.training import should_use_mlx_training_backend
+        from utils.models.unsloth_mirror import unsloth_public_mirror
+
+        torch_loader_path = not config.get("is_embedding", False) and (
+            not should_use_mlx_training_backend()
+        )
+        if (
+            torch_loader_path
+            and not _model_local_files_only(config)
+            and not config.get("model_revision")
+        ):
+            # The fallbacks only ever run DOWNWARDS: an unusable bitsandbytes or an active
+            # latest-transformers sidecar turns a 4-bit request into a 16-bit load, and
+            # effective_training_load_in_4bit returns False outright for a config that is
+            # already False (full finetunes among them). So a configured 16-bit load can never
+            # become 4-bit, and scanning the 4-bit mirror there would let an unused repo's
+            # findings block a run whose real repo is clean.
+            _modes = (True, False) if config.get("load_in_4bit", True) else (False,)
+            # Every resolved seed, not just the picked name. For a remote LoRA adapter the
+            # loader takes peft_config.base_model_name_or_path and runs get_model_name over it
+            # (loader.py:756-765), so the base has a mirror of its own and that mirror is what
+            # gets downloaded. Expanding only the adapter id left it unscanned.
+            for _seed in list(dict.fromkeys(requested_targets)):
+                for _mode in _modes:
+                    mirrored = unsloth_public_mirror(_seed, _mode)
+                    if mirrored and mirrored != _seed:
+                        requested_targets.append(mirrored)
+                        # Where ALLOW_PREQUANTIZED_MODELS is false - ROCm Instinct on
+                        # bitsandbytes < 0.49.2, whose blocksize is 128 while our pre-quants use
+                        # 64 - loader.py:581 strips the 4-bit suffix off the name the mapper just
+                        # produced and downloads THAT repo. For a mapping that only exists in the
+                        # 4-bit direction it is the one repo that actually gets fetched, and
+                        # without it here its files bypass both the malware scan and the
+                        # remote-code consent fingerprint. Unlike a mode that cannot happen, this
+                        # repo really is loaded on a live configuration, so it belongs in the scan.
+                        stripped = _strip_unsloth_bnb_4bit_suffix(mirrored)
+                        if stripped != mirrored and stripped != _seed:
+                            requested_targets.append(stripped)
+    except Exception as error:  # noqa: BLE001
+        logger.debug("Could not resolve the mirror for the security scan: %s", error)
 
     from utils.utils import hf_env_offline
 
@@ -5057,6 +5143,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     log_frequency = config.get("log_frequency", 50)
 
     from core.training.trainer import _drop_hf_stdout_callbacks, _hf_stdout_progress_disabled
+    from core.training.training import apply_save_strategy
 
     training_args_kwargs = {
         "output_dir": output_dir,
@@ -5088,9 +5175,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     elif warmup_steps_val is not None and warmup_steps_val > 0:
         training_args_kwargs["warmup_steps"] = warmup_steps_val
 
-    if save_steps_val and save_steps_val > 0:
-        training_args_kwargs["save_steps"] = save_steps_val
-        training_args_kwargs["save_strategy"] = "steps"
+    apply_save_strategy(training_args_kwargs, save_steps_val)
 
     args = SentenceTransformerTrainingArguments(**training_args_kwargs)
 

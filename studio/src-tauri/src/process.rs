@@ -341,6 +341,7 @@ mod appimage_environment_tests {
 const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
 
 pub(crate) const STUDIO_RUNTIME_GATE_HANDOFF_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF";
+pub(crate) const STUDIO_RUNTIME_GATE_BUSY: &str = "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again.";
 const STUDIO_RUNTIME_GATE_ACQUIRE_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_ACQUIRE";
 
 #[cfg(windows)]
@@ -402,10 +403,7 @@ fn acquire_named_studio_runtime_launch_guard(
             unsafe {
                 let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
             }
-            Err(
-                "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
-                    .to_string(),
-            )
+            Err(STUDIO_RUNTIME_GATE_BUSY.to_string())
         }
         _ => {
             let error = std::io::Error::last_os_error();
@@ -520,26 +518,23 @@ fn acquire_file_studio_runtime_launch_guard(
     use std::os::fd::AsRawFd;
 
     std::fs::create_dir_all(home)
-        .map_err(|error| format!("Could not create the Studio runtime lock directory: {error}"))?;
+        .map_err(|error| format!("Could not create the Unsloth runtime lock directory: {error}"))?;
     let path = home.join(".studio-runtime.lock");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(&path)
-        .map_err(|error| format!("Could not open the Studio runtime lock: {error}"))?;
+        .map_err(|error| format!("Could not open the Unsloth runtime lock: {error}"))?;
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if result == 0 {
         return Ok(StudioManagedRuntimeLaunchGuard { file });
     }
     let error = std::io::Error::last_os_error();
     if error.kind() == std::io::ErrorKind::WouldBlock {
-        return Err(
-            "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
-                .to_string(),
-        );
+        return Err(STUDIO_RUNTIME_GATE_BUSY.to_string());
     }
-    Err(format!("Could not acquire the Studio runtime lock: {error}"))
+    Err(format!("Could not acquire the Unsloth runtime lock: {error}"))
 }
 
 #[cfg(unix)]
@@ -1191,6 +1186,38 @@ pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) 
     match handle {
         OwnedBackendHandle::Spawned { child, .. } => !matches!(child.try_wait(), Ok(Some(_))),
         OwnedBackendHandle::Adopted { pid, .. } => backend_pid_is_running(*pid),
+    }
+}
+
+/// Whether anything of ours COULD be on *port*, which is the question ABSENCE needs.
+///
+/// A handle we spawned names no port until a probe validates one, and for that whole window
+/// `owned_backend_on_port_is_running` calls our own starting backend somebody else's: right
+/// for presence, wrong here, since a refusal about a port we are about to bind proves nothing.
+pub(crate) fn owned_backend_could_bind_port(state: &BackendState, port: u16) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let handle = match proc.owned.as_mut() {
+        Some(handle) => handle,
+        None => return false,
+    };
+    match handle {
+        // A port it has not claimed yet is a port it may still claim.
+        OwnedBackendHandle::Spawned {
+            child,
+            reported_port,
+            ..
+        } => {
+            reported_port.is_none_or(|bound| bound == port)
+                && !matches!(child.try_wait(), Ok(Some(_)))
+        }
+        OwnedBackendHandle::Adopted {
+            port: owned_port,
+            pid,
+            ..
+        } => *owned_port == port && backend_pid_is_running(*pid),
     }
 }
 
@@ -6522,6 +6549,69 @@ mod owned_backend_liveness_tests {
     fn no_handle_at_all_is_not_a_managed_backend() {
         let state = new_backend_state();
         assert!(!owned_backend_on_port_is_running(&state, 8765));
+        assert!(!owned_backend_could_bind_port(&state, 8765));
+    }
+
+    /// While a handle has no port yet, presence reads every port as "not ours". Absence must
+    /// not agree, or a refusal during our own start becomes proof of death.
+    #[test]
+    fn a_child_that_has_not_reported_a_port_could_still_bind_the_one_asked_about() {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.owned = Some(OwnedBackendHandle::spawned(
+                spawn_owned(&LIVE_CHILD),
+                None,
+                0,
+                1,
+            ));
+        }
+        assert!(
+            !owned_backend_on_port_is_running(&state, 8765),
+            "presence is unchanged: a handle with no port names no port"
+        );
+        assert!(
+            owned_backend_could_bind_port(&state, 8765),
+            "a live backend of ours that has not bound a port yet was ruled out as the owner \
+             of the port it is starting on, which is the slow start #10520 exists to survive"
+        );
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_that_died_before_reporting_a_port_cannot_bind_anything() {
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let _ = child.wait();
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, 0, 1));
+        }
+        assert!(
+            !owned_backend_could_bind_port(&state, 8765),
+            "an exited child kept the fast path switched off for every port"
+        );
+    }
+
+    #[test]
+    fn a_handle_that_reported_another_port_does_not_cover_this_one() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(
+            !owned_backend_could_bind_port(&state, 8766),
+            "a backend that has told us its port was still treated as a candidate for others"
+        );
+        assert!(owned_backend_could_bind_port(&state, 8765));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
     }
 
     // The adopted half, where there is no child handle to wait on.

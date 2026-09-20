@@ -34,6 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace as dataclasses_replace
 
@@ -1359,7 +1360,7 @@ def resolve_simple_install_release_plans(
     published_release_tag: str,
     *,
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
-) -> tuple[str, list[InstallReleasePlan]]:
+) -> "tuple[str, Sequence[InstallReleasePlan]]":
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     # The fork (unslothai) ships a manifest describing every bundle's GPU/arch
     # coverage, so all fork hosts select from it. Upstream (ggml-org) ships no
@@ -2264,23 +2265,23 @@ def iter_resolved_published_releases(
     published_release_tag: str = "",
     *,
     allow_download_host_fast_path: bool = True,
+    continue_after_fast_path: bool = False,
 ) -> Iterable[ResolvedPublishedRelease]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     normalized_requested = normalized_requested_llama_tag(requested_tag)
 
     # Fast path: resolve a pinned or latest fork release from the download host (no
-    # api.github.com rate limit). Latest surfaces only the single newest release, so
-    # the caller disables it when the multi-release walk-back is needed (macOS
-    # skipping too-new prebuilts); a broken latest then drops to source build, not
-    # an older release. Pinned tags use the same CDN path so in-app updates avoid
-    # the API entirely (#9970). Any rejection/network error is non-fatal and falls
-    # through to the API.
+    # api.github.com rate limit). Latest surfaces only the newest release: macOS walks
+    # back past too-new prebuilts via continue_after_fast_path, otherwise a broken
+    # latest drops to source build. Pinned tags use the same CDN path so in-app updates
+    # avoid the API entirely (#9970). Any rejection/network error falls through to the API.
     fast_path_tag: str | None = None
     if published_release_tag:
         fast_path_tag = published_release_tag
     elif normalized_requested == "latest":
         fast_path_tag = ""
 
+    fast_path_release_tag: str | None = None
     if (
         fast_path_tag is not None
         and allow_download_host_fast_path
@@ -2308,7 +2309,13 @@ def iter_resolved_published_releases(
                     f"{resolved.bundle.upstream_tag}, but requested {normalized_requested}"
                 )
             yield resolved
-            return
+            # A pin names exactly one release, so there is nothing to walk back to and
+            # continue_after_fast_path has nothing to add. Falling through would re-resolve
+            # the same tag below -- the same release twice, and an api.github.com call to
+            # do it -- so a pin returns here whatever the walk-back flag says.
+            if not continue_after_fast_path or published_release_tag:
+                return
+            fast_path_release_tag = resolved.bundle.release_tag
 
     if published_release_tag:
         bundle = pinned_published_release_bundle(repo, published_release_tag)
@@ -2324,11 +2331,14 @@ def iter_resolved_published_releases(
         )
         return
 
-    matched_any = False
+    matched_any = fast_path_release_tag is not None
     skipped_invalid = 0
-    yielded_valid = False
+    yielded_valid = fast_path_release_tag is not None
     for bundle in iter_published_release_bundles(repo):
         if not published_release_matches_request(bundle, normalized_requested):
+            continue
+        if fast_path_release_tag is not None and bundle.release_tag == fast_path_release_tag:
+            # Already yielded from the download host.
             continue
         matched_any = True
         try:
@@ -5754,9 +5764,17 @@ def macos_binary_minos_issues(
 
 
 def macos_dyld_load_issues(
-    binaries: Iterable[Path], install_dir: Path, host: HostInfo
+    binaries: Iterable[Path],
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    loaded: "set[str] | None" = None,
 ) -> list[str]:
     """Issue strings for every installed executable dyld refuses to load.
+
+    *loaded*, when given, collects the binaries dyld actually resolved: this probe
+    fails OPEN, so "no issues" alone cannot tell a clean load from one that never
+    ran. Only a name in here is evidence of a load.
 
     `--version` costs a process spawn and still makes dyld resolve the whole link
     graph, so it catches a missing dylib, a missing symbol or a too-new slice --
@@ -5786,6 +5804,8 @@ def macos_dyld_load_issues(
             log(f"macos load probe could not run {binary_path.name}: {exc}")
             continue
         if result.returncode == 0:
+            if loaded is not None:
+                loaded.add(binary_path.name)
             continue
         output = (result.stdout + result.stderr).strip()
         # A non-zero exit is not evidence of a bad link: llama-quantize answers
@@ -5795,6 +5815,10 @@ def macos_dyld_load_issues(
         # that asked, which otool -L cannot, since an absolute install name absent
         # from disk is the normal case for /usr/lib's shared-cache members.
         if not looks_like_macos_loader_failure(output):
+            # llama-quantize answers --version by printing its table and exiting 1;
+            # dyld still resolved the image to let it print anything at all.
+            if loaded is not None:
+                loaded.add(binary_path.name)
             continue
         detail = " | ".join(output.splitlines()[-5:]) or f"exit {result.returncode}"
         issues.append(f"{binary_path.name}: {detail}")
@@ -5802,12 +5826,22 @@ def macos_dyld_load_issues(
 
 
 def preflight_macos_installed_binaries(
-    binaries: Iterable[Path], install_dir: Path, host: HostInfo
-) -> None:
-    """Reject a macos prebuilt whose minimum-OS is newer than the host, or that
-    dyld will not load at all. The upstream selector pins a loadable release up
+    binaries: Iterable[Path],
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    load_probe: bool = True,
+) -> bool:
+    """Reject a macos prebuilt whose minimum-OS is newer than the host, or (with
+    *load_probe*) that dyld will not load at all. The upstream selector pins a loadable release up
     front, so here this is the post-download backstop; the published/fork path
     also uses it to advance the walk-back.
+
+    Returns True only when the load probe actually ran and dyld resolved every
+    binary. False means "no evidence", not "bad": the probe is skipped, or it
+    timed out or could not spawn. Callers record the skip only on True, so an
+    inconclusive probe costs another probe next time instead of being cached as
+    a pass.
 
     The load probe is the macOS counterpart of preflight_linux_installed_binaries'
     ldd sweep, which this side went without: a bundle whose libggml-rpc.0.dylib
@@ -5820,18 +5854,30 @@ def preflight_macos_installed_binaries(
     both on an unparseable ``platform.mac_ver()`` left that host with no check at
     all, since the runtime validation it deferred to is off by default (#5854)."""
     if not host.is_macos:
-        return
+        return False
+    binaries = list(binaries)
     if host.macos_version is not None:
         issues = macos_binary_minos_issues(binaries, install_dir, host)
         if issues:
             raise PrebuiltFallback(
                 "macos prebuilt requires a newer macOS than this host:\n" + "\n".join(issues)
             )
-    load_issues = macos_dyld_load_issues(binaries, install_dir, host)
+    if not load_probe:
+        log("installed binaries match their recorded digests; skipping the dyld load probe")
+        return False
+    loaded: set[str] = set()
+    load_issues = macos_dyld_load_issues(binaries, install_dir, host, loaded = loaded)
     if load_issues:
         raise PrebuiltFallback(
             "macos prebuilt does not load on this host:\n" + "\n".join(load_issues)
         )
+    expected = {path.name for path in binaries if path.is_file()}
+    if not expected or not expected.issubset(loaded):
+        # The probe fails open so a loaded machine cannot reject a healthy bundle;
+        # that is right for INSTALLING, and wrong to remember as a load.
+        log("macos load probe did not run for every binary; not recording it as a pass")
+        return False
+    return True
 
 
 def preflight_linux_installed_binaries(
@@ -6849,6 +6895,85 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
     return attempts
 
 
+RELEASE_LISTING_TRANSPORT_ERRORS = (
+    urllib.error.URLError,
+    ssl.SSLError,
+    ConnectionError,
+    TimeoutError,
+    RuntimeError,
+    ValueError,
+)
+
+
+def release_listing_fallback(exc: BaseException, published_repo: str) -> PrebuiltFallback:
+    # Install time only: a resolver probe must fail hard, or update_flow caches "no prebuilt".
+    return PrebuiltFallback(
+        f"failed to inspect published releases in "
+        f"{published_repo or DEFAULT_PUBLISHED_REPO}: {exc}"
+    )
+
+
+def iter_release_plans(
+    plans: "Sequence[InstallReleasePlan]", published_repo: str
+) -> "Iterator[InstallReleasePlan]":
+    try:
+        yield from plans
+    except (BusyInstallConflict, PrebuiltFallback):
+        raise
+    except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
+        raise release_listing_fallback(exc, published_repo) from exc
+
+
+class LazyReleasePlans(Sequence):
+    """Release plans resolved on first access; ``len()`` resolves them all."""
+
+    def __init__(self, plans: "Iterable[InstallReleasePlan]") -> None:
+        self._source: "Iterator[InstallReleasePlan] | None" = iter(plans)
+        self._resolved: list[InstallReleasePlan] = []
+        self._failure: "BaseException | None" = None
+
+    def _resolve_through(self, index: int) -> bool:
+        while len(self._resolved) <= index:
+            # A generator that raised is closed, so without remembering why, a second
+            # traversal would report a short-but-clean sequence and len() would answer
+            # differently than the call that raised. Same inputs, same answer, every time.
+            if self._failure is not None:
+                raise self._failure
+            if self._source is None:
+                return False
+            try:
+                self._resolved.append(next(self._source))
+            except StopIteration:
+                self._source = None
+                return False
+            except BaseException as exc:
+                self._source = None
+                self._failure = exc
+                raise
+        return True
+
+    def __getitem__(self, index):
+        if isinstance(index, slice) or index < 0:
+            self._resolve_through(sys.maxsize)
+            return self._resolved[index]
+        if not self._resolve_through(index):
+            raise IndexError(index)
+        return self._resolved[index]
+
+    def __len__(self) -> int:
+        self._resolve_through(sys.maxsize)
+        return len(self._resolved)
+
+    def __iter__(self):
+        index = 0
+        while self._resolve_through(index):
+            yield self._resolved[index]
+            index += 1
+
+    def __bool__(self) -> bool:
+        return self._resolve_through(0)
+
+
 def _fork_manifest_release_plans(
     llama_tag: str,
     host: HostInfo,
@@ -6856,7 +6981,7 @@ def _fork_manifest_release_plans(
     published_release_tag: str,
     *,
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
-) -> tuple[str, list[InstallReleasePlan]]:
+) -> "tuple[str, Sequence[InstallReleasePlan]]":
     """Manifest-reading branch of resolve_simple_install_release_plans, used for
     every fork host: all of the fork's bundles describe their GPU/arch coverage
     in llama-prebuilt-manifest.json rather than in the asset filename (CPU,
@@ -6868,74 +6993,82 @@ def _fork_manifest_release_plans(
     # version is known; otherwise keep the default (cannot tell up front).
     if host.is_macos and allow_older_release_fallback and host.macos_version is not None:
         release_limit = max(release_limit, DEFAULT_MAX_MACOS_RELEASE_FALLBACKS)
-    plans: list[InstallReleasePlan] = []
-    last_error: PrebuiltFallback | None = None
-    # The newest release this host could not take, if the first plan is an older one.
-    skipped_newest: str | None = None
 
-    for resolved_release in iter_resolved_published_releases(
-        llama_tag,
-        published_repo,
-        published_release_tag,
-        # macOS relies on the multi-release walk-back to skip too-new prebuilts,
-        # which the single-latest download-host path cannot provide.
-        allow_download_host_fast_path = not host.is_macos,
-    ):
-        bundle = resolved_release.bundle
-        checksums = resolved_release.checksums
-        resolved_tag = bundle.upstream_tag
-        try:
-            if host.is_linux:
-                linux_attempts = _linux_published_attempts(host, bundle)
-                if not linux_attempts:
-                    raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
-                attempts = apply_approved_hashes(linux_attempts, checksums)
-                if not attempts:
-                    raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
-                if attempts[0].selection_log:
-                    log_lines(attempts[0].selection_log)
-            else:
-                attempts = resolve_release_asset_choice(
-                    host,
-                    resolved_tag,
-                    bundle,
-                    checksums,
+    def _plans() -> "Iterator[InstallReleasePlan]":
+        resolved_count = 0
+        last_error: PrebuiltFallback | None = None
+        # The newest release this host could not take, if the first plan is an older one.
+        skipped_newest: str | None = None
+
+        for resolved_release in iter_resolved_published_releases(
+            llama_tag,
+            published_repo,
+            published_release_tag,
+            # macOS takes the newest release from the CDN and walks back through the API.
+            continue_after_fast_path = host.is_macos,
+        ):
+            bundle = resolved_release.bundle
+            checksums = resolved_release.checksums
+            resolved_tag = bundle.upstream_tag
+            try:
+                if host.is_linux:
+                    linux_attempts = _linux_published_attempts(host, bundle)
+                    if not linux_attempts:
+                        raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+                    attempts = apply_approved_hashes(linux_attempts, checksums)
+                    if not attempts:
+                        raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+                    if attempts[0].selection_log:
+                        log_lines(attempts[0].selection_log)
+                else:
+                    attempts = resolve_release_asset_choice(
+                        host,
+                        resolved_tag,
+                        bundle,
+                        checksums,
+                    )
+                    if not attempts:
+                        raise PrebuiltFallback("no compatible prebuilt asset was found")
+                    if attempts[0].selection_log:
+                        log_lines(attempts[0].selection_log)
+            except PrebuiltFallback as exc:
+                last_error = exc
+                if not allow_older_release_fallback:
+                    raise
+                log(
+                    "published release skipped for install planning: "
+                    f"{bundle.repo}@{bundle.release_tag} upstream_tag={resolved_tag} ({exc})"
                 )
-                if not attempts:
-                    raise PrebuiltFallback("no compatible prebuilt asset was found")
-                if attempts[0].selection_log:
-                    log_lines(attempts[0].selection_log)
-        except PrebuiltFallback as exc:
-            last_error = exc
-            if not allow_older_release_fallback:
-                raise
-            log(
-                "published release skipped for install planning: "
-                f"{bundle.repo}@{bundle.release_tag} upstream_tag={resolved_tag} ({exc})"
-            )
-            if not plans and skipped_newest is None:
-                skipped_newest = bundle.release_tag
-            continue
+                if resolved_count == 0 and skipped_newest is None:
+                    skipped_newest = bundle.release_tag
+                continue
 
-        plans.append(
-            InstallReleasePlan(
+            yield InstallReleasePlan(
                 requested_tag = requested_tag,
                 llama_tag = resolved_tag,
                 release_tag = bundle.release_tag,
                 attempts = attempts,
                 approved_checksums = checksums,
-                walk_back = _core.walk_back_for(host, skipped_newest) if not plans else None,
+                walk_back = (
+                    _core.walk_back_for(host, skipped_newest) if resolved_count == 0 else None
+                ),
             )
-        )
+            resolved_count += 1
 
-        if not allow_older_release_fallback or len(plans) >= release_limit:
-            break
+            if not allow_older_release_fallback or resolved_count >= release_limit:
+                return
 
-    if plans:
-        return requested_tag, plans
-    if last_error is not None:
-        raise last_error
-    raise PrebuiltFallback("no installable published llama.cpp releases were found")
+        if resolved_count:
+            return
+        if last_error is not None:
+            raise last_error
+        raise PrebuiltFallback("no installable published llama.cpp releases were found")
+
+    plans = LazyReleasePlans(_plans())
+    # Resolve the first plan here, so its listing failures still raise from the resolver.
+    if not plans:
+        raise PrebuiltFallback("no installable published llama.cpp releases were found")
+    return requested_tag, plans
 
 
 def persisted_llama_backend(llama_backend: str | None, choice: AssetChoice) -> str | None:
@@ -7052,6 +7185,7 @@ def write_prebuilt_metadata(
     backend_request: str | None = None,
     rocm_gfx: str | None = None,
     walk_back: "_core.WalkBack | None" = None,
+    macos_load_probe_passed: bool = False,
 ) -> None:
     source_asset_name, source_sha256 = selected_source_archive_metadata(
         approved_checksums,
@@ -7071,6 +7205,9 @@ def write_prebuilt_metadata(
     if fingerprint is None:
         raise PrebuiltFallback(f"cannot compute install fingerprint for {choice.name}")
     _persisted_backend = persisted_llama_backend(llama_backend, choice)
+    _load_probe = (
+        macos_load_probe_record(host) if macos_load_probe_passed and host is not None else None
+    )
     # An install kind with no allowlist raises; the binary tier alone is still honest evidence.
     try:
         _runtime_patterns: list[str] | None = runtime_patterns_for_choice(choice)
@@ -7141,6 +7278,10 @@ def write_prebuilt_metadata(
         "runtime_files": runtime_file_records(install_dir, host, _runtime_patterns),
         # The box this bundle was chosen for. Absent reads as "cannot say": full path.
         **({"host_profile": host_profile(host)} if host is not None else {}),
+        # Evidence that dyld really loaded these bytes on this macOS build, which is what
+        # lets a later update skip the probe. Absent reads as "cannot say": probe again.
+        # Not fingerprinted, so it never invalidates an install.
+        **({MACOS_LOAD_PROBE_KEY: _load_probe} if _load_probe is not None else {}),
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -7960,14 +8101,18 @@ def runtime_file_records(
         libraries are where most of a CUDA bundle's bytes live, which is exactly the
         shape a full disk or an interrupted extract leaves behind. A size comparison
         catches it for the price of a stat; hashing 300 MB of kernels on every update
-        would not be worth it.
+        would not be worth it. macOS hashes both tiers, since its record stands in for the
+        dyld probe and a Metal bundle is tens of MB.
 
     *patterns* comes from runtime_patterns_for_install_kind for the bundle being
     installed; without it only the binary tier is recorded, which is what the callers
     that have no bundle in hand (a bare re-record) can honestly say.
+
+    Call only after the platform preflights pass: the macOS probe skip trusts the record.
     """
     records: dict[str, dict[str, Any]] = {}
     runtime_dir = install_runtime_dir(install_dir, host) if host is not None else None
+    hash_payload = host is not None and host.is_macos
     if patterns and runtime_dir is not None:
         for pattern in patterns:
             try:
@@ -7982,6 +8127,15 @@ def runtime_file_records(
                     relative = candidate.relative_to(install_dir).as_posix()
                 except ValueError:
                     continue
+                if hash_payload:
+                    try:
+                        record["sha256"] = sha256_file(candidate)
+                    except (OSError, MemoryError) as exc:
+                        log(
+                            f"could not hash {relative} for the runtime record ({exc}); "
+                            "not recording"
+                        )
+                        return {}
                 records[relative] = record
     # Last, so a binary the sweep matched is upgraded to the hashed tier.
     for candidate in _runtime_record_paths(install_dir, host):
@@ -8001,6 +8155,137 @@ def runtime_file_records(
             return {}
         records[relative] = record
     return records
+
+
+MACOS_LOAD_PROBE_KEY = "macos_load_probe"
+
+
+def macos_product_version() -> str:
+    """The macOS identity the dyld shared cache actually tracks, as one string.
+
+    host_profile records parse_macos_version, which is (major, minor) by design --
+    right for the minos comparison, wrong for "can this image still load": since Big
+    Sur the system libraries are a dyld shared cache blob, and Apple replaces that
+    blob in point releases and in Rapid Security Responses.
+
+    A Rapid Security Response does NOT move ProductVersion, which is all
+    platform.mac_ver() reads: 13.3.1 (a) reports ProductVersion 13.3.1 with the "(a)"
+    in ProductVersionExtra and the build at 22E772610a instead of 22E261. Reading
+    SystemVersion.plist has the same blind spot and is additionally stale for an RSR
+    (osquery/osquery#8008), so ask sw_vers -- bare, since it documents single-dash
+    options and a misspelt flag would silently cost the field this exists to read.
+    """
+    try:
+        done = subprocess.run(
+            ["/usr/bin/sw_vers"],
+            capture_output = True,
+            text = True,
+            timeout = 10,
+            check = False,
+        )
+        if done.returncode == 0:
+            values: "dict[str, str]" = {}
+            for line in done.stdout.splitlines():
+                key, sep, value = line.partition(":")
+                if sep:
+                    values[key.strip()] = value.strip()
+            # Absent ProductVersionExtra means no RSR, and predates macOS 13; not a failure.
+            fields = [
+                values.get(key, "")
+                for key in ("ProductVersion", "ProductVersionExtra", "BuildVersion")
+            ]
+            if fields[0]:
+                return " ".join(f for f in fields if f)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # sw_vers unavailable: the product version alone still catches a point release.
+        return str(platform.mac_ver()[0] or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def macos_load_probe_record(host: HostInfo) -> "dict[str, Any] | None":
+    """The evidence a completed dyld probe leaves for later runs, or None when the
+    host cannot describe itself finely enough to be worth recording."""
+    version = macos_product_version()
+    if not host.is_macos or not version:
+        return None
+    return {"passed": True, "macos_product_version": version}
+
+
+def persist_macos_load_probe(install_dir: Path, host: HostInfo) -> bool:
+    """Remember a reuse-path probe that just passed, so the next update can skip it.
+
+    Without this the skip is unreachable for everyone it was not born with: a marker
+    written before the record existed, an install whose first probe timed out, and
+    every install after a macOS point release all probe again on EVERY later update
+    and never stop, since nothing writes the evidence outside a fresh install.
+
+    Re-recording the runtime files is safe HERE and nowhere else: the minos check, the
+    digests the marker did carry and dyld itself all passed on these exact bytes
+    moments ago, which is the same evidence the install path records on.
+
+    The record covers the ROOT copies too, so only a caller that has started every one
+    of them may write it. That is _existing_install_runs alone; the two reuse fast paths
+    probe build/bin and never reach a root wrapper, which can be a separate file rather
+    than a symlink.
+    """
+    record = macos_load_probe_record(host)
+    if record is None:
+        return False
+    try:
+        marker = load_prebuilt_metadata(install_dir)
+        if not isinstance(marker, dict) or not marker:
+            return False
+        patch: "dict[str, Any]" = {MACOS_LOAD_PROBE_KEY: record}
+        recorded = marker.get("runtime_files")
+        if not (
+            isinstance(recorded, dict)
+            and recorded
+            and all(isinstance(e, dict) and e.get("sha256") for e in recorded.values())
+        ):
+            # Both macOS kinds share one pattern list, so the host answers this without
+            # a plan; an unreadable file yields {} and no evidence rather than a half record.
+            kind = "macos-arm64" if str(host.machine or "").lower() == "arm64" else "macos-x64"
+            records = runtime_file_records(
+                install_dir, host, runtime_patterns_for_install_kind(kind)
+            )
+            if not records:
+                return False
+            patch["runtime_files"] = records
+        marker.update(patch)
+        return _write_marker(install_dir / "UNSLOTH_PREBUILT_INFO.json", marker)
+    except Exception:  # noqa: BLE001
+        # Best effort: a marker we could not rewrite costs another probe, never the reuse.
+        return False
+
+
+def _macos_load_record_is_current(marker: "dict[str, Any] | None", host: HostInfo) -> bool:
+    """Whether the dyld probe these recorded bytes passed still holds; callers must also
+    check _runtime_files_match. A size-only entry misses a same-size rewrite, and an
+    unknown macOS version skips the minos check, leaving the probe as the only load check.
+
+    Requires POSITIVE evidence that a probe ran and passed (MACOS_LOAD_PROBE_KEY), on
+    this exact macOS product version. A marker without it -- every one written before
+    this existed, and every install whose probe timed out or could not spawn -- takes
+    the probe, which is what happened on every update before the skip existed.
+    """
+    if not host.is_macos or host.macos_version is None or prebuilt_full_check_requested():
+        return False
+    marker = marker or {}
+    recorded = marker.get("runtime_files")
+    if not isinstance(recorded, dict) or not recorded:
+        return False
+    if not all(isinstance(entry, dict) and entry.get("sha256") for entry in recorded.values()):
+        return False
+    probe = marker.get(MACOS_LOAD_PROBE_KEY)
+    if not isinstance(probe, dict) or probe.get("passed") is not True:
+        return False
+    version = macos_product_version()
+    if not version or probe.get("macos_product_version") != version:
+        return False
+    return marker.get("host_profile") == host_profile(host)
 
 
 def _runtime_files_match(install_dir: Path, host: HostInfo, marker: "dict[str, Any]") -> bool:
@@ -8298,11 +8583,10 @@ def _expected_release_tag_without_plan(
         api.github.com call, so no rate limit, and no manifest or checksum download.
 
     KNOWN AND ACCEPTED LAG, for "latest" only. The HEAD follows /releases/latest, which
-    GitHub resolves by make_latest / created_at. The normal macOS path deliberately
-    turns the download-host resolver off (allow_download_host_fast_path = not
-    host.is_macos, so it can walk back past a prebuilt whose minimum OS is too new) and
-    orders releases by published_at instead. The two disagree when a release is created
-    before, but published after, another -- e.g. a re-published or back-dated release.
+    GitHub resolves by make_latest / created_at. _select reads the same pointer through
+    the download host, but falls back to the API listing, ordered by published_at, when
+    that host is unavailable. The two disagree when a release is created before, but
+    published after, another -- e.g. a re-published or back-dated release.
     In that window this check can report "current" for an install _select would have
     moved off. The consequence is one deferred update, never a wrong install: the very
     next run whose pointer has caught up does the move, and every OTHER guard here
@@ -8560,15 +8844,18 @@ def existing_install_current_without_plan(
     # this returned True before reinstalling anything, and the next launch was stale again.
     if _damaged_entrypoint(install_dir, host) is not None:
         return False
-    try:
-        # Kept, unlike the --version spawns: a preflight answers whether the OS can LOAD the image,
-        # which a hash cannot.
-        preflight_linux_installed_binaries(binaries, install_dir, host)
-        preflight_macos_installed_binaries(binaries, install_dir, host)
-    except Exception:  # noqa: BLE001
-        return False
-    # (6) and the bytes are the ones that were installed.
+    # (6) the bytes are the ones installed; before the preflight, whose probe skip trusts them.
     if not _runtime_files_match(install_dir, host, marker):
+        return False
+    try:
+        preflight_linux_installed_binaries(binaries, install_dir, host)
+        preflight_macos_installed_binaries(
+            binaries,
+            install_dir,
+            host,
+            load_probe = not _macos_load_record_is_current(marker, host),
+        )
+    except Exception:  # noqa: BLE001
         return False
     # The one backfill that is not a release change, so it has to be asked separately.
     if _diffusion_visual_server_missing_for_marker(install_dir, host, marker):
@@ -8866,7 +9153,8 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         return False
     if not _kept_install_payload_is_healthy(install_dir, host):
         return False
-    recorded_runtime_line = (load_prebuilt_metadata(install_dir) or {}).get("runtime_line")
+    marker = load_prebuilt_metadata(install_dir) or {}
+    recorded_runtime_line = marker.get("runtime_line")
     if not isinstance(recorded_runtime_line, str):
         recorded_runtime_line = None
     runtime_dir = install_runtime_dir(install_dir, host)
@@ -8874,12 +9162,20 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     binaries = [runtime_dir / f"llama-{name}{ext}" for name in ("server", "quantize")]
     if _damaged_entrypoint(install_dir, host) is not None:
         return False
+    # A current macOS load record also replaces the `--version` probes below.
+    recorded_bytes_intact = _macos_load_record_is_current(marker, host) and _runtime_files_match(
+        install_dir, host, marker
+    )
     try:
         # Each preflight is a no-op outside its platform.
         preflight_linux_installed_binaries(binaries, install_dir, host)
-        preflight_macos_installed_binaries(binaries, install_dir, host)
+        probed = preflight_macos_installed_binaries(
+            binaries, install_dir, host, load_probe = not recorded_bytes_intact
+        )
     except Exception:
         return False
+    if recorded_bytes_intact:
+        return True
     # Root copies first: _find_llama_server_binary reaches them first, and without a
     # symlink they can rot alone.
     probes: list[Path] = []
@@ -8895,9 +9191,16 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
             continue
         seen.add(key)
         probes.append(binary)
-    return all(
+    if not all(
         _binary_image_runs(binary, install_dir, host, recorded_runtime_line) for binary in probes
-    )
+    ):
+        return False
+    # Last, not straight after the dyld probe: recording before the root entrypoints ran
+    # would bless a corrupt wrapper into the record, and the next run would read the
+    # record as current, return above, and never start the wrapper either.
+    if probed:
+        persist_macos_load_probe(install_dir, host)
+    return True
 
 
 def reusable_existing_install(install_dir: Path, host: HostInfo) -> bool:
@@ -8963,9 +9266,11 @@ def existing_install_matches_choice(
     # Windows has no image-reading preflight, so a truncated llama-server.exe kept its fingerprint
     # match. Only a marker carrying the record is held to it.
     recorded_files = metadata.get("runtime_files")
+    runtime_files_matched = False
     if isinstance(recorded_files, dict) and recorded_files:
         if not _runtime_files_match(install_dir, host, metadata):
             return False
+        runtime_files_matched = True
     elif not (host.is_linux or host.is_macos):
         # The migration run, on the one platform with no loader preflight below: a pre-record
         # marker has no digest, so damaged bytes would become the reference they are later
@@ -9001,6 +9306,9 @@ def existing_install_matches_choice(
                 [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
                 install_dir,
                 host,
+                load_probe = not (
+                    runtime_files_matched and _macos_load_record_is_current(metadata, host)
+                ),
             )
         except Exception:
             return False
@@ -9108,7 +9416,9 @@ def validate_prebuilt_choice(
             f"{choice.install_kind} bundle {choice.name} omitted a required runtime component"
         )
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
-    preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
+    macos_load_probe_passed = preflight_macos_installed_binaries(
+        (server_path, quantize_path), install_dir, host
+    )
     ensure_repo_shape(install_dir)
     write_prebuilt_metadata(
         install_dir,
@@ -9124,6 +9434,7 @@ def validate_prebuilt_choice(
         backend_request = backend_request,
         rocm_gfx = rocm_gfx,
         walk_back = walk_back,
+        macos_load_probe_passed = macos_load_probe_passed,
     )
     # Hashless external prebuilts are not in the approved-sha256
     # manifest and rely on the functional smoke test as their only integrity gate,
@@ -9526,8 +9837,15 @@ def _vulkan_loader_allows(path: str) -> bool:
     manifest's basename. A manifest filtered out is registered and never loaded, so
     counting it hands an integrated host a Vulkan build with no AMD device.
 
-    Disable is read before select precisely so "disable everything, then name one back"
-    works, hence select answering alone when it is set.
+    Select is an allowlist and disable is a denylist that WINS over it, rather than being
+    skipped when select is set. The loader documents the order the other way round from the
+    way this once read it: "The values from the disable environment variable will be
+    considered before the enable or select environment variable", and
+    VK_LOADER_DRIVERS_DISABLE is "also checked before other driver environment variables
+    (such as VK_LOADER_DRIVERS_SELECT)" (Vulkan-Loader, LoaderInterfaceArchitecture.md).
+    Drivers have no VK_LOADER_LAYERS_ALLOW counterpart to name one back, so selecting
+    radeon* while also disabling radeon* leaves the real loader with no driver, where this
+    counted Radeon as usable and reported only the device-node repair.
     """
 
     def _globs(env_name: str) -> list[str]:
@@ -9535,11 +9853,11 @@ def _vulkan_loader_allows(path: str) -> bool:
         return [entry.strip() for entry in value.split(",") if entry.strip()]
 
     name = PurePath(path).name
-    select = _globs("VK_LOADER_DRIVERS_SELECT")
-    if select:
-        return any(_vulkan_glob_matches(pattern, name) for pattern in select)
     disable = _globs("VK_LOADER_DRIVERS_DISABLE")
-    return not any(_vulkan_glob_matches(pattern, name) for pattern in disable)
+    if any(_vulkan_glob_matches(pattern, name) for pattern in disable):
+        return False
+    select = _globs("VK_LOADER_DRIVERS_SELECT")
+    return any(_vulkan_glob_matches(pattern, name) for pattern in select) if select else True
 
 
 # Per call, not at import: Path.home() raises with no USERPROFILE.
@@ -10209,7 +10527,7 @@ class BackendSelection:
     published_repo: str
     published_release_tag: str
     requested_tag: str
-    release_plans: list[InstallReleasePlan]
+    release_plans: "Sequence[InstallReleasePlan]"
     persist_llama_backend: str | None
     persist_rocm_gfx: str | None
 
@@ -10302,7 +10620,7 @@ def route_backend_request(
 
 
 def _with_rocm_behind_vulkan(
-    plans: list[InstallReleasePlan],
+    plans: "Sequence[InstallReleasePlan]",
     llama_tag: str,
     rocm_host: HostInfo,
     published_repo: str,
@@ -10331,7 +10649,7 @@ def _with_rocm_behind_vulkan(
             return plan
         return dataclasses_replace(plan, attempts = attempts) if attempts else None
 
-    def _drop_cpu_only(candidates: list[InstallReleasePlan]) -> list[InstallReleasePlan]:
+    def _drop_cpu_only(candidates: "Sequence[InstallReleasePlan]") -> list[InstallReleasePlan]:
         """Apply _without_cpu across releases, or fail rather than install CPU."""
         kept = [narrowed for plan in candidates if (narrowed := _without_cpu(plan)) is not None]
         if candidates and not kept:
@@ -10342,10 +10660,11 @@ def _with_rocm_behind_vulkan(
         _tag, rocm_plans = resolve_simple_install_release_plans(
             llama_tag, rocm_host, published_repo, published_release_tag
         )
+        # Inside the try: later releases resolve lazily here.
+        rocm_attempts = {plan.release_tag: plan.attempts for plan in rocm_plans}
     except Exception:
         # Not a reason to fail the Vulkan install, but a reason to drop the CPU tail.
         return _drop_cpu_only(plans)
-    rocm_attempts = {plan.release_tag: plan.attempts for plan in rocm_plans}
     out: list[InstallReleasePlan] = []
     for plan in plans:
         present = {attempt.install_kind for attempt in plan.attempts}
@@ -10503,10 +10822,10 @@ def install_prebuilt(
             # transient 403 as "no prebuilt" for 24h; nonzero exits are never
             # cached, so the resolver must keep failing hard.
             #
-            # Not dead code despite the download-host fast path: macOS skips it
-            # entirely (see allow_download_host_fast_path below), as does a
-            # non-latest requested tag without a published-release pin, a
-            # non-default --published-repo, and any CDN outage.
+            # Not dead code despite the download-host fast path: a macOS walk-back
+            # past the newest release lists the API, as does a non-latest
+            # requested tag without a published-release pin, a non-default
+            # --published-repo, and any CDN outage.
             #
             # Transport shapes only: URLError covers HTTPError and the socket/DNS
             # errors urllib wraps, JSONDecodeError is a ValueError, and
@@ -10544,18 +10863,8 @@ def install_prebuilt(
                     )
                 except (BusyInstallConflict, PrebuiltFallback):
                     raise
-                except (
-                    urllib.error.URLError,
-                    ssl.SSLError,
-                    ConnectionError,
-                    TimeoutError,
-                    RuntimeError,
-                    ValueError,
-                ) as exc:
-                    raise PrebuiltFallback(
-                        f"failed to inspect published releases in "
-                        f"{published_repo or DEFAULT_PUBLISHED_REPO}: {exc}"
-                    ) from exc
+                except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
+                    raise release_listing_fallback(exc, published_repo) from exc
 
             # Before the listing, manifest and checksum fetches, which on a current install resolve
             # back to the bundle on disk. One HEAD instead. Routed once and handed to both, since
@@ -10644,20 +10953,11 @@ def install_prebuilt(
                     work_dir / "stories260K.gguf",
                     validation_model_cache_path(install_dir),
                 )
-                # Same reason as the per-candidate guard in validate_prebuilt_attempts,
-                # one level up: the per-release handler below also swallows
-                # PrebuiltFallback and moves to an older plan, so a probe failure raised
-                # inside it would install an older llama.cpp over a transient 429. The
-                # probe is independent of which release was picked, so resolve it once
-                # here when any plan will smoke-test.
-                if staged_validation_enabled() or any(
-                    attempt.expected_sha256 is None
-                    for release_plan in release_plans
-                    for attempt in release_plan.attempts
+                probe_resolved = False
+                last_failure: PrebuiltFallback | None = None
+                for release_index, plan in enumerate(
+                    iter_release_plans(release_plans, published_repo)
                 ):
-                    probe = resolve_validation_model(probe)
-                release_count = len(release_plans)
-                for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
                     backfill = diffusion_visual_server_backfill_needed(install_dir, host, choice)
                     if existing_install_matches_plan(install_dir, host, plan):
@@ -10679,6 +10979,13 @@ def install_prebuilt(
                         f"{choice.name} ({choice.source_label}) from published release "
                         f"{plan.release_tag} for {host.system} {host.machine}"
                     )
+                    # Outside the handler, so a transient failure cannot demote to an older release.
+                    if not probe_resolved and (
+                        staged_validation_enabled()
+                        or any(attempt.expected_sha256 is None for attempt in plan.attempts)
+                    ):
+                        probe = resolve_validation_model(probe)
+                        probe_resolved = True
                     try:
                         choice, selected_staging_dir, _ = validate_prebuilt_attempts(
                             plan.attempts,
@@ -10708,12 +11015,11 @@ def install_prebuilt(
                     except PrebuiltFallback as exc:
                         if _environment_fatal_reason(exc):
                             raise
-                        if release_index == release_count - 1:
-                            raise
+                        last_failure = exc
                         log(
                             "published release "
                             f"{plan.release_tag} upstream_tag={plan.llama_tag} failed; "
-                            "trying the next older published prebuilt "
+                            "trying an older published prebuilt if one remains "
                             f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                         )
                         continue
@@ -10736,6 +11042,8 @@ def install_prebuilt(
                             f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                         )
                     return
+                if last_failure is not None:
+                    raise last_failure
     except BusyInstallConflict as exc:
         log("prebuilt install path is blocked by an in-use llama.cpp install")
         log(f"prebuilt busy reason: {exc}")

@@ -419,10 +419,33 @@ jobs:
             bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y -qq --no-install-recommends xvfb || { apt-get update -qq && apt-get install -y -qq --no-install-recommends xvfb; }'
           if [ "${{ matrix.kind }}" = "deb" ]; then
-            sudo apt-get install -y ./dl/*.deb || {
-              echo "::error::the .deb does not declare its runtime dependencies correctly"
-              exit 1
-            }
+            # Refresh the index before blaming the package. The image ships apt lists from
+            # whenever it was baked, so once Ubuntu rotates a point release the pool 404s the
+            # exact versions those lists name -- this job died on bubblewrap 0.6.1-1ubuntu0.1
+            # and gst-plugins-good 1.20.3-0ubuntu1.7 under a message accusing the .deb of a
+            # wrong dependency list. Same update-then-retry the xvfb line above already uses,
+            # and it weakens nothing: apt still has to resolve and install every declared
+            # dependency, so a .deb naming a package that does not exist still fails here.
+            apt_log="$RUNNER_TEMP/deb-install.log"
+            # Redirected, not piped into tee: this step runs under `bash -e` without
+            # pipefail, so `apt-get ... | tee` would report tee's status and swallow every
+            # failure this branch exists to catch.
+            if ! sudo apt-get install -y ./dl/*.deb > "$apt_log" 2>&1; then
+              cat "$apt_log"
+              sudo apt-get update -qq
+              if ! sudo apt-get install -y ./dl/*.deb > "$apt_log" 2>&1; then
+                cat "$apt_log"
+                # Name the failure that actually happened. A fetch error is the mirror's, and
+                # reporting it as a packaging defect sent two days of this job at the bundle.
+                if grep -qE "Failed to fetch|404  Not Found" "$apt_log"; then
+                  echo "::error::apt could not fetch a dependency from the mirror even after apt-get update; this is the runner's package mirror, not the .deb's dependency list"
+                else
+                  echo "::error::the .deb does not declare its runtime dependencies correctly"
+                fi
+                exit 1
+              fi
+            fi
+            cat "$apt_log"
             BIN="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/usr/bin/' | head -1)"
           else
             sudo apt-get install -y -qq --no-install-recommends \
@@ -964,8 +987,9 @@ jobs:
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
           # Extension, not fragment: see the macOS leg. '*setup.exe' was the Tauri NSIS
-          # default; the current asset is Unsloth-Desktop-<ver>-Windows.exe, and a release
-          # ships exactly one .exe.
+          # default. A release used to ship exactly one .exe; it now ships two, an x64
+          # Unsloth-Desktop-Windows.exe beside an arm64 Unsloth-Desktop-Windows-ARM64.exe,
+          # so the install step below picks by architecture instead of taking the first.
           gh release download "$REL_TAG" --repo "$REL_REPO" --pattern '*.exe' --dir dl
           ls -la dl
 
@@ -1084,7 +1108,25 @@ jobs:
       - name: Silent install
         shell: pwsh
         run: |
-          $exe = (Get-ChildItem dl/*.exe | Select-Object -First 1).FullName
+          # By architecture, not by position. A release ships an x64 installer beside an
+          # arm64 one, and `Select-Object -First 1` over the directory took the arm64 build
+          # on this x64 runner -- '-' sorts before '.', so Unsloth-Desktop-Windows-ARM64.exe
+          # precedes Unsloth-Desktop-Windows.exe. It installed without complaint and the app
+          # then refused to start with "This version of %1 is not compatible with the version
+          # of Windows you're running", reported as the app exiting early.
+          $all = @(Get-ChildItem dl/*.exe)
+          $arm = @($all | Where-Object { $_.Name -match '(?i)-arm64\.exe$' })
+          $wanted = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { $arm }
+                    else { @($all | Where-Object { $_.Name -notmatch '(?i)-arm64\.exe$' }) }
+          # Named, not silently narrowed: a release that stops shipping this runner's
+          # architecture, or starts shipping two of them, is a packaging change this job
+          # should report rather than guess its way through.
+          if ($wanted.Count -ne 1) {
+            Write-Host "::error::expected exactly one $env:PROCESSOR_ARCHITECTURE installer in the release, found $($wanted.Count) (assets: $($all.Name -join ', '))"
+            exit 1
+          }
+          $exe = $wanted[0].FullName
+          Write-Host "installer for $($env:PROCESSOR_ARCHITECTURE): $exe"
           # /S is the NSIS silent switch: a user double-clicks, but an installer that cannot
           # run unattended cannot be scripted or MDM-deployed either.
           $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
