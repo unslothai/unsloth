@@ -3184,3 +3184,51 @@ class TestContextManagersWalrusesAndTheVersionFloor:
         finally:
             monkeypatch.undo()
             importlib.reload(reloaded)
+
+
+class TestNonlocalTargetsAndSessionMethods:
+    _NONLOCAL = """import requests
+def outer():
+    u = "{outer}"
+    def middle():
+        def inner():
+            nonlocal u
+            u = "{inner}"
+        inner()
+    middle()
+    requests.get(u)
+"""
+
+    def test_a_nonlocal_through_an_unbound_middle_scope_reaches_the_real_binding(self):
+        # The write lands on outer's u, so the name has two bindings and vouches for nothing. The
+        # stale outer literal must not answer for the call.
+        _ok(self._NONLOCAL.format(outer = _METADATA_URL, inner = "https://huggingface.co/"))
+
+    def test_an_untouched_outer_binding_still_resolves_blocked(self):
+        _blocked(
+            'import requests\ndef outer():\n    u = "%s"\n    requests.get(u)' % _METADATA_URL,
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                's.get_adapter("https://example.com/")',
+                id = "get_adapter",
+            ),
+            pytest.param(
+                'import requests\ns = requests.Session()\ns.mount("https://example.com/", None)',
+                id = "mount",
+            ),
+        ],
+    )
+    def test_a_session_method_that_sends_nothing_is_not_a_request_ok(self, code):
+        _ok(code)
+
+    def test_a_session_method_that_does_send_is_still_policed_blocked(self):
+        _blocked(
+            f'import requests\ns = requests.Session()\ns.get("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )

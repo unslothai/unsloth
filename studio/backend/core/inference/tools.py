@@ -16070,6 +16070,12 @@ def _check_signal_escape_patterns(code: str):
     _HTTP_METHOD_NAMES = frozenset(
         {"get", "post", "put", "patch", "delete", "head", "options", "request"}
     )
+    _SESSION_PREFIXES = (
+        "requests.Session",
+        "httpx.Client",
+        "httpx.AsyncClient",
+        "aiohttp.ClientSession",
+    )
     _URL_OWNERS = frozenset(
         {
             "requests",
@@ -16112,6 +16118,16 @@ def _check_signal_escape_patterns(code: str):
             return True
         owner, _, method = fq.rpartition(".")
         return bool(owner) and method in _HTTP_METHOD_NAMES and owner in _URL_OWNERS
+
+    def _is_a_network_call(fq: str) -> bool:
+        """Whether this name reaches the network. A session instance has plenty of methods that do
+        not: s.mount(...) and s.get_adapter(...) take a URL and send nothing."""
+        if not fq or not any(fq.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES):
+            return False
+        for prefix in _SESSION_PREFIXES:
+            if fq.startswith(prefix + "."):
+                return fq.rpartition(".")[2] in _HTTP_METHOD_NAMES
+        return True
 
     def _url_arg_index(fq: str) -> int:
         """Which positional argument holds the URL. `requests.request(method, url)` and the session
@@ -16189,6 +16205,10 @@ def _check_signal_escape_patterns(code: str):
             self._scope_parent: dict[object, object] = {}
             self._class_scopes: set = set()
             self._comprehension_scopes: set = set()
+            # (scope, name) seen in a first, redirect-free pass, so a nonlocal can be pointed at
+            # the scope that really binds its name rather than at the lexical parent.
+            self._raw_bound: set = set()
+            self._raw_mode = False
             # (scope, name) -> the scope that name really binds in, for global / nonlocal.
             self._redirect: dict = {}
             # (scope, name) -> [(position, is_alias)], so a call before a rebind still resolves.
@@ -16347,6 +16367,16 @@ def _check_signal_escape_patterns(code: str):
                     return list(self.all_values.get(key, ()))
             return []
 
+        def _nonlocal_target(self, scope, name):
+            """The scope a `nonlocal` really writes to: the nearest enclosing function scope that
+            binds the name, skipping class bodies and scopes that never bind it at all."""
+            candidate = self._scope_parent.get(scope)
+            while candidate is not None:
+                if candidate not in self._class_scopes and (candidate, name) in self._raw_bound:
+                    return candidate
+                candidate = self._scope_parent.get(candidate)
+            return self._scope_parent.get(scope)
+
         def _record_alias(self, table: dict, key: tuple, target: str) -> None:
             if key in table and table[key] != target:
                 self._ambiguous_aliases.add(key)
@@ -16357,6 +16387,9 @@ def _check_signal_escape_patterns(code: str):
             return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
 
         def _mark(self, name: "str | None", scope, node = None, is_alias = False) -> None:
+            if name and self._raw_mode:
+                self._raw_bound.add((scope, name))
+                return
             if name:
                 scope = self._redirect.get((scope, name), scope)
                 key = (scope, name)
@@ -16367,6 +16400,9 @@ def _check_signal_escape_patterns(code: str):
                     )
 
         def _bind(self, target, value, scope) -> None:
+            if isinstance(target, ast.Name) and self._raw_mode:
+                self._raw_bound.add((scope, target.id))
+                return
             if isinstance(target, ast.Name):
                 # `global u` makes an assignment here a write to the module's u, not a local one.
                 scope = self._redirect.get((scope, target.id), scope)
@@ -16384,38 +16420,9 @@ def _check_signal_escape_patterns(code: str):
                 for element in target.elts:
                     self._bind(element, None, scope)
 
-        def collect(self, tree) -> "_NameBindings":
-            scoped = list(self._walk_scoped(tree))
-            for node, scope in scoped:
-                if isinstance(node, ast.Global):
-                    for name in node.names:
-                        self._redirect[(scope, name)] = None
-                elif isinstance(node, ast.Nonlocal):
-                    for name in node.names:
-                        self._redirect[(scope, name)] = self._scope_parent.get(scope)
-            for node, scope in scoped:
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        self._mark(
-                            alias.asname or alias.name.split(".")[0],
-                            scope,
-                            node,
-                            is_alias = True,
-                        )
-                        # Without `as`, the bound name is already the canonical head of the FQ name.
-                        if alias.asname and alias.name in _NET_MODULES:
-                            self._record_alias(self.modules, (scope, alias.asname), alias.name)
-                elif isinstance(node, ast.ImportFrom):
-                    for alias in node.names:
-                        local = alias.asname or alias.name
-                        self._mark(local, scope, node, is_alias = True)
-                        if node.level or node.module is None:
-                            continue
-                        fq = f"{node.module}.{alias.name}"
-                        if fq in _NET_MODULES:
-                            self._record_alias(self.modules, (scope, local), fq)
-                        elif node.module in _NET_MODULES:
-                            self._record_alias(self.funcs, (scope, local), fq)
+        def _scan_bindings(self, scoped) -> None:
+            """Record every binding in the tree. Run once in raw mode, to learn which
+            scope binds which name, then again for real once declarations are resolved."""
             for node, scope in scoped:
                 if _MATCH_CAPTURES and isinstance(node, _MATCH_CAPTURES):
                     self._mark(node.name, scope, node)
@@ -16464,6 +16471,43 @@ def _check_signal_escape_patterns(code: str):
                     self._mark(node.name, scope, node)
                 elif isinstance(node, (ast.Global, ast.Nonlocal)):
                     pass  # a declaration, not a binding; collected in the first pass
+
+        def collect(self, tree) -> "_NameBindings":
+            scoped = list(self._walk_scoped(tree))
+            self._raw_mode = True
+            self._scan_bindings(scoped)
+            self._raw_mode = False
+            for node, scope in scoped:
+                if isinstance(node, ast.Global):
+                    for name in node.names:
+                        self._redirect[(scope, name)] = None
+                elif isinstance(node, ast.Nonlocal):
+                    for name in node.names:
+                        self._redirect[(scope, name)] = self._nonlocal_target(scope, name)
+            for node, scope in scoped:
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        self._mark(
+                            alias.asname or alias.name.split(".")[0],
+                            scope,
+                            node,
+                            is_alias = True,
+                        )
+                        # Without `as`, the bound name is already the canonical head of the FQ name.
+                        if alias.asname and alias.name in _NET_MODULES:
+                            self._record_alias(self.modules, (scope, alias.asname), alias.name)
+                elif isinstance(node, ast.ImportFrom):
+                    for alias in node.names:
+                        local = alias.asname or alias.name
+                        self._mark(local, scope, node, is_alias = True)
+                        if node.level or node.module is None:
+                            continue
+                        fq = f"{node.module}.{alias.name}"
+                        if fq in _NET_MODULES:
+                            self._record_alias(self.modules, (scope, local), fq)
+                        elif node.module in _NET_MODULES:
+                            self._record_alias(self.funcs, (scope, local), fq)
+            self._scan_bindings(scoped)
             # An alias entry is only good while the name means one thing in its own scope. `import
             # requests as r` followed by `import socket as r`, or by an assignment to `r`, leaves
             # whichever the walk reached last, and ast.walk order is not specified, so drop both.
@@ -16891,9 +16935,7 @@ def _check_signal_escape_patterns(code: str):
             fq_names = _call_fq_names(node.func, _bindings)
             fq = fq_names[0] if fq_names else ""
             # The name the network policy answers on: whichever spelling a prefix matches.
-            network_fq = next(
-                (f for f in fq_names if any(f.startswith(p) for p in _NETWORK_FQ_PREFIXES)), ""
-            )
+            network_fq = next((f for f in fq_names if _is_a_network_call(f)), "")
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
