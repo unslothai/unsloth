@@ -504,6 +504,175 @@ marker_case "a committed first install keeps its marker when a later step fails"
     "/previous/install/cache" "/tmp/this-attempt-cache" commit
 commit_flag_case
 
+echo "=== --no-rollback discards the old environment instead of keeping a copy (#11313) ==="
+# The rename still has to happen first -- uv creates only into a path that is absent or empty --
+# so what the flag changes is what survives the rename, not whether there is one.
+no_rollback_case() {  # label  flag_line  expect_copy(yes|no)
+    _nr_label="$1"
+    _nr_flag="$2"
+    _nr_expect="$3"
+    _nr_dir="$WORK/no-rollback-$(printf '%s' "$_nr_label" | tr -c 'a-zA-Z0-9' '-')"
+    mkdir -p "$_nr_dir/unsloth_studio"
+    printf 'old\n' > "$_nr_dir/unsloth_studio/generation"
+    _nr_harness="$_nr_dir/harness.sh"
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { printf "SUBSTEP %s\n" "$*"; }'
+        printf '%s\n' 'rollback_substep() { substep "$@"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$_nr_dir"
+        printf "VENV_DIR='%s/unsloth_studio'\n" "$_nr_dir"
+        printf '%s\n' "$_nr_flag"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        printf '%s\n' '_start_studio_venv_replacement "$VENV_DIR"'
+    } > "$_nr_harness"
+    set +e
+    _nr_out=$(dash "$_nr_harness" 2>&1)
+    _nr_status=$?
+    set -e
+    if [ "$_nr_status" -ne 0 ]; then
+        bad "$_nr_label: harness exited $_nr_status"
+        return
+    fi
+    if find "$_nr_dir" -maxdepth 1 -name 'unsloth_studio.rollback.*' -print -quit | grep -q .; then
+        _nr_got=yes
+    else
+        _nr_got=no
+    fi
+    if [ "$_nr_got" = "$_nr_expect" ]; then
+        ok "$_nr_label"
+    else
+        bad "$_nr_label (rollback copy present: $_nr_got, expected $_nr_expect)"
+    fi
+    # The old venv is gone from its original place either way: the rename is unconditional.
+    if [ ! -e "$_nr_dir/unsloth_studio" ]; then
+        ok "$_nr_label: the old environment was moved aside"
+    else
+        bad "$_nr_label: the old environment is still in place"
+    fi
+    case "$_nr_expect" in
+        no)
+            if printf '%s\n' "$_nr_out" | grep -q 'discarded (--no-rollback)'; then
+                ok "$_nr_label: says the old environment was discarded"
+            else
+                bad "$_nr_label: said nothing about discarding it"
+            fi
+            ;;
+        yes)
+            if printf '%s\n' "$_nr_out" | grep -q 'preserved for rollback'; then
+                ok "$_nr_label: says the old environment was preserved"
+            else
+                bad "$_nr_label: said nothing about preserving it"
+            fi
+            ;;
+    esac
+}
+no_rollback_case "default keeps the rollback copy" "_NO_ROLLBACK=false" yes
+no_rollback_case "flag drops the rollback copy" "_NO_ROLLBACK=true" no
+# Unset is the shape the extracted block sees when the flag parser is not spliced in; it must
+# read as "keep", never as an error under set -e.
+no_rollback_case "an unset flag still keeps the copy" "# no flag set" yes
+
+echo "=== --no-rollback clears the restore state, so a later signal cannot resurrect it ==="
+NR_SIGNAL_DIR="$WORK/no-rollback-signal"
+mkdir -p "$NR_SIGNAL_DIR/unsloth_studio"
+printf 'old\n' > "$NR_SIGNAL_DIR/unsloth_studio/generation"
+{
+    printf '%s\n' 'set -e'
+    printf '%s\n' 'substep() { :; }'
+    printf '%s\n' 'rollback_substep() { substep "$@"; }'
+    printf '%s\n' 'C_WARN=""'
+    printf "STUDIO_HOME='%s'\n" "$NR_SIGNAL_DIR"
+    printf "VENV_DIR='%s/unsloth_studio'\n" "$NR_SIGNAL_DIR"
+    printf '%s\n' '_NO_ROLLBACK=true'
+    printf '%s\n' "$ROLLBACK_BLOCK"
+    printf '%s\n' '_start_studio_venv_replacement "$VENV_DIR"'
+    printf '%s\n' 'mkdir -p "$VENV_DIR"'
+    printf '%s\n' 'printf "partial\n" > "$VENV_DIR/generation"'
+    printf '%s\n' 'kill -TERM $$'
+    printf '%s\n' 'exit 99'
+} > "$NR_SIGNAL_DIR/harness.sh"
+set +e
+dash "$NR_SIGNAL_DIR/harness.sh" >/dev/null 2>&1
+_nr_signal_status=$?
+set -e
+if [ "$_nr_signal_status" -eq 143 ]; then
+    ok "a signal after --no-rollback still exits 143"
+else
+    bad "a signal after --no-rollback exited $_nr_signal_status"
+fi
+# There is nothing to restore, and the half-built environment is what is left. The point is that
+# the restore path does not fail or put back a tree that was deleted.
+if [ ! -e "$NR_SIGNAL_DIR/unsloth_studio" ] \
+   || [ "$(cat "$NR_SIGNAL_DIR/unsloth_studio/generation" 2>/dev/null)" != "old" ]; then
+    ok "--no-rollback does not resurrect the discarded environment"
+else
+    bad "--no-rollback restored an environment it had deleted"
+fi
+
+echo "=== the free-space warning names both figures and the opt-out, and never aborts ==="
+space_case() {  # label  free_kb_stub  expect_warning(yes|no)
+    _sc_label="$1"
+    _sc_free="$2"
+    _sc_expect="$3"
+    _sc_dir="$WORK/space-$(printf '%s' "$_sc_label" | tr -c 'a-zA-Z0-9' '-')"
+    mkdir -p "$_sc_dir/unsloth_studio"
+    printf 'old\n' > "$_sc_dir/unsloth_studio/generation"
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'rollback_substep() { substep "$@"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$_sc_dir"
+        printf "VENV_DIR='%s/unsloth_studio'\n" "$_sc_dir"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        # Stub the two measurements rather than filling a real disk.
+        printf '%s\n' '_dir_size_kb() { echo 1048576; }'
+        printf "_free_space_kb() { %s; }\n" "$_sc_free"
+        printf '%s\n' '_start_studio_venv_replacement "$VENV_DIR"'
+        printf '%s\n' 'echo INSTALL_CONTINUED'
+    } > "$_sc_dir/harness.sh"
+    set +e
+    _sc_out=$(dash "$_sc_dir/harness.sh" 2>&1)
+    _sc_status=$?
+    set -e
+    if [ "$_sc_status" -ne 0 ]; then
+        bad "$_sc_label: harness exited $_sc_status"
+        return
+    fi
+    if printf '%s\n' "$_sc_out" | grep -q 'INSTALL_CONTINUED'; then
+        ok "$_sc_label: warns without aborting"
+    else
+        bad "$_sc_label: the install did not continue"
+    fi
+    if printf '%s\n' "$_sc_out" | grep -q 'needs about 1024 MB'; then
+        _sc_got=yes
+    else
+        _sc_got=no
+    fi
+    if [ "$_sc_got" = "$_sc_expect" ]; then
+        ok "$_sc_label: warning present=$_sc_expect"
+    else
+        bad "$_sc_label: warning present=$_sc_got, expected $_sc_expect"
+    fi
+    if [ "$_sc_expect" = yes ]; then
+        if printf '%s\n' "$_sc_out" | grep -q '512 MB free'; then
+            ok "$_sc_label: names the free space too"
+        else
+            bad "$_sc_label: did not name the free space"
+        fi
+        if printf '%s\n' "$_sc_out" | grep -q 'UNSLOTH_INSTALL_NO_ROLLBACK=1'; then
+            ok "$_sc_label: names the opt-out"
+        else
+            bad "$_sc_label: did not name the opt-out"
+        fi
+    fi
+}
+space_case "less free than the venv needs" "echo 524288" yes
+space_case "plenty of room" "echo 104857600" no
+# An unmeasurable disk is not a warning: du or df missing must print nothing, not "about  MB".
+space_case "unmeasurable free space" "return 0" no
+
 echo ""
 echo "  PASS: $PASS"
 echo "  FAIL: $FAIL"

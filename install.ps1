@@ -7,8 +7,9 @@
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
 # beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE,
-# UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the equivalent flags
-# (--no-torch, --skip-autostart, --isolated-uv-cache, --python, --local).
+# UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the
+# equivalent flags (--no-torch, --skip-autostart, --isolated-uv-cache, --no-rollback,
+# --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -1924,6 +1925,9 @@ function Install-UnslothStudio {
     $SkipTorch = $false
     $SkipAutostart = $false
     $IsolateUvCache = $false
+    # Script-scoped: Start-StudioVenvRollback reads it, and tests/studio/test_install_rollback_lifecycle.ps1
+    # extracts that function on its own.
+    $script:StudioNoRollback = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -1933,6 +1937,7 @@ function Install-UnslothStudio {
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
             "--isolated-uv-cache" { $IsolateUvCache = $true }
+            "--no-rollback" { $script:StudioNoRollback = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
@@ -1959,6 +1964,7 @@ function Install-UnslothStudio {
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
     if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
     if ($env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')) { $IsolateUvCache = $true }
+    if ($env:UNSLOTH_INSTALL_NO_ROLLBACK -in @('1', 'true', 'yes', 'on')) { $script:StudioNoRollback = $true }
 
     if ($script:UnslothVerbose) {
         $env:UNSLOTH_VERBOSE = '1'
@@ -2745,6 +2751,44 @@ exit 1
     function Get-StudioFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
         return (Resolve-StudioFinalPathInfo -Path $Path).Path
+    }
+
+    # Disk arithmetic for the rollback copy and the uv cache (#11313). Each answers $null / "cannot
+    # tell" rather than guessing: a number this cannot produce is a warning it does not print.
+    # Defined here, above Set-StudioUvCacheEnvironment's call site, because a nested function does
+    # not exist until the statement defining it has run.
+    # GetPathRoot on a path that does not exist yet still names the volume it would be created on.
+    function Get-StudioFreeSpaceBytes {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        try {
+            $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Path))
+            if (-not $root) { return $null }
+            return ([System.IO.DriveInfo]::new($root)).AvailableFreeSpace
+        } catch { return $null }
+    }
+
+    function Get-StudioTreeSizeBytes {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        try {
+            if (-not (Test-Path -LiteralPath $Path)) { return $null }
+            $total = 0
+            foreach ($f in (Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+                $total += $f.Length
+            }
+            return $total
+        } catch { return $null }
+    }
+
+    # Junctions and symlinks lie about which volume a path is on, so canonicalise first. Unknown
+    # answers $true -- "same volume" is the quiet case, and a guess must not invent a warning.
+    function Test-StudioSameVolume {
+        param([Parameter(Mandatory = $true)][string]$PathA, [Parameter(Mandatory = $true)][string]$PathB)
+        try {
+            $a = [System.IO.Path]::GetPathRoot((Get-StudioFinalPath -Path $PathA))
+            $b = [System.IO.Path]::GetPathRoot((Get-StudioFinalPath -Path $PathB))
+            if (-not $a -or -not $b) { return $true }
+            return ($a -eq $b)
+        } catch { return $true }
     }
 
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
@@ -6829,6 +6873,18 @@ exit 0
     # installer is a command-not-found.
     Write-StudioRootOwnerMarker -Root $StudioHome
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
+    # Outside the selector, not inside it: the ranking is pinned across install.ps1, install.sh,
+    # studio/setup.sh and unsloth_cli/commands/studio.py (tests/python/test_uv_cache_selector_agreement.py),
+    # and tests/python/test_windows_uv_cache_selection.py lifts that one function out and runs it
+    # on its own, so it stays exactly what those two pin. The ranking is therefore NOT reordered to
+    # prefer a co-located cache; what is added is saying what the winner costs. Across a volume
+    # boundary uv copies every wheel rather than hardlinking it, so the new environment is a second
+    # full copy rather than a handful of megabytes -- the whole of the "a reinstall doubles the
+    # disk" report (#11313). A Studio home on any drive but C: lands here, because uv's default
+    # cache is under %LOCALAPPDATA%.
+    if ($env:UV_CACHE_DIR -and -not (Test-StudioSameVolume -PathA $env:UV_CACHE_DIR -PathB $StudioHome)) {
+        step "uv cache" "$($env:UV_CACHE_DIR) is on a different volume from $StudioHome, so wheels are copied into the venv rather than hardlinked, costing extra disk; use --isolated-uv-cache to keep the cache beside the environment" "Yellow"
+    }
 
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
@@ -6954,6 +7010,20 @@ exit 0
         return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
     }
 
+    # One line, before the move, naming both figures and the opt-out. Warn only: the estimate is a
+    # guess and being wrong must never stop an install that would have fitted (#11313).
+    function Write-StudioRollbackSpaceWarning {
+        param([Parameter(Mandatory = $true)][string]$ExistingDir)
+        $size = Get-StudioTreeSizeBytes -Path $ExistingDir
+        $free = Get-StudioFreeSpaceBytes -Path $StudioHome
+        if ($null -eq $size -or $null -eq $free) { return }
+        if ($free -ge $size) { return }
+        $sizeMb = [math]::Round($size / 1MB)
+        $freeMb = [math]::Round($free / 1MB)
+        Write-StudioLine "[WARN] Keeping the previous environment for rollback needs about $sizeMb MB, and $StudioHome has $freeMb MB free." -ForegroundColor Yellow
+        Write-StudioLine "       The install continues. If it runs out of space, re-run with --no-rollback (or UNSLOTH_INSTALL_NO_ROLLBACK=1) to discard the old environment instead of keeping it." -ForegroundColor Yellow
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -6969,6 +7039,13 @@ exit 0
         $script:StudioVenvRollbackTarget = $ExistingDir
         $script:StudioVenvRollbackActive = $true
         $script:StudioVenvRollbackPartial = $false
+        # The rename itself is free, but the new venv beside it is not: uv hardlinks a wheel only
+        # within one volume, so a cache elsewhere makes every file a real copy and the install
+        # needs room for two whole environments (#11313). Say so before the space is gone.
+        # In its own try: this is advice, and advice that cannot be produced must not cost the
+        # rename. This function runs under "Stop", so an enumeration denied halfway, or a harness
+        # that spliced this function without its helper, would otherwise abort the rollback.
+        try { Write-StudioRollbackSpaceWarning -ExistingDir $ExistingDir } catch { }
         # Publish the rollback state before the atomic rename so interruption
         # cannot land after Move-Item but before cleanup knows where the old venv went.
         try {
@@ -6999,6 +7076,18 @@ exit 0
                 Write-StudioLine "       Close Unsloth Studio and re-run the installer to reverse the move." -ForegroundColor Yellow
             }
             throw
+        }
+        # --no-rollback / UNSLOTH_INSTALL_NO_ROLLBACK: drop the old environment now instead of at
+        # commit, for the disk-constrained cross-volume case. The rename still happens first, so
+        # uv never builds into an occupied path. Clearing the state before the delete is what the
+        # commit path does too: an interrupt must not restore a half-deleted backup.
+        if ($script:StudioNoRollback) {
+            $discard = $script:StudioVenvRollbackDir
+            $script:StudioVenvRollbackActive = $false
+            $script:StudioVenvRollbackDir = $null
+            Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment" | Out-Null
+            substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
+            return
         }
         substep "previous environment preserved for rollback"
     }
@@ -10480,6 +10569,14 @@ sys.exit(2 if conflict else (0 if installed else 1))
     if ($setupExit -ne 0) {
         if (-not $TauriMode) {
             Write-StudioLine "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
+            # A full disk surfaces here as nothing but an exit code, with the one out-of-space line
+            # buried in setup's output (#11313). Ask the volume directly and name it. Below 64 MB
+            # nothing useful can be unpacked, so it is the cause rather than a coincidence.
+            $_failFree = Get-StudioFreeSpaceBytes -Path $StudioHome
+            if ($null -ne $_failFree -and $_failFree -lt 64MB) {
+                Write-StudioLine "        $StudioHome has only $([math]::Round($_failFree / 1MB)) MB free -- the disk is full, which is very likely the cause." -ForegroundColor Red
+                Write-StudioLine "        Free some space and re-run. --no-rollback (or UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install." -ForegroundColor Red
+            }
         }
         return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)" $setupExit)
     }

@@ -188,6 +188,60 @@ try {
         Microsoft.PowerShell.Management\Remove-Item -LiteralPath Function:\Remove-Item -Force
     }
     Check "locked rollback deletion retries" ($removed -and $script:removeAttempts -eq 3)
+
+    Write-Host "--no-rollback discards the old environment instead of keeping a copy (#11313)"
+    # The rename still has to happen -- uv creates only into a path that is absent or empty -- so
+    # what the flag changes is what survives it, not whether there is one.
+    foreach ($case in @(
+            @{ Label = "default"; Flag = $false; ExpectCopy = $true },
+            @{ Label = "--no-rollback"; Flag = $true; ExpectCopy = $false })) {
+        [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+        Reset-RollbackState $VenvDir
+        $script:StudioNoRollback = $case.Flag
+        Start-StudioVenvRollback -ExistingDir $VenvDir
+        $copies = @(Get-ChildItem -LiteralPath $StudioHome -Directory -Filter "unsloth_studio.rollback.*" -ErrorAction SilentlyContinue)
+        Check "$($case.Label): rollback copy kept = $($case.ExpectCopy)" (($copies.Count -gt 0) -eq $case.ExpectCopy)
+        Check "$($case.Label): the old environment was moved aside" (-not (Test-Path -LiteralPath $VenvDir))
+        if (-not $case.ExpectCopy) {
+            # Cleared before the delete, exactly as the commit path does: an interrupt must not be
+            # handed a backup that is already half gone.
+            Check "--no-rollback clears the restore state" (
+                (-not $script:StudioVenvRollbackActive) -and ($null -eq $script:StudioVenvRollbackDir))
+            # And the restore must then be a no-op rather than a failure.
+            $restoreThrew = $false
+            try { Restore-StudioVenvRollback } catch { $restoreThrew = $true }
+            Check "--no-rollback leaves nothing for the restore to do" (
+                (-not $restoreThrew) -and (-not (Test-Path -LiteralPath $VenvDir)))
+        }
+        foreach ($c in $copies) { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    $script:StudioNoRollback = $false
+
+    Write-Host "the free-space warning names both figures and the opt-out, and never aborts"
+    # Stub the two measurements rather than filling a real disk.
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+    foreach ($case in @(
+            @{ Label = "less free than the venv needs"; Free = 512MB; Expect = $true },
+            @{ Label = "plenty of room"; Free = 100GB; Expect = $false },
+            @{ Label = "unmeasurable free space"; Free = $null; Expect = $false })) {
+        $script:warnLines = @()
+        function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) $script:warnLines += $Message }
+        function Get-StudioTreeSizeBytes { param([string]$Path) return 1GB }
+        $script:caseFree = $case.Free
+        function Get-StudioFreeSpaceBytes { param([string]$Path) return $script:caseFree }
+        $threw = $false
+        try { Write-StudioRollbackSpaceWarning -ExistingDir $VenvDir } catch { $threw = $true }
+        $joined = ($script:warnLines -join "`n")
+        Check "$($case.Label): never throws" (-not $threw)
+        Check "$($case.Label): warning present = $($case.Expect)" (($joined -match 'needs about 1024 MB') -eq $case.Expect)
+        if ($case.Expect) {
+            Check "$($case.Label): names the free space too" ($joined -match '512 MB free')
+            Check "$($case.Label): names the opt-out" ($joined -match 'UNSLOTH_INSTALL_NO_ROLLBACK=1')
+        }
+    }
+    function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }
 } finally {
     if (Test-Path -LiteralPath $StudioHome) {
         Microsoft.PowerShell.Management\Remove-Item -LiteralPath $StudioHome -Recurse -Force
