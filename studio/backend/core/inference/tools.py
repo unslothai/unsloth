@@ -17198,6 +17198,50 @@ def _check_signal_escape_patterns(code: str):
         ):
             _assigned_attributes(_target, _rebound_attributes)
 
+    def _dynamically_mutated_owners(tree) -> set:
+        """Names whose attributes the source replaces without writing an assignment target:
+        `setattr(sqlite3, "connect", ...)`, `vars(sqlite3)["connect"] = ...` and the `__dict__`
+        spelling of the same thing. The attribute cannot be proven unchanged after that, so the
+        exemption is withheld for everything under that name."""
+        out: set = set()
+
+        def root_of(node) -> str:
+            while isinstance(node, (ast.Attribute, ast.Subscript)):
+                node = node.value
+            if isinstance(node, ast.Call) and node.args:
+                # vars(sqlite3)[...]
+                node = node.args[0]
+            return node.id if isinstance(node, ast.Name) else ""
+
+        for node in _tree_nodes(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id in ("setattr", "delattr") and node.args:
+                    owner = root_of(node.args[0])
+                    if owner:
+                        out.add(owner)
+            targets = list(getattr(node, "targets", []))
+            if isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.target:
+                targets.append(node.target)
+            if isinstance(node, ast.Delete):
+                targets += node.targets
+            for target in targets:
+                if not isinstance(target, ast.Subscript):
+                    continue
+                owner = root_of(target.value)
+                mapping = target.value
+                is_namespace = (
+                    isinstance(mapping, ast.Attribute) and mapping.attr == "__dict__"
+                ) or (
+                    isinstance(mapping, ast.Call)
+                    and isinstance(mapping.func, ast.Name)
+                    and mapping.func.id == "vars"
+                )
+                if owner and is_namespace:
+                    out.add(owner)
+        return out
+
+    _mutated_owners = _dynamically_mutated_owners(tree)
+
     def _any_prefix_was_rebound(node) -> bool:
         """Whether the source assigned this attribute or anything it hangs off. `sqlite3.x` being
         replaced makes `sqlite3.x.connect` someone else's callable even though the root is still
@@ -17206,6 +17250,9 @@ def _check_signal_escape_patterns(code: str):
         if not written:
             return False
         parts = written.split(".")
+        if parts[0] in _mutated_owners:
+            # Its namespace was written to at runtime, so nothing under it is what it was.
+            return True
         return any(
             ".".join(parts[: index + 1]) in _rebound_attributes for index in range(len(parts))
         )
