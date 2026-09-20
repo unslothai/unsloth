@@ -718,6 +718,26 @@ def test_seed_hf_path_counts_a_digit_as_a_label_separator(monkeypatch, tmp_path)
     )
 
 
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        # Most files wins, so the long csv name does not decide the format.
+        (
+            ["data/a-very-long-name.csv", "data/z.parquet", "data/y.parquet"],
+            "datasets/org/repo/data/*.parquet",
+        ),
+        (["data/a.csv", "data/z.parquet"], "datasets/org/repo/data/*.parquet"),
+        (["data/a.csv", "data/b.csv"], "datasets/org/repo/data/*.csv"),
+    ],
+)
+def test_seed_hf_path_picks_the_format_the_loader_would_build(
+    monkeypatch, tmp_path, files, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "data/*"}]}]
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs) == expected
+
+
 def test_seed_hf_path_combines_bare_and_explicit_train_entries(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     configs = [

@@ -403,6 +403,30 @@ def _with_data_extension(pattern: str, suffix: str) -> str:
     return f"{pattern}{suffix}"
 
 
+def _dominant_suffix(paths: list[str]) -> str:
+    """The format the loader would build this split from: most files, parquet on ties.
+
+    One broad card glob can cover several formats, and picking whichever name
+    sorts first would point the recipe at a format the split does not use
+    (`local_options._one_module`).
+    """
+    counts: dict[str, int] = {}
+    for path in paths:
+        suffix = Path(path).suffix.lower()
+        counts[suffix] = counts.get(suffix, 0) + 1
+    if not counts:
+        return ""
+    best = max(
+        counts,
+        key = lambda s: (counts[s], -DATA_EXTS.index(s) if s in DATA_EXTS else -99),
+    )
+    return next(Path(p).suffix for p in paths if Path(p).suffix.lower() == best)
+
+
+def _of_suffix(paths: list[str], suffix: str) -> list[str]:
+    return [p for p in paths if Path(p).suffix.lower() == suffix.lower()]
+
+
 def _common_name_prefix(paths: list[str]) -> str:
     names = [Path(path).name for path in paths]
     shared = os.path.commonprefix(names) if names else ""
@@ -451,7 +475,8 @@ def _resolve_seed_hf_path(
     # The card's own mapping beats any guess from the folder names, as long as it
     # resolves to files that are really there.
     if declared_files:
-        suffix = Path(sorted(declared_files)[0]).suffix
+        suffix = _dominant_suffix(declared_files)
+        declared_files = _of_suffix(declared_files, suffix)
         pattern = ""
         if len(declared) == 1:
             pattern = _with_data_extension(declared[0], suffix)
@@ -698,6 +723,9 @@ def inspect_seed_dataset(
     declared_files = _files_under_patterns(
         _declared_split_patterns(configs, split, subset), data_files
     )
+    # Same format the resolved path will read, or the rows on screen come from a
+    # file the recipe never opens.
+    declared_files = _of_suffix(declared_files, _dominant_suffix(declared_files))
     selected_file = _select_best_file(declared_files or data_files, split, subset)
     if selected_file:
         try:
