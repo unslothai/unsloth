@@ -22,6 +22,18 @@ from utils.hardware.vram_estimation import (
 )
 
 
+def _shared_setup_1():
+    flash = compute_activation_bytes(
+        STRUCTURED_MIXED,
+        1,
+        4096,
+        "unsloth",
+        is_lora = True,
+        attention_implementation = "flash_attention_2",
+    )
+    return flash
+
+
 def _gb(b: int) -> float:
     return b / (1024**3)
 
@@ -269,6 +281,35 @@ class TestExtractArchConfig(unittest.TestCase):
         self.assertEqual(arch.quantization_skip_modules, ["model.layers.0.self_attn"])
         self.assertEqual(arch.quant_4bit_factor, 3.6)
 
+    def test_quantization_fields_from_raw_config_json(self):
+        from utils.hardware import hardware as hardware_module
+
+        skip_modules = ["lm_head", "multi_modal_projector", "merger", "modality_projection"]
+        raw_config = {
+            "model_type": "gemma3",
+            "text_config": {
+                "model_type": "gemma3_text",
+                "hidden_size": 5376,
+                "num_hidden_layers": 62,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 16,
+                "intermediate_size": 21504,
+                "vocab_size": 262208,
+            },
+            "quantization_config": {
+                "bnb_4bit_use_double_quant": True,
+                "llm_int8_skip_modules": skip_modules,
+                "quant_method": "bitsandbytes",
+            },
+        }
+        with patch("utils.transformers_version._load_config_json", return_value = raw_config):
+            config = hardware_module._load_config_for_gpu_estimate(
+                "unsloth/gemma-3-27b-it-bnb-4bit"
+            )
+        arch = extract_arch_config(config)
+        self.assertEqual(arch.quant_4bit_factor, 3.6)
+        self.assertEqual(arch.quantization_skip_modules, skip_modules)
+
 
 class TestModelWeightsBytes(unittest.TestCase):
     def test_llama_8b_fp16(self):
@@ -420,14 +461,7 @@ class TestActivationBytes(unittest.TestCase):
         self.assertAlmostEqual(act_4k / act_2k, 2.0, delta = 0.1)
 
     def test_flash_attention_uses_linear_path(self):
-        flash = compute_activation_bytes(
-            STRUCTURED_MIXED,
-            1,
-            4096,
-            "unsloth",
-            is_lora = True,
-            attention_implementation = "flash_attention_2",
-        )
+        flash = _shared_setup_1()
         default = compute_activation_bytes(
             STRUCTURED_MIXED,
             1,
@@ -438,14 +472,7 @@ class TestActivationBytes(unittest.TestCase):
         self.assertEqual(flash, default)
 
     def test_sdpa_attention_uses_linear_path(self):
-        flash = compute_activation_bytes(
-            STRUCTURED_MIXED,
-            1,
-            4096,
-            "unsloth",
-            is_lora = True,
-            attention_implementation = "flash_attention_2",
-        )
+        flash = _shared_setup_1()
         sdpa = compute_activation_bytes(
             STRUCTURED_MIXED,
             1,
@@ -1075,14 +1102,7 @@ class TestKvSharedLayer(unittest.TestCase):
 
 class TestFlexAttentionLinear(unittest.TestCase):
     def test_flex_attention_treated_as_linear(self):
-        flash = compute_activation_bytes(
-            STRUCTURED_MIXED,
-            1,
-            4096,
-            "unsloth",
-            is_lora = True,
-            attention_implementation = "flash_attention_2",
-        )
+        flash = _shared_setup_1()
         flex = compute_activation_bytes(
             STRUCTURED_MIXED,
             1,
@@ -2319,3 +2339,109 @@ class TestErnieVlSharedExpertWidth(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_embedding_targets_cost_full_matrices_not_lora_pairs():
+    """embed_tokens/lm_head are redirected to modules_to_save, so they cost vocab*hidden."""
+    from utils.hardware.vram_estimation import _full_weight_embedding_elements
+
+    untied = replace(LLAMA_8B, tie_word_embeddings = False)
+    one = untied.vocab_size * untied.hidden_size
+
+    assert _full_weight_embedding_elements(untied, DEFAULT_TARGET_MODULES) == 0
+    assert _full_weight_embedding_elements(untied, DEFAULT_TARGET_MODULES + ["embed_tokens"]) == one
+    assert (
+        _full_weight_embedding_elements(
+            untied, DEFAULT_TARGET_MODULES + ["embed_tokens", "lm_head"]
+        )
+        == 2 * one
+    )
+
+    # A tied pair gets ensure_weight_tying, which leaves ONE trainable matrix.
+    tied = replace(LLAMA_8B, tie_word_embeddings = True)
+    assert (
+        _full_weight_embedding_elements(tied, DEFAULT_TARGET_MODULES + ["embed_tokens", "lm_head"])
+        == tied.vocab_size * tied.hidden_size
+    )
+
+    # Regex / all-linear / None never carry these names.
+    assert _full_weight_embedding_elements(untied, "all-linear") == 0
+    assert _full_weight_embedding_elements(untied, None) == 0
+
+
+def test_embedding_targets_feed_optimizer_and_gradient_bytes():
+    """The count drives trainable_params, so it must reach compute_lora_params."""
+    untied = replace(LLAMA_8B, tie_word_embeddings = False)
+    base = compute_lora_params(untied, 16, DEFAULT_TARGET_MODULES)
+    with_embed = compute_lora_params(untied, 16, DEFAULT_TARGET_MODULES + ["embed_tokens"])
+    assert with_embed - base == untied.vocab_size * untied.hidden_size
+
+
+def test_an_embedding_only_request_still_counts_the_default_projections():
+    """Counting only the embeddings under-reports by every projection adapter the CPT
+    fallback adds."""
+    tied = replace(LLAMA_8B, tie_word_embeddings = True)
+    projections = compute_lora_params(tied, 128, list(DEFAULT_TARGET_MODULES))
+    one_matrix = tied.vocab_size * tied.hidden_size
+    for targets in (["embed_tokens"], ["embed_tokens", "lm_head"], ["lm_head"]):
+        assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
+    # For Llama, all-linear and the default projection set are equivalent.
+    for targets in (["all-linear", "lm_head"], ["all-linear", "embed_tokens"]):
+        assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
+
+
+def test_cpt_all_linear_payload_counts_lfm2_linear_layers():
+    arch = ModelArchConfig(
+        hidden_size = 2048,
+        num_hidden_layers = 2,
+        num_attention_heads = 32,
+        num_key_value_heads = 8,
+        intermediate_size = 12288,
+        vocab_size = 65536,
+        tie_word_embeddings = True,
+        layer_types = ["conv", "full_attention"],
+        model_type = "lfm2",
+        block_auto_adjust_ff_dim = True,
+        block_ffn_dim_multiplier = 1.0,
+        block_multiple_of = 256,
+    )
+    all_linear = compute_lora_params(arch, 128, ["all-linear"])
+    combined = compute_lora_params(
+        arch,
+        128,
+        ["all-linear", "embed_tokens", "lm_head"],
+    )
+    one_matrix = arch.vocab_size * arch.hidden_size
+    conv_linears = [(2048, 6144), (2048, 2048), (2048, 8192), (2048, 8192), (8192, 2048)]
+    attention_linears = [
+        (2048, 2048),
+        (2048, 512),
+        (2048, 512),
+        (2048, 2048),
+        (2048, 8192),
+        (2048, 8192),
+        (8192, 2048),
+    ]
+    expected_all_linear = sum((in_dim + out_dim) * 128 for in_dim, out_dim in conv_linears)
+    expected_all_linear += sum((in_dim + out_dim) * 128 for in_dim, out_dim in attention_linears)
+
+    assert all_linear == expected_all_linear
+    assert combined == all_linear + one_matrix
+    assert all_linear > compute_lora_params(arch, 128, list(DEFAULT_TARGET_MODULES))
+
+
+def test_qualified_embedding_names_are_counted_too():
+    """PEFT matches on the module suffix, so model.embed_tokens is the same matrix and
+    must not be estimated as if no embedding were trained."""
+    tied = replace(LLAMA_8B, tie_word_embeddings = True)
+    projections = compute_lora_params(tied, 128, list(DEFAULT_TARGET_MODULES))
+    one_matrix = tied.vocab_size * tied.hidden_size
+    for targets in (
+        ["model.embed_tokens"],
+        list(DEFAULT_TARGET_MODULES) + ["model.embed_tokens"],
+        list(DEFAULT_TARGET_MODULES) + ["language_model.lm_head"],
+        ["all-linear", "model.embed_tokens"],
+    ):
+        assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
+    # A qualified projection is NOT an embedding and keeps its low-rank cost.
+    assert compute_lora_params(tied, 128, ["layers.0.q_proj"]) < one_matrix

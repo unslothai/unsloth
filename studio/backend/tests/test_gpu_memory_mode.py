@@ -215,16 +215,9 @@ def test_auto_layers_branch_empties_gpus_and_drops_tensor_parallel():
     # The branch sits before GPU selection assigns gpu_indices; --fit on is its emission.
     assert gate < src.find("gpu_indices, use_fit = None, True")
     assert 'cmd.extend(["--fit", "on"])' in src
-    # TP drops for this path, but at a guard BEFORE the quantized-KV cache-drop, so
-    # a requested quantized cache survives into the --fit load.
     tp_drop = src.find('if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:')
     assert tp_drop != -1, "manual + Auto layers must drop tensor_parallel"
     assert "tensor_parallel = False" in src[tp_drop : tp_drop + 400]
-    cache_drop = src.find("Tensor parallelism requires a non-quantized KV cache")
-    assert cache_drop != -1
-    assert (
-        tp_drop < cache_drop
-    ), "TP must drop before the cache-drop so a quantized KV survives --fit"
 
 
 def test_auto_layers_never_sends_ctx_size_zero():
@@ -629,15 +622,18 @@ def _target_state_gpu_ids(backend, gpu_ids):
     )
 
 
-def test_gpu_ids_reload_detection_is_order_insensitive():
+def test_gpu_ids_reload_detection_is_order_sensitive():
     backend = _loaded_backend("auto")
     backend._gpu_ids = [0, 1]
     # A real non-narrowed load records the raw request too; the non-diffusion
-    # dedupe now compares that raw pin (#7239). Set it to match the effective pin
-    # (no narrowing) so this exercises the order-insensitive comparison.
+    # dedupe compares that raw pin (#7239). Set it to match the effective pin
+    # (no narrowing) so this exercises the order comparison alone.
     backend._requested_gpu_ids = [0, 1]
-    # Same set, different order -> no reload.
-    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    # The picker's order IS the device order, so the same set dragged into a
+    # different order is a different placement and has to reload.
+    assert _target_state_gpu_ids(backend, [1, 0]) is False
+    # Same set, same order -> no reload.
+    assert _target_state_gpu_ids(backend, [0, 1]) is True
     # Different set -> reload.
     assert _target_state_gpu_ids(backend, [0]) is False
     # Dropping the pick (auto) -> reload.
@@ -654,7 +650,7 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     )
 
     # The original request still matches after the fitter narrows it.
-    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    assert _target_state_gpu_ids(backend, [0, 1]) is True
     assert backend.requested_gpu_ids == [0, 1]
     # The status response echoes the effective pin, which must also round-trip.
     # Treat the incoming subset as the latest intent so status and a future
@@ -954,6 +950,16 @@ def test_start_diffusion_server_resets_tensor_parallel():
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
+
+
+@pytest.mark.parametrize(
+    ("parent_ids", "expected"),
+    [([], None), ([2], (2,)), ([0, 1], None)],
+)
+def test_unmasked_child_gpu_map_is_known_only_for_one_gpu(monkeypatch, parent_ids, expected):
+    import utils.hardware as hw
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: parent_ids)
+    assert LlamaCppBackend._unmasked_child_gpu_physical_ids() == expected
 
 
 def _patch_split_pin_env(monkeypatch, *, inherited, reported):

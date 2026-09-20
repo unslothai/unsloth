@@ -309,6 +309,43 @@ function closeDedented(
   return open === columns.length ? columns : columns.slice(0, open);
 }
 
+function sameLineListColumns(
+  line: string,
+  firstItem: RegExpExecArray,
+  firstIndent: number,
+  outerColumns: number[],
+): number[] {
+  let item = firstItem;
+  let itemIndent = firstIndent;
+  let rest = line;
+  const columns = [...outerColumns];
+
+  while (true) {
+    const marker = item[1] ?? "";
+    const rawPadding = indentWidth(item[2] ?? "");
+    const padding =
+      rawPadding === 0 || rawPadding > MAX_ITEM_PADDING ? 1 : rawPadding;
+    const contentColumn = itemIndent + marker.length + padding;
+    columns.push(contentColumn);
+    if (rawPadding === 0 || rawPadding > MAX_ITEM_PADDING) {
+      break;
+    }
+
+    rest = rest.slice(item[0].length);
+    const relativeIndent = indentWidth(rest);
+    if (relativeIndent >= INDENTED_CODE || THEMATIC_BREAK.test(rest)) {
+      break;
+    }
+    const nested = LIST_ITEM.exec(rest);
+    if (nested === null) {
+      break;
+    }
+    item = nested;
+    itemIndent = contentColumn + relativeIndent;
+  }
+  return columns;
+}
+
 /**
  * The list items still open after `line`. A dedented line closes an item unless
  * it is a lazy paragraph continuation. A new marker nests under a deeper column
@@ -343,15 +380,14 @@ export function openLists(
   if (item === null || indent - (columns.at(-1) ?? 0) >= INDENTED_CODE) {
     return { columns, emptyItem: false };
   }
-  const marker = item[1] ?? "";
-  let padding = indentWidth(item[2] ?? "");
-  if (padding === 0 || padding > MAX_ITEM_PADDING) {
-    // An empty or over-indented item still holds one column of content.
-    padding = 1;
-  }
   // A sibling marker replaces the item it lines up with.
   return {
-    columns: [...dropDeeper(columns, indent), indent + marker.length + padding],
+    columns: sameLineListColumns(
+      line,
+      item,
+      indent,
+      dropDeeper(columns, indent),
+    ),
     emptyItem: empty,
   };
 }

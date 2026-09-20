@@ -92,9 +92,8 @@ type PastedTextAttachment = {
   readonly sentBytes?: number;
 };
 
-// Long pastes arrive as a synthetic .txt and render as a chip, not a tile.
-// The selector only passes references along: the text can be megabytes, so
-// nothing here may copy or scan it.
+// Long pastes arrive as a synthetic .txt and render as a chip, not a tile. The selector only passes
+// references along: the text can be megabytes, so nothing here may copy or scan it.
 const usePastedTextAttachment = (): PastedTextAttachment | null => {
   return useAuiState(
     useShallow(({ attachment }): PastedTextAttachment | null => {

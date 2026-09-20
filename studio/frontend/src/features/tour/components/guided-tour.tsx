@@ -4,7 +4,14 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowLeft01Icon, ArrowRight01Icon, Cancel01Icon, CheckmarkCircle01Icon } from "@hugeicons/core-free-icons";
+import {
+  Cancel01Icon,
+  CheckmarkCircle01Icon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+} from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -38,7 +45,14 @@ export function GuidedTour({
   const closeLockRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const lastRectRef = useRef<Rect | null>(null);
-  const activeStepRef = useRef<TourStep | null>(null);
+
+  // Rewound during render: an effect runs after the onEnter effect below, so reopening would fire
+  // the last step's onEnter (Chat's compare step navigates) before rewinding to the first.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setIdx(0);
+  }
 
   const step = steps[idx] ?? null;
   const total = steps.length;
@@ -50,30 +64,19 @@ export function GuidedTour({
     return padded(targetRect, pad, vw, vh);
   }, [step?.target, targetRect, vw, vh]);
 
+  // Cleanup, not a second effect: a step is then also left when the tour unmounts mid-step, as a
+  // page hiding its tour on navigation does. Without it onEnter's side effects leak onto the next
+  // page, and a persisted one (the sidebar pin) is never put back.
   useEffect(() => {
-    if (!open) return;
-    const prev = activeStepRef.current;
-    if (prev && prev.id !== step?.id) {
-      void prev.onExit?.();
-    }
-    activeStepRef.current = step;
-    if (step) {
-      void step.onEnter?.();
-    }
-  }, [open, step?.id]); // run before target lookup effect below
-
-  useEffect(() => {
-    if (open) return;
-    const prev = activeStepRef.current;
-    activeStepRef.current = null;
-    if (prev) {
-      void prev.onExit?.();
-    }
-  }, [open]);
+    if (!open || !step) return;
+    void step.onEnter?.();
+    return () => {
+      void step.onExit?.();
+    };
+  }, [open, step?.id]); // stays above the target lookup effect below
 
   useEffect(() => {
     if (!open) return;
-    setIdx(0);
     setTargetRect(null);
     closeLockRef.current = false;
     lastRectRef.current = null;
@@ -356,7 +359,7 @@ export function GuidedTour({
                           disabled={idx === 0}
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >
-                          <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+                          <ChevronLeftIcon className="size-4" />
                           Back
                         </Button>
                         {isLast ? (
@@ -375,7 +378,7 @@ export function GuidedTour({
                             onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}
                           >
                             Next
-                            <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" />
+                            <ChevronRightIcon className="size-4" />
                           </Button>
                         )}
                       </div>

@@ -6,10 +6,8 @@ import type { VideoGenerationDefaults } from "./api";
 /** Sentinel for deriving resolution from the keyframe aspect ratio. */
 export const MATCH_SOURCE_RESOLUTION = -1;
 
-/**
- * Preview the backend-owned canvas rule from status defaults.
- * Returns null when the family lacks a rule or the aspect ratio is unsupported.
- */
+/** Preview the backend-owned canvas rule from status defaults. Returns null when the family lacks a
+ *  rule or the aspect ratio is unsupported. */
 export function matchedCanvas(
   aspectWidth: number,
   aspectHeight: number,

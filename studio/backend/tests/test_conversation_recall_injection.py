@@ -57,6 +57,23 @@ def _conversation():
     ]
 
 
+def _truncated_turn(
+    *,
+    role = "assistant",
+    content = "a",
+    fits = True,
+    dropped_messages = 4,
+):
+    """A stored turn carrying a context-truncation record, with per-test overrides."""
+    return {
+        "role": role,
+        "content": content,
+        "metadata": {
+            "custom": {"contextTruncation": {"fits": fits, "dropped_messages": dropped_messages}}
+        },
+    }
+
+
 def test_recall_runs_even_when_document_rag_is_off(archived):
     """Compaction happens regardless of the user's RAG toggle.
 
@@ -307,11 +324,18 @@ def _fake_studio_db(monkeypatch, messages):
     import sys
     import types
 
+    from core.inference import checkpoint
+
     module = types.SimpleNamespace(list_chat_messages = lambda thread_id: messages)
     package = types.ModuleType("storage")
     package.studio_db = module
     monkeypatch.setitem(sys.modules, "storage", package)
     monkeypatch.setitem(sys.modules, "storage.studio_db", module)
+    # These fixtures store rolling-shaped records (`fits` + `dropped_messages`, no
+    # `checkpoint` key). Sticky replay treats a missing key as rolling, and the
+    # process default is checkpoint, so pin rolling here or every omitted-key
+    # record is refused. Policy-switch coverage lives in test_checkpoint_compaction.
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
 
 
 def test_sticky_boundary_reads_the_newest_assistant_truncation(monkeypatch):
@@ -320,21 +344,9 @@ def test_sticky_boundary_reads_the_newest_assistant_truncation(monkeypatch):
         monkeypatch,
         [
             {"role": "user", "content": "q"},
-            {
-                "role": "assistant",
-                "content": "a",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 12}}
-                },
-            },
+            _truncated_turn(dropped_messages = 12),
             {"role": "user", "content": "q2"},
-            {
-                "role": "assistant",
-                "content": "a2",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 18}}
-                },
-            },
+            _truncated_turn(content = "a2", dropped_messages = 18),
         ],
     )
 
@@ -353,20 +365,11 @@ def test_sticky_boundary_ignores_a_sibling_branchs_assistant_turn(monkeypatch):
         monkeypatch,
         [
             {"role": "user", "content": "q"},
-            {
-                "role": "assistant",
-                "content": "answer on the branch we are on",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 4}}
-                },
-            },
-            {
-                "role": "assistant",
-                "content": "regenerated answer the user switched away from",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 40}}
-                },
-            },
+            _truncated_turn(content = "answer on the branch we are on"),
+            _truncated_turn(
+                content = "regenerated answer the user switched away from",
+                dropped_messages = 40,
+            ),
         ],
     )
     branch = [
@@ -394,20 +397,8 @@ def test_sticky_boundary_takes_the_smaller_of_two_identical_replies(monkeypatch)
         monkeypatch,
         [
             {"role": "user", "content": "q"},
-            {
-                "role": "assistant",
-                "content": "Done.",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 4}}
-                },
-            },
-            {
-                "role": "assistant",
-                "content": "Done.",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 60}}
-                },
-            },
+            _truncated_turn(content = "Done."),
+            _truncated_turn(content = "Done.", dropped_messages = 60),
         ],
     )
     branch = [
@@ -430,20 +421,8 @@ def test_sticky_boundary_still_prefers_the_newest_distinguishable_reply(monkeypa
     _fake_studio_db(
         monkeypatch,
         [
-            {
-                "role": "assistant",
-                "content": "an earlier, shallower answer",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 2}}
-                },
-            },
-            {
-                "role": "assistant",
-                "content": "the newest answer",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 30}}
-                },
-            },
+            _truncated_turn(content = "an earlier, shallower answer", dropped_messages = 2),
+            _truncated_turn(content = "the newest answer", dropped_messages = 30),
         ],
     )
     branch = [
@@ -466,20 +445,8 @@ def test_sticky_boundary_prefers_a_reply_that_matches_the_branch_exactly(monkeyp
         monkeypatch,
         [
             {"role": "user", "content": "did it work"},
-            {
-                "role": "assistant",
-                "content": "Not done yet, still running.",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 4}}
-                },
-            },
-            {
-                "role": "assistant",
-                "content": "Done",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 60}}
-                },
-            },
+            _truncated_turn(content = "Not done yet, still running."),
+            _truncated_turn(content = "Done", dropped_messages = 60),
         ],
     )
     branch = [
@@ -502,13 +469,7 @@ def test_sticky_boundary_still_reads_a_reply_no_branch_message_matches_exactly(m
     _fake_studio_db(
         monkeypatch,
         [
-            {
-                "role": "assistant",
-                "content": "the answer",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 9}}
-                },
-            },
+            _truncated_turn(content = "the answer", dropped_messages = 9),
         ],
     )
     branch = [
@@ -631,7 +592,7 @@ def test_sticky_boundary_ignores_an_anchor_the_branch_no_longer_has(monkeypatch)
 def test_sticky_boundary_anchor_skips_the_system_turn(monkeypatch):
     """Counted the way `_branch_boundary` counts: system and developer turns do not.
 
-    Studio prefixes every request with a system message, so counting it would put every
+    Unsloth prefixes every request with a system message, so counting it would put every
     anchor one place late and quietly deepen every boundary by one.
     """
     from core.inference import llama_cpp
@@ -673,13 +634,7 @@ def test_sticky_boundary_falls_back_for_turns_saved_before_the_boundary_existed(
     _fake_studio_db(
         monkeypatch,
         [
-            {
-                "role": "assistant",
-                "content": "a",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 6}}
-                },
-            },
+            _truncated_turn(dropped_messages = 6),
         ],
     )
 
@@ -716,13 +671,7 @@ def test_sticky_boundary_only_matches_assistant_messages(monkeypatch):
         monkeypatch,
         [
             {"role": "user", "content": "did the deploy finish? not done yet I think"},
-            {
-                "role": "assistant",
-                "content": "Done",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 60}}
-                },
-            },
+            _truncated_turn(content = "Done", dropped_messages = 60),
         ],
     )
     branch = [{"role": "user", "content": "did the deploy finish? not done yet I think"}]
@@ -764,13 +713,7 @@ def test_sticky_boundary_ignores_a_fit_that_did_not_fit(monkeypatch):
     _fake_studio_db(
         monkeypatch,
         [
-            {
-                "role": "assistant",
-                "content": "a",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": False, "dropped_messages": 40}}
-                },
-            },
+            _truncated_turn(fits = False, dropped_messages = 40),
         ],
     )
 
@@ -938,7 +881,8 @@ def test_the_sticky_boundary_is_applied_once_per_request():
     text = source.read_text(encoding = "utf-8")
     assert "_sticky_boundary_applied = True" in text
     # Whitespace-insensitive: the gate is one expression however the formatter wraps it.
-    assert "0 if _sticky_boundary_applied" in " ".join(text.split())
+    # Both halves are spent together, so the depth and its provenance cannot disagree.
+    assert "(0, True) if _sticky_boundary_applied" in " ".join(text.split())
 
 
 def test_conversation_search_top_k_is_clamped(archived, monkeypatch):
@@ -1113,10 +1057,10 @@ def test_conversation_search_returns_what_the_budget_does_hold(archived, monkeyp
 
 
 def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):
-    """Studio always sends enabled_tools, and it never names this internal tool.
+    """Unsloth always sends enabled_tools, and it never names this internal tool.
 
     While the gate could only REMOVE, the allowlist filter dropped search_conversation
-    first, so neither it nor the compaction nudge ever appeared in a Studio chat.
+    first, so neither it nor the compaction nudge ever appeared in an Unsloth chat.
     """
     import asyncio
     import types
@@ -1510,8 +1454,10 @@ def test_a_tool_exchange_this_request_created_stays_on_the_branch(monkeypatch):
     assert "branch_messages = _request_branch" not in text
     assert 'kwargs["conversation_branch"] = _request_branch' not in text
     # And the boundary is still measured against the client's messages, which is what it
-    # will be re-applied to.
-    assert "_branch_boundary(conversation, _request_branch)" in text
+    # will be re-applied to. Recorded through `_boundary_metadata`, which is the only
+    # writer, so the depth, its anchor and the headroom that produced it stay together.
+    assert "_boundary_metadata( conversation, _request_branch," in text
+    assert '"boundary_messages": _branch_boundary(fitted, before),' in text
 
 
 # --- The instruction the user gave, and the follow-up that says nothing ---

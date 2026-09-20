@@ -23,11 +23,13 @@ from loggers import get_logger
 from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
+from .jobs import _resolve_seed_endpoint
+
 logger = get_logger(__name__)
 router = APIRouter()
 
-# A stdio provider is a command this host would run, so only a UI session may
-# supply one. Annotated, not a Depends default, so a direct call gets False.
+# A stdio provider is a command this host would run, so only a UI session may supply one. Annotated, not a
+# Depends default, so a direct call gets False.
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 _GITHUB_VALIDATE_NOTE = (
@@ -128,11 +130,8 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
 
 
 def _patch_local_providers(recipe: dict[str, Any]) -> None:
-    """Strip is_local and fill a dummy endpoint so validation doesn't choke.
-
-    Strict `is True` matches _inject_local_providers: truthy non-boolean values
-    aren't treated as local.
-    """
+    """Strip is_local and fill a dummy endpoint so validation doesn't choke. Strict `is True` matches
+    _inject_local_providers: truthy non-boolean values aren't treated as local."""
     for provider in recipe.get("model_providers", []):
         if not isinstance(provider, dict):
             continue
@@ -152,6 +151,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         require_ui_session_for_local_commands(via_api_key)
 
     _patch_local_providers(recipe)
+    _resolve_seed_endpoint(recipe)
 
     github_source = _github_seed_source(recipe)
     if github_source is not None:
@@ -161,10 +161,8 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         try:
             build_config_builder(recipe)
         except ModuleNotFoundError as exc:
-            # data_designer is an optional runtime dep; static validation passed
-            # and full validation is deferred to run start, so a missing import
-            # shouldn't block the recipe. Restrict the bypass to data_designer so
-            # other ImportErrors still surface as failures.
+            # data_designer is an optional runtime dep and full validation is deferred to run start, so only ITS
+            # ImportError is bypassed; others still fail.
             if not (exc.name or "").startswith("data_designer"):
                 raise
             logger.debug(

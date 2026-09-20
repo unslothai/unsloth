@@ -52,8 +52,7 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5193"))
-# Unset: start and stop our own server. Set: drive that one and leave it running.
-# Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
+# Unset: start and stop our own server.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
@@ -61,15 +60,15 @@ LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-chat-autoscroll"))
 OUT.mkdir(parents = True, exist_ok = True)
 
-# A token every 250ms for 8s: the deep research synthesis cadence, and the one the loop is
-# wasteful at. A faster cadence (SMOKE_TOKEN_GAP_MS=40) is the one case where a frame per token is
-# justified, so measuring only there hides the effect.
+# A token every 250ms for 8s: the deep research synthesis cadence, and the one the loop is wasteful at.
+# A faster cadence (SMOKE_TOKEN_GAP_MS=40) is the one case where a frame per token is justified, so measuring only there
+# hides the effect.
 TOKEN_COUNT = int(os.environ.get("SMOKE_TOKEN_COUNT", "32"))
 TOKEN_GAP_MS = int(os.environ.get("SMOKE_TOKEN_GAP_MS", "250"))
-# One frame per token at this cadence is 4/s; the old loop ran at the pump's ceiling, around 62/s.
-# 25/s leaves room for React's own frames and still fails loudly on a return to the ceiling.
+# One frame per token at this cadence is 4/s; the old loop ran at the pump's ceiling, around 62/s. 25/s leaves room for
+# React's own frames and still fails loudly on a return to the ceiling.
 MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "25"))
-# The follow window in the hook. Silent growth is measured against it.
+# The follow window in the hook.
 FOLLOW_SETTLE_MS = 600
 # What the settle check trades away: unobservable growth is followed on a timer, not the next
 # frame. Generous against 115ms measured, tight enough to catch a regression.
@@ -151,7 +150,7 @@ def run() -> dict:
         page.wait_for_timeout(800)
         results["seeded"] = page.evaluate("window.__autoscroll.metrics()")
 
-        # 1. Streaming. Clock and counter start and stop together inside the page, so they
+        # Streaming. Clock and counter start and stop together inside the page, so they
         # bracket one interval; split across round trips they do not, and the rate drifts.
         before = metrics(cdp)
         streamed = page.evaluate(
@@ -190,13 +189,12 @@ def run() -> dict:
             "is_at_bottom": page.evaluate("window.__autoscroll.isAtBottom()"),
         }
 
-        # 2. Idle: the loop must stop.
         page.evaluate("window.__rafCount = 0")
         page.wait_for_timeout(2000)
         results["idle_raf_per_2s"] = page.evaluate("window.__rafCount")
 
-        # 3. Silent growth. A token first to open a fresh follow window, then growth as an inline
-        # style, which reaches neither observer.
+        # Silent growth. A token first to open a fresh follow window, then growth as an inline style, which
+        # reaches neither observer.
         page.evaluate("window.__autoscroll.resetGrowth()")
         page.wait_for_timeout(900)
         settled = page.evaluate(
@@ -226,7 +224,6 @@ def run() -> dict:
         )
         results["silent_growth"] = settled
 
-        # 4. Intent. Scrolling up must detach and survive further streaming.
         page.evaluate("window.__autoscroll.resetGrowth()")
         page.evaluate("window.__autoscroll.scrollToBottom()")
         page.wait_for_timeout(900)
@@ -292,8 +289,8 @@ def main() -> int:
         failures.append("the viewport did not stay pinned through the stream")
     if not results["stream"]["is_at_bottom"]:
         failures.append("isAtBottom went false while following")
-    # Recording the count without asserting on it was false-green: the unconditional loop ran 503
-    # callbacks over this stream and the script still exited 0.
+    # Recording the count without asserting on it was false-green: the unconditional loop ran 503 callbacks over this
+    # stream and the script still exited 0.
     if raf_rate > MAX_STREAM_RAF_PER_SECOND:
         failures.append(
             f"the follow loop ran at {raf_rate:.1f} rAF/s during the stream, over the "
@@ -306,9 +303,8 @@ def main() -> int:
     intent = results["intent"]
     if not intent["detached"]:
         failures.append("scrolling up did not detach")
-    # Without this the check above is vacuous: if the tokens streamed while detached add no
-    # height, "streaming re-pinned a detached reader" passes on a tree where following is broken
-    # in either direction. Recorded and unread was false-green; assert it.
+    # Without this the check above is vacuous: if the tokens streamed while detached add no height, "streaming
+    # re-pinned a detached reader" passes on a tree where following is broken in either direction.
     if not intent["grewWhileDetached"]:
         failures.append("the content did not grow while detached; the re-pin check proved nothing")
     if not intent["stillDetached"]:
@@ -318,8 +314,7 @@ def main() -> int:
     repinned_after_ms = results["silent_growth"]["repinnedAfterMs"]
     if repinned_after_ms is None:
         failures.append("silent growth was never followed inside the window")
-    # The settle timer is 100ms plus the frame it schedules, measured at 115ms. Bounding it is the
-    # point: "eventually" would stay green if the re-check slowed to half a second.
+    # The settle timer is 100ms plus the frame it schedules, measured at 115ms.
     elif repinned_after_ms > SILENT_GROWTH_REPIN_BUDGET_MS:
         failures.append(
             f"silent growth took {repinned_after_ms:.0f}ms to follow, over the "

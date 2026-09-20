@@ -14,10 +14,13 @@ export function ModelLoadSettingsAction({
   ariaLabel,
   onConfigure,
   className,
+  tooltip = "Configure run settings before loading model",
 }: {
   ariaLabel: string;
   onConfigure: () => void;
   className?: string;
+  /** Hover copy. The default describes a local load, so Connected rows override it. */
+  tooltip?: string;
 }) {
   return (
     <Tooltip delayDuration={0}>
@@ -30,8 +33,8 @@ export function ModelLoadSettingsAction({
           }}
           aria-label={ariaLabel}
           className={cn(
-            // Fixed box, not padding around the glyph, so this and the dots
-            // menu hover as one size. Callers can still size it up.
+            // Fixed box, not padding around the glyph, so this and the dots menu hover as one size. Callers
+            // can still size it up.
             "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
             className,
           )}
@@ -45,7 +48,7 @@ export function ModelLoadSettingsAction({
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
-        Configure run settings before loading model
+        {tooltip}
       </TooltipContent>
     </Tooltip>
   );

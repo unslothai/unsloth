@@ -7,32 +7,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected to find '$_needle')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
 _FN=$(mktemp)
 sed -n '/^_uv_venv_arm64()/,/^}/p' "$INSTALL_SH" > "$_FN"
 [ -s "$_FN" ] || { echo "  FAIL: _uv_venv_arm64 not found in install.sh"; exit 1; }
@@ -98,10 +74,10 @@ else
     PASS=$((PASS + 1))
 fi
 
-echo "=== Studio installer stream ==="
+echo "=== Unsloth installer stream ==="
 
 # install.rs turns [TAURI:ERROR_OUTPUT] into "Installation failed" until a later
-# [TAURI:ERROR_CLEAR]. A recovered fallback must emit one or Studio reports a
+# [TAURI:ERROR_CLEAR]. A recovered fallback must emit one or Unsloth reports a
 # failure it already recovered from.
 _STREAM=$(mktemp)
 {
@@ -140,7 +116,7 @@ fi
 
 _out=$(_emit 1)
 assert_contains "fallback run still returns 0" "$_out" "RC=0"
-assert_contains "recovery clears the Studio failure" "$_out" "ERROR_CLEAR"
+assert_contains "recovery clears the Unsloth failure" "$_out" "ERROR_CLEAR"
 assert_eq "ERROR_CLEAR is the last error-state line" "ERROR_CLEAR" \
     "$(echo "$_out" | grep -o 'ERROR_OUTPUT\|ERROR_CLEAR' | tail -1)"
 

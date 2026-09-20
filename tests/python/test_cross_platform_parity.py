@@ -36,6 +36,16 @@ def _fallback_range(lines):
     raise AssertionError("install.sh's GPU-detection fallback branch is never closed")
 
 
+def _all_indexes(haystack, needle):
+    """Every occurrence, so an assertion about "each write" cannot pass on the first one."""
+    found, at = [], haystack.find(needle)
+    while at != -1:
+        found.append(at)
+        at = haystack.find(needle, at + 1)
+    assert found, needle
+    return found
+
+
 class TestNoTorchBackendAutoInInstallSh:
     """install.sh primary paths must not use --torch-backend=auto (only the fallback else-branch may)."""
 
@@ -293,7 +303,7 @@ class TestTorchIndexOverrideParity:
         # A pinned cu* index skips ALL host-GPU probing, so the CUDA repair must clear the
         # CUDA_VISIBLE_DEVICES hide gate too (else the GPU-less CI case bails).
         text = STACK_PY.read_text(encoding = "utf-8")
-        m = re.search(r"def _ensure_cuda_torch\(\).*?(?=\ndef )", text, re.DOTALL)
+        m = re.search(r"def _ensure_cuda_torch\(.*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cuda_torch"
         body = m.group(0)
         assert "_cuda_pinned" in body, (
@@ -515,30 +525,42 @@ class TestKnown211SetParity:
             ), f"{label} floor gate must not use the unanchored ^rocm(\\d+)\\.(\\d+) prefix"
 
     def test_install_ps1_bounds_unknown_leaf_pinned_torch(self):
-        """install.ps1's pinned-torch install must bound BOTH companions on EVERY
-        index, cu<digits> families included: torchaudio 2.11 dropped its exact torch
-        pin from the wheel metadata, so a bare companion beside torch<2.11 can
-        resolve a mismatched 2.11.0 build (Codex P2, then unconditional per the
-        torchaudio 2.11 unpinning)."""
+        """install.ps1's pinned-torch install must bound the whole trio on EVERY
+        index with the default torch 2.11 line (<2.12 trio, matching install.sh's
+        ceiling-composed default and _CUDA_TORCH_PKG_SPEC): torchaudio 2.11
+        dropped its exact torch pin from the wheel metadata, so a bare companion
+        beside a capped torch can resolve a mismatched build."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert (
-            '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"' in text
-        ), "install.ps1 custom-pin install must bound torchvision (>=0.19,<0.26.0)"
+            '$_pinTorchSpec = "torch>=2.4,<2.12.0"' in text
+        ), "install.ps1 default install must use the torch 2.11 line (<2.12.0)"
         assert (
-            '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"' in text
-        ), "install.ps1 custom-pin install must bound torchaudio (>=2.4,<2.11.0)"
-        # No cu-family exemption: the bounds apply unconditionally.
+            '$_pinVisionSpec = "torchvision>=0.19,<0.27.0"' in text
+        ), "install.ps1 must pair torchvision <0.27.0 with torch <2.12"
+        assert (
+            '$_pinAudioSpec = "torchaudio>=2.4,<2.12.0"' in text
+        ), "install.ps1 must pair torchaudio <2.12.0 with torch <2.12"
         assert (
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
-        # The bounded companions must actually be passed to the install command.
+        # No stale 2.10-line DEFAULT remains. Checked against the default trio's own assignments,
+        # not a blanket "<2.11.0 appears nowhere": Get-XpuTorchSpecs keeps a curated sub-2.11 cap.
+        for _stale in (
+            '$_pinTorchSpec = "torch>=2.4,<2.11.0"',
+            '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"',
+            '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"',
+            '$_torchSpecs = @("torch>=2.4,<2.11.0"',
+        ):
+            assert (
+                _stale not in text
+            ), f"install.ps1 must not retain the <2.11.0 default torch line: {_stale}"
         # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
-            '$_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)' in text
-        ), "install.ps1 custom-pin install must build the bounded spec list"
+            "$_torchSpecs = @($_pinTorchSpec, $_pinVisionSpec, $_pinAudioSpec)" in text
+        ), "install.ps1 pinned install must build the bounded trio spec list"
         assert (
             "@_torchSpecs --default-index $TorchIndexUrl" in text
-        ), "install.ps1 custom-pin install must pass the bounded companion specs to uv"
+        ), "install.ps1 pinned install must pass the bounded trio specs to uv"
 
     def test_gfx_allowlist_matches_across_installers(self):
         # The gfx 2.11 allowlist {gfx120x-all, gfx1151, gfx1150} must appear in each.
@@ -808,6 +830,12 @@ class TestPinnedIndexClearsUvEnvParity:
             "_install_env_for_cmd must point PIP_CONFIG_FILE at os.devnull for "
             "pinned installs (pip fallback isolation)"
         )
+        # devnull is all or nothing, so the transport and only-binary it removes are put
+        # back key by key.
+        assert "_pinned_pip_config_overrides()" in stack, (
+            "the pinned scrub must re-assert the operator's transport and binary policy "
+            "that PIP_CONFIG_FILE=devnull removes"
+        )
         setup = SETUP_PS1.read_text(encoding = "utf-8")
         assert "$env:PIP_CONFIG_FILE = 'nul'" in setup, (
             "setup.ps1 Fast-Install pinned scrub must point PIP_CONFIG_FILE at nul "
@@ -827,9 +855,9 @@ class TestPinnedIndexClearsUvEnvParity:
         # The custom-leaf branch bounds torch AND both companions (parity with the
         # other installers' custom-pin trio bounds), gated on a non-cu-family leaf.
         for spec in (
-            '$cudaTorchSpec = "torch>=2.4,<2.11.0"',
-            '$cudaVisionSpec = "torchvision>=0.19,<0.26.0"',
-            '$cudaAudioSpec = "torchaudio>=2.4,<2.11.0"',
+            '$cudaTorchSpec = "torch>=2.4,<2.12.0"',
+            '$cudaVisionSpec = "torchvision>=0.19,<0.27.0"',
+            '$cudaAudioSpec = "torchaudio>=2.4,<2.12.0"',
         ):
             assert spec in text, f"setup.ps1 must bound the custom-leaf trio: {spec}"
         assert (
@@ -976,8 +1004,13 @@ class TestNoTorchPersistenceParity:
         # Written after the manifest is dropped and before the dependency pass, so
         # a pass killed part-way still leaves the mode recorded somewhere.
         assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
-            "if not install_manifest.remove_manifest():"
+            "if install_manifest.remove_manifest():"
         )
+        # And the parked copy goes with it before the pass starts, so a pass killed part-way leaves
+        # no evidence of a finished one.
+        removed_at = text.index("if install_manifest.remove_manifest():")
+        consumed_at = text.index("install_manifest.consume_previous_manifest()", removed_at)
+        assert consumed_at < text.index("install_manifest.set_no_torch_marker(NO_TORCH)")
 
     def test_both_sides_use_the_same_marker_filename(self):
         manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
@@ -1006,7 +1039,7 @@ class TestNoTorchPersistenceParity:
 class TestAmdBnbFloorParity:
     """bitsandbytes <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU; the ROCm
     4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra,
-    install.sh and the Studio stack resolve bitsandbytes independently, so all three
+    install.sh and the Unsloth stack resolve bitsandbytes independently, so all three
     must carry the same floor or an unreachable pre-release wheel silently reinstates
     the broken range."""
 
@@ -1074,3 +1107,412 @@ class TestAmdBnbFloorParity:
             assert (
                 "4-bit QLoRA needs a source build" in text
             ), f"{name} must tell aarch64 users 4-bit needs a source build"
+
+
+class TestInstallUvCacheRootParity:
+    """Both top-level installers must expose the same automatic cache policy."""
+
+    def test_option_and_environment_names_match(self):
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        for source in (sh, ps1):
+            assert "--isolated-uv-cache" in source
+            assert "UNSLOTH_ISOLATE_UV_CACHE" in source
+            assert "--isolated-uv-cache" in source[:1200]
+            assert "UNSLOTH_ISOLATE_UV_CACHE" in source[:1200]
+
+        assert "_ISOLATE_UV_CACHE=false" in sh
+        assert "--isolated-uv-cache) _ISOLATE_UV_CACHE=true" in sh
+        assert "$IsolateUvCache = $false" in ps1
+        assert '"--isolated-uv-cache" { $IsolateUvCache = $true }' in ps1
+        assert "$env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')" in ps1
+
+    def test_selectors_share_precedence_markers_modes_and_messages(self):
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        for source in (sh, ps1):
+            for marker in ("CACHEDIR.TAG", ".gitignore"):
+                assert marker in source
+            for mode in ("custom", "shared", "studio", "isolated"):
+                assert f'"{mode}"' in source or f"'{mode}'" in source or f"={mode}" in source
+            for message in (
+                "preserving custom UV_CACHE_DIR",
+                "reusing existing shared cache",
+                "avoid duplicate Torch/CUDA downloads",
+                "using new Unsloth Studio-owned cache",
+                "already-cached packages may download again",
+                "so cached packages may download again",
+            ):
+                assert message in source
+            # Both selectors must agree: a metadata-only cache is cold.
+            for bucket in ("archive", "builds", "built-wheels", "wheels", "sdists"):
+                assert bucket in source, bucket
+            for metadata_suffix in (".msgpack", ".http", ".rev", ".lock"):
+                assert metadata_suffix in source, metadata_suffix
+
+    def test_both_installers_record_the_cache_they_chose(self):
+        """`unsloth studio update` reads this to reuse the install's cache. Content
+        cannot decide it: install.sh:705 points the backend at the Studio cache even in
+        shared mode, so a runtime install leaves bytes in the losing one."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        cli = (REPO_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
+
+        for source in (sh, ps1, cli):
+            assert "uv-cache-dir" in source
+
+        # Written after the choice is made.
+        assert "_record_uv_cache_choice() {" in sh
+        # Every mode records, custom included, or a previous install's marker survives. The
+        # no-cache guard may precede the call, since uv fills nothing under it, but a branch
+        # that stops calling it at all is the bug this counts.
+        call_sites = [
+            match.start()
+            for match in re.finditer(
+                r"^[ \t]+(?:_uv_no_cache_requested \|\| )?_record_uv_cache_choice[ \t]*$",
+                sh,
+                re.MULTILINE,
+            )
+        ]
+        assert len(call_sites) == 3, f"one call site per mode branch, found {len(call_sites)}"
+        assert (
+            sh.index("_UV_CACHE_MODE=custom")
+            < min(call_sites)
+            < sh.index("_UV_CACHE_MODE=isolated")
+        ), "the custom branch records before it returns"
+        # Three on the ps1 side too, one per recording mode: custom, isolated, and the
+        # selection. UV_NO_CACHE is the deliberate fourth that records NOTHING on both sides,
+        # since a marker there would name a cache the install never filled.
+        assert ps1.count("Write-StudioUvCacheMarker -StudioRoot") == 3, ps1.count(
+            "Write-StudioUvCacheMarker -StudioRoot"
+        )
+        # A marker is a preference, not a requirement, so neither installer may fail on it.
+        # Sliced at the first selection helper, not at the selector: the helpers between them
+        # do use -ErrorAction Stop, and on purpose.
+        marker_write = ps1[
+            ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
+                "function Test-StudioUvNoCache"
+            )
+        ]
+        # Covers both marker functions, which sit together above the selector.
+        assert "-ErrorAction Stop" not in marker_write
+        assert marker_write.count("-ErrorAction SilentlyContinue") >= 2
+        assert "|| true" in sh[sh.index("_record_uv_cache_choice() {") :]
+        # Windows PowerShell 5.1 writes -Encoding utf8 WITH a BOM, so the reader allows one.
+        assert "utf-8-sig" in cli
+
+        # Absolute on both sides: the update resolves it against its own directory.
+        assert "_absolutize_uv_cache_dir() {" in sh
+        assert "UV_CACHE_DIR=$(_absolutize_uv_cache_dir)" in sh
+        assert "IsPathRooted" in ps1
+
+        # The selection rules, on both installers. install.sh gained them first, which left
+        # Windows abandoning a warm Studio cache on every rerun and selecting caches uv aborts
+        # on. The behaviour is asserted by running each installer; the PAIRING is asserted
+        # here, so a rule added to one side alone fails even where neither shell can run.
+        #   1. the marker outranks uv's default while it is still warm
+        assert "cache/uv-cache-dir" in sh
+        assert "function Read-StudioUvCacheMarker" in ps1
+        #   2. UV_NO_CACHE stands the selection down, in every spelling uv honours
+        for source in (sh, ps1):
+            assert "UV_NO_CACHE" in source
+        # clap's literals, which is what uv binds UV_NO_CACHE to. All three copies, or one of
+        # them probes and records a cache uv is not using.
+        assert "1|y|yes|t|true|on)" in sh
+        assert '@("1", "y", "yes", "t", "true", "on")' in ps1
+        assert '_UV_TRUE = ("1", "y", "yes", "t", "true", "on")' in cli
+        # and it is honoured BEFORE a caller's cache is recorded, on both sides: uv leaves
+        # UV_CACHE_DIR completely empty under --no-cache, so a marker naming it would send the
+        # next repair to a cache this install never filled. The CLI already checked first.
+        assert "_uv_no_cache_requested() {" in sh
+        assert "function Test-StudioUvNoCache" in ps1
+        sh_custom = sh[sh.index("_UV_CACHE_MODE=custom") :].split("return 0", 1)[0]
+        assert "_uv_no_cache_requested" in sh_custom, sh_custom
+        sh_iso = sh[sh.index("_UV_CACHE_MODE=isolated") :].split("return 0", 1)[0]
+        assert "_uv_no_cache_requested" in sh_iso, sh_iso
+        ps1_custom = ps1[ps1.index('$script:StudioUvCacheMode = "custom"') :].split(
+            "if ($Isolated)", 1
+        )[0]
+        assert "Test-StudioUvNoCache" in ps1_custom, ps1_custom
+        ps1_iso = ps1[ps1.index('$script:StudioUvCacheMode = "isolated"') :].split(
+            "Test-StudioUvNoCache)", 1
+        )
+        assert len(ps1_iso) == 2, "the isolated branch no longer guards its marker write"
+        #   3. only <kind>-v<N> is uv's to write, so a lookalike is neither probed nor warmth
+        assert "_uv_is_bucket_name() {" in sh
+        assert "function Test-StudioUvBucketName" in ps1
+        # and the version cannot be EMPTY on either side: `##*-v` strips through the last
+        # `-v`, so `archive-v1-v` leaves "" behind, which no `*[!0-9]*` matches. PowerShell
+        # rejected it from the start, so this was a real split.
+        bucket_sh = sh.split("_uv_is_bucket_name() {", 1)[1].split("\n}", 1)[0]
+        assert "''|*[!0-9]*) return 1 ;;" in bucket_sh, bucket_sh
+        # To the NEXT function: the body is indented, so splitting on "\n}" ran two
+        # functions on and every assertion below it read the wrong code.
+        bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
+            "function Test-StudioUvCacheWritable", 1
+        )[0]
+        assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
+        # Both sides MEASURE whether to fold: default APFS folds and ext4 does not, NTFS
+        # folds unless fsutil setCaseSensitiveInfo says otherwise. Blind folding condemns.
+        assert "ToLowerInvariant()" in bucket_ps1, bucket_ps1
+        assert "-cin" not in bucket_ps1, bucket_ps1
+        assert "[switch]$Fold" in bucket_ps1, bucket_ps1
+        writable_ps1 = ps1.split("function Test-StudioUvCacheWritable", 1)[1].split(
+            "function Test-StudioUvCachePopulated", 1
+        )[0]
+        assert ".unsloth-case-probe." in writable_ps1, writable_ps1
+        assert "-Fold:$fold" in writable_ps1, writable_ps1
+        writable_sh = sh.split("_uv_cache_is_writable() {", 1)[1].split("\n}", 1)[0]
+        assert "tr '[:upper:]' '[:lower:]'" in writable_sh, writable_sh
+        # By a directory the probe MAKES: an existing pair cannot say whether it is one.
+        assert ".unsloth-case-probe." in writable_sh, writable_sh
+        assert "_uv_w_fold=1" in writable_sh, writable_sh
+        # and it decides only the NAME: a colliding file must reach the rejection below.
+        assert writable_sh.index("_uv_w_fold") < writable_sh.index('[ ! -d "$_uv_w_dir" ]')
+        probe_kinds = {
+            "archive",
+            "binaries",
+            "builds",
+            "built-wheels",
+            "environments",
+            "flat-index",
+            "git",
+            "interpreter",
+            "osv",
+            "python",
+            "sdists",
+            "simple",
+            "wheels",
+        }
+        assert 'UV_PINNED_VERSION="0.12.1"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
+        case_body = re.search(
+            r'case "\$\{1%-v\*\}" in\n(.*?)\n\s*\*\) return 1', bucket_sh, re.S
+        ).group(1)
+        kinds_sh = set(re.findall(r"[a-z\-]+", case_body))
+        assert kinds_sh == probe_kinds, sorted(kinds_sh ^ probe_kinds)
+        kinds_ps1 = set(
+            re.findall(r'"([a-z\-]+)"', bucket_ps1.split("-in @(", 1)[1].split("))", 1)[0])
+        )
+        assert kinds_ps1 == probe_kinds, sorted(kinds_ps1 ^ probe_kinds)
+        # and the CLI validates the whole suffix too, or `unsloth studio update` prefers a
+        # cache the installers just rejected. Its docstring claimed the same rule long before
+        # it had it.
+        assert "def _uv_is_bucket_name(name: str) -> bool:" in cli
+        assert (
+            '_UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")' in cli
+        )
+        #   4. readable is not usable: a real create-and-delete, root and every bucket
+        assert ".unsloth-write-probe." in sh
+        assert ".unsloth-write-probe." in ps1
+        assert "function Test-StudioUvCacheWritable" in ps1
+        #   5. and a fallback we cannot write is not a fallback, on both sides
+        assert "_uv_cache_root_is_writable() {" in sh
+        assert "function Test-StudioUvCacheRootWritable" in ps1
+        # Root AND buckets there, and at the launch repoint: the root can be writable while a
+        # bucket uv renames into is not, which is what the candidate probe rejects a cache for.
+        # A root-only question at either site hands back the cache the probe just refused.
+        assert "_uv_cache_is_writable() {" in sh
+        assert "function Test-StudioUvCacheUsable" in ps1
+        sh_launch = sh.split("_prepare_studio_uv_cache_for_launch() {", 1)[1].split("\n}", 1)[0]
+        assert "_uv_cache_is_writable" in sh_launch, sh_launch
+        ps1_launch = ps1.split("function Set-StudioUvCacheForLaunch", 1)[1].split("\n    }", 1)[0]
+        assert "Test-StudioUvCacheUsable" in ps1_launch, ps1_launch
+        #   6. creating the probe is not enough: uv RENAMES into these directories, and NTFS
+        # carries DELETE as its own ACE while an append-only directory does the same on ext4,
+        # so a root can grant create and deny unlink.
+        root_sh = sh.split("_uv_cache_root_is_writable() {", 1)[1].split("\n}", 1)[0]
+        # Judged by whether the probe is GONE, not by rm's exit status, and retried: a scanner
+        # holding the handle makes one delete fail and the next succeed, and Remove-Item throws
+        # for a probe something else already removed where rm -f exits 0.
+        assert '[ -e "$_uv_root_probe" ] || break' in root_sh, root_sh
+        assert "_uv_root_tries" in root_sh, root_sh
+        root_ps1 = ps1.split("function Test-StudioUvCacheRootWritable", 1)[1].split("\n    }", 1)[0]
+        assert "[System.IO.File]::Exists($probe)" in root_ps1, root_ps1
+        assert "$attempt -lt 3" in root_ps1, root_ps1
+
+        # The reset must precede both consumers, the selector that writes the marker and
+        # every Exit-InstallFailure that restores it. Under `irm | iex` the script scope is
+        # the caller's session, so only the entry point is ahead of both.
+        entry = ps1.index("function Install-UnslothStudio {")
+        # The call form, not the bare name, which also appears in prose above.
+        first_consumer = min(
+            ps1.index("Set-StudioUvCacheEnvironment -StudioRoot $StudioHome"),
+            ps1.index('(Exit-InstallFailure "', entry),
+        )
+        for variable in (
+            "$script:StudioUvMarkerSaved = $false",
+            "$script:StudioUvMarkerExisted = $false",
+            "$script:StudioUvMarkerPrevious = $null",
+            "$script:StudioInstallCommitted = $false",
+        ):
+            assert variable in ps1[entry:first_consumer], variable
+
+        # Committing the environment commits the marker that came with it.
+        assert (
+            "$script:StudioUvMarkerSaved = $false"
+            in ps1[
+                ps1.index("function Complete-StudioVenvRollback") : ps1.index(
+                    "function Complete-StudioVenvRollback"
+                )
+                + 900
+            ]
+        )
+        commit_start = sh.index("_commit_studio_venv_replacement() {")
+        commit_body = sh[commit_start : sh.index("\n}", commit_start)]
+        # Before the venv flag: a signal between the two keeps the environment and
+        # reverts its marker.
+        assert commit_body.index("_UV_MARKER_SAVED=false") < commit_body.index(
+            "_VENV_ROLLBACK_ACTIVE=false"
+        )
+        ps1_commit = ps1[ps1.index("function Complete-StudioVenvRollback") :][:900]
+        assert ps1_commit.index("$script:StudioUvMarkerSaved = $false") < ps1_commit.index(
+            "$script:StudioVenvRollbackActive = $false"
+        )
+        # And outside the rollback branch, which a first install skips entirely.
+        assert commit_body.index("_UV_MARKER_SAVED=false") < commit_body.index(
+            'if [ "$_VENV_ROLLBACK_ACTIVE" = true ]'
+        )
+        assert ps1_commit.index("$script:StudioUvMarkerSaved = $false") < ps1_commit.index(
+            "if (-not $script:StudioVenvRollbackActive) { return }"
+        )
+
+        # Both writes are gated on the old entry being gone: the unlink is what keeps a
+        # symlinked marker from truncating its target, and it can fail silently.
+        for body in (
+            sh[sh.index("_record_uv_cache_choice() {") : sh.index("_restore_uv_cache_marker() {")],
+            sh[sh.index("_restore_uv_cache_marker() {") :][:600],
+        ):
+            unlink = body.index('rm -f "$_uv_marker_file"')
+            write = body.index("printf '%s\\n'", unlink)
+            assert '[ -L "$_uv_marker_file" ]' in body[unlink:write], body[unlink:write]
+        ps1_marker = ps1[
+            ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
+                "function Test-StudioUvNoCache"
+            )
+        ]
+        # One helper for every path that must end up absolute, or they disagree the moment
+        # UV_WORKING_DIR is set: the caller's value, the marker write, the marker READ, and
+        # uv's own answer, which comes back verbatim and may be relative.
+        assert ps1.count("Resolve-StudioUvCachePath -Cache") == 4, ps1.count(
+            "Resolve-StudioUvCachePath -Cache"
+        )
+        assert "$env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR" in ps1
+        # And both sides consult UV_WORKING_DIR, itself resolvable against the run dir.
+        assert "UV_WORKING_DIR" in sh[sh.index("_absolutize_uv_cache_dir() {") :][:600]
+        assert "UV_WORKING_DIR" in ps1[ps1.index("function Resolve-StudioUvCachePath") :][:800]
+        for start in _all_indexes(ps1_marker, "Remove-Item -LiteralPath $markerFile"):
+            # The call form: the comment above the gate names the cmdlet too.
+            window = ps1_marker[
+                start : ps1_marker.index("Set-Content -LiteralPath $markerFile", start)
+            ]
+            assert "Get-Item -LiteralPath $markerFile -Force" in window, window
+
+        # UTF-8, not the ANSI code page: the update writes this file BOM-less UTF-8 and
+        # 5.1 would restore mojibake. Asserted on source, since pwsh 7 passes either way.
+        read_back = ps1_marker.index("Get-Content -LiteralPath $markerFile")
+        assert "-Encoding UTF8" in ps1_marker[read_back : read_back + 220], ps1_marker[read_back:]
+
+        # One flag decides both rollbacks. Clearing them separately leaves a window either
+        # way round, where a signal restores one half of a committed install.
+        assert commit_body.index("_STUDIO_INSTALL_COMMITTED=true") < commit_body.index(
+            "_UV_MARKER_SAVED=false"
+        )
+        for body in (
+            sh[sh.index("_restore_studio_venv_replacement() {") :][:400],
+            sh[sh.index("_restore_uv_cache_marker() {") :][:400],
+        ):
+            assert "_STUDIO_INSTALL_COMMITTED" in body, body
+        assert ps1_commit.index("$script:StudioInstallCommitted = $true") < ps1_commit.index(
+            "$script:StudioUvMarkerSaved = $false"
+        )
+        for name in ("Restore-StudioVenvRollback", "Restore-StudioUvCacheMarker"):
+            body = ps1[ps1.index(f"function {name} {{") :][:800]
+            assert "if ($script:StudioInstallCommitted) { return }" in body, name
+
+        # Restored whether or not a venv replacement was ever in flight.
+        assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_exit() {") :]
+        assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_signal() {") :]
+        assert ps1.count("Restore-StudioUvCacheMarker -StudioRoot") == 2
+
+        # And the marker travels with the environment: a rolled-back install puts it back.
+        assert "_restore_uv_cache_marker" in sh
+        assert sh.count("_restore_uv_cache_marker") >= 2, "defined but never called"
+        assert "function Restore-StudioUvCacheMarker" in ps1
+
+        assert "${XDG_CACHE_HOME}/uv" in sh
+        assert "${HOME}/.cache/uv" in sh
+        assert 'Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"' in ps1
+        # The warmth scan lives in Test-StudioUvCachePopulated now, so slicing at
+        # Set-StudioUvCacheEnvironment alone would assert on a body that no longer holds the
+        # scan and pass for the wrong reason.
+        selector = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
+            "function Set-StudioUvCacheForLaunch", 1
+        )[0]
+        assert "Get-ChildItem -LiteralPath $Cache -Directory -Force" in selector
+        assert "Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force" in selector
+        # Must not fail closed: one denied subdirectory would read as an empty cache.
+        assert "-ErrorAction SilentlyContinue -ErrorVariable scanErrors" in selector
+        # The scan only. The helpers after it DO use Stop, and have to: a marker or a write
+        # probe that fails is an answer, where a bucket that cannot be read is not.
+        # Ends at the next function, not two on: Test-StudioUvCacheRootWritable sits between
+        # this scan and the marker reader, and it uses Stop deliberately, so a slice reaching
+        # past it asserts the opposite of what this test says it is asserting.
+        bucket_loop = selector.split("foreach ($bucket in $buckets)", 1)[1].split(
+            "function Test-StudioUvCacheRootWritable", 1
+        )[0]
+        assert "-ErrorAction Stop" not in bucket_loop, bucket_loop
+        # -L on the sh side for the same reason Get-ChildItem -Recurse follows links.
+        assert "find -L " in sh
+
+    def test_shell_order_wsl_handoff_and_autostart_boundary(self):
+        source = INSTALL_SH.read_text(encoding = "utf-8")
+        resolved = source.index("\n_resolve_studio_destinations\n")
+        uv_setup = source.index("\n# ── Install uv ──\n")
+        configured = source.index("\n_configure_uv_cache\n", uv_setup)
+        launch_boundary = source.index("_prepare_studio_uv_cache_for_launch\n", configured)
+        autostart = source.index(
+            '(trap - INT; exec "$VENV_DIR/bin/unsloth" studio', launch_boundary
+        )
+
+        assert "_configure_uv_cache() {" in source
+        assert "_prepare_studio_uv_cache_for_launch() {" in source
+        assert resolved < uv_setup < configured < launch_boundary < autostart
+        reroute = source.split("_maybe_reroute_strixhalo_to_2404() {", 1)[1].split(
+            "_maybe_reroute_strixhalo_to_2404 || true", 1
+        )[0]
+        assert "export UNSLOTH_ISOLATE_UV_CACHE=1" in reroute
+        assert "unset UV_CACHE_DIR" in reroute
+        assert 'case "${UV_CACHE_DIR-}" in' in reroute
+        assert "*[![:space:]]*)" in reroute
+
+    def test_powershell_order_handoff_and_restoration(self):
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        resolved = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"')
+        captured = source.index("$hadPreviousUvCacheDir =")
+        uv_setup = source.index("if (-not (Test-UvVersionOk))", captured)
+        configured = source.index(
+            "Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache",
+            uv_setup,
+        )
+        tauri_return = source.index("if ($TauriMode)", configured)
+        handoff = source.index("Set-StudioUvCacheForLaunch -StudioRoot $StudioHome", tauri_return)
+        autostart = source.index("$studioAutoStartProcess = Start-Process", handoff)
+        restored = source.index("Restore-StudioUvCacheEnvironment -WasPresent", autostart)
+
+        assert (
+            resolved
+            < captured
+            < uv_setup
+            < configured
+            < tauri_return
+            < handoff
+            < autostart
+            < restored
+        )
+        selector = source.split("function Set-StudioUvCacheEnvironment", 1)[1].split(
+            "function Set-StudioUvCacheForLaunch", 1
+        )[0]
+        assert "Read-Host" not in selector
+        assert "Set-StudioUvCacheForLaunch" in source
+        assert "Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $PreviousValue" in source
+        assert "Remove-Item -LiteralPath Env:UV_CACHE_DIR" in source

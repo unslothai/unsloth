@@ -30,7 +30,9 @@ import {
 } from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
+  setShowWhisperUpdateBanner,
   useShowLlamaUpdateBanner,
+  useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
@@ -58,18 +60,23 @@ import {
 } from "../api/upload-limit";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
+import { useIsAccountOwner } from "@/features/auth";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
+import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
   DesktopUpdateControl,
   DesktopUpdateNote,
 } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
+import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
+import { DownloadTransportRow } from "../components/download-transport-row";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
 import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
 import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
+import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
@@ -81,6 +88,7 @@ const PREFS_KEYS: string[] = [
   "theme",
   "palette",
   "unsloth_appearance_customization",
+  INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
@@ -91,10 +99,12 @@ const PREFS_KEYS: string[] = [
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
-  // Rebound chords. Without this a reset leaves the user on shortcuts they
-  // asked to throw away, and a chord bound to something unusable has no
-  // escape hatch from this button.
+  // Rebound chords. Without this a reset leaves the user on shortcuts they asked to throw away, and
+  // a chord bound to something unusable has no escape hatch from this button.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
+  // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
+  // transport changes made elsewhere.
+  TRANSPORT_MODE_STORAGE_KEY,
   // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
@@ -117,6 +127,14 @@ const PREFS_KEYS: string[] = [
   // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
+  // The memory bar's opt-in. Reset All advertises restoring defaults and this feature's default is
+  // off, so leaving the key out left it switched on across a reset that said it had turned
+  // everything back. Spelled out rather than imported as CHAT_SHOW_MEMORY_BAR_KEY, for the same
+  // reason the note above gives: it lives in chat-runtime-store, which is in an import cycle with
+  // this file, so the constant would still be in its temporal dead zone when this module-scope list
+  // is built. A test pins this literal against the store's constant so the two cannot drift apart
+  // silently.
+  "unsloth_chat_show_memory_bar",
   "unsloth_models_fit_on_device_only",
   // Chat presets
   "unsloth_chat_custom_presets",
@@ -134,6 +152,7 @@ const PREFS_KEYS: string[] = [
   "tour:studio:v1",
   // Update notifications
   "unsloth_show_llama_update_banner",
+  "unsloth_show_whisper_update_banner",
   "unsloth_monitor_overlay",
   LOADED_MODELS_PREFERENCE_KEYS.show,
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
@@ -162,6 +181,7 @@ function resetAllPrefs() {
 }
 
 export function GeneralTab() {
+  const isOwner = useIsAccountOwner();
   const t = useT();
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
@@ -170,6 +190,7 @@ export function GeneralTab() {
     (s) => s.persistenceError,
   );
   const showLlamaUpdates = useShowLlamaUpdateBanner();
+  const showWhisperUpdates = useShowWhisperUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -249,6 +270,7 @@ export function GeneralTab() {
   const tokenValidated = tokenIsCurrent && tokenValidation.isValid === true;
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadUploadLimitSettings()
       .then((settings) => {
@@ -267,9 +289,10 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isOwner]);
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadHelperPrecacheSettings()
       .then((settings) => {
@@ -288,9 +311,10 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, isOwner]);
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadPreviewSharing()
       .then((settings) => {
@@ -309,7 +333,7 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, isOwner]);
 
 
   const saveHelperPrecache = async (enabled: boolean) => {
@@ -491,10 +515,10 @@ export function GeneralTab() {
             ) : null}
           </div>
         </SettingsRow>
-        {/* The desktop app authenticates via desktop auto-auth with a generated
-            secret, so this password only governs remote browsers and is managed
-            in Remote access instead. Web only. */}
-        {isTauri ? null : (
+        {/* The desktop owner authenticates via desktop auto-auth with a generated
+            secret, so the owner password only governs remote browsers and is
+            managed in Remote access instead. Managed accounts sign in here. */}
+        {isTauri && isOwner ? null : (
           <SettingsRow
             label={t("settings.general.password")}
             description={t("settings.general.passwordDescription")}
@@ -591,8 +615,22 @@ export function GeneralTab() {
             onCheckedChange={setShowLlamaUpdateBanner}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.showWhisperUpdates")}
+          description={t(
+            "settings.general.notifications.showWhisperUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showWhisperUpdates}
+            onCheckedChange={setShowWhisperUpdateBanner}
+          />
+        </SettingsRow>
       </SettingsSection>
 
+      {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
+      {isOwner ? (
+        <>
       <SettingsSection
         title={t("settings.general.previewSharing.sectionTitle")}
       >
@@ -630,6 +668,10 @@ export function GeneralTab() {
       </SettingsSection>
 
       <DocumentsRagSection />
+
+      <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
+        <DownloadTransportRow />
+      </SettingsSection>
 
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
         <SettingsRow
@@ -705,6 +747,8 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
       </SettingsSection>
+        </>
+      ) : null}
 
       <SettingsSection
         title={t("settings.general.resetPreferences.sectionTitle")}
@@ -723,6 +767,10 @@ export function GeneralTab() {
             {t("settings.general.resetPreferences.action")}
           </Button>
         </SettingsRow>
+        {/* Same section as the reset row: both rewrite state the user cannot easily put
+            back, and the desktop-only repair renders nothing on the web build, which
+            would leave a section header with no rows under it if it had its own. */}
+        <DesktopRepairControl />
       </SettingsSection>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>

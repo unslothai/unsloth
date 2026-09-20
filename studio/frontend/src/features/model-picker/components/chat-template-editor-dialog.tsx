@@ -42,8 +42,8 @@ export function ChatTemplateEditorDialog({
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
-  // Bumped whenever the dialog closes so a validation still in flight cannot
-  // apply a template the user has already dismissed.
+  // Bumped whenever the dialog closes so a validation still in flight cannot apply a template the
+  // user has already dismissed.
   const validationToken = useRef(0);
   const renderedDraft = draft ?? value ?? defaultTemplate ?? "";
 
@@ -74,8 +74,7 @@ export function ChatTemplateEditorDialog({
     const token = validationToken.current;
     try {
       const result = await validateChatTemplate(renderedDraft);
-      // Dialog was closed (or reopened) while validating; drop the result so a
-      // discarded template is never applied.
+      // Dialog was closed (or reopened) while validating; drop the result so a discarded template is never applied.
       if (token !== validationToken.current) {
         return;
       }
@@ -118,19 +117,23 @@ export function ChatTemplateEditorDialog({
               : "Override the model's chat template with custom Jinja. The change applies when the model loads. Saving an empty template or one that matches the default clears the override."}
           </DialogDescription>
         </DialogHeader>
-        <Textarea
-          value={renderedDraft}
-          onChange={(event) => {
-            if (readOnly) return;
-            setDraft(event.target.value);
-            setError(null);
-          }}
-          readOnly={readOnly}
-          className="min-h-[20rem] max-h-[50dvh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
-          rows={14}
-          spellCheck={false}
-          placeholder={defaultLoading ? "Loading model default..." : ""}
-        />
+        {/* Chrome does not clip a scroll area to a squircle, which squared off
+            the scrollbar's corners. The wrapper carries the shape instead. */}
+        <div className="corner-squircle overflow-hidden rounded-xl">
+          <Textarea
+            value={renderedDraft}
+            onChange={(event) => {
+              if (readOnly) return;
+              setDraft(event.target.value);
+              setError(null);
+            }}
+            readOnly={readOnly}
+            className="min-h-[20rem] max-h-[50dvh] overflow-y-auto rounded-none border-0 font-mono text-xs leading-5 focus-visible:ring-0"
+            rows={14}
+            spellCheck={false}
+            placeholder={defaultLoading ? "Loading model default..." : ""}
+          />
+        </div>
         {readOnly ? null : (
           <div className="flex items-center justify-between gap-3 px-0.5 text-ui-11">
             <span

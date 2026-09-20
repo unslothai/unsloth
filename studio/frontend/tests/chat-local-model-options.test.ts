@@ -54,6 +54,28 @@ test("Ollama rows are offered under their own label", () => {
   assert.equal(localGgufKindFor(option, true), "direct");
 });
 
+test("Hermes downloads are offered under their own label", () => {
+  // Hermes Desktop stages one-click downloads as flat GGUFs in ~/.hermes/models. The row is a
+  // plain file path, loadable as-is; it must clear CHAT_LOCAL_SOURCES or the model Hermes
+  // just fetched is missing from the very picker it should show up in.
+  const options = chatLocalModelOptions([
+    row({
+      id: "/home/u/.hermes/models/Qwen3.8-27B-UD-Q4_K_M.gguf",
+      path: "/home/u/.hermes/models/Qwen3.8-27B-UD-Q4_K_M.gguf",
+      display_name: "Qwen3.8-27B-UD-Q4_K_M",
+      source: "hermes",
+      model_format: "gguf",
+    }),
+  ]);
+  assert.equal(options.length, 1);
+  const option = options[0];
+  assert.ok(option);
+  assert.equal(option.name, "Qwen3.8-27B-UD-Q4_K_M");
+  assert.equal(option.baseModel, "Hermes");
+  assert.equal(option.isGguf, true);
+  assert.equal(option.isDirectGguf, true);
+});
+
 test("a directory with two weight formats yields one option per load id", () => {
   // The shared inventory keys a row on (format, path), so this arrives as two rows with the
   // same `id`. The selector keys on `id`, so both would share a React key and read as
@@ -78,16 +100,18 @@ test("hf_cache rows stay out of the local list", () => {
   assert.deepEqual(chatLocalModelOptions([row({ source: "hf_cache" })]), []);
 });
 
-test("LM Studio rows prefer the model id and keep their label", () => {
+test("LM Studio rows use the model name without the publisher folder", () => {
+  const modelPath = "N:\\AI Models\\Qwen\\Qwen3.6-40B-Deck-Opus";
   const options = chatLocalModelOptions([
     row({
-      id: "/lm/x",
+      id: modelPath,
       source: "lmstudio",
-      model_id: "publisher/model",
-      display_name: "x",
+      model_id: "Qwen/Qwen3.6-40B-Deck-Opus",
+      display_name: "Qwen3.6-40B-Deck-Opus",
     }),
   ]);
-  assert.equal(options[0]?.name, "publisher/model");
+  assert.equal(options[0]?.id, modelPath);
+  assert.equal(options[0]?.name, "Qwen3.6-40B-Deck-Opus");
   assert.equal(options[0]?.baseModel, "LM Studio");
 });
 

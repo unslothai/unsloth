@@ -35,8 +35,9 @@ from studiobench.instruments.selfcheck import (  # noqa: E402
 from studiobench.scoring.schema import EXCLUSION_REASONS, check_exclusion_reasons  # noqa: E402
 
 
-# ---------------------------------------------------------------------------------------
 # the injected stall
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -58,8 +59,9 @@ def test_no_stall_reading_at_all_is_a_failure_not_a_pass():
     assert gate.measured.has_reading is False
 
 
-# ---------------------------------------------------------------------------------------
 # the injected input delay
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -73,8 +75,9 @@ def test_an_input_path_that_does_not_move_is_not_measuring_input():
     assert "will not move when the app gets slower" in gate.detail
 
 
-# ---------------------------------------------------------------------------------------
 # scene contrast: the blindness check
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -88,8 +91,9 @@ def test_an_instrument_that_cannot_tell_heavy_from_trivial_is_blind():
     assert "BLIND" in gate.detail
 
 
-# ---------------------------------------------------------------------------------------
 # longtask support
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -109,8 +113,9 @@ def test_an_unreadable_support_list_is_recorded_and_not_guessed():
     assert gate.fatal is False
 
 
-# ---------------------------------------------------------------------------------------
 # the clock-pair control ratio
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -124,8 +129,9 @@ def test_a_moving_control_ratio_means_the_measurement_moved():
     assert "the MEASUREMENT moved, not the page" in gate.detail
 
 
-# ---------------------------------------------------------------------------------------
 # three-clock agreement
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -188,8 +194,9 @@ def test_clock_disagreement_is_a_declared_exclusion_reason():
     assert "clock_disagreement" in EXCLUSION_REASONS
 
 
-# ---------------------------------------------------------------------------------------
 # the whole gate set
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -230,3 +237,68 @@ def test_the_abort_message_says_why_reporting_nothing_is_better():
     with pytest.raises(SelfCheckFailure) as caught:
         report.raise_if_failed()
     assert "the numbers get quoted and the blindness does not" in str(caught.value)
+
+
+# ── the streaming-cost recovery gate ─────────────────────────────────────────────────────────
+
+
+def _recovery(
+    base,
+    injected,
+    total_ms = 600.0,
+    chars = 6_000,
+):
+    from studiobench.instruments.selfcheck import evaluate_stream_cost_recovery_gate
+    return evaluate_stream_cost_recovery_gate(base, injected, total_ms, chars)
+
+
+def test_full_recovery_of_an_injected_streaming_cost_passes():
+    # 600 ms injected over 6,000 characters is 100 ms per thousand on top of the base rate.
+    gate = _recovery(110.0, 210.0)
+    assert gate.passed
+    assert gate.measured.value == pytest.approx(1.0)
+
+
+def test_partial_recovery_is_reported_as_a_fraction_not_rounded_up():
+    gate = _recovery(110.0, 185.0)
+    assert gate.measured.value == pytest.approx(0.75)
+    assert gate.passed
+
+
+def test_under_recovery_FAILS_rather_than_being_called_close_enough():
+    """THE FAILURE DIRECTION. A metric reading back a quarter of a known cost under-reports an
+    unknown one by the same factor, and the gate exists to say so out loud."""
+    gate = _recovery(110.0, 135.0)
+    assert gate.measured.value == pytest.approx(0.25)
+    assert not gate.passed
+    assert "under-attributing" in gate.detail
+
+
+def test_a_metric_that_did_not_move_at_all_fails():
+    gate = _recovery(110.0, 110.0)
+    assert gate.measured.value == pytest.approx(0.0)
+    assert not gate.passed
+
+
+def test_a_missing_reading_is_a_failure_not_a_zero_recovery():
+    gate = _recovery(None, 210.0)
+    assert not gate.passed
+    assert gate.measured.value is None
+    assert "the base rate" in (gate.measured.note or "")
+
+
+def test_a_zero_denominator_refuses_rather_than_dividing():
+    gate = _recovery(110.0, 210.0, total_ms = 600.0, chars = 0)
+    assert not gate.passed
+    assert gate.measured.value is None
+
+
+def test_the_injection_script_burns_only_on_sse_chunks():
+    from studiobench.instruments.selfcheck import stream_cost_injection_init_script
+
+    js = stream_cost_injection_init_script(3.0)
+    assert 'indexOf("data:")' in js
+    # Queued, not inline: the burn has to land inside the measured chain whichever TextDecoder wrapper
+    # ended up outermost.
+    assert "queueMicrotask" in js
+    assert "3.0" in js
