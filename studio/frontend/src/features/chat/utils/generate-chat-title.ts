@@ -96,13 +96,17 @@ export async function generateChatTitle(
   let raw: string | undefined;
   if (payload.stream) {
     raw = "";
-    for await (const chunk of streamChatCompletions(
-      { ...payload, reasoning_effort: undefined },
-      signal ?? new AbortController().signal,
-    )) {
-      const choice = chunk.choices?.[0];
-      if (choice?.finish_reason === "length") return null;
-      raw += choice?.delta?.content ?? "";
+    try {
+      for await (const chunk of streamChatCompletions(
+        { ...payload, reasoning_effort: undefined },
+        signal ?? new AbortController().signal,
+      )) {
+        const choice = chunk.choices?.[0];
+        if (choice?.finish_reason === "length") return null;
+        raw += choice?.delta?.content ?? "";
+      }
+    } catch {
+      return null;
     }
   } else {
     const response = await authFetch("/v1/chat/completions", {

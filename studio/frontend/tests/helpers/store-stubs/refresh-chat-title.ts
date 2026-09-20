@@ -84,6 +84,7 @@ export async function encryptProviderApiKey(value: string) {
 
 export async function* streamChatCompletions(payload: unknown) {
   state.requests.push(JSON.parse(JSON.stringify(payload)));
+  if (state.status !== 200) throw new Error("Subscription unavailable");
   const choice = state.response.choices[0];
   yield {
     choices: [{ delta: { content: choice.message.content.slice(0, 9) } }],

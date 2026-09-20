@@ -305,3 +305,25 @@ test("a truncated subscription title preserves the existing title", async () => 
   await assert.rejects(refreshChatTitle(item));
   assert.equal(state.threads[0].title, item.title);
 });
+
+test("subscription failures return null for the automatic title fallback", async () => {
+  const { generateChatTitle } = await import(
+    "../src/features/chat/utils/generate-chat-title.ts"
+  );
+  state.providers = [
+    {
+      id: "subscription",
+      providerType: "openai_codex",
+      baseUrl: "",
+      hasApiKey: true,
+    },
+  ];
+  state.status = 401;
+  assert.equal(
+    await generateChatTitle(
+      "user: Help write an email",
+      "external::subscription::gpt-5.3-codex",
+    ),
+    null,
+  );
+});
