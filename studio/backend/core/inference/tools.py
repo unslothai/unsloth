@@ -10251,6 +10251,18 @@ def _get_project_workdir_info(session_id: str) -> "tuple[str, bool] | None":
             return orphaned, False
         if session_id.startswith("project-workspace-"):
             raise ProjectWorkspaceSessionUnavailableError("Project workspace changed")
+        # A first incarnation is still called `project-<id>`, so the rotated spelling is
+        # not the only one that has to refuse: falling through hands a project session to
+        # standalone resolution, where file requests answer out of a different sandbox and
+        # the next tool call creates and writes in it. Only for an id this install really
+        # used as a project, though. A chat is free to call itself `project-anything`, and
+        # that one must still resolve and still be cleaned up.
+        from storage.studio_db import project_workspace_incarnation_exists
+
+        if project_workspace_incarnation_exists(project_id):
+            raise ProjectWorkspaceSessionUnavailableError(
+                "Project workspace is unavailable"
+            )
         return None
     current_session_id = project.get("workspaceSessionId") or (
         f"{_PROJECT_SESSION_PREFIX}{project_id}"

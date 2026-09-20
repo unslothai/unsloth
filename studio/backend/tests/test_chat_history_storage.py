@@ -2634,3 +2634,33 @@ def test_a_first_turn_that_registered_before_its_row_still_holds_the_project(
             ),
         )
         assert not changed, "a first turn lost its project and the workspace rotated"
+
+
+def test_a_deleted_projects_first_session_refuses_instead_of_finding_a_sandbox(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """A first incarnation is called `project-<id>`, not `project-workspace-...`.
+
+    With the project gone and its kept folder unreachable, the orphan lookup finds
+    nothing. Falling through then handed that project session to standalone
+    resolution, which answers file requests out of an unrelated sandbox and lets the
+    next tool call create and write in it.
+    """
+    from core.inference import tools
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    chosen = workspace_projects_home / "picked"
+    chosen.mkdir()
+
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(chosen))
+    session_id = tools.project_session_id(project["id"])
+    assert not session_id.startswith("project-workspace-"), "not a first incarnation"
+
+    studio_db.delete_chat_project(project["id"], delete_files = False)
+    shutil.rmtree(chosen)  # the kept folder is unplugged or removed
+
+    with pytest.raises(tools.ProjectWorkspaceSessionUnavailableError):
+        tools.resolve_sandbox_workdir(session_id)
+
+    # A chat that merely calls itself something project-shaped is untouched.
+    assert tools.resolve_sandbox_workdir("project-not-a-real-project-id")
