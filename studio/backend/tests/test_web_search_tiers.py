@@ -40,6 +40,7 @@ class _Recorder:
                     body = f"A synthetic result from {name}.",
                 )
             ]
+
         return search
 
     def install(self, behaviour_for):
@@ -106,7 +107,9 @@ def test_every_tier_empty_reports_no_results_and_never_widens(engine_calls):
 
 
 @pytest.mark.parametrize("missing", [("startpage",), ("startpage", "grokipedia", "google")])
-def test_an_engine_absent_from_the_registry_does_not_reopen_auto(monkeypatch, engine_calls, missing):
+def test_an_engine_absent_from_the_registry_does_not_reopen_auto(
+    monkeypatch, engine_calls, missing
+):
     """9.8.0 raises KeyError on an unknown name and re-runs as auto; 9.14.4 keeps the valid ones.
     Either way the query must not reach an engine outside the tiers."""
     engine_calls.install(lambda name: "results")
