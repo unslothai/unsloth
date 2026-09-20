@@ -61,10 +61,6 @@ def _timeout_minutes() -> int:
     return int(found[0])
 
 
-def _sentences(text: str) -> list[str]:
-    return [part for part in re.split(r"(?<=[.:]) ", text) if part.strip()]
-
-
 def test_the_rationale_and_the_timeout_are_both_still_there():
     """A guard that found neither would pass every check below for the wrong reason."""
     rationale = _rationale()
@@ -77,24 +73,38 @@ def test_the_rationale_and_the_timeout_are_both_still_there():
 
 
 def test_the_timeout_is_never_offered_as_what_a_superseded_matrix_holds():
-    """The defect this replaces, in the exact words it had: "for up to ten minutes"."""
+    """The defect this replaces, in the exact words it had: "for up to ten minutes".
+
+    Judged per OCCURRENCE and on what the occurrence is attached to, not per sentence.
+    A sentence is the wrong unit twice over: "although the timeout is the cutoff for a
+    hang, a superseded matrix holds its runners for ten minutes" contains the exempting
+    words and reinstates the false claim anyway, and the words can sit far enough away to
+    mean nothing about the number they excuse. So an occupancy verb next to the duration
+    condemns it outright, and the cutoff reading only excuses a duration it is adjacent
+    to.
+    """
     minutes = _timeout_minutes()
     spellings = [str(minutes)]
     if minutes in _AS_A_WORD:
         spellings.append(_AS_A_WORD[minutes])
     duration = re.compile(r"\b(" + "|".join(spellings) + r")\s+minutes?\b", re.I)
+    rationale = _rationale()
     offenders = []
-    for sentence in _sentences(_rationale()):
-        if not duration.search(sentence):
+    for match in duration.finditer(rationale):
+        window = rationale[max(0, match.start() - 90) : match.end() + 40]
+        # Attached to a verb of occupancy: that is the false claim, whatever else the
+        # sentence concedes elsewhere.
+        if re.search(r"\b(hold|holds|holding|held|occup\w*|tie[sd]? up)\b", window, re.I):
+            offenders.append(window)
             continue
-        # Cited as the cutoff it is, rather than as an occupancy, is fine.
-        if re.search(r"timeout|hang|hung|cutoff", sentence, re.I):
-            continue
-        offenders.append(sentence)
+        # Otherwise it passes only if named, right here, as the cutoff it is.
+        if not re.search(r"timeout|hang\w*|hung|cutoff", window, re.I):
+            offenders.append(window)
     assert not offenders, (
-        f"{WORKFLOW.name} states {minutes} minutes as a duration without saying it is the "
-        f"timeout: {offenders}. That value is the cutoff for a cell that hangs, not what a "
-        f"working cell holds, and quoting it as the cost is what this guard exists to stop"
+        f"{WORKFLOW.name} gives {minutes} minutes as something a cell occupies, or as a "
+        f"bare duration with no sign it is the timeout: {offenders}. That value is the "
+        f"cutoff for a cell that hangs, not what a working cell holds, and quoting it as "
+        f"the cost is what this guard exists to stop"
     )
 
 
