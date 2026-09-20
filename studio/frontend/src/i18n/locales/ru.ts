@@ -222,6 +222,18 @@ export const ru = {
       organizeChats: "Настроить чаты",
       organizeProjects: "Настроить проекты",
       sortPinnedChats: "Сортировать закреплённые чаты",
+      dragDrop: "Перетаскивание",
+      dragHints: "Показывать подсказку при перетаскивании",
+      reorderSwitchesSort: "Перестановка включает ручной порядок",
+      dragOpensFolders: "Открывать папки под указателем",
+    },
+    drag: {
+      reorder: "Переставить",
+      pin: "Закрепить",
+      unpin: "Открепить",
+      moveTo: "Переместить в {name}",
+      moveToRecents: "Переместить в Недавние",
+      dropToPin: "Отпустите здесь, чтобы закрепить",
     },
     dialog: {
       deleteChat: {

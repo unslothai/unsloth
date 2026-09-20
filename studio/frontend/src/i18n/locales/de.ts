@@ -223,6 +223,18 @@ export const de = {
       organizeChats: "Chats organisieren",
       organizeProjects: "Projekte organisieren",
       sortPinnedChats: "Angeheftete Chats sortieren",
+      dragDrop: "Ziehen und Ablegen",
+      dragHints: "Hinweis beim Ziehen anzeigen",
+      reorderSwitchesSort: "Umordnen wechselt zu manueller Reihenfolge",
+      dragOpensFolders: "Ordner unter dem Zeiger öffnen",
+    },
+    drag: {
+      reorder: "Umordnen",
+      pin: "Anheften",
+      unpin: "Lösen",
+      moveTo: "Verschieben nach {name}",
+      moveToRecents: "Zu Zuletzt verschieben",
+      dropToPin: "Zum Anheften hier ablegen",
     },
     dialog: {
       deleteChat: {

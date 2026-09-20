@@ -225,6 +225,18 @@ export const en = {
       organizeChats: "Organize chats",
       organizeProjects: "Organize projects",
       sortPinnedChats: "Sort pinned chats",
+      dragDrop: "Drag and drop",
+      dragHints: "Show a hint while dragging",
+      reorderSwitchesSort: "Reordering sets Manual order",
+      dragOpensFolders: "Open folders while hovering",
+    },
+    drag: {
+      reorder: "Reorder",
+      pin: "Pin",
+      unpin: "Unpin",
+      moveTo: "Move to {name}",
+      moveToRecents: "Move to Recents",
+      dropToPin: "Drop here to pin",
     },
     dialog: {
       deleteChat: {

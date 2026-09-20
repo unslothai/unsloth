@@ -93,7 +93,7 @@ test("a folder row's icon follows its disclosure", () => {
 test("an empty open folder says it is empty", () => {
   assert.match(
     APP_SIDEBAR,
-    /\{expanded && projectChats\.length === 0 && \(\n\s*<SidebarMenuItem \{\.\.\.sectionChatDropProps\(project\.id\)\}>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.noChats"\)\}/,
+    /\{expanded && projectChats\.length === 0 && \(\n\s*<SidebarMenuItem\n\s*\{\.\.\.dnd\.dropZoneProps\(\{ section: order\.section, folderId: project\.id \}\)\}\n\s*>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.noChats"\)\}/,
   );
   // And it is a row, so the bottom fade has to count it like the "Show more" one.
   assert.match(APP_SIDEBAR, /if \(chats\.length === 0\) rows \+= 1;/);

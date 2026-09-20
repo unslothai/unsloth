@@ -220,6 +220,18 @@ export const ko = {
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
       sortPinnedChats: "고정된 채팅 정렬",
+      dragDrop: "드래그 앤 드롭",
+      dragHints: "드래그 중 힌트 표시",
+      reorderSwitchesSort: "순서 변경 시 수동 정렬로 전환",
+      dragOpensFolders: "포인터 아래 폴더 열기",
+    },
+    drag: {
+      reorder: "순서 변경",
+      pin: "고정",
+      unpin: "고정 해제",
+      moveTo: "{name}(으)로 이동",
+      moveToRecents: "최근으로 이동",
+      dropToPin: "여기에 놓아 고정",
     },
     dialog: {
       deleteChat: {

@@ -223,6 +223,18 @@ export const hi = {
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
+      dragDrop: "खींचें और छोड़ें",
+      dragHints: "खींचते समय संकेत दिखाएँ",
+      reorderSwitchesSort: "क्रम बदलने पर मैन्युअल क्रम पर स्विच करें",
+      dragOpensFolders: "पॉइंटर के नीचे फ़ोल्डर खोलें",
+    },
+    drag: {
+      reorder: "क्रम बदलें",
+      pin: "पिन करें",
+      unpin: "अनपिन करें",
+      moveTo: "{name} में ले जाएँ",
+      moveToRecents: "हाल के में ले जाएँ",
+      dropToPin: "पिन करने के लिए यहाँ छोड़ें",
     },
     dialog: {
       deleteChat: {

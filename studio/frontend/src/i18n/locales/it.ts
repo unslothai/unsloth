@@ -187,6 +187,18 @@ export const it = {
       organizeChats: "Organizza le chat",
       organizeProjects: "Organizza i progetti",
       sortPinnedChats: "Ordina le chat fissate",
+      dragDrop: "Trascina e rilascia",
+      dragHints: "Mostra un suggerimento durante il trascinamento",
+      reorderSwitchesSort: "Riordinare passa all'ordine manuale",
+      dragOpensFolders: "Apri le cartelle sotto il puntatore",
+    },
+    drag: {
+      reorder: "Riordina",
+      pin: "Fissa",
+      unpin: "Sblocca",
+      moveTo: "Sposta in {name}",
+      moveToRecents: "Sposta in Recenti",
+      dropToPin: "Rilascia qui per fissare",
     },
     dialog: {
       deleteChat: {

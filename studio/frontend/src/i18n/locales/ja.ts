@@ -222,6 +222,18 @@ export const ja = {
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
+      dragDrop: "ドラッグ＆ドロップ",
+      dragHints: "ドラッグ中にヒントを表示",
+      reorderSwitchesSort: "並べ替えると手動順序に切り替える",
+      dragOpensFolders: "ポインターの下のフォルダーを開く",
+    },
+    drag: {
+      reorder: "並べ替え",
+      pin: "ピン留め",
+      unpin: "ピン留めを解除",
+      moveTo: "{name} に移動",
+      moveToRecents: "最近に移動",
+      dropToPin: "ここにドロップしてピン留め",
     },
     dialog: {
       deleteChat: {
