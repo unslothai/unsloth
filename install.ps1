@@ -7027,6 +7027,13 @@ exit 0
         # command ends, so nothing the old environment's files could be shared with survives the
         # install and keeping that tree costs its full size. No notice for this one: where the
         # cache sits is not what is wrong here. install.sh gates its twin the same way.
+        # The caller can turn linking off outright, and then nothing is shared whatever volume
+        # the cache is on. `copy` is the only mode that does not share blocks: clone reflinks,
+        # hardlink links, symlink points at the cache. Checked before the branches below rather
+        # than inside them, because the cross-volume notice may apply as well.
+        if ($env:UV_LINK_MODE -and $env:UV_LINK_MODE.Trim().ToLowerInvariant() -eq "copy") {
+            $script:StudioRollbackCostsFullSize = $true
+        }
         if (Test-StudioUvNoCache) {
             $script:StudioRollbackCostsFullSize = $true
         } elseif ($env:UV_CACHE_DIR -and -not (Test-StudioSameVolume -PathA $env:UV_CACHE_DIR -PathB $StudioHome)) {

@@ -245,6 +245,37 @@ case "$(_run_devids 41 42)" in
     *) bad "a cache on another filesystem was reported as co-located" ;;
 esac
 
+# UV_LINK_MODE=copy: uv copies even on one filesystem, so the old environment shares nothing and
+# keeping it costs its full size. clone, hardlink and symlink all share; only copy does not.
+_run_link_mode() {  # mode
+    {
+        printf '%s\n' 'step() { printf "STEP %s\n" "$2"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$_TMP"
+        printf "UV_CACHE_DIR='%s/cache'\n" "$_TMP"
+        printf '%s\n' '_UV_CACHE_MODE=studio'
+        printf "UV_LINK_MODE='%s'\n" "$1"
+        printf '%s\n' 'mkdir -p "$UV_CACHE_DIR"'
+        cat "$_NOTICE_FILE"
+        printf '%s\n' '_warn_if_uv_cache_is_off_volume'
+        printf '%s\n' 'printf "COSTS_FULL_SIZE=%s\n" "${_ROLLBACK_COSTS_FULL_SIZE:-false}"'
+    } | "$_SH" 2>&1
+}
+case "$(_run_link_mode copy)" in
+    *"COSTS_FULL_SIZE=true"*) ok "UV_LINK_MODE=copy costs a full second environment" ;;
+    *) bad "UV_LINK_MODE=copy was treated as if the old environment were shared" ;;
+esac
+case "$(_run_link_mode COPY)" in
+    *"COSTS_FULL_SIZE=true"*) ok "and the mode is read case-insensitively" ;;
+    *) bad "UV_LINK_MODE=COPY was not recognised" ;;
+esac
+for _lm in hardlink clone symlink ""; do
+    case "$(_run_link_mode "$_lm")" in
+        *"COSTS_FULL_SIZE=false"*) ok "UV_LINK_MODE=${_lm:-unset} shares, so no warning" ;;
+        *) bad "UV_LINK_MODE=${_lm:-unset} was treated as copying" ;;
+    esac
+done
+
 _NOTICE_CUSTOM=$(_run_notice custom)
 _NOTICE_STUDIO=$(_run_notice studio)
 case "$_NOTICE_CUSTOM" in

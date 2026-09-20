@@ -979,6 +979,10 @@ _warn_if_uv_cache_is_off_volume() {
         _ROLLBACK_COSTS_FULL_SIZE=true
         return 0
     fi
+    # The caller can turn linking off outright, and then nothing is shared whatever filesystem the cache is on. `copy` is the only mode that does not share blocks: clone reflinks, hardlink links, symlink points at the cache. Not a return -- the cross-filesystem notice below may apply as well.
+    case "$(printf '%s' "${UV_LINK_MODE:-}" | tr '[:upper:]' '[:lower:]')" in
+        copy) _ROLLBACK_COSTS_FULL_SIZE=true ;;
+    esac
     [ -n "${UV_CACHE_DIR:-}" ] || return 0
     _same_volume "$UV_CACHE_DIR" "$STUDIO_HOME" && return 0
     # Read by the rollback warning below: the cost it describes is only real across this boundary.

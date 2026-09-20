@@ -1878,3 +1878,24 @@ class TestNoRollbackNeverPromisesAKeptCopy:
         # If a fourth call site appears, this fails and the promise above it has to be checked.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert text.count("Start-StudioVenvRollback -ExistingDir") == 3
+
+
+class TestCopyLinkModeCostsAFullEnvironment:
+    """UV_LINK_MODE=copy makes uv copy from the cache even on one filesystem, so the old
+    environment shares nothing and keeping it costs its full size. clone reflinks, hardlink
+    links and symlink points at the cache; copy is the only mode that does not share (#11313)."""
+
+    @pytest.mark.parametrize(
+        "path, var",
+        [
+            (INSTALL_SH, "UV_LINK_MODE"),
+            (INSTALL_PS1, "$env:UV_LINK_MODE"),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_the_link_mode_is_considered(self, path, var):
+        text = path.read_text(encoding = "utf-8")
+        assert var in text, f"{path.name} infers sharing from volume identity alone"
+        flag = "_ROLLBACK_COSTS_FULL_SIZE" if path is INSTALL_SH else "StudioRollbackCostsFullSize"
+        window = text.split(var, 1)[1][:600]
+        assert flag in window, f"{path.name} reads the link mode without acting on it"
