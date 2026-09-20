@@ -2781,6 +2781,7 @@ class ToolConfirmRequest(BaseModel):
 class ToolApprovalStatusRequest(BaseModel):
     """Ask whether one approval is still waiting. Takes the id rather than listing them, so a
     caller can only ask about an approval it already holds and cannot enumerate anyone else's."""
+
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
 
