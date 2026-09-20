@@ -3232,3 +3232,18 @@ def outer():
             f'import requests\ns = requests.Session()\ns.get("{_METADATA_URL}")',
             expect_phrase = "Blocked: cloud-metadata host",
         )
+
+
+class TestClassBodyOrder:
+    def test_a_use_above_the_class_attribute_reads_the_module_binding_ok(self):
+        # A class body executes in order, so the attribute assigned below has not happened yet.
+        _ok(
+            'import requests\nurl = "https://huggingface.co/"\nclass C:\n'
+            '    requests.get(url)\n    url = "https://example.com/"'
+        )
+
+    def test_a_use_below_the_class_attribute_reads_it_blocked(self):
+        _blocked(
+            f'import requests\nclass C:\n    url = "{_METADATA_URL}"\n    requests.get(url)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )

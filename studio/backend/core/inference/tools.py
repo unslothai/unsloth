@@ -16326,6 +16326,8 @@ def _check_signal_escape_patterns(code: str):
             scope that binds the name, since a nearer binding shadows the alias."""
             for scope in self._chain(node):
                 key = (scope, name)
+                if not self._class_binding_applies(scope, key, node):
+                    continue
                 if key in table:
                     return table[key]
                 if self._alias_holds_here(key, node):
@@ -16347,10 +16349,20 @@ def _check_signal_escape_patterns(code: str):
                 return True
             return max(before)[1]
 
+        def _class_binding_applies(self, scope, key, node) -> bool:
+            """A class body is read in order: an attribute assigned further down is not what a use
+            above it reads, so that use falls through to the enclosing scope."""
+            if scope not in self._class_scopes:
+                return True
+            positions = self._bind_positions.get(key, [])
+            return any(position <= self._position(node) for position, _alias in positions)
+
         def string_for(self, name: str, node):
             """The value bound to *name* where *node* uses it, or None when nothing is trusted."""
             for scope in self._chain(node):
                 key = (scope, name)
+                if not self._class_binding_applies(scope, key, node):
+                    continue
                 if key in self.strings:
                     return self.strings[key]
                 if key in self._counts:
@@ -16363,6 +16375,8 @@ def _check_signal_escape_patterns(code: str):
             parameter shadowing a global is the parameter, and the global is never read."""
             for scope in self._chain(node):
                 key = (scope, name)
+                if not self._class_binding_applies(scope, key, node):
+                    continue
                 if key in self._counts:
                     return list(self.all_values.get(key, ()))
             return []
