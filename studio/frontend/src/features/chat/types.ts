@@ -83,4 +83,5 @@ export interface ParsedConversation {
   /** Open WebUI exports carry the flag; other formats leave it unset. */
   archived?: boolean;
   createdAt?: number;
+  thread?: Partial<Omit<ThreadRecord, "id" | "title" | "archived">>;
 }
