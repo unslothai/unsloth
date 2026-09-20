@@ -16,6 +16,7 @@ import inspect
 import os
 import struct
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1735,3 +1736,25 @@ def test_missing_custom_projector_is_rejected_before_unloading(tmp_path, monkeyp
             )
         )
     assert unloaded == []
+
+
+@pytest.mark.parametrize("flag", ["--mmproj", "-mm"])
+def test_hub_load_rechecks_custom_projector_replaced_in_place(tmp_path, flag):
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    backend._resolve_launch_mmproj_path = LlamaCppBackend._resolve_launch_mmproj_path.__get__(
+        backend
+    )
+    custom = _write_gguf(tmp_path / "custom-projector.gguf")
+    _launch(backend, gguf, is_vision = False, extra_args = [flag, str(custom)])
+    backend._hf_variant = "Q4_K_M"
+    intent = GgufLoadIntent(
+        model_identifier = "test",
+        hf_repo = "org/model",
+        hf_variant = "Q4_K_M",
+        extra_args = (flag, str(custom)),
+    )
+    assert backend.matches_load_source(intent)
+    assert not backend.matches_load_source(replace(intent, hf_variant = "Q8_0"))
+    replacement = _write_gguf(tmp_path / "replacement.gguf")
+    replacement.replace(custom)
+    assert not backend.matches_load_source(intent)

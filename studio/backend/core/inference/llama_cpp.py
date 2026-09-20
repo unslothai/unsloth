@@ -31169,17 +31169,22 @@ class LlamaCppBackend:
             intent.model_identifier.lower()
         ):
             return False
-        if intent.gguf_path is not None and self._gguf_path:
+        custom_mmproj = _extra_args_device(intent.extra_args, {"--mmproj", "-mm"})
+        source_path = intent.gguf_path
+        if source_path is None and custom_mmproj is not None:
+            if (self._hf_variant or "").lower() != (intent.hf_variant or "").lower():
+                return False
+            source_path = self._gguf_path
+        if source_path is not None and self._gguf_path:
             resident_identity = getattr(self, "_gguf_load_identity", None)
             if resident_identity is not None:
                 candidate_identity = LlamaCppBackend._gguf_load_source_identity(
-                    intent.gguf_path,
-                    _extra_args_device(intent.extra_args, {"--mmproj", "-mm"})
-                    or intent.mmproj_path,
+                    source_path,
+                    custom_mmproj or intent.mmproj_path,
                 )
                 return candidate_identity == resident_identity
             try:
-                return Path(self._gguf_path).resolve() == Path(intent.gguf_path).resolve()
+                return Path(self._gguf_path).resolve() == Path(source_path).resolve()
             except OSError:
                 return False
         return (self._hf_variant or "").lower() == (intent.hf_variant or "").lower()
