@@ -803,11 +803,45 @@ def _nothing_at(path: Path, *, ending: str = "") -> bool:
         with os.scandir(path) as entries:
             return not any(entry.name.lower().endswith(ending) for entry in entries)
     except FileNotFoundError:
-        return True
+        # Not absence on its own. POSIX distinguishes "not there" from "a parent component is a
+        # file" (NotADirectoryError) and "I may not traverse it" (PermissionError); Windows
+        # collapses all three into ERROR_PATH_NOT_FOUND, which Python raises as
+        # FileNotFoundError. Taking it at face value is the very reading the docstring above
+        # rejects, restricted to one platform: with a FILE where ~/.matplotlib belongs, POSIX
+        # declined the pin and Windows took it. Caught by the windows-latest leg on a test
+        # written for the POSIX shape.
+        return _nothing_above(path)
     except (OSError, ValueError):
         # Could not look. Declining a pin costs a shared cache directory; taking one wrongly
         # hides the configuration or datasets underneath it.
         return False
+
+
+def _nothing_above(path: Path) -> bool:
+    """Whether a FileNotFoundError for *path* really means nothing is there.
+
+    Decided by the nearest ancestor that can be stat'ed: a directory means the tree is real and
+    the entry genuinely is not in it; anything else means a component is a file or a reparse
+    point, so the path could never have existed and this call has learned nothing; an ancestor
+    that cannot be inspected at all is not proof either way. Running out of ancestors means
+    nothing along the path exists, which is real absence.
+
+    Same rule as hf_cache_settings._absence_is_real, for the same reason on the same platform.
+    """
+    current = os.path.dirname(os.fspath(path))
+    while current:
+        try:
+            info = os.stat(current)
+        except FileNotFoundError:
+            parent = os.path.dirname(current)
+            if parent == current:
+                return True
+            current = parent
+            continue
+        except OSError:
+            return False
+        return stat_module.S_ISDIR(info.st_mode)
+    return True
 
 
 def _matplotlib_config_dir() -> Path | None:

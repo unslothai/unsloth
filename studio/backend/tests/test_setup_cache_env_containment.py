@@ -1494,3 +1494,38 @@ def test_an_uninspectable_probe_declines_and_still_pins_everything_else(tmp_path
     assert "MPLCONFIGDIR" not in os.environ
     for sibling in _DECLINE_SIBLINGS:
         assert os.environ.get(sibling, "").startswith(str(tmp_path / "studio")), sibling
+
+
+def test_a_file_where_the_config_dir_belongs_declines_the_pin_on_windows_too(monkeypatch, tmp_path):
+    """_nothing_at reads a FileNotFoundError as absence, and on Windows that error also means
+    "a parent component is a file" -- the case POSIX reports as NotADirectoryError and declines.
+    So with a file where ~/.matplotlib belongs, POSIX declined the pin and Windows took it,
+    hiding whatever the user had underneath. Caught by the windows-latest leg.
+
+    Reproduced by the error shape rather than the platform, since the Linux runners cannot raise
+    it; the POSIX arm of the same fixture is the test directly above.
+    """
+    sr = _load_storage_roots()
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.parent.mkdir(parents = True, exist_ok = True)
+    config.write_text("", encoding = "utf-8")
+
+    real_lstat = sr.os.lstat
+
+    def windows_shaped_lstat(p, *a, **k):
+        text = os.fspath(p)
+        if text != str(config) and text.startswith(str(config) + os.sep):
+            raise FileNotFoundError(2, "The system cannot find the path specified", text)
+        return real_lstat(p, *a, **k)
+
+    monkeypatch.setattr(sr.os, "lstat", windows_shaped_lstat)
+
+    assert sr._nothing_at(config / "matplotlibrc") is False, \
+        "a file where the config dir belongs read as 'nothing there'"
+    # A genuinely empty, genuinely present directory must still read as empty, or the fix above
+    # would decline every pin and the guard would stop guarding anything.
+    empty = tmp_path / "really-empty"
+    empty.mkdir()
+    assert sr._nothing_at(empty / "matplotlibrc") is True
+    # And a path with nothing along it at all is still absence, which is the default install.
+    assert sr._nothing_at(tmp_path / "never" / "created" / "matplotlibrc") is True
