@@ -189,7 +189,7 @@ _run_notice() {  # mode
         printf "_UV_CACHE_MODE='%s'\n" "$_rn_mode"
         cat "$_NOTICE_FILE"
         printf '%s\n' '_warn_if_uv_cache_is_off_volume'
-        printf '%s\n' 'printf "OFF_VOLUME=%s\n" "${_ROLLBACK_COSTS_FULL_SIZE:-false}"'
+        printf '%s\n' 'printf "NOTICE_DONE\n"'
     } | "$_SH" 2>&1
 }
 # UV_NO_CACHE: uv takes a temporary cache it discards when the command ends, so nothing the old
@@ -205,14 +205,10 @@ _run_no_cache() {  # same_volume_cache
         printf "STUDIO_HOME='%s'\n" "$_TMP"
         cat "$_NOTICE_FILE"
         printf '%s\n' '_warn_if_uv_cache_is_off_volume'
-        printf '%s\n' 'printf "COSTS_FULL_SIZE=%s\n" "${_ROLLBACK_COSTS_FULL_SIZE:-false}"'
+        printf '%s\n' 'printf "NOTICE_DONE\n"'
     } | "$_SH" 2>&1
 }
 _NOTICE_NO_CACHE=$(_run_no_cache)
-case "$_NOTICE_NO_CACHE" in
-    *"COSTS_FULL_SIZE=true"*) ok "UV_NO_CACHE still costs a full second environment" ;;
-    *) bad "UV_NO_CACHE was treated as if the old environment were shared: $_NOTICE_NO_CACHE" ;;
-esac
 case "$_NOTICE_NO_CACHE" in
     *"different filesystem"*) bad "UV_NO_CACHE printed a cross-volume notice about a co-located cache" ;;
     *) ok "UV_NO_CACHE does not blame the cache location" ;;
@@ -233,15 +229,15 @@ _run_devids() {  # id_a  id_b
         printf '%s\n' 'UV_CACHE_DIR="$STUDIO_HOME/cache"'
         printf '%s\n' 'mkdir -p "$UV_CACHE_DIR"'
         printf '%s\n' '_warn_if_uv_cache_is_off_volume'
-        printf '%s\n' 'printf "COSTS_FULL_SIZE=%s\n" "${_ROLLBACK_COSTS_FULL_SIZE:-false}"'
+        printf '%s\n' 'printf "NOTICE_DONE\n"'
     } | "$_SH" 2>&1
 }
 case "$(_run_devids 41 41)" in
-    *"COSTS_FULL_SIZE=false"*) ok "one device id is one volume" ;;
-    *) bad "a co-located cache was reported as off-volume" ;;
+    *"different filesystem"*) bad "a co-located cache was reported as off-volume" ;;
+    *) ok "one device id is one volume" ;;
 esac
 case "$(_run_devids 41 42)" in
-    *"COSTS_FULL_SIZE=true"*) ok "two device ids are two volumes, whatever df says" ;;
+    *"different filesystem"*) ok "two device ids are two volumes, whatever df says" ;;
     *) bad "a cache on another filesystem was reported as co-located" ;;
 esac
 
@@ -258,23 +254,9 @@ _run_link_mode() {  # mode
         printf '%s\n' 'mkdir -p "$UV_CACHE_DIR"'
         cat "$_NOTICE_FILE"
         printf '%s\n' '_warn_if_uv_cache_is_off_volume'
-        printf '%s\n' 'printf "COSTS_FULL_SIZE=%s\n" "${_ROLLBACK_COSTS_FULL_SIZE:-false}"'
+        printf '%s\n' 'printf "NOTICE_DONE\n"'
     } | "$_SH" 2>&1
 }
-case "$(_run_link_mode copy)" in
-    *"COSTS_FULL_SIZE=true"*) ok "UV_LINK_MODE=copy costs a full second environment" ;;
-    *) bad "UV_LINK_MODE=copy was treated as if the old environment were shared" ;;
-esac
-case "$(_run_link_mode COPY)" in
-    *"COSTS_FULL_SIZE=true"*) ok "and the mode is read case-insensitively" ;;
-    *) bad "UV_LINK_MODE=COPY was not recognised" ;;
-esac
-for _lm in hardlink clone symlink ""; do
-    case "$(_run_link_mode "$_lm")" in
-        *"COSTS_FULL_SIZE=false"*) ok "UV_LINK_MODE=${_lm:-unset} shares, so no warning" ;;
-        *) bad "UV_LINK_MODE=${_lm:-unset} was treated as copying" ;;
-    esac
-done
 
 # And the other direction: a symlink crosses a filesystem boundary, so an off-volume cache under
 # that mode costs nothing and must not warn. Driven with two device ids, as above.
@@ -290,21 +272,17 @@ _run_link_mode_offvol() {  # mode
         printf '%s\n' 'UV_CACHE_DIR="$STUDIO_HOME/cache"'
         printf '%s\n' 'mkdir -p "$UV_CACHE_DIR"'
         printf '%s\n' '_warn_if_uv_cache_is_off_volume'
-        printf '%s\n' 'printf "COSTS_FULL_SIZE=%s\n" "${_ROLLBACK_COSTS_FULL_SIZE:-false}"'
+        printf '%s\n' 'printf "NOTICE_DONE\n"'
     } | "$_SH" 2>&1
 }
 _OFFVOL_SYMLINK=$(_run_link_mode_offvol symlink)
-case "$_OFFVOL_SYMLINK" in
-    *"COSTS_FULL_SIZE=false"*) ok "an off-volume cache under symlink mode costs nothing" ;;
-    *) bad "symlink mode across filesystems was reported as costing a full copy" ;;
-esac
 case "$_OFFVOL_SYMLINK" in
     *"different filesystem"*) bad "symlink mode printed a copy notice about links" ;;
     *) ok "and prints no copy notice" ;;
 esac
 case "$(_run_link_mode_offvol hardlink)" in
-    *"COSTS_FULL_SIZE=true"*) ok "while hardlink mode across filesystems still does" ;;
-    *) bad "an off-volume hardlink cache stopped warning" ;;
+    *"different filesystem"*) ok "while hardlink mode across filesystems still says so" ;;
+    *) bad "an off-volume hardlink cache stopped reporting the boundary" ;;
 esac
 
 _NOTICE_CUSTOM=$(_run_notice custom)
@@ -320,11 +298,6 @@ esac
 case "$_NOTICE_STUDIO" in
     *"--isolated-uv-cache"*) ok "a selected cache still names the flag that would move it" ;;
     *) bad "a selected cache lost the --isolated-uv-cache remedy: $_NOTICE_STUDIO" ;;
-esac
-# The rollback free-space warning reads this, and only warns across the boundary.
-case "$_NOTICE_STUDIO" in
-    *"OFF_VOLUME=true"*) ok "the off-volume finding is recorded for the rollback warning" ;;
-    *) bad "the off-volume finding was not recorded" ;;
 esac
 rm -f "$_NOTICE_FILE"
 

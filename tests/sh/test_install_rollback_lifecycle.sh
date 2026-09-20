@@ -670,20 +670,15 @@ space_case() {  # label  free_kb_stub  expect_warning(yes|no)  [extra_harness_li
         fi
     fi
 }
-# Every case below is a cache on ANOTHER filesystem, which is the only arrangement where keeping
-# the old environment costs its own size; the co-located case is the last one.
-space_case "less free than the venv needs" "echo 524288" yes "_ROLLBACK_COSTS_FULL_SIZE=true"
-space_case "plenty of room" "echo 104857600" no "_ROLLBACK_COSTS_FULL_SIZE=true"
+space_case "less free than the venv needs" "echo 524288" yes
+space_case "plenty of room" "echo 104857600" no
 # An unmeasurable disk is not a warning: du or df missing must print nothing, not "about  MB".
-space_case "unmeasurable free space" "return 0" no "_ROLLBACK_COSTS_FULL_SIZE=true"
+space_case "unmeasurable free space" "return 0" no
 # The warning's payload is the name of the opt-out, so printing it to someone who already passed
 # that flag advises an action they have taken, about a copy discarded three lines later.
-space_case "short on space, but --no-rollback already set" "echo 524288" no "_NO_ROLLBACK=true
-_ROLLBACK_COSTS_FULL_SIZE=true"
-# uv hardlinks a wheel within one filesystem, so the old venv shares its blocks with the cache and
-# discarding it frees nothing -- while du over the venv alone still charges every one of those
-# inodes in full, which is exactly how this warning would recommend an opt-out that does nothing.
-space_case "short on space, but the cache is on this filesystem" "echo 524288" no
+space_case "short on space, but --no-rollback already set" "echo 524288" no "_NO_ROLLBACK=true"
+# The co-located case is no longer a gate on this run's cache mode: _dir_size_kb answers it by
+# counting only blocks the tree owns, which the size section above drives with a real hardlink.
 
 echo "=== the size estimate counts only what the tree would actually free (#11313) ==="
 # A venv hardlinked to a cache that survives the install shares those blocks: deleting the venv

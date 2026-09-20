@@ -1539,21 +1539,16 @@ class TestOffVolumeCacheNoticeParity:
             "unset UV_CACHE_DIR" in text
         ), f"{path.name} does not tell a custom-cache user what would change the answer"
 
-    @pytest.mark.parametrize(
-        "path, flag",
-        [
-            (INSTALL_SH, "_ROLLBACK_COSTS_FULL_SIZE"),
-            (INSTALL_PS1, "$script:StudioRollbackCostsFullSize"),
-        ],
-        ids = ["install.sh", "install.ps1"],
-    )
-    def test_the_finding_is_recorded_for_the_rollback_warning(self, path, flag):
-        # Keeping the old environment only costs its own size across a filesystem boundary:
-        # within one, uv hardlinks every wheel, so the tree shares its blocks with the cache.
-        text = path.read_text(encoding = "utf-8")
-        assert (
-            text.count(flag) >= 2
-        ), f"{path.name} should set {flag} at the notice and read it at the rollback warning"
+    def test_windows_still_records_the_finding_for_the_rollback_warning(self):
+        # Windows only. install.sh dropped its twin of this flag once _dir_size_kb learned to
+        # count blocks the tree actually owns, which answers the same question and answers it
+        # for a tree built by a previous run rather than for this one. The Windows estimate
+        # sums every file with no link count available, so there the gate still does work.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.count("$script:StudioRollbackCostsFullSize") >= 2
+        assert "_ROLLBACK_COSTS_FULL_SIZE" not in INSTALL_SH.read_text(encoding = "utf-8"), (
+            "install.sh carries a mode flag nothing reads"
+        )
 
 
 class TestWindowsMountPointVolumes:
@@ -1657,28 +1652,24 @@ class TestNoCacheStillCostsAFullEnvironment:
     ends (docs.astral.sh/uv/concepts/cache: "a temporary cache directory if --no-cache was
     requested"). Nothing the old environment's files could be shared with survives the install,
     so keeping that tree costs its full size and the rollback-space warning has to fire even
-    though the cache path looks co-located."""
+    though the cache path looks co-located. Windows only: install.sh answers the same question
+    by measuring blocks the tree owns, which does not depend on what mode THIS run picked."""
 
     @pytest.mark.parametrize(
         "path, probe",
         [
-            (INSTALL_SH, "_uv_no_cache_requested"),
             (INSTALL_PS1, "Test-StudioUvNoCache"),
         ],
-        ids = ["install.sh", "install.ps1"],
+        ids = ["install.ps1"],
     )
     def test_no_cache_sets_the_full_size_flag(self, path, probe):
         # Sliced on the block, not on a character window around a message: a window silently
         # stops covering what it was written for as soon as anything is inserted above it.
         text = path.read_text(encoding = "utf-8")
-        if path is INSTALL_SH:
-            block = text.split("_warn_if_uv_cache_is_off_volume() {", 1)[1].split("\n}\n", 1)[0]
-            flag = "_ROLLBACK_COSTS_FULL_SIZE"
-        else:
-            block = text.split("Set-StudioUvCacheEnvironment -StudioRoot", 1)[1].split(
-                "Bytecode compilation", 1
-            )[0]
-            flag = "StudioRollbackCostsFullSize"
+        block = text.split("Set-StudioUvCacheEnvironment -StudioRoot", 1)[1].split(
+            "Bytecode compilation", 1
+        )[0]
+        flag = "StudioRollbackCostsFullSize"
         assert probe in block, f"{path.name} does not consider no-cache mode before gating"
         assert flag in block, f"{path.name} does not set the full-size flag for no-cache mode"
 
@@ -1891,20 +1882,20 @@ class TestNoRollbackNeverPromisesAKeptCopy:
 class TestCopyLinkModeCostsAFullEnvironment:
     """UV_LINK_MODE=copy makes uv copy from the cache even on one filesystem, so the old
     environment shares nothing and keeping it costs its full size. clone reflinks, hardlink
-    links and symlink points at the cache; copy is the only mode that does not share (#11313)."""
+    links and symlink points at the cache; copy is the only mode that does not share (#11313).
+    Windows only, for the same reason as the no-cache gate: install.sh measures instead."""
 
     @pytest.mark.parametrize(
         "path, var",
         [
-            (INSTALL_SH, "UV_LINK_MODE"),
             (INSTALL_PS1, "$env:UV_LINK_MODE"),
         ],
-        ids = ["install.sh", "install.ps1"],
+        ids = ["install.ps1"],
     )
     def test_the_link_mode_is_considered(self, path, var):
         text = path.read_text(encoding = "utf-8")
         assert var in text, f"{path.name} infers sharing from volume identity alone"
-        flag = "_ROLLBACK_COSTS_FULL_SIZE" if path is INSTALL_SH else "StudioRollbackCostsFullSize"
+        flag = "StudioRollbackCostsFullSize"
         window = text.split(var, 1)[1][:600]
         assert flag in window, f"{path.name} reads the link mode without acting on it"
 
