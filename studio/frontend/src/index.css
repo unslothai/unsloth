@@ -1484,19 +1484,16 @@ html[data-chat-font] .aui-root {
 	/* Select trigger on the panel: the surface and padding the model rows
 	   use. Height and width stay with the caller, since an inline select
 	   is 32px and a full-width one 36px. */
+	/* Inline field on the panel: the filled box a row's value is typed
+	   into. Width and height stay with the caller. */
+	.panel-field {
+		@apply rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 py-0 text-center text-ui-13 font-medium text-nav-fg outline-none hover:bg-[var(--panel-input-surface-hover)] focus-visible:ring-0;
+	}
+
 	/* Important like .panel-input-group: these all override a base
 	   SelectTrigger class of the same weight. */
 	.panel-select-trigger {
-		@apply rounded-full! border-transparent! bg-black/[0.04]! py-0! pl-3.5! pr-[11px]! text-ui-13! font-medium! text-nav-fg shadow-none! focus-visible:ring-0!;
-	}
-	.panel-select-trigger:hover {
-		@apply bg-black/[0.06]!;
-	}
-	.dark .panel-select-trigger {
-		@apply bg-white/[0.05]!;
-	}
-	.dark .panel-select-trigger:hover {
-		@apply bg-white/[0.1]!;
+		@apply rounded-full! border-transparent! bg-[var(--panel-input-surface)]! py-0! pl-3.5! pr-[11px]! text-ui-13! font-medium! text-nav-fg shadow-none! hover:bg-[var(--panel-input-surface-hover)]! focus-visible:ring-0!;
 	}
 
 	/* Switch — unsloth-green track when active, slider-gray thumb in

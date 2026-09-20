@@ -1453,7 +1453,7 @@ export function ChatSettingsPanel({
           {/* Rounded wrapper clips overflowing text and the scrollbar. */}
           <div
             className={cn(
-              "panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle",
+              "panel-text-surface h-20 w-full overflow-hidden corner-squircle",
               systemPromptOverflows && "cursor-pointer",
             )}
           >
@@ -1623,35 +1623,34 @@ export function ChatSettingsPanel({
                     are batched and that moves the result.
                   </InfoHint>
                 </div>
-                <InputGroup className="panel-input-group w-[8.5rem] shrink-0">
-                  <InputGroupInput
-                    id="inference-seed"
-                    // A TEXT input: type="number" reports an unreadable entry as "", clearing the pin.
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={
-                      seedDraft ??
-                      (params.seed == null ? "" : String(params.seed))
-                    }
-                    onChange={(e) =>
-                      setSeedDraft(e.target.value.replace(/\D/g, ""))
-                    }
-                    onBlur={() => {
-                      if (seedDraft === null) return;
-                      setSeedDraft(null);
-                      setSeed(committedSeed);
-                    }}
-                    onKeyDown={(e) => {
-                      // Blur is the only commit, so Enter has to reach it.
-                      if (e.key === "Enter") e.currentTarget.blur();
-                    }}
-                    placeholder="Random"
-                    aria-label="Seed"
-                    className="!h-8 min-h-0 min-w-0 self-stretch !px-3 py-0 text-ui-13 font-medium leading-8 text-nav-fg md:text-ui-13"
-                  />
-                </InputGroup>
+                {/* A plain field, sized like the model rows': the input group
+                    it used to sit in is 36px and full width. */}
+                <input
+                  id="inference-seed"
+                  // A TEXT input: type="number" reports an unreadable entry as "", clearing the pin.
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={
+                    seedDraft ?? (params.seed == null ? "" : String(params.seed))
+                  }
+                  onChange={(e) =>
+                    setSeedDraft(e.target.value.replace(/\D/g, ""))
+                  }
+                  onBlur={() => {
+                    if (seedDraft === null) return;
+                    setSeedDraft(null);
+                    setSeed(committedSeed);
+                  }}
+                  onKeyDown={(e) => {
+                    // Blur is the only commit, so Enter has to reach it.
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  placeholder="Random"
+                  aria-label="Seed"
+                  className="panel-field h-8 w-[84px] shrink-0"
+                />
               </div>
             ) : null}
           </div>
