@@ -2759,7 +2759,8 @@ exit 1
     # not exist until the statement defining it has run.
     # GetPathRoot on a path that does not exist yet still names the volume it would be created on.
     function Get-StudioFreeSpaceBytes {
-        param([Parameter(Mandatory = $true)][string]$Path)
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
         try {
             $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Path))
             if (-not $root) { return $null }
@@ -2768,7 +2769,8 @@ exit 1
     }
 
     function Get-StudioTreeSizeBytes {
-        param([Parameter(Mandatory = $true)][string]$Path)
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
         try {
             if (-not (Test-Path -LiteralPath $Path)) { return $null }
             $total = 0
@@ -2782,7 +2784,10 @@ exit 1
     # Junctions and symlinks lie about which volume a path is on, so canonicalise first. Unknown
     # answers $true -- "same volume" is the quiet case, and a guess must not invent a warning.
     function Test-StudioSameVolume {
-        param([Parameter(Mandatory = $true)][string]$PathA, [Parameter(Mandatory = $true)][string]$PathB)
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$PathA,
+              [Parameter(Mandatory = $true)][AllowEmptyString()][string]$PathB)
+        # Unknown answers "same volume", because same volume is the quiet case.
+        if ([string]::IsNullOrWhiteSpace($PathA) -or [string]::IsNullOrWhiteSpace($PathB)) { return $true }
         try {
             $a = [System.IO.Path]::GetPathRoot((Get-StudioFinalPath -Path $PathA))
             $b = [System.IO.Path]::GetPathRoot((Get-StudioFinalPath -Path $PathB))
@@ -6882,9 +6887,15 @@ exit 0
     # full copy rather than a handful of megabytes -- the whole of the "a reinstall doubles the
     # disk" report (#11313). A Studio home on any drive but C: lands here, because uv's default
     # cache is under %LOCALAPPDATA%.
-    if ($env:UV_CACHE_DIR -and -not (Test-StudioSameVolume -PathA $env:UV_CACHE_DIR -PathB $StudioHome)) {
-        step "uv cache" "$($env:UV_CACHE_DIR) is on a different volume from $StudioHome, so wheels are copied into the venv rather than hardlinked, costing extra disk; use --isolated-uv-cache to keep the cache beside the environment" "Yellow"
-    }
+    # In its own try, for the same reason Start-StudioVenvRollback wraps its twin: this is advice,
+    # it runs under the installer's "Stop", and advice that cannot be produced must never cost the
+    # install. Test-StudioSameVolume already answers "same volume" for anything it cannot resolve,
+    # so this only catches what it cannot catch itself, such as a parameter it will not bind.
+    try {
+        if ($env:UV_CACHE_DIR -and -not (Test-StudioSameVolume -PathA $env:UV_CACHE_DIR -PathB $StudioHome)) {
+            step "uv cache" "$($env:UV_CACHE_DIR) is on a different volume from $StudioHome, so wheels are copied into the venv rather than hardlinked, costing extra disk; use --isolated-uv-cache to keep the cache beside the environment" "Yellow"
+        }
+    } catch { }
 
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
