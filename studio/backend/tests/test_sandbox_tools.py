@@ -4154,3 +4154,86 @@ class TestPartiallyDynamicAuthorities:
         # "https://huggingface.co" + suffix may really be huggingface.co.evil.org, so a prefix
         # that has not passed the delimiter names no host either way.
         _ok(code)
+
+
+class TestTargetsHandedOverInAMapping:
+    """`requests.get(**{"url": ...})` names its target as plainly as a positional one."""
+
+    def test_a_metadata_url_in_an_expansion_is_blocked(self):
+        _blocked(
+            f'import requests\nrequests.get(**{{"url": "{_METADATA_URL}"}})',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_untrusted_url_in_an_expansion_is_refused(self):
+        _blocked(
+            'import requests\nrequests.get(**{"url": "https://evil.example/x"})',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import os, requests\nrequests.get(**{"url": os.environ["T"]})', id = "literal_map"
+            ),
+            pytest.param("import os, requests\nrequests.get(**os.environ)", id = "opaque_map"),
+        ],
+    )
+    def test_an_external_target_in_an_expansion_is_refused(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nrequests.get(**{"url": "https://huggingface.co/api/models"})',
+                id = "allowed_url",
+            ),
+            pytest.param(
+                "import requests\n"
+                'opts = {"timeout": 5}\n'
+                'requests.get("https://huggingface.co/api/models", **opts)',
+                id = "ordinary_options",
+            ),
+        ],
+    )
+    def test_an_expansion_that_reaches_an_allowed_host_keeps_working_ok(self, code):
+        _ok(code)
+
+    def test_an_expanded_database_host_from_the_environment_is_refused(self):
+        _blocked(
+            'import os, psycopg2\npsycopg2.connect(**{"host": os.environ["H"]})',
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_an_expanded_database_host_that_is_allowed_keeps_working_ok(self):
+        _ok('import psycopg2\npsycopg2.connect(**{"host": "huggingface.co"})')
+
+
+class TestOnlyRealFileReadsAreExternal:
+    """A read method is a file read when its receiver is a file. An in-memory reader holds a
+    string the source itself wrote."""
+
+    def test_an_in_memory_reader_is_not_an_external_source_ok(self):
+        _ok('import io, requests\nrequests.get(io.StringIO("https://huggingface.co/x").read())')
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nrequests.get(open("target.txt").read())', id = "inline_open"
+            ),
+            pytest.param(
+                'import requests\nf = open("target.txt")\nrequests.get(f.read())',
+                id = "bound_handle",
+            ),
+            pytest.param(
+                "from pathlib import Path\nimport requests\n"
+                'requests.get(Path("t.txt").read_text())',
+                id = "pathlib",
+            ),
+        ],
+    )
+    def test_a_real_file_read_is_still_external(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")

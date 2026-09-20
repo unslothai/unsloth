@@ -16995,7 +16995,9 @@ def _check_signal_escape_patterns(code: str):
 
     def _database_target_is_external(node: ast.Call) -> bool:
         """Whether the DSN or host of a database `connect` is read from outside the source."""
+        expanded, _opaque = _expanded_host_arguments(node)
         candidates = [kw.value for kw in node.keywords or [] if kw.arg in ("host", "server")]
+        candidates += expanded
         candidates += list(node.args[:1])
         return any(_externally_sourced(candidate, _bindings) for candidate in candidates)
 
@@ -17218,6 +17220,22 @@ def _check_signal_escape_patterns(code: str):
     # chosen wherever that file came from, which is the same hole as reading the environment.
     _FILE_READ_METHODS = frozenset({"read", "readline", "readlines", "read_text", "read_bytes"})
 
+    _PATHLIB_FQ = ("pathlib.Path", "Path")
+
+    def _is_a_file_receiver(node: ast.AST) -> bool:
+        """Whether *node* evaluates to something backed by a file. An in-memory reader is not:
+        `io.StringIO("...")` holds a string the source itself wrote."""
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "open":
+                return True
+            fq = _canonical_fq(func, _bindings)
+            return fq in _PATHLIB_FQ or fq.endswith(".Path") or fq == "os.fdopen"
+        if isinstance(node, ast.Name):
+            bound = _bindings.string_for(node.id, node)
+            return bound is not None and _is_a_file_receiver(bound)
+        return False
+
     def _reads_a_file(node: ast.AST) -> bool:
         """Whether *node* opens or reads a file."""
         if not isinstance(node, ast.Call):
@@ -17225,7 +17243,12 @@ def _check_signal_escape_patterns(code: str):
         func = node.func
         if isinstance(func, ast.Name) and func.id == "open":
             return True
-        return isinstance(func, ast.Attribute) and func.attr in _FILE_READ_METHODS
+        if not isinstance(func, ast.Attribute) or func.attr not in _FILE_READ_METHODS:
+            return False
+        if func.attr in ("read_text", "read_bytes"):
+            # pathlib only, and only a path has them.
+            return True
+        return _is_a_file_receiver(func.value)
 
     def _reads_an_external_source_through_an_alias(node: ast.AST, bindings) -> bool:
         """The alias-aware half of external-source detection. `_reads_env_or_secret` matches the
@@ -17595,10 +17618,32 @@ def _check_signal_escape_patterns(code: str):
                 target_resolved = True
                 url_index = _url_arg_index(network_fq)
                 url_node = node.args[url_index] if len(node.args) > url_index else None
+                expansion_is_opaque = False
                 for kw in node.keywords or []:
                     if kw.arg in _URL_KWARGS:
                         url_node = kw.value
                         break
+                    if kw.arg is not None:
+                        continue
+                    # `requests.get(**{"url": ...})` hands the target over in a mapping.
+                    if isinstance(kw.value, ast.Dict):
+                        for key, value in zip(kw.value.keys, kw.value.values):
+                            if (
+                                isinstance(key, ast.Constant)
+                                and isinstance(key.value, str)
+                                and key.value in _URL_KWARGS
+                            ):
+                                url_node = value
+                                break
+                    else:
+                        expansion_is_opaque = True
+                    if url_node is not None:
+                        break
+                if expansion_is_opaque and url_node is None:
+                    target_resolved = False
+                    url_node = next(
+                        (kw.value for kw in node.keywords or [] if kw.arg is None), None
+                    )
                 if isinstance(url_node, ast.Tuple) and url_node.elts:
                     text, complete = _static_str_prefix(url_node.elts[0], _bindings)
                     host_arg = text if (complete and text) else None
