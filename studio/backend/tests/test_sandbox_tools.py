@@ -891,8 +891,15 @@ class TestBashBlocklistPosition:
             ),
             pytest.param("coproc echo hi", id = "coproc_benign_allowed"),
             pytest.param("coproc MYJOB { cat train.log; }", id = "coproc_named_benign_allowed"),
-            # `coproc` reads as a keyword only at command position; elsewhere it is an ordinary word.
+            # Bash reads `coproc` as the keyword only UNQUOTED and at command position: `'coproc' echo rm` is
+            # "command not found". So a word spelled coproc anywhere else starts nothing, and the blocked word
+            # behind it is data the command merely prints or greps for.
             pytest.param("grep -rn coproc tools.py", id = "coproc_as_argument_allowed"),
+            pytest.param("grep coproc rm file", id = "coproc_then_blocked_word_as_args_allowed"),
+            pytest.param("echo coproc rm", id = "coproc_then_blocked_word_echoed_allowed"),
+            pytest.param("echo 'coproc rm'", id = "quoted_coproc_payload_allowed"),
+            # A real coprocess whose command is harmless does not become blocked by its own arguments.
+            pytest.param("coproc echo rm", id = "coproc_benign_command_blocked_arg_allowed"),
             pytest.param("> out.log echo hi", id = "spaced_redirection_benign_allowed"),
             # A substitution that IS the redirection target names a file; nothing runs.
             pytest.param("> $(date).log echo hi", id = "subst_as_redirection_target_allowed"),

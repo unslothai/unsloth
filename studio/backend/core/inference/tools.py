@@ -1333,8 +1333,10 @@ def _is_start_title(token: str) -> bool:
 # 0.60s of 3.9s. None only if the set is empty.
 _BLOCKED_WORD_RE = (
     re.compile(
-        # `coproc [NAME] ` is a boundary bash honours that no punctuation spells, so this screen needs it too.
-        r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*|\bcoproc\s+(?:[A-Za-z_]\w*\s+)?)"
+        # No `coproc` alternative here: this pass has no quoting or command-position context, and bash recognizes the
+        # keyword only unquoted at command position, so `grep coproc rm file` would read as a boundary. The token scan
+        # above knows where a command starts, and it is the one that handles it.
+        r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
         r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
         r"(" + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS)) + r")"
         r"(?:\.(?:exe|com|bat|cmd))?\b"
