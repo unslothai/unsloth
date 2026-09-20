@@ -7194,6 +7194,21 @@ exit 0
 
     # One line, before the move, naming both figures and the opt-out. Warn only: the estimate is a
     # guess and being wrong must never stop an install that would have fitted (#11313).
+    # Did the environment about to be moved aside keep its own copy of everything? It did if the
+    # cache it was built against is gone or was on another volume, because uv can only hardlink
+    # within one. $script:StudioUvMarkerPrevious is the marker's value BEFORE this run overwrote
+    # it, which is exactly the previous run's cache; unknown answers "shared", the quiet
+    # direction every other helper here takes.
+    function Test-StudioPreviousCacheIsGone {
+        $previous = $script:StudioUvMarkerPrevious
+        if ([string]::IsNullOrWhiteSpace($previous)) { return $false }
+        try {
+            $previous = ([string]$previous).Trim()
+            if (-not (Test-StudioPathPresent -Path $previous)) { return $true }
+            return (-not (Test-StudioSameVolume -PathA $previous -PathB $StudioHome))
+        } catch { return $false }
+    }
+
     function Write-StudioRollbackSpaceWarning {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $size = Get-StudioTreeSizeBytes -Path $ExistingDir
@@ -7276,6 +7291,16 @@ exit 0
         # costs metadata rather than megabytes, while summing each file's logical length still
         # bills every one of those links in full and would recommend an opt-out that frees
         # nothing. Unset counts as same, the quiet direction. install.sh gates its twin the same way.
+        # The tree about to be kept was built by a PREVIOUS run, so what decides whether keeping
+        # it costs real blocks is the cache THAT run used, not the one this one picked. uv
+        # hardlinks within a volume, so the old tree shares its bulk with its own cache if that
+        # cache is still there and still on this volume; if it is gone, or was somewhere else,
+        # the tree owns its blocks and keeping it costs their full size whatever this run does.
+        # install.sh answers the same question by counting blocks with st_nlink == 1, which is
+        # exact; there is no per-file link count on Windows short of a P/Invoke per file, so this
+        # reads the marker the previous run left behind instead.
+        $script:StudioRollbackCostsFullSize =
+            $script:StudioRollbackCostsFullSize -or (Test-StudioPreviousCacheIsGone)
         if ((-not $script:StudioNoRollback) -and $script:StudioRollbackCostsFullSize) {
             try { Write-StudioRollbackSpaceWarning -ExistingDir $ExistingDir } catch { }
         }

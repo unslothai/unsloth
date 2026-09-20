@@ -1945,3 +1945,25 @@ class TestTheSizeEstimateAsksWhatWouldBeFreed:
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         before = text.split("function Get-StudioTreeSizeBytes", 1)[0][-900:]
         assert "hardlinked" in before and "Known limit" in before
+
+
+class TestWindowsJudgesTheTreeNotTheRun:
+    """The tree about to be kept was built by a PREVIOUS run, so this run's cache and link modes
+    cannot say whether it owns its blocks: an environment built under UV_NO_CACHE or copy mode,
+    reinstalled against a fresh co-located cache, still owns everything it copied. install.sh
+    answers by counting blocks with st_nlink == 1; Windows has no per-file link count short of a
+    P/Invoke per file, so it reads the marker the previous run left behind (#11313)."""
+
+    def test_the_gate_consults_the_previous_cache(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "function Test-StudioPreviousCacheIsGone" in text
+        assert "$script:StudioUvMarkerPrevious" in text.split(
+            "function Test-StudioPreviousCacheIsGone", 1
+        )[1].split("\n    }", 1)[0], "the helper does not read the previous run's marker"
+
+    def test_the_rollback_gate_uses_it(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        before = text.split("if ((-not $script:StudioNoRollback) -and", 1)[0][-700:]
+        assert "Test-StudioPreviousCacheIsGone" in before, (
+            "the rollback warning still decides from this run's cache mode alone"
+        )

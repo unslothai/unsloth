@@ -452,6 +452,27 @@ try {
         Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
 
+    Write-Host "the tree that is kept is judged by the cache it was built against (#11313)"
+    # The tree about to be kept was built by a previous run, so this run's cache mode cannot say
+    # whether it owns its blocks. The marker the previous run left behind can: uv hardlinks only
+    # within one volume, so a cache that is gone, or was elsewhere, means the tree kept its own
+    # copies and keeping it costs their full size.
+    $prevCache = Join-Path $StudioHome "prev-cache"
+    [System.IO.Directory]::CreateDirectory($prevCache) | Out-Null
+    $script:StudioUvMarkerPrevious = $prevCache
+    Check "a previous cache still here, on this volume, reads as shared" (
+        -not (Test-StudioPreviousCacheIsGone))
+    $script:StudioUvMarkerPrevious = Join-Path $StudioHome "prev-cache-that-was-deleted"
+    Check "a previous cache that is gone means the tree owns its blocks" (
+        Test-StudioPreviousCacheIsGone)
+    # No marker at all is the first install or an older layout: unknown answers shared, which is
+    # the quiet direction every other helper here takes.
+    $script:StudioUvMarkerPrevious = $null
+    Check "no previous marker is not a reason to warn" (-not (Test-StudioPreviousCacheIsGone))
+    $script:StudioUvMarkerPrevious = "   "
+    Check "and neither is a blank one" (-not (Test-StudioPreviousCacheIsGone))
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $prevCache -Recurse -Force -ErrorAction SilentlyContinue
+
     Write-Host "the warning and the discard message both tell the truth under --no-rollback"
     # Two things Start-StudioVenvRollback gets wrong if it is written without them, and install.sh
     # is gated identically: the warning's payload is the name of the opt-out, so printing it to
