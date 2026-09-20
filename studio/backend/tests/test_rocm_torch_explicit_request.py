@@ -276,6 +276,12 @@ def _index_url(env: str, stubs: str) -> str:
     """
     script = "\n".join(
         [
+            # Every case here describes a Linux x86_64 host, so say so rather than letting
+            # the RUNNER answer. get_torch_index_url returns the cpu index outright for any
+            # other `uname -m`, which on the ubuntu-24.04-arm leg turned these into "the
+            # request selected cpu": two of them failed for a reason that is about the
+            # runner, and the cpu-index CONTROLS below passed for the same wrong reason.
+            'uname() { case "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac; }',
             _shell_function("_rocm_torch_explicitly_requested"),
             stubs,
             # The stubs above name this host's arch family, so it is not lifted here.
@@ -2969,6 +2975,10 @@ def _inferred_install_args(stack, monkeypatch, arch):
     monkeypatch.setattr(stack, "pip_install_try", lambda *a, **k: calls.append(a))
     monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", arch)
     monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
+    # ROCm wheels are x86_64 only, so _ensure_rocm_torch returns on its arch gate anywhere
+    # else and this helper answers [] on the ubuntu-24.04-arm runner. The case is about the
+    # arch SPELLING, not the host's architecture, so the host is stated like the rest.
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: False)
