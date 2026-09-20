@@ -4994,3 +4994,74 @@ class TestDynamicallyReplacedConnectors:
     )
     def test_an_untouched_connector_keeps_its_exemption_ok(self, code):
         _ok(code)
+
+
+class TestNamespaceWritesByAnyName:
+    """The name at the end of the call says it writes a namespace; the owner in front can be
+    anything."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import builtins, sqlite3, smtplib\n"
+                'builtins.setattr(sqlite3, "connect", smtplib.SMTP().connect)\n'
+                'sqlite3.connect("evil.example", 25)',
+                id = "through_builtins",
+            ),
+            pytest.param(
+                "import sqlite3, smtplib\nsetter = setattr\n"
+                'setter(sqlite3, "connect", smtplib.SMTP().connect)\n'
+                'sqlite3.connect("evil.example", 25)',
+                id = "aliased_setattr",
+            ),
+            pytest.param(
+                "import sqlite3, smtplib\nfrom unittest import mock\n"
+                'mock.patch.object(sqlite3, "connect", smtplib.SMTP().connect)\n'
+                'sqlite3.connect("evil.example", 25)',
+                id = "patch_object",
+            ),
+            pytest.param(
+                "import sqlite3\nfrom unittest import mock\n"
+                'mock.patch("sqlite3.connect")\nsqlite3.connect("evil.example", 25)',
+                id = "patch_by_name",
+            ),
+        ],
+    )
+    def test_every_spelling_withholds_the_exemption(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_an_untouched_connector_still_keeps_it_ok(self):
+        _ok('import sqlite3\nsqlite3.connect("state.db")')
+
+
+class TestShadowedReaderBuiltins:
+    """A bare `open` or `getenv` the source defines is not the builtin either."""
+
+    def test_a_local_getenv_is_not_an_environment_read_ok(self):
+        _ok(
+            "import requests\n"
+            "def getenv():\n"
+            '    return "https://huggingface.co/x"\n'
+            "requests.get(getenv())"
+        )
+
+    def test_a_local_open_is_not_a_file_read_ok(self):
+        _ok(
+            "import requests\n"
+            "def open(name):\n"
+            '    return "https://huggingface.co/x"\n'
+            'requests.get(open("t.txt"))'
+        )
+
+    def test_the_builtin_open_is_still_a_file_read(self):
+        _blocked(
+            'import requests\nrequests.get(open("t.txt").read())',
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_the_imported_getenv_is_still_an_environment_read(self):
+        _blocked(
+            'from os import getenv\nimport requests\nrequests.get(getenv("T"))',
+            expect_phrase = "Blocked: request target is read",
+        )

@@ -17213,12 +17213,40 @@ def _check_signal_escape_patterns(code: str):
                 node = node.args[0]
             return node.id if isinstance(node, ast.Name) else ""
 
+        def writes_a_namespace(func) -> bool:
+            """`setattr`, however it is reached: bare, through `builtins`, under an alias, or as
+            `mock.patch.object`. The name at the end is what says so, because the owner in front
+            of it can be anything."""
+            if isinstance(func, ast.Attribute):
+                if func.attr in ("setattr", "delattr"):
+                    return True
+                # mock.patch.object(sqlite3, "connect", ...)
+                return func.attr == "object" and _written_fq(func).endswith("patch.object")
+            if not isinstance(func, ast.Name):
+                return False
+            if func.id in ("setattr", "delattr"):
+                return True
+            # `setter = setattr` holds the same function.
+            for value in _bindings.possible_values(func.id, func):
+                if isinstance(value, ast.Name) and value.id in ("setattr", "delattr"):
+                    return True
+                if isinstance(value, ast.Attribute) and value.attr in ("setattr", "delattr"):
+                    return True
+            return False
+
         for node in _tree_nodes(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id in ("setattr", "delattr") and node.args:
-                    owner = root_of(node.args[0])
-                    if owner:
-                        out.add(owner)
+            if isinstance(node, ast.Call) and node.args and writes_a_namespace(node.func):
+                owner = root_of(node.args[0])
+                if owner:
+                    out.add(owner)
+            if isinstance(node, ast.Call) and node.args:
+                # mock.patch("sqlite3.connect") names its target as a dotted string.
+                target = node.args[0]
+                patches = (isinstance(node.func, ast.Attribute) and node.func.attr == "patch") or (
+                    isinstance(node.func, ast.Name) and node.func.id == "patch"
+                )
+                if patches and isinstance(target, ast.Constant) and isinstance(target.value, str):
+                    out.add(target.value.split(".")[0])
             targets = list(getattr(node, "targets", []))
             if isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.target:
                 targets.append(node.target)
@@ -17240,7 +17268,13 @@ def _check_signal_escape_patterns(code: str):
                     out.add(owner)
         return out
 
-    _mutated_owners = _dynamically_mutated_owners(tree)
+    # Computed on first use: it resolves names, and the binding table is built further down.
+    _mutated_owners_cache: list = []
+
+    def _mutated_owners() -> set:
+        if not _mutated_owners_cache:
+            _mutated_owners_cache.append(_dynamically_mutated_owners(tree))
+        return _mutated_owners_cache[0]
 
     def _any_prefix_was_rebound(node) -> bool:
         """Whether the source assigned this attribute or anything it hangs off. `sqlite3.x` being
@@ -17250,7 +17284,7 @@ def _check_signal_escape_patterns(code: str):
         if not written:
             return False
         parts = written.split(".")
-        if parts[0] in _mutated_owners:
+        if parts[0] in _mutated_owners():
             # Its namespace was written to at runtime, so nothing under it is what it was.
             return True
         return any(
@@ -17520,7 +17554,7 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Name) and func.id == "open":
-                return True
+                return not _bindings.is_bound(func.id, func)
             fq = _canonical_fq(func, _bindings)
             if fq in _PATHLIB_FQ or fq.endswith(".Path"):
                 return True
@@ -17549,7 +17583,7 @@ def _check_signal_escape_patterns(code: str):
             return False
         func = node.func
         if isinstance(func, ast.Name) and func.id == "open":
-            return True
+            return not _bindings.is_bound(func.id, func)
         if not isinstance(func, ast.Attribute) or func.attr not in _FILE_READ_METHODS:
             return False
         # `read_text` reads like pathlib, but Python is duck typed and the name is not reserved,
@@ -17656,7 +17690,8 @@ def _check_signal_escape_patterns(code: str):
                     ):
                         return True
                 if isinstance(f, ast.Name) and f.id in {"getenv", "getenvb"}:
-                    return True
+                    if bindings is None or not bindings.is_bound(f.id, f):
+                        return True
         return False
 
     def _is_safe_relative_path(path: str) -> bool:
