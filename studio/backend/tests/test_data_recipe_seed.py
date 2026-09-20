@@ -673,9 +673,7 @@ def test_seed_hf_path_gives_a_card_glob_a_readable_extension(
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["data/train.parquet", "data/train-0.parquet", "data/test-0.parquet"]
     configs = [{"config_name": "default", "data_files": [{"split": "train", "path": declared}]}]
-    assert (
-        seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs) == expected
-    )
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs) == expected
 
 
 @pytest.mark.parametrize(
