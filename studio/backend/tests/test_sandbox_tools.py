@@ -5227,3 +5227,89 @@ class TestCallableAliasArms:
 
     def test_a_conditional_between_two_builtins_is_left_alone_ok(self):
         _ok("fetch = str if flag else repr\nprint(fetch(5))")
+
+
+class TestModuleAssignedToAName:
+    """`r = requests` is the assignment spelling of `import requests as r`."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(f'import requests\nr = requests\nr.get("{_METADATA_URL}")', id = "one_step"),
+            pytest.param(
+                f'import requests\na = requests\nb = a\nb.get("{_METADATA_URL}")', id = "chained"
+            ),
+        ],
+    )
+    def test_a_module_held_in_a_name_is_policed(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_an_allowed_host_through_the_name_keeps_working_ok(self):
+        _ok('import requests\nr = requests\nr.get("https://huggingface.co/api/models")')
+
+
+class TestConditionalSessionFactories:
+    """A session behind a conditional is still a session on the arm that makes one."""
+
+    def test_a_conditional_session_is_policed(self):
+        _blocked(
+            f"import requests\nenabled = True\n"
+            f"s = requests.Session() if enabled else object()\n"
+            f's.get("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_allowed_host_through_a_conditional_session_keeps_working_ok(self):
+        _ok(
+            "import requests\ns = requests.Session() if enabled else object()\n"
+            's.get("https://huggingface.co/api/models")'
+        )
+
+
+class TestExpandedConstructorHosts:
+    """A host handed to a client through `**` is the host the later relative call reaches."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f'import httpx\nc = httpx.Client(**{{"base_url": "{_METADATA_URL}"}})\nc.get("/")',
+                id = "dict_literal",
+            ),
+            pytest.param(
+                f'import httpx\nopts = {{"base_url": "{_METADATA_URL}"}}\n'
+                'c = httpx.Client(**opts)\nc.get("/")',
+                id = "dict_bound_to_a_name",
+            ),
+            pytest.param(
+                'import urllib3\np = urllib3.HTTPConnectionPool(**{"host": "169.254.169.254"})\n'
+                'p.request("GET", "/")',
+                id = "pool_host",
+            ),
+        ],
+    )
+    def test_an_expanded_host_is_read(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_an_allowed_expanded_host_keeps_working_ok(self):
+        _ok(
+            'import httpx\nc = httpx.Client(**{"base_url": "https://huggingface.co"})\n'
+            'c.get("/api/models")'
+        )
+
+    def test_an_unknown_expansion_is_left_as_it_was_ok(self):
+        _ok('import httpx\nc = httpx.Client(**opts)\nc.get("/")')
+
+
+class TestModuleAliasChainsAreBounded:
+    """Following a name to the module behind it must stop, whatever the source hands it."""
+
+    def test_a_long_module_alias_chain_returns_a_verdict(self):
+        links = "\n".join(f"n{i + 1} = n{i}" for i in range(2000))
+        code = f'import requests\nn0 = requests\n{links}\nn2000.get("{_METADATA_URL}")'
+        assert _check_code_safety(code) is None or "Blocked" in _check_code_safety(code)
+
+    def test_a_chain_within_the_bound_still_resolves(self):
+        links = "\n".join(f"n{i + 1} = n{i}" for i in range(5))
+        code = f'import requests\nn0 = requests\n{links}\nn5.get("{_METADATA_URL}")'
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")

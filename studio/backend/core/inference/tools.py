@@ -16274,6 +16274,28 @@ def _check_signal_escape_patterns(code: str):
             arms.append(value)
         return arms
 
+    def _factory_behind(value, bindings) -> "str | None":
+        """The session factory a bound value amounts to. A conditional holds one of two values
+        and `s = requests.Session() if enabled else object()` is a session down either path that
+        has a `get`, so both arms are read."""
+        for arm in _callable_arms([value] if value is not None else []):
+            if not isinstance(arm, ast.Call):
+                continue
+            factory = _SESSION_FACTORY_FQ.get(_canonical_fq(arm.func, bindings))
+            if factory is not None:
+                return factory
+        return None
+
+    # How deep a chain of name-held callables resolution will follow. Each link asks the same
+    # question of the value behind it, so the chain, not the tree, is what has to be bounded.
+    _fq_depth = [0]
+
+    def _held_callables(name: str, node, bindings) -> "list":
+        """The callables a name can hold, with conditional arms split out. Resolution asks the
+        same question of each value, and the depth that chain is followed to is bounded where
+        that question is asked, in _canonical_fq."""
+        return _callable_arms(bindings.possible_values(name, node))
+
     def _call_fq_names(func_node, bindings) -> "list[str]":
         """Every name this call answers to: as written, and with aliases and session variables
         resolved. Both are policed, because resolving is only ever allowed to ADD a match. A rewrite
@@ -16304,7 +16326,7 @@ def _check_signal_escape_patterns(code: str):
                 # the name can hold is offered, because resolving only ever adds a name that is
                 # checked.
                 from_values = []
-                for value in _callable_arms(bindings.possible_values(head, func_node)):
+                for value in _held_callables(head, func_node, bindings):
                     if not isinstance(value, (ast.Attribute, ast.Name)):
                         continue
                     candidate = _canonical_fq(value, bindings)
@@ -16318,6 +16340,16 @@ def _check_signal_escape_patterns(code: str):
                 if target is not None:
                     resolved = ".".join([target] + parts[1:])
                     break
+            else:
+                # `r = requests` is the assignment spelling of `import requests as r`, and
+                # `r.get(...)` has to answer to the same name either way.
+                for value in _held_callables(head, func_node, bindings):
+                    if not isinstance(value, (ast.Attribute, ast.Name)):
+                        continue
+                    target = _canonical_fq(value, bindings)
+                    if target and target != head:
+                        resolved = ".".join([target] + parts[1:])
+                        break
         names = [written] if resolved is None or resolved == written else [resolved, written]
         for name in list(names):
             names.extend(
@@ -16343,8 +16375,16 @@ def _check_signal_escape_patterns(code: str):
         return []
 
     def _canonical_fq(func_node, bindings) -> str:
-        """The resolved name when there is one, else the name as written."""
-        names = _call_fq_names(func_node, bindings)
+        """The resolved name when there is one, else the name as written. A name held in a name
+        asks the same question again, so the chain is followed to the depth every other resolver
+        stops at rather than until the interpreter runs out of stack."""
+        if _fq_depth[0] >= _MAX_RESOLVE_DEPTH:
+            return _written_fq(func_node)
+        _fq_depth[0] += 1
+        try:
+            names = _call_fq_names(func_node, bindings)
+        finally:
+            _fq_depth[0] -= 1
         return names[0] if names else ""
 
     class _NameBindings(ast.NodeVisitor):
@@ -17000,11 +17040,10 @@ def _check_signal_escape_patterns(code: str):
             for (scope, name), value in self._candidates.items():
                 if value is None or self._counts.get((scope, name), 0) != 1:
                     continue
-                if isinstance(value, ast.Call):
-                    factory = _SESSION_FACTORY_FQ.get(_canonical_fq(value.func, self))
-                    if factory is not None:
-                        factories[(scope, name)] = factory
-                        continue
+                factory = _factory_behind(value, self)
+                if factory is not None:
+                    factories[(scope, name)] = factory
+                    continue
                 # A call resolves to no text, but it is still where the name's value came from, so
                 # `u = input()` has to stay followable.
                 self.strings[(scope, name)] = value
@@ -17032,9 +17071,7 @@ def _check_signal_escape_patterns(code: str):
             # `s.get(...)`, `s = object()` still polices the call in the middle.
             for key, positioned in self._value_positions.items():
                 for position, value in positioned:
-                    if not isinstance(value, ast.Call):
-                        continue
-                    factory = _SESSION_FACTORY_FQ.get(_canonical_fq(value.func, self))
+                    factory = _factory_behind(value, self)
                     if factory is not None:
                         self._alias_history.setdefault(key, []).append(
                             (position, factory, id(self.sessions))
@@ -17949,6 +17986,20 @@ def _check_signal_escape_patterns(code: str):
                 out.append(host)
         return out
 
+    def _expanded_host_node(value, wanted):
+        """The host a `**` expansion carries, when the mapping is written out. A dict bound to a
+        name first is the same expansion one line later."""
+        held = [value]
+        if isinstance(value, ast.Name):
+            held += _bindings.possible_values(value.id, value)
+        for candidate in held:
+            if not isinstance(candidate, ast.Dict):
+                continue
+            for key, item in zip(candidate.keys, candidate.values):
+                if isinstance(key, ast.Constant) and key.value in wanted:
+                    return item
+        return None
+
     def _configured_host_node(node: ast.Call, fq: str):
         """Where a client is handed its host. `httpx.Client(base_url = ...)` followed by
         `c.get("/latest")` reaches a host the request itself never names, so the constructor is
@@ -17959,6 +18010,11 @@ def _check_signal_escape_patterns(code: str):
         for kw in node.keywords or []:
             if kw.arg in ("base_url", "host"):
                 return kw.value
+            if kw.arg is None:
+                # `**{"base_url": ...}` hands over the host as surely as the keyword does.
+                expanded = _expanded_host_node(kw.value, ("base_url", "host"))
+                if expanded is not None:
+                    return expanded
         takes_positional = fq in _POSITIONAL_HOST_FQ or fq == "aiohttp.ClientSession"
         return node.args[0] if (takes_positional and node.args) else None
 
