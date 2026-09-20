@@ -1605,11 +1605,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 logit_scale_divide = _transforms["logit_scale_divide"]
             else:
                 logit_softcapping = _unsloth_get_final_logit_softcapping(model)
-                logit_scale_multiply = getattr(model_config, "logit_scale", 0)
-                if logit_scale_multiply is None:
-                    logit_scale_multiply = 0
-                logit_scale_divide = getattr(model_config, "logits_scaling", 0)
-                if logit_scale_divide is None:
+                logit_scale_multiply = getattr(model_config, "logit_scale", 0) or 0
+                logit_scale_divide = getattr(model_config, "logits_scaling", 0) or 0
+                # Which family is it, for the three that logits_scaling alone gets wrong.
+                model_type = getattr(model_config, "model_type", "") or ""
+                if model_type == "falcon_h1":
+                    logit_scale_multiply = getattr(model_config, "lm_head_multiplier", 0) or 0
+                elif model_type == "hyperclovax":
+                    # Same spelling as Granite, opposite operation.
+                    logit_scale_multiply, logit_scale_divide = logit_scale_divide, 0
+                elif model_type == "minicpm3":
+                    # Scales the hidden states before the head, so not a logit transform.
                     logit_scale_divide = 0
 
             zipped_inputs = zip(
@@ -2488,11 +2494,17 @@ def grpo_trainer_compute_loss(function_name, function):
             logit_scale_divide = _transforms["logit_scale_divide"]
         else:
             logit_softcapping = _unsloth_get_final_logit_softcapping(model)  # Gemma
-            logit_scale_multiply = getattr(model_config, "logit_scale", 0)  # Cohere
-            if logit_scale_multiply is None:
-                logit_scale_multiply = 0
-            logit_scale_divide = getattr(model_config, "logits_scaling", 0)  # Granite
-            if logit_scale_divide is None:
+            logit_scale_multiply = getattr(model_config, "logit_scale", 0) or 0  # Cohere
+            logit_scale_divide = getattr(model_config, "logits_scaling", 0) or 0  # Granite
+            # Which family is it, for the three that logits_scaling alone gets wrong.
+            model_type = getattr(model_config, "model_type", "") or ""
+            if model_type == "falcon_h1":
+                logit_scale_multiply = getattr(model_config, "lm_head_multiplier", 0) or 0
+            elif model_type == "hyperclovax":
+                # Same spelling as Granite, opposite operation.
+                logit_scale_multiply, logit_scale_divide = logit_scale_divide, 0
+            elif model_type == "minicpm3":
+                # Scales the hidden states before the head, so not a logit transform.
                 logit_scale_divide = 0
 
         max_left_pad = inputs.get("max_left_pad", 0)
