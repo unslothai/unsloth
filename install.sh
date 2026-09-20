@@ -1091,7 +1091,8 @@ _start_studio_venv_replacement() {
     _VENV_ROLLBACK_ACTIVE=true
     # The rename itself is free, but the new venv beside it is not: uv hardlinks a wheel only within one filesystem, so a cache on another volume makes every file a real copy and the install needs room for two whole environments (#11313). Say so before the space is gone, and never abort -- the estimate is a guess and being wrong must not cost a working install.
     # `|| true` for the same reason install.ps1 wraps its twin: this is advice, and advice that cannot be produced must not cost the rename under `set -e` -- including in a harness that spliced this function without the helper.
-    _warn_if_rollback_needs_space "$_existing_dir" || true
+    # Not under --no-rollback: the warning exists to name the opt-out, and telling a user to re-run with the flag they already passed is noise. The branch below discards that copy anyway, so the space it describes is never held.
+    [ "${_NO_ROLLBACK:-false}" = true ] || _warn_if_rollback_needs_space "$_existing_dir" || true
     # Publish the rollback state before the atomic rename so a signal cannot land after mv but before the exit handlers know where the old venv went.
     if ! mv "$_existing_dir" "$_candidate"; then
         _VENV_ROLLBACK_ACTIVE=false
@@ -1103,7 +1104,13 @@ _start_studio_venv_replacement() {
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
         rm -rf "$_candidate" 2>/dev/null || true
-        substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
+        # -f exempts a missing path from the exit status, not a real unlink failure: an immutable entry, a busy mount point, a sticky-bit parent. Reporting "discarded" there promises space that was never freed, in the one situation this flag exists for. The state above stays cleared either way -- re-arming the rollback would hand an interrupt a half-deleted backup -- so say what is actually on disk.
+        if [ -e "$_candidate" ] || [ -L "$_candidate" ]; then
+            substep "could not discard the previous environment at $_candidate" "$C_WARN"
+            substep "it is no longer used for rollback; remove it by hand to reclaim the space." "$C_WARN"
+        else
+            substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
+        fi
         return 0
     fi
     substep "previous environment preserved for rollback"

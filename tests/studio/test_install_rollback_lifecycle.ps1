@@ -274,6 +274,53 @@ try {
             Check "$($case.Label): names the opt-out" ($joined -match 'UNSLOTH_INSTALL_NO_ROLLBACK=1')
         }
     }
+    Write-Host "the warning and the discard message both tell the truth under --no-rollback"
+    # Two things Start-StudioVenvRollback gets wrong if it is written without them, and install.sh
+    # is gated identically: the warning's payload is the name of the opt-out, so printing it to
+    # someone who already passed that flag advises an action they have taken; and a delete that
+    # could not remove the tree frees none of the space the flag exists to free, so reporting it
+    # as discarded promises the user something that is still on their disk.
+    function Get-StudioTreeSizeBytes { param([string]$Path) return 1GB }
+    function Get-StudioFreeSpaceBytes { param([string]$Path) return 512MB }
+    $script:said = @()
+    function substep { param([string]$Message, [string]$Color) $script:said += $Message }
+    function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) $script:said += $Message }
+
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+    Reset-RollbackState $VenvDir
+    $script:StudioNoRollback = $true
+    Start-StudioVenvRollback -ExistingDir $VenvDir
+    $joined = ($script:said -join "`n")
+    Check "--no-rollback does not advise the flag it was already given" (
+        $joined -notmatch 'needs about')
+    Check "--no-rollback still reports the discard" ($joined -match 'discarded \(--no-rollback\)')
+
+    # A tree the retry helper could not remove. It shadows the extracted definition, so
+    # Start-StudioVenvRollback resolves to this one at call time.
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+    Reset-RollbackState $VenvDir
+    $script:said = @()
+    function Remove-StudioVenvTreeWithRetry { param([string]$Path, [string]$Label) return $false }
+    try {
+        $discardThrew = $false
+        try { Start-StudioVenvRollback -ExistingDir $VenvDir } catch { $discardThrew = $true }
+    } finally {
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath Function:\Remove-StudioVenvTreeWithRetry -Force
+    }
+    $joined = ($script:said -join "`n")
+    Check "a discard that could not delete never aborts the install" (-not $discardThrew)
+    Check "a discard that could not delete does not claim success" (
+        $joined -notmatch 'discarded \(--no-rollback\)')
+    Check "a discard that could not delete names the path left on disk" (
+        $joined -match [regex]::Escape($StudioHome) -and $joined -match 'unsloth_studio\.rollback\.')
+    $script:StudioNoRollback = $false
+    foreach ($c in @(Get-ChildItem -LiteralPath $StudioHome -Directory -Filter "unsloth_studio.rollback.*" -ErrorAction SilentlyContinue)) {
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    function substep { param([string]$Message, [string]$Color) }
     function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }
 } finally {
     if (Test-Path -LiteralPath $StudioHome) {

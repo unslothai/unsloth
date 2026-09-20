@@ -611,10 +611,11 @@ else
 fi
 
 echo "=== the free-space warning names both figures and the opt-out, and never aborts ==="
-space_case() {  # label  free_kb_stub  expect_warning(yes|no)
+space_case() {  # label  free_kb_stub  expect_warning(yes|no)  [extra_harness_line]
     _sc_label="$1"
     _sc_free="$2"
     _sc_expect="$3"
+    _sc_extra="${4:-}"
     _sc_dir="$WORK/space-$(printf '%s' "$_sc_label" | tr -c 'a-zA-Z0-9' '-')"
     mkdir -p "$_sc_dir/unsloth_studio"
     printf 'old\n' > "$_sc_dir/unsloth_studio/generation"
@@ -625,6 +626,7 @@ space_case() {  # label  free_kb_stub  expect_warning(yes|no)
         printf '%s\n' 'C_WARN=""'
         printf "STUDIO_HOME='%s'\n" "$_sc_dir"
         printf "VENV_DIR='%s/unsloth_studio'\n" "$_sc_dir"
+        printf '%s\n' "$_sc_extra"
         printf '%s\n' "$ROLLBACK_BLOCK"
         # Stub the two measurements rather than filling a real disk.
         printf '%s\n' '_dir_size_kb() { echo 1048576; }'
@@ -672,6 +674,54 @@ space_case "less free than the venv needs" "echo 524288" yes
 space_case "plenty of room" "echo 104857600" no
 # An unmeasurable disk is not a warning: du or df missing must print nothing, not "about  MB".
 space_case "unmeasurable free space" "return 0" no
+# The warning's payload is the name of the opt-out, so printing it to someone who already passed
+# that flag advises an action they have taken, about a copy discarded three lines later.
+space_case "short on space, but --no-rollback already set" "echo 524288" no "_NO_ROLLBACK=true"
+
+echo "=== a discard that could not delete says so instead of reporting success (#11313) ==="
+# rm -rf exempts a missing path from its exit status, not a real unlink failure: an immutable
+# entry, a busy mount point, a sticky-bit parent. Shadowing rm is how that is reached portably.
+DISCARD_FAIL_DIR="$WORK/no-rollback-undeletable"
+mkdir -p "$DISCARD_FAIL_DIR/unsloth_studio"
+printf 'old\n' > "$DISCARD_FAIL_DIR/unsloth_studio/generation"
+{
+    printf '%s\n' 'set -e'
+    printf '%s\n' 'substep() { printf "SUBSTEP %s\n" "$1"; }'
+    printf '%s\n' 'rollback_substep() { substep "$@"; }'
+    printf '%s\n' 'C_WARN=""'
+    printf "STUDIO_HOME='%s'\n" "$DISCARD_FAIL_DIR"
+    printf "VENV_DIR='%s/unsloth_studio'\n" "$DISCARD_FAIL_DIR"
+    printf '%s\n' '_NO_ROLLBACK=true'
+    printf '%s\n' "$ROLLBACK_BLOCK"
+    printf '%s\n' 'rm() { return 1; }'
+    printf '%s\n' '_start_studio_venv_replacement "$VENV_DIR"'
+    printf '%s\n' 'echo INSTALL_CONTINUED'
+} > "$DISCARD_FAIL_DIR/harness.sh"
+set +e
+DISCARD_FAIL_OUT=$(dash "$DISCARD_FAIL_DIR/harness.sh" 2>&1)
+DISCARD_FAIL_STATUS=$?
+set -e
+if [ "$DISCARD_FAIL_STATUS" -eq 0 ] && printf '%s\n' "$DISCARD_FAIL_OUT" | grep -q INSTALL_CONTINUED; then
+    ok "a failed discard never aborts the install"
+else
+    bad "a failed discard exited $DISCARD_FAIL_STATUS"
+fi
+if printf '%s\n' "$DISCARD_FAIL_OUT" | grep -q 'could not discard the previous environment'; then
+    ok "a failed discard says the environment is still there"
+else
+    bad "a failed discard said nothing about the tree it could not remove"
+fi
+if printf '%s\n' "$DISCARD_FAIL_OUT" | grep -q 'discarded (--no-rollback)'; then
+    bad "a failed discard still claimed the environment was discarded"
+else
+    ok "a failed discard does not claim success"
+fi
+# Naming the leftover is the whole point: the user came here to reclaim space.
+if printf '%s\n' "$DISCARD_FAIL_OUT" | grep -q "$DISCARD_FAIL_DIR/unsloth_studio.rollback."; then
+    ok "a failed discard names the path left on disk"
+else
+    bad "a failed discard did not name the path left on disk"
+fi
 
 echo ""
 echo "  PASS: $PASS"

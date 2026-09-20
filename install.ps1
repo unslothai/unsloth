@@ -7059,7 +7059,11 @@ exit 0
         # In its own try: this is advice, and advice that cannot be produced must not cost the
         # rename. This function runs under "Stop", so an enumeration denied halfway, or a harness
         # that spliced this function without its helper, would otherwise abort the rollback.
-        try { Write-StudioRollbackSpaceWarning -ExistingDir $ExistingDir } catch { }
+        # Not under --no-rollback: the warning exists to name the opt-out, and telling a user to
+        # re-run with the flag they already passed is noise. install.sh gates its twin the same way.
+        if (-not $script:StudioNoRollback) {
+            try { Write-StudioRollbackSpaceWarning -ExistingDir $ExistingDir } catch { }
+        }
         # Publish the rollback state before the atomic rename so interruption
         # cannot land after Move-Item but before cleanup knows where the old venv went.
         try {
@@ -7102,8 +7106,14 @@ exit 0
             # Distinct from "never started". Inactive alone cannot tell the two apart, and the
             # ARM64 migration below reads it to decide whether it still has a tree to move.
             $script:StudioVenvRollbackDiscarded = $true
-            Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment" | Out-Null
-            substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
+            # The helper already names the reason it could not delete. What it must not do is
+            # report success anyway: a tree left behind by an open handle, a reparse point or a
+            # long path frees none of the space this flag exists to free.
+            if (Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment") {
+                substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
+            } else {
+                substep "it is no longer used for rollback; remove $discard by hand to reclaim the space." "Yellow"
+            }
             return
         }
         substep "previous environment preserved for rollback"
@@ -7459,8 +7469,13 @@ exit 0
         # anything the user pip-installed there is not reinstalled. The old tree is kept
         # under $StudioHome as unsloth_studio.arm64.* rather than deleted with the ordinary
         # rollback, so it can still be read: $script:StudioVenvRollbackPreserve below.
-        substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
-        substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
+        # Only when there is a tree to keep. Under --no-rollback it is already gone, and the arm
+        # below says so; printing both leaves the user looking for an unsloth_studio.arm64.* that
+        # was never written.
+        if (-not $script:StudioVenvRollbackDiscarded) {
+            substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
+            substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
+        }
         try {
             if ($script:StudioVenvRollbackDiscarded) {
                 # --no-rollback already deleted it. There is nothing to move and nothing to
