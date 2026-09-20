@@ -709,10 +709,11 @@ def _resolve_seed_hf_path(
         declared_files = _of_suffix(declared_files, suffix)
         exact = suffix
         suffix = _extension_glob(declared_files, suffix, repo_files or data_files)
-        if suffix == exact:
-            # The builder's other extension cannot be named safely, so it is the
-            # winning one alone, as `load_dataset` would read it.
-            declared_files = [f for f in declared_files if Path(f).suffix.lower() == exact.lower()]
+        if suffix == exact and len({Path(f).suffix.lower() for f in declared_files}) > 1:
+            # The card put both of the builder's extensions in this split and no
+            # glob can take the two without also taking the file that made the
+            # combined form unsafe. Refused, rather than read short.
+            return None
         pattern = ""
         if len(declared) == 1:
             pattern = _with_data_extension(declared[0], suffix)
@@ -764,10 +765,14 @@ def _resolve_seed_hf_path(
         root = _common_parent(sorted(folders | {selected}))
         if root != parent:
             for label in labels:
+                # The four folder shapes the loader's grammar accepts
+                # (`local_options._DIR_NAME_KEYWORD_PATTERNS`), the last for a
+                # label sitting between separators, as a_train_x.
                 for shape in (
                     f"**/{label}/**/*{ext}",
                     f"**/{label}{_SEP}*/**/*{ext}",
                     f"**/*{_SEP}{label}/**/*{ext}",
+                    f"**/*{_SEP}{label}{_SEP}*/**/*{ext}",
                 ):
                     if _pattern_fits_the_split(data_files, folders, root, shape):
                         return f"{_anchor(dataset_name, root)}/{shape}"
