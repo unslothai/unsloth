@@ -9397,6 +9397,12 @@ def _prepare_tool_launch(plan):
 
 # What each launcher prints on stderr when it refuses to build the sandbox, as
 # opposed to the payload failing inside a sandbox that was built correctly.
+#
+# mxc-processcontainer is deliberately absent: its executor's diagnostics are
+# diverted to a per-launch log file precisely so they cannot contaminate the
+# tool call's stdout, so there is nothing to match here. Recognising an MXC
+# launcher failure means reading that log, which is a separate change and is
+# noted as a gap rather than papered over with a guessed prefix.
 _LAUNCHER_FAILURE_MARKERS = {
     "bubblewrap": "bwrap: ",
     "macos-seatbelt": "sandbox-exec: ",
