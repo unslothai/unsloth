@@ -748,9 +748,7 @@ class TestEmbeddedImagesStayOffTheDurablePath:
     rides along inside messages[].content. So the follow-up was admitted and the blob re-persisted.
     """
 
-    _PNG = (
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
-    )
+    _PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
     def _msg(self, parts):
         from models.inference import ChatMessage
@@ -759,10 +757,15 @@ class TestEmbeddedImagesStayOffTheDurablePath:
     def test_an_inline_data_url_image_in_history_is_detected(self):
         from routes.inference import _messages_have_embedded_image
         messages = [
-            self._msg([
-                {"type": "text", "text": "what is this?"},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{self._PNG}"}},
-            ]),
+            self._msg(
+                [
+                    {"type": "text", "text": "what is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{self._PNG}"},
+                    },
+                ]
+            ),
             self._msg([{"type": "text", "text": "and what colour was it?"}]),
         ]
         assert _messages_have_embedded_image(messages) is True
@@ -771,18 +774,27 @@ class TestEmbeddedImagesStayOffTheDurablePath:
         """Deliberately narrower than 'has an image'. A remote URL is a short string and costs
         nothing to persist, so it has no business forcing a turn off the durable path."""
         from routes.inference import _messages_have_embedded_image
-        messages = [self._msg([
-            {"type": "text", "text": "what is this?"},
-            {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
-        ])]
+
+        messages = [
+            self._msg(
+                [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                ]
+            )
+        ]
         assert _messages_have_embedded_image(messages) is False
 
     def test_a_plain_text_thread_is_not_treated_as_media(self):
         """Negative control: if this ever returns True the guard would push every text turn onto
         the legacy path and the feature would silently stop working."""
         from routes.inference import _messages_have_embedded_image
-        assert _messages_have_embedded_image([self._msg([{"type": "text", "text": "hello"}])]) is False
+
+        assert (
+            _messages_have_embedded_image([self._msg([{"type": "text", "text": "hello"}])]) is False
+        )
         from models.inference import ChatMessage
+
         assert _messages_have_embedded_image([ChatMessage(role = "user", content = "hello")]) is False
 
 
@@ -793,7 +805,7 @@ _INLINE_PNG_PART = {
     "type": "image_url",
     "image_url": {
         "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
-               "DUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        "DUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
     },
 }
 
@@ -815,10 +827,13 @@ def test_a_remote_image_url_does_not_force_a_turn_off_the_durable_path():
     """Narrower than 'has an image' on purpose: a remote URL is a short string, so persisting it
     costs nothing and there is no reason to give up durability for it."""
     messages = [
-        {"role": "user", "content": [
-            {"type": "text", "text": "what is this?"},
-            {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
-        ]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is this?"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+            ],
+        },
     ]
     assert _sanitize_request(_model(messages = messages))["stream"] is True
 
