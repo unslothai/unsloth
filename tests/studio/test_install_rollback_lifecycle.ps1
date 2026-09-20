@@ -24,7 +24,10 @@ $subjectNames = @(
     "Remove-StaleStudioVenvRollbacks",
     "Restore-StudioVenvRollback",
     "Complete-StudioVenvRollback",
-    "Restore-StudioUvCacheMarker"
+    "Restore-StudioUvCacheMarker",
+    # Not called by the rollback helpers: it is the cross-volume cache notice that
+    # calls it, and the rollback space warning is now gated on what it decides.
+    "Test-StudioSameVolume"
 )
 
 $definitions = @{}
@@ -84,6 +87,7 @@ function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Wr
 # not recognized" inside whichever case happened to reach it first. The closure above
 # makes an install.ps1-defined callee unreachable by construction; this catches the rest,
 # including a helper that calls a sink this file forgot to stub.
+$windowsOnlyCommands = @("Get-CimInstance")
 $unresolved = [System.Collections.Generic.List[string]]::new()
 foreach ($name in $extracted) {
     foreach ($call in $definitions[$name].Body.FindAll({ param($n)
@@ -91,6 +95,10 @@ foreach ($name in $extracted) {
     }, $true)) {
         $callee = $call.GetCommandName()
         if (-not $callee) { continue }
+        # CimCmdlets ships only on Windows. Get-StudioMountedVolume guards its one call on the
+        # platform before making it, so off Windows the name is never reached; requiring it to
+        # resolve here would fail this suite on the hosts it actually runs on.
+        if ($windowsOnlyCommands -contains $callee -and -not ($IsWindows -or $env:OS -eq "Windows_NT")) { continue }
         if (-not (Get-Command -Name $callee -ErrorAction SilentlyContinue)) {
             $unresolved.Add("$callee (called by $name)")
         }
@@ -250,6 +258,21 @@ try {
     foreach ($c in @(Get-ChildItem -LiteralPath $StudioHome -Directory -Filter "unsloth_studio.rollback.*" -ErrorAction SilentlyContinue)) {
         Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
+
+    Write-Host "the volume helpers degrade to the drive root where mount points cannot be read"
+    # A Windows volume mounted at a directory is not its drive letter, so both helpers ask
+    # Win32_Volume first. That view exists only on Windows, and this host is not Windows, so what
+    # is checkable here is the fallback: the probe answers "cannot tell" rather than throwing, and
+    # the drive-root logic underneath still produces the answers the rest of this file relies on.
+    # The mount-point case itself is pinned by text in tests/python/test_cross_platform_parity.py
+    # and is not reproduced on any host available here.
+    Check "the mount-point probe answers nothing off Windows" (
+        $null -eq (Get-StudioMountedVolume -Path $StudioHome))
+    Check "and an empty path is not an error" ($null -eq (Get-StudioMountedVolume -Path ""))
+    $freeHere = Get-StudioFreeSpaceBytes -Path $StudioHome
+    Check "free space still comes back from the fallback" ($null -ne $freeHere -and $freeHere -gt 0)
+    Check "a path and its own child are still one volume" (
+        Test-StudioSameVolume -PathA $StudioHome -PathB (Join-Path $StudioHome "child"))
 
     Write-Host "the free-space warning names both figures and the opt-out, and never aborts"
     # Stub the two measurements rather than filling a real disk.

@@ -2762,10 +2762,37 @@ exit 1
     # tell" rather than guessing: a number this cannot produce is a warning it does not print.
     # Defined here, above Set-StudioUvCacheEnvironment's call site, because a nested function does
     # not exist until the statement defining it has run.
+    # A Windows volume can be mounted at a DIRECTORY rather than a drive letter, and then the
+    # drive root is the wrong answer to both questions below: GetPathRoot reduces C:\studio to
+    # C:\, so DriveInfo reports the host C: drive, and two paths on different mounted volumes
+    # compare equal on their root. Win32_Volume is the view that lists mount points, by the path
+    # they are mounted at, so the longest Name that prefixes a path names the volume really
+    # holding it. Best effort: off Windows, or wherever CIM cannot answer, every caller falls
+    # back to the drive-root logic this shipped with, which is right for a lettered volume.
+    function Get-StudioMountedVolume {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) { return $null }
+        try {
+            $full = [System.IO.Path]::GetFullPath($Path)
+            $best = $null
+            foreach ($vol in @(Get-CimInstance -ClassName Win32_Volume -ErrorAction Stop)) {
+                if (-not $vol.Name) { continue }
+                # Name carries its trailing separator, so this cannot match C:\studiofoo against
+                # a volume mounted at C:\studio.
+                if (-not $full.StartsWith($vol.Name, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                if ((-not $best) -or $vol.Name.Length -gt $best.Name.Length) { $best = $vol }
+            }
+            return $best
+        } catch { return $null }
+    }
+
     # GetPathRoot on a path that does not exist yet still names the volume it would be created on.
     function Get-StudioFreeSpaceBytes {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        $mounted = Get-StudioMountedVolume -Path $Path
+        if ($mounted -and $null -ne $mounted.FreeSpace) { return [int64]$mounted.FreeSpace }
         try {
             $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Path))
             if (-not $root) { return $null }
@@ -2794,8 +2821,18 @@ exit 1
         # Unknown answers "same volume", because same volume is the quiet case.
         if ([string]::IsNullOrWhiteSpace($PathA) -or [string]::IsNullOrWhiteSpace($PathB)) { return $true }
         try {
-            $a = [System.IO.Path]::GetPathRoot((Get-StudioFinalPath -Path $PathA))
-            $b = [System.IO.Path]::GetPathRoot((Get-StudioFinalPath -Path $PathB))
+            $fullA = Get-StudioFinalPath -Path $PathA
+            $fullB = Get-StudioFinalPath -Path $PathB
+            # Volume identity first, so two directory mount points under one drive letter are not
+            # read as one volume. DeviceID is the volume GUID, which is the identity; the mount
+            # path is not, since one volume can be mounted in several places.
+            $volA = Get-StudioMountedVolume -Path $fullA
+            $volB = Get-StudioMountedVolume -Path $fullB
+            if ($volA -and $volB -and $volA.DeviceID -and $volB.DeviceID) {
+                return ($volA.DeviceID -eq $volB.DeviceID)
+            }
+            $a = [System.IO.Path]::GetPathRoot($fullA)
+            $b = [System.IO.Path]::GetPathRoot($fullB)
             if (-not $a -or -not $b) { return $true }
             return ($a -eq $b)
         } catch { return $true }

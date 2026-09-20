@@ -1554,3 +1554,38 @@ class TestOffVolumeCacheNoticeParity:
         assert (
             text.count(flag) >= 2
         ), f"{path.name} should set {flag} at the notice and read it at the rollback warning"
+
+
+class TestWindowsMountPointVolumes:
+    """A Windows volume can be mounted at a DIRECTORY rather than a drive letter. GetPathRoot
+    reduces C:\\studio to C:\\, so DriveInfo answers for the host drive and two paths on
+    different mounted volumes compare equal on their root: the rollback-space warning is then
+    suppressed or falsely emitted, and the cross-volume cache notice never fires. Win32_Volume
+    lists mount points by the path they are mounted at. Pinned by text because no host in CI
+    has a directory mount point to exercise (#11313)."""
+
+    def test_free_space_asks_the_mounted_volume_first(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "Win32_Volume" in text, "install.ps1 does not consult the mount-point view"
+        helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
+            "function Get-StudioTreeSizeBytes", 1
+        )[0]
+        assert "Get-StudioMountedVolume" in helper, (
+            "Get-StudioFreeSpaceBytes falls straight through to the drive root"
+        )
+        assert "DriveInfo" in helper, "the drive-root fallback was dropped"
+
+    def test_same_volume_compares_identity_not_root(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Test-StudioSameVolume", 1)[1].split("\n    }", 1)[0]
+        # DeviceID is the volume GUID. The mount path is not identity: one volume can be
+        # mounted in several places.
+        assert "DeviceID" in helper, "Test-StudioSameVolume still compares only the drive root"
+
+    def test_the_probe_is_gated_on_windows(self):
+        # CimCmdlets ships only on Windows, and this helper is reached on every platform.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Get-StudioMountedVolume", 1)[1].split("\n    }", 1)[0]
+        assert "$IsWindows" in helper and "Windows_NT" in helper, (
+            "Get-StudioMountedVolume would call Get-CimInstance off Windows"
+        )
