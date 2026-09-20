@@ -712,7 +712,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise WorkdirUnsafeError(f"the session workdir cannot be a filesystem root: {workdir}")
     # file-write* covers the workdir subpath, so a file hard-linked outside
     # writes through to the host inode.
-    scan_workdir_for_host_channels(workdir)
+    workdir_limitations = scan_workdir_for_host_channels(workdir)
     # /tmp, not /var/folders: the profile has to name this directory, and this
     # keeps it out of the confidential per-user container.
     private_tmp = tempfile.mkdtemp(
@@ -740,6 +740,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             timeout_seconds = plan.timeout_seconds,
             close_fds = plan.close_fds,
             terminate_descendants = plan.terminate_descendants,
+            launch_limitations = workdir_limitations,
         )
     except Exception:
         shutil.rmtree(private_tmp, ignore_errors = True)

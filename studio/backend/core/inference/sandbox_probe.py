@@ -36,8 +36,14 @@ _SENTINEL_TOKEN = "unsloth-host-sentinel-must-not-be-readable"
 _OUTSIDE_WRITE_TOKEN = "unsloth-sandbox-escaped-to-the-host"
 
 PROBE_TIMEOUT_SECONDS = 30.0
-# Short enough that installing the AppArmor profile takes effect without a restart.
-_CACHE_TTL_SECONDS = 60.0
+# Long enough that an idle chat does not pay the 353ms cold probe again on its
+# next message, which 60s did: a call 70s after the last one cost 1.24s against
+# 0.040s unsandboxed. Correctness does not rest on the TTL. The key already
+# carries the runtime identity, so a changed interpreter or venv re-probes
+# immediately, and a launch that fails invalidates the entry outright
+# (tools.py's _note_launch_failure), which is what actually covers installing
+# the AppArmor profile without a restart.
+_CACHE_TTL_SECONDS = 900.0
 _CACHE_MAX_ENTRIES = 8
 
 # ``sun_path`` is 108 bytes and multiprocessing appends about 32 of its own, so a

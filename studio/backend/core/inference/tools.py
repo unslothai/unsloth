@@ -9395,6 +9395,11 @@ def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> N
     try:
         from .sandbox_probe import reset_probe_cache
         reset_probe_cache()
+        if sys.platform == "linux":
+            # Same reasoning as the probe: a launch that failed is the one signal
+            # that something the planner believed about this host has changed.
+            from .sandbox_linux import reset_cache_verdicts
+            reset_cache_verdicts()
     except Exception:  # noqa: BLE001 - a cache reset never breaks a tool result
         logger.debug("could not reset the sandbox probe cache", exc_info = True)
 

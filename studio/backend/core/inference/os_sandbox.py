@@ -148,6 +148,9 @@ class PreparedSandboxLaunch:
     terminate_descendants: bool = True
     cleanup_callbacks: list[Callable[[], None]] = field(default_factory = list)
     cleanup_diagnostics: list[str] = field(default_factory = list)
+    # Earned by THIS launch, on top of the backend's static set: what was true
+    # of this call and may not be true of the next one.
+    launch_limitations: tuple[str, ...] = ()
 
     def cleanup(self) -> None:
         while self.cleanup_callbacks:
@@ -186,12 +189,26 @@ CACHE_SCAN_ENTRIES = 50_000
 CACHE_SCAN_SECONDS = 3.0
 
 
-def _host_channel_hazard(root: str, max_entries: int, seconds: float) -> str | None:
-    """Return a host-access hazard under *root*, or None; never raise.
+class _ScanBudgetExceeded(Exception):
+    """The walk ran out of entries or time before it could reach a verdict.
 
-    Reject sockets, devices, FIFOs, external hard links, nested mounts and scan overruns.
+    Distinct from a hazard, because the two call for opposite answers. A hazard
+    is a finding about the tree; this is only a statement about the scan's cost,
+    and the tree may be perfectly safe. Treating the two alike is what let an
+    ordinary `pip install` end a chat: past the entry cap every later Python and
+    Terminal call was refused, and since the scan is also what must run before a
+    tool can delete anything, the chat could never clean itself up.
+    """
+
+
+def _host_channel_hazard(root: str, max_entries: int, seconds: float) -> str | None:
+    """Return a host-access hazard under *root*, or None.
+
+    Reject sockets, devices, FIFOs, external hard links and nested mounts.
     Tool-created entries cannot be distinguished from host entries. The root
-    itself may be a mount point.
+    itself may be a mount point. Raises ``_ScanBudgetExceeded`` if the walk
+    cannot finish inside its budget; callers decide what an unfinished scan means
+    for them, because it is not a finding.
     """
     deadline = time.monotonic() + seconds
     entries = 0
@@ -208,7 +225,10 @@ def _host_channel_hazard(root: str, max_entries: int, seconds: float) -> str | N
         for name in (*dirs, *names):
             entries += 1
             if entries > max_entries or time.monotonic() > deadline:
-                return f"too large to check for host channels (over {max_entries} entries or {seconds:.0f}s)"
+                raise _ScanBudgetExceeded(
+                    f"could not be fully checked for host channels "
+                    f"(over {max_entries} entries or {seconds:.0f}s)"
+                )
             path = os.path.join(base, name)
             try:
                 info = os.lstat(path)
@@ -234,11 +254,27 @@ def _host_channel_hazard(root: str, max_entries: int, seconds: float) -> str | N
     return None
 
 
-def scan_workdir_for_host_channels(workdir: str) -> None:
-    """The writable session workdir. A hazard here fails the call."""
-    hazard = _host_channel_hazard(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
+    """The writable session workdir. A hazard here fails the call.
+
+    Returns the per-launch limitations the scan earned, so an unfinished scan is
+    reported rather than silently treated as a clean one.
+
+    A scan that overruns its budget does NOT fail the call. Refusing looked
+    conservative and was not: the call it refused was a confined one, and the
+    user was left with no working tool rather than with a weaker boundary. The
+    sandbox is still built, and the record says the workdir was not fully
+    inspected. Genuine findings above remain fatal, so a planted socket or an
+    external hard link still stops the launch.
+    """
+    try:
+        hazard = _host_channel_hazard(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+    except _ScanBudgetExceeded as exc:
+        logger.warning("The session workdir %s: %s", workdir, exc)
+        return ("workdir_scan_incomplete",)
     if hazard is not None:
         raise WorkdirUnsafeError(f"the session workdir {hazard}")
+    return ()
 
 
 def cache_share_hazard(path: str) -> str | None:
@@ -247,8 +283,15 @@ def cache_share_hazard(path: str) -> str | None:
     Apply the workdir's host-access checks: sockets and hard links can expose
     host resources. Unsafe components are omitted, not launch failures, so a
     planted socket cannot disable later calls. Missing caches are re-downloaded.
+
+    Unlike the workdir, a cache that overruns its budget IS a reason not to share
+    it: the component is simply omitted and re-downloaded inside, which costs
+    bandwidth and nothing else.
     """
-    return _host_channel_hazard(path, CACHE_SCAN_ENTRIES, CACHE_SCAN_SECONDS)
+    try:
+        return _host_channel_hazard(path, CACHE_SCAN_ENTRIES, CACHE_SCAN_SECONDS)
+    except _ScanBudgetExceeded as exc:
+        return str(exc)
 
 
 _LINUX_REQUIRED_BINARIES = ("bwrap",)
@@ -600,6 +643,6 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         backend = capability.backend,
         profile_id = capability.profile_id,
         safeguards = _OS_ISOLATION_SAFEGUARDS,
-        limitations = capability.limitations,
+        limitations = capability.limitations + prepared.launch_limitations,
     )
     return prepared

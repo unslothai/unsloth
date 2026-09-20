@@ -426,7 +426,7 @@ def test_a_hard_link_wholly_inside_the_workdir_is_allowed(tmp_path):
     os.link(str(tmp_path / "a"), str(tmp_path / "b"))
     (tmp_path / "nested").mkdir()
     os.link(str(tmp_path / "a"), str(tmp_path / "nested" / "c"))
-    assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
+    assert sandbox_linux._validate_workdir(str(tmp_path)) == (os.path.realpath(tmp_path), ())
 
 
 def test_a_nested_host_mount_under_the_workdir_is_refused(tmp_path, monkeypatch):
@@ -445,17 +445,50 @@ def test_the_workdir_itself_being_a_mount_point_is_allowed(tmp_path, monkeypatch
     monkeypatch.setattr(
         os.path, "ismount", lambda path: os.path.samefile(path, tmp_path) or real(path)
     )
-    assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
+    assert sandbox_linux._validate_workdir(str(tmp_path)) == (os.path.realpath(tmp_path), ())
 
 
-def test_a_workdir_too_large_to_check_is_refused_rather_than_accepted_unchecked(
+def test_a_workdir_too_large_to_check_still_launches_and_says_it_was_not_checked(
     tmp_path, monkeypatch
 ):
+    # Refusing here ended the chat: the workdir only grows, and the scan is also
+    # what must run before a tool could delete anything, so once an ordinary pip
+    # install crossed the cap every later Python and Terminal call was refused
+    # with no way back. The call is confined either way, so the sandbox is still
+    # built and the record carries what was not established.
     monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 2)
     for name in ("a", "b", "c", "d"):
         (tmp_path / name).write_text("")
-    with pytest.raises(SandboxUnavailableError, match = "too large"):
+    resolved, limitations = sandbox_linux._validate_workdir(str(tmp_path))
+    assert resolved == os.path.realpath(tmp_path)
+    assert limitations == ("workdir_scan_incomplete",)
+
+
+def test_an_overrun_does_not_stop_a_real_finding_from_refusing(tmp_path, monkeypatch):
+    # The budget is a cost guard, not a boundary. A hazard found inside the
+    # budget must still be fatal, or the fix above would have removed the check.
+    os.mkfifo(str(tmp_path / "channel"))
+    with pytest.raises(SandboxUnavailableError, match = "device or IPC node"):
         sandbox_linux._validate_workdir(str(tmp_path))
+
+
+def test_an_incomplete_scan_reaches_the_execution_record(tmp_path, monkeypatch):
+    # A limitation nobody can read is not a disclosure.
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 2)
+    for name in ("a", "b", "c", "d"):
+        (tmp_path / name).write_text("")
+    prepared = sandbox_linux.prepare(
+        os_sandbox.ToolLaunchPlan(
+            argv = (sys.executable, "-c", "pass"),
+            workdir = str(tmp_path),
+            env = {},
+            requested_mode = "required",
+        )
+    )
+    try:
+        assert "workdir_scan_incomplete" in prepared.launch_limitations
+    finally:
+        prepared.cleanup()
 
 
 def test_a_workdir_that_is_not_a_directory_is_refused(tmp_path):
@@ -469,7 +502,7 @@ def test_a_symlinked_directory_under_the_workdir_is_not_followed(tmp_path):
     # Following it would scan /dev and refuse every launch; the bind does
     # not follow it either, so the link dangles inside the jail.
     (tmp_path / "escape").symlink_to("/dev")
-    assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
+    assert sandbox_linux._validate_workdir(str(tmp_path)) == (os.path.realpath(tmp_path), ())
 
 
 def test_every_interpreter_path_this_python_imports_from_is_bound(prepared, tmp_path):
