@@ -4,7 +4,10 @@
 import { streamChatCompletions } from "../api/chat-api";
 import type { OpenAIChatCompletionsRequest } from "../types/api";
 import { authFetch } from "@/features/auth";
-import { encryptProviderApiKey } from "../api/providers-api";
+import {
+  encryptProviderApiKey,
+  isProviderKeyRotationError,
+} from "../api/providers-api";
 import {
   getExternalProviderApiKey,
   parseExternalModelId,
@@ -65,9 +68,6 @@ export async function generateChatTitle(
           provider_type: toExternalBackendProviderType(provider.providerType),
           external_model: selection.modelId,
           provider_base_url: provider.baseUrl || null,
-          ...(apiKey
-            ? { encrypted_api_key: await encryptProviderApiKey(apiKey) }
-            : {}),
         }
       : {};
 
@@ -96,18 +96,28 @@ export async function generateChatTitle(
   };
   let raw: string | undefined;
   if (payload.stream) {
-    raw = "";
-    try {
-      for await (const chunk of streamChatCompletions(
-        payload,
-        signal ?? new AbortController().signal,
-      )) {
-        const choice = chunk.choices?.[0];
-        if (choice?.finish_reason === "length") return null;
-        raw += choice?.delta?.content ?? "";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      raw = "";
+      try {
+        if (apiKey) {
+          payload.encrypted_api_key = await encryptProviderApiKey(
+            apiKey,
+            attempt > 0,
+          );
+        }
+        for await (const chunk of streamChatCompletions(
+          payload,
+          signal ?? new AbortController().signal,
+        )) {
+          const choice = chunk.choices?.[0];
+          if (choice?.finish_reason === "length") return null;
+          raw += choice?.delta?.content ?? "";
+        }
+        break;
+      } catch (error) {
+        if (attempt > 0 || !apiKey || !isProviderKeyRotationError(error))
+          return null;
       }
-    } catch {
-      return null;
     }
   } else {
     const response = await authFetch("/v1/chat/completions", {

@@ -53,6 +53,8 @@ beforeEach(() => {
   state.writes = [];
   state.status = 200;
   state.guardSupport = true;
+  state.rotationFailures = 0;
+  state.encryptions = [];
   state.response = {
     choices: [
       { message: { content: "Contract Negotiation" }, finish_reason: "stop" },
@@ -378,3 +380,42 @@ test("older backends cannot receive unguarded title refreshes", async () => {
   assert.equal(state.requests.length, 0);
   assert.equal(state.writes.length, 0);
 });
+
+for (const failures of [1, 2]) {
+  test(`legacy key rotation retries once with ${failures} decryption failures`, async () => {
+    const previousWindow = globalThis.window;
+    const previousStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: { getItem: () => JSON.stringify({ legacy: "fixture-key" }) },
+    });
+    try {
+      state.model = "external::legacy::chat-model";
+      state.providers = [
+        { id: "legacy", providerType: "openai", baseUrl: "", hasApiKey: false },
+      ];
+      state.rotationFailures = failures;
+      if (failures === 1) await refreshChatTitle(item);
+      else await assert.rejects(refreshChatTitle(item));
+      assert.equal(state.requests.length, 2);
+      assert.deepEqual(state.encryptions, [false, true]);
+      assert.equal(
+        state.threads[0].title,
+        failures === 1 ? "Contract Negotiation" : item.title,
+      );
+    } finally {
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: previousWindow,
+      });
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: previousStorage,
+      });
+    }
+  });
+}

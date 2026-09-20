@@ -30,6 +30,8 @@ export const state = {
   },
   status: 200,
   guardSupport: true,
+  rotationFailures: 0,
+  encryptions: [] as boolean[],
   wait: undefined as Promise<void> | undefined,
   providers: [] as {
     id: string;
@@ -100,13 +102,24 @@ export async function authFetch(url: string, init?: RequestInit) {
   await state.wait;
   return new Response(JSON.stringify(state.response), { status: state.status });
 }
-export async function encryptProviderApiKey(value: string) {
-  return `encrypted:${value}`;
+export async function encryptProviderApiKey(value: string, refresh = false) {
+  state.encryptions.push(refresh);
+  return `encrypted:${value}:${refresh}`;
+}
+export function isProviderKeyRotationError(error: unknown) {
+  return (
+    error instanceof Error &&
+    error.message.includes("public key may have changed")
+  );
 }
 
 export async function* streamChatCompletions(payload: unknown) {
   state.requests.push(JSON.parse(JSON.stringify(payload)));
   if (state.status !== 200) throw new Error("Subscription unavailable");
+  if (state.rotationFailures > 0) {
+    state.rotationFailures -= 1;
+    throw new Error("The server public key may have changed");
+  }
   const choice = state.response.choices[0];
   yield {
     choices: [{ delta: { content: choice.message.content.slice(0, 9) } }],
