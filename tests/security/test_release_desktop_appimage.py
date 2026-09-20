@@ -715,7 +715,7 @@ def test_the_deb_ships_the_polkit_action_in_app_debian_updates_authenticate_with
     action = "/usr/share/polkit-1/actions/ai.unsloth.studio.update.policy"
     assert files[action].endswith("/ai.unsloth.studio.update.policy")
 
-    policy = (REPO_ROOT / "studio/src-tauri/linux" / files[action].removeprefix("./linux/"))
+    policy = REPO_ROOT / "studio/src-tauri/linux" / files[action].removeprefix("./linux/")
     source = policy.read_text(encoding = "utf-8")
     assert '<action id="ai.unsloth.studio.update">' in source
     # auth_admin on all three implicit cases is what makes an update prompt, rather than
@@ -735,9 +735,9 @@ def test_the_deb_ships_the_polkit_action_in_app_debian_updates_authenticate_with
     # from the crate name, and the argument has to be the one main.rs dispatches on.
     cargo = (REPO_ROOT / "studio/src-tauri/Cargo.toml").read_text(encoding = "utf-8")
     assert 'name = "unsloth-studio"' in cargo
-    debian_update = (
-        REPO_ROOT / "studio/src-tauri/src/debian_update.rs"
-    ).read_text(encoding = "utf-8")
+    debian_update = (REPO_ROOT / "studio/src-tauri/src/debian_update.rs").read_text(
+        encoding = "utf-8"
+    )
     assert 'const INSTALL_ARGUMENT: &str = "--install-debian-update";' in debian_update
     assert 'const INSTALLED_BINARY: &str = "/usr/bin/unsloth-studio";' in debian_update
 
