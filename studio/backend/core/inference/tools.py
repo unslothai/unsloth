@@ -16057,11 +16057,8 @@ def _check_signal_escape_patterns(code: str):
             return False
         return True
 
-    # The FQ name the visitor builds from the call site is only canonical when the call is written
-    # out in full. `import requests as r; r.get(...)`, `from requests import get as fetch;
-    # fetch(...)` and `s = requests.Session(); s.get(...)` all produce a name no prefix in
-    # _NETWORK_FQ_PREFIXES matches, so the host allowlist never ran on them. These tables let an
-    # aliased or session-bound call be rewritten to its canonical name before any policy check.
+    # An aliased or session-bound call spells a name no _NETWORK_FQ_PREFIXES entry matches, so the
+    # allowlist never ran on it. These tables give the policy the canonical name to check.
     _NET_MODULES = frozenset(
         {
             "requests",
@@ -16321,10 +16318,8 @@ def _check_signal_escape_patterns(code: str):
         if len(parts) == 1:
             resolved = bindings.alias_for(bindings.funcs, head, func_node)
             if resolved is None:
-                # `fetch = requests.get` is the assignment spelling of `from requests import get
-                # as fetch`, and the call has to answer to the same name either way. Every value
-                # the name can hold is offered, because resolving only ever adds a name that is
-                # checked.
+                # `fetch = requests.get` is the assignment spelling of an import alias. Every
+                # value the name can hold is offered: resolving only ever adds a checked name.
                 from_values = []
                 for value in _held_callables(head, func_node, bindings):
                     if not isinstance(value, (ast.Attribute, ast.Name)):
@@ -16571,11 +16566,9 @@ def _check_signal_escape_patterns(code: str):
                 return None
             history = sorted(history, key = lambda entry: entry[0])
             if self._scope_of.get(id(node)) != key[0]:
-                # A function body runs when it is called, not where it is written, so its line
-                # number says nothing about which outer binding it will see. `def f(): r.get(...)`
-                # above `import requests as r` reads the import, because f() runs after it. The
-                # last binding in the source is the conservative answer: it keeps the call
-                # policed instead of letting a body placed above an import escape the check.
+                # A body runs when it is called, so its line number says nothing about which
+                # outer binding it sees. The last binding is the conservative answer: a body
+                # written above an import must not escape the check.
                 return history[-1][1]
             where = self._position(node)
             before = [
@@ -16948,10 +16941,8 @@ def _check_signal_escape_patterns(code: str):
                                 target_scope = self._scope_parent.get(target_scope)
                         self._bind(node.target, node.value, target_scope)
                 elif isinstance(node, ast.AugAssign):
-                    # The value is the old one combined with this expression, which is not a
-                    # string this analysis can name. It stays unresolvable, so nothing here
-                    # vouches for a host, but the right side is still somewhere the value came
-                    # from: `u += input()` reads the outside as plainly as `u = input()` does.
+                    # The value is unresolvable, so nothing vouches for a host, but the right
+                    # side is still where it came from: `u += input()` reads the outside.
                     self._bind(node.target, None, scope, came_from = node.value)
                     self._augmented_positions.add(self._position(node.target))
                 elif isinstance(node, (ast.For, ast.AsyncFor)):
@@ -17047,11 +17038,8 @@ def _check_signal_escape_patterns(code: str):
                 # A call resolves to no text, but it is still where the name's value came from, so
                 # `u = input()` has to stay followable.
                 self.strings[(scope, name)] = value
-            # `client = s` holds the same session, and a one-line alias must not take the call out
-            # of the policy. Repeat until the chain stops growing.
-            # To a fixed point, not a fixed number of passes: each pass either classifies at
-            # least one more name or stops, so the candidate count bounds the work and a chain of
-            # twenty-five aliases resolves the same as a chain of two.
+            # `client = s` holds the same session. To a fixed point rather than a fixed number of
+            # passes, so a chain of twenty-five aliases resolves the same as a chain of two.
             for _ in range(len(self._candidates) + 1):
                 grew = False
                 for (scope, name), value in self._candidates.items():
@@ -17159,10 +17147,8 @@ def _check_signal_escape_patterns(code: str):
                     return _static_str_prefix(inner, bindings, seen, depth + 1)
             return "", False
         if isinstance(node, ast.Name):
-            # `a1 = a0` repeated is a chain, not nesting, so following it iteratively keeps the
-            # depth limit measuring real structure (sums, f-strings). Spending depth here would
-            # make the limit itself the way past the policy: a blocked literal handed along
-            # twenty-five assignments would simply stop resolving.
+            # `a1 = a0` repeated is a chain, not nesting: following it iteratively keeps the depth
+            # limit on real structure, so handing a literal along enough names is not a way out.
             names = set(seen)
             current = node
             links = 0
@@ -17450,11 +17436,9 @@ def _check_signal_escape_patterns(code: str):
         if not isinstance(root, ast.Name):
             return False
         if _bindings.may_be_bound(root.id, root):
-            # The source may have given this name a meaning of its own, so the import is not what
-            # it holds. A parameter and a class both bind it without ever recording a value, which
-            # is why this asks the binding table rather than the values, and a binding in an
-            # enclosing scope counts: losing an exemption costs a refusal, keeping one wrongly
-            # costs a request to any host.
+            # A parameter and a class bind a name without recording a value, so this asks the
+            # binding table. An enclosing scope counts: a wrong exemption costs a request to any
+            # host, a wrong shadow only a refusal.
             return False
         if _any_prefix_was_rebound(node):
             # An attribute below the module was replaced, so what hangs off it is not the module's.
@@ -17480,10 +17464,8 @@ def _check_signal_escape_patterns(code: str):
 
     _external_memo: set = set()
 
-    # Following bindings is bounded by the tree itself once visited nodes are remembered, so this
-    # budget is a backstop against a pathological file rather than the real limit. Exhausting it
-    # answers "externally sourced": a guard that answers "no" when it gives up is a bypass, since
-    # laundering a value through enough assignments would be all it takes.
+    # A backstop against a pathological file, not the real limit. Exhausting it answers
+    # "externally sourced": a guard that answers "no" when it gives up is a bypass.
     _MAX_EXTERNAL_STEPS = 200_000
 
     def _externally_sourced(node, bindings) -> bool:
@@ -17915,10 +17897,8 @@ def _check_signal_escape_patterns(code: str):
             return _HF_UPLOAD_PATH_VIOLATION
         return None
 
-    # Clients that can be handed their host once, at construction, after which a request needs
-    # only a path. `urllib3` pools take a bare host, the others a whole base URL.
-    # Only the connection pools take a host positionally. `urllib3.PoolManager(10)` takes a pool
-    # count, so reading argument zero there would refuse an ordinary configuration.
+    # Clients handed their host at construction, after which a request needs only a path. Pools
+    # take a bare host positionally; `urllib3.PoolManager(10)` takes a pool count, not a host.
     _POSITIONAL_HOST_FQ = ("urllib3.HTTPConnectionPool", "urllib3.HTTPSConnectionPool")
     _POOL_FACTORY_FQ = (
         "urllib3.PoolManager",
@@ -18048,12 +18028,9 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch, and so do the
-            # scalar-host clients (ftplib, smtplib, socketio). Only the APIs whose `connect` opens
-            # a local resource are left alone: reading a database path as a host refuses it.
-            # Even then the exemption is only from screening the argument as a bare host. A
-            # connection string can name a remote host as plainly as a URL does, and
-            # `postgresql://user:pass@host/db` is the usual way to write one.
+            # `sock.connect((host, port))` and the scalar-host clients bypass the FQ-prefix
+            # branch. Only a `connect` that opens a local resource is left alone, and only from
+            # the bare-host screen: `postgresql://user:pass@host/db` still names a remote host.
             if _is_a_connect_call(node) and _connect_is_exempt(node):
                 database_hosts = (
                     []
