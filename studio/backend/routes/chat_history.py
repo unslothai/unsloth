@@ -1413,7 +1413,11 @@ async def delete_project(
                 record_orphaned_project_if_unowned,
                 project_id,
                 managed_sandbox_path,
-                delete_files and not retired_referenced,
+                # Pending records what the user ASKED for. The reference only delays
+                # it: `collect_orphaned_project_workspaces` skips a referenced session
+                # on its own, so recording this as kept would leave the directory on
+                # disk for ever once the fork that held it is gone.
+                delete_files,
                 managed_root_path,
                 cleanup_session,
             )

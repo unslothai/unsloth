@@ -2424,6 +2424,16 @@ def test_a_fork_keeps_the_managed_files_a_switch_left_behind(
     run_delete()
     assert made_while_managed.exists(), "the delete took files a fork still has cards for"
 
+    # The reference delays the removal, it does not cancel it: the record must still
+    # say the user asked for these files to go, or nothing ever collects them once
+    # the fork is gone. The collector skips a referenced session on its own.
+    pending = [
+        record
+        for _, record in tools._project_orphan_records()
+        if str(record.get("id")) == str(project["id"]) and record.get("pendingDelete")
+    ]
+    assert pending, "the deletion the user asked for was recorded as kept for ever"
+
 
 def test_moving_a_generating_chat_out_does_not_unlock_the_folder_change(
     tmp_path, monkeypatch, workspace_projects_home
