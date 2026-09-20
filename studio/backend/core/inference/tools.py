@@ -16224,7 +16224,7 @@ def _check_signal_escape_patterns(code: str):
 
     # Wrappers whose own first argument is the URL the request will use, so a Request object is
     # policed like the url string it was built from.
-    _URL_WRAPPER_FQ = ("urllib.request.Request",)
+    _URL_WRAPPER_FQ = {"urllib.request.Request": 0, "httpx.Request": 1}
 
     def _written_fq(func_node) -> str:
         """The dotted call name exactly as the source spells it."""
@@ -16323,6 +16323,7 @@ def _check_signal_escape_patterns(code: str):
             # the second binding, which is where the source says it changes.
             self._alias_history: dict = {}
             self._value_positions: dict = {}
+            self._conditional_bindings: set = set()
             # Names imported twice: no order-independent answer, so no alias at all.
             self._ambiguous_aliases: set = set()
 
@@ -16506,32 +16507,67 @@ def _check_signal_escape_patterns(code: str):
                     return None
             return None
 
+        def _mark_conditional_bindings(self, tree) -> None:
+            """Positions of assignments that only run if a branch is taken. Source position says
+            they came before the call, but not that they ran, so they cannot displace the value
+            an unconditional assignment left."""
+            branching = (ast.If, ast.While, ast.For, ast.AsyncFor, ast.Try, ast.With, ast.AsyncWith)
+            match_statement = getattr(ast, "Match", None)
+            if match_statement is not None:
+                branching = branching + (match_statement,)
+            for statement in _tree_nodes(tree):
+                if not isinstance(statement, branching):
+                    continue
+                for inner in ast.walk(statement):
+                    if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
+                        self._conditional_bindings.add(self._position(inner))
+
+        def possible_values(self, name: str, node) -> list:
+            """Every value the name can hold at *node*: the last unconditional assignment that
+            precedes it, plus any conditional ones since. One value means the call sees that
+            value; more than one means each of them has to be answered for."""
+            for scope in self._chain(node):
+                key = (scope, name)
+                if not self._class_binding_applies(scope, key, node):
+                    continue
+                candidates = self._candidates_held_here(key, node)
+                if candidates:
+                    return [value for _position, value in candidates]
+                if key in self._counts:
+                    return []
+            return []
+
+        def _candidates_held_here(self, key, node) -> list:
+            positioned = sorted(
+                self._value_positions.get(key, ()), key = lambda entry: entry[0]
+            )
+            if not positioned:
+                return []
+            if self._scope_of.get(id(node)) != key[0]:
+                # A body runs when it is called, so every value it could see is possible.
+                return positioned
+            where = self._position(node)
+            before = [entry for entry in positioned if entry[0] <= where]
+            if not before:
+                return []
+            start = 0
+            for index, (position, _value) in enumerate(before):
+                if position not in self._conditional_bindings:
+                    start = index
+            return before[start:]
+
         def _value_held_here(self, key, node):
             """The value a name bound more than once holds at *node*, or ``_NOTHING_HELD``.
 
             Same reasoning as the import aliases: dropping the name everywhere would let a later
             assignment unpolice the calls above it, so `u = metadata`, the request, `u = allowed`
             would pass on the strength of a value the request never sees."""
-            positioned = self._value_positions.get(key)
-            if not positioned:
+            candidates = self._candidates_held_here(key, node)
+            if len(candidates) != 1:
+                # Nothing to resolve, or more than one value could hold and no single one of them
+                # may vouch for the call. The caller screens them all instead.
                 return _NOTHING_HELD
-            positioned = sorted(positioned, key = lambda entry: entry[0])
-            if self._scope_of.get(id(node)) != key[0]:
-                # A function body runs when it is called, so its position says nothing about which
-                # outer value it sees. The last one is the conservative answer.
-                return positioned[-1][1]
-            before = [
-                position
-                for position, _alias in self._bind_positions.get(key, [])
-                if position <= self._position(node)
-            ]
-            if not before:
-                return _NOTHING_HELD
-            last = max(before)
-            for position, value in positioned:
-                if position == last:
-                    return value
-            return _NOTHING_HELD
+            return candidates[0][1]
 
         def values_for(self, name: str, node) -> list:
             """Where the name's value can have come from, stopping at the scope that binds it: a
@@ -16669,6 +16705,7 @@ def _check_signal_escape_patterns(code: str):
                     pass  # a declaration, not a binding; collected in the first pass
 
         def collect(self, tree) -> "_NameBindings":
+            self._mark_conditional_bindings(tree)
             scoped = list(self._walk_scoped(tree))
             self._raw_mode = True
             self._scan_bindings(scoped)
@@ -16810,8 +16847,10 @@ def _check_signal_escape_patterns(code: str):
             return "", False
         if isinstance(node, ast.Call):
             # urllib.request.Request("...") carries the URL the later urlopen will use.
-            if _canonical_fq(node.func, bindings) in _URL_WRAPPER_FQ:
-                inner = node.args[0] if node.args else None
+            wrapper = _URL_WRAPPER_FQ.get(_canonical_fq(node.func, bindings))
+            if wrapper is not None:
+                # httpx.Request("GET", url) puts the verb first, urllib's Request the URL.
+                inner = node.args[wrapper] if len(node.args) > wrapper else None
                 for kw in node.keywords or []:
                     if kw.arg in _URL_KWARGS:
                         inner = kw.value
@@ -17232,8 +17271,20 @@ def _check_signal_escape_patterns(code: str):
             fq = _canonical_fq(func, _bindings)
             return fq in _PATHLIB_FQ or fq.endswith(".Path") or fq == "os.fdopen"
         if isinstance(node, ast.Name):
-            bound = _bindings.string_for(node.id, node)
-            return bound is not None and _is_a_file_receiver(bound)
+            # `f1 = f0` repeated is a chain, so it is followed rather than recursed through.
+            seen: set = set()
+            current = node
+            links = 0
+            while isinstance(current, ast.Name):
+                links += 1
+                if current.id in seen or links > _MAX_BINDING_LINKS:
+                    return False
+                seen.add(current.id)
+                bound = _bindings.string_for(current.id, current)
+                if bound is None:
+                    return False
+                current = bound
+            return _is_a_file_receiver(current)
         return False
 
     def _reads_a_file(node: ast.AST) -> bool:
@@ -17445,6 +17496,18 @@ def _check_signal_escape_patterns(code: str):
                 }
             )
 
+    def _other_possible_hosts(url_node) -> "list[str]":
+        """Hosts a target could reach besides the one it resolves to, because more than one
+        assignment can hold at the call."""
+        if not isinstance(url_node, ast.Name):
+            return []
+        out: list = []
+        for value in _bindings.possible_values(url_node.id, url_node)[:_MAX_RESOLVE_DEPTH]:
+            host, _resolved = _host_from_url_node(value, _bindings)
+            if host and host not in out:
+                out.append(host)
+        return out if len(out) > 1 else []
+
     def _configured_host_node(node: ast.Call, fq: str):
         """Where a client is handed its host. `httpx.Client(base_url = ...)` followed by
         `c.get("/latest")` reaches a host the request itself never names, so the constructor is
@@ -17644,6 +17707,10 @@ def _check_signal_escape_patterns(code: str):
                     url_node = next(
                         (kw.value for kw in node.keywords or [] if kw.arg is None), None
                     )
+                for possible in _other_possible_hosts(url_node):
+                    # More than one value can hold here, so each is answered for: a conditional
+                    # assignment is a value the call may see, not the value it does see.
+                    _screen_host(possible, node)
                 if isinstance(url_node, ast.Tuple) and url_node.elts:
                     text, complete = _static_str_prefix(url_node.elts[0], _bindings)
                     host_arg = text if (complete and text) else None

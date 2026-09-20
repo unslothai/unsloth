@@ -4237,3 +4237,62 @@ class TestOnlyRealFileReadsAreExternal:
     )
     def test_a_real_file_read_is_still_external(self, code):
         _blocked(code, expect_phrase = "Blocked: request target is read")
+
+
+class TestConditionalAssignments:
+    """Source position says a conditional assignment came before the call, not that it ran, so
+    it is a value the call may see rather than the value it does see."""
+
+    def test_a_conditional_assignment_does_not_displace_the_value_below_it(self):
+        _blocked(
+            f'import requests\nurl = "{_METADATA_URL}"\nif False:\n'
+            '    url = "https://huggingface.co"\nrequests.get(url)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_either_branch_reaching_a_blocked_host_is_enough(self):
+        _blocked(
+            'import requests\nurl = "https://huggingface.co/a"\nif flag:\n'
+            '    url = "https://evil.example/b"\nrequests.get(url)',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_both_branches_on_an_allowed_host_keep_working_ok(self):
+        _ok(
+            'import requests\nurl = "https://huggingface.co/a"\nif flag:\n'
+            '    url = "https://huggingface.co/b"\nrequests.get(url)'
+        )
+
+    def test_an_unconditional_reassignment_still_replaces_the_value_ok(self):
+        _ok(
+            'import requests\nurl = "https://evil.example/a"\n'
+            'url = "https://huggingface.co/api/models"\nrequests.get(url)'
+        )
+
+
+class TestRequestObjectsHandedToSend:
+    """`httpx.Client.send` takes a request object, and that object carries the URL."""
+
+    def test_a_request_object_built_inline_is_screened(self):
+        _blocked(
+            f'import httpx\nc = httpx.Client()\nc.send(httpx.Request("GET", "{_METADATA_URL}"))',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_the_same_request_on_an_allowed_host_keeps_working_ok(self):
+        _ok(
+            "import httpx\n"
+            "c = httpx.Client()\n"
+            'c.send(httpx.Request("GET", "https://huggingface.co/api/models"))'
+        )
+
+
+class TestFileReceiverChainsAreBounded:
+    """Following a chain of handles must return a verdict, never raise out of the tool call."""
+
+    def test_a_long_handle_chain_returns_a_verdict(self):
+        chain = "".join(f"f{i} = f{i - 1}\n" for i in range(1, 1500))
+        message = _check_code_safety(
+            'import requests\nf0 = open("target")\n' + chain + "requests.get(f1499.read())"
+        )
+        assert message is not None and "request target is read" in message
