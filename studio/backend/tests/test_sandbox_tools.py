@@ -2965,3 +2965,58 @@ class TestScopeAndReceiverAccuracy:
             f'import requests\nclass C:\n    url = "{_METADATA_URL}"\n    requests.get(url)',
             expect_phrase = "Blocked: cloud-metadata host",
         )
+
+
+class TestSessionAliasesAndShadowedAliases:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import requests\ns = requests.Session()\nclient = s\n"
+                f'client.get("{_METADATA_URL}")',
+                id = "one_hop",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\na = s\nb = a\n"
+                f'b.get("{_METADATA_URL}")',
+                id = "two_hops",
+            ),
+        ],
+    )
+    def test_a_session_held_through_another_name_is_policed_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_a_session_alias_still_blocks_uploads(self):
+        _blocked(
+            "import requests\ns = requests.Session()\nc = s\n"
+            's.post("https://huggingface.co/u", files = {"f": open("a.bin", "rb")})',
+            expect_phrase = "Blocked: file upload disallowed in sandbox",
+        )
+
+    def test_a_session_alias_to_an_allowed_host_ok(self):
+        _ok(
+            "import requests\ns = requests.Session()\nc = s\n"
+            'c.get("https://huggingface.co/api/models")'
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import requests as client\ndef go(client):\n    client.get(input())",
+                id = "parameter",
+            ),
+            pytest.param(
+                "import requests as r\ndef go():\n    r = object()\n    r.get(input())",
+                id = "local_assignment",
+            ),
+        ],
+    )
+    def test_a_nearer_binding_shadows_an_alias_ok(self, code):
+        _ok(code)
+
+    def test_an_unshadowed_alias_still_resolves_blocked(self):
+        _blocked(
+            f'import requests as client\nclient.get("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )

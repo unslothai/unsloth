@@ -16216,7 +16216,8 @@ def _check_signal_escape_patterns(code: str):
                 key = (scope, name)
                 if key in table:
                     return table[key]
-                if key in self._counts and self._counts[key] > 1:
+                if key in self._counts:
+                    # Bound nearer than the alias, so the alias is not what this name holds.
                     return None
             return None
 
@@ -16337,6 +16338,22 @@ def _check_signal_escape_patterns(code: str):
                 # A call resolves to no text, but it is still where the name's value came from, so
                 # `u = input()` has to stay followable.
                 self.strings[(scope, name)] = value
+            # `client = s` holds the same session, and a one-line alias must not take the call out
+            # of the policy. Repeat until the chain stops growing.
+            for _ in range(_MAX_RESOLVE_DEPTH):
+                grew = False
+                for (scope, name), value in self._candidates.items():
+                    key = (scope, name)
+                    if key in factories or not isinstance(value, ast.Name):
+                        continue
+                    if self._counts.get(key, 0) != 1:
+                        continue
+                    target = self.alias_for(factories, value.id, value)
+                    if target is not None:
+                        factories[key] = target
+                        grew = True
+                if not grew:
+                    break
             self.sessions.update(factories)
             return self
 
