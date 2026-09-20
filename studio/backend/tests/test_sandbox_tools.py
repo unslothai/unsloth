@@ -4778,3 +4778,40 @@ class TestConnectorNamesMustBeImports:
     )
     def test_the_imported_connector_is_still_exempt_ok(self, code):
         _ok(code)
+
+
+class TestConnectorNamesAcrossScopes:
+    """Losing an exemption costs a refusal; keeping one wrongly costs a request to any host, so a
+    connector name bound anywhere the call can see is not the module."""
+
+    def test_a_name_bound_in_an_enclosing_scope_is_not_the_module(self):
+        _blocked(
+            "import requests\n"
+            "def outer(sqlite3):\n"
+            "    def inner():\n"
+            '        sqlite3.connect("169.254.169.254", 80)\n'
+            "    inner()",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_imported_connector_used_inside_a_function_is_still_exempt_ok(self):
+        _ok('import sqlite3\ndef go():\n    sqlite3.connect("state.db")')
+
+
+class TestReaderChainsFailClosed:
+    """Giving up on a chain of aliases cannot mean the call is fine."""
+
+    def test_a_long_alias_chain_to_input_is_still_refused(self):
+        chain = "".join(f"r{i} = r{i - 1}\n" for i in range(1, 25))
+        _blocked(
+            "import requests\nr0 = input\n" + chain + "requests.get(r24())",
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_a_local_function_of_the_same_shape_is_still_fine_ok(self):
+        _ok(
+            "import requests\n"
+            "def reader():\n"
+            '    return "https://huggingface.co/x"\n'
+            "requests.get(reader())"
+        )

@@ -16609,6 +16609,19 @@ def _check_signal_escape_patterns(code: str):
                 return not max(before)[1]
             return False
 
+        def may_be_bound(self, name: str, node) -> bool:
+            """Whether the source could have given this name a meaning of its own by the time
+            *node* runs, counting bindings in enclosing scopes and below the use.
+
+            The sibling question, `is_bound`, asks whether it definitely has. The two are asked
+            by callers whose safe answers point in opposite directions: an unrecognised external
+            reader keeps being policed, while an unrecognised connector loses its exemption."""
+            for scope in self._chain(node):
+                key = (scope, name)
+                if any(not is_alias for _position, is_alias in self._bind_positions.get(key, [])):
+                    return True
+            return False
+
         def possible_values(self, name: str, node) -> list:
             """Every value the name can hold at *node*: the last unconditional assignment that
             precedes it, plus any conditional ones since. One value means the call sees that
@@ -17204,10 +17217,12 @@ def _check_signal_escape_patterns(code: str):
             root = root.value
         if not isinstance(root, ast.Name):
             return False
-        if _bindings.is_bound(root.id, root):
-            # The source gave this name a meaning of its own, so the import is not what it holds.
-            # A parameter and a class both bind it without ever recording a value, which is why
-            # this asks the binding table rather than the values.
+        if _bindings.may_be_bound(root.id, root):
+            # The source may have given this name a meaning of its own, so the import is not what
+            # it holds. A parameter and a class both bind it without ever recording a value, which
+            # is why this asks the binding table rather than the values, and a binding in an
+            # enclosing scope counts: losing an exemption costs a refusal, keeping one wrongly
+            # costs a request to any host.
             return False
         if _any_prefix_was_rebound(node):
             # An attribute below the module was replaced, so what hangs off it is not the module's.
@@ -17470,7 +17485,9 @@ def _check_signal_escape_patterns(code: str):
         while isinstance(func, ast.Name):
             links += 1
             if func.id in seen or links > _MAX_RESOLVE_DEPTH:
-                return False
+                # Giving up cannot mean "not a reader": a chain of aliases would be the whole
+                # bypass. The same rule the string resolver follows when it runs out.
+                return True
             seen.add(func.id)
             if _reads_an_external_source_through_an_alias(func, bindings):
                 return True
