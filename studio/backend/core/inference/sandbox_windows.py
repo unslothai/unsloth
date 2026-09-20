@@ -186,6 +186,41 @@ def _readonly_roots(workdir: str) -> list[str]:
     return roots
 
 
+# Windows will not start a process without these. They name the system
+# directories and the local machine rather than carrying user data, and the
+# POSIX backends pass their equivalents through for the same reason.
+_REQUIRED_WINDOWS_ENV = (
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "COMSPEC",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+)
+
+
+def _policy_environment(plan_env: dict[str, str]) -> list[str]:
+    """The sanitized env, plus the few variables Windows needs to start at all.
+
+    MXC replaces the environment rather than layering onto it
+    (`inheritDefaultEnv` is 0.9 only), so whatever is handed over is the whole
+    environment the child gets. A plan env that omits SystemRoot leaves
+    python.exe unable to initialise, which is not a confinement result but
+    looks exactly like one.
+
+    Only filled in when the caller did not set them, so a deliberately
+    overridden value still wins.
+    """
+    env = dict(plan_env)
+    for name in _REQUIRED_WINDOWS_ENV:
+        if name in env or name.upper() in {key.upper() for key in env}:
+            continue
+        value = os.environ.get(name)
+        if value:
+            env[name] = value
+    return [f"{key}={value}" for key, value in sorted(env.items())]
+
+
 def build_policy(plan: ToolLaunchPlan, workdir: str, container_id: str) -> dict:
     """The MXC config for one launch.
 
@@ -201,7 +236,7 @@ def build_policy(plan: ToolLaunchPlan, workdir: str, container_id: str) -> dict:
         "containerId": container_id,
         "containment": "processcontainer",
         "process": {
-            "env": [f"{key}={value}" for key, value in sorted(plan.env.items())],
+            "env": _policy_environment(plan.env),
             "cwd": workdir,
         },
         "filesystem": {
