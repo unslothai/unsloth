@@ -5,11 +5,13 @@ import base64
 import json
 import os
 import sqlite3
+import struct
 import sys
 import time
 
 import pytest
 from fastapi import HTTPException
+from starlette.responses import JSONResponse
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
@@ -527,7 +529,6 @@ def test_previews_convert_images_and_read_drawings(tmp_path):
 def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     import gzip
     import io
-    import struct
     import tarfile
     import zipfile
     from xml.etree import ElementTree
@@ -650,6 +651,330 @@ def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     zipfile.ZipFile(tmp_path / "deck.ppsm", "w").close()
     assert previews.build_preview(tmp_path / "deck.ppsm", "deck.ppsm") is None
     assert seen == {"filetype": "pptx"}
+
+
+def _tables(tmp_path) -> None:
+    import numpy as np
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.orc as orc
+
+    cities = ["Oslo", "Lima", "Hanoi", "Perth", "Cairo", "Kyoto", "Quito"]
+    frame = pd.DataFrame({"city": cities, "temp": [1.5, 22.0, 33.0, 18.5, 27.0, 9.0, 14.5]})
+    frame.to_parquet(tmp_path / "w.parquet")
+    frame.to_feather(tmp_path / "w.feather")
+    frame.to_stata(tmp_path / "w.dta", write_index = False)
+    orc.write_table(pa.Table.from_pandas(frame, preserve_index = False), str(tmp_path / "w.orc"))
+    np.savez(
+        tmp_path / "e.npz",
+        signal = np.arange(4.0),
+        labels = np.zeros(3, dtype = np.int8),
+        counts = np.arange(20),
+        blank = np.zeros(0),
+    )
+    np.save(tmp_path / "m.npy", np.arange(6).reshape(2, 3))
+
+
+def test_previews_outline_tables_and_arrays(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from core import chat_attachment_preview as previews
+    from core.chat_attachment_preview import build_preview
+
+    _tables(tmp_path)
+    rows = "first 5 rows:\n  Oslo\t1.5\n  Lima\t22.0\n  Hanoi\t33.0\n  Perth\t18.5\n  Cairo\t27.0"
+    for index, source in enumerate(("w.parquet", "w.feather", "w.orc", "w.dta")):
+        (tmp_path / f"7c2{index}").write_bytes((tmp_path / source).read_bytes())
+    for name, stored, count in (
+        ("weather.parquet", "7c20", "7"),
+        ("weather.feather", "7c21", "7"),
+        ("weather.orc", "7c22", "7"),
+        # StataReader counts observations only privately.
+        ("survey.dta", "7c23", "unknown"),
+    ):
+        text = build_preview(tmp_path / stored, name)["text"]
+        assert text.startswith(f"{count} rows x 2 columns\ncolumns: city (")
+        assert text.endswith(rows), name
+
+    assert build_preview(tmp_path / "m.npy", "m.npy") == {
+        "kind": "outline",
+        "text": "array: shape (2, 3), dtype int64, min 0, max 5, mean 2.5, "
+        "values [[0, 1, 2], [3, 4, 5]]",
+    }
+    assert build_preview(tmp_path / "e.npz", "e.npz")["text"] == (
+        "4 arrays\n"
+        "signal: shape (4,), dtype float64, min 0, max 3, mean 1.5, values [0.0, 1.0, 2.0, 3.0]\n"
+        "labels: shape (3,), dtype int8, min 0, max 0, mean 0, values [0, 0, 0]\n"
+        "counts: shape (20,), dtype int64, min 0, max 19, mean 9.5\n"
+        "blank: shape (0,), dtype float64, values []"
+    )
+
+    header = json.dumps(
+        {
+            "__metadata__": {"r": "16"},
+            "w": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]},
+        }
+    ).encode()
+    (tmp_path / "a.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + b"\0" * 24)
+    assert build_preview(tmp_path / "a.safetensors", "a.safetensors")["text"] == (
+        "1 tensors, 6 parameters, metadata {'r': '16'}\nw: shape (2, 3), dtype F32"
+    )
+
+    # A name out of a file can hold a lone surrogate, which the JSON response cannot encode.
+    lone = json.dumps({"bad\ud800": {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]}})
+    raw = lone.encode("utf-8", "surrogatepass")
+    (tmp_path / "u.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw + b"\0" * 8)
+    text = build_preview(tmp_path / "u.safetensors", "u.safetensors")["text"]
+    assert text.endswith("bad?: shape (2,), dtype F32")
+    assert JSONResponse({"preview": text}).body
+
+    # A .sas7bdat is opened as its own layout, and states its row count under another name.
+    class _Sas7bdat:
+        row_count = 9
+        nobs = 4
+        # pandas names the encoding a file states even when Python has no codec by that name.
+        inferred_encoding = "unknown (code=0)"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, rows):
+            # SAS7BDATReader leaves character columns as bytes in the file's own encoding.
+            return pd.DataFrame(
+                {
+                    "year": [1948, 1949, 1950],
+                    "city": [b"caf\xe9", ("a" + "\u00e9" * 1000).encode(), b"\xe9" * 2000],
+                }
+            )
+
+    opened = {}
+    monkeypatch.setattr(pd, "read_sas", lambda path, **kwargs: opened.update(kwargs) or _Sas7bdat())
+    (tmp_path / "a.sas7bdat").touch()
+    text = build_preview(tmp_path / "a.sas7bdat", "airline.sas7bdat")["text"]
+    assert text.startswith("9 rows x 2 columns") and opened["format"] == "sas7bdat"
+    # Python reserves the buffer for the lengths a sas7bdat claims, filled or not.
+    magic = bytes.fromhex("0" * 24 + "c2ea8160b31411cfbd92080009c7318c181f1011")
+
+    def sas7bdat(
+        header,
+        page,
+        order = "<",
+        aligned = False,
+        pad = b"",
+    ):
+        head = bytearray(magic + b"\x00" * 256)
+        head[35] = 0x33 if aligned else 0
+        head[37] = 1 if order == "<" else 0
+        at = 196 + (4 if aligned else 0)
+        head[at : at + 8] = struct.pack(f"{order}2I", header, page)
+        (tmp_path / "claim.sas7bdat").write_bytes(bytes(head) + pad)
+        return build_preview(tmp_path / "claim.sas7bdat", "big.sas7bdat")["text"]
+
+    claim = "67108864 bytes to read through before the first row"
+    assert sas7bdat(4096, 64 * 1024 * 1024) == claim
+    assert sas7bdat(64 * 1024 * 1024, 4096, order = ">", aligned = True) == claim
+
+    (tmp_path / "t.xpt").touch()
+    assert build_preview(tmp_path / "t.xpt", "trial.xpt")["text"].startswith("4 rows x 2 columns")
+    assert opened["format"] == "xport"
+
+    _Sas7bdat.inferred_encoding = "cp1251"
+    _Sas7bdat.read = lambda self, rows: pd.DataFrame({"city": [b"\xcc\xee\xf1\xea\xe2\xe0"]})
+    assert build_preview(tmp_path / "a.sas7bdat", "airline.sas7bdat")["text"].endswith(
+        "\n  \u041c\u043e\u0441\u043a\u0432\u0430"
+    )
+
+    # Below the 288 bytes already read, the next read runs to the end and the claim states nothing.
+    monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 100)
+    assert sas7bdat(287, 4096, pad = b"\x00" * 712) == (
+        "1000 bytes to read through before the first row"
+    )
+    # A value cut mid-character is not a single-byte encoding; a real one reads once UTF-8 fails.
+    assert text.endswith(
+        "\n  1948\tcaf\u00e9\n  1949\ta" + "\u00e9" * 79 + "...\n  1950\t" + "\u00e9" * 80 + "..."
+    )
+    monkeypatch.undo()
+
+
+def test_table_previews_stop_at_their_budgets(tmp_path, monkeypatch):
+    import zipfile
+
+    import numpy as np
+    import pandas as pd
+
+    from core import chat_attachment_preview as previews
+
+    _tables(tmp_path)
+
+    def preview(name):
+        return previews.build_preview(tmp_path / name, name)["text"]
+
+    # Parquet decodes a page at a time, checked in every row group the sample reaches.
+    monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 10)
+    text = preview("w.parquet")
+    assert (
+        text.startswith("7 rows x 2 columns\n") and "[First rows not read: a row group of " in text
+    )
+    monkeypatch.undo()
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    pq.write_table(pa.table({"s": ["x", "z" * 400]}), tmp_path / "two.parquet", row_group_size = 1)
+    monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 300)
+    assert "[First rows not read: a row group of " in (preview("two.parquet"))
+    # The group is the bound, not the file: 267 bytes under the cap in a file over it.
+    assert (tmp_path / "w.parquet").stat().st_size > 300
+    assert "first 5 rows:\n  Oslo\t1.5" in (preview("w.parquet"))
+    monkeypatch.undo()
+
+    # Labels are decoded with the first row, so the map's size gates them, the codes surviving.
+    def dta(
+        name,
+        frame,
+        version = 118,
+        **kwargs,
+    ):
+        frame.to_stata(tmp_path / name, version = version, write_index = False, **kwargs)
+        return tmp_path / name
+
+    for version, name in ((118, "coded.dta"), (114, "old.dta")):
+        dta(name, pd.DataFrame({"c": pd.Categorical(["yes", "no"])}), version = version)
+        assert preview(name).endswith("\n  yes\n  no"), name
+        monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 40)
+        text = preview(name)
+        assert text.endswith(" bytes to read through]") and "\n  1\n  0\n" in text, name
+        monkeypatch.undo()
+    # The stated table gates them, not the file: over the cap, its stated table under it.
+    monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 1000)
+    assert (tmp_path / "coded.dta").stat().st_size > 1000
+    assert preview("coded.dta").endswith("\n  yes\n  no")
+    monkeypatch.undo()
+
+    # Stata decodes its long-string table whole on the first row, so its map's size gates it.
+    dta("long.dta", pd.DataFrame({"s": ["x" * 2100]}))
+    monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 1000)
+    assert preview("long.dta") == ("long-string table of 2136 bytes, too large to read")
+
+    # Fixed-width strings state 15 bytes of long strings, so a file over the cap still samples.
+    dta("fixed.dta", pd.DataFrame({"s": ["y" * 244] * 40}))
+    assert (tmp_path / "fixed.dta").stat().st_size > 1000
+    assert preview("fixed.dta").startswith("unknown rows x 1 columns")
+    # A Stata file states the byte order its map is written in, and MSF is not the host's.
+    dta("msf.dta", pd.DataFrame({"n": [1, 2]}), byteorder = ">")
+    assert b"<byteorder>MSF" in (tmp_path / "msf.dta").read_bytes()[:200]
+    assert preview("msf.dta").startswith("unknown rows x 1 columns")
+    # A label and a value hold the same tags, so neither the first <map> nor the last is the real one.
+    dta(
+        "spoof.dta",
+        pd.DataFrame({"s": ["<map>" + "x" * 2100]}),
+        data_label = "<byteorder>MSF<map>" + "x" * 60,
+    )
+    raw = (tmp_path / "spoof.dta").read_bytes()
+    assert raw.count(b"<map>") == 3 and b"<byteorder>MSF" in raw[:200]
+    assert preview("spoof.dta") == ("long-string table of 2141 bytes, too large to read")
+    # pandas skips those tags unchecked, so a header this cannot follow states nothing.
+    for tag in (b"</header><map>", b"<stata_dta>"):
+        (tmp_path / "odd.dta").write_bytes(raw.replace(tag, tag.upper(), 1))
+        text = preview("odd.dta")
+        assert text.startswith("header in no known layout, and "), tag
+    # A release opening with its own number has no long-string table, so it samples over the cap.
+    dta("plain.dta", pd.DataFrame({"s": ["y" * 200] * 20}), version = 114)
+    assert (tmp_path / "plain.dta").read_bytes()[0] == 114
+    assert (tmp_path / "plain.dta").stat().st_size > 1000
+    assert "first 5 rows:" in preview("plain.dta")
+    monkeypatch.undo()
+
+    # ORC and Arrow materialise a whole stripe or batch, so size and stated rows both gate it.
+    for cap, value in (("MAX_SAMPLED_CELLS", 3), ("MAX_SAMPLED_BYTES", 10)):
+        monkeypatch.setattr(previews, cap, value)
+        for name in ("w.orc", "w.feather"):
+            text = preview(name)
+            assert "columns: city (" in text and "[First rows not read: " in text, (name, cap)
+        monkeypatch.undo()
+
+    # A column of lists states one cell a row: 500 of them take 200 MB in Feather, 492 MB in ORC.
+    import pyarrow.feather as feather
+    import pyarrow.orc as orc
+
+    nested = pa.table(
+        {"xs": pa.array([[0] * 400] * 4, type = pa.list_(pa.int64())), "n": pa.array([1, 2, 3, 4])}
+    )
+    orc.write_table(nested, str(tmp_path / "n.orc"))
+    feather.write_feather(nested, tmp_path / "n.feather")
+    for name in ("n.orc", "n.feather"):
+        text = preview(name)
+        assert (
+            text.startswith("4 rows x 2 columns") and "[First rows not read: 4 rows]" in text
+        ), name
+
+    # Compression hides a batch's size, so the shape the footer states refuses it instead.
+    wide = pa.table({f"c{index}": pa.array([0.0] * 5000) for index in range(4)})
+    feather.write_feather(wide, tmp_path / "z.feather", compression = "zstd")
+    monkeypatch.setattr(previews, "MAX_SAMPLED_CELLS", 1000)
+    text = preview("z.feather")
+    assert text.startswith("5000 rows x 4 columns") and "[First rows not read: 5000 rows]" in text
+    monkeypatch.undo()
+
+    # Feather v1 predates the IPC reader; an IPC stream has no footer, and is left to the tool.
+    feather.write_feather(pa.table({"n": [1, 2]}), tmp_path / "v1.feather", version = 1)
+    assert preview("v1.feather") == (
+        "2 rows x 1 columns\ncolumns: n (int64)\nfirst 2 rows:\n  1\n  2"
+    )
+    # Nothing states its schema separately, so a large one is left alone entirely.
+    monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 10)
+    assert previews.build_preview(tmp_path / "v1.feather", "v1.feather") is None
+    monkeypatch.undo()
+    with pa.OSFile(str(tmp_path / "s.arrow"), "wb") as sink:
+        with pa.ipc.new_stream(sink, wide.schema) as out:
+            out.write_table(wide)
+    assert previews.build_preview(tmp_path / "s.arrow", "s.arrow") is None
+
+    np.save(tmp_path / "big.npy", np.arange(10_000.0))
+    np.savez(tmp_path / "mixed.npz", wide = np.arange(10_000.0), small = np.zeros(3, np.int8))
+    monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 1000)
+    assert preview("big.npy") == ("array: shape (10000,), dtype float64")
+    assert preview("mixed.npz") == (
+        "2 arrays\nwide: shape (10000,), dtype float64\n"
+        "small: shape (3,), dtype int8, min 0, max 0, mean 0, values [0, 0, 0]"
+    )
+    monkeypatch.undo()
+    # The version decides the encoding: 3.0 is UTF-8, written for a name outside Latin-1.
+    monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 10)
+    for field, version in (("caf\u00e9", b"\x01\x00"), ("\u6e29\u5ea6", b"\x03\x00")):
+        np.save(tmp_path / f"{field}.npy", np.zeros(4000, dtype = [(field, "f8")]))
+        assert (tmp_path / f"{field}.npy").read_bytes()[6:8] == version, field
+        assert preview(f"{field}.npy") == (
+            f"array: shape (4000,), dtype [('{field}', '<f8')]"
+        ), field
+    monkeypatch.undo()
+
+    # A structured dtype of a thousand fields passes numpy's 10,000-byte refusal in a 21 KB file.
+    np.save(tmp_path / "wide.npy", np.zeros(1, dtype = [(f"f{i}", "f4") for i in range(1000)]))
+    np.savez(tmp_path / "wide.npz", w = np.zeros(1, dtype = [(f"f{i}", "f4") for i in range(1000)]))
+    for name in ("wide.npy", "wide.npz"):
+        assert "[('f0', '<f4')" in preview(name), name
+
+    with zipfile.ZipFile(tmp_path / "z.npz", "w", zipfile.ZIP_LZMA) as archive:
+        archive.writestr("packed.npy", np.arange(3).tobytes())
+    assert preview("z.npz") == ("1 arrays\npacked: packed.npy uses zip compression method 14")
+
+    # Unchecked, the two bytes after a header the file cannot hold read as an empty one.
+    (tmp_path / "b.safetensors").write_bytes(struct.pack("<Q", 4 << 30) + b"{}")
+    assert preview("b.safetensors") == ("header of 4294967296 bytes, too large to read")
+    (tmp_path / "b.npy").write_bytes(b"\x93NUMPY\x02\x00" + struct.pack("<I", 1 << 30) + b"{}")
+    monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 10)
+    assert preview("b.npy") == ("array: header of 1073741824 bytes, too large to read")
+    monkeypatch.undo()
+
+    # A long cell is cut where the row is built, not where the outline is clipped.
+    long_frame = pd.DataFrame({"note": ["z" * 200]})
+    long_frame.to_parquet(tmp_path / "long.parquet")
+    text = preview("long.parquet")
+    assert text.endswith("\n  " + "z" * 80 + "...")
 
 
 def test_attachment_upload_dedupes_and_renews(tmp_path, monkeypatch):

@@ -1,20 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Previews of chat attachments only the python tool can read, so the message already carries what
-the file holds: images become a PNG, documents their text, and other files a short outline.
-
-Every reader takes headers, schemas, the first rows, listings or small members, never the whole
-payload, so a large file costs about as much as a small one.
-"""
+"""Previews of chat attachments only the python tool can read: an image becomes a PNG, a document
+its text, anything else a short outline. Every reader is bounded by what the file states it would
+have to read, so a large file costs about as much as a small one."""
 
 from __future__ import annotations
 
+import ast
 import base64
 import bz2
 import codecs
 import gzip
 import io
+import json
 import lzma
 import mmap
 import multiprocessing as mp
@@ -36,16 +35,30 @@ MAX_TEXT_CHARS = 10 * 1024 * 1024
 MAX_IMAGE_SIDE = 1024
 MAX_XML_BYTES = 10 * 1024 * 1024
 LISTED_MEMBERS = 40
+LISTED_VALUES = 12
+CELL_CHARS = 80
+SAMPLE_ROWS = 5
 SCANNED_MEMBERS = 1000
 SMALL_MEMBER_BYTES = 1500
 MEMBER_TEXT_CHARS = 1200
 # Reaching a tar member means decompressing everything before it.
 MAX_SCANNED_BYTES = 64 * 1024 * 1024
+# What sampling materialises: a whole stripe, batch, array, row group or long-string table.
+MAX_SAMPLED_BYTES = 16 * 1024 * 1024
+MAX_SAMPLED_CELLS = 2_000_000
+MAX_HEADER_BYTES = 16 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
 # Pages without text add nothing to the text cap, so the walk has its own.
 MAX_DOCUMENT_PAGES = 1000
 # MuPDF inflates a zip member whole, to the size the central directory states.
 MAX_DOCUMENT_MEMBER_BYTES = 128 * 1024 * 1024
+_STATA_HEADER = {b"117": ("H", "I", "B"), b"118": ("H", "Q", "H"), b"119": ("I", "Q", "H")}
+# The releases before 117 open with their own number and have no long strings.
+_STATA_PLAIN_RELEASES = frozenset(range(102, 116))
+_SAS_MAGIC = (
+    b"\x00" * 12
+    + b"\xc2\xea\x81\x60\xb3\x14\x11\xcf\xbd\x92\x08\x00\x09\xc7\x31\x8c\x18\x1f\x10\x11"
+)
 # ZipFile parses the whole central directory; real archives use about 80-170 bytes an entry.
 MAX_ZIP_DIRECTORY_BYTES = 4 * 1024 * 1024
 # MuPDF lays out one long paragraph in quadratic time: 128k characters take 18 s.
@@ -134,6 +147,8 @@ def build_preview(path: Path, filename: str) -> dict | None:
 
 
 def _clip(text: str, limit: int, marker: str) -> str:
+    # Names and values out of a file can hold lone surrogates, which JSON cannot encode.
+    text = text.encode("utf-8", "replace").decode("utf-8")
     return text if len(text) <= limit else text[:limit] + f"\n[Truncated: {marker}]"
 
 
@@ -154,12 +169,14 @@ def _text(ext: str, text: str) -> dict | None:
     }
 
 
-def _as_text(data: bytes) -> str | None:
-    # A read cut mid-character leaves a partial sequence at the end, which is not an error.
+def _as_text(data: bytes, complete: bool = False) -> str | None:
+    # A read cut mid-character is not an error; complete, the same bytes are another encoding.
     try:
-        text = codecs.getincrementaldecoder("utf-8")().decode(data, final = False)
+        text = codecs.getincrementaldecoder("utf-8")().decode(data, final = complete)
     except UnicodeDecodeError:
-        return None
+        if not complete:
+            return None
+        text = data.decode("latin-1")
     printable = sum(ch.isprintable() or ch in "\n\r\t" for ch in text)
     return text if text and printable >= 0.95 * len(text) else None
 
@@ -390,9 +407,8 @@ class _Capped(io.RawIOBase):
 
 
 def _tar_members(path: Path) -> str:
-    # One streaming pass over a capped decompressed stream: tarfile reads extended headers into
-    # memory and skips member data by reading it, so the cap bounds both. Names that are not UTF-8
-    # are replaced rather than surrogate-escaped, which the JSON response cannot encode.
+    # tarfile reads extended headers into memory and skips member data by reading it, so the cap
+    # bounds both. A name that is not UTF-8 reads better replaced than surrogate-escaped.
     with path.open("rb") as handle:
         magic = handle.read(6)
     opener = next((opener for prefix, opener in _TAR_COMPRESSION if magic.startswith(prefix)), open)
@@ -431,6 +447,293 @@ def _stream(path: Path, ext: str, filename: str) -> dict:
     return {"kind": "text", "label": ext[1:].upper(), "text": text}
 
 
-_OUTLINES: dict[str, Callable[[Path], str]] = dict.fromkeys(
-    (".zip", ".jar", ".whl", ".apk"), _zip_members
-)
+def _cell(value) -> str:
+    # A SAS reader hands back bytes for character columns as well as for binary ones.
+    if isinstance(value, bytes):
+        # Reading a cut value as a complete one mangles the cell, so it is the last resort.
+        prefix = value[:SMALL_MEMBER_BYTES]
+        text = _as_text(prefix, complete = len(value) <= SMALL_MEMBER_BYTES) or _as_text(
+            prefix, complete = True
+        )
+        if text is None:
+            return f"<{len(value)}-byte blob>"
+    else:
+        text = str(value)
+    return text if len(text) <= CELL_CHARS else text[:CELL_CHARS] + "..."
+
+
+def _frame(
+    frame,
+    rows: int | None,
+    note: str = "",
+) -> str:
+    lines = [f"{'unknown' if rows is None else rows} rows x {frame.shape[1]} columns"]
+    lines.append(
+        "columns: "
+        + ", ".join(f"{column} ({dtype})" for column, dtype in frame.dtypes.astype(str).items())
+    )
+    if len(frame):
+        lines.append(f"first {len(frame)} rows:")
+        lines += ["  " + "\t".join(map(_cell, row)) for row in frame.itertuples(index = False)]
+    return "\n".join(lines + ([note] if note else []))
+
+
+def _over_budget(schema, rows: int) -> bool:
+    """Whether a sample would materialise more than the budget. A nested column states no size: an
+    8 KB Feather file of 500 lists took 200 MB to sample, an ORC one 492 MB."""
+    import pyarrow as pa
+    return rows * len(schema) > MAX_SAMPLED_CELLS or any(
+        pa.types.is_nested(field.type) for field in schema
+    )
+
+
+def _parquet(path: Path) -> str:
+    import pyarrow.parquet as pq
+    with pq.ParquetFile(path) as file:
+        meta = file.metadata
+        # What costs is one large value, and every row group states its uncompressed size.
+        wanted, largest = SAMPLE_ROWS, 0
+        for index in range(meta.num_row_groups):
+            if wanted <= 0:
+                break
+            group = meta.row_group(index)
+            largest = max(largest, group.total_byte_size)
+            wanted -= group.num_rows
+        if largest > MAX_SAMPLED_BYTES:
+            note = f"[First rows not read: a row group of {largest} bytes]"
+            return _frame(file.schema_arrow.empty_table().to_pandas(), meta.num_rows, note)
+        batch = next(file.iter_batches(batch_size = SAMPLE_ROWS), None)
+        table = batch if batch is not None else file.schema_arrow.empty_table()
+        return _frame(table.to_pandas(), meta.num_rows)
+
+
+def _table(path: Path, layout: str) -> str:
+    """An Arrow IPC or ORC file: both materialise a whole batch or stripe, and state no size."""
+    import pyarrow.dataset as ds
+
+    data = ds.dataset(str(path), format = layout)
+    size = path.stat().st_size
+    # Counting walks every batch's metadata, which on a large file is the file itself.
+    if size > MAX_SAMPLED_BYTES:
+        note = f"[First rows not read: {size} bytes]"
+        return _frame(data.schema.empty_table().to_pandas(), None, note)
+    rows = data.count_rows()
+    if _over_budget(data.schema, rows):
+        note = f"[First rows not read: {rows} rows]"
+        return _frame(data.schema.empty_table().to_pandas(), rows, note)
+    return _frame(data.head(SAMPLE_ROWS).to_pandas(), rows)
+
+
+def _arrow(path: Path) -> str:
+    import pyarrow as pa
+    try:
+        return _table(path, "arrow")
+    except pa.ArrowInvalid:
+        # Feather v1: uncompressed, and not openable by the IPC reader, so its size is its cost.
+        import pyarrow.feather as feather
+
+        if path.stat().st_size > MAX_SAMPLED_BYTES:
+            raise
+        table = feather.read_table(path)
+        return _frame(table.slice(0, SAMPLE_ROWS).to_pandas(), table.num_rows)
+
+
+def _stata_tables(path: Path) -> tuple[int, int | None] | None:
+    """What the file's map states its long-string and value-label tables hold: zero where the
+    release has none, None where it states no size, and None for the pair when the header is not
+    one this can walk, which a dataset label holding the same tags is why it is walked at all."""
+    with path.open("rb") as handle:
+        window = handle.read(8192)
+    # A release opening with its own number has no long-string table, and no map for its labels.
+    if window[:1] and window[0] in _STATA_PLAIN_RELEASES:
+        return 0, None
+    if not window.startswith(b"<stata_dta><header><release>"):
+        return None
+    widths = _STATA_HEADER.get(window[28:31])
+    if widths is None:
+        return None
+    variables, observations, label = widths
+    order = ">" if window[52:55] == b"MSF" else "<"
+    at = 55 + len("</byteorder><K>") + struct.calcsize(variables) + len("</K><N>")
+    at += struct.calcsize(observations) + len("</N><label>")
+    if len(window) - at < struct.calcsize(label):
+        return None
+    (stated,) = struct.unpack_from(order + label, window, at)
+    at += struct.calcsize(label) + stated + len("</label><timestamp>")
+    if at >= len(window):
+        return None
+    at += 1 + window[at] + len("</timestamp></header><map>")
+    if window[at - 5 : at] != b"<map>" or len(window) - at < 112:
+        return None
+    offsets = struct.unpack_from(f"{order}14Q", window, at)
+    return max(offsets[11] - offsets[10], 0), max(offsets[12] - offsets[11], 0)
+
+
+def _stata(path: Path) -> str:
+    import pandas as pd
+
+    # pandas decodes the long-string table whole on the first row read, and every value label with
+    # it. Labels too large only leave the values as their codes; a long-string table leaves no rows.
+    size = path.stat().st_size
+    tables = _stata_tables(path)
+    long_strings, value_labels = (None, None) if tables is None else tables
+    if long_strings is None:
+        if size > MAX_SAMPLED_BYTES:
+            return f"header in no known layout, and {size} bytes to read through"
+        long_strings = 0
+    if long_strings > MAX_SAMPLED_BYTES:
+        return f"long-string table of {long_strings} bytes, too large to read"
+    labels = size if value_labels is None else value_labels
+    note = (
+        ""
+        if labels <= MAX_SAMPLED_BYTES
+        else f"[Value labels not read: {labels} bytes to read through]"
+    )
+    # StataReader counts observations only privately, so the outline leaves the count out.
+    with pd.read_stata(path, iterator = True, convert_categoricals = not note) as reader:
+        return _frame(reader.read(SAMPLE_ROWS), None, note)
+
+
+def _sas_claimed_bytes(path: Path) -> int | None:
+    """The largest read a sas7bdat header asks for, or None when it states none. Python reserves the
+    buffer before pandas rejects it: a 5,120-byte file claiming a 64 MiB page costs 70 MB."""
+    with path.open("rb") as handle:
+        window = handle.read(288)
+    if len(window) < 288 or not window.startswith(_SAS_MAGIC):
+        return None
+    order = "<" if window[37:38] == b"\x01" else ">"
+    at = 196 + (4 if window[35:36] == b"3" else 0)
+    header, page = struct.unpack_from(f"{order}2I", window, at)
+    # pandas reads the rest of the header as `header - 288`, which below 288 is a read to the end.
+    return None if header < 288 else max(header, page)
+
+
+def _sas(path: Path, layout: str) -> str:
+    import pandas as pd
+
+    if layout == "sas7bdat":
+        claimed = _sas_claimed_bytes(path)
+        claimed = path.stat().st_size if claimed is None else claimed
+        if claimed > MAX_SAMPLED_BYTES:
+            return f"{claimed} bytes to read through before the first row"
+    with pd.read_sas(path, format = layout, iterator = True, chunksize = SAMPLE_ROWS) as reader:
+        rows = reader.nobs if layout == "xport" else reader.row_count
+        frame = reader.read(SAMPLE_ROWS)
+        named = _codec(getattr(reader, "inferred_encoding", None))
+    if named is not None:
+        # Character columns come back as bytes; the file names the encoding they are in.
+        frame = frame.map(
+            lambda value: value.decode(named, "replace") if isinstance(value, bytes) else value
+        )
+    return _frame(frame, rows)
+
+
+def _codec(name: str | None) -> str | None:
+    try:
+        return codecs.lookup(name).name if name else None
+    except LookupError:  # a SAS file can name an encoding by a code Python has no name for
+        return None
+
+
+def _array_line(name: str, array) -> str:
+    import numpy as np
+
+    line = f"{name}: shape {tuple(array.shape)}, dtype {array.dtype}"
+    if array.size and array.dtype.kind in "biuf":
+        line += f", min {array.min():.6g}, max {array.max():.6g}, mean {array.mean():.6g}"
+    if array.size <= LISTED_VALUES:
+        line += f", values {np.asarray(array).tolist()}"
+    return line
+
+
+def _array_header(handle: BinaryIO) -> str:
+    """What an array too large to load says about itself, from the front of its .npy stream."""
+    import numpy as np
+
+    # numpy reads headers for 1.0 and 2.0 only, yet writes 3.0 for field names outside Latin-1.
+    version = np.lib.format.read_magic(handle)
+    length_format = "<H" if version[0] == 1 else "<I"
+    (length,) = struct.unpack(length_format, handle.read(struct.calcsize(length_format)))
+    if length > MAX_HEADER_BYTES:
+        return f"header of {length} bytes, too large to read"
+    header = ast.literal_eval(handle.read(length).decode("utf-8" if version[0] > 2 else "latin-1"))
+    return f"shape {tuple(header['shape'])}, dtype {np.dtype(header['descr'])}"
+
+
+def _npy(path: Path) -> str:
+    import numpy as np
+    if path.stat().st_size > MAX_SAMPLED_BYTES:
+        with path.open("rb") as handle:
+            return f"array: {_array_header(handle)}"
+    # A wide structured dtype passes numpy's 10,000-byte header refusal in an otherwise small file.
+    return _array_line("array", np.load(path, allow_pickle = False, max_header_size = MAX_HEADER_BYTES))
+
+
+def _npz(path: Path) -> str:
+    import numpy as np
+    with _open_zip(path) as archive:
+        names = [info.filename for info in archive.infolist() if info.filename.endswith(".npy")]
+        lines = [f"{len(names)} arrays"]
+        for name in names[:LISTED_MEMBERS]:
+            label = name[: -len(".npy")]
+            try:
+                data = _read_member(archive, name, MAX_SAMPLED_BYTES + 1)
+            except ValueError as exc:
+                lines.append(f"{label}: {exc}")
+                continue
+            if len(data) > MAX_SAMPLED_BYTES:
+                lines.append(f"{label}: {_array_header(io.BytesIO(data))}")
+            else:
+                lines.append(
+                    _array_line(
+                        label,
+                        np.load(
+                            io.BytesIO(data), allow_pickle = False, max_header_size = MAX_HEADER_BYTES
+                        ),
+                    )
+                )
+    return "\n".join(lines)
+
+
+def _safetensors(path: Path) -> str:
+    with path.open("rb") as handle:
+        (length,) = struct.unpack("<Q", handle.read(8))
+        if length > MAX_HEADER_BYTES:
+            return f"header of {length} bytes, too large to read"
+        header = json.loads(handle.read(length))
+    metadata = header.pop("__metadata__", None)
+    parameters = sum(_count(entry["shape"]) for entry in header.values())
+    lines = [
+        f"{len(header)} tensors, {parameters} parameters"
+        + (f", metadata {metadata}" if metadata else "")
+    ]
+    lines += [
+        f"{name}: shape {tuple(entry['shape'])}, dtype {entry['dtype']}"
+        for name, entry in list(header.items())[:LISTED_MEMBERS]
+    ]
+    return "\n".join(lines)
+
+
+def _count(shape: Iterable[int]) -> int:
+    total = 1
+    for dimension in shape:
+        total *= dimension
+    return total
+
+
+_OUTLINES: dict[str, Callable[[Path], str]] = {
+    ext: builder
+    for exts, builder in (
+        (".zip .jar .whl .apk", _zip_members),
+        (".parquet", _parquet),
+        (".feather .arrow", _arrow),
+        (".orc", lambda path: _table(path, "orc")),
+        (".dta", _stata),
+        (".sas7bdat", lambda path: _sas(path, "sas7bdat")),
+        (".xpt", lambda path: _sas(path, "xport")),
+        (".npy", _npy),
+        (".npz", _npz),
+        (".safetensors", _safetensors),
+    )
+    for ext in exts.split()
+}
