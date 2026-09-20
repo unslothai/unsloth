@@ -193,9 +193,8 @@ const CONTROL_SURFACE =
 const INPUT_WIDTH_CLASS = "w-[84px] shrink-0";
 // A select holds one of a known set of values, so it sizes to that value.
 const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
-// 14px each side optically. The chevron's stroke fills 14 of its 24 viewBox units, so its
-// box carries ~3px of slack; pr-[11px] pays that back.
-const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${SELECT_WIDTH_CLASS} ${CONTROL_SURFACE} pl-3.5 pr-[11px] py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
+// .panel-select-trigger carries the surface, padding and type; this adds the layout.
+const SELECT_TRIGGER_CLASS = `panel-select-trigger grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${SELECT_WIDTH_CLASS} [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
 // .panel-field carries the surface and the value's alignment; the field adds its size.
 const NUMBER_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS}`;
 const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;

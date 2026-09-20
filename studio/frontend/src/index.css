@@ -1492,9 +1492,20 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Important like .panel-input-group: these all override a base
-	   SelectTrigger class of the same weight. */
+	   SelectTrigger class of the same weight. 14px each side optically:
+	   the chevron's stroke fills 14 of its 24 viewBox units, so its box
+	   carries ~3px of slack and pr-[11px] pays that back. */
 	.panel-select-trigger {
 		@apply rounded-full! border-transparent! bg-[var(--panel-input-surface)]! py-0! pl-3.5! pr-[11px]! text-ui-13! font-medium! text-nav-fg shadow-none! hover:bg-[var(--panel-input-surface-hover)]! focus-visible:ring-0!;
+	}
+
+	/* These controls suppress the ring, so keyboard focus would otherwise
+	   land with nothing drawn. Same soft 1px halo as .composer-pill-btn. */
+	.panel-field:focus-visible,
+	.panel-select-trigger:focus-visible,
+	.panel-number-input:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 1px var(--ring-soft) !important;
 	}
 
 	/* Switch — unsloth-green track when active, slider-gray thumb in
