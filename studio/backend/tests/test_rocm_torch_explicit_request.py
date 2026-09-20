@@ -320,9 +320,12 @@ def test_the_cuda_repair_stands_down_under_the_request(stack, monkeypatch, rocm_
     _mixed_host(stack, monkeypatch, rocm_gpu = rocm_gpu, archs = archs, display = True)
     probed = {"ran": False}
     monkeypatch.setattr(
-        stack, "_probe_torch_runtime",
-        lambda *a, **k: (probed.__setitem__("ran", True),
-                         (True, True, "2.11.0+rocm7.0", True, False))[1],
+        stack,
+        "_probe_torch_runtime",
+        lambda *a, **k: (
+            probed.__setitem__("ran", True),
+            (True, True, "2.11.0+rocm7.0", True, False),
+        )[1],
     )
     stack._ensure_cuda_torch()
     assert probed["ran"] is False
@@ -751,8 +754,14 @@ def _route_shell(probe: str, inferred: str, pci_ok: bool) -> bool:
         ("gfx906", "", True, True),
         ("gfx906\ngfx1010", "", True, False),
     ],
-    ids = ["no-index", "generic-wheel", "inferable-no-runtime", "declared-without-a-card",
-           "gfx906-sole-arch", "gfx906-mixed-amd"],
+    ids = [
+        "no-index",
+        "generic-wheel",
+        "inferable-no-runtime",
+        "declared-without-a-card",
+        "gfx906-sole-arch",
+        "gfx906-mixed-amd",
+    ],
 )
 def test_the_request_needs_a_card_whose_arch_an_index_serves(probe, inferred, pci_ok, routes):
     """Presence is not the bar: an arch no index can serve must never depose a card that can,
@@ -763,10 +772,26 @@ def test_the_request_needs_a_card_whose_arch_an_index_serves(probe, inferred, pc
 def _mixed_host(stack, monkeypatch, **over):
     """The host this feature exists for, stated by difference."""
     o = dict(
-        request = True, nvidia = True, rocm_gpu = True, archs = ["gfx1100"], devices = None,
-        masked = None, kfd = [], wsl = False, display = None, miscomputing = False,
-        machine = "x86_64", windows = False, macos = False, backend = "", inferred = None,
-        rocm = (6, 4), torch = "2.13.0+cu130", declared = None, pin = None, pin_url = None,
+        request = True,
+        nvidia = True,
+        rocm_gpu = True,
+        archs = ["gfx1100"],
+        devices = None,
+        masked = None,
+        kfd = [],
+        wsl = False,
+        display = None,
+        miscomputing = False,
+        machine = "x86_64",
+        windows = False,
+        macos = False,
+        backend = "",
+        inferred = None,
+        rocm = (6, 4),
+        torch = "2.13.0+cu130",
+        declared = None,
+        pin = None,
+        pin_url = None,
         masks = {},
     )
     o.update(over)
@@ -777,13 +802,21 @@ def _mixed_host(stack, monkeypatch, **over):
     monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
     if o["request"]:
         monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
-    for _var in ("UNSLOTH_ROCM_GFX_ARCH", "UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY",
-                 "UNSLOTH_ROCM_TORCH_INSTALLED", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES",
-                 "CUDA_VISIBLE_DEVICES"):
+    for _var in (
+        "UNSLOTH_ROCM_GFX_ARCH",
+        "UNSLOTH_TORCH_INDEX_URL",
+        "UNSLOTH_TORCH_INDEX_FAMILY",
+        "UNSLOTH_ROCM_TORCH_INSTALLED",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+    ):
         monkeypatch.delenv(_var, raising = False)
-    for _var, _val in (("UNSLOTH_ROCM_GFX_ARCH", o["declared"]),
-                       ("UNSLOTH_TORCH_INDEX_FAMILY", o["pin"]),
-                       ("UNSLOTH_TORCH_INDEX_URL", o["pin_url"])):
+    for _var, _val in (
+        ("UNSLOTH_ROCM_GFX_ARCH", o["declared"]),
+        ("UNSLOTH_TORCH_INDEX_FAMILY", o["pin"]),
+        ("UNSLOTH_TORCH_INDEX_URL", o["pin_url"]),
+    ):
         if _val is not None:
             monkeypatch.setenv(_var, _val)
     for _var, _val in o["masks"].items():
@@ -803,18 +836,22 @@ def _mixed_host(stack, monkeypatch, **over):
     monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda *a, **k: o["inferred"])
     monkeypatch.setattr(stack, "_detect_rocm_version", lambda *a, **k: o["rocm"])
     monkeypatch.setattr(
-        stack, "_physical_amd_gfx_archs",
+        stack,
+        "_physical_amd_gfx_archs",
         lambda: list(o["archs"]) or ([o["inferred"]] if o["inferred"] else []),
     )
     # The masked list is what a probe that HONOURS the mask returns; ignore_visible_masks asks
     # for the machine before any mask, which is the distinction the ROCr layer rests on.
     monkeypatch.setattr(
-        stack, "_detect_amd_gfx_codes",
-        lambda **k: list(devices if o["masked"] is None or k.get("ignore_visible_masks")
-                         else o["masked"]),
+        stack,
+        "_detect_amd_gfx_codes",
+        lambda **k: list(
+            devices if o["masked"] is None or k.get("ignore_visible_masks") else o["masked"]
+        ),
     )
     monkeypatch.setattr(
-        stack, "_probe_torch_runtime",
+        stack,
+        "_probe_torch_runtime",
         lambda *a, **k: (True, True, o["torch"], "rocm" in o["torch"], ""),
     )
     # The pin readers are deliberately NOT stubbed: the environment above is already
@@ -823,10 +860,24 @@ def _mixed_host(stack, monkeypatch, **over):
     return o
 
 
-def _viable(stack, monkeypatch, *, corroborated: bool, archs: list,
-            miscomputing = False, machine: str = "x86_64"):
-    _mixed_host(stack, monkeypatch, request = False, rocm_gpu = corroborated, archs = archs,
-                miscomputing = miscomputing, machine = machine)
+def _viable(
+    stack,
+    monkeypatch,
+    *,
+    corroborated: bool,
+    archs: list,
+    miscomputing = False,
+    machine: str = "x86_64",
+):
+    _mixed_host(
+        stack,
+        monkeypatch,
+        request = False,
+        rocm_gpu = corroborated,
+        archs = archs,
+        miscomputing = miscomputing,
+        machine = machine,
+    )
     return stack._forced_rocm_route_is_viable()
 
 
@@ -1097,8 +1148,15 @@ def _route_script(
         (["gfx1100", "gfx1010"], "1,0", False),
         (["gfx1100", "gfx1010"], "0,1", True),
     ],
-    ids = ["selected-unroutable", "selected-routable", "prefix-resolves", "prefix-unroutable",
-           "gfx906-not-sole-arch", "mask-head-second-card", "mask-head-first-card"],
+    ids = [
+        "selected-unroutable",
+        "selected-routable",
+        "prefix-resolves",
+        "prefix-unroutable",
+        "gfx906-not-sole-arch",
+        "mask-head-second-card",
+        "mask-head-first-card",
+    ],
 )
 def test_the_shell_route_judges_the_card_the_mask_selects(physical, mask, routes):
     """install.sh's half of the rule above, on the same host shapes."""
@@ -1179,17 +1237,25 @@ def test_the_same_kernel_topology_still_yields_for_the_routable_card():
     )
 
 
-@pytest.mark.parametrize("mask, routes", [("7", False), ("1", True)],
-                         ids = ["mask-resolves-nothing", "mask-names-a-device"])
+@pytest.mark.parametrize(
+    "mask, routes",
+    [("7", False), ("1", True)],
+    ids = ["mask-resolves-nothing", "mask-names-a-device"],
+)
 def test_a_declared_arch_does_not_answer_over_the_mask(mask, routes):
     """UNSLOTH_ROCM_GFX_ARCH takes an early return above the mask resolution, so a declared
     arch beside HIP_VISIBLE_DEVICES=7 approved the swap where HIP exposes no device at all.
     The control keeps the escape hatch: the same declaration over a mask naming a device this
     host has must still depose CUDA."""
-    assert _route_shell_masked(
-        ["gfx1100", "gfx1010"], devices = ["gfx1100", "gfx1010"],
-        UNSLOTH_ROCM_GFX_ARCH = "gfx1100", HIP_VISIBLE_DEVICES = mask,
-    ) is routes
+    assert (
+        _route_shell_masked(
+            ["gfx1100", "gfx1010"],
+            devices = ["gfx1100", "gfx1010"],
+            UNSLOTH_ROCM_GFX_ARCH = "gfx1100",
+            HIP_VISIBLE_DEVICES = mask,
+        )
+        is routes
+    )
 
 
 def test_the_rocr_layer_is_resolved_the_same_way():
@@ -1285,9 +1351,18 @@ def _viable_masked(
     **mask: str,
 ) -> bool:
     """_forced_rocm_route_is_viable on a masked host, with the resolution left live."""
-    _mixed_host(stack, monkeypatch, request = False, archs = devices, devices = devices,
-                masked = masked, inferred = inferred, rocm = rocm, declared = declared,
-                masks = mask)
+    _mixed_host(
+        stack,
+        monkeypatch,
+        request = False,
+        archs = devices,
+        devices = devices,
+        masked = masked,
+        inferred = inferred,
+        rocm = rocm,
+        declared = declared,
+        masks = mask,
+    )
     return stack._forced_rocm_route_is_viable()
 
 
@@ -1308,17 +1383,22 @@ def _viable_masked(
         (["gfx1033", "gfx1100"], "0", False),
         (["gfx1033", "gfx1100"], "1", True),
     ],
-    ids = ["selected-unroutable", "selected-routable", "past-last-device", "uuid",
-           "in-range-second", "selected-miscomputing", "healthy-sibling"],
+    ids = [
+        "selected-unroutable",
+        "selected-routable",
+        "past-last-device",
+        "uuid",
+        "in-range-second",
+        "selected-miscomputing",
+        "healthy-sibling",
+    ],
 )
 def test_the_python_route_judges_the_card_the_mask_selects(
     stack, monkeypatch, devices, mask, viable
 ):
     """Each row is paired with the same host masked the other way, so a fix that answered
     "never viable" fails here."""
-    assert _viable_masked(
-        stack, monkeypatch, devices = devices, HIP_VISIBLE_DEVICES = mask
-    ) is viable
+    assert _viable_masked(stack, monkeypatch, devices = devices, HIP_VISIBLE_DEVICES = mask) is viable
 
 
 def test_a_mask_exposing_no_device_is_not_a_viable_route(stack, monkeypatch):
@@ -1373,8 +1453,7 @@ def test_an_explicit_pin_of_another_family_outranks_the_request(stack, monkeypat
 
 @pytest.mark.parametrize(
     "pin_url, reached",
-    [("https://download.pytorch.org/whl/rocm6.4", True),
-     ("https://mirror.example/simple", False)],
+    [("https://download.pytorch.org/whl/rocm6.4", True), ("https://mirror.example/simple", False)],
     ids = ["rocm-pin-agrees", "unknown-family-pin"],
 )
 def test_a_pin_of_another_family_is_the_only_pin_that_outranks_the_request(
@@ -1383,9 +1462,10 @@ def test_a_pin_of_another_family_is_the_only_pin_that_outranks_the_request(
     """A pin naming ROCm agrees with the request and must not be swept up by the CPU/CUDA
     check. An unknown leaf was applied verbatim at install time, so _ensure_rocm_torch
     declines to judge it and returns before any vendor gate -- pre-existing, not added here."""
-    assert _rocm_repair_reached(
-        stack, monkeypatch, archs = ["gfx1100"], viable = True, pin_url = pin_url
-    ) is reached
+    assert (
+        _rocm_repair_reached(stack, monkeypatch, archs = ["gfx1100"], viable = True, pin_url = pin_url)
+        is reached
+    )
 
 
 def test_the_two_mask_layers_compose_in_the_order_the_runtime_reads_them():
@@ -1599,8 +1679,13 @@ def test_a_declared_arch_over_a_mask_that_resolves_is_still_viable_in_python(sta
     """The control, and the reason the resolution is gated on a mask being set at all: the ordinary
     declared-arch host has none, and must still route without paying for a probe."""
     assert (
-        _viable_masked(stack, monkeypatch, devices = ["gfx1100", "gfx1010"],
-                       declared = "gfx1100", HIP_VISIBLE_DEVICES = "1")
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1100", "gfx1010"],
+            declared = "gfx1100",
+            HIP_VISIBLE_DEVICES = "1",
+        )
         is True
     )
 
@@ -1704,8 +1789,14 @@ def test_a_declared_arch_resolves_its_mask_against_the_unmasked_list(stack, monk
     """With no KFD topology (WSL) the declared-arch path falls back to rocminfo, and rocminfo is
     the one probe ROCR_VISIBLE_DEVICES renumbers."""
     assert (
-        _viable_masked(stack, monkeypatch, devices = ["gfx1100", "gfx1010"],
-                       masked = ["gfx1010"], declared = "gfx1100", ROCR_VISIBLE_DEVICES = "1")
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1100", "gfx1010"],
+            masked = ["gfx1010"],
+            declared = "gfx1100",
+            ROCR_VISIBLE_DEVICES = "1",
+        )
         is True
     )
 
@@ -1832,18 +1923,30 @@ def test_a_uuid_in_the_rocr_mask_is_a_rejection_only_where_it_is_ambiguous(
     """ROCR_VISIBLE_DEVICES may MIX ordinals and UUIDs, and a UUID names a device this
     installer cannot place -- but where every ordinal gives the same arch there is nothing
     ambiguous about it, which is why the branch asks about unlike adapters."""
-    assert _viable_masked(
-        stack, monkeypatch, devices = devices,
-        ROCR_VISIBLE_DEVICES = _UUID_MASK, HIP_VISIBLE_DEVICES = "0",
-    ) is viable
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = devices,
+            ROCR_VISIBLE_DEVICES = _UUID_MASK,
+            HIP_VISIBLE_DEVICES = "0",
+        )
+        is viable
+    )
 
 
 def test_the_named_arch_the_message_offers_resolves_the_ambiguity(stack, monkeypatch):
     """The second control: the message names UNSLOTH_ROCM_GFX_ARCH as the way through, so setting
     it must restore the route rather than leave the host declined for good."""
     assert (
-        _viable_masked(stack, monkeypatch, devices = ["gfx1010", "gfx1100"], declared = "gfx1100",
-                       ROCR_VISIBLE_DEVICES = _UUID_MASK, HIP_VISIBLE_DEVICES = "0")
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1010", "gfx1100"],
+            declared = "gfx1100",
+            ROCR_VISIBLE_DEVICES = _UUID_MASK,
+            HIP_VISIBLE_DEVICES = "0",
+        )
         is True
     )
 
@@ -1995,10 +2098,17 @@ def test_a_feature_suffix_changes_the_spelling_and_not_the_answer(
     into UNSLOTH_ROCM_GFX_ARCH. _amd_arch_index_url keys on the bare arch, so the suffixed
     form answered None and declined a route the plain spelling gets on the same silicon. The
     third row is the control: normalising the SPELLING must not normalise the ANSWER."""
-    assert _viable_masked(
-        stack, monkeypatch, devices = [arch], inferred = declared, rocm = (0, 0),
-        declared = declared,
-    ) is viable
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = [arch],
+            inferred = declared,
+            rocm = (0, 0),
+            declared = declared,
+        )
+        is viable
+    )
 
 
 # ── The feature suffix rocminfo prints, which users copy verbatim ───────────────────────
@@ -2176,9 +2286,7 @@ def test_the_versionless_reroute_family_comes_from_the_selected_card(
     cross-family pair answered empty, the reroute never fired and the downgrade guard
     restored CUDA -- the request ignored on exactly the host that resolved a routable
     target. Probe-resolved only: a declared arch cannot name the card the runtime selected."""
-    assert _reroute_family_for_target(
-        inventory = inventory, target = target, source = source
-    ) == family
+    assert _reroute_family_for_target(inventory = inventory, target = target, source = source) == family
 
 
 def test_a_disqualified_family_is_not_put_back_by_the_target():
@@ -2465,30 +2573,39 @@ def test_the_index_selector_does_not_inherit_a_previous_target(stack):
     ), "the selector must clear the target SOURCE on entry too"
 
 
-@pytest.mark.parametrize("miscomputing, viable", [(True, False), (False, True)],
-                         ids = ["every-arch-computes-wrong", "control-healthy-host"])
+@pytest.mark.parametrize(
+    "miscomputing, viable",
+    [(True, False), (False, True)],
+    ids = ["every-arch-computes-wrong", "control-healthy-host"],
+)
 def test_a_host_gate_decides_when_no_probe_can_name_a_device(
     stack, monkeypatch, miscomputing, viable
 ):
     """_miscomputing_arch_host is the only thing declining when no target resolves -- a Steam
     Deck with no rocminfo, where the narrower target refusal never runs and the fallback would
     otherwise approve the swap off the inventory."""
-    _mixed_host(stack, monkeypatch, request = False, archs = ["gfx1033"], devices = [],
-                miscomputing = miscomputing)
+    _mixed_host(
+        stack, monkeypatch, request = False, archs = ["gfx1033"], devices = [], miscomputing = miscomputing
+    )
     assert stack._forced_rocm_route_is_viable() is viable
 
 
-@pytest.mark.parametrize("request_set, sees_amd", [("", False), ("UNSLOTH_FORCE_ROCM_TORCH=1", True)],
-                         ids = ["default-nvidia-wins", "request-opens-the-probe"])
+@pytest.mark.parametrize(
+    "request_set, sees_amd",
+    [("", False), ("UNSLOTH_FORCE_ROCM_TORCH=1", True)],
+    ids = ["default-nvidia-wins", "request-opens-the-probe"],
+)
 def test_the_shell_probe_hides_the_amd_card_until_it_is_asked(request_set, sees_amd):
     """install.sh's half of the gate _has_rocm_gpu carries in Python: the AMD probe returns
     early on a usable NVIDIA GPU unless this run asked for ROCm."""
-    script = "\n".join([
-        _shell_function("_rocm_torch_explicitly_requested"),
-        _shell_function("_ensure_rocm_probe_env"),
-        _shell_function("_has_amd_rocm_gpu"),
-        "_has_usable_nvidia_gpu() { return 0; }",
-        'rocminfo() { echo "  Name:                    gfx1100"; }',
-        f"{request_set} _has_amd_rocm_gpu && echo yes || echo no",
-    ])
+    script = "\n".join(
+        [
+            _shell_function("_rocm_torch_explicitly_requested"),
+            _shell_function("_ensure_rocm_probe_env"),
+            _shell_function("_has_amd_rocm_gpu"),
+            "_has_usable_nvidia_gpu() { return 0; }",
+            'rocminfo() { echo "  Name:                    gfx1100"; }',
+            f"{request_set} _has_amd_rocm_gpu && echo yes || echo no",
+        ]
+    )
     assert _bash(script, env = _clean_env()) == ("yes" if sees_amd else "no")
