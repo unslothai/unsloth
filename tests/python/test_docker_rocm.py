@@ -880,22 +880,6 @@ class TestRocmEntrypoint:
         entry = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
 
-    def test_stable_tag_promotion_is_serialized_across_runs(self):
-        """The workflow group carries github.run_id on main so a dispatch runs alongside the
-        cron. Harmless while one stable tag moved; this workflow now promotes `latest` and
-        `studio`, documented as a pair, so two unserialized runs can interleave and leave the
-        pair sourced from different builds. The tag job needs its own group, and that group
-        must NOT carry run_id or every run is alone in it again."""
-        import yaml
-
-        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
-        group = wf["jobs"]["tag"].get("concurrency", {})
-        assert group, "the tag job promotes both stable tags and must serialize across runs"
-        assert "run_id" not in group["group"], group
-        assert group["cancel-in-progress"] is False, (
-            "a cancelled promotion is the split this exists to prevent"
-        )
-
     def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
         """docker/Dockerfile.studio-rocm is built by the same run as the base, on the
         base by digest (a tag can already be a newer run's) with the refs the base
@@ -913,8 +897,12 @@ class TestRocmEntrypoint:
         assert args["UNSLOTH_STUDIO_ZOO_REF"] == "${{ needs.prepare.outputs.zoo_ref }}"
 
         # no stable tag moves until both digests exist, and both manifests are created in ONE
-        # job, back to back. That orders them WITHIN a run; across runs the job-level
-        # concurrency group below is what stops two runs interleaving.
+        # job, back to back. That orders the two writes WITHIN a run; it does not order two
+        # RUNS, which the per-run concurrency group deliberately lets overlap. Same shape as
+        # docker-publish.yml for latest + core, so the pairing window is repo-wide rather
+        # than this workflow's, and closing it needs a real lock: a shared concurrency group
+        # cancels a PENDING job (tests/studio/test_main_runs_survive_merge_bursts.py), which
+        # would drop a whole run's tags instead.
         tag = wf["jobs"]["tag"]
         assert tag["needs"] == ["prepare", "build", "build-studio"]
         ids = [s.get("id") for s in tag["steps"]]
