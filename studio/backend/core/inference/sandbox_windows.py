@@ -31,6 +31,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import uuid
 
 from loggers import get_logger
@@ -290,9 +291,17 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         # it, so nothing is claimed here that the host cannot back.
         logger.debug("MXC tier 1 is unavailable on build %s", _windows_build())
 
+    # MXC runs in "STDIO mode: passthrough", forwarding its own handles to the
+    # child, so its warnings land on the SAME stdout as the payload. The probe
+    # requires its token alone on stdout, and a tool call must not have MXC's
+    # banner spliced into the user's output either. --log-file diverts MXC's
+    # diagnostics to a file this launch owns and removes.
+    log_handle, log_path = tempfile.mkstemp(prefix = "unsloth-mxc-", suffix = ".log")
+    os.close(log_handle)
+
     prepared = PreparedSandboxLaunch(
         # `--` hands the argv to MXC to render. See build_policy().
-        argv = (executor, "--config-base64", encoded, "--", *plan.argv),
+        argv = (executor, "--log-file", log_path, "--config-base64", encoded, "--", *plan.argv),
         workdir = workdir,
         env = dict(plan.env),
         # Windows has neither, and tools.py already guards both for win32.
@@ -303,10 +312,19 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         terminate_descendants = plan.terminate_descendants,
         launch_limitations = limitations,
     )
+    # A file, so not cleanup_paths, which rmtree's whatever it is given.
+    prepared.cleanup_callbacks.append(lambda: _remove_quietly(log_path))
     # A hard kill skips the executor's own ACE revert, so reconcile on the way
     # out whether or not it exited cleanly.
     prepared.cleanup_callbacks.append(lambda: _reconcile_container(executor, container_id))
     return prepared
+
+
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _reconcile_container(executor: str, container_id: str) -> None:

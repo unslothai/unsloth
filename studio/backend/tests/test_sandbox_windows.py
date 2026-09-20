@@ -147,11 +147,29 @@ def test_every_launch_gets_its_own_container_id(monkeypatch, plan, tmp_path):
     seen = set()
     for _ in range(5):
         prepared = sandbox_windows.prepare(plan)
-        encoded = prepared.argv[2]
+        # Located by flag, not by index: argv grows as the backend learns what
+        # MXC needs, and a positional assumption breaks silently.
+        encoded = prepared.argv[prepared.argv.index("--config-base64") + 1]
         import base64
 
         seen.add(json.loads(base64.b64decode(encoded))["containerId"])
     assert len(seen) == 5
+
+
+def test_mxc_diagnostics_are_diverted_off_the_payload_stdout(monkeypatch, plan):
+    # MXC runs in passthrough stdio mode and forwards its own handles to the
+    # child, so without --log-file its warnings land on the same stdout as the
+    # payload. That breaks the probe, which requires its token alone, and would
+    # splice MXC's banner into what the user sees from a tool call.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sandbox_windows, "available", lambda: (True, "ok"))
+    monkeypatch.setattr(sandbox_windows, "executable_path", lambda: sys.executable)
+    prepared = sandbox_windows.prepare(plan)
+    assert "--log-file" in prepared.argv
+    log_path = prepared.argv[prepared.argv.index("--log-file") + 1]
+    assert os.path.isfile(log_path)
+    prepared.cleanup()
+    assert not os.path.exists(log_path)
 
 
 def test_the_prepared_launch_carries_no_posix_only_kwargs(monkeypatch, plan):
