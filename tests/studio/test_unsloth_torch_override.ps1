@@ -212,6 +212,46 @@ Check "and the existing path really was attempted" (
     @($script:RemoveItemCalls | Where-Object { $_ -like "*$([System.IO.Path]::GetFileName($presentFile))*" }).Count -ge 1)
 [System.IO.File]::Delete($presentFile)
 
+Write-Host "an unreadable alias path cannot abort the install (#11290)"
+# install.ps1:3277 documents it: under the installer's "Stop", Test-Path inside an ACL-denied
+# directory THROWS UnauthorizedAccessException rather than returning false. None of the 8.3
+# guards is inside a try, so a bare Test-Path there turns "reject this alias" into "abort the
+# whole install". Every guard added for #11290 must therefore carry -ErrorAction SilentlyContinue.
+$guardedPaths = [regex]::Matches($installText, 'Test-Path -LiteralPath \$(short|dirShort)\b[^\)]*\)')
+# Three is what #11290 added; the count is not the assertion, the absence of a bare one is.
+Check "the 8.3 guards were found" ($guardedPaths.Count -ge 3)
+$bareGuards = @($guardedPaths | Where-Object { $_.Value -notmatch '-ErrorAction SilentlyContinue' })
+Check "no 8.3 guard asks the filesystem without -ErrorAction SilentlyContinue" ($bareGuards.Count -eq 0)
+foreach ($b in $bareGuards) { Write-Host "        bare: $($b.Value)" -ForegroundColor Red }
+
+# Behavioural, on this host: chmod 000 reproduces the same throw class PowerShell raises for a
+# Windows deny ACE. Skipped under a uid that bypasses permission bits, which would pass vacuously.
+if ((& id -u) -eq "0") {
+    Write-Host "  SKIP  running as root: a denied directory is still readable, so this cannot fail"
+} else {
+    $deniedRoot = Join-Path ([System.IO.Path]::GetTempPath()) "denied_$([guid]::NewGuid().ToString('N'))"
+    [System.IO.Directory]::CreateDirectory($deniedRoot) | Out-Null
+    $deniedLeaf = Join-Path $deniedRoot "ov.tmp"
+    Set-Content -LiteralPath $deniedLeaf -Value "torch==2.10.0"
+    & chmod 000 $deniedRoot
+    try {
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Stop"   # what install.ps1 line 18 sets
+        $bareThrew = $false
+        try { $null = Test-Path -LiteralPath $deniedLeaf -PathType Leaf } catch { $bareThrew = $true }
+        $guardedThrew = $false
+        try { $null = Test-Path -LiteralPath $deniedLeaf -PathType Leaf -ErrorAction SilentlyContinue } catch { $guardedThrew = $true }
+        $ErrorActionPreference = $prevEap
+        # A negative control that can fail: if the bare form stopped throwing on this host, the
+        # assertion above is no longer testing anything and must say so rather than pass quietly.
+        Check "a bare Test-Path really does throw here (negative control)" $bareThrew
+        Check "the guarded form does not throw" (-not $guardedThrew)
+    } finally {
+        & chmod 755 $deniedRoot
+        Remove-Item -LiteralPath $deniedRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host "the inherited-override filter drops the torch trio in any casing"
 # PowerShell's -notmatch is case-insensitive, so a caller override `Torch<2.11` is dropped.
 $filterPattern = $null

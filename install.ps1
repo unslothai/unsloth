@@ -31,7 +31,7 @@ function Remove-UnslothTempFileQuietly {
     param([string]$Path)
     if (-not $Path) { return }
     try {
-        if (-not (Test-Path -LiteralPath $Path)) { return }
+        if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) { return }
         Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
     } catch { }
 }
@@ -419,7 +419,7 @@ function Install-UnslothStudio {
             }
             # A space-free alias is not necessarily a name that resolves (#11290). This value
             # reaches UV_OVERRIDE and --find-links, so a bogus one breaks every later uv call.
-            if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short)) { return $short }
+            if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -ErrorAction SilentlyContinue)) { return $short }
         } catch {}
         return $Path
     }
@@ -9437,7 +9437,7 @@ exit 0
         try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($Path).ShortPath } catch { }
         # Space-free is not sufficient: a volume can hand back an 8.3 name that does not resolve,
         # and uv then fails to open the file it was pointed at (#11290).
-        if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -PathType Leaf)) {
+        if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -PathType Leaf -ErrorAction SilentlyContinue)) {
             return @{ Path = $short; Temporary = $false }
         }
 
@@ -9467,7 +9467,7 @@ exit 0
                 try { $dirShort = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($dir).ShortPath } catch { }
                 # Space-free is not sufficient: an 8.3 name that does not resolve would be copied
                 # into and then handed to uv, which cannot open it (#11290).
-                if (-not $dirShort -or $dirShort.Contains(" ") -or -not (Test-Path -LiteralPath $dirShort -PathType Container)) { continue }
+                if (-not $dirShort -or $dirShort.Contains(" ") -or -not (Test-Path -LiteralPath $dirShort -PathType Container -ErrorAction SilentlyContinue)) { continue }
                 $dir = $dirShort
             }
             # Declared before the try so the catch can clean up a Copy-Item that failed partway
@@ -9556,8 +9556,13 @@ exit 0
             # Space-free is not sufficient. A volume can hand back an 8.3 name that does not resolve,
             # and this path is then both uv's --overrides argument and the file the caller deletes:
             # uv fails to open it, and Remove-Item raises a terminating PSArgumentException that
+        # -ErrorAction SilentlyContinue on every one of these probes is the idiom at line 3277
+        # and is load-bearing: under this script's "Stop", Test-Path inside an ACL-denied
+        # directory THROWS UnauthorizedAccessException instead of returning false, and none of
+        # these guards sits inside a try. Bare, the check aborts the install on a path whose
+        # only crime is being unreadable, in functions whose contract is to fall through.
             # -ErrorAction SilentlyContinue cannot suppress (#11290). Require a real file.
-            if (-not $short -or $short.Contains(" ") -or -not (Test-Path -LiteralPath $short -PathType Leaf)) {
+            if (-not $short -or $short.Contains(" ") -or -not (Test-Path -LiteralPath $short -PathType Leaf -ErrorAction SilentlyContinue)) {
                 # No usable short name: skip the freeze rather than fail.
                 substep "[WARN] the torch overrides path has a space and no usable 8.3 short name;" "Yellow"
                 substep "installing unsloth without freezing the installed PyTorch." "Yellow"
