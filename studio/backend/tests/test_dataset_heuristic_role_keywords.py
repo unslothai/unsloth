@@ -78,6 +78,14 @@ _CASES = [
         {"task": _MID, "input": _MID, "output": _MID},
         {"input": "user", "task": "system", "output": "assistant"},
     ),
+    (
+        {"context": "Background.", "prompt": "Summarize.", "question": "Why?", "answer": _MID},
+        {"context": "system", "prompt": "user", "answer": "assistant"},
+    ),
+    (
+        {"context": _LONG, "response_text": _MID},
+        {"context": "user", "response_text": "assistant"},
+    ),
 ]
 
 

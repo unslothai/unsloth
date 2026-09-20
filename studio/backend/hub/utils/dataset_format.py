@@ -262,7 +262,7 @@ def detect_custom_format_heuristic(dataset):
         score = score_column(col, user_words, "user", len(user_potential))
         if score > 0:
             user_candidates.append((col, score))
-    if not user_candidates:
+    if not user_candidates and not any(col != assistant_col for col in user_potential):
         # has_keyword drops "context" from user_potential because "text" only matches
         # inside it. When nothing else can hold the user turn, that column is a better
         # user turn than an assistant-worded leftover.
