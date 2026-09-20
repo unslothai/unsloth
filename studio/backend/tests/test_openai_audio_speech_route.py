@@ -163,7 +163,7 @@ def test_the_speech_route_asks_for_the_full_audio_token_budget(monkeypatch):
     from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
 
     cli, calls, _saved = _make_client(monkeypatch)
-    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: None)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda _backend = None: None)
     assert cli.post("/v1/audio/speech", json = {"input": "a long script"}).status_code == 200
     payload = calls[0]["payload"]
     assert payload.max_tokens == AUDIO_GENERATION_MAX_TOKENS
@@ -176,7 +176,7 @@ def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
     from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
     from models.inference import ChatCompletionRequest
 
-    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda _backend = None: 2048)
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": "x"}],
         max_tokens = AUDIO_GENERATION_MAX_TOKENS,
@@ -198,7 +198,7 @@ def test_an_over_context_prompt_is_a_client_error(monkeypatch):
     in generation. Both routes share this guard through _generate_tts_wav."""
     from fastapi import HTTPException
 
-    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda _backend = None: 2048)
 
     with pytest.raises(HTTPException) as excinfo:
         routes_module._raise_if_prompt_leaves_no_speech_budget("x" * 8000)
@@ -224,7 +224,7 @@ def test_only_resident_requests_use_the_pre_switch_budget(monkeypatch, named):
         raise RuntimeError("reached the switch")
 
     monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
-    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda _backend = None: 2048)
     monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 2048)
     payload = SimpleNamespace(audio_instructions = None, audio_language = None)
     request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
@@ -242,32 +242,39 @@ def test_only_resident_requests_use_the_pre_switch_budget(monkeypatch, named):
     assert str(error.value) == "reached the switch" if named else error.value.status_code == 400
 
 
-def test_the_shared_core_guards_before_generating():
-    """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
-    import inspect
+def test_reload_only_tts_rechecks_the_context_after_restoring(monkeypatch):
+    """An idle-reloaded small-context model rejects an over-context prompt before generation."""
+    restored = SimpleNamespace(backend = None)
+    small_context = SimpleNamespace(is_loaded = True, context_length = 128)
 
-    source = inspect.getsource(routes_module._generate_tts_wav)
-    assert "_raise_if_prompt_leaves_no_speech_budget(text)" in source
+    async def _restore(model, *_args, **_kwargs):
+        assert model == routes_module._RELOAD_ONLY_MODEL
+        restored.backend = small_context
 
-
-def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
-    """With nothing loaded there is no context to measure, so the guard passes everything.
-    Idle auto-unload leaves exactly that state, and the restore below it brings the context
-    back, so the first request after an eviction reached generation over-context and came
-    back as a one-token clip."""
-    import inspect
-
-    source = inspect.getsource(routes_module._generate_tts_wav)
-    guards = [
-        i
-        for i, line in enumerate(source.splitlines())
-        if "_raise_if_prompt_leaves_no_speech_budget(text)" in line
-    ]
-    restore = next(
-        i for i, line in enumerate(source.splitlines()) if "await _maybe_auto_switch_model(" in line
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _restore)
+    monkeypatch.setattr(routes_module, "_serving_llama_backend", lambda _model: restored.backend)
+    monkeypatch.setattr(
+        routes_module,
+        "_monitor_context_length",
+        lambda backend = None: getattr(backend, "context_length", None),
     )
-    assert len(guards) == 2, "one check before the restore, one after"
-    assert guards[0] < restore < guards[1]
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _text: 64)
+    payload = SimpleNamespace(audio_instructions = None, audio_language = None)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            routes_module._generate_tts_wav(
+                "restored prompt",
+                payload,
+                request,
+                "tester",
+                requested_model = routes_module._RELOAD_ONLY_MODEL,
+            )
+        )
+
+    assert excinfo.value.status_code == 400
+    assert "128-token context" in str(excinfo.value.detail)
 
 
 def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatch, tmp_path):

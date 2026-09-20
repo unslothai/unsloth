@@ -7,6 +7,8 @@ A load/unload has to know which streaming chats it would interrupt. Everything
 under test is a dict + threading.Lock, so this passes on every platform.
 """
 
+import asyncio
+
 import os
 import sys
 import threading
@@ -155,6 +157,27 @@ def test_cancel_does_not_unregister_entries():
         assert active_generations.count() == 1
 
 
+def test_cancel_backend_leaves_other_resident_generations_running():
+    resident_a, resident_b = object(), object()
+    a, b = threading.Event(), threading.Event()
+
+    with active_generations.ActiveGeneration(a, thread_id = "a", backend = resident_a):
+        with active_generations.ActiveGeneration(b, thread_id = "b", backend = resident_b):
+            assert active_generations.count_for_backend(resident_a) == 1
+            assert active_generations.active_thread_ids_for_backend(resident_b) == ["b"]
+            assert active_generations.cancel_backend(resident_b) == 1
+            assert not a.is_set() and b.is_set()
+
+
+def test_backend_scoping_excludes_untagged_generations():
+    resident, untagged, tagged = object(), threading.Event(), threading.Event()
+    with active_generations.ActiveGeneration(untagged, thread_id = "unscoped"):
+        with active_generations.ActiveGeneration(tagged, thread_id = "resident", backend = resident):
+            assert active_generations.count_for_backend(resident) == 1
+            assert active_generations.cancel_backend(resident) == 1
+            assert not untagged.is_set() and tagged.is_set()
+
+
 # ── concurrency ───────────────────────────────────────────────────────
 
 
@@ -238,6 +261,45 @@ def test_gate_force_cancels_and_returns_the_count(gate):
             assert a.is_set() and b.is_set()
 
 
+def test_gate_scopes_a_secondary_teardown_to_its_backend(gate):
+    from fastapi import HTTPException
+
+    resident_a, resident_b = object(), object()
+    a, b = threading.Event(), threading.Event()
+    with active_generations.ActiveGeneration(a, thread_id = "a", backend = resident_a):
+        with active_generations.ActiveGeneration(b, thread_id = "b", backend = resident_b):
+            with pytest.raises(HTTPException) as excinfo:
+                gate(force = False, action = "Unloading the model", backend = resident_b)
+            assert excinfo.value.detail["running"] == 1
+            assert gate(force = True, action = "Unloading the model", backend = resident_b) == 1
+            assert not a.is_set() and b.is_set()
+
+
+def test_secondary_drain_waits_for_the_unregistered_admission_window(monkeypatch):
+    _route_gate()
+    from routes import inference as inference_route
+
+    calls = []
+
+    async def _wait(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(inference_route, "_wait_for_model_switch_idle", _wait)
+    asyncio.run(
+        inference_route._drain_and_recancel_before_teardown(
+            force = False, action = "Unloading the model", backend = object()
+        )
+    )
+
+    assert calls == [
+        {
+            "current_request_counted": False,
+            "discount_registered": True,
+            "timeout_s": inference_route._POST_CANCEL_DRAIN_TIMEOUT_S,
+        }
+    ]
+
+
 def test_gate_force_with_nothing_running_is_a_no_op(gate):
     assert gate(force = True, action = "Loading a model") == 0
 
@@ -259,6 +321,27 @@ def test_tracked_cancel_registers_the_thread_for_its_block():
     finally:
         tracker.__exit__(None, None, None)
     assert active_generations.count() == 0
+
+
+def test_payload_tracker_registers_its_serving_backend():
+    from types import SimpleNamespace
+
+    _route_gate()
+    from routes.inference import _TrackedCancel
+
+    backend = object()
+    event = threading.Event()
+    tracker = _TrackedCancel.for_payload(
+        event,
+        SimpleNamespace(thread_id = "thread-1", generation_run_id = None, model = "org/B-GGUF"),
+        backend = backend,
+    )
+    tracker.__enter__()
+    try:
+        assert active_generations.count_for_backend(backend) == 1
+        assert active_generations.active_thread_ids_for_backend(backend) == ["thread-1"]
+    finally:
+        tracker.__exit__(None, None, None)
 
 
 def test_tracked_cancel_shares_its_event_with_the_registry():

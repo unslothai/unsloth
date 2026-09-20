@@ -1489,7 +1489,7 @@ def _graceful_shutdown(server = None):
         logger.warning("Error shutting down training subprocess: %s", e)
 
     try:
-        from routes.inference import _llama_cpp_backend, cancel_pending_loads
+        from routes.inference import _llama_cpp_backend, cancel_pending_loads, get_resident_registry
 
         # Before the kill: a load still in the lifecycle gate or in preflight is not yet
         # holding anything the backend's own flag can see, and would spawn llama-server
@@ -1504,6 +1504,14 @@ def _graceful_shutdown(server = None):
             # teardown = True: an app-level stop, not the retry ladder reaping a child it
             # is about to replace. Only the former may end an in-flight health wait.
             _llama_cpp_backend._kill_process(teardown = True)
+        # Secondary resident slots each own a llama-server: sweep them too, and
+        # their per-backend atexit handlers never run (the table is cleared here).
+        try:
+            swept = get_resident_registry().teardown_all()
+            if swept:
+                logger.info("Tore down %d resident GGUF backend(s) for shutdown", swept)
+        except Exception as e:
+            logger.warning("Could not tear down resident GGUF backends: %s", e)
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
@@ -2756,11 +2764,13 @@ def run_server(
     # would build the backend singleton ahead of the startup steps that must come
     # first) and before uvicorn serves anything below.
     try:
-        from routes.inference import _llama_cpp_backend, begin_load_lifecycle
+        from routes.inference import _llama_cpp_backend, begin_load_lifecycle, get_resident_registry
         from utils.process_lifetime import begin_process_lifecycle
 
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._begin_server_lifecycle()
+        # Resident slots carry the same per-instance shutdown flags.
+        get_resident_registry().begin_lifecycle()
         begin_process_lifecycle()
         begin_load_lifecycle()
     except Exception as e:
