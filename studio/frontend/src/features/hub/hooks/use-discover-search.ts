@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { toast } from "@/lib/toast";
 import { clearRemoteBackoff, type HubFailure } from "@/features/hub/lib/network";
+import type { ModelSearchFilters } from "../lib/model-search-filters";
 import { useHubAvailability } from "./use-online-status";
 import {
   type HfModelResult,
@@ -97,6 +98,7 @@ export function useDiscoverSearch({
   direction,
   channel,
   ownerScope,
+  filters,
 }: {
   debouncedQuery: string;
   accessToken: string | undefined;
@@ -106,6 +108,7 @@ export function useDiscoverSearch({
   direction: HfSortDirection;
   channel: HfModelSearchChannel | null;
   ownerScope: "unsloth" | "all";
+  filters?: ModelSearchFilters;
 }): DiscoverSearch {
   const { phase, failure } = useHubAvailability();
   // "probing" counts: a lapsed backoff is exactly when the next request should
@@ -128,6 +131,7 @@ export function useDiscoverSearch({
     enabled: canProbe && isDiscoverTab && !isDatasetMode,
     keepUnsupportedTags: true,
     channel,
+    filters,
   });
   const datasetSearch = useHubDatasetSearch(debouncedQuery, {
     accessToken,

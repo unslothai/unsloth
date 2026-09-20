@@ -28,6 +28,12 @@ import {
   classifyUnslothSupport,
   excludedFormatTagsForDevice,
 } from "../lib/unsloth-support";
+import {
+  filterModelListing,
+  hasModelSearchFilters,
+  parameterRange,
+  type ModelSearchFilters,
+} from "../lib/model-search-filters";
 import { pullBatch, useHubPaginatedSearch } from "./use-hub-paginated-search";
 
 // "gguf" is not in the @huggingface/hub expandable-key type, but the listing supports
@@ -171,6 +177,7 @@ function makeMapModel(
 ) {
   const suffixLower = idSuffix.toLowerCase();
   return (raw: unknown): HfModelResult | null => {
+    if (raw === null) return null;
     const m = raw as {
       name: string;
       downloads?: number;
@@ -612,6 +619,7 @@ export function useHubModelSearch(
     enabled?: boolean;
     keepUnsupportedTags?: boolean;
     channel?: HfModelSearchChannel | null;
+    filters?: ModelSearchFilters;
   },
 ) {
   const {
@@ -626,6 +634,7 @@ export function useHubModelSearch(
     enabled = true,
     keepUnsupportedTags = false,
     channel = null,
+    filters,
   } = options ?? {};
   const unslothOnly = ownerScope === "unsloth";
 
@@ -655,6 +664,54 @@ export function useHubModelSearch(
   const hfEndpoint = useHfEndpoint();
   const createIter = useCallback(
     (signal: AbortSignal) => {
+      if (filters && hasModelSearchFilters(filters)) {
+        const sortedFetch = makeSortFetch(sortBy, sortDirection, signal);
+        const range = parameterRange(filters);
+        const iterator = listModels({
+          hubUrl: hfEndpoint,
+          search: {
+            query:
+              (channelOwner || channelTagsKey || channelQuery
+                ? trimmed || channelQuery
+                : searchQuery) || undefined,
+            owner: channelOwner ?? (unslothOnly ? "unsloth" : undefined),
+            tags: channelTagsKey ? channelTagsKey.split("|") : undefined,
+          },
+          additionalFields: ALL_FIELDS,
+          sort: sortBy,
+          fetch: (input, init) => {
+            const url = new URL(
+              typeof input === "string"
+                ? input
+                : input instanceof URL
+                  ? input.href
+                  : input.url,
+            );
+            if (range) url.searchParams.set("num_parameters", range);
+            return sortedFetch(url, init);
+          },
+          ...(accessToken ? { credentials: { accessToken } } : {}),
+        }) as AsyncGenerator<unknown>;
+        return filterModelListing(iterator, filters, async (path) => {
+          const response = await fetchWithTimeout(
+            `${hfEndpoint}${path}`,
+            {
+              signal,
+              ...(accessToken
+                ? { headers: { Authorization: `Bearer ${accessToken}` } }
+                : {}),
+            },
+            HF_SEARCH_TIMEOUT_MS,
+          );
+          if ([401, 403, 404].includes(response.status)) return null;
+          if (!response.ok) {
+            throw new Error(
+              `Model filter metadata request failed (HTTP ${response.status})`,
+            );
+          }
+          return response.json();
+        });
+      }
       // Channel scoping bypasses the unsloth-merge iterator: a hard owner/tag filter shows that slice.
       if (channelOwner || channelTagsKey || channelQuery) {
         const channelTags = channelTagsKey
@@ -775,6 +832,7 @@ export function useHubModelSearch(
       pinUnslothFirst,
       unslothOnly,
       hfEndpoint,
+      filters,
     ],
   );
 

@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+export interface ModelSearchFilters {
+  minParams?: number;
+  maxParams?: number;
+  minContext?: number;
+  maxContext?: number;
+  verifiedOnly?: boolean;
+}
+
+export function hasModelSearchFilters(filters: ModelSearchFilters): boolean {
+  return Object.values(filters).some(
+    (value) => value !== undefined && value !== false,
+  );
+}
+
+export function parameterRange(filters: ModelSearchFilters): string {
+  return [
+    filters.minParams === undefined ? "" : `min:${filters.minParams}`,
+    filters.maxParams === undefined ? "" : `max:${filters.maxParams}`,
+  ]
+    .filter(Boolean)
+    .join(",");
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
+
+export function modelContextLength(
+  config: Record<string, unknown>,
+): number | undefined {
+  const text = config.text_config;
+  const source =
+    text && typeof text === "object"
+      ? (text as Record<string, unknown>)
+      : config;
+  return (
+    positiveNumber(source.max_position_embeddings) ??
+    positiveNumber(source.n_positions) ??
+    positiveNumber(source.max_seq_len) ??
+    positiveNumber(source.seq_length)
+  );
+}
+
+export function matchesRange(
+  value: number | undefined,
+  min?: number,
+  max?: number,
+): boolean {
+  if (min === undefined && max === undefined) return true;
+  return (
+    positiveNumber(value) !== undefined &&
+    (min === undefined || value! >= min) &&
+    (max === undefined || value! <= max)
+  );
+}
+
+type JsonFetch = (path: string) => Promise<Record<string, unknown> | null>;
+
+interface ListingModel {
+  name: string;
+  safetensors?: { total?: number };
+  gguf?: { total?: number; context_length?: number };
+}
+
+export async function* filterModelListing(
+  iterator: AsyncGenerator<unknown>,
+  filters: ModelSearchFilters,
+  fetchJson: JsonFetch,
+): AsyncGenerator<unknown> {
+  const owners = new Map<string, Promise<boolean>>();
+  async function filter(raw: unknown): Promise<ListingModel | null> {
+    const model = raw as ListingModel;
+    if (
+      !matchesRange(
+        model.safetensors?.total ?? model.gguf?.total,
+        filters.minParams,
+        filters.maxParams,
+      )
+    )
+      return null;
+    if (filters.verifiedOnly) {
+      const owner = model.name.split("/")[0];
+      let verified = owners.get(owner);
+      if (!verified) {
+        verified = fetchJson(
+          `/api/organizations/${encodeURIComponent(owner)}/overview`,
+        ).then((data) => data?.isVerified === true);
+        owners.set(owner, verified);
+      }
+      if (!(await verified)) return null;
+    }
+    if (filters.minContext === undefined && filters.maxContext === undefined)
+      return model;
+    let contextLength = positiveNumber(model.gguf?.context_length);
+    if (contextLength === undefined) {
+      const path = model.name.split("/").map(encodeURIComponent).join("/");
+      const config = await fetchJson(`/${path}/resolve/main/config.json`);
+      if (config) contextLength = modelContextLength(config);
+    }
+    return matchesRange(contextLength, filters.minContext, filters.maxContext)
+      ? model
+      : null;
+  }
+  try {
+    while (true) {
+      const batch: unknown[] = [];
+      let done = false;
+      for (let i = 0; i < 4; i++) {
+        const next = await iterator.next();
+        if (next.done) {
+          done = true;
+          break;
+        }
+        batch.push(next.value);
+      }
+      // preserve rejected rows so pagination's scan limit still bounds sparse searches.
+      for (const model of await Promise.all(batch.map(filter))) yield model;
+      if (done) return;
+    }
+  } finally {
+    await iterator.return(undefined);
+  }
+}
