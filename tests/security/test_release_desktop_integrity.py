@@ -395,10 +395,12 @@ def test_the_two_linux_legs_never_stage_the_same_asset_name(tmp_path):
         }
 
     assert set(staged["linux-x64"]) == {
-        "Unsloth-Desktop-Ubuntu.deb", "Unsloth-Desktop-Ubuntu.deb.sig"
+        "Unsloth-Desktop-Ubuntu.deb",
+        "Unsloth-Desktop-Ubuntu.deb.sig",
     }
     assert set(staged["linux-arm64"]) == {
-        "Unsloth-Desktop-Ubuntu-ARM64.deb", "Unsloth-Desktop-Ubuntu-ARM64.deb.sig"
+        "Unsloth-Desktop-Ubuntu-ARM64.deb",
+        "Unsloth-Desktop-Ubuntu-ARM64.deb.sig",
     }
     assert not set(staged["linux-x64"]) & set(staged["linux-arm64"])
     assert staged["linux-arm64"]["Unsloth-Desktop-Ubuntu-ARM64.deb.sig"] == "arm64.deb.sig"
