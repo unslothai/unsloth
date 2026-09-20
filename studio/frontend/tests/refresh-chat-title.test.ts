@@ -52,6 +52,7 @@ beforeEach(() => {
   state.requests = [];
   state.writes = [];
   state.status = 200;
+  state.guardSupport = true;
   state.response = {
     choices: [
       { message: { content: "Contract Negotiation" }, finish_reason: "stop" },
@@ -370,3 +371,10 @@ for (const providerType of ["openai", "anthropic", "vllm"]) {
     assert.equal(state.threads[0].title, "Contract Negotiation");
   });
 }
+
+test("older backends cannot receive unguarded title refreshes", async () => {
+  state.guardSupport = false;
+  await assert.rejects(refreshChatTitle(item), /Update Studio/);
+  assert.equal(state.requests.length, 0);
+  assert.equal(state.writes.length, 0);
+});

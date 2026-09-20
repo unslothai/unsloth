@@ -3,6 +3,8 @@
 
 // eslint-disable-next-line no-restricted-imports
 import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
+import { authFetch } from "@/features/auth";
+import { schemaDeclaresRepairGuards } from "./openapi-support";
 import { parseExternalModelId } from "../external-providers";
 import { updateChatThread } from "../api/chat-api";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
@@ -56,6 +58,12 @@ async function refresh(item: SidebarItem): Promise<void> {
       runtime.loadedContextLength ??
       (runtime.params.maxSeqLength || 4096));
   if (!model) throw new Error("Select a model to refresh the chat title.");
+  const schema = await authFetch("/openapi.json");
+  if (!schema.ok)
+    throw new Error("Unable to check Studio compatibility. Try again.");
+  if (!schemaDeclaresRepairGuards(await schema.json())) {
+    throw new Error("Update Studio to use chat title refresh.");
+  }
   const threads =
     item.type === "compare"
       ? await listStoredChatThreads({ pairId: item.id, includeArchived: true })

@@ -29,6 +29,7 @@ export const state = {
     ],
   },
   status: 200,
+  guardSupport: true,
   wait: undefined as Promise<void> | undefined,
   providers: [] as {
     id: string;
@@ -68,8 +69,23 @@ export async function updateChatThread(
   );
   state.writes.push(id);
 }
-export async function authFetch(_url: string, init: RequestInit) {
-  state.requests.push(JSON.parse(init.body as string));
+export async function authFetch(url: string, init?: RequestInit) {
+  if (url === "/openapi.json") {
+    return new Response(
+      JSON.stringify({
+        components: {
+          schemas: {
+            ChatThreadPatch: {
+              properties: state.guardSupport
+                ? { expectedTitle: {}, expectedOpeningMessageId: {} }
+                : { title: {} },
+            },
+          },
+        },
+      }),
+    );
+  }
+  state.requests.push(JSON.parse(init!.body as string));
   const request = state.requests.at(-1)!;
   if (request.provider_type === "openai_codex" && !request.stream) {
     return new Response("ChatGPT subscription chat requires stream=true.", {
