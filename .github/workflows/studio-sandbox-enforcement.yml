@@ -140,13 +140,20 @@ jobs:
           }
 
       - name: Prepare the host, which Tier 3 requires
+        # Not fatal. wxc-host-prep.exe carries requireAdministrator, so the
+        # loader raises a UAC consent prompt at process start and with no
+        # interactive desktop to answer it the binary never returns (observed:
+        # prepare-system-drive hung the full 300s on windows-2025). Report the
+        # state and still attempt the measurement, so the run tells us whether
+        # Tier 3 works without the preparation rather than stopping here.
+        continue-on-error: true
         shell: pwsh
         run: |
           # AppContainer plus DACL needs minimum-rights ACEs on the system
           # drive root and MXC's descriptor on \Device\Null. Runners are
           # already elevated, so no UAC prompt here; on a user's machine this
           # is the step Studio setup has to ask about.
-          python studio/install_mxc_runtime.py --dest "$env:RUNNER_TEMP\mxc" --prepare-host
+          python studio/install_mxc_runtime.py --dest "$env:RUNNER_TEMP\mxc" --prepare-host --prepare-host-timeout 90
 
       - name: Confirm the argv splice this backend depends on
         shell: pwsh

@@ -131,7 +131,7 @@ def install(dest: str) -> dict:
     }
 
 
-def prepare_host(dest: str) -> dict:
+def prepare_host(dest: str, timeout: float = 120.0) -> dict:
     """Run MXC's one-time elevated host preparation.
 
     Tier 3 (AppContainer plus DACL) is the tier every shipping Windows build
@@ -149,11 +149,27 @@ def prepare_host(dest: str) -> dict:
         raise SystemExit(f"{prep} is missing; run this without --prepare-host first")
     results = {}
     for subcommand in ("prepare-system-drive", "prepare-null-device"):
-        completed = subprocess.run(
-            [prep, subcommand],
-            capture_output = True,
-            timeout = 300,
-        )
+        try:
+            completed = subprocess.run(
+                [prep, subcommand], capture_output = True, timeout = timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # requireAdministrator in the manifest means the loader raises a UAC
+            # consent dialog at process start. With no interactive desktop to
+            # answer it the binary simply never returns, which is what happens
+            # on a GitHub Windows runner: prepare-system-drive hung for the full
+            # 300s. Report it as a state rather than hanging the caller, because
+            # Studio setup has to be able to say "this needs your approval"
+            # instead of appearing to freeze.
+            results[subcommand] = {
+                "exit": None,
+                "timed_out_after": timeout,
+                "stderr": (
+                    "no response, which usually means the UAC consent prompt was "
+                    "never answered. Run this from an elevated terminal."
+                ),
+            }
+            continue
         results[subcommand] = {
             "exit": completed.returncode,
             "stderr": completed.stderr.decode(errors = "replace").strip()[:300],
@@ -164,11 +180,10 @@ def prepare_host(dest: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description = __doc__)
     parser.add_argument("--dest", default = None, help = "where to install (default: Studio home)")
-    parser.add_argument(
-        "--prepare-host",
-        action = "store_true",
-        help = "run MXC's elevated host preparation (prompts for UAC)",
-    )
+    parser.add_argument("--prepare-host-timeout", type = float, default = 120.0,
+                        help = "seconds to wait for each elevated step before reporting no response")
+    parser.add_argument("--prepare-host", action = "store_true",
+                        help = "run MXC's elevated host preparation (prompts for UAC)")
     parser.add_argument(
         "--verify-only", action = "store_true", help = "report an existing install without downloading"
     )
@@ -191,7 +206,7 @@ def main() -> int:
         return 0 if present else 1
 
     if args.prepare_host:
-        print(json.dumps(prepare_host(dest), indent = 2))
+        print(json.dumps(prepare_host(dest, args.prepare_host_timeout), indent = 2))
         return 0
 
     print(json.dumps(install(dest), indent = 2))
