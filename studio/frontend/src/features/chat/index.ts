@@ -356,6 +356,7 @@ export {
   setChatProjectWorkspace,
   updateChatProjectInstructions,
   useChatProjects,
+  useScopedChatProject,
 } from "./hooks/use-chat-projects";
 export { subscribeDictationLevel } from "./adapters/dictation-level";
 export {

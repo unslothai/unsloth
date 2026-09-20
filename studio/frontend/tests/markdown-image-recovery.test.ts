@@ -60,7 +60,7 @@ function renderer() {
     useAuiState: () => "thread",
     useChatRuntimeStore: () => "thread",
     useChatProjectScope: () => null,
-    useChatProjects: () => ({ projects: [] }),
+    useScopedChatProject: () => ({ project: undefined, isResolving: false }),
     markdownSandboxImageSrc: () => null,
     sandboxFileForSrc: () => null,
     useSandboxImage: () => ({ state: { status: "idle" } }),

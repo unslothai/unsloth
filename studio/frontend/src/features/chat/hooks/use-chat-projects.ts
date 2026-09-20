@@ -7,6 +7,7 @@ import type { ProjectRecord } from "../types";
 import {
   createStoredChatProject,
   deleteStoredChatProject,
+  getStoredChatProject,
   isExpectedBackgroundChatStorageError,
   listStoredChatProjects,
   moveStoredChatItemToProject,
@@ -181,4 +182,57 @@ export async function moveChatItemToProject(
   projectId: string | null,
 ): Promise<void> {
   await moveStoredChatItemToProject(item, projectId);
+}
+
+/**
+ * The project a chat is scoped to, including one the project list does not carry.
+ *
+ * `loadProjects` asks for non-archived projects only, but a chat opened from the
+ * archived view keeps its project scope, so its row is never in that list. A caller
+ * that reads "missing" as "still loading" then waits for a row that cannot arrive.
+ * Archived projects are fetched one at a time instead of widening the shared list,
+ * which is what the sidebar and the projects page render.
+ */
+export function useScopedChatProject(projectId: string | null | undefined): {
+  project: ProjectRecord | undefined;
+  isResolving: boolean;
+} {
+  const { projects, hasLoaded } = useChatProjects();
+  const listed = projectId
+    ? projects.find((candidate) => candidate.id === projectId)
+    : undefined;
+  // Keyed by the id it was read for, so a scope change is spotted by comparison
+  // rather than by clearing state from inside the effect.
+  const [fetched, setFetched] = useState<{
+    id: string;
+    project: ProjectRecord | null;
+  } | null>(null);
+  const resolvedFor = fetched?.id === projectId ? fetched : null;
+  const alreadyRead = resolvedFor !== null;
+
+  useEffect(() => {
+    if (!projectId || listed || !hasLoaded || alreadyRead) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const project = await getStoredChatProject(projectId);
+        if (!cancelled) setFetched({ id: projectId, project: project ?? null });
+      } catch (error) {
+        // Same contract as the list: a project that cannot be read is reported as
+        // absent rather than left resolving for ever.
+        console.debug("Could not read the scoped project", error);
+        if (!cancelled) setFetched({ id: projectId, project: null });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, listed, hasLoaded, alreadyRead]);
+
+  if (!projectId) return { project: undefined, isResolving: false };
+  if (listed) return { project: listed, isResolving: false };
+  return {
+    project: resolvedFor?.project ?? undefined,
+    isResolving: !hasLoaded || resolvedFor === null,
+  };
 }

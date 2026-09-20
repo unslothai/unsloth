@@ -5,7 +5,7 @@
 
 import {
   ArtifactCard,
-  useChatProjects,
+  useScopedChatProject,
   useChatProjectScope,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -162,10 +162,10 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
-  const { projects } = useChatProjects();
-  const project = projectId
-    ? projects.find((candidate) => candidate.id === projectId)
-    : undefined;
+  // Scoped rather than the plain list: a chat opened from the archived view keeps its
+  // project scope, and the shared list carries non-archived projects only, so reading
+  // "missing" as "still loading" hid those images for good.
+  const { project, isResolving } = useScopedChatProject(projectId);
   // Changing a project's working directory rotates its workspace session, so a bare `plot.png` in
   // a project chat resolves against the row's current value. Until that row has loaded there is
   // nothing to resolve against, and only such a src waits, rather than guessing `project-<id>`:
@@ -176,6 +176,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
     src !== undefined &&
     !!projectId &&
     project === undefined &&
+    isResolving &&
     sandboxFileForSrc(src) !== null &&
     sandboxSessionInSrc(src) === null;
   const file =
