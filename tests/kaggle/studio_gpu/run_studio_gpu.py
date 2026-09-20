@@ -1953,9 +1953,9 @@ class Payload:
         worth catching.
 
         What is deliberately NOT asserted: that the search returned results.
-        `_web_search` uses DuckDuckGo through ddgs with no API key, and DuckDuckGo
-        rate-limiting a Kaggle egress IP is a fact about the day, not a Studio
-        defect. Failing on it would put a red in front of every PR for
+        `_web_search` runs an approved engine allowlist through ddgs with no API
+        key, and those engines rate-limiting a Kaggle egress IP is a fact about
+        the day, not a Studio defect. Failing on it would put a red in front of every PR for
         something no reader could act on. The reply and the result count are
         recorded so a human can see which happened.
         """
