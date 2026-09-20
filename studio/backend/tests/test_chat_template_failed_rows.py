@@ -128,6 +128,7 @@ def test_a_marker_named_column_survives_a_schema_less_stream():
     Taking that as "no columns" picks the plain marker name, and remove_columns then
     deletes the user's own column from every row that survived.
     """
+
     def rows():
         for i in range(8):
             yield {
@@ -155,9 +156,7 @@ def test_failures_spread_across_scan_batches_are_all_counted(monkeypatch):
     monkeypatch.setattr(chat_templates, "_ERROR_SCAN_BATCH", 3)
     n = 20
     bad = {0, 4, 5, 11, 19}
-    dataset = Dataset.from_dict(
-        {"messages": [_convo(i, with_system = i in bad) for i in range(n)]}
-    )
+    dataset = Dataset.from_dict({"messages": [_convo(i, with_system = i in bad) for i in range(n)]})
 
     result = apply_chat_template_to_dataset(_dataset_info(dataset), _StrictTokenizer())
 
