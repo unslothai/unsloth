@@ -13,14 +13,35 @@ export interface ToolPartLike {
   readonly result?: unknown;
 }
 
-/** Canvases, Python, generated images and anything that wrote a file: their output lives only
- *  in the card, so it is never tucked away. */
+/** An MCP-style result with images in it, the shape the fallback card shows previews for. */
+export function carriesImages(result: unknown): boolean {
+  if (typeof result !== "object" || result === null) {
+    return false;
+  }
+  const v = result as { text?: unknown; images?: unknown };
+  return (
+    typeof v.text === "string" &&
+    Array.isArray(v.images) &&
+    v.images.length > 0 &&
+    v.images.every(
+      (img: unknown) =>
+        typeof img === "object" &&
+        img !== null &&
+        typeof (img as { data?: unknown }).data === "string" &&
+        typeof (img as { mimeType?: unknown }).mimeType === "string",
+    )
+  );
+}
+
+/** Canvases, Python, generated images, results that carry images and anything that wrote a
+ *  file: their output lives only in the card, so it is never tucked away. */
 export function holdsOwnOutput(part: ToolPartLike): boolean {
   return (
     part.type === "tool-call" &&
     (part.toolName === "render_html" ||
       part.toolName === "python" ||
       part.toolName === "image_generation" ||
+      carriesImages(part.result) ||
       hasCreatedFiles(part.toolName, part.result))
   );
 }

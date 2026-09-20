@@ -128,6 +128,20 @@ test("calls whose output lives only in their card stay visible", () => {
     ),
     true,
   );
+  // An MCP tool that returned images shows them only in its card.
+  const mcpImages = {
+    text: "two charts",
+    images: [{ data: "iVBORw0KGgo=", mimeType: "image/png" }],
+  };
+  assert.equal(holdsOwnOutput(call("mcp__charts__plot", mcpImages)), true);
+  assert.equal(
+    holdsOwnOutput(call("mcp__charts__plot", { text: "none", images: [] })),
+    false,
+  );
+  assert.equal(
+    holdsOwnOutput(call("mcp__charts__plot", { text: "bad", images: ["x"] })),
+    false,
+  );
   assert.equal(holdsOwnOutput(call("web_search")), false);
   assert.equal(holdsOwnOutput(call("terminal", "plain output")), false);
   assert.equal(holdsOwnOutput({ type: "reasoning" }), false);
