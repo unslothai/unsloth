@@ -119,14 +119,29 @@ def _reference_loss(scale, softcapping = 0.0):
 
 
 def _config(cls, **kwargs):
-    return cls(
-        hidden_size = HIDDEN_SIZE,
-        intermediate_size = 2 * HIDDEN_SIZE,
-        num_hidden_layers = 1,
-        num_attention_heads = 2,
-        vocab_size = VOCAB_SIZE,
-        **kwargs,
-    )
+    """Deferred, because these tables are built at import.
+
+    transformers validates config fields strictly and which values a class accepts moves
+    between releases, so constructing eagerly turns one unconstructable class into a
+    collection error for the whole file. Building inside the test turns it into a skip
+    of the one case that cannot be expressed on the installed version.
+    """
+
+    def build():
+        try:
+            return cls(
+                hidden_size = HIDDEN_SIZE,
+                intermediate_size = 2 * HIDDEN_SIZE,
+                num_hidden_layers = 1,
+                num_attention_heads = 2,
+                vocab_size = VOCAB_SIZE,
+                **kwargs,
+            )
+        except Exception as error:
+            pytest.skip(f"{cls.__name__} does not accept this shape here: {error}")
+
+    build.cls = cls
+    return build
 
 
 @pytest.mark.parametrize(
@@ -139,6 +154,7 @@ def _config(cls, **kwargs):
     ids = ["cohere", "granite"],
 )
 def test_fused_ce_applies_the_configured_logit_scale(config, scale, monkeypatch):
+    config = config()
     unscaled = _reference_loss(1.0)  # 7.898634, what the fused branch returns unfixed
     expected = _reference_loss(scale)
     assert abs(expected - unscaled) > 1.0, "the fixture no longer separates the two losses"
@@ -152,7 +168,7 @@ def test_fused_ce_applies_the_configured_logit_scale(config, scale, monkeypatch)
 
 def test_fused_ce_applies_falcon_h1_multiplier_once(monkeypatch):
     """The multiplier is folded into the hidden states, so it must not scale the logits too."""
-    config = _config(FalconH1Config, lm_head_multiplier = 3.0)
+    config = _config(FalconH1Config, lm_head_multiplier = 3.0)()
     assert _fused_loss(config, monkeypatch) == pytest.approx(_reference_loss(3.0), rel = 1e-6)
 
 
@@ -162,13 +178,13 @@ def test_mistral_fused_ce_reads_the_transforms_the_same_way(monkeypatch):
     No shipped Mistral config carries one, so the scale is injected here: the point is
     that the call site forwards whatever the config holds, not that Mistral needs it.
     """
-    plain = _config(MistralConfig)
+    plain = _config(MistralConfig)()
     assert _fused_loss(plain, monkeypatch, MistralForCausalLM_fast_forward) == pytest.approx(
         _reference_loss(1.0),
         rel = 1e-6,
     ), "plain Mistral carries no transform and must be unaffected"
 
-    scaled = _config(MistralConfig)
+    scaled = _config(MistralConfig)()
     scaled.logit_scale = 0.0625
     assert _fused_loss(scaled, monkeypatch, MistralForCausalLM_fast_forward) == pytest.approx(
         _reference_loss(0.0625),
@@ -188,6 +204,7 @@ def test_mistral_fused_ce_reads_the_transforms_the_same_way(monkeypatch):
     ids = ["cohere", "granite", "granitemoe", "falcon_h1"],
 )
 def test_transforms_resolve_without_unsloth_zoo(config, expected, monkeypatch):
+    config = config()
     """The fallback arm runs whenever unsloth_zoo predates detect_logit_transforms."""
     monkeypatch.setattr(llama_module, "detect_logit_transforms", None)
     # Both arms answer these configs the same way, so without this the coverage would
@@ -219,7 +236,7 @@ def test_a_none_valued_field_resolves_to_zero(model_type, field, monkeypatch):
 def test_a_none_model_type_does_not_raise(monkeypatch):
     """Remote-code configs do set model_type to None, and `in`-style reads must survive it."""
     monkeypatch.setattr(llama_module, "detect_logit_transforms", None)
-    config = _config(CohereConfig, logit_scale = 0.0625)
+    config = _config(CohereConfig, logit_scale = 0.0625)()
     config.model_type = None
     assert resolve_logit_transforms(config) == (0, 0.0625, 0)
 
@@ -248,6 +265,7 @@ _SCALE_IDS = ["cohere", "granite", "gemma2_softcap"]
 )
 @pytest.mark.parametrize("config,scale,softcapping", _SCALE_CASES, ids = _SCALE_IDS)
 def test_inference_logits_carry_the_same_transforms(config, scale, softcapping, forward):
+    config = config()
     """The labels-free branch returns the logits, so they must arrive already transformed."""
     expected = F.linear(_hidden_states(), _lm_head_weight()) * scale
     if softcapping:
@@ -272,6 +290,7 @@ def test_materialized_branch_is_handed_the_same_transforms(
     Each module has its own binding of fast_cross_entropy_loss via `from .llama import *`,
     so the spy has to go on the module whose call site is under test.
     """
+    config = config()
     calls = []
 
     def spy(**kwargs):

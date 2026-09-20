@@ -28,7 +28,7 @@ import pytest
 import unsloth.models.rl_replacements as rl
 
 
-SOURCE = Path(inspect.getfile(rl)).read_text()
+SOURCE = Path(inspect.getfile(rl)).read_text(encoding = "utf-8")
 GUARD = "detect_logit_transforms is not None"
 
 
