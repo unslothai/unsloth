@@ -2027,6 +2027,7 @@ def test_a_stale_tool_socket_does_not_brick_the_session(tmp_path):
     workdir = tmp_path / "work"
     scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME / "pymp-abc"
     scratch.mkdir(parents = True)
+    os.chmod(scratch.parent, 0o700)
     _bind_unix_socket(str(scratch / "listener-0"))
     assert (scratch / "listener-0").exists(), "the stale socket was not created"
 
@@ -2056,14 +2057,18 @@ def test_a_scratch_entry_that_cannot_be_removed_still_fails_the_call(tmp_path):
 
     workdir = tmp_path / "work"
     scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
-    scratch.mkdir(parents = True)
-    _bind_unix_socket(str(scratch / "listener-0"))
-    os.chmod(scratch, 0o500)
+    held = scratch / "held"
+    held.mkdir(parents = True)
+    os.chmod(scratch, 0o700)
+    _bind_unix_socket(str(held / "listener-0"))
+    # Unlinkable only by making its directory read-only: the sweep itself is
+    # allowed to run, and what it cannot remove must still stop the launch.
+    os.chmod(held, 0o500)
     try:
         with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "device or IPC node"):
             os_sandbox.scan_workdir_for_host_channels(str(workdir))
     finally:
-        os.chmod(scratch, 0o700)
+        os.chmod(held, 0o700)
 
 
 def test_a_workdir_scan_that_blocks_is_given_up_on_rather_than_waited_out(monkeypatch, tmp_path):
@@ -2142,3 +2147,79 @@ def test_the_directory_holding_every_home_is_not_a_model_library(monkeypatch, tm
     )
 
     assert os_sandbox.model_library_roots() == ()
+
+
+def test_a_live_listener_in_the_scratch_directory_is_not_removed(tmp_path):
+    """Two tool calls can share the scratch directory, so "left behind" has to
+    be proved: a listener the other call is still using must survive."""
+    import socket
+
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(parents = True)
+    os.chmod(scratch, 0o700)
+
+    here = os.getcwd()
+    os.chdir(scratch)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind("listener-0")
+        listener.listen(1)
+        os.chdir(here)
+        assert os_sandbox.clear_stale_tool_ipc(str(workdir)) == ()
+        assert (scratch / "listener-0").exists(), "a live listener was unlinked"
+    finally:
+        os.chdir(here)
+        listener.close()
+
+
+def test_a_scratch_directory_studio_did_not_create_is_left_alone(tmp_path):
+    """_sandbox_temp_dir adopts an existing unsloth-tmp rather than failing, so
+    a project that already had one must not have its own endpoints swept."""
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(parents = True)
+    os.chmod(scratch, 0o755)
+    _bind_unix_socket(str(scratch / "theirs"))
+
+    assert os_sandbox.clear_stale_tool_ipc(str(workdir)) == ()
+    assert (scratch / "theirs").exists(), "a directory Studio did not create was swept"
+
+
+def test_a_stale_fifo_is_removed_and_one_with_a_reader_is_not(tmp_path):
+    """The same proof for the other endpoint type: ENXIO means no reader."""
+    import threading
+
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(parents = True)
+    os.chmod(scratch, 0o700)
+    os.mkfifo(scratch / "stale", 0o600)
+    os.mkfifo(scratch / "live", 0o600)
+
+    opened = threading.Event()
+    reader_fd = []
+
+    def read_end():
+        fd = os.open(str(scratch / "live"), os.O_RDONLY)
+        reader_fd.append(fd)
+        opened.set()
+
+    reader = threading.Thread(target = read_end, daemon = True)
+    reader.start()
+    writer = os.open(str(scratch / "live"), os.O_WRONLY)
+    opened.wait(5)
+    try:
+        removed = os_sandbox.clear_stale_tool_ipc(str(workdir))
+        assert removed == (str(scratch / "stale"),), removed
+        assert (scratch / "live").exists(), "a FIFO with a reader was unlinked"
+    finally:
+        os.close(writer)
+        for fd in reader_fd:
+            os.close(fd)
