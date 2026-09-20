@@ -29,6 +29,7 @@ from .os_sandbox import (
     WorkdirUnsafeError,
     editable_import_roots,
     editable_source_roots,
+    model_library_roots,
     scan_workdir_for_host_channels,
     studio_state_roots,
 )
@@ -563,6 +564,10 @@ def build_profile(
         *developer_paths,
         *_DEVICES,
         *runtime_paths,
+        # The model folders the approval gate already lets a tool read without
+        # asking. Without them a read from a registered folder passes the gate
+        # silently and then fails in here.
+        *model_library_roots(),
         workdir,
         private_tmp,
     )

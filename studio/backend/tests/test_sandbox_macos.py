@@ -873,3 +873,28 @@ def test_the_studio_state_deny_keeps_path_traversal_working(monkeypatch, tmp_pat
     # Reading a file, and listing a directory, both remain denied.
     assert "file-read-data" in rules[0]
     assert str(state) in rules[0]
+
+
+def test_a_registered_model_folder_is_readable(monkeypatch, tmp_path):
+    """The approval gate treats registered model folders as read-silent, so a
+    read from one never prompts. Without granting them here the two halves of
+    the product disagree: the call is allowed and then fails in the sandbox."""
+    from core.inference import os_sandbox, sandbox_macos
+
+    library = tmp_path / "models"
+    library.mkdir()
+    monkeypatch.setattr(sandbox_macos, "model_library_roots", lambda: (str(library),))
+    monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: (str(library),))
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    private_tmp = tmp_path / "tmp"
+    private_tmp.mkdir()
+
+    profile = sandbox_macos.build_profile(
+        workdir = str(workdir),
+        private_tmp = str(private_tmp),
+        runtime_paths = (),
+    )
+
+    assert str(library) in profile

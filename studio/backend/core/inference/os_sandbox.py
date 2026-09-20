@@ -401,6 +401,70 @@ def editable_source_roots() -> tuple[str, ...]:
     return tuple(roots)
 
 
+def model_library_roots() -> tuple[str, ...]:
+    """The model folders a tool is already allowed to read without asking.
+
+    tool_path_approval treats the folders the user registered with Studio, and
+    the well-known LM Studio and Ollama locations, as read-silent: "these hold
+    weights, not documents, and reading them is the point of the app". Without
+    granting them the two halves of the product disagree, because a read from
+    a registered folder passes the approval gate silently, as designed, and
+    then fails inside the sandbox on every `auto` launch.
+
+    Deliberately NOT the whole read-silent set. That also carries /etc and
+    other system directories, where staying silent at the approval gate is
+    reasonable and binding the directory into the jail is not: it would hand
+    over /etc/ssl/private, which the bind list excludes one file at a time.
+
+    Read only; the write-silent set is not consulted, since the sandbox keeps
+    writes to the session workdir. Degraded to nothing rather than raising,
+    because a launch must not fail over this.
+    """
+    try:
+        from . import tool_path_approval
+        from utils.paths.storage_roots import well_known_model_dirs
+
+        candidates = (
+            *tool_path_approval._scan_folder_roots(),
+            *well_known_model_dirs(),
+        )
+    except Exception:  # noqa: BLE001 - never fail a launch over the approval gate
+        return ()
+    state = studio_state_roots()
+    kept: list[str] = []
+    for path in candidates:
+        if not path or not os.path.isabs(path):
+            continue
+        real = os.path.realpath(path)
+        if real == os.sep or not os.path.isdir(real):
+            continue
+        home = os.path.realpath(os.path.expanduser("~"))
+        # A registered folder that IS a home, a system directory, or that holds
+        # Studio's own state is a misconfiguration, and binding it would undo
+        # the rest of the profile.
+        if real == home or real in _NEVER_A_MODEL_LIBRARY:
+            continue
+        if any(_paths_overlap(real, root) for root in state):
+            continue
+        if real not in kept:
+            kept.append(real)
+    return tuple(kept)
+
+
+_NEVER_A_MODEL_LIBRARY = frozenset(
+    ("/", "/etc", "/usr", "/var", "/opt", "/bin", "/lib", "/home", "/Users", "/root", "/tmp")
+)
+
+
+def _paths_overlap(first: str, second: str) -> bool:
+    """Whether either path is the other, or contains it."""
+    try:
+        common = os.path.commonpath([first, second])
+    except ValueError:
+        return False
+    return common in (first, second)
+
+
 def studio_state_roots() -> tuple[str, ...]:
     """Where Studio keeps ``auth/auth.db`` and the rest of its persisted state.
 

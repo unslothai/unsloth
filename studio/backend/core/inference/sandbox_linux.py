@@ -35,6 +35,7 @@ from .os_sandbox import (
     cache_share_hazard,
     editable_source_roots,
     scan_workdir_for_host_channels,
+    model_library_roots,
     studio_state_roots,
 )
 
@@ -681,6 +682,13 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     if os.path.isdir(_NIX_STORE) and _within(os.path.realpath(sys.executable), _NIX_STORE):
         system_roots += (_NIX_STORE,)
     runtime_paths = _runtime_read_paths(workdir, system_roots, inner)
+    # Kept out of system_roots so the Studio-state descent above is not asked
+    # to reason about them: these come from the approval gate, which already
+    # excludes the Studio home.
+    silent_roots = tuple(
+        root for root in model_library_roots()
+        if not _within(root, workdir) and not any(_within(root, r) for r in system_roots)
+    )
     model_cache = _model_cache_binds(workdir)
     # A runtime under /tmp has to be restored after the tmpfs replaces it.
     tmp_runtime_paths = tuple(path for path in runtime_paths if _within(path, "/tmp"))
@@ -727,6 +735,11 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             "/etc",
         ]
         for root in system_roots:
+            argv += ["--ro-bind-try", root, root]
+        # The model folders the approval gate already lets a tool read without
+        # asking. -try, because any of them can be on removable media or simply
+        # gone, and a missing one must not fail the launch.
+        for root in silent_roots:
             argv += ["--ro-bind-try", root, root]
         trusted = tuple(p for p in _ETC_FILES_IF_TRUSTED if _trusted_system_file(p))
         for path in (*_ETC_FILES, *trusted, *_NETWORK_FILES):
