@@ -376,6 +376,7 @@ const selection = {
   activeGgufVariant: "Q4_K_M",
   loadedIsGguf: true,
   activeNativePathToken: "local-token",
+  activeLoadId: "/secondary/models--owner--model/snapshots/pinned",
   models: [],
   loras: [],
 };
@@ -386,6 +387,8 @@ test("omitted model identity inherits the selected model and native capability l
   assert.equal(target?.meta.isGguf, true);
   assert.equal(target?.meta.ggufVariant, "Q4_K_M");
   assert.equal(target?.meta.nativePathToken, "local-token");
+  assert.equal(target?.meta.loadId, selection.activeLoadId);
+  assert.equal(target?.meta.isDownloaded, true);
   assert.equal(
     resolveRunConfigTarget(
       { config: {} },
@@ -403,6 +406,7 @@ test("an explicit native format cannot inherit a GGUF variant or native file tok
   assert.equal(target?.meta.isGguf, false);
   assert.equal(target?.meta.ggufVariant, undefined);
   assert.equal(target?.meta.nativePathToken, undefined);
+  assert.equal(target?.meta.loadId, undefined);
 });
 
 test("a different model uses its inventory format without inheriting the selected model's identity", () => {

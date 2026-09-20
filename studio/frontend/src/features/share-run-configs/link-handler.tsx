@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useChatRuntimeStore } from "@/features/chat";
+import { useHfTokenStore, useInventoryVersion } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
@@ -25,6 +26,7 @@ import {
   clearModelConfigHandoff,
   requestModelConfigHandoff,
 } from "../model-picker/model-config/model-config-handoff";
+import { resolveCachedRunConfigTarget } from "./cached-target";
 import { runConfigInbox } from "./inbox";
 import { isShareableModelId } from "./links";
 import {
@@ -48,6 +50,8 @@ export function SharedRunConfigLinkHandler() {
   );
   const [, setAuthRevision] = useState(0);
   const [modelInput, setModelInput] = useState("");
+  const hfToken = useHfTokenStore((state) => state.token) || undefined;
+  const inventoryVersion = useInventoryVersion();
   const checkpoint = useChatRuntimeStore((state) => state.params.checkpoint);
   const settingsHydrated = useChatRuntimeStore(
     (state) => state.settingsHydrated,
@@ -113,13 +117,41 @@ export function SharedRunConfigLinkHandler() {
       });
       return;
     }
-    if (routeReady) {
-      runConfigInbox.bind(
-        pending.id,
-        modelConfigDraftKey(target.id, target.meta.ggufVariant),
-      );
-      requestModelConfigHandoff({ requestId: pending.id, ...target });
+    if (!routeReady) {
+      return;
     }
+    const controller = new AbortController();
+    resolveCachedRunConfigTarget(target, {
+      hfToken,
+      inventoryVersion,
+      signal: controller.signal,
+    })
+      .then((resolved) => {
+        if (
+          controller.signal.aborted ||
+          runConfigInbox.getSnapshot() !== pending
+        ) {
+          return;
+        }
+        runConfigInbox.bind(
+          pending.id,
+          modelConfigDraftKey(resolved.id, resolved.meta.ggufVariant),
+        );
+        requestModelConfigHandoff({ requestId: pending.id, ...resolved });
+      })
+      .catch(() => {
+        if (
+          controller.signal.aborted ||
+          runConfigInbox.getSnapshot() !== pending
+        ) {
+          return;
+        }
+        runConfigInbox.clear(pending.id);
+        toast.error(
+          "Could not check local model availability. Reopen the link to try again.",
+        );
+      });
+    return () => controller.abort();
   }, [
     canOpen,
     currentModel,
@@ -129,6 +161,8 @@ export function SharedRunConfigLinkHandler() {
     pending,
     settingsHydrated,
     routeReady,
+    hfToken,
+    inventoryVersion,
   ]);
 
   const chooseModel =

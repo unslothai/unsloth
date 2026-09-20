@@ -5,15 +5,20 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
+const playwright = require(process.env.PLAYWRIGHT_MODULE || "playwright");
+const browserName = process.env.PLAYWRIGHT_BROWSER || "chromium";
+assert.ok(["chromium", "firefox", "webkit"].includes(browserName));
 const base = process.env.SHARE_RUN_BASE_URL || "http://127.0.0.1:5198";
 assert.ok(["localhost", "127.0.0.1", "[::1]"].includes(new URL(base).hostname));
-const browser = await chromium.launch({
+const browser = await playwright[browserName].launch({
   headless: true,
-  ...(process.env.PLAYWRIGHT_CHROMIUM_PATH
+  ...(browserName === "chromium" && process.env.PLAYWRIGHT_CHROMIUM_PATH
     ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH }
     : {}),
-  args: ["--no-sandbox"],
+  ...(browserName === "chromium" ? { args: ["--no-sandbox"] } : {}),
+  ...(browserName === "firefox"
+    ? { firefoxUserPrefs: { "dom.events.testing.asyncClipboard": true } }
+    : {}),
 });
 const model = "unsloth/Test-GGUF";
 const params = (extra = {}) =>
@@ -23,6 +28,9 @@ async function fixture({
   authenticated = true,
   delay = 100,
   models = [],
+  cachedGguf = [],
+  cachedModels = [],
+  variants = [],
 } = {}) {
   const context = await browser.newContext({
     viewport: { width: 1400, height: 1000 },
@@ -32,6 +40,8 @@ async function fixture({
   const writes = [];
   const errors = [];
   const requests = [];
+  const loads = [];
+  const validations = [];
   page.on("pageerror", (error) => errors.push(String(error)));
   await page.addInitScript((authenticated) => {
     if (authenticated) localStorage.setItem("unsloth_auth_token", "local-test");
@@ -65,8 +75,8 @@ async function fixture({
         refresh_token: "local-refresh",
         must_change_password: false,
       };
-    if (url.pathname.includes("device-type"))
-      body = { device_type: "cuda", chat_only: false };
+    if (url.pathname === "/api/health")
+      body = { device_type: "linux", chat_only: false };
     if (url.pathname.includes("llama-flags"))
       body = {
         flags: {},
@@ -100,8 +110,32 @@ async function fixture({
     if (
       ["/api/hub/cached-gguf", "/api/hub/cached-models"].includes(url.pathname)
     ) {
-      body = { cached: [], scan_confirmed: true };
+      body = {
+        cached: url.pathname.endsWith("cached-gguf") ? cachedGguf : cachedModels,
+        scan_confirmed: true,
+      };
     }
+    if (url.pathname === "/api/hub/gguf-variants") {
+      body = {
+        repo_id: url.searchParams.get("repo_id"),
+        variants,
+        default_variant: variants[0]?.quant ?? null,
+        has_vision: false,
+      };
+    }
+    if (url.pathname === "/api/inference/validate") {
+      validations.push(request.postDataJSON());
+      body = { valid: true };
+    }
+    if (url.pathname === "/api/inference/load") {
+      loads.push(request.postDataJSON());
+      body = {
+        status: "success",
+        is_gguf: request.postDataJSON().gguf_variant != null,
+        context_length: 8192,
+      };
+    }
+    if (url.pathname === "/api/inference/unload") body = { status: "unloaded" };
     if (url.pathname.includes("/threads")) body = { threads: [] };
     if (url.pathname.includes("/projects")) body = { projects: [] };
     await route.fulfill({
@@ -110,7 +144,7 @@ async function fixture({
       body: JSON.stringify(body),
     });
   });
-  return { context, page, writes, errors, requests };
+  return { context, page, writes, errors, requests, loads, validations };
 }
 
 async function value(page, label, expected, scope = "body") {
@@ -142,6 +176,248 @@ async function waitForSettings(page) {
 }
 
 try {
+  for (const { loadId, isGguf } of [
+    {
+      loadId: "/secondary/cache/models--unsloth--Test-GGUF/snapshots/pinned",
+      isGguf: true,
+    },
+    {
+      loadId: "C:\\Models\\models--unsloth--Test-GGUF\\snapshots\\pinned",
+      isGguf: true,
+    },
+    {
+      loadId: "/secondary/cache/models--owner--native/snapshots/pinned",
+      isGguf: false,
+    },
+  ]) {
+    const repoId = isGguf ? model : "owner/native";
+    for (const active of [false, true]) {
+      const { context, page, writes, errors, requests, loads, validations } =
+        await fixture({
+          [isGguf ? "cachedGguf" : "cachedModels"]: [
+            {
+              repo_id: repoId,
+              load_id: active ? "/other/snapshot" : loadId,
+              cache_path: active ? "/other/cache" : loadId,
+              size_bytes: 1024,
+            },
+          ],
+          variants: [
+            {
+              quant: "Q4_K_M",
+              filename: "Test-Q4_K_M.gguf",
+              size_bytes: 1024,
+              downloaded: true,
+            },
+          ],
+        });
+      await page.goto(`${base}/chat`);
+      await waitForSettings(page);
+      if (!active && !isGguf) {
+        await page.evaluate(async () => {
+          const { fetchInventorySource, useDeviceInventoryStore } = await import(
+            "/src/features/hub/inventory/use-device-inventory.ts"
+          );
+          const { getInventoryVersion } = await import(
+            "/src/features/hub/stores/inventory-events.ts"
+          );
+          await fetchInventorySource("cachedModels", {
+            inventoryVersion: getInventoryVersion(),
+          });
+          useDeviceInventoryStore.setState((state) => ({
+            cachedModels: {
+              ...state.cachedModels,
+              rows: [],
+              refreshedAt: Date.now() - 60_000,
+            },
+          }));
+        });
+      }
+      if (active) {
+        await page.evaluate(
+          async ({ model, loadId, isGguf }) => {
+            const { useChatRuntimeStore: store } = await import(
+              "/src/features/chat/stores/chat-runtime-store.ts"
+            );
+            store.setState({
+              params: { ...store.getState().params, checkpoint: model },
+              loadedIsGguf: isGguf,
+              activeGgufVariant: isGguf ? "Q4_K_M" : null,
+              activeLoadId: loadId,
+            });
+          },
+          { model: repoId, loadId, isGguf },
+        );
+      }
+      const config = isGguf ? { nParallel: "3" } : { maxSeqLength: "8192" };
+      await nativeLink(
+        page,
+        new URLSearchParams({
+          ...(active
+            ? {}
+            : {
+                model: repoId,
+                isGguf: String(isGguf),
+                ...(isGguf ? { ggufVariant: "Q4_K_M" } : {}),
+              }),
+          ...config,
+        }),
+      );
+      const editor = page.locator('[data-slot="popover-content"]');
+      await value(
+        page,
+        isGguf ? "Parallel decode slots" : "Max Seq Length",
+        isGguf ? "3" : "8192",
+        '[data-slot="popover-content"]',
+      );
+      await editor.getByRole("button", { name: "Share", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "Share run settings" });
+      const shared = await dialog.getByLabel("Shareable link").inputValue();
+      const sharedParams = new URLSearchParams(new URL(shared).hash.slice(5));
+      assert.equal(sharedParams.get("model"), repoId);
+      assert.equal(shared.includes("pinned"), false);
+      assert.equal(sharedParams.has("loadId"), false);
+      await page.keyboard.press("Escape");
+      assert.equal(loads.length, 0);
+      assert.ok(
+        !writes.some((path) => path.includes("download")),
+        writes.join(","),
+      );
+      await Promise.all([
+        page.waitForResponse((response) =>
+          response.url().endsWith("/api/inference/load"),
+        ),
+        editor.getByRole("button", { name: "Load model", exact: true }).click(),
+      ]);
+      assert.equal(loads.length, 1);
+      assert.equal(loads[0].model_path, loadId);
+      assert.equal(loads[0].gguf_variant, isGguf ? "Q4_K_M" : null);
+      if (isGguf) assert.equal(loads[0].n_parallel, 3);
+      else assert.equal(loads[0].max_seq_length, 8192);
+      await page.waitForFunction(
+        async ({ model, loadId }) => {
+          const { useChatRuntimeStore } = await import(
+            "/src/features/chat/stores/chat-runtime-store.ts"
+          );
+          const state = useChatRuntimeStore.getState();
+          return (
+            state.params.checkpoint === model &&
+            state.activeLoadId === loadId &&
+            !state.modelLoading
+          );
+        },
+        { model: repoId, loadId },
+      );
+      assert.ok(validations.length > 0);
+      assert.ok(validations.some((request) => request.model_path === loadId));
+      const loadValidations = validations.filter(
+        (request) => "max_seq_length" in request,
+      );
+      assert.ok(loadValidations.length > 0);
+      assert.ok(
+        loadValidations.every((request) => request.model_path === loadId),
+      );
+      assert.ok(
+        !writes.some((path) => path.includes("download")),
+        writes.join(","),
+      );
+      const listings = requests
+        .map((url) => new URL(url))
+        .filter((url) => url.pathname === "/api/hub/gguf-variants");
+      assert.equal(listings.length, active || !isGguf ? 0 : 1);
+      for (const url of listings) {
+        assert.equal(url.searchParams.get("offline"), "true");
+        assert.equal(url.searchParams.get("repo_id"), loadId);
+        assert.equal(url.searchParams.get("local_path"), loadId);
+      }
+      assert.deepEqual(errors, []);
+      await context.close();
+      console.log(
+        `PASS: ${active ? "active" : "cached"} snapshot imports load locally: ${loadId}`,
+      );
+    }
+  }
+  for (const newer of ["valid", "invalid"]) {
+    const { context, page, writes, errors } = await fixture({
+      cachedGguf: [
+        { repo_id: model, load_id: "/cache/pinned", size_bytes: 1024 },
+      ],
+    });
+    let release;
+    let entered;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const listingStarted = new Promise((resolve) => {
+      entered = resolve;
+    });
+    await page.route("**/api/hub/gguf-variants?**", async (route) => {
+      entered();
+      await held;
+      await route.fulfill({
+        json: {
+          variants: [
+            { quant: "Q4_K_M", filename: "model.gguf", downloaded: true },
+          ],
+        },
+      });
+    });
+    await page.goto(`${base}/chat#run?${params({ nParallel: "3" })}`);
+    await listingStarted;
+    await nativeLink(
+      page,
+      newer === "valid"
+        ? "model=owner/native&isGguf=false&maxSeqLength=8192"
+        : "model=owner/native&unknown=true",
+    );
+    release();
+    if (newer === "valid") {
+      await value(page, "Max Seq Length", "8192");
+    } else {
+      await page
+        .getByText("Could not open shared run settings", { exact: true })
+        .waitFor();
+      assert.equal(
+        await page.getByRole("button", { name: "Share", exact: true }).count(),
+        0,
+      );
+    }
+    assert.ok(
+      !writes.some((path) => /\/load$|download/.test(path)),
+      writes.join(","),
+    );
+    assert.deepEqual(errors, []);
+    await context.close();
+    console.log(
+      `PASS: a newer ${newer} link supersedes a delayed inventory lookup`,
+    );
+  }
+  {
+    const { context, page, writes, errors } = await fixture();
+    await page.route("**/api/hub/cached-gguf", (route) =>
+      route.fulfill({ status: 503, json: { detail: "Unavailable" } }),
+    );
+    await page.goto(`${base}/chat#run?${params({ nParallel: "3" })}`);
+    await page
+      .getByText(
+        "Could not check local model availability. Reopen the link to try again.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "Share", exact: true }).count(),
+      0,
+    );
+    assert.ok(
+      !writes.some((path) => /\/load$|download/.test(path)),
+      writes.join(","),
+    );
+    assert.deepEqual(errors, []);
+    await context.close();
+    console.log(
+      "PASS: an inventory failure cancels the import without staging a download",
+    );
+  }
   {
     const { context, page, writes, errors } = await fixture({ delay: 400 });
     const args = [
@@ -184,7 +460,22 @@ try {
     const dialog = page.getByRole("dialog", { name: "Share run settings" });
     await dialog.waitFor();
     const link = await dialog.getByLabel("Shareable link").inputValue();
-    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    if (browserName === "chromium") {
+      await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    } else if (browserName === "webkit") {
+      await page.evaluate(() => {
+        let text = "";
+        Object.defineProperty(navigator, "clipboard", {
+          value: {
+            writeText: async (value) => { text = value; },
+            readText: async () => text,
+          },
+        });
+      });
+      console.log(
+        "NOTE: WebKit's headless system clipboard is unavailable; clipboard calls use a test double.",
+      );
+    }
     await dialog
       .getByRole("button", { name: "Copy link", exact: true })
       .click();
@@ -565,6 +856,7 @@ try {
       () =>
         document.activeElement?.getAttribute("aria-label") === "Message input",
     );
+    await page.getByRole("button", { name: "Select model", exact: true }).click();
     await page.evaluate(async () => {
       const { requestModelConfigHandoff } = await import(
         "/src/features/model-picker/model-config/model-config-handoff.ts"

@@ -4,7 +4,10 @@
 import { isExternalModelId } from "../chat/external-providers";
 import type { ChatLoraSummary, ChatModelSummary } from "../chat/types/runtime";
 import type { ModelConfigHandoffRequest } from "../model-picker/model-config/model-config-handoff";
-import { residentModelIdMatches } from "../model-picker/model-config/model-identity";
+import {
+  ggufVariantsMatch,
+  residentModelIdMatches,
+} from "../model-picker/model-config/model-identity";
 import { type SharedRunConfig, isShareableModelId } from "./links.ts";
 
 const ggufName = /(?:-gguf|\.gguf)$/i;
@@ -14,6 +17,7 @@ type ModelSelection = {
   activeGgufVariant: string | null;
   loadedIsGguf: boolean | null;
   activeNativePathToken: string | null;
+  activeLoadId: string | null;
   models: readonly Pick<ChatModelSummary, "id" | "isGguf" | "isLora">[];
   loras: readonly Pick<ChatLoraSummary, "id" | "exportType">[];
 };
@@ -60,6 +64,10 @@ export function resolveRunConfigTarget(
     knownFormat,
     sameModel ? selection.activeGgufVariant : null,
   );
+  const sameArtifact =
+    sameModel &&
+    selection.loadedIsGguf === isGguf &&
+    ggufVariantsMatch(ggufVariant, selection.activeGgufVariant);
   return {
     id,
     meta: {
@@ -67,7 +75,10 @@ export function resolveRunConfigTarget(
       isLora: model?.isLora ?? lora?.exportType === "lora",
       isGguf,
       ggufVariant,
-      ...(sameModel && isGguf && selection.activeNativePathToken
+      ...(sameArtifact
+        ? { loadId: selection.activeLoadId, isDownloaded: true }
+        : {}),
+      ...(sameArtifact && isGguf && selection.activeNativePathToken
         ? { nativePathToken: selection.activeNativePathToken }
         : {}),
     },

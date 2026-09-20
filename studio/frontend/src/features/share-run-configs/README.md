@@ -38,6 +38,8 @@ const link = `unsloth://run?${parameters}`;
 
 Opening a link navigates to the existing model configuration editor. It does not load a model, start a download, or save the imported settings. The existing Load/Reload and Remember controls own those actions. A pending import waits for saved settings to hydrate, then overlays only the supplied fields once. A model-only link does not mark the settings as edited. Closing the receiving editor cancels an unfinished import, even when the same model's sidebar remains open. The sidebar reflects the shared draft without consuming pending links. Links received during login remain in memory until authentication completes. Newer native run links, rejected run links and existing Hub intents supersede an older startup link, including during credential loading.
 
+Before handing a Hub model to the editor, the receiver checks the shared local inventory and refreshes expired results using its existing freshness window. Complete cached models carry their local load ID and downloaded status into the existing Load action. GGUF checks use an offline-only listing for the requested variant at the exact load target; partial or different variants and copies in other snapshots do not count as downloaded. Matching active-model imports retain the recipient's existing load path without an inventory lookup. These paths stay local and are never included in shared URLs. Failed availability checks cancel the import with a retry message, and newer links supersede pending checks.
+
 If saved settings fail to load or the editor's wait expires, the import is cancelled with a message and the draft remains untouched. Close the editor and reopen the link after the connection recovers. This prevents a partial link from replacing remembered defaults with temporary fallback values. Consecutive duplicate native events are ignored; an intervening browser run link starts a new intent, including when that browser link is rejected.
 
 Editing a setting, changing Remember, or pressing Reset while an import is waiting cancels that import. Typing also cancels it for numeric fields that commit only when focus leaves the field. The newer user action wins, including edits made through the resident model's sidebar. Ready imports apply after the editor's mount effects settle so React Strict Mode cannot consume a link and then discard its draft during remounting.
@@ -61,6 +63,7 @@ Editing a setting, changing Remember, or pressing Reset while an import is waiti
 | `inbox.ts` | In-memory request lifetime and sparse configuration merging |
 | `receive-link.ts` | Link intake and native intent ordering/deduplication |
 | `target.ts` | Model identity, format and local capability resolution |
+| `cached-target.ts` | Fresh local inventory and exact cached variant resolution |
 | `link-handler.tsx` | Browser events, login recovery and existing editor handoff |
 | `config-controls.tsx` | One-time draft application and Share entry point |
 | `share-dialog.tsx` | Field selection, preview and clipboard |
@@ -92,6 +95,8 @@ npm run typecheck
 ```
 
 For the browser regression test, start a fresh Vite server on loopback port 5198, then run `node tests/share-run-configs.browser.mjs` with Playwright available. Restart Vite after source edits so the test's direct module imports and the app use the same module instances rather than different hot-reload versions. `PLAYWRIGHT_MODULE` and `PLAYWRIGHT_CHROMIUM_PATH` can point to an existing local Playwright installation and Chromium executable. `SHARE_RUN_BASE_URL` selects another loopback development server. All backend requests are mocked and external requests are blocked. The test does not require a GPU, running backend, or model download.
+
+Set `PLAYWRIGHT_BROWSER` to `chromium` (the default), `firefox`, or `webkit` to run the same suite in each engine. Import-to-Load cases assert that cached and pinned snapshots use their exact local paths without download requests, including Windows paths. Chromium and Firefox check the system clipboard; headless WebKit uses a clipboard test double. Inventory failure and supersession tests cover the asynchronous handoff.
 
 Native OS protocol-launch behavior requires separate Windows, WSL2, macOS and Linux desktop testing. Browser tests exercise the native intent receiver, not the OS launcher.
 
