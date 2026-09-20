@@ -686,7 +686,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     # to reason about them: these come from the approval gate, which already
     # excludes the Studio home.
     silent_roots = tuple(
-        root for root in model_library_roots()
+        root
+        for root in model_library_roots()
         if not _within(root, workdir) and not any(_within(root, r) for r in system_roots)
     )
     model_cache = _model_cache_binds(workdir)
