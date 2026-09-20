@@ -164,6 +164,8 @@ export const ptBR = {
       export: "Exportar",
       recents: "Recentes",
       noChatsYet: "Nenhum chat ainda",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Nenhum chat",
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",
@@ -1267,7 +1269,11 @@ export const ptBR = {
       },
       gpu: {
         title: "Dispositivos de GPU",
-        ggufInference: "Inferência com GGUF",
+        memory: "Memória da GPU",
+        sharedWithSystemRam: "Compartilhada com a RAM do sistema",
+        estimatedAvailable: "Disponibilidade estimada: {value}",
+        sharedEstimatedAvailable: "RAM compartilhada do sistema: disponibilidade estimada de {value}",
+        ggufInference: "Memória para modelos GGUF",
         unavailable: "indisponível",
         detecting: "Procurando GPUs...",
         unreadable: "Não foi possível ler o hardware deste servidor.",
