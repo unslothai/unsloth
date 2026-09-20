@@ -95,7 +95,6 @@ def _env(home: Path, **overrides: str) -> dict[str, str]:
 
 
 @NEEDS_POSIX_BASH
-
 def _master_root_answer(tmp_path: Path, environment: str) -> str:
     """What uninstall.ps1's own _MasterRoot answers, with *environment* run before it.
 
@@ -757,12 +756,15 @@ def test_the_windows_uninstaller_resolves_a_relative_root_like_setup(tmp_path):
     chosen = tmp_path / "chosen"
     (chosen / "portable").mkdir(parents = True)
     initial.mkdir()
-    out = _master_root_answer(tmp_path, f"""[System.Environment]::CurrentDirectory = "{initial}"
+    out = _master_root_answer(
+        tmp_path,
+        f"""[System.Environment]::CurrentDirectory = "{initial}"
 Set-Location "{chosen}"
 $env:UNSLOTH_HOME = "portable"
 $env:USERPROFILE = "{tmp_path}/profile"
 Write-Output (_MasterRoot)
-""")
+""",
+    )
     assert out == str(chosen / "portable"), out
 
 
@@ -929,13 +931,16 @@ def test_the_windows_uninstaller_does_not_borrow_another_installs_note(tmp_path)
     named = tmp_path / "named"
     (named / "share").mkdir(parents = True)
 
-    out = _master_root_answer(tmp_path, f"""$env:UNSLOTH_HOME = ""
+    out = _master_root_answer(
+        tmp_path,
+        f"""$env:UNSLOTH_HOME = ""
 $env:STUDIO_HOME = ""
 $env:UNSLOTH_STUDIO_HOME = "{named}"
 $env:USERPROFILE = "{profile}"
 $answer = _MasterRoot
 Write-Output "ANSWER:$answer"
-""")
+""",
+    )
     assert out == "ANSWER:", out
 
 
@@ -958,12 +963,15 @@ def test_the_windows_uninstaller_finds_a_master_root_from_the_note(tmp_path):
     profile = tmp_path / "profile"
     (profile / ".unsloth" / "studio" / "share").mkdir(parents = True)
 
-    out = _master_root_answer(tmp_path, f"""$env:UNSLOTH_HOME = ""
+    out = _master_root_answer(
+        tmp_path,
+        f"""$env:UNSLOTH_HOME = ""
 $env:STUDIO_HOME = ""
 $env:UNSLOTH_STUDIO_HOME = "{master}/studio"
 $env:USERPROFILE = "{profile}"
 Write-Output (_MasterRoot)
-""")
+""",
+    )
     assert out == str(master), out
 
 

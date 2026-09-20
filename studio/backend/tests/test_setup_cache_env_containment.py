@@ -383,11 +383,15 @@ def test_studio_home_outranks_unsloth_home(monkeypatch, tmp_path):
     sr = _load_storage_roots()
 
     assert sr.studio_root() == explicit.resolve()
+
+
 def _use_data_designer(home: Path) -> None:
     """Write what a Studio Data Designer session leaves behind."""
     (home / "managed-assets").mkdir(parents = True, exist_ok = True)
     (home / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
     (home / "managed-assets" / "seeds.parquet").write_bytes(b"PAR1")
+
+
 def test_a_used_managed_home_does_not_flip_when_the_legacy_dir_is_deleted(tmp_path):
     # Deleting and recreating ~/.data-designer used to toggle which home a run read.
     managed = tmp_path / "studio" / "data-designer"
@@ -407,6 +411,8 @@ def test_a_used_managed_home_does_not_flip_when_the_legacy_dir_is_deleted(tmp_pa
         seen.append(os.environ.get("DATA_DESIGNER_HOME"))
 
     assert seen == [str(managed)] * 4
+
+
 def _fail_stat_on(monkeypatch, target: Path, error: OSError) -> None:
     """Make every stat of *target* raise *error*, and leave every other path alone.
 
@@ -425,6 +431,7 @@ def _fail_stat_on(monkeypatch, target: Path, error: OSError) -> None:
 
     for name in ("stat", "lstat"):
         monkeypatch.setattr(os, name, denying(getattr(os, name)))
+
 
 def _assert_the_resolver_really_ran(tmp_path: Path) -> None:
     """A decline only means something beside a pin that still happened.
@@ -531,7 +538,7 @@ def _mpl_linked_styles(tmp_path, monkeypatch):
     config = _matplotlib_config_dir(tmp_path / "home")
     config.mkdir(parents = True)
     elsewhere = tmp_path / "styles-volume"
-    elsewhere.mkdir()   # empty, which is the whole point
+    elsewhere.mkdir()  # empty, which is the whole point
     (config / "stylelib").symlink_to(elsewhere, target_is_directory = True)
 
 
@@ -642,7 +649,7 @@ def _dd_redirected_assets(tmp_path, monkeypatch):
     managed = _dd_managed(tmp_path)
     managed.mkdir(parents = True)
     elsewhere = tmp_path / "big-disk" / "assets"
-    elsewhere.mkdir(parents = True)   # empty, which is the whole point
+    elsewhere.mkdir(parents = True)  # empty, which is the whole point
     (managed / "managed-assets").symlink_to(elsewhere, target_is_directory = True)
     _use_data_designer(_dd_legacy(tmp_path))
 
@@ -709,6 +716,7 @@ def test_the_data_designer_home_is_pinned_only_when_it_would_hide_nothing(
         assert "DATA_DESIGNER_HOME" not in os.environ
         assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
         _assert_the_resolver_really_ran(tmp_path)
+
 
 def test_managed_assets_follow_an_explicit_data_designer_home(monkeypatch, tmp_path):
     chosen = tmp_path / "mine" / ".data-designer"
@@ -813,6 +821,8 @@ def _matplotlib_config_dir(home: Path) -> Path:
         base = (os.environ.get("XDG_CONFIG_HOME") or "").strip()
         return (Path(base) if base else home / ".config") / "matplotlib"
     return home / ".matplotlib"
+
+
 def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
     pytest.importorskip("matplotlib")
     config = _matplotlib_config_dir(tmp_path / "home")
@@ -843,6 +853,8 @@ def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
     assert result["rc"] == str(config / "matplotlibrc")
     assert result["dpi"] == 222.0
     assert result["style"] is True
+
+
 @pytest.mark.skipif(
     not sys.platform.startswith(("linux", "freebsd")),
     reason = "XDG config base is the Linux/FreeBSD branch",
@@ -1102,6 +1114,8 @@ def test_a_managed_matplotlibrc_is_not_displaced_by_a_later_legacy_one(tmp_path)
     sr._setup_cache_env()
 
     assert os.environ["MPLCONFIGDIR"] == str(managed)
+
+
 def test_a_blank_toolchain_override_is_dropped_on_a_spaced_root(monkeypatch, tmp_path):
     """ "blank counts as unset" has to hold for a root we refuse to pin, too.
 
@@ -1187,6 +1201,8 @@ def test_a_usable_managed_inductor_path_is_still_published(tmp_path):
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(
         tmp_path / "studio" / "cache" / "torchinductor"
     )
+
+
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason = "chmod 000 denies neither")
 def test_a_note_that_could_not_be_read_is_not_cached_as_a_missing_one(monkeypatch, tmp_path):
     """A miss is a fact about the install; a failure to LOOK is a fact about one instant.
@@ -1342,6 +1358,7 @@ def test_a_master_root_is_honoured_only_when_a_reader_should_honour_it(
     else:
         assert expected in hub.parents
         assert Path(os.environ["TORCH_HOME"]).is_relative_to(expected)
+
 
 # 25 of 113 cases stayed green with the production hunks reverted: each asserts a variable is
 # ABSENT, which is equally true when no pinning code exists, so they were assertions rather than
