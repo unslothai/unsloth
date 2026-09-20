@@ -946,7 +946,9 @@ def test_a_hard_link_to_a_readable_file_cannot_be_created_in_the_workdir(tmp_pat
     assert not (workdir / "alias").exists()
 
 
-def test_a_workdir_spelled_differently_from_the_studio_home_is_still_readable(monkeypatch, tmp_path):
+def test_a_workdir_spelled_differently_from_the_studio_home_is_still_readable(
+    monkeypatch, tmp_path
+):
     """The deny rules are emitted in every spelling a path has, so the restore
     list has to be built the same way. It was not. On macOS /var, /tmp and /etc
     are symlinks into /private, a session workdir arrives resolved and a

@@ -1087,7 +1087,9 @@ def test_a_wedged_cache_mount_drops_the_cache_instead_of_hanging_the_launch(tmp_
         time.sleep(30)
         raise AssertionError("the caller should not have waited for this")
 
-    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", lambda name, path, witness = None: wedged(path))
+    monkeypatch.setattr(
+        sandbox_linux, "_inspect_cache_component", lambda name, path, witness = None: wedged(path)
+    )
     monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 1.0)
     started = time.monotonic()
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
@@ -1128,7 +1130,11 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     _share_cache_paths(monkeypatch, cache)
     started: list[str] = []
 
-    def wedged(name, path, witness = None):
+    def wedged(
+        name,
+        path,
+        witness = None,
+    ):
         started.append(path)
         time.sleep(30)
 
@@ -1182,7 +1188,11 @@ def test_concurrent_launches_start_one_cache_worker_and_never_raise(tmp_path, mo
     started: list[str] = []
     gate = threading.Event()
 
-    def wedged(name, path, witness = None):
+    def wedged(
+        name,
+        path,
+        witness = None,
+    ):
         started.append(path)
         gate.wait(30)
 
@@ -2127,7 +2137,9 @@ def test_a_windows_system_directory_is_not_a_model_library(monkeypatch, tmp_path
     monkeypatch.setenv("SystemRoot", str(windows))
     monkeypatch.setattr(tool_path_approval, "_scan_folder_roots", lambda: (str(windows),))
     monkeypatch.setattr(
-        "utils.paths.storage_roots.well_known_model_dirs", lambda: (), raising = False,
+        "utils.paths.storage_roots.well_known_model_dirs",
+        lambda: (),
+        raising = False,
     )
 
     assert os_sandbox.model_library_roots() == ()
@@ -2143,7 +2155,9 @@ def test_the_directory_holding_every_home_is_not_a_model_library(monkeypatch, tm
     monkeypatch.setenv("HOME", str(homes / "someone"))
     monkeypatch.setattr(tool_path_approval, "_scan_folder_roots", lambda: (str(homes),))
     monkeypatch.setattr(
-        "utils.paths.storage_roots.well_known_model_dirs", lambda: (), raising = False,
+        "utils.paths.storage_roots.well_known_model_dirs",
+        lambda: (),
+        raising = False,
     )
 
     assert os_sandbox.model_library_roots() == ()
@@ -2299,7 +2313,11 @@ def test_an_unchanged_cache_is_not_walked_again(monkeypatch, tmp_path):
     walks: list[str] = []
     real = sandbox_linux._inspect_cache_component
 
-    def counted(name, path, witness = None):
+    def counted(
+        name,
+        path,
+        witness = None,
+    ):
         walks.append(path)
         return real(name, path, witness)
 

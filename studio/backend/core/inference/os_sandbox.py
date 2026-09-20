@@ -359,9 +359,7 @@ def _hazard_within_wall_clock(
                 # What is LEFT of the budget, not a fresh copy of it: the walk
                 # and anything before it share one deadline.
                 answer.append(
-                    _host_channel_hazard(
-                        root, max_entries, max(0.1, deadline - time.monotonic())
-                    )
+                    _host_channel_hazard(root, max_entries, max(0.1, deadline - time.monotonic()))
                 )
             except _ScanBudgetExceeded as exc:
                 budget.append(str(exc))
@@ -421,7 +419,6 @@ def _ipc_endpoint_is_dead(path: str) -> bool:
         # so the endpoint gets a short alias through a temporary symlink to its
         # directory rather than being declared undecidable on path length.
         import tempfile
-
         alias_dir = None
         try:
             alias_dir = tempfile.mkdtemp(prefix = "unsloth-ipc-")
@@ -539,7 +536,9 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
                     # for it. Removing this name would hide the finding.
                     continue
                 if not _ipc_endpoint_is_dead(path):
-                    logger.info("Leaving a live IPC endpoint in the tool scratch directory: %s", path)
+                    logger.info(
+                        "Leaving a live IPC endpoint in the tool scratch directory: %s", path
+                    )
                     continue
                 try:
                     os.unlink(path)
@@ -738,7 +737,17 @@ def _is_filesystem_root(path: str, pathmod: Any = None) -> bool:
 # because they are not fixed: the system drive can be any letter and Program
 # Files can be redirected, so they are read from the environment below.
 _NEVER_A_MODEL_LIBRARY = (
-    "/", "/etc", "/usr", "/var", "/opt", "/bin", "/lib", "/home", "/Users", "/root", "/tmp",
+    "/",
+    "/etc",
+    "/usr",
+    "/var",
+    "/opt",
+    "/bin",
+    "/lib",
+    "/home",
+    "/Users",
+    "/root",
+    "/tmp",
 )
 
 _WINDOWS_SYSTEM_VARS = (
