@@ -1,18 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Source-level guards keeping the duplicate-weight-format filter's two implementations aligned.
+"""Guards that dataset-size.ts still mirrors snapshot_filters.py.
 
-``hub/utils/snapshot_filters.py`` decides what ``snapshot_download`` actually fetches;
-``frontend/src/features/hub/lib/dataset-size.ts`` is a hand-ported copy of the same rules
-that produces the size shown in the Model hub and the download progress denominator.
-There is no shared source, so the pair can drift silently: the symptom is a model whose
-advertised size never matches what lands on disk, or a progress bar that never reaches
-100% because its denominator counts files the backend skipped.
-
-These guards do not re-test the filtering behaviour (that is
-``test_hub_snapshot_duplicate_weight_formats.py``); they pin the correspondence, so adding
-a pattern on one side without the other fails here rather than in a user's download.
+The backend decides what snapshot_download fetches, the frontend is a hand-ported copy
+deciding the size shown and the progress denominator, and nothing is shared between them,
+so drift is silent: an advertised size that never matches disk, or a bar stuck below 100%.
 """
 
 from __future__ import annotations
@@ -59,13 +52,12 @@ def test_every_backend_duplicate_pattern_has_a_frontend_counterpart():
     src = _ts_source()
     for pattern in DUPLICATE_WEIGHT_FORMAT_PATTERNS:
         assert _TS_COUNTERPARTS[pattern] in src, f"{pattern} has no counterpart in dataset-size.ts"
-    # The index.json trio is one alternation branch in the regex rather than three patterns.
     assert r"\.index\.json$" in src
 
 
 def test_both_gates_spell_the_shard_number_with_ascii_digits():
-    # Python's \d matches non-ASCII digits, JavaScript's does not, so \d here would make the
-    # two gates disagree about whether a repo ships a root safetensors checkpoint at all.
+    # Python's \d matches non-ASCII digits and JavaScript's does not, so \d here would have
+    # the two gates disagree about whether a repo ships a root checkpoint at all.
     assert r"model([-_][0-9]+-of-[0-9]+)?\.safetensors" in (
         Path(__file__).resolve().parents[1] / "hub" / "utils" / "snapshot_filters.py"
     ).read_text(encoding = "utf-8")
