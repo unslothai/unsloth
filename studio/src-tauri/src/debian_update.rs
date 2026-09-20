@@ -26,6 +26,12 @@ pub(crate) fn is_supported_install() -> bool {
         && fs::metadata(INSTALLED_BINARY)
             .is_ok_and(|metadata| metadata.uid() == 0 && metadata.mode() & 0o022 == 0)
         && Path::new("/usr/bin/pkexec").is_file()
+        // The package manager this drives, checked for the same reason install.rs checks it
+        // before offering first-run dependency elevation: bundle_type() is baked into the
+        // binary, so a .deb unpacked onto a non-apt distro by hand or by alien still reports
+        // Deb, and without this the app offers an in-app update that dies on the first
+        // dpkg-query with "No such file or directory" instead of pointing at the release page.
+        && Path::new("/usr/bin/apt-get").is_file()
 }
 
 pub(crate) fn install(bytes: &[u8], signature: &str, version: &str) -> Result<(), String> {
