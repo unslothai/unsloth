@@ -33,6 +33,9 @@ from .llama import (
     LlamaLinearScalingRotaryEmbedding,
     original_apply_qkv,
     original_apply_o,
+    apply_logit_transforms,
+    resolve_logit_scaling,
+    resolve_logit_transforms,
 )
 from transformers.models.mistral.modeling_mistral import (
     MistralAttention,
@@ -327,7 +330,12 @@ def MistralForCausalLM_fast_forward(
             n_items = kwargs.get("num_items_in_batch", None)
             if n_items is None:
                 n_items = kwargs.get("n_items", None)
-            logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
+            # Read the transforms the way llama.py's fused branch does, so a Mistral-family
+            # config that ever carries a scale optimizes the loss the reference implementation
+            # computes. No config does today, and all three then resolve to 0.
+            logit_softcapping, logit_scale_multiply, logit_scale_divide = resolve_logit_transforms(
+                self.config
+            )
 
             # Packed-boundary guard, see llama.py. This branch returns, so mask_packed_sequence_boundaries()
             # below is never reached.
@@ -348,6 +356,8 @@ def MistralForCausalLM_fast_forward(
                 target_gb = None,
                 torch_compile = True,
                 logit_softcapping = logit_softcapping,
+                logit_scale_multiply = logit_scale_multiply,
+                logit_scale_divide = logit_scale_divide,
             )
             if not return_dict:
                 # Fused CE never materializes logits; use EMPTY_LOGITS like the return_dict branch below (#2068).
@@ -367,6 +377,9 @@ def MistralForCausalLM_fast_forward(
     logits = logits.to(_get_dtype(dtype_from_config(self.config)))
 
     loss = None
+    # Same answer the fused branch above reads, so the two branches cannot drift apart.
+    logit_softcapping, logit_scaling = resolve_logit_scaling(self.config)
+
     if labels is not None:
         shift_logits = logits
         shift_labels = torch.empty_like(labels)
@@ -382,8 +395,13 @@ def MistralForCausalLM_fast_forward(
         loss = fast_cross_entropy_loss(
             logits = shift_logits,
             labels = shift_labels,
+            logit_softcapping = logit_softcapping,
+            logit_scaling = logit_scaling,
             n_items = n_items,
         )
+    else:
+        # Inference returns the logits, so they carry the transforms themselves.
+        logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
     if not return_dict:
         output = (logits,) + outputs[1:]
