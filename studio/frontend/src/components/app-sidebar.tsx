@@ -1059,12 +1059,15 @@ export function AppSidebar() {
     return map;
   }, [allChatItems]);
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
-  // One test for "the Projects section is on screen". The nav row stands down behind it.
-  const projectsSectionShowing =
+  const projectsSectionRendered =
     !isStudioRoute &&
     !showTrainingRecents &&
     organizeBy === "project" &&
     projects.length > 0;
+  // The icon rail hides the section in CSS without unmounting it, so the nav row only stands
+  // down while the section is really on screen.
+  const projectsSectionShowing =
+    projectsSectionRendered && (isMobile || sidebarState !== "collapsed");
   const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
   const pinnedSort = useSidebarOrganizationStore((s) => s.pinnedSort);
   const manualOrder = useSidebarOrganizationStore((s) => s.manualOrder);
@@ -1666,6 +1669,8 @@ export function AppSidebar() {
   function handleProjectSelectionClick(
     event: React.MouseEvent,
     projectId: string,
+    // The list this row is in: Pinned holds folders too, and its ids are not Projects'.
+    orderedIds: string[],
   ): boolean {
     const additive = SELECT_WITH_META ? event.metaKey : event.ctrlKey;
     if (!additive && !event.shiftKey) return false;
@@ -1676,10 +1681,14 @@ export function AppSidebar() {
       return true;
     }
     const anchorId = projectAnchorRef.current;
-    if (!anchorId) projectAnchorRef.current = projectId;
+    // Shift without an anchor in this list starts one here, as the chat rows do.
+    const sameList = anchorId !== null && orderedIds.includes(anchorId);
+    if (!sameList) projectAnchorRef.current = projectId;
     setSelectedProjectIds(
       new Set(
-        anchorId ? rangeBetween(projectRowIds, anchorId, projectId) : [projectId],
+        sameList && anchorId
+          ? rangeBetween(orderedIds, anchorId, projectId)
+          : [projectId],
       ),
     );
     return true;
@@ -3506,7 +3515,7 @@ export function AppSidebar() {
           }
           onClick={(event) => {
             if (
-              handleProjectSelectionClick(event, project.id)
+              handleProjectSelectionClick(event, project.id, order.orderedIds)
             )
               return;
             clearSelection();
@@ -4113,7 +4122,7 @@ export function AppSidebar() {
 
         {/* One folder per unpinned project. The header owns "New project", so the section stays
             even when every project is pinned. */}
-        {projectsSectionShowing && (
+        {projectsSectionRendered && (
             <Collapsible
               open={projectsOpen}
               onOpenChange={setProjectsOpen}

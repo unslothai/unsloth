@@ -69,11 +69,81 @@ test("only Projects has a rule; every other row reads its own pref", () => {
 });
 
 test("an install that never chose gets the rule, one that chose keeps its choice", () => {
-  // Written before the field existed: no choice was ever made, so the rule applies.
+  // Written before the field existed, with a layout we shipped: no choice was ever made.
   assert.deepEqual(sanitizeCustomization({}).sidebarNavAuto, ["projects"]);
   assert.deepEqual(DEFAULT_CUSTOMIZATION.sidebarNavAuto, ["projects"]);
+  assert.deepEqual(
+    sanitizeCustomization({ sidebarNav: [...DEFAULT_CUSTOMIZATION.sidebarNav] })
+      .sidebarNavAuto,
+    ["projects"],
+  );
+  // An arranged layout already carries a Projects choice, so the rule must not overrule it.
+  const unpinned = sanitizeCustomization({
+    sidebarNav: DEFAULT_CUSTOMIZATION.sidebarNav.map((entry) =>
+      entry.id === "projects" ? { ...entry, pinned: false } : entry,
+    ),
+  });
+  assert.deepEqual(unpinned.sidebarNavAuto, []);
+  assert.equal(
+    sidebarNavRowPinned(
+      unpinned.sidebarNav.find((entry) => entry.id === "projects")!,
+      unpinned.sidebarNavAuto,
+      { projectsSectionShowing: false },
+    ),
+    false,
+    "an upgrade pinned a row the user had put away",
+  );
+  // Reordering counts as arranging too, even with Projects left where it was.
+  const reordered = sanitizeCustomization({
+    sidebarNav: [
+      { id: "train", pinned: true },
+      ...DEFAULT_CUSTOMIZATION.sidebarNav.filter((entry) => entry.id !== "train"),
+    ],
+  });
+  assert.deepEqual(reordered.sidebarNavAuto, []);
   // An explicit empty list is a decision, and survives the round trip.
   assert.deepEqual(sanitizeCustomization({ sidebarNavAuto: [] }).sidebarNavAuto, []);
+});
+
+// The rail hides both folder sections in CSS without unmounting them, so the row has to stay on
+// it: standing down there would bury the only way to reach projects behind More.
+test("the rail keeps the Projects row, since the section is hidden there", async () => {
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
+  assert.match(
+    sidebar,
+    /const projectsSectionShowing =\n\s*projectsSectionRendered && \(isMobile \|\| sidebarState !== "collapsed"\);/,
+  );
+  // The section itself still mounts on the rail, as it did before, and CSS hides it.
+  assert.match(sidebar, /\{projectsSectionRendered && \(/);
+  assert.match(
+    sidebar,
+    /\{projectsSectionRendered && \(\n[\s\S]{0,400}?group-data-\[collapsible=icon\]:hidden/,
+  );
+});
+
+// Pinned folders are rows of Pinned, whose ids are not the Projects list's, so a Shift-click
+// that read the Projects list found neither endpoint and cleared the selection.
+test("folders range-select within the list the row is in", async () => {
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
+  assert.match(
+    sidebar,
+    /function handleProjectSelectionClick\(\n\s*event: React\.MouseEvent,\n\s*projectId: string,\n(?:\s*\/\/[^\n]*\n)*\s*orderedIds: string\[\],/,
+  );
+  assert.match(
+    sidebar,
+    /const sameList = anchorId !== null && orderedIds\.includes\(anchorId\);/,
+  );
+  assert.match(sidebar, /rangeBetween\(orderedIds, anchorId, projectId\)/);
+  assert.match(
+    sidebar,
+    /handleProjectSelectionClick\(event, project\.id, order\.orderedIds\)/,
+  );
+  // Nothing reaches for the Projects list from inside the handler any more.
+  const handler = sidebar.slice(
+    sidebar.indexOf("function handleProjectSelectionClick("),
+    sidebar.indexOf("function selectProjectForContextMenu("),
+  );
+  assert.ok(!handler.includes("projectRowIds"), "the handler still reads projectRowIds");
 });
 
 test("the sidebar and the customizer resolve the row the same way", async () => {
