@@ -272,7 +272,9 @@ def test_the_scan_actually_found_the_workflows():
     """A glob that matched nothing would pass every check above."""
     scanned = _scanned()
     assert len(scanned) > 20, f"only found {len(scanned)} pull_request workflows; the scan is wrong"
-    assert "runner-pool-probe.yml" in scanned, "the workflow that motivated this guard left the scan"
+    assert (
+        "runner-pool-probe.yml" in scanned
+    ), "the workflow that motivated this guard left the scan"
     assert "lint-ci.yml" in scanned
 
 
