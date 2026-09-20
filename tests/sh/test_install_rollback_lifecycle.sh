@@ -670,13 +670,20 @@ space_case() {  # label  free_kb_stub  expect_warning(yes|no)  [extra_harness_li
         fi
     fi
 }
-space_case "less free than the venv needs" "echo 524288" yes
-space_case "plenty of room" "echo 104857600" no
+# Every case below is a cache on ANOTHER filesystem, which is the only arrangement where keeping
+# the old environment costs its own size; the co-located case is the last one.
+space_case "less free than the venv needs" "echo 524288" yes "_UV_CACHE_OFF_VOLUME=true"
+space_case "plenty of room" "echo 104857600" no "_UV_CACHE_OFF_VOLUME=true"
 # An unmeasurable disk is not a warning: du or df missing must print nothing, not "about  MB".
-space_case "unmeasurable free space" "return 0" no
+space_case "unmeasurable free space" "return 0" no "_UV_CACHE_OFF_VOLUME=true"
 # The warning's payload is the name of the opt-out, so printing it to someone who already passed
 # that flag advises an action they have taken, about a copy discarded three lines later.
-space_case "short on space, but --no-rollback already set" "echo 524288" no "_NO_ROLLBACK=true"
+space_case "short on space, but --no-rollback already set" "echo 524288" no "_NO_ROLLBACK=true
+_UV_CACHE_OFF_VOLUME=true"
+# uv hardlinks a wheel within one filesystem, so the old venv shares its blocks with the cache and
+# discarding it frees nothing -- while du over the venv alone still charges every one of those
+# inodes in full, which is exactly how this warning would recommend an opt-out that does nothing.
+space_case "short on space, but the cache is on this filesystem" "echo 524288" no
 
 echo "=== a discard that could not delete says so instead of reporting success (#11313) ==="
 # rm -rf exempts a missing path from its exit status, not a real unlink failure: an immutable

@@ -1928,6 +1928,11 @@ function Install-UnslothStudio {
     # Script-scoped: Start-StudioVenvRollback reads it, and tests/studio/test_install_rollback_lifecycle.ps1
     # extracts that function on its own.
     $script:StudioNoRollback = $false
+    # Set later by the cross-volume cache notice and read later still by Start-StudioVenvRollback.
+    # Initialised here rather than beside the other rollback state, which is reset AFTER that
+    # notice runs and would therefore clear it. Under `irm | iex` the script scope IS the caller's
+    # session, so a stale value from a previous run has to be cleared somewhere.
+    $script:StudioUvCacheOffVolume = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -6893,7 +6898,19 @@ exit 0
     # so this only catches what it cannot catch itself, such as a parameter it will not bind.
     try {
         if ($env:UV_CACHE_DIR -and -not (Test-StudioSameVolume -PathA $env:UV_CACHE_DIR -PathB $StudioHome)) {
-            step "uv cache" "$($env:UV_CACHE_DIR) is on a different volume from $StudioHome, so wheels are copied into the venv rather than hardlinked, costing extra disk; use --isolated-uv-cache to keep the cache beside the environment" "Yellow"
+            # Read by Start-StudioVenvRollback, which runs later: the cost its own warning
+            # describes is only real across this boundary.
+            $script:StudioUvCacheOffVolume = $true
+            # A caller's own UV_CACHE_DIR wins in Set-StudioUvCacheEnvironment and returns before
+            # -Isolated is ever read, so naming that flag here sends the user back for a
+            # byte-identical run that prints this same line again. install.sh varies its twin the
+            # same way.
+            $remedy = if ($script:StudioUvCacheMode -eq "custom") {
+                "unset UV_CACHE_DIR, or point it at a path on the same volume, to keep the cache beside the environment"
+            } else {
+                "use --isolated-uv-cache to keep the cache beside the environment"
+            }
+            step "uv cache" "$($env:UV_CACHE_DIR) is on a different volume from $StudioHome, so wheels are copied into the venv rather than hardlinked, costing extra disk; $remedy" "Yellow"
         }
     } catch { }
 
@@ -7059,9 +7076,15 @@ exit 0
         # In its own try: this is advice, and advice that cannot be produced must not cost the
         # rename. This function runs under "Stop", so an enumeration denied halfway, or a harness
         # that spliced this function without its helper, would otherwise abort the rollback.
-        # Not under --no-rollback: the warning exists to name the opt-out, and telling a user to
-        # re-run with the flag they already passed is noise. install.sh gates its twin the same way.
-        if (-not $script:StudioNoRollback) {
+        # Two gates, both stopping the warning from advising something that would not help.
+        # Not under --no-rollback: the warning exists to name the opt-out, so telling a user to
+        # re-run with the flag they already passed is noise, and the branch below discards that
+        # copy anyway. And only across a volume boundary: with the cache on this volume uv
+        # hardlinks every wheel, so the old venv's blocks are shared with the cache and keeping it
+        # costs metadata rather than megabytes, while summing each file's logical length still
+        # bills every one of those links in full and would recommend an opt-out that frees
+        # nothing. Unset counts as same, the quiet direction. install.sh gates its twin the same way.
+        if ((-not $script:StudioNoRollback) -and $script:StudioUvCacheOffVolume) {
             try { Write-StudioRollbackSpaceWarning -ExistingDir $ExistingDir } catch { }
         }
         # Publish the rollback state before the atomic rename so interruption

@@ -290,11 +290,33 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
     Reset-RollbackState $VenvDir
     $script:StudioNoRollback = $true
+    # Off-volume, so the only thing keeping the warning quiet here is the flag.
+    $script:StudioUvCacheOffVolume = $true
     Start-StudioVenvRollback -ExistingDir $VenvDir
     $joined = ($script:said -join "`n")
     Check "--no-rollback does not advise the flag it was already given" (
         $joined -notmatch 'needs about')
     Check "--no-rollback still reports the discard" ($joined -match 'discarded \(--no-rollback\)')
+
+    # And with the cache on this volume the warning is wrong even without the flag: uv hardlinks
+    # every wheel within one filesystem, so the old tree shares its blocks with the cache and
+    # keeping it costs metadata, while summing each file's length still bills all of them.
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+    Reset-RollbackState $VenvDir
+    $script:StudioNoRollback = $false
+    $script:StudioUvCacheOffVolume = $false
+    $script:said = @()
+    Start-StudioVenvRollback -ExistingDir $VenvDir
+    $joined = ($script:said -join "`n")
+    Check "a co-located cache does not warn about space the rollback does not take" (
+        $joined -notmatch 'needs about')
+    Check "and the rollback copy is still kept" ($script:StudioVenvRollbackActive)
+    foreach ($c in @(Get-ChildItem -LiteralPath $StudioHome -Directory -Filter "unsloth_studio.rollback.*" -ErrorAction SilentlyContinue)) {
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $script:StudioNoRollback = $true
+    $script:StudioUvCacheOffVolume = $true
 
     # A tree the retry helper could not remove. It shadows the extracted definition, so
     # Start-StudioVenvRollback resolves to this one at call time.

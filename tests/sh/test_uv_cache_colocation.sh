@@ -157,6 +157,52 @@ else
     assert_eq "setup.sh drops an unusable cache" "<unset>" "$(_run_setup "$_TMP/updro" '')"
 fi
 
+# The notice for a cache that could not be co-located has to name a remedy that exists. A
+# caller's own UV_CACHE_DIR wins in _configure_uv_cache and returns before --isolated-uv-cache is
+# read at all, so naming that flag to a custom-cache user sends them back for an identical run.
+_NOTICE_FILE=$(mktemp)
+awk '/^_same_volume\(\) \{$/,/^\}$/'                       "$INSTALL_SH" >  "$_NOTICE_FILE"
+awk '/^_warn_if_uv_cache_is_off_volume\(\) \{$/,/^\}$/'    "$INSTALL_SH" >> "$_NOTICE_FILE"
+if ! grep -q '^_warn_if_uv_cache_is_off_volume() {' "$_NOTICE_FILE"; then
+    echo "FAIL: could not extract _warn_if_uv_cache_is_off_volume from install.sh"
+    exit 1
+fi
+_run_notice() {  # mode
+    _rn_mode="$1"
+    {
+        printf '%s\n' 'step() { printf "STEP %s\n" "$2"; }'
+        printf '%s\n' 'C_WARN=""'
+        # A path that cannot exist on any mounted filesystem, so the device comparison answers
+        # "different" without needing a second real volume here.
+        printf '%s\n' 'UV_CACHE_DIR="/proc/self/uv-cache-elsewhere"'
+        printf "STUDIO_HOME='%s'\n" "$_TMP"
+        printf "_UV_CACHE_MODE='%s'\n" "$_rn_mode"
+        cat "$_NOTICE_FILE"
+        printf '%s\n' '_warn_if_uv_cache_is_off_volume'
+        printf '%s\n' 'printf "OFF_VOLUME=%s\n" "${_UV_CACHE_OFF_VOLUME:-false}"'
+    } | "$_SH" 2>&1
+}
+_NOTICE_CUSTOM=$(_run_notice custom)
+_NOTICE_STUDIO=$(_run_notice studio)
+case "$_NOTICE_CUSTOM" in
+    *"unset UV_CACHE_DIR"*) ok "a custom cache is told to unset or move UV_CACHE_DIR" ;;
+    *) bad "a custom cache was not told what would actually change the answer: $_NOTICE_CUSTOM" ;;
+esac
+case "$_NOTICE_CUSTOM" in
+    *"--isolated-uv-cache"*) bad "a custom cache was sent back for an identical run" ;;
+    *) ok "a custom cache is not sent back for an identical run" ;;
+esac
+case "$_NOTICE_STUDIO" in
+    *"--isolated-uv-cache"*) ok "a selected cache still names the flag that would move it" ;;
+    *) bad "a selected cache lost the --isolated-uv-cache remedy: $_NOTICE_STUDIO" ;;
+esac
+# The rollback free-space warning reads this, and only warns across the boundary.
+case "$_NOTICE_STUDIO" in
+    *"OFF_VOLUME=true"*) ok "the off-volume finding is recorded for the rollback warning" ;;
+    *) bad "the off-volume finding was not recorded" ;;
+esac
+rm -f "$_NOTICE_FILE"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

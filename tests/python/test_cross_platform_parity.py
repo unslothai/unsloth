@@ -1516,3 +1516,41 @@ class TestInstallUvCacheRootParity:
         assert "Set-StudioUvCacheForLaunch" in source
         assert "Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $PreviousValue" in source
         assert "Remove-Item -LiteralPath Env:UV_CACHE_DIR" in source
+
+
+class TestOffVolumeCacheNoticeParity:
+    """The notice for a cache that could not be co-located has to name a remedy that exists,
+    and the same one on both installers. A caller's own UV_CACHE_DIR wins in the selector and
+    returns before --isolated-uv-cache is read at all, so naming that flag to a custom-cache
+    user sends them back for a byte-identical run that prints the notice again (#11313)."""
+
+    @pytest.mark.parametrize(
+        "path, mode_test",
+        [
+            (INSTALL_SH, '[ "${_UV_CACHE_MODE:-}" = custom ]'),
+            (INSTALL_PS1, '$script:StudioUvCacheMode -eq "custom"'),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_custom_cache_is_not_told_to_pass_a_flag_it_ignores(self, path, mode_test):
+        text = path.read_text(encoding = "utf-8")
+        assert mode_test in text, f"{path.name} does not vary the remedy by cache mode"
+        assert (
+            "unset UV_CACHE_DIR" in text
+        ), f"{path.name} does not tell a custom-cache user what would change the answer"
+
+    @pytest.mark.parametrize(
+        "path, flag",
+        [
+            (INSTALL_SH, "_UV_CACHE_OFF_VOLUME"),
+            (INSTALL_PS1, "$script:StudioUvCacheOffVolume"),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_the_finding_is_recorded_for_the_rollback_warning(self, path, flag):
+        # Keeping the old environment only costs its own size across a filesystem boundary:
+        # within one, uv hardlinks every wheel, so the tree shares its blocks with the cache.
+        text = path.read_text(encoding = "utf-8")
+        assert text.count(flag) >= 2, (
+            f"{path.name} should set {flag} at the notice and read it at the rollback warning"
+        )

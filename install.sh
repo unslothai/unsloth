@@ -976,7 +976,15 @@ _configure_uv_cache() {
 _warn_if_uv_cache_is_off_volume() {
     [ -n "${UV_CACHE_DIR:-}" ] || return 0
     _same_volume "$UV_CACHE_DIR" "$STUDIO_HOME" && return 0
-    step "uv cache" "$UV_CACHE_DIR is on a different filesystem from $STUDIO_HOME, so wheels are copied into the venv rather than hardlinked, costing extra disk; use --isolated-uv-cache to keep the cache beside the environment" "$C_WARN"
+    # Read by the rollback warning below: the cost it describes is only real across this boundary.
+    _UV_CACHE_OFF_VOLUME=true
+    # A caller's own UV_CACHE_DIR wins in _configure_uv_cache and returns before --isolated-uv-cache is ever read, so naming that flag here sends the user back for a byte-identical run that prints this same line again. Name the thing that would actually change the answer.
+    if [ "${_UV_CACHE_MODE:-}" = custom ]; then
+        _wov_remedy="unset UV_CACHE_DIR, or point it at a path on the same filesystem, to keep the cache beside the environment"
+    else
+        _wov_remedy="use --isolated-uv-cache to keep the cache beside the environment"
+    fi
+    step "uv cache" "$UV_CACHE_DIR is on a different filesystem from $STUDIO_HOME, so wheels are copied into the venv rather than hardlinked, costing extra disk; $_wov_remedy" "$C_WARN"
 }
 
 _prepare_studio_uv_cache_for_launch() {
@@ -1091,8 +1099,12 @@ _start_studio_venv_replacement() {
     _VENV_ROLLBACK_ACTIVE=true
     # The rename itself is free, but the new venv beside it is not: uv hardlinks a wheel only within one filesystem, so a cache on another volume makes every file a real copy and the install needs room for two whole environments (#11313). Say so before the space is gone, and never abort -- the estimate is a guess and being wrong must not cost a working install.
     # `|| true` for the same reason install.ps1 wraps its twin: this is advice, and advice that cannot be produced must not cost the rename under `set -e` -- including in a harness that spliced this function without the helper.
-    # Not under --no-rollback: the warning exists to name the opt-out, and telling a user to re-run with the flag they already passed is noise. The branch below discards that copy anyway, so the space it describes is never held.
-    [ "${_NO_ROLLBACK:-false}" = true ] || _warn_if_rollback_needs_space "$_existing_dir" || true
+    # Two gates, both of which stop the warning from advising something that would not help.
+    # Not under --no-rollback: the warning exists to name the opt-out, so telling a user to re-run with the flag they already passed is noise, and the branch below discards that copy anyway.
+    # And only across a filesystem boundary: with the cache on this volume uv hardlinks every wheel, so the old venv's blocks are shared with the cache and keeping it costs metadata rather than megabytes -- while `du` over the venv alone still bills each of those inodes in full and would recommend an opt-out that frees nothing. Not knowing counts as same, the quiet direction taken everywhere else here.
+    if [ "${_NO_ROLLBACK:-false}" != true ] && [ "${_UV_CACHE_OFF_VOLUME:-false}" = true ]; then
+        _warn_if_rollback_needs_space "$_existing_dir" || true
+    fi
     # Publish the rollback state before the atomic rename so a signal cannot land after mv but before the exit handlers know where the old venv went.
     if ! mv "$_existing_dir" "$_candidate"; then
         _VENV_ROLLBACK_ACTIVE=false
@@ -1132,10 +1144,12 @@ _same_volume() {  # a b
     _sv_b="$2"
     while [ -n "$_sv_a" ] && [ ! -e "$_sv_a" ]; do _sv_a=$(dirname "$_sv_a"); done
     while [ -n "$_sv_b" ] && [ ! -e "$_sv_b" ]; do _sv_b=$(dirname "$_sv_b"); done
-    [ -n "$_sv_a" ] && [ -n "$_sv_b" ] || return 1
+    # Cannot tell: answer "same volume", which is the quiet direction and what install.ps1's Test-StudioSameVolume already does. Answering "different" would make an unreadable path print a cost warning nobody can act on.
+    [ -n "$_sv_a" ] && [ -n "$_sv_b" ] || return 0
     _sv_da=$(df -P "$_sv_a" 2>/dev/null | awk 'NR == 2 { print $1 }')
     _sv_db=$(df -P "$_sv_b" 2>/dev/null | awk 'NR == 2 { print $1 }')
-    [ -n "$_sv_da" ] && [ "$_sv_da" = "$_sv_db" ]
+    [ -n "$_sv_da" ] && [ -n "$_sv_db" ] || return 0
+    [ "$_sv_da" = "$_sv_db" ]
 }
 
 # One line, before the move, naming both figures and the opt-out. Warn only: du over a tree full of hardlinks already counts shared blocks once, so the estimate is conservative, and a wrong guess must never stop an install that would have fitted.
