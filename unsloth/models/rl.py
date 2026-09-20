@@ -1004,42 +1004,6 @@ def _pin_pristine_sft_loss_type(config_cls):
     return True
 
 
-class _UnslothMaxLengthUnset:
-    """Sentinel default for the generated SFTConfig's ``max_length``.
-
-    Its own class so it survives pickling by identity and reprs legibly in a signature.
-    """
-
-    __slots__ = ()
-
-    def __repr__(self):
-        return "<unset>"
-
-
-_UNSLOTH_MAX_LENGTH_UNSET = _UnslothMaxLengthUnset()
-
-
-def _unsloth_default_max_length(config_cls):
-    """TRL's own ``max_length`` default, walking back off Unsloth's generated subclass."""
-    import dataclasses as _dc
-
-    cls = config_cls
-    while "_unsloth_patched_rl_config" in getattr(cls, "__dict__", {}) or cls.__name__.startswith(
-        "Unsloth"
-    ):
-        bases = getattr(cls, "__bases__", ())
-        if not bases:
-            break
-        cls = bases[0]
-    try:
-        for f in _dc.fields(cls):
-            if f.name == "max_length":
-                return None if f.default is _dc.MISSING else f.default
-    except Exception:
-        pass
-    return None
-
-
 def _wrap_sft_evaluate_cap(trainer_cls):
     """Cap a pre-tokenized split handed to ``evaluate()``/``predict()`` later on. The padding-free branch caps the init-time splits and then clears ``args.max_length`` as TRL's guard demands, so a split supplied afterwards is prepared with ``max_length = None`` and Zoo's prep leaves rows already carrying ``input_ids`` alone: overlength rows reach the collator uncapped. The cap survives on ``args.max_seq_length``, so apply it here. Both entry points, since ``predict(test_dataset = ...)`` reaches the same collator. Up to TRL 1.6 nothing prepares a late split; from 1.7.0 ``SFTTrainer.evaluate`` does, packing included, so ``eval_packing`` must be honoured here exactly as at construction (``_trl_prepares_late_evals``). This has to agree with the construction-time cap on every detail: truncation_mode, refusing a packed split, dropping rows with no supervised token, and handling a stream."""
 
@@ -2010,19 +1974,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "_unsloth_explicit_max_length = None\n"
                 "try:\n"
                 "    import dataclasses as _unsloth_dc\n"
+                "    _unsloth_cfg_cls = type(args)\n"
+                # Back off the generated subclass to TRL's own dataclass, where the default lives.
+                "    while '_unsloth_patched_rl_config' in _unsloth_cfg_cls.__dict__ or _unsloth_cfg_cls.__name__.startswith('Unsloth'):\n"
+                "        _unsloth_cfg_cls = _unsloth_cfg_cls.__bases__[0]\n"
+                "    _unsloth_default_max_length = None\n"
+                "    for _unsloth_field in _unsloth_dc.fields(_unsloth_cfg_cls):\n"
+                "        if _unsloth_field.name == 'max_length': _unsloth_default_max_length = _unsloth_field.default\n"
                 "    _unsloth_given_max_length = getattr(args, 'max_length', None)\n"
-                # The generated config recorded whether the caller named it; only a config built
-                # before `import unsloth` lacks the flag, and there the default is all there is.
-                "    _unsloth_named = getattr(args, '_unsloth_max_length_explicit', None)\n"
-                "    if _unsloth_named is None:\n"
-                "        _unsloth_cfg_cls = type(args)\n"
-                "        while '_unsloth_patched_rl_config' in _unsloth_cfg_cls.__dict__ or _unsloth_cfg_cls.__name__.startswith('Unsloth'):\n"
-                "            _unsloth_cfg_cls = _unsloth_cfg_cls.__bases__[0]\n"
-                "        _unsloth_cfg_default = None\n"
-                "        for _unsloth_field in _unsloth_dc.fields(_unsloth_cfg_cls):\n"
-                "            if _unsloth_field.name == 'max_length': _unsloth_cfg_default = _unsloth_field.default\n"
-                "        _unsloth_named = _unsloth_given_max_length != _unsloth_cfg_default\n"
-                "    if (_unsloth_given_max_length or 0) > 0 and _unsloth_named:\n"
+                "    if (_unsloth_given_max_length or 0) > 0 and _unsloth_given_max_length != _unsloth_default_max_length:\n"
                 "        _unsloth_explicit_max_length = _unsloth_given_max_length\n"
                 "except Exception:\n"
                 "    _unsloth_explicit_max_length = None\n"
@@ -2577,39 +2537,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         max_seq_length_call = ""
         max_seq_length_post = ""
 
-    # Record whether the CALLER named `max_length`, which no value can tell you: an explicit
-    # `max_length = 1024` is the dataclass default too, so comparing values reads it as omitted
-    # and lets the model length override a cap that was asked for. A sentinel default answers it
-    # at the only point that knows, the constructor, and is resolved back before anything reads it.
-    if trainer_file == "sft_trainer" and "max_length" in call_args:
-        arguments = re.sub(
-            "max_length( = [^,\n]{1,})?,\n",
-            "max_length = _UNSLOTH_MAX_LENGTH_UNSET,\n",
-            arguments,
-            count = 1,
-        )
-        # The FIELD default carries the sentinel too. HfArgumentParser builds one argparse
-        # argument per `dataclasses.fields()` entry and always passes the value through
-        # (tests/version_compat/test_trl_loss_normalization_contract.py), so a signature-only
-        # sentinel makes every CLI run without `--max_length` arrive as an explicit 1024.
-        max_length_field = """max_length : Optional[int] = field(
-        default = _UNSLOTH_MAX_LENGTH_UNSET,
-        metadata = {'help': 'Maximum sequence length to truncate to.'},
-    )"""
-        max_seq_length_pre = (
-            max_length_field
-            if not max_seq_length_pre
-            else max_seq_length_pre + "\n    " + max_length_field
-        )
-        extra_args += (
-            "_unsloth_max_length_explicit = max_length is not _UNSLOTH_MAX_LENGTH_UNSET\n"
-            "if not _unsloth_max_length_explicit:\n"
-            "    max_length = _unsloth_default_max_length(__class__)\n"
-        )
-        max_seq_length_post += (
-            "\n        self._unsloth_max_length_explicit = _unsloth_max_length_explicit"
-        )
-
     if "output_dir" in call_args:
         saving_check = (
             "if output_dir is None and save_strategy == 'steps' and save_steps == 500:\n"
@@ -2756,15 +2683,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if "SamplingParams" in old_RLTrainer_source:
         RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
-
-    if trainer_file == "sft_trainer" and "max_length" in call_args:
-        RL_pre = (
-            RL_pre
-            + "\n"
-            + inspect.getsource(_UnslothMaxLengthUnset)
-            + "\n_UNSLOTH_MAX_LENGTH_UNSET = _UnslothMaxLengthUnset()\n\n"
-            + inspect.getsource(_unsloth_default_max_length)
-        )
 
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
     grpo_selective_log_softmax_code = inspect.getsource(grpo_selective_log_softmax)

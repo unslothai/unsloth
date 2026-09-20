@@ -247,69 +247,100 @@ def test_an_untouched_max_length_default_does_not_cap_the_model_context(
     )
 
 
-def test_an_explicit_max_length_equal_to_the_default_is_still_honoured(tmp_path, trl_has_guard):
-    """`SFTConfig(max_length = 1024)` is a request, even though 1024 is also the default.
+@pytest.mark.parametrize("path", ["cli", "clone"])
+def test_a_rebuilt_default_config_still_does_not_cap_the_model(tmp_path, trl_has_guard, path):
+    """The two ways an untouched config comes back carrying its RESOLVED default.
 
-    No value can tell the two apart, so the generated config records whether the caller
-    named it and the resolution reads that rather than comparing against the default.
+    `HfArgumentParser` builds one argparse argument per `dataclasses.fields()` entry and
+    passes every value through, and `dataclasses.replace` re-inits from the current field
+    values, so on both paths a config nobody capped arrives holding `max_length = 1024`.
+    Reading omission from the value is what keeps these safe: a constructor-provenance
+    marker is set on the original object and forged by both of these.
+    """
+    import dataclasses
+
+    from datasets import Dataset
+    from trl import SFTConfig
+
+    default_max_length = _trl_default_max_length()
+    if default_max_length is None or default_max_length <= 0:
+        pytest.skip("this TRL has no positive max_length default, so there is nothing to confuse")
+
+    if path == "cli":
+        from transformers import HfArgumentParser
+        (cfg,) = HfArgumentParser((SFTConfig,)).parse_args_into_dataclasses(
+            ["--output_dir", str(tmp_path)]
+        )
+    else:
+        cfg = dataclasses.replace(SFTConfig(output_dir = str(tmp_path)), learning_rate = 1e-4)
+    assert cfg.max_length == default_max_length
+
+    model, tok = _load_plain(8192)
+    text = "The quick brown fox. " * 4000
+    for key, value in (
+        ("per_device_train_batch_size", 2),
+        ("max_steps", 1),
+        ("report_to", "none"),
+        ("save_strategy", "no"),
+        ("use_cpu", True),
+        ("dataset_text_field", "text"),
+        ("fp16", False),
+        ("bf16", False),
+        ("optim", "adamw_torch"),
+    ):
+        setattr(cfg, key, value)
+    from trl import SFTTrainer
+
+    trainer = SFTTrainer(
+        model = model,
+        processing_class = tok,
+        args = cfg,
+        train_dataset = Dataset.from_list([{"text": text}] * 4),
+    )
+    assert _longest(trainer) == 8192, (
+        f"a config rebuilt via {path} carried its resolved default back in and capped an "
+        "8192-token context at it"
+    )
+
+
+def test_an_explicit_max_length_equal_to_the_default_keeps_the_model_length(tmp_path):
+    """The one case this cannot decide, pinned so it is a known limit and not a surprise.
+
+    `SFTConfig(max_length = 1024)` is indistinguishable from an untouched config once the
+    value is all you have, and every marker that could tell them apart is forged by the
+    CLI and clone paths above. This resolves to the model's length, which is what the
+    merge base did too, so it is a gap this change does not close rather than one it opens.
     """
     from datasets import Dataset
     from trl import SFTConfig
 
     default_max_length = _trl_default_max_length()
     if default_max_length is None or default_max_length <= 0:
-        pytest.skip("this TRL has no positive max_length default, so the two cannot collide")
-    assert hasattr(
-        SFTConfig(output_dir = str(tmp_path)), "_unsloth_max_length_explicit"
-    ), "the generated config must record constructor provenance"
+        pytest.skip("this TRL has no positive max_length default")
 
-    def _long_text(tok):
-        return Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4)
-
-    trainer = _build(
-        tmp_path,
-        dataset = _long_text,
-        model_max_seq_length = 8192,
+    model, tok = _load_plain(8192)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path),
+        per_device_train_batch_size = 2,
+        max_steps = 1,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+        optim = "adamw_torch",
         max_length = default_max_length,
     )
-    assert trainer.args.max_seq_length == default_max_length
-    assert _longest(trainer) == default_max_length, (
-        "an explicitly requested cap was read as an untouched default and the model "
-        "context overrode it"
+    from trl import SFTTrainer
+
+    trainer = SFTTrainer(
+        model = model,
+        processing_class = tok,
+        args = cfg,
+        train_dataset = Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4),
     )
-
-
-def test_an_unnamed_max_length_still_defers_to_the_model(tmp_path, trl_has_guard):
-    """The control for the test above: the sentinel must resolve back to TRL's default."""
-    from trl import SFTConfig
-
-    cfg = SFTConfig(output_dir = str(tmp_path))
-    assert cfg.max_length == _trl_default_max_length(), "the sentinel leaked into the config"
-    assert cfg._unsloth_max_length_explicit is False
-
-
-def test_a_cli_default_is_not_mistaken_for_an_explicit_max_length(tmp_path):
-    """`HfArgumentParser` forwards every dataclass field, defaults included.
-
-    It builds one argparse argument per `dataclasses.fields()` entry, so a signature-only
-    sentinel leaves every CLI run without `--max_length` arriving as an explicit 1024 and
-    capping a larger model context. The FIELD default has to carry the sentinel too.
-    """
-    from transformers import HfArgumentParser
-    from trl import SFTConfig
-
-    parser = HfArgumentParser((SFTConfig,))
-    (bare,) = parser.parse_args_into_dataclasses(["--output_dir", str(tmp_path)])
-    assert bare.max_length == _trl_default_max_length(), "the sentinel reached the config"
-    assert (
-        bare._unsloth_max_length_explicit is False
-    ), "a CLI run that never named --max_length was recorded as having named it"
-
-    (named,) = parser.parse_args_into_dataclasses(
-        ["--output_dir", str(tmp_path), "--max_length", "2048"]
-    )
-    assert named.max_length == 2048
-    assert named._unsloth_max_length_explicit is True
+    assert _longest(trainer) == 8192
 
 
 def test_the_cap_reads_an_explicit_max_length_not_a_positive_one():
