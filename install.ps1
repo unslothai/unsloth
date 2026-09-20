@@ -7609,8 +7609,14 @@ exit 0
         if ((Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
             $script:PrevVenvPlatformTag = Get-PythonPlatformTag $VenvPython
         }
-        # New layout already exists -- replace only after preserving rollback copy.
-        substep "preserving existing environment for rollback..."
+        # New layout already exists -- replace only after preserving rollback copy, unless the
+        # caller asked for no copy at all, in which case this line would be contradicted by the
+        # "discarded" one Start-StudioVenvRollback prints a moment later.
+        if ($script:StudioNoRollback) {
+            substep "moving the existing environment aside..."
+        } else {
+            substep "preserving existing environment for rollback..."
+        }
         try {
             Start-StudioVenvRollback -ExistingDir $VenvDir
         } catch {
@@ -7756,7 +7762,14 @@ exit 0
         if ($_woaMigPlatform -ne "win-arm64") {
             $_woaMigLabel = if ($_woaMigPlatform) { $_woaMigPlatform } else { "unknown" }
             substep "windows on arm: the migrated environment is $_woaMigLabel, not win-arm64 --" "Yellow"
-            substep "rebuilding it as ARM64; the previous one is kept for rollback." "Yellow"
+            # Varied, not printed flat: the call below discards under --no-rollback, and telling
+            # the user the previous environment is recoverable when it is about to be deleted is
+            # the same promise the ARM64 mismatch branch above already had to stop making.
+            if ($script:StudioNoRollback) {
+                substep "rebuilding it as ARM64; --no-rollback discards the previous one rather than keeping it." "Yellow"
+            } else {
+                substep "rebuilding it as ARM64; the previous one is kept for rollback." "Yellow"
+            }
             try {
                 Start-StudioVenvRollback -ExistingDir $VenvDir
                 # Left set, the install step below would --no-deps into an empty venv.

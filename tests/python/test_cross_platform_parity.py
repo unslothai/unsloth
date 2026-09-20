@@ -1847,3 +1847,34 @@ class TestArm64MigrationDoesNotPromiseWhatTheFlagDeletes:
         arm = text.split("Start-StudioVenvRollback -ExistingDir $VenvDir\n                if (", 1)
         assert len(arm) == 2, "the migration does not check what its own rollback call did"
         assert "discarded by --no-rollback rather than kept" in arm[1][:900]
+
+
+class TestNoRollbackNeverPromisesAKeptCopy:
+    """Every message printed before a call that may discard has to vary on the flag. Three sites
+    promised a recoverable copy and then deleted it: the ordinary reinstall, the ARM64 mismatch
+    rebuild, and the Windows-on-ARM native-CUDA migration rebuild (#11313)."""
+
+    @pytest.mark.parametrize(
+        "path, flag",
+        [
+            (INSTALL_SH, '[ "${_NO_ROLLBACK:-false}" = true ]'),
+            (INSTALL_PS1, "if ($script:StudioNoRollback)"),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_the_reinstall_message_varies(self, path, flag):
+        text = path.read_text(encoding = "utf-8")
+        before = text.split("preserving existing environment for rollback", 1)[0][-500:]
+        assert flag in before, f"{path.name} promises a rollback copy it may be about to discard"
+
+    def test_the_woa_migration_message_varies(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        before = text.split("the previous one is kept for rollback", 1)[0][-600:]
+        assert "$script:StudioNoRollback" in before, (
+            "the Windows-on-ARM migration rebuild promises a copy --no-rollback deletes"
+        )
+
+    def test_every_rollback_call_site_was_audited(self):
+        # If a fourth call site appears, this fails and the promise above it has to be checked.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.count("Start-StudioVenvRollback -ExistingDir") == 3

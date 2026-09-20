@@ -3588,8 +3588,12 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     # _run_bounded the fallback: without version.py it hits `import torch`, which can wedge.
     [ -n "$_PREV_TORCH_VER" ] || _PREV_TORCH_VER=$(_run_bounded "$VENV_DIR/bin/python" -c \
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
-    # New layout already exists — replace only after preserving rollback copy.
-    substep "preserving existing environment for rollback..."
+    # New layout already exists — replace only after preserving rollback copy, unless the caller asked for no copy at all, in which case this line would be contradicted by the "discarded" one _start_studio_venv_replacement prints a moment later. install.ps1 varies its twin the same way.
+    if [ "${_NO_ROLLBACK:-false}" = true ]; then
+        substep "moving the existing environment aside..."
+    else
+        substep "preserving existing environment for rollback..."
+    fi
     # A bare call still aborts under `set -e`, but shows only mv's own stderr. install.ps1 reports this step; say the same here and name the directory.
     if ! _start_studio_venv_replacement "$VENV_DIR"; then
         echo "ERROR: could not move $VENV_DIR aside to reinstall." >&2
