@@ -449,7 +449,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
 
 
 def _prepare_held(plan: ToolLaunchPlan, executor: str,
-                  hold: "_ExecutorHold | None") -> PreparedSandboxLaunch:
+                  hold: object | None) -> PreparedSandboxLaunch:
     # Re-checked WHILE held: only now is the verdict about a file that cannot
     # change underneath the launch.
     if not mxc_pins.matches_pin(executor, mxc_pins.EXECUTOR_SHA256):
@@ -514,73 +514,19 @@ def _prepare_held(plan: ToolLaunchPlan, executor: str,
     return prepared
 
 
-class _ExecutorHold:
-    """An open handle that denies other processes write, rename and delete.
-
-    Verifying the digest and then handing the PATHNAME to Popen leaves a
-    window: policy construction and the live probe sit between the two, and a
-    same-user process, which is exactly the attacker this check exists for,
-    can swap the file in it. Cleanup runs the same pathname again for
-    ``--delete``, widening the window to the whole call.
-
-    Windows honours a deny-write share mode at the filesystem level, so the
-    verified bytes cannot change while this is open. Released last, after the
-    reconciliation that also executes it.
-    """
-
-    def __init__(self, handle: object) -> None:
-        self._handle = handle
-
-    def close(self) -> None:
-        if self._handle is None:
-            return
-        handle, self._handle = self._handle, None
-        try:
-            import ctypes
-
-            if not hasattr(ctypes, "WinDLL"):
-                return
-            ctypes.WinDLL("kernel32", use_last_error = True).CloseHandle(handle)
-        except Exception:  # noqa: BLE001 - a released handle is not worth a failed call
-            logger.debug("could not close the MXC executor hold", exc_info = True)
-
-
-def _hold_executor(path: str) -> "_ExecutorHold | None":
-    """Open ``path`` so nothing else can modify or replace it.
-
-    None on a non-Windows host, where this backend does not launch anything
-    and the tests only exercise policy construction.
-    """
-    import ctypes
-
-    # WinDLL exists only on a real Windows interpreter. The platform check
-    # alone is not enough, because the policy tests spoof sys.platform to
-    # exercise the Windows branches from any host.
-    if sys.platform != "win32" or not hasattr(ctypes, "WinDLL"):
-        return None
-    from ctypes import wintypes
-
-    generic_read = 0x80000000
-    file_share_read = 0x00000001
-    open_existing = 3
-    invalid_handle = ctypes.c_void_p(-1).value
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
-    kernel32.CreateFileW.restype = ctypes.c_void_p
-    kernel32.CreateFileW.argtypes = (
-        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-        wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-    )
-    handle = kernel32.CreateFileW(
-        path, generic_read, file_share_read, None, open_existing, 0, None)
-    if handle == invalid_handle:
+# The hold itself lives in mxc_pins, because install_mxc_runtime.py needs the
+# same protection for the elevated wxc-host-prep.exe and cannot import this
+# module.
+def _hold_executor(path: str) -> object | None:
+    try:
+        return mxc_pins.hold_file(path)
+    except OSError as exc:
         # Fails CLOSED: somebody else already holds it in a way that would let
         # them write to it, which is the condition this is meant to exclude.
         raise SandboxUnavailableError(
-            "the MXC executor could not be opened for exclusive use "
-            f"(WinError {ctypes.get_last_error()}); refusing to launch through it"
-        )
-    return _ExecutorHold(handle)
+            f"the MXC executor could not be opened for exclusive use ({exc}); "
+            "refusing to launch through it"
+        ) from exc
 
 
 def _remove_quietly(path: str) -> None:

@@ -71,3 +71,73 @@ def matches_pin(path: str, expected: "dict[str, str]") -> bool:
         return digest(path) == wanted
     except OSError:
         return False
+
+
+class FileHold:
+    """An open handle that denies other processes write, rename and delete.
+
+    Verifying a digest and then handing the PATHNAME to a process launcher
+    leaves a window, and the window is the interesting part: for the executor
+    it spans policy construction, the live probe and the cleanup that runs the
+    same file again; for the elevated helper it spans the UAC prompt the user
+    has to answer. A same-user process, which is precisely the attacker these
+    pins exist for, can swap the file inside it.
+
+    Windows honours a deny-write share mode at the filesystem level, so the
+    verified bytes cannot change while this is open.
+    """
+
+    def __init__(self, handle: object) -> None:
+        self._handle = handle
+
+    def close(self) -> None:
+        if self._handle is None:
+            return
+        handle, self._handle = self._handle, None
+        try:
+            import ctypes
+
+            if hasattr(ctypes, "WinDLL"):
+                ctypes.WinDLL("kernel32", use_last_error = True).CloseHandle(handle)
+        except Exception:  # noqa: BLE001 - a released handle is not worth a failed call
+            pass
+
+    def __enter__(self) -> "FileHold":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
+
+
+def hold_file(path: str) -> "FileHold | None":
+    """Open ``path`` so nothing else can modify or replace it.
+
+    None on a non-Windows interpreter, keyed on WinDLL being absent rather
+    than on sys.platform, because the policy tests spoof the platform to
+    exercise the Windows branches from any host. Raises OSError when the file
+    cannot be opened that way, which means somebody else already holds it in a
+    manner that would let them write to it.
+    """
+    import ctypes
+    import sys
+
+    if sys.platform != "win32" or not hasattr(ctypes, "WinDLL"):
+        return None
+    from ctypes import wintypes
+
+    generic_read = 0x80000000
+    file_share_read = 0x00000001
+    open_existing = 3
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CreateFileW.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+    )
+    handle = kernel32.CreateFileW(
+        path, generic_read, file_share_read, None, open_existing, 0, None)
+    if handle == invalid_handle:
+        raise OSError(ctypes.get_last_error(), f"WinError {ctypes.get_last_error()}")
+    return FileHold(handle)

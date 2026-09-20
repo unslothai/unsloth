@@ -221,16 +221,24 @@ def prepare_host(dest: str, timeout: float = 120.0) -> dict:
         )
     results = {}
     for subcommand in ("prepare-system-drive", "prepare-null-device"):
-        # Re-checked before EVERY invocation, not once before the loop. The
-        # first call can take up to the full timeout, and the pathname stays
-        # user-writable throughout, so a same-user process could wait for it to
-        # finish and swap the helper before the second elevated run.
-        if not pins.matches_pin(prep, HOST_PREP_SHA256):
-            raise SystemExit(
-                f"{prep} changed and is no longer the pinned MXC {MXC_VERSION} "
-                f"host-preparation helper. {subcommand} was NOT run."
-            )
+        # HELD across process creation, not merely re-checked before it. The
+        # user answers a UAC prompt between the check and the launch, and the
+        # pathname stays user-writable throughout, so a same-user process
+        # could swap the helper inside that window and have the replacement
+        # run as administrator.
         try:
+            hold = pins.hold_file(prep)
+        except OSError as exc:
+            raise SystemExit(
+                f"{prep} could not be opened for exclusive use ({exc}); "
+                f"{subcommand} was NOT run."
+            ) from exc
+        try:
+            if not pins.matches_pin(prep, HOST_PREP_SHA256):
+                raise SystemExit(
+                    f"{prep} changed and is no longer the pinned MXC {MXC_VERSION} "
+                    f"host-preparation helper. {subcommand} was NOT run."
+                )
             completed = subprocess.run(
                 [prep, subcommand],
                 capture_output = True,
@@ -253,6 +261,9 @@ def prepare_host(dest: str, timeout: float = 120.0) -> dict:
                 ),
             }
             continue
+        finally:
+            if hold is not None:
+                hold.close()
         results[subcommand] = {
             "exit": completed.returncode,
             "stderr": completed.stderr.decode(errors = "replace").strip()[:300],

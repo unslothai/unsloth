@@ -853,3 +853,83 @@ def test_the_executor_hold_is_released_after_the_reconciliation(monkeypatch, pla
     prepared.cleanup()
 
     assert order == ["reconciled", "released"], order
+
+
+def test_the_elevated_helper_is_held_across_process_creation(tmp_path, monkeypatch):
+    """Re-checking before each invocation does not close the window.
+
+    The user answers a UAC prompt between the check and process creation, and
+    the pathname stays user-writable throughout, so the verified file has to
+    be held against writes and renames the way the backend holds the executor.
+    """
+    import subprocess as sp
+
+    from core.inference import mxc_pins
+
+    installer = _installer_module()
+    dest = tmp_path / "mxc"
+    dest.mkdir()
+    prep = dest / "wxc-host-prep.exe"
+    prep.write_bytes(b"the pinned helper")
+    monkeypatch.setitem(
+        installer.HOST_PREP_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(prep)))
+
+    held = []
+
+    class Hold:
+        def __init__(self, path):
+            held.append(("held", path))
+
+        def close(self):
+            held.append(("released", None))
+
+    monkeypatch.setattr(installer.pins, "hold_file", Hold)
+    monkeypatch.setattr(
+        installer.subprocess, "run",
+        lambda argv, **kwargs: (held.append(("ran", argv[1]))
+                                or sp.CompletedProcess(argv, 0, b"", b"")),
+    )
+
+    installer.prepare_host(str(dest))
+
+    # Held, then run, then released, for each of the two elevated steps.
+    assert [entry[0] for entry in held] == [
+        "held", "ran", "released", "held", "ran", "released",
+    ], held
+
+
+def test_the_helper_hold_is_released_even_when_the_prompt_is_never_answered(
+    tmp_path, monkeypatch):
+    """The timeout path continues the loop, so the release has to be in a
+    finally or the second step would run against a still-held handle."""
+    import subprocess as sp
+
+    from core.inference import mxc_pins
+
+    installer = _installer_module()
+    dest = tmp_path / "mxc"
+    dest.mkdir()
+    prep = dest / "wxc-host-prep.exe"
+    prep.write_bytes(b"the pinned helper")
+    monkeypatch.setitem(
+        installer.HOST_PREP_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(prep)))
+
+    released = []
+
+    class Hold:
+        def __init__(self, path):
+            pass
+
+        def close(self):
+            released.append(True)
+
+    def never_answered(argv, **kwargs):
+        raise sp.TimeoutExpired(argv, 1)
+
+    monkeypatch.setattr(installer.pins, "hold_file", Hold)
+    monkeypatch.setattr(installer.subprocess, "run", never_answered)
+
+    results = installer.prepare_host(str(dest), timeout = 1)
+
+    assert len(released) == 2, "a hold survived a step that timed out"
+    assert all(result["exit"] is None for result in results.values())
