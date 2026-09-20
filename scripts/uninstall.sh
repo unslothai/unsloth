@@ -564,6 +564,16 @@ $HOME/.unsloth/studio"
     # skips all of this: that is the user speaking, not a file on disk.
     if [ "${_mr_from_note:-}" = 1 ]; then
         _mr_here=$(CDPATH= cd -P -- "$_mr_studio" 2>/dev/null && pwd -P) || _mr_here=""
+        # A note found in the ordinary ~/.unsloth/studio install is declined outright, whatever
+        # it records, which is the rule storage_roots._is_legacy_studio_tree and the CLI already
+        # apply. Containment alone is not enough here: $HOME contains the legacy tree, so a note
+        # naming it passed, _custom_studio_roots then emitted "$HOME/studio", and uninstalling
+        # the legacy install accepted a SECOND marked install there as a root to remove, taking
+        # its database and outputs with it. The deny list does not catch that -- it refuses
+        # $HOME as a master root, not the separate Studio candidate derived from it.
+        _mr_legacy_studio=$(CDPATH= cd -P -- "$HOME/.unsloth/studio" 2>/dev/null && pwd -P) \
+            || _mr_legacy_studio="$HOME/.unsloth/studio"
+        [ "$_mr_here" != "$_mr_legacy_studio" ] || return 0
         case "$_mr_here" in
             "$_mr") : ;;
             "$_mr"/*) : ;;

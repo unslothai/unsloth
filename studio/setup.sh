@@ -1478,7 +1478,13 @@ _RUNTIME_ROOT_IS_CUSTOM="$_STUDIO_HOME_IS_CUSTOM"
 # Keyed on where the runtimes LAND, not on whether a master root was named: UNSLOTH_HOME set to
 # the root an install already uses moves nothing, and calling that custom would demand an owner
 # marker from a legacy source-built ~/.unsloth/llama.cpp that predates markers.
-if [ -n "$_MASTER_ROOT" ]; then
+#
+# Staging is excluded for the same reason, not as an exception to it: the placement below gives
+# STAGE_ROOT precedence over the master root, so during a staged update the master root is not
+# where anything lands and must not decide ownership. Assigned rather than raised, or a custom
+# STUDIO_HOME kept the flag true while the runtimes went to the legacy root, which demanded
+# markers from exactly the pre-marker trees this comparison exists to spare.
+if [ -z "${STAGE_ROOT:-}" ] && [ -n "$_MASTER_ROOT" ]; then
     # Canonicalised like _MASTER_ROOT, or a symlinked $HOME compares unequal to itself and the
     # legacy root reads as custom after all.
     _rrc_legacy="$HOME/.unsloth"
@@ -1487,7 +1493,11 @@ if [ -n "$_MASTER_ROOT" ]; then
         [ -z "$_rrc_canon" ] || _rrc_legacy="$_rrc_canon"
         unset _rrc_canon
     fi
-    [ "$_MASTER_ROOT" = "$_rrc_legacy" ] || _RUNTIME_ROOT_IS_CUSTOM=true
+    if [ "$_MASTER_ROOT" = "$_rrc_legacy" ]; then
+        _RUNTIME_ROOT_IS_CUSTOM=false
+    else
+        _RUNTIME_ROOT_IS_CUSTOM=true
+    fi
     unset _rrc_legacy
 fi
 # Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
@@ -3766,6 +3776,22 @@ _master_root_note_is_honoured() {
     # moved off ~/.cache/huggingface, the one cache this change promises not to move.
     _mrn_legacy=$(CDPATH= cd -P -- "${HOME:-}/.unsloth" 2>/dev/null && pwd -P) || _mrn_legacy="${HOME:-}/.unsloth"
     [ "$_mrn_root" != "$_mrn_legacy" ] || return 1
+    # Keyed on the TREE as well, because that is what the readers key on: storage_roots'
+    # _is_legacy_studio_tree and the CLI both decline ANY note found in ~/.unsloth/studio,
+    # whatever it records. Without this, UNSLOTH_HOME=$HOME passed containment (the legacy tree
+    # is inside $HOME) and the value is not the legacy root, so the note was written, warned
+    # about nothing, and then honoured by nobody.
+    _mrn_studio=$(CDPATH= cd -P -- "$STUDIO_HOME" 2>/dev/null && pwd -P) || _mrn_studio="$STUDIO_HOME"
+    _mrn_legacy_studio=$(CDPATH= cd -P -- "${HOME:-}/.unsloth/studio" 2>/dev/null && pwd -P) \
+        || _mrn_legacy_studio="${HOME:-}/.unsloth/studio"
+    if [ "$_mrn_studio" = "$_mrn_legacy_studio" ]; then
+        echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself is the" >&2
+        echo "      default install at $_mrn_studio, where no reader honours a recorded root. That" >&2
+        echo "      root cannot be recorded, so a later launch or uninstall will not find them." >&2
+        echo "      Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or re-export UNSLOTH_HOME whenever" >&2
+        echo "      you run Unsloth." >&2
+        return 1
+    fi
     # A note must describe the tree it is written into: all four readers require the Studio
     # directory to lie INSIDE the root it names, so a tree copied between master roots cannot
     # aim a removal at the original install. install.sh and install.ps1 do not read UNSLOTH_HOME

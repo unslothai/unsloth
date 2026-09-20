@@ -655,7 +655,10 @@ Environment:
                     # they decline it, while accepting line 1 here let a note no runtime reader
                     # honours authorise removing the master root's runtime children. Two lines
                     # are read so the second can be seen; a trailing newline is not one.
-                    $noteLines = @(Get-Content -LiteralPath $notePath -TotalCount 2 -ErrorAction Stop)
+                    # -Encoding UTF8: 5.1 decodes BOM-less input with the ANSI code page, so a
+                    # master root holding non-ASCII came back mangled and its runtime siblings
+                    # were never found.
+                    $noteLines = @(Get-Content -LiteralPath $notePath -TotalCount 2 -Encoding UTF8 -ErrorAction Stop)
                 } catch { continue }
                 if ($noteLines.Count -gt 1 -and -not [string]::IsNullOrWhiteSpace($noteLines[1])) { continue }
                 $line = if ($noteLines.Count -ge 1) { $noteLines[0] } else { $null }
@@ -694,6 +697,22 @@ Environment:
             try { $here = [System.IO.Path]::GetFullPath($(if ($here) { $here } else { $noteStudio })).TrimEnd('\','/') }
             catch { $here = $null }
             if (-not $here) { return $null }
+            # A note found in the ordinary %USERPROFILE%\.unsloth\studio install is declined
+            # outright, whatever it records, which is the rule storage_roots'
+            # _is_legacy_studio_tree and the CLI already apply. Containment alone is not enough:
+            # the profile directory CONTAINS the legacy tree, so a note naming it passed,
+            # _CustomStudioRoots then derived "<profile>\studio", and uninstalling the legacy
+            # install accepted a SECOND marked install there as a root to remove. The deny list
+            # below refuses the profile as a MASTER root, not the Studio candidate derived from
+            # it. Mirrors uninstall.sh.
+            if ($env:USERPROFILE) {
+                $legacyStudio = $null
+                try {
+                    $legacyStudio = [System.IO.Path]::GetFullPath(
+                        (Join-Path $env:USERPROFILE ".unsloth\studio")).TrimEnd('\','/')
+                } catch { $legacyStudio = $null }
+                if ($legacyStudio -and ($here -ieq $legacyStudio)) { return $null }
+            }
             if (-not ($here -ieq $norm -or $here.StartsWith($norm + [System.IO.Path]::DirectorySeparatorChar,
                       [System.StringComparison]::OrdinalIgnoreCase))) {
                 return $null

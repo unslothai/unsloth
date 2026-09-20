@@ -152,12 +152,21 @@ def _seed_cache_env() -> None:
         pass
 
 
-def ensure_studio_backend_path() -> None:
+def ensure_studio_backend_path(*, seed_cache_env: bool = True) -> None:
+    """Put studio/backend on sys.path, and by default pin the cache locations too.
+
+    `seed_cache_env = False` is for callers that only want to IMPORT a path helper.
+    setup_cache_env() creates every cache directory it pins, so seeding it from
+    `unsloth start`'s Node discovery turned a read-only lookup into 18 mkdirs under a home
+    that may have nothing to do with the command being run -- including one against a remote
+    server. Seeding stays on for the ML entry points, where the pins are the point.
+    """
     backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
-    # After the path insert, before the caller's backend import pulls in unsloth_zoo.compiler.
-    _seed_cache_env()
+    if seed_cache_env:
+        # After the path insert, before the caller's backend import pulls in unsloth_zoo.compiler.
+        _seed_cache_env()
 
 
 def configure_quiet_logging() -> None:

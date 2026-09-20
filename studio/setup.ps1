@@ -2821,13 +2821,19 @@ $RuntimeRootIsCustom = $StudioHomeIsCustom
 # the root an install already uses moves nothing, and calling that custom would demand an owner
 # marker from a legacy source-built .unsloth\llama.cpp that predates markers. The comparison
 # setup.sh makes; taking any non-empty master root instead was a real divergence.
+#
+# Staging is excluded for the same reason, not as an exception to it: Get-ManagedLlamaCppDir
+# gives $StageRoot precedence over the master root, so during a staged update the master root is
+# not where anything lands. ASSIGNED, not merely raised, or a custom Studio home whose runtimes
+# land in the legacy root keeps the flag true and demands markers from exactly the pre-marker
+# tree this comparison exists to spare.
 $_masterRootForOwnership = Get-MasterRootOverride
-if ($_masterRootForOwnership) {
+if ($_masterRootForOwnership -and -not $StageRoot) {
     # Canonicalised the same way Get-MasterRootOverride canonicalises its answer, or a
     # junctioned profile compares unequal to itself. Case-insensitively, since two Windows
     # paths differing only in case are one directory.
     $_legacyRuntimeRoot = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth")
-    if ($_masterRootForOwnership -ine $_legacyRuntimeRoot) { $RuntimeRootIsCustom = $true }
+    $RuntimeRootIsCustom = ($_masterRootForOwnership -ine $_legacyRuntimeRoot)
 }
 $LlamaCppDir = Get-ManagedLlamaCppDir -StagingRoot $StageRoot
 $UnslothHome = Split-Path -Parent $LlamaCppDir
@@ -2851,6 +2857,20 @@ function Test-MasterRootNoteIsHonoured {
     # moved off the shared Hugging Face cache this change promises not to move.
     $legacy = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth")
     if ($legacy -and ($norm -ieq $legacy)) { return $false }
+    # Keyed on the TREE as well, because that is what the readers key on: storage_roots'
+    # _is_legacy_studio_tree and the CLI both decline ANY note found in the legacy Studio tree,
+    # whatever it records. Without this, UNSLOTH_HOME=%USERPROFILE% passed containment (the
+    # legacy tree is inside the profile) and is not the legacy root, so the note was written,
+    # warned about nothing, and was then honoured by nobody.
+    $legacyStudio = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")
+    if ($legacyStudio -and ($here -ieq $legacyStudio)) {
+        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio is the" -ForegroundColor Yellow
+        Write-StudioLine "        default install at $here, where no reader honours a recorded root." -ForegroundColor Yellow
+        Write-StudioLine "        That root cannot be recorded, so a later launch or uninstall will" -ForegroundColor Yellow
+        Write-StudioLine "        not find them. Set UNSLOTH_STUDIO_HOME to $norm\studio, or re-set" -ForegroundColor Yellow
+        Write-StudioLine "        UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
+        return $false
+    }
     # A note must describe the tree it is written into: every reader requires the Studio
     # directory to lie INSIDE the root it names, so a tree copied between master roots cannot aim
     # a removal at the original install. install.ps1 does not read UNSLOTH_HOME yet, so a master
@@ -2935,7 +2955,10 @@ if ((Get-MasterRootOverride) -and -not $StageRoot -and
 try {
     $staleNote = Join-Path (Join-Path $StudioHome "share") ".unsloth-master-root"
     if (Test-Path -LiteralPath $staleNote -PathType Leaf) {
-        $staleValue = (Get-Content -LiteralPath $staleNote -TotalCount 1 -ErrorAction Stop)
+        # -Encoding UTF8: the writer emits BOM-less UTF-8 and Windows PowerShell 5.1 decodes
+        # BOM-less input with the ANSI code page, so a root holding non-ASCII read back
+        # mangled and never matched the value this sweep exists to clear.
+        $staleValue = (Get-Content -LiteralPath $staleNote -TotalCount 1 -Encoding UTF8 -ErrorAction Stop)
         if ($staleValue) { $staleValue = $staleValue.Trim() }
         if ($staleValue) {
             if ($staleValue -eq "~") { $staleValue = $env:USERPROFILE }

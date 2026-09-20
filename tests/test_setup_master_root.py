@@ -412,6 +412,62 @@ def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
 
 
 @NEEDS_POSIX_BASH
+@pytest.mark.parametrize(
+    "environment, expected",
+    [
+        # Staging: the placement below gives STAGE_ROOT precedence over the master root, so the
+        # master root is not where anything lands and must not decide ownership. Raised anyway,
+        # it demanded an owner marker from a markerless tree the old updater had staged, and an
+        # update that worked on the merge base exited instead.
+        pytest.param(
+            {"UNSLOTH_STUDIO_STAGE_ROOT": "STAGE", "_STUDIO_HOME_IS_CUSTOM": "false"},
+            ["false", "false"],
+            id = "a staged update ignores the master root",
+        ),
+        # And the flag has to be ASSIGNED, not only raised: a custom STUDIO_HOME whose runtimes
+        # land in the legacy root kept it true and demanded markers from exactly the pre-marker
+        # ~/.unsloth/llama.cpp this comparison exists to spare.
+        pytest.param(
+            {"UNSLOTH_HOME": "LEGACY", "_STUDIO_HOME_IS_CUSTOM": "true"},
+            ["true", "false"],
+            id = "a custom studio home whose runtimes stay legacy",
+        ),
+    ],
+)
+def test_the_ownership_flag_follows_where_the_runtimes_land(tmp_path, environment, expected):
+    home = tmp_path / "home"
+    (home / ".unsloth" / "studio").mkdir(parents = True)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    resolved = {
+        key: str(stage) if value == "STAGE" else
+        str(home / ".unsloth") if value == "LEGACY" else value
+        for key, value in environment.items()
+    }
+    if "UNSLOTH_HOME" not in resolved:
+        resolved["UNSLOTH_HOME"] = str(tmp_path / "portable")
+        (tmp_path / "portable").mkdir()
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    script = "\n".join(
+        (
+            "set -u",
+            f'STAGE_ROOT="{resolved.pop("UNSLOTH_STUDIO_STAGE_ROOT", "")}"',
+            _slice(src, "# Stripped before anything else", "# Directory-local evidence"),
+            'printf "%s %s\\n" "$_STUDIO_HOME_IS_CUSTOM" "$_RUNTIME_ROOT_IS_CUSTOM"',
+        )
+    )
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        env = {"HOME": str(home), "PATH": "/usr/bin:/bin", **resolved},
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.split() == expected
+
+
+@NEEDS_POSIX_BASH
 def test_no_master_root_leaves_the_ownership_flag_alone(tmp_path):
     src = SETUP_SH.read_text(encoding = "utf-8")
     script = "\n".join(

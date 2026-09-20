@@ -297,6 +297,24 @@ got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$MULTI"
          export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "a one-line note is still honoured" "$got" "$MULTI_MASTER"
 
+echo "== a note in the legacy tree cannot aim the uninstall at a second install =="
+# The legacy install carries a note naming $HOME, which setup used to accept: the profile
+# CONTAINS ~/.unsloth/studio, so containment passed and the value is not the legacy root.
+# _custom_studio_roots then emitted "$HOME/studio", and a SECOND marked install kept there was
+# accepted as a Studio root to remove, taking its database and outputs. The deny list does not
+# catch it: it refuses $HOME as a master root, not the Studio candidate derived from it.
+# storage_roots._is_legacy_studio_tree and the CLI decline that note outright; so must this.
+LEGACY_HOME="$_TMP_ROOT/legacy-note-home"
+mkdir -p "$LEGACY_HOME/.unsloth/studio/share"
+printf '%s\n' "$LEGACY_HOME" > "$LEGACY_HOME/.unsloth/studio/share/.unsloth-master-root"
+mkdir -p "$LEGACY_HOME/studio/share" "$LEGACY_HOME/studio/outputs"
+: > "$LEGACY_HOME/studio/.unsloth-studio-owned"
+: > "$LEGACY_HOME/studio/studio.db"
+got=$( ( HOME="$LEGACY_HOME"; unset UNSLOTH_HOME UNSLOTH_STUDIO_HOME STUDIO_HOME
+         export HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "a legacy-tree note names no master root" "$got" ""
+assert_dir "the second install is untouched" "$LEGACY_HOME/studio/studio.db"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

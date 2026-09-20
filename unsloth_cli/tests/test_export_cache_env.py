@@ -119,3 +119,37 @@ def test_export_commands_seed_compile_location(tmp_path, command_name):
     assert Path(location).is_absolute()
     assert Path(location) == unsloth_home / "studio" / "compiled_cache"
     assert not (workdir / "unsloth_compiled_cache").exists()
+
+
+def test_node_discovery_does_not_build_the_cache_tree(tmp_path):
+    """`unsloth start` asks whether a managed Node exists; that is a read, not an install.
+
+    ensure_studio_backend_path() seeds the cache environment, and setup_cache_env() CREATES
+    every directory it pins, so routing Node discovery through it turned the lookup into 18
+    mkdirs under a home that may have nothing to do with the command -- including a launch
+    aimed at a remote server. The merge base created nothing here.
+    """
+    home = tmp_path / "home"
+    (home / ".unsloth" / "studio").mkdir(parents = True)
+    probe = (
+        "import json, os, sys\n"
+        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        "from pathlib import Path\n"
+        "home = Path(os.environ['HOME'])\n"
+        "before = {str(p) for p in home.rglob('*') if p.is_dir()}\n"
+        "from unsloth_cli.commands import start\n"
+        "start._managed_node_tools()\n"
+        "after = {str(p) for p in home.rglob('*') if p.is_dir()}\n"
+        "print('PROBE ' + json.dumps(sorted(after - before)))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd = str(tmp_path),
+        env = {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert completed.returncode == 0, completed.stderr
+    line = next(l for l in completed.stdout.splitlines() if l.startswith("PROBE "))
+    assert json.loads(line[len("PROBE ") :]) == []
