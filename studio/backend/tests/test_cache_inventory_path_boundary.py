@@ -354,44 +354,38 @@ def _cached_inventory(monkeypatch):
     monkeypatch.setattr(models_routes, "cached_gguf_rows", lambda *a, **k: [_cached_row()])
 
 
-# /api/models is the OpenAI-compatible mirror of /api/hub, reachable with the same key.
-
-
 @pytest.mark.parametrize(
-    "route",
-    ["/api/hub/cached-models", "/api/hub/cached-gguf"],
+    ("client", "route", "row_fields"),
+    [
+        (_hub, "/api/hub/cached-models", True),
+        (_hub, "/api/hub/cached-gguf", True),
+        # /api/models is the OpenAI-compatible mirror of /api/hub, reachable with the same key,
+        # and it answers a shape of its own: the leak check is what both have in common.
+        (_models, "/api/models/cached-models", False),
+        (_models, "/api/models/cached-gguf", False),
+    ],
+    ids = ("hub-models", "hub-gguf", "compat-models", "compat-gguf"),
 )
-def test_an_api_key_enumerates_the_cache_without_its_paths(_cached_inventory, route):
-    body = _hub(via_api_key = True).get(route)
-    assert body.status_code == 200
-    payload = body.json()
+def test_the_cache_is_enumerable_without_the_layout_it_sits_in(
+    _cached_inventory, client, route, row_fields
+):
+    answered = client(via_api_key = True).get(route)
+    assert answered.status_code == 200
+    payload = answered.json()
     assert [row["repo_id"] for row in payload["cached"]], "the listing must still answer"
     assert response_leaks_host_path(payload, [HOST_ROOT], ignore = LOAD_HANDLE) is None
-    for row in payload["cached"]:
-        assert row["cache_path"] == ""
-        assert row["cache_ref"].startswith("ref:")
-        assert HOST_ROOT not in json.dumps(row), row
-        assert not row["repo_id"].startswith("ref:")
+    if row_fields:
+        for row in payload["cached"]:
+            assert row["cache_path"] == ""
+            assert row["cache_ref"].startswith("ref:")
+            assert HOST_ROOT not in json.dumps(row), row
+            assert not row["repo_id"].startswith("ref:")
 
-
-@pytest.mark.parametrize(
-    "route",
-    ["/api/hub/cached-models", "/api/hub/cached-gguf"],
-)
-def test_a_ui_session_still_sees_its_own_machine(_cached_inventory, route):
-    payload = _hub(via_api_key = False).get(route).json()
-    assert payload["cached"]
-    assert all(row["cache_path"].startswith(HOST_ROOT) for row in payload["cached"])
-
-
-@pytest.mark.parametrize(
-    "route",
-    ["/api/models/cached-models", "/api/models/cached-gguf"],
-)
-def test_the_models_mirror_of_the_inventory_is_covered_too(_cached_inventory, route):
-    payload = _models(via_api_key = True).get(route).json()
-    assert payload["cached"]
-    assert response_leaks_host_path(payload, [HOST_ROOT], ignore = LOAD_HANDLE) is None
+    # BOUNDARY. A browser session still sees its own machine.
+    ui = client(via_api_key = False).get(route).json()
+    assert ui["cached"]
+    if row_fields:
+        assert all(row["cache_path"].startswith(HOST_ROOT) for row in ui["cached"])
 
 
 def test_the_models_folder_is_not_disclosed(monkeypatch):
@@ -402,24 +396,6 @@ def test_the_models_folder_is_not_disclosed(monkeypatch):
     assert _hub(via_api_key = False).get("/api/hub/models-folder").json()["path"] == HOST_ROOT
 
 
-def test_a_rejected_scan_folder_does_not_disclose_where_it_resolved(monkeypatch):
-    def _raises(path):
-        raise HTTPException(
-            status_code = 400,
-            detail = f"Path is not readable: [Errno 36] File name too long: '{REPO_DIR}'",
-        )
-
-    monkeypatch.setattr(local_inventory, "add_scan_folder_response", _raises)
-
-    response = _hub(via_api_key = True).post("/api/hub/scan-folders", json = {"path": "./models"})
-    assert response.status_code == 400
-    detail = response.json()["detail"]
-    assert HOST_ROOT not in detail, detail
-    assert REPO_DIR not in detail, detail
-    assert "File name too long" in detail, detail
-
-    ui = _hub(via_api_key = False).post("/api/hub/scan-folders", json = {"path": "./models"})
-    assert REPO_DIR in ui.json()["detail"]
 
 
 # A raised detail is walked like a payload: the message survives, the layout does not.
@@ -477,17 +453,6 @@ def test_the_models_folder_error_is_not_disclosed_either(
         assert HOST_ROOT in session.json()["detail"]
 
 
-def test_the_scan_folder_list_is_not_disclosed(monkeypatch):
-    monkeypatch.setattr(
-        local_inventory,
-        "get_scan_folders_response",
-        lambda: ScanFoldersResponse(
-            folders = [ScanFolderInfo(id = 1, path = f"{HOST_ROOT}/extra", created_at = "2026-09-01")]
-        ),
-    )
-    payload = _hub(via_api_key = True).get("/api/hub/scan-folders").json()
-    assert payload["folders"], "the folder is still listed, by id"
-    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
 
 
 def test_the_hidden_model_matchers_keep_their_ids_and_drop_their_paths(monkeypatch):
@@ -651,7 +616,17 @@ def test_a_local_adapter_base_model_is_redacted_but_a_repo_id_is_kept():
     assert session[0]["base_model"] == "/home/op/models/Llama-3.1-8B"
 
 
-def test_the_compat_scan_folder_list_is_not_disclosed(monkeypatch):
+def _stub_hub_scan_folders(monkeypatch):
+    monkeypatch.setattr(
+        local_inventory,
+        "get_scan_folders_response",
+        lambda: ScanFoldersResponse(
+            folders = [ScanFolderInfo(id = 1, path = f"{HOST_ROOT}/extra", created_at = "2026-09-01")]
+        ),
+    )
+
+
+def _stub_compat_scan_folders(monkeypatch):
     monkeypatch.setattr(
         models_routes,
         "annotate_scan_folders",
@@ -660,10 +635,25 @@ def test_the_compat_scan_folder_list_is_not_disclosed(monkeypatch):
     monkeypatch.setattr(models_routes, "refresh_failed_scan_folders", lambda folders: None)
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"id": 1}])
 
-    payload = _models(via_api_key = True).get("/api/models/scan-folders").json()
+
+@pytest.mark.parametrize(
+    ("install", "client", "route"),
+    [
+        (_stub_hub_scan_folders, _hub, "/api/hub/scan-folders"),
+        (_stub_compat_scan_folders, _models, "/api/models/scan-folders"),
+    ],
+    ids = ("hub", "compat"),
+)
+def test_a_scan_folder_is_listed_by_id_and_not_by_where_it_points(
+    monkeypatch, install, client, route
+):
+    install(monkeypatch)
+    payload = client(via_api_key = True).get(route).json()
     assert payload["folders"], "the folder is still listed, by id"
     assert response_leaks_host_path(payload, [HOST_ROOT]) is None
-    ui = _models(via_api_key = False).get("/api/models/scan-folders").json()
+
+    # BOUNDARY. The folder a browser session added is shown where it added it.
+    ui = client(via_api_key = False).get(route).json()
     assert ui["folders"][0]["path"] == f"{HOST_ROOT}/extra"
 
 
@@ -753,7 +743,17 @@ def test_a_filesystem_backed_row_is_not_named_by_its_path(_local_inventory):
     assert ui["hf_cache_dir"] == HOST_ROOT
 
 
-def test_a_local_scan_failure_is_redacted_like_its_payload(monkeypatch):
+def _stub_rejected_scan_folder(monkeypatch):
+    def _raises(path):
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Path is not readable: [Errno 36] File name too long: '{REPO_DIR}'",
+        )
+
+    monkeypatch.setattr(local_inventory, "add_scan_folder_response", _raises)
+
+
+def _stub_failing_local_scan(monkeypatch):
     async def _raises(models_dir = "./models"):
         raise HTTPException(
             status_code = 500,
@@ -761,11 +761,42 @@ def test_a_local_scan_failure_is_redacted_like_its_payload(monkeypatch):
         )
 
     monkeypatch.setattr(local_inventory, "list_local_models_response", _raises)
-    detail = _hub(via_api_key = True).get("/api/hub/local").json()["detail"]
-    assert HOST_ROOT not in str(detail), detail
-    assert "unable to open database file" in str(detail), detail
-    ui = _hub(via_api_key = False).get("/api/hub/local").json()["detail"]
-    assert HOST_ROOT in str(ui), ui
+
+
+@pytest.mark.parametrize(
+    ("install", "send", "status", "kept"),
+    [
+        (
+            _stub_rejected_scan_folder,
+            lambda api_key: _hub(via_api_key = api_key).post(
+                "/api/hub/scan-folders", json = {"path": "./models"}
+            ),
+            400,
+            "File name too long",
+        ),
+        (
+            _stub_failing_local_scan,
+            lambda api_key: _hub(via_api_key = api_key).get("/api/hub/local"),
+            500,
+            "unable to open database file",
+        ),
+    ],
+    ids = ("a-rejected-scan-folder", "a-failing-local-scan"),
+)
+def test_a_raised_detail_keeps_the_reason_and_loses_the_layout(
+    monkeypatch, install, send, status, kept
+):
+    """The error text is the only account of WHY, so it is scrubbed rather than blanked."""
+    install(monkeypatch)
+    response = send(True)
+    assert response.status_code == status
+    detail = str(response.json()["detail"])
+    assert HOST_ROOT not in detail, detail
+    assert REPO_DIR not in detail, detail
+    assert kept in detail, detail
+
+    # BOUNDARY. A browser session is told exactly which path failed.
+    assert HOST_ROOT in str(send(False).json()["detail"])
 
 
 def test_a_reference_table_that_fills_up_drops_the_oldest(monkeypatch):

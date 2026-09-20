@@ -469,112 +469,147 @@ def test_the_provenance_key_is_case_folded_like_every_other_repo_lookup():
     assert hf_tokens._request_token_repo_key("org/private", "dataset") != _key("org/private")
 
 
-def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
+def _source(target) -> str:
     import inspect
 
+    return inspect.getsource(target)
+
+
+def _fetch_sites():
+    """Where a fetch under a request token is recorded, and what has to be true of each site.
+
+    Asserted against the code rather than by driving every route, because the thing being
+    pinned is ORDER: the record has to exist before the bytes can move and after anything
+    cheap can still refuse, and no test that only drives the happy path can see that.
+    """
     from hub.services import download_lifecycle
+    from hub.services.datasets import formatting
+    from hub.services.models import downloads
+    from picker import service as picker_module
     from routes import video as video_routes
 
-    text_load = inspect.getsource(inference_routes._load_model_impl)
-    assert "_note_load_fetched_with_a_request_token(request.model_path" in text_load
-    assert text_load.rindex("finally:") < text_load.index("_note_load_fetched_with_a_request_token")
-    assert "_load_fetched_bytes(" in text_load
+    text_load = _source(inference_routes._load_model_impl)
+    media_loads = {
+        "diffusion-load": _source(inference_routes.load_diffusion_model_gated),
+        "video-load": _source(video_routes.load_video_model_gated),
+    }
+    preview = _source(formatting.check_format_response)
+    picker = _source(picker_module)
+    config_read = _source(model_config_module)
+    return {
+        "text-load": text_load,
+        **media_loads,
+        "chat-route": _source(inference_routes.load_model_gated),
+        "download-service": _source(downloads),
+        "download-lifecycle": _source(download_lifecycle),
+        "dataset-preview": preview,
+        "picker-template": picker,
+        "config-read": config_read,
+    }
 
-    # `begin_load` returns before the worker moves a byte, so a before/after comparison in a
-    # media route would record nothing; they write at the launch, after the 400-able validation.
-    for media_load in (
-        inspect.getsource(inference_routes.load_diffusion_model_gated),
-        inspect.getsource(video_routes.load_video_model_gated),
-    ):
-        assert "_repo_is_in_the_hub_cache(ref) is not True" in media_load
-        assert "_note_load_fetched_with_a_request_token(_ref" in media_load
-        assert (
-            "_load_fetched_bytes" not in media_load
-        ), "a media route cannot compare before and after: its fetch has not happened yet"
-        tested_at = media_load.index("_repo_is_in_the_hub_cache(ref) is not True")
-        validated_at = media_load.index("validate_load_request")
-        written_at = media_load.index("_note_load_fetched_with_a_request_token(_ref")
-        launched_at = media_load.index("status_dict = await asyncio.to_thread(")
-        assert tested_at < validated_at, "the cache test has to precede anything that can fetch"
-        assert validated_at < written_at, "a 400 from validation must leave no record behind"
-        assert written_at < launched_at, "nothing may be fetched unrecorded"
-        # And INSIDE the admitted start callback, not on the way to it: the busy guard 409s,
-        # the arbiter refuses and the retirement check rejects a tombstoned account, none of
-        # them starting a worker, and a record any of them leaves behind withholds a repo
-        # nobody fetched.
-        admitted_at = media_load.index("def _start_")
-        fetches_at = media_load.index(".begin_load(")
-        assert (
-            admitted_at < written_at < fetches_at
-        ), "the media record is outside the callback the load is admitted through"
 
-    assert "_note_load_fetched_with_a_request_token" not in inspect.getsource(
-        inference_routes.load_model_gated
-    ), "the route records again, before the load is admitted"
+_SITES = _fetch_sites()
 
-    from hub.services.models import downloads
-
-    assert "note_repo_fetched_with_a_request_token" not in inspect.getsource(downloads)
-
-    # An unrecorded fetch reads back later as "nothing here needed a credential".
-    from hub.services.datasets import formatting
-    from picker import service as picker_module
-
-    # Each of these WRAPS its fetch, rather than writing beside it: the record has to exist
-    # before the call, because a download that dies half way has still filled the cache, and
-    # it has to be taken back when the call raised having left nothing, or a 404 withholds a
-    # repo a later anonymous fetch fills.
-    for source, writer, call, fetches_at in (
-        (
-            inspect.getsource(download_lifecycle),
-            "note_repo_fetched_with_a_request_token",
-            "(hf_token, repo_id, repo_type)",
-            "proc = spawn()",
-        ),
-        (
-            inspect.getsource(formatting.check_format_response),
-            "recording_a_request_token_fetch",
-            "(\n                            hf_token, request.dataset_name",
-            "load_dataset(**load_kwargs)",
-        ),
-        (
-            inspect.getsource(picker_module),
-            "recording_a_request_token_fetch",
-            "(hf_token, resolved",
-            "path = hf_hub_download(",
-        ),
-        (
-            inspect.getsource(model_config_module),
-            "recording_a_request_token_fetch",
-            "(token, model_name",
-            "AutoConfig.from_pretrained(",
-        ),
-    ):
-        assert f"{writer}{call}" in source
-        assert source.index(writer) < source.index(
-            fetches_at
-        ), "the fetch was recorded only after making it"
-
-    config_read = inspect.getsource(model_config_module)
+# A text load compares the cache before and after, since its fetch has happened by then; a media
+# route cannot, because `begin_load` returns before the worker moves a byte.
+_PRESENT = [
+    ("text-load", "_note_load_fetched_with_a_request_token(request.model_path", "_load_fetched_bytes("),
+    ("diffusion-load", "_repo_is_in_the_hub_cache(ref) is not True", "_note_load_fetched_with_a_request_token(_ref"),
+    ("video-load", "_repo_is_in_the_hub_cache(ref) is not True", "_note_load_fetched_with_a_request_token(_ref"),
+    # Each of these WRAPS its fetch rather than writing beside it: the record has to exist
+    # before the call, because a download that dies half way has still filled the cache, and it
+    # has to be taken back when the call raised having left nothing.
+    ("download-lifecycle", "note_repo_fetched_with_a_request_token(hf_token, repo_id, repo_type)"),
+    ("dataset-preview", "recording_a_request_token_fetch(\n                            hf_token, request.dataset_name"),
+    ("picker-template", "recording_a_request_token_fetch(hf_token, resolved"),
+    ("config-read", "recording_a_request_token_fetch(token, model_name"),
     # And only where the call can actually fetch: both of these resolve an already-cached file
-    # without asking the Hub, so an unconditional record marks a repo the cache may have held
-    # anonymously and withholds it from the tokenless offline caller.
-    assert "not _config_json_already_cached(model_name, revision)" in config_read
-    assert "if not _this_file_was_already_here(rel)" in inspect.getsource(picker_module)
-    # Same rule on the preview: the record sits BELOW the prefer-local branches, which read
-    # the cache or 404 without a round trip.
-    preview = inspect.getsource(formatting.check_format_response)
-    assert preview.index("_LOCAL_CACHE_MISS_ERROR_CODE") < preview.index(
-        "recording_a_request_token_fetch"
-    ), "a cache-only preview records a fetch it never made"
-    # And below the listing call: `list_repo_files` fetches nothing into the cache, so a 404 or
-    # an outage there used to leave a record for a fetch that never happened, which the
-    # first-writer rule then keeps forever.
-    assert preview.index("list_repo_files") < preview.index(
-        "recording_a_request_token_fetch"
-    ), "a failed listing records a fetch that never started"
-    # Both download call sites, since tier 2 reaches the network whether or not tier 1 ran.
-    assert preview.count("recording_a_request_token_fetch") == 2
+    # without asking the Hub, and recording that marks a repo the cache may have held
+    # anonymously, which withholds it from the tokenless offline caller.
+    ("config-read", "not _config_json_already_cached(model_name, revision)"),
+    ("picker-template", "if not _this_file_was_already_here(rel)"),
+]
+
+_ABSENT = [
+    ("chat-route", "_note_load_fetched_with_a_request_token", "the route records again, before the load is admitted"),
+    ("download-service", "note_repo_fetched_with_a_request_token", "the download service records what its caller already did"),
+    ("diffusion-load", "_load_fetched_bytes", "a media route cannot compare before and after: its fetch has not happened yet"),
+    ("video-load", "_load_fetched_bytes", "a media route cannot compare before and after: its fetch has not happened yet"),
+]
+
+# Read as "this marker must appear before the next one".
+_ORDERED = [
+    (
+        "diffusion-load",
+        "the media record lands after the 400-able validation and before the launch",
+        ["_repo_is_in_the_hub_cache(ref) is not True", "validate_load_request",
+         "_note_load_fetched_with_a_request_token(_ref", "status_dict = await asyncio.to_thread("],
+    ),
+    (
+        "video-load",
+        "the media record lands after the 400-able validation and before the launch",
+        ["_repo_is_in_the_hub_cache(ref) is not True", "validate_load_request",
+         "_note_load_fetched_with_a_request_token(_ref", "status_dict = await asyncio.to_thread("],
+    ),
+    # INSIDE the admitted start callback, not on the way to it: the busy guard 409s, the arbiter
+    # refuses and the retirement check rejects a tombstoned account, none of them starting a
+    # worker, and a record any of them leaves behind withholds a repo nobody fetched.
+    ("diffusion-load", "the media record is inside the callback the load is admitted through",
+     ["def _start_", "_note_load_fetched_with_a_request_token(_ref", ".begin_load("]),
+    ("video-load", "the media record is inside the callback the load is admitted through",
+     ["def _start_", "_note_load_fetched_with_a_request_token(_ref", ".begin_load("]),
+    ("download-lifecycle", "the fetch was recorded only after making it",
+     ["note_repo_fetched_with_a_request_token", "proc = spawn()"]),
+    ("picker-template", "the fetch was recorded only after making it",
+     ["recording_a_request_token_fetch", "path = hf_hub_download("]),
+    ("config-read", "the fetch was recorded only after making it",
+     ["recording_a_request_token_fetch", "AutoConfig.from_pretrained("]),
+    # A cache-only preview reads the cache or 404s without a round trip, and `list_repo_files`
+    # caches nothing, so a 404 there used to leave a record for a fetch that never happened.
+    ("dataset-preview", "a cache-only preview records a fetch it never made",
+     ["_LOCAL_CACHE_MISS_ERROR_CODE", "recording_a_request_token_fetch"]),
+    ("dataset-preview", "a failed listing records a fetch that never started",
+     ["list_repo_files", "recording_a_request_token_fetch", "load_dataset(**load_kwargs)"]),
+]
+
+
+@pytest.mark.parametrize(
+    ("site", "markers"),
+    [(site, markers) for site, *markers in _PRESENT],
+    ids = [f"{site}:{markers[0][:38]}" for site, *markers in _PRESENT],
+)
+def test_a_fetch_site_records_what_it_is_supposed_to(site, markers):
+    for marker in markers:
+        assert marker in _SITES[site], (site, marker)
+
+
+@pytest.mark.parametrize(
+    ("site", "marker", "why"),
+    _ABSENT,
+    ids = [f"{site}:{marker[:38]}" for site, marker, _why in _ABSENT],
+)
+def test_a_site_that_must_not_record_does_not(site, marker, why):
+    assert marker not in _SITES[site], why
+
+
+@pytest.mark.parametrize(
+    ("site", "why", "markers"),
+    _ORDERED,
+    ids = [f"{site}:{why[:44]}" for site, why, _markers in _ORDERED],
+)
+def test_the_record_sits_between_the_last_refusal_and_the_first_byte(site, why, markers):
+    source = _SITES[site]
+    found = [source.index(marker) for marker in markers]
+    assert found == sorted(found), (why, dict(zip(markers, found)))
+
+
+def test_a_text_load_records_in_its_finally_and_the_preview_records_at_both_tiers():
+    """The two contracts that are counts rather than order: the text load's record is in the
+    `finally`, so a load that failed part way still records the bytes it pulled, and the preview
+    has one per download tier, since tier 2 reaches the network whether or not tier 1 ran."""
+    text_load = _SITES["text-load"]
+    assert text_load.rindex("finally:") < text_load.index("_note_load_fetched_with_a_request_token")
+    assert _SITES["dataset-preview"].count("recording_a_request_token_fetch") == 2
 
 
 def test_every_credentialed_fetch_is_recorded_not_only_a_foreign_one(monkeypatch, writes):
