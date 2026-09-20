@@ -216,7 +216,7 @@ export function ParamSlider({
     );
   }
   return (
-    <div className="space-y-3.5">
+    <div className="space-y-2">
       <div className="flex min-h-8 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1125,7 +1125,7 @@ export function ChatSettingsPanel({
       <div className="px-[18px] pt-3">
         {(hasModelContent || modelConfig) && (
               <CollapsibleSection label="Model" defaultOpen={true} first={true}>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-5">
               {modelConfig}
               {showSpecFallback && (
                 <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
@@ -1197,7 +1197,7 @@ export function ChatSettingsPanel({
           defaultOpen={true}
           first={!hasModelContent && !modelConfig}
         >
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
             <DropdownMenu>
                   <DropdownMenuTrigger asChild={true}>
                 <div
@@ -1278,7 +1278,8 @@ export function ChatSettingsPanel({
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-            <div className="grid grid-cols-2 gap-3">
+            {/* Each pill is as wide as its label, not half the panel. */}
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
@@ -1288,7 +1289,7 @@ export function ChatSettingsPanel({
                     }
                 size="sm"
                 className={cn(
-                  "h-9 w-full rounded-full text-ui-13 font-medium tracking-nav",
+                  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav",
                   presetSaveState.isSaveReady &&
                     "bg-primary text-primary-foreground hover:bg-primary/90",
                 )}
@@ -1303,7 +1304,7 @@ export function ChatSettingsPanel({
                 disabled={!(settingsHydrated && activeCustomPreset)}
                 variant="outline"
                 size="sm"
-                className="h-9 w-full rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
+                className="h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
@@ -1343,7 +1344,7 @@ export function ChatSettingsPanel({
               />
             </div>
             {showPromptCacheTtlControl && promptCachingEnabled ? (
-              <div className="flex min-h-8 items-center justify-between gap-3 pt-3.5">
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-5">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Cache TTL
@@ -1367,7 +1368,10 @@ export function ChatSettingsPanel({
                   }}
                 >
                   <SelectTrigger
-                    className="panel-select-trigger h-8 shrink-0"
+                    size="sm"
+                    icon={ChevronDownStandardIcon}
+                    iconClassName="size-3.5"
+                    className="panel-select-trigger shrink-0"
                     aria-label="Prompt cache TTL"
                   >
                     <SelectValue />
@@ -1380,7 +1384,7 @@ export function ChatSettingsPanel({
               </div>
             ) : null}
             {showFastModeControl ? (
-              <div className="flex min-h-8 items-center justify-between gap-3 pt-3.5">
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-5">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Fast mode
@@ -1516,9 +1520,9 @@ export function ChatSettingsPanel({
               />
             ) : null}
             {showMinP ? (
-              <div className="space-y-3">
+              <div className="space-y-5">
                 {isVllm ? (
-                  <div className="space-y-2">
+                  <div className="space-y-1">
                     <Select
                       value={effectiveMinPMode(params)}
                       onValueChange={(value) => {
@@ -1645,7 +1649,7 @@ export function ChatSettingsPanel({
                     }}
                     placeholder="Random"
                     aria-label="Seed"
-                    className="!h-9 min-h-0 min-w-0 self-stretch !px-3 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13"
+                    className="!h-8 min-h-0 min-w-0 self-stretch !px-3 py-0 text-ui-13 font-medium leading-8 text-nav-fg md:text-ui-13"
                   />
                 </InputGroup>
               </div>

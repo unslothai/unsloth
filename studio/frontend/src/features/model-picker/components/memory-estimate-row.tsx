@@ -230,7 +230,7 @@ export function MemoryEstimateRow({
     estimate.drafterRuntimeBytes,
   );
   return (
-    <div className="flex flex-col border-b border-border/60 pb-3.5">
+    <div className="flex flex-col border-b border-border/60 pb-5">
       <button
         type="button"
         onClick={() => onExpandedChange(!expanded)}

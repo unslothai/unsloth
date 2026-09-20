@@ -200,7 +200,9 @@ const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] i
 const NUMBER_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} ${CONTROL_SURFACE} px-3.5 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
 const TEXT_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} min-w-0 ${CONTROL_SURFACE} px-3.5 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
 // Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
-const FOOTER_BUTTON_CLASS = "h-9 rounded-full text-ui-13 font-medium tracking-nav";
+// Width is the label plus this padding, so a pill is never wider than what it says.
+const FOOTER_BUTTON_CLASS =
+  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav";
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
@@ -434,7 +436,7 @@ function MaxSeqLengthSetting({
   // shows the length that will be served, not "Auto". A dash only while it is unknown.
   const label = isMlx ? "Context Length" : "Max Seq Length";
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>{label}</span>
@@ -503,7 +505,7 @@ function AdvancedGpuSlider({
   disabled?: boolean;
 }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>{label}</span>
@@ -975,7 +977,7 @@ function AdvancedSettingsToggle({
 }) {
   return (
     // Ruled off from the context controls above, matching the estimate row's divider.
-    <div className={`${ROW_CLASS} border-t border-border/60 pt-3.5`}>
+    <div className={`${ROW_CLASS} border-t border-border/60 pt-5`}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
           Advanced settings
@@ -1013,9 +1015,10 @@ function MlxAdvancedSettings({
   templateOutcome: string | null;
 }) {
   return (
-    <div className="flex flex-col gap-1">
+    // Same row spacing as the GGUF rows, whose fragment sits in the list above.
+    <div className="flex flex-col gap-5">
       {servedByMlx && (
-        <>
+        <div className="space-y-1">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
@@ -1049,22 +1052,20 @@ function MlxAdvancedSettings({
         </Select>
       </div>
       {outcome ? (
-        <p className="text-ui-11 leading-snug text-muted-foreground">
-          {outcome}
-        </p>
+        <p className="text-ui-11 text-muted-foreground">{outcome}</p>
       ) : null}
-        </>
+        </div>
       )}
-      <ChatTemplateSetting
-        config={config}
-        onEditTemplate={onEditTemplate}
-        readOnly={!servedByMlx}
-      />
-      {templateOutcome ? (
-        <p className="text-ui-11 leading-snug text-muted-foreground">
-          {templateOutcome}
-        </p>
-      ) : null}
+      <div className="space-y-1">
+        <ChatTemplateSetting
+          config={config}
+          onEditTemplate={onEditTemplate}
+          readOnly={!servedByMlx}
+        />
+        {templateOutcome ? (
+          <p className="text-ui-11 text-muted-foreground">{templateOutcome}</p>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -3098,7 +3099,7 @@ export function ModelConfigPage({
       {variant === "page" && showHeader && (
         // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
         // the same left edge as the rows below.
-        <div className="flex items-center gap-2.5 pb-4">
+        <div className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
               type="button"
@@ -3123,7 +3124,7 @@ export function ModelConfigPage({
         </div>
       )}
 
-      <div className="space-y-3.5">
+      <div className="space-y-5">
         {target.isGguf && (
           <>
             {/* Above Context Length on purpose: that is the control moving this number most, and a readout
@@ -3148,7 +3149,7 @@ export function ModelConfigPage({
               expanded={memoryBreakdownOpen}
               onExpandedChange={setMemoryBreakdownOpen}
             />
-            <div className="space-y-3">
+            <div className="space-y-2">
               <div className={ROW_CLASS}>
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className={LABEL_CLASS}>Context Length</span>
@@ -3181,7 +3182,7 @@ export function ModelConfigPage({
               {/* Grouped so the warning sits 4px under the slider, as advice does elsewhere. */}
               <div className="space-y-1">
                 {nativeContextLength != null ? (
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     <Slider
                       min={0}
                       max={maxContext}
@@ -3291,8 +3292,8 @@ export function ModelConfigPage({
       <div
         className={
           variant === "sidebar"
-            ? "mt-4 flex flex-col gap-3 border-t border-border/60 pt-4"
-            : "mt-4 flex items-center justify-between gap-3 border-t border-border/60 pt-4"
+            ? "mt-5 flex flex-col gap-2 border-t border-border/60 pt-5"
+            : "mt-5 flex items-center justify-between gap-3 border-t border-border/60 pt-5"
         }
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -3316,15 +3317,35 @@ export function ModelConfigPage({
         <div
           className={
             variant === "sidebar"
-              ? "grid grid-cols-2 gap-3"
+              ? "flex flex-wrap items-center gap-2"
               : "flex shrink-0 items-center gap-2"
           }
         >
+          {/* Primary action first, like the Preset row's Save/Delete. */}
+          <Button
+            type="button"
+            size="sm"
+            className={FOOTER_BUTTON_CLASS}
+            disabled={
+              stagedMetadataPending ||
+              budgetSettling ||
+              (!extraArgsLoadable && !sharedExtraArgsCleared) ||
+              sharedExtraArgsRefused ||
+              extraArgsHydrating ||
+              (isActiveModel &&
+                atBaseline &&
+                !rememberChanged &&
+                !budgetReloadRequired)
+            }
+            onClick={handleRun}
+          >
+            {primaryActionLabel}
+          </Button>
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className={`${FOOTER_BUTTON_CLASS} text-muted-foreground${variant === "sidebar" ? " w-full" : ""}`}
+            className={`${FOOTER_BUTTON_CLASS} text-muted-foreground`}
             disabled={atDefault}
             onClick={() => {
               // Reset writes through setConfig, not update, so it marks the draft itself.
@@ -3341,25 +3362,6 @@ export function ModelConfigPage({
             }}
           >
             Reset
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            className={`${FOOTER_BUTTON_CLASS}${variant === "sidebar" ? " w-full" : ""}`}
-            disabled={
-              stagedMetadataPending ||
-              budgetSettling ||
-              (!extraArgsLoadable && !sharedExtraArgsCleared) ||
-              sharedExtraArgsRefused ||
-              extraArgsHydrating ||
-              (isActiveModel &&
-                atBaseline &&
-                !rememberChanged &&
-                !budgetReloadRequired)
-            }
-            onClick={handleRun}
-          >
-            {primaryActionLabel}
           </Button>
         </div>
       </div>

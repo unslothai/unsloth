@@ -1473,11 +1473,30 @@ html[data-chat-font] .aui-root {
 	   fade-in, just enough to read as interactive without competing
 	   with the slider row's quiet aesthetic. */
 	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
+	/* 32px like every other inline control on the panel. */
 	.panel-number-input {
-		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
+		@apply h-8 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}
 	.dark .panel-number-input {
 		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
+	}
+
+	/* Select trigger on the panel: the surface and padding the model rows
+	   use. Height and width stay with the caller, since an inline select
+	   is 32px and a full-width one 36px. */
+	/* Important like .panel-input-group: these all override a base
+	   SelectTrigger class of the same weight. */
+	.panel-select-trigger {
+		@apply rounded-full! border-transparent! bg-black/[0.04]! py-0! pl-3.5! pr-[11px]! text-ui-13! font-medium! text-nav-fg shadow-none! focus-visible:ring-0!;
+	}
+	.panel-select-trigger:hover {
+		@apply bg-black/[0.06]!;
+	}
+	.dark .panel-select-trigger {
+		@apply bg-white/[0.05]!;
+	}
+	.dark .panel-select-trigger:hover {
+		@apply bg-white/[0.1]!;
 	}
 
 	/* Switch — unsloth-green track when active, slider-gray thumb in
