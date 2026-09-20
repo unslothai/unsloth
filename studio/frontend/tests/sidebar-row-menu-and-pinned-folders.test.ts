@@ -6,6 +6,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  useChatNavigationStore,
+  visibleChatItems,
+} from "../src/features/chat/stores/chat-navigation-store.ts";
+import { applyManualOrder } from "../src/features/chat/stores/sidebar-organization-store.ts";
+import type { SidebarItem } from "../src/features/chat/hooks/use-chat-sidebar-items.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
@@ -189,4 +195,61 @@ test("a pinned folder is a row of Pinned, not of Projects", () => {
     /const projectsSectionRendered =\n[\s\S]{0,200}?organizeBy === "project" &&\n\s*projects\.length > 0;/,
   );
   assert.match(APP_SIDEBAR, /\{projectsSectionRendered && \(/);
+});
+
+// Moving a folder into Pinned must not undo an order the user had already dragged it into: the
+// Pinned scope is empty on the first run, while the Projects one still holds that order.
+test("a pinned folder keeps the order it was dragged into", () => {
+  const projects = [{ id: "a" }, { id: "b" }, { id: "c" }];
+  const byId = new Map(projects.map((p) => [p.id, p]));
+  // Pinned b first, so pin order alone would draw b above a.
+  const pinned = ["b", "a"].map((id) => byId.get(id)!);
+  const draggedInProjects = ["c", "a", "b"];
+  const order = (pinnedScope: string[] | undefined) =>
+    applyManualOrder(
+      pinned,
+      pinnedScope?.length ? pinnedScope : draggedInProjects,
+      (project) => project.id,
+    ).map((project) => project.id);
+  assert.deepEqual(order(undefined), ["a", "b"]);
+  // And a drop in Pinned takes over from then on.
+  assert.deepEqual(order(["b", "a"]), ["b", "a"]);
+  assert.match(
+    APP_SIDEBAR,
+    /manualOrder\[PINNED_PROJECT_ORDER_SCOPE\]\?\.length\n\s*\? manualOrder\[PINNED_PROJECT_ORDER_SCOPE\]\n\s*: manualOrder\[PROJECT_ORDER_SCOPE\],/,
+  );
+});
+
+// Pinned draws its folders above its chats, and the chords walk what the store was handed.
+test("the walk reads the rows in the order Pinned draws them", () => {
+  const item = (id: string): SidebarItem => ({
+    type: "single",
+    id,
+    title: id,
+    createdAt: 0,
+    updatedAt: 0,
+  });
+  const folderChats = [item("folder-1"), item("folder-2")];
+  // folder-2 is pinned as well as being in a pinned folder, so it is drawn twice.
+  const pinnedChats = [item("pin-1"), item("folder-2")];
+  useChatNavigationStore.getState().publishLists({
+    pinnedItems: [...folderChats, ...pinnedChats],
+    projectItems: [item("proj-1")],
+    recentItems: [item("recent-1")],
+    attentionItemIds: [],
+    activeItemId: null,
+  });
+  assert.deepEqual(
+    visibleChatItems(useChatNavigationStore.getState()).map((i) => i.id),
+    ["folder-1", "folder-2", "pin-1", "proj-1", "recent-1"],
+  );
+  // The sidebar publishes that block whole, and leaves the section's own chats to projectItems.
+  assert.match(
+    APP_SIDEBAR,
+    /const pinnedSectionChatItems = useMemo\(\n\s*\(\) => \[\.\.\.pinnedProjectChatItems, \.\.\.visiblePinnedItems\],/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /pinnedItems: pinnedSectionChatItems,\n\s*projectItems: sectionProjectChatItems,/,
+  );
 });

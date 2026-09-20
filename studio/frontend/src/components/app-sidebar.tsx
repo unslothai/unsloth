@@ -1125,7 +1125,11 @@ export function AppSidebar() {
       .filter((p): p is ProjectRecord => Boolean(p));
     return applyManualOrder(
       pinned,
-      manualOrder[PINNED_PROJECT_ORDER_SCOPE],
+      // Until Pinned records an order of its own, the one these folders were dragged into while
+      // they were rows of Projects still stands: it covers them and pin order does not.
+      manualOrder[PINNED_PROJECT_ORDER_SCOPE]?.length
+        ? manualOrder[PINNED_PROJECT_ORDER_SCOPE]
+        : manualOrder[PROJECT_ORDER_SCOPE],
       (project) => project.id,
     );
   }, [projects, pinnedProjectIds, manualOrder]);
@@ -1345,15 +1349,12 @@ export function AppSidebar() {
   // unread would take it over the open chat. Navigation is exempt: it moves the chat the user IS
   // looking at, and the sheet is closed for most of its life on a narrow window.
   const chatRowsOnScreen = chatListsOnScreen && (!isMobile || openMobile);
-  const renderedProjectChatItems = useMemo(() => {
-    if (!chatListsOnScreen || organizeBy !== "project") return [];
-    const out: SidebarItem[] = [];
-    // A pinned folder leaves with Pinned's disclosure, not the Projects one.
-    for (const [open, records] of [
-      [pinnedOpen, pinnedProjectRecords],
-      [projectsOpen, visibleProjectRecords],
-    ] as const) {
-      if (!open) continue;
+  // The chats a section's folders show, in row order. A pinned folder leaves with Pinned's
+  // disclosure, not the Projects one, so each section collects its own.
+  const folderChatItems = useCallback(
+    (open: boolean, records: ProjectRecord[]) => {
+      if (!chatListsOnScreen || organizeBy !== "project" || !open) return [];
+      const out: SidebarItem[] = [];
       for (const project of records) {
         if (collapsedProjectIds.has(project.id)) continue;
         const chats = sortedChatsByProjectId.get(project.id) ?? [];
@@ -1363,19 +1364,24 @@ export function AppSidebar() {
             : chats.slice(0, PROJECT_CHAT_LIMIT)),
         );
       }
-    }
-    return out;
-  }, [
-    chatListsOnScreen,
-    organizeBy,
-    pinnedOpen,
-    pinnedProjectRecords,
-    projectsOpen,
-    visibleProjectRecords,
-    collapsedProjectIds,
-    expandedChatProjectIds,
-    sortedChatsByProjectId,
-  ]);
+      return out;
+    },
+    [
+      chatListsOnScreen,
+      organizeBy,
+      collapsedProjectIds,
+      expandedChatProjectIds,
+      sortedChatsByProjectId,
+    ],
+  );
+  const pinnedProjectChatItems = useMemo(
+    () => folderChatItems(pinnedOpen, pinnedProjectRecords),
+    [folderChatItems, pinnedOpen, pinnedProjectRecords],
+  );
+  const sectionProjectChatItems = useMemo(
+    () => folderChatItems(projectsOpen, visibleProjectRecords),
+    [folderChatItems, projectsOpen, visibleProjectRecords],
+  );
   // A collapsed section is not on screen either, so its rows are not walked or
   // selected any more than a collapsed folder's are.
   const visiblePinnedItems = useMemo(
@@ -1386,16 +1392,26 @@ export function AppSidebar() {
     () => (chatListsOnScreen && chatOpen ? sortedRecentChatItems : []),
     [chatListsOnScreen, chatOpen, sortedRecentChatItems],
   );
-  // Every row on screen, in one set. The three arrays above already fold in
-  // each section's disclosure, each folder's, and the per-folder limit, so a
-  // selection can be held to what is rendered without restating any of it.
-  const renderedChatIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const item of visiblePinnedItems) ids.add(item.id);
-    for (const item of renderedProjectChatItems) ids.add(item.id);
-    for (const item of visibleRecentItems) ids.add(item.id);
-    return ids;
-  }, [visiblePinnedItems, renderedProjectChatItems, visibleRecentItems]);
+  // Pinned draws its folders above its chats, so the section's rows read in that order.
+  const pinnedSectionChatItems = useMemo(
+    () => [...pinnedProjectChatItems, ...visiblePinnedItems],
+    [pinnedProjectChatItems, visiblePinnedItems],
+  );
+  // Every chat row on screen, in draw order: Pinned, then the Projects folders, then Recents.
+  // The arrays above already fold in each section's disclosure, each folder's, and the
+  // per-folder limit, so the walk and the selection need not restate any of it.
+  const renderedChatItems = useMemo(
+    () => [
+      ...pinnedSectionChatItems,
+      ...sectionProjectChatItems,
+      ...visibleRecentItems,
+    ],
+    [pinnedSectionChatItems, sectionProjectChatItems, visibleRecentItems],
+  );
+  const renderedChatIds = useMemo(
+    () => new Set(renderedChatItems.map((item) => item.id)),
+    [renderedChatItems],
+  );
   // The folder rows, selectable in their own right and leaving the screen on their own terms: the
   // section closes, the sidebar organizes by date, or a "show less" takes back the overflow. The chat
   // sets above say nothing about that, since a folder with no chats in view is still a row.
@@ -1423,7 +1439,7 @@ export function AppSidebar() {
   // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
   const attentionItemIds = useMemo(
     () =>
-      [...visiblePinnedItems, ...renderedProjectChatItems, ...visibleRecentItems]
+      renderedChatItems
         .filter((item) => chatPriorityRank(item) < 3)
         .sort(
           (a, b) =>
@@ -1431,27 +1447,23 @@ export function AppSidebar() {
             b.updatedAt - a.updatedAt,
         )
         .map((item) => item.id),
-    [
-      visiblePinnedItems,
-      renderedProjectChatItems,
-      visibleRecentItems,
-      chatPriorityRank,
-    ],
+    [renderedChatItems, chatPriorityRank],
   );
   // Publish the finished order, so the chords cannot disagree with the screen.
   const publishLists = useChatNavigationStore((s) => s.publishLists);
   useEffect(() => {
     publishLists({
-      pinnedItems: visiblePinnedItems,
-      projectItems: renderedProjectChatItems,
+      // The pinned folders' chats belong to Pinned, which draws them first.
+      pinnedItems: pinnedSectionChatItems,
+      projectItems: sectionProjectChatItems,
       recentItems: visibleRecentItems,
       attentionItemIds,
       activeItemId: activeThreadId ?? null,
     });
   }, [
     publishLists,
-    visiblePinnedItems,
-    renderedProjectChatItems,
+    pinnedSectionChatItems,
+    sectionProjectChatItems,
     visibleRecentItems,
     attentionItemIds,
     activeThreadId,
@@ -1582,23 +1594,13 @@ export function AppSidebar() {
   /** Select every chat row on screen, pinned block included. */
   const selectAllChats = useCallback(() => {
     if (!chatRowsOnScreen) return;
-    const ids = [
-      ...visiblePinnedItems,
-      ...renderedProjectChatItems,
-      ...visibleRecentItems,
-    ].map((item) => item.id);
+    const ids = renderedChatItems.map((item) => item.id);
     if (ids.length === 0) return;
     dropProjectSelection();
     // No anchor: a shift click after this one has no row to reach back to.
     selectionAnchorRef.current = null;
     setSelectedChatIds(new Set(ids));
-  }, [
-    chatRowsOnScreen,
-    visiblePinnedItems,
-    renderedProjectChatItems,
-    visibleRecentItems,
-    dropProjectSelection,
-  ]);
+  }, [chatRowsOnScreen, renderedChatItems, dropProjectSelection]);
 
   // Escape leaves a selection, as it does the menus. A passive listener rather than one that consumes
   // the key: dictation's Escape reads defaultPrevented first, and a stale selection must not outrank
