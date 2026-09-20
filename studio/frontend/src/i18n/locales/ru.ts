@@ -233,7 +233,6 @@ export const ru = {
       unpin: "Открепить",
       moveTo: "Переместить в {name}",
       moveToRecents: "Переместить в Недавние",
-      dropToPin: "Отпустите здесь, чтобы закрепить",
     },
     dialog: {
       deleteChat: {

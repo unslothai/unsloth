@@ -236,7 +236,6 @@ export const en = {
       unpin: "Unpin",
       moveTo: "Move to {name}",
       moveToRecents: "Move to Recents",
-      dropToPin: "Drop here to pin",
     },
     dialog: {
       deleteChat: {

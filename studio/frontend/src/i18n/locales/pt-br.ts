@@ -233,7 +233,6 @@ export const ptBR = {
       unpin: "Desafixar",
       moveTo: "Mover para {name}",
       moveToRecents: "Mover para Recentes",
-      dropToPin: "Solte aqui para fixar",
     },
     dialog: {
       deleteChat: {

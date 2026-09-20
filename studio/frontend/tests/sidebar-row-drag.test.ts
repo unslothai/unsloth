@@ -8,7 +8,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  dragCanPin,
   dropEdgeAt,
   folderRingKey,
   planKey,
@@ -287,10 +286,14 @@ test("a chat dropped into Pinned is pinned where it lands", () => {
   assert.deepEqual(onRow.cue, {
     line: { rowKey: rowKey(PINNED_ORDER_SCOPE, "p1"), edge: "top" },
   });
-  // The section itself, and its header while it is closed, pin it last.
+  // The section itself, and its header when the first row is not a chat, pin it last.
   for (const zone of [
     { section: "pinned" } as SidebarDropZone,
-    { section: "pinned", header: true } as SidebarDropZone,
+    {
+      section: "pinned",
+      header: true,
+      row: { id: "work", kind: "project", scope: PINNED_PROJECT_ORDER_SCOPE },
+    } as SidebarDropZone,
   ]) {
     const plan = planSidebarDrop(drag, zone, "bottom", context());
     assert.deepEqual(plan?.cue, { ring: sectionRingKey("pinned") });
@@ -448,18 +451,45 @@ test("a folder dragged into Pinned is pinned where it lands, and back out is unp
   assert.deepEqual(unpinOnHeader?.cue, { ring: sectionRingKey("projects") });
 });
 
-// A first pin needs Pinned on screen to land in.
-test("Pinned offers itself to a drag that could pin", () => {
-  const ctx = context();
-  assert.equal(dragCanPin(chat("r1", "recents", RECENTS_ORDER_SCOPE, null), ctx), true);
-  assert.equal(dragCanPin(chat("p1", "pinned", PINNED_ORDER_SCOPE, null), ctx), false);
-  assert.equal(dragCanPin(folder("home", "projects", PROJECT_ORDER_SCOPE), ctx), true);
-  assert.equal(dragCanPin(folder("work", "pinned", PINNED_PROJECT_ORDER_SCOPE), ctx), false);
-  assert.match(
-    APP_SIDEBAR,
-    /\(organizeBy === "project" && pinnedProjectRecords\.length > 0\) \|\|\n(?:\s*\/\/.*\n)*\s*dnd\.pinnedTakesDrag\) && \(/,
+// The gap between a header and its first row is where "above the first row" is aimed, so the
+// header stands for that edge for a drag of the same kind, and for the bare section otherwise.
+test("a section header stands for the top of its first row", () => {
+  const ctx = context({ chatSort: "manual" });
+  const aboveFirstChat = planSidebarDrop(
+    chat("r2", "recents", RECENTS_ORDER_SCOPE, null),
+    { section: "recents", header: true, row: { id: "r1", kind: "chat", scope: RECENTS_ORDER_SCOPE } },
+    "bottom",
+    ctx,
   );
-  assert.ok(APP_SIDEBAR.includes('t("shell.drag.dropToPin")'));
+  assert.deepEqual(aboveFirstChat?.cue, {
+    line: { rowKey: rowKey(RECENTS_ORDER_SCOPE, "r1"), edge: "top" },
+  });
+  assert.deepEqual(aboveFirstChat?.effects.orders, [
+    { scope: RECENTS_ORDER_SCOPE, ids: ["r2", "r1"] },
+  ]);
+  const aboveFirstFolder = planSidebarDrop(
+    folder("misc", "projects", PROJECT_ORDER_SCOPE),
+    { section: "projects", header: true, row: { id: "home", kind: "project", scope: PROJECT_ORDER_SCOPE } },
+    "bottom",
+    ctx,
+  );
+  assert.deepEqual(aboveFirstFolder?.cue, {
+    line: { rowKey: rowKey(PROJECT_ORDER_SCOPE, "home"), edge: "top" },
+  });
+  // A chat over the Projects header does not file into the first folder.
+  assert.equal(
+    planSidebarDrop(
+      chat("r1", "recents", RECENTS_ORDER_SCOPE, null),
+      { section: "projects", header: true, row: { id: "home", kind: "project", scope: PROJECT_ORDER_SCOPE } },
+      "top",
+      ctx,
+    ),
+    null,
+  );
+  // Pinned is not conjured up for a drag: it is on screen only when it has rows.
+  assert.ok(!APP_SIDEBAR.includes("pinnedTakesDrag"));
+  assert.ok(!APP_SIDEBAR.includes("dropToPin"));
+  assert.ok(!EN.includes("dropToPin:"));
 });
 
 // Equal plans must not re-render the sidebar.
@@ -509,8 +539,9 @@ test("every row and section is wired to the planner", () => {
       APP_SIDEBAR.includes(`{...dnd.dropZoneProps({ section: "${section}" })}`),
       `${section} body is not a zone`,
     );
-    assert.ok(
-      APP_SIDEBAR.includes(`{ section: "${section}", header: true }`),
+    assert.match(
+      APP_SIDEBAR,
+      new RegExp(`section: "${section}",\\n\\s*header: true,\\n\\s*row:`),
       `${section} header is not a zone`,
     );
   }
@@ -553,6 +584,8 @@ test("every drop cue is drawn inside its row", () => {
     "${DROP_CUE_BASE} before:top-0",
     "${DROP_CUE_BASE} before:bottom-0",
     "before:inset-x-1 before:inset-y-0 ",
+    // A ring is drawn outside its box unless inset, and the first row's box ends at the clip.
+    "before:ring-1 before:ring-inset",
   ]) {
     assert.ok(APP_SIDEBAR.includes(cue), `no cue is drawn at ${cue}`);
   }
@@ -578,7 +611,7 @@ test("alt and an arrow reorder a row without a pointer", () => {
 
 // The hint names every kind of drop.
 test("the hint beside the cursor names every kind of drop", () => {
-  for (const key of ["reorder", "pin", "unpin", "moveTo", "moveToRecents", "dropToPin"]) {
+  for (const key of ["reorder", "pin", "unpin", "moveTo", "moveToRecents"]) {
     assert.ok(EN.includes(`${key}:`), `${key} is missing from the en locale`);
   }
   for (const use of [

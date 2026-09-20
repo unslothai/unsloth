@@ -337,7 +337,7 @@ const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-0`;
 // A row dropped onto a folder or section joins it, so the whole target is tinted and outlined.
 // Kept inside the box for the same clipping reason.
 const DROP_INTO_CUE =
-  "before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:ring-1 before:ring-primary/70 before:content-['']";
+  "before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:ring-1 before:ring-inset before:ring-primary/70 before:content-['']";
 // A closed section has no body to light, so its header takes the tint.
 const DROP_INTO_HEADER_CUE =
   "rounded-full bg-primary/8 ring-1 ring-inset ring-primary/70";
@@ -4309,12 +4309,10 @@ export function AppSidebar() {
         {!isStudioRoute &&
           !showTrainingRecents &&
           (pinnedChatItems.length > 0 ||
-            (organizeBy === "project" && pinnedProjectRecords.length > 0) ||
-            // Shown to a drag that could pin, so a first pin has a target.
-            dnd.pinnedTakesDrag) && (
+            (organizeBy === "project" && pinnedProjectRecords.length > 0)) && (
           <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
             <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0">
-              {/* The header takes drops too, so a closed section is still a target. */}
+              {/* The header takes drops too: above the first row, or into a closed section. */}
               <SidebarGroupLabel
                 className={cn(
                   "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
@@ -4325,7 +4323,24 @@ export function AppSidebar() {
                     DROP_INTO_HEADER_CUE,
                 )}
                 {...dnd.dropZoneProps(
-                  { section: "pinned", header: true },
+                  {
+                    section: "pinned",
+                    header: true,
+                    row:
+                      organizeBy === "project" && pinnedProjectRecords[0]
+                        ? {
+                            id: pinnedProjectRecords[0].id,
+                            kind: "project",
+                            scope: PINNED_PROJECT_ORDER_SCOPE,
+                          }
+                        : sortedPinnedChatItems[0]
+                          ? {
+                              id: sortedPinnedChatItems[0].id,
+                              kind: "chat",
+                              scope: PINNED_ORDER_SCOPE,
+                            }
+                          : undefined,
+                  },
                   { closed: !pinnedOpen },
                 )}
               >
@@ -4370,16 +4385,6 @@ export function AppSidebar() {
                         sort: { value: pinnedSort, set: setPinnedSort },
                       }),
                     )}
-                    {/* Empty Pinned is on screen only for the drag, and says why. */}
-                    {pinnedChatItems.length === 0 &&
-                      (organizeBy !== "project" ||
-                        pinnedProjectRecords.length === 0) && (
-                        <SidebarMenuItem>
-                          <p className="flex h-[30px] items-center pl-3 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
-                            {t("shell.drag.dropToPin")}
-                          </p>
-                        </SidebarMenuItem>
-                      )}
                   </SidebarMenu>
                 </SidebarGroupContent>
               </CollapsibleContent>
@@ -4408,7 +4413,17 @@ export function AppSidebar() {
                       DROP_INTO_HEADER_CUE,
                   )}
                   {...dnd.dropZoneProps(
-                    { section: "projects", header: true },
+                    {
+                      section: "projects",
+                      header: true,
+                      row: visibleProjectRecords[0]
+                        ? {
+                            id: visibleProjectRecords[0].id,
+                            kind: "project",
+                            scope: PROJECT_ORDER_SCOPE,
+                          }
+                        : undefined,
+                    },
                     { closed: !projectsOpen },
                   )}
                 >
@@ -4491,7 +4506,17 @@ export function AppSidebar() {
                     DROP_INTO_HEADER_CUE,
                 )}
                 {...dnd.dropZoneProps(
-                  { section: "recents", header: true },
+                  {
+                    section: "recents",
+                    header: true,
+                    row: sortedRecentChatItems[0]
+                      ? {
+                          id: sortedRecentChatItems[0].id,
+                          kind: "chat",
+                          scope: RECENTS_ORDER_SCOPE,
+                        }
+                      : undefined,
+                  },
                   { closed: !chatOpen },
                 )}
               >

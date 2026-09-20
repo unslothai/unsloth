@@ -233,7 +233,6 @@ export const es = {
       unpin: "Desfijar",
       moveTo: "Mover a {name}",
       moveToRecents: "Mover a Recientes",
-      dropToPin: "Suelta aquí para fijar",
     },
     dialog: {
       deleteChat: {

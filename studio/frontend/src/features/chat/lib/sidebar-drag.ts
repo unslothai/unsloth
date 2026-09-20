@@ -42,7 +42,9 @@ export interface SidebarDropZone {
   folderId?: string;
   /** For a chat under a folder: its place in the folder's block. */
   block?: { index: number; count: number };
-  /** The section header, which takes a drop while the section is collapsed. */
+  /** The section header. It stands for the top of its first row (given as `row`) for a drag
+   *  of the same kind, so the gap above the first row is not dead space, and takes a drop
+   *  while the section is collapsed. */
   header?: boolean;
 }
 
@@ -117,6 +119,16 @@ export function planSidebarDrop(
   edge: DropEdge,
   ctx: SidebarDropContext,
 ): SidebarDropPlan | null {
+  if (zone.header) {
+    const first = zone.row?.kind === drag.kind ? zone.row : undefined;
+    zone = {
+      section: zone.section,
+      header: true,
+      row: first,
+      folderId: first?.kind === "project" ? first.id : undefined,
+    };
+    edge = "top";
+  }
   return drag.kind === "project"
     ? planFolderDrop(drag, zone, edge, ctx)
     : planChatDrop(drag, zone, edge, ctx);
@@ -372,16 +384,6 @@ function reorder(
       switchSort: sort === "manual" ? undefined : sortKey,
     },
   };
-}
-
-/** Whether Pinned should show for this drag even while empty: a first pin needs a target. */
-export function dragCanPin(
-  drag: SidebarDragItem,
-  ctx: Pick<SidebarDropContext, "pinnedChatIds" | "pinnedProjectIds">,
-): boolean {
-  return drag.kind === "chat"
-    ? !ctx.pinnedChatIds.has(drag.id)
-    : !ctx.pinnedProjectIds.has(drag.id);
 }
 
 /** Changes exactly when the painted state does, so equal plans skip a re-render. */

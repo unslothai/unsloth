@@ -198,7 +198,6 @@ export const it = {
       unpin: "Sblocca",
       moveTo: "Sposta in {name}",
       moveToRecents: "Sposta in Recenti",
-      dropToPin: "Rilascia qui per fissare",
     },
     dialog: {
       deleteChat: {

@@ -231,7 +231,6 @@ export const ar = {
       unpin: "إلغاء التثبيت",
       moveTo: "نقل إلى {name}",
       moveToRecents: "نقل إلى الأخيرة",
-      dropToPin: "أفلت هنا للتثبيت",
     },
     dialog: {
       deleteChat: {

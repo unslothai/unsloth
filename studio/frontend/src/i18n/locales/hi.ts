@@ -234,7 +234,6 @@ export const hi = {
       unpin: "अनपिन करें",
       moveTo: "{name} में ले जाएँ",
       moveToRecents: "हाल के में ले जाएँ",
-      dropToPin: "पिन करने के लिए यहाँ छोड़ें",
     },
     dialog: {
       deleteChat: {

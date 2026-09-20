@@ -234,7 +234,6 @@ export const fr = {
       unpin: "Désépingler",
       moveTo: "Déplacer vers {name}",
       moveToRecents: "Déplacer vers Récents",
-      dropToPin: "Déposer ici pour épingler",
     },
     dialog: {
       deleteChat: {

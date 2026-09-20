@@ -7,7 +7,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  dragCanPin,
   dropEdgeAt,
   planKey,
   planSidebarDrop,
@@ -50,8 +49,6 @@ export interface SidebarDragApi {
   drag: SidebarDragItem | null;
   /** What the drop under the pointer would do. */
   plan: SidebarDropPlan | null;
-  /** Whether Pinned should show for the drag even while empty. */
-  pinnedTakesDrag: boolean;
   /** Props that let a row be picked up. */
   dragHandleProps: (item: SidebarDragItem) => {
     draggable: true;
@@ -223,12 +220,9 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
     [plan],
   );
 
-  const pinnedTakesDrag = Boolean(drag && dragCanPin(drag, options.context()));
-
   return {
     drag,
     plan,
-    pinnedTakesDrag,
     dragHandleProps,
     dropZoneProps,
     lineEdge,

@@ -233,7 +233,6 @@ export const ja = {
       unpin: "ピン留めを解除",
       moveTo: "{name} に移動",
       moveToRecents: "最近に移動",
-      dropToPin: "ここにドロップしてピン留め",
     },
     dialog: {
       deleteChat: {

@@ -104,7 +104,6 @@ export {
   type SidebarRowKind,
 } from "./stores/sidebar-drag-source";
 export {
-  dragCanPin,
   folderRingKey,
   planKey,
   planSidebarDrop,

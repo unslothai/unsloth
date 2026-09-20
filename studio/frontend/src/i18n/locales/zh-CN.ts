@@ -229,7 +229,6 @@ export const zhCN = {
       unpin: "取消固定",
       moveTo: "移动到 {name}",
       moveToRecents: "移动到最近",
-      dropToPin: "放到此处以固定",
     },
     dialog: {
       deleteChat: {

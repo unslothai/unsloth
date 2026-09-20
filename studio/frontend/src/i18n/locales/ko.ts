@@ -231,7 +231,6 @@ export const ko = {
       unpin: "고정 해제",
       moveTo: "{name}(으)로 이동",
       moveToRecents: "최근으로 이동",
-      dropToPin: "여기에 놓아 고정",
     },
     dialog: {
       deleteChat: {
