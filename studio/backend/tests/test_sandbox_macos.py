@@ -864,8 +864,7 @@ def test_the_studio_state_deny_keeps_path_traversal_working(monkeypatch, tmp_pat
     workdir.mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
 
-    rules = sandbox_macos._studio_state_rules(
-        (), (), str(workdir), str(tmp_path / "tmp"))
+    rules = sandbox_macos._studio_state_rules((), (), str(workdir), str(tmp_path / "tmp"))
 
     assert rules[0].startswith("(deny file-read-data"), rules[0][:60]
     # Stat is not denied, so path traversal to the workdir still works.
