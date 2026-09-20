@@ -861,3 +861,32 @@ def test_a_malformed_props_payload_alone_returns_none(monkeypatch):
         props = _FakeResponse(200, {"default_generation_settings": [{"n_ctx": 8192}]}),
     )
     assert _make_backend()._probe_runtime_n_ctx() is None
+
+
+def test_stdout_fallback_reads_the_line_current_llama_cpp_actually_logs(monkeypatch):
+    """The stdout fallback exists for --no-slots builds, so it has to match the
+    spelling those builds emit.
+
+    Verbatim from llama-server b11057 (commit 59657a613) launched with
+    ``-c 32768 --parallel 4 --no-kv-unified``; that run logged the per-slot
+    window exactly once, in this line, and logged no "new slot, n_ctx =" at all.
+    """
+    _stub_endpoints(
+        monkeypatch, slots_exc = RuntimeError("refused"), props_exc = RuntimeError("refused")
+    )
+    inst = _make_backend()
+    inst._stdout_lines = [
+        "0.04.385.170 I srv    load_model: initializing, n_slots = 4, "
+        "n_ctx_slot = 8192, kv_unified = 'false'",
+    ]
+    assert inst._probe_runtime_n_ctx() == 8192
+
+
+def test_stdout_fallback_still_reads_the_older_per_slot_line(monkeypatch):
+    """Older builds logged it from slot_init instead; both must keep working."""
+    _stub_endpoints(
+        monkeypatch, slots_exc = RuntimeError("refused"), props_exc = RuntimeError("refused")
+    )
+    inst = _make_backend()
+    inst._stdout_lines = ["slot         init: id  0 | task -1 | new slot, n_ctx = 2048"]
+    assert inst._probe_runtime_n_ctx() == 2048

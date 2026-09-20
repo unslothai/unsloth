@@ -32705,7 +32705,13 @@ class LlamaCppBackend:
             return None
         return _positive_int_n_ctx(settings.get("n_ctx"))
 
-    _RUNTIME_N_CTX_STDOUT_RE = re.compile(r"new slot, n_ctx = (\d+)")
+    # Two spellings, because the line was renamed upstream and the old one alone
+    # is dead on current llama.cpp. b11057 logs the per-slot window once, as
+    #   srv load_model: initializing, n_slots = 4, n_ctx_slot = 8192, kv_unified = 'false'
+    # and emits no "new slot, n_ctx =" at all; older builds logged the latter
+    # per slot from slot_init. Matching only the old spelling made this whole
+    # fallback unreachable on exactly the --no-slots builds it exists to cover.
+    _RUNTIME_N_CTX_STDOUT_RE = re.compile(r"(?:new slot, n_ctx|n_ctx_slot)\s*=\s*(\d+)")
 
     def _parse_runtime_n_ctx_from_stdout(self) -> Optional[int]:
         """Per-slot ``n_ctx`` from llama-server's startup log.
