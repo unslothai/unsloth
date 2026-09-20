@@ -16766,9 +16766,8 @@ def _check_signal_escape_patterns(code: str):
                             }
                         )
 
-            is_open_call = (
-                (isinstance(node.func, ast.Name) and node.func.id == "open")
-                or any(f in ("io.open", "pathlib.Path.open") or f.endswith(".open") for f in fq_names)
+            is_open_call = (isinstance(node.func, ast.Name) and node.func.id == "open") or any(
+                f in ("io.open", "pathlib.Path.open") or f.endswith(".open") for f in fq_names
             )
             if is_open_call and node.args:
                 a0 = node.args[0]
