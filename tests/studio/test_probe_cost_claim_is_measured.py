@@ -61,6 +61,43 @@ def _timeout_minutes() -> int:
     return int(found[0])
 
 
+# "holds it for about five seconds": an occupancy verb, then the duration it GOVERNS.
+# Parsed rather than searched for, and used by both tests below, because proximity
+# answers neither question they ask. The unit on this duration is the whole occupancy
+# claim, and "holds" sitting near a number does not mean it governs that number: in
+# "a cell holds a runner for five seconds; timeout-minutes is a cutoff at ten minutes if
+# hung" the verb governs the five, and rejecting the ten would fail CI on a true comment.
+_HOLD_CLAIM = re.compile(
+    r"\b(?:hold\w*|occup\w*|tie[sd]?\s+up)\b[^.;]{0,80}?\bfor\s+"
+    r"(?:about\s+|roughly\s+|around\s+|up\s+to\s+|at\s+most\s+|as\s+(?:much|long)\s+as\s+|~\s*)*"
+    r"(?P<value>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*"
+    r"(?P<unit>seconds?|s\b|minutes?|mins?\b|hours?|hrs?\b)",
+    re.I,
+)
+
+_SECONDS = re.compile(r"^(seconds?|s)$", re.I)
+
+# What the comment reports having observed, which is what the claim has to agree with.
+_MEASURED = re.compile(r"\bmedian\s+(?P<value>\d+)\s*(?:s\b|seconds?\b)", re.I)
+
+_AS_A_NUMBER = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+
+
+def _value(text: str) -> int:
+    return int(text) if text.isdigit() else _AS_A_NUMBER[text.lower()]
+
+
 def test_the_rationale_and_the_timeout_are_both_still_there():
     """A guard that found neither would pass every check below for the wrong reason."""
     rationale = _rationale()
@@ -75,13 +112,17 @@ def test_the_rationale_and_the_timeout_are_both_still_there():
 def test_the_timeout_is_never_offered_as_what_a_superseded_matrix_holds():
     """The defect this replaces, in the exact words it had: "for up to ten minutes".
 
-    Judged per OCCURRENCE and on what the occurrence is attached to, not per sentence.
-    A sentence is the wrong unit twice over: "although the timeout is the cutoff for a
-    hang, a superseded matrix holds its runners for ten minutes" contains the exempting
-    words and reinstates the false claim anyway, and the words can sit far enough away to
-    mean nothing about the number they excuse. So an occupancy verb next to the duration
-    condemns it outright, and the cutoff reading only excuses a duration it is adjacent
-    to.
+    Judged per OCCURRENCE, on what GOVERNS it. A sentence is the wrong unit: "although
+    the timeout is the cutoff for a hang, a superseded matrix holds its runners for ten
+    minutes" contains the exempting words and reinstates the false claim anyway. But
+    proximity is the wrong unit too, in the other direction: in "a cell holds a runner
+    for five seconds; timeout-minutes is a cutoff at ten minutes if hung" the verb
+    governs the five, and condemning the ten because "holds" is nearby would fail CI on
+    a comment that is entirely true.
+
+    So the durations an occupancy verb actually governs are parsed out, and only those
+    are condemned. Any other mention of the timeout value still has to be named as the
+    cutoff where it stands.
     """
     minutes = _timeout_minutes()
     spellings = [str(minutes)]
@@ -89,12 +130,14 @@ def test_the_timeout_is_never_offered_as_what_a_superseded_matrix_holds():
         spellings.append(_AS_A_WORD[minutes])
     duration = re.compile(r"\b(" + "|".join(spellings) + r")\s+minutes?\b", re.I)
     rationale = _rationale()
+    # The durations an occupancy verb actually governs, by where their number starts.
+    occupied = {claim.start("value") for claim in _HOLD_CLAIM.finditer(rationale)}
     offenders = []
     for match in duration.finditer(rationale):
         window = rationale[max(0, match.start() - 90) : match.end() + 40]
-        # Attached to a verb of occupancy: that is the false claim, whatever else the
+        # Governed by a verb of occupancy: that is the false claim, whatever else the
         # sentence concedes elsewhere.
-        if re.search(r"\b(hold|holds|holding|held|occup\w*|tie[sd]? up)\b", window, re.I):
+        if match.start() in occupied:
             offenders.append(window)
             continue
         # Otherwise it passes only if named, right here, as the cutoff it is.
@@ -122,27 +165,16 @@ def test_the_timeout_is_still_explained_as_the_hung_cell_bound():
     )
 
 
-# "holds it for about five seconds": the verb, then the duration it governs. Parsed
-# rather than searched for, because the unit ON THIS duration is the whole claim. A
-# nearby seconds figure is not the same thing: "holds it for about five MINUTES ...
-# median 4s" reinstates the overstatement while leaving every loose match satisfied.
-_HOLD_CLAIM = re.compile(
-    r"\bhold\w*\b[^.]{0,80}?\bfor\s+(?:about\s+|roughly\s+|around\s+|~\s*)?"
-    r"(?P<value>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*"
-    r"(?P<unit>seconds?|s\b|minutes?|mins?\b|hours?|hrs?\b)",
-    re.I,
-)
-
-_SECONDS = re.compile(r"^(seconds?|s)$", re.I)
-
-
 def test_the_occupancy_claim_is_a_measured_one():
     """Seconds, and said to be measured, both read off the claim itself.
 
-    Neither is checked over a window. The queue figures further down are also measured
-    and also in seconds, so a window check passes with the occupancy claim removed
-    entirely, and it passes with the claim changed to minutes while a stale `median 4s`
-    sits behind it. Both of those were found by sabotaging this test, in that order.
+    Nothing here is checked over a window. The queue figures further down are also
+    measured and also in seconds, so a window check passes with the occupancy claim
+    removed entirely, and it passes with the claim changed to minutes while a stale
+    `median 4s` sits behind it. Seconds alone is not enough either: "about 600 seconds"
+    is the original overstatement in the right unit. So the value is read off the claim
+    and compared with the median the same sentence reports, within 3x either way. All
+    three of those holes were found by sabotaging this test, in that order.
     """
     rationale = _rationale()
     claim = _HOLD_CLAIM.search(rationale)
@@ -163,4 +195,16 @@ def test_the_occupancy_claim_is_a_measured_one():
     assert re.search(r"measured|median", sentence, re.I), (
         f"the occupancy claim has no sign it was observed: {sentence!r}. Both costs this "
         f"comment gave before were plausible numbers nobody had measured"
+    )
+    measured = _MEASURED.search(sentence)
+    assert measured, (
+        f"the occupancy claim cites no median: {sentence!r}. Saying a figure was measured "
+        f"without giving the measurement leaves nothing for the claim to be checked "
+        f"against, which is how 'about five seconds' could have read 600 and still passed"
+    )
+    claimed, observed = _value(claim.group("value")), _value(measured.group("value"))
+    assert observed <= claimed * 3 and claimed <= observed * 3, (
+        f"the occupancy claim says {claimed}s but reports measuring {observed}s: "
+        f"{sentence!r}. Seconds is not enough on its own -- an overstatement of the same "
+        f"shape as the original fits comfortably inside the unit"
     )
