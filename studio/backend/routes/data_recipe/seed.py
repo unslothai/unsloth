@@ -111,10 +111,8 @@ def _normalize_optional_text(value: str | None) -> str | None:
 
 
 def _list_hf_repo_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
-    """Every file in the repo, including the ones no builder reads.
-
-    A glob is run by the reader over all of them, so a pattern has to be judged
-    against the whole listing even where only the data files can be loaded.
+    """Every file in the repo: the reader globs over all of them, not just the
+    ones a builder can load, so a pattern is judged against the whole listing.
     """
     try:
         from huggingface_hub import HfApi
@@ -181,9 +179,8 @@ def _patterns_for_split(
                 return _as_pattern_list(paths)
         return []
     if isinstance(data_files, list):
-        # Entry by entry, as hub/services/datasets does: a list may mix the bare
-        # train shorthand with explicit mappings, and a split may be declared
-        # more than once. Stopping at the first match drops the rest of it.
+        # Entry by entry: a list may declare one split more than once, and
+        # stopping at the first match drops the rest of it.
         patterns: list[str] = []
         for entry in data_files:
             if isinstance(entry, str):
@@ -215,19 +212,16 @@ def _declared_split_patterns(
         declared, split, exact = False
     )
     folder = _config_folder(config)
-    # `data_dir` scopes the config and its `data_files` are read under it, with
-    # no exception for a pattern that happens to start with the folder's name:
-    # `_resolve_data_files` joins the two whatever they say (`builder.py`).
+    # `_resolve_data_files` joins `data_dir` to the declared pattern whatever
+    # the two say, even where the pattern repeats the folder (`builder.py`).
     return [_normalized_glob(f"{folder}/{p}" if folder else p) for p in named]
 
 
 def _normalized_glob(pattern: str) -> str:
-    """The pattern as the listing spells it: no leading ./ and no bare dot.
+    """The pattern as the listing spells it, the way `normpath` would.
 
-    `datasets` runs `os.path.normpath` over `data_dir` before it resolves
-    anything (`builder.py`), while `list_repo_files` returns data/train.parquet
-    with no dot at all, so ./data or staging/../data has to be spelled the
-    listing's way here or match nothing.
+    `list_repo_files` returns data/train.parquet, so ./data and staging/../data
+    have to lose their dots here or match nothing.
     """
     parts: list[str] = []
     for part in pattern.strip().split("/"):
@@ -259,10 +253,8 @@ def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str,
     config uses it whatever its name (imdb ships only `plain_text`).
     """
     if subset:
-        # Config names are case sensitive and a card may carry both Foo and foo,
-        # so the exact one wins; a differently cased request only falls back to a
-        # loose match when nothing matches exactly. An omitted config_name is the
-        # default one, the same normalization hub/services/datasets applies.
+        # A card may carry both Foo and foo, so the exact one wins and a folded
+        # match is only a fallback. No config_name means the default one.
         names = [(c, str(c.get("config_name") or DEFAULT_CONFIG)) for c in configs]
         return next(
             (c for c, name in names if name == subset),
@@ -273,8 +265,7 @@ def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str,
         return flagged
     if len(configs) == 1:
         return configs[0]
-    # Exactly `default`: `datasets` does not recognise Default or DEFAULT as the
-    # implicit one, it asks for a config name instead.
+    # Exactly `default`: Default and DEFAULT are configs to be asked for.
     return next(
         (c for c in configs if str(c.get("config_name") or DEFAULT_CONFIG) == DEFAULT_CONFIG),
         None,
@@ -310,8 +301,7 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
                 parts.append(r"\[")
             else:
                 body = pattern[i + 1 : end].replace("\\", "\\\\")
-                # Only `!` negates a glob class. A leading `^` is just a
-                # character, so it is escaped rather than read as a regex.
+                # Only `!` negates a glob class; a leading `^` is a character.
                 if body[:1] == "!":
                     body = f"^{body[1:]}"
                 elif body[:1] == "^":
@@ -338,9 +328,8 @@ def _class_end(pattern: str, start: int) -> int:
 def _ignored_by_the_loader(path: str, pattern: str) -> bool:
     """Whether the loader drops this match by name, as dataset_info.json.
 
-    `datasets` removes those basenames from a glob's matches unless the pattern
-    is that file itself (`data_files.FILES_TO_IGNORE`), so a card's `*` covers
-    the shards and none of the metadata sitting beside them.
+    Those basenames leave a glob's matches unless the pattern is that file
+    itself (`data_files.FILES_TO_IGNORE`).
     """
     name = PurePosixPath(path).name
     return name in _IGNORED_DATA_FILENAMES and PurePosixPath(pattern).name != name
@@ -349,13 +338,11 @@ def _ignored_by_the_loader(path: str, pattern: str) -> bool:
 def _hidden_to_the_loader(path: str, pattern: str) -> bool:
     """Whether a match sits in a part the loader skips unless it was asked for.
 
-    `datasets` drops a match whose path carries a hidden or dunder component the
-    pattern does not carry itself, so `**/*` never reaches .backup/ or
-    __pycache__/ (`data_files._is_unrequested_hidden_file_or_is_inside_unrequested_hidden_dir`).
+    A hidden or dunder component the pattern does not carry itself drops the
+    match, so `**/*` never reaches .backup/ or __pycache__/ (`data_files`).
     """
-    # A dot counts anywhere, a dunder only in a folder: `datasets` reads the
-    # whole path for hidden parts but only the parents for a special directory,
-    # so data/__train.json is a file it loads.
+    # A dot counts anywhere, a dunder only in a parent, so data/__train.json
+    # is a file the loader reads.
     for prefix, parts in ((".", "parts"), ("__", "parent_parts")):
         in_path = _marked_parts(path, prefix, parts)
         in_pattern = _marked_parts(pattern, prefix, parts)
@@ -376,10 +363,10 @@ def _files_under_patterns(
     *,
     as_the_loader_would: bool = False,
 ) -> list[str]:
-    """The files a glob takes. Reading a card's own glob, the loader's rules apply.
+    """The files a glob takes, under the loader's rules for a card's own glob.
 
-    Only there: a pattern this module WRITES is handed to a reader that skips
-    nothing, so it has to be judged on what it plainly matches.
+    A pattern this module writes goes to a reader that skips nothing, so it is
+    judged on what it plainly matches.
     """
     matchers = [(pattern, _glob_to_regex(pattern)) for pattern in patterns]
     return [
@@ -536,14 +523,13 @@ def _candidate_patterns(stem: str, suffix: str, split_lower: str) -> list[str]:
         if stem_lower.startswith((f"{label}-", f"{label}_", f"{label}.")):
             candidates.append(f"{stem[: len(label) + 1]}*{suffix}")
         if stem_lower == label or stem_lower.endswith((f"_{label}", f"-{label}")):
-            # Keep the trailing star: the split may still be sharded as train.jsonl
-            # beside train_2.jsonl, so an exact name would read only the first shard.
+            # Keep the star: train.jsonl may be sharded beside train_2.jsonl.
             candidates.append(f"{stem}*{suffix}")
         at = stem_lower.find(label)
         if at >= 0:
             candidates.append(f"*{stem[at : at + len(label)]}*{suffix}")
-    # Last and narrowest: the whole name. A config written after the split, as
-    # train-main beside train-socratic, is only kept by carrying both labels.
+    # Last and narrowest: the whole name, which keeps train-main off
+    # train-socratic.
     candidates.append(f"{stem}*{suffix}")
     return list(dict.fromkeys(candidates))
 
@@ -555,8 +541,7 @@ def _with_data_extension(pattern: str, suffix: str) -> str:
         return pattern
     if current and any(char in current for char in "*?["):
         pattern = pattern[: -len(current)]
-    # `**` has to be a whole path component: fsspec refuses data/**.parquet
-    # outright, so a card's data/** becomes data/**/* before the extension.
+    # fsspec refuses data/**.parquet: `**` has to be a whole component.
     if pattern.endswith("**"):
         pattern = f"{pattern}/*"
     return f"{pattern}{suffix}"
@@ -570,15 +555,12 @@ def _dominant_suffix(paths: list[str]) -> str:
     (`local_options._one_module`).
     """
     counts: dict[str, int] = {}
-    # Folder-builder metadata never decides a builder for the loader either, so
-    # a couple of metadata.csv cannot outvote the real shards.
+    # Metadata never decides a builder, so it cannot outvote the shards.
     voting = [p for p in paths if Path(p).name.lower() not in _METADATA_FILENAMES] or paths
-    # The same window the loader infers from, so a split whose formats change
-    # past it is read as the loader reads it rather than as the whole listing.
+    # The same window the loader infers from.
     for path in sorted(voting)[:_MAX_MODULE_INFERENCE_FILES]:
         # One vote per extension, as `load.infer_module_for_data_files_list`
-        # counts them: .json and .jsonl share a builder, but they are still two
-        # extensions, so neither lends the other its votes before the tie-break.
+        # counts them: .json lends .jsonl none of its votes.
         suffix = Path(path).suffix.lower()
         counts[suffix] = counts.get(suffix, 0) + 1
     if not counts:
@@ -587,7 +569,7 @@ def _dominant_suffix(paths: list[str]) -> str:
         counts,
         key = lambda s: (counts[s], -DATA_EXTS.index(s) if s in DATA_EXTS else -99),
     )
-    # The builder only widens once its extension has won on its own votes.
+    # The builder widens only once its extension has won on its own.
     group = _builder_exts(best)
     return next(Path(p).suffix for p in paths if Path(p).suffix.lower() in group)
 
@@ -612,12 +594,9 @@ def _of_suffix(paths: list[str], suffix: str) -> list[str]:
 def _extension_glob(paths: list[str], suffix: str, repo_files: list[str]) -> str:
     """What the pattern should end in to keep every file this builder reads.
 
-    A split declared over both .json and .jsonl cannot be named by one of them
-    without dropping the other, so the shared start of the two ends the glob.
-    That glob is open at the end, and the reader runs it over the whole repo
-    rather than over the data files listed here, so a a.json.gz sitting beside
-    them would be read as well: where the repo holds one, the split is named by
-    the one extension that won instead.
+    A split over both .json and .jsonl needs the shared start of the two, which
+    leaves the glob open at the end; where the repo holds a a.json.gz that glob
+    would read it too, so there the winning extension is used alone.
     """
     group = set(_builder_exts(suffix))
     used = {Path(path).suffix.lower() for path in paths} & group
@@ -656,11 +635,9 @@ def _staged_split_files(
 ) -> set[str]:
     """This split's shards, when the repo is laid out the way the loader looks first.
 
-    Split inference is staged, and the sharded data names come first: once
-    data/train-00000-of-00001.parquet is there, the loader stops and never
-    considers a train-named file anywhere else (`local_options._grouped_splits`).
-    Widening over one of those would read data the split, and the preview beside
-    it, both leave out.
+    Split inference is staged and the sharded names come first: once
+    data/train-00000-of-00001.parquet is there, a train-named file elsewhere is
+    not in the split (`local_options._grouped_splits`).
     """
     # The loader reads a config's files relative to its `data_dir`, and the
     # sharded names it looks for start at `data/`, so the scope comes off first.
@@ -742,11 +719,9 @@ def _widened_declared_pattern(
         if set(_files_under_patterns([candidate], data_files)) == wanted:
             return candidate
     # Nothing names these files and only these files: train aa and bb beside
-    # test ab and ba cannot be told apart by any class a glob can carry. A card
-    # says outright which files are in the split, so a pattern that reads a
-    # neighbour contradicts it and one that drops a shard truncates it; the
-    # caller refuses the dataset rather than quietly doing either. A guess from
-    # the file names says no such thing, so there the folder is still covered.
+    # test ab and ba defeat every class a glob can carry. Against a card, that
+    # is refused rather than read wide or short; against a guess from the file
+    # names, the folder is still covered.
     return f"{base}/*{suffix}" if fallback_glob else ""
 
 
@@ -785,9 +760,8 @@ def _resolve_seed_hf_path(
         # answers 422 and the recipe is never pointed at the wrong rows.
         return f"datasets/{dataset_name}/{pattern}" if pattern else None
 
-    # Without a card mapping the subset is only a label on the files. Narrow to
-    # the ones carrying it first, so the pattern is checked against those alone
-    # and cannot be widened back over another config.
+    # Without a card the subset is only a label, so narrowing first keeps the
+    # pattern from widening back over another config.
     folder = _config_scope(configs or [], subset)
     scoped = _in_subset(
         [f for f in data_files if f.startswith(f"{folder}/")] or data_files
@@ -798,9 +772,7 @@ def _resolve_seed_hf_path(
     )
     split_lower = split.lower()
     labels = _split_labels(split_lower)
-    # The loader looks at the sharded names first and stops there, so when the
-    # repo has them the request is for those files, whatever else carries the
-    # split in its name.
+    # Sharded names come first and stop the search, whatever else is labelled.
     staged = _staged_split_files(scoped, labels, folder)
     selected = _select_best_file(sorted(staged) or scoped, split)
     if not selected:
@@ -817,23 +789,20 @@ def _resolve_seed_hf_path(
         base = f"{base}/{parent}"
 
     if _split_folder(selected.lower(), labels):
-        # The loader reads train_a and train_b as one train split, so a folder
-        # pattern rooted at the one folder that was picked drops the other.
+        # train_a and train_b are one split, so rooting at either drops half.
         folders = staged or {f for f in scoped if _split_rank(f, split_lower) == 0}
         root = _common_parent(sorted(folders | {selected}))
         if root != parent:
             for label in labels:
-                # The four folder shapes the loader's grammar accepts
-                # (`local_options._DIR_NAME_KEYWORD_PATTERNS`), the last for a
-                # label sitting between separators, as a_train_x.
+                # The four shapes `local_options._DIR_NAME_KEYWORD_PATTERNS`
+                # accepts, the last for a label between separators, a_train_x.
                 for shape in (
                     f"**/{label}/**/*{ext}",
                     f"**/{label}{_SEP}*/**/*{ext}",
                     f"**/*{_SEP}{label}/**/*{ext}",
                     f"**/*{_SEP}{label}{_SEP}*/**/*{ext}",
-                    # One split may use several of those shapes at once, as
-                    # train/ beside sets/train_a/, and only a looser form covers
-                    # both. Still only taken where the listing bears it out.
+                    # train/ beside sets/train_a/ needs a looser form, still
+                    # only taken where the listing bears it out.
                     f"**/{label}*/**/*{ext}",
                     f"**/*{label}*/**/*{ext}",
                 ):
@@ -842,12 +811,9 @@ def _resolve_seed_hf_path(
     else:
         # The files this request is for: in the chosen subset, and of this split.
         wanted = staged or {f for f in scoped if _split_rank(f, split_lower) <= 1}
-        # A split sharded over sibling folders, as a/train-0.parquet beside
-        # b/train-1.parquet, cannot be written under the one folder its chosen
-        # file sits in, so the pattern is anchored at the folder they share and
-        # walks down from there. Without a card the loader reads those as one
-        # split whatever else the folders hold, and a requested subset has
-        # already narrowed `scoped`, so a neighbour cannot pull the answer wide.
+        # A split sharded over sibling folders is anchored at the folder they
+        # share: without a card the loader reads those as one split, and a
+        # requested subset has already narrowed `scoped`.
         spread = any(Path(f).parent.as_posix() != parent for f in wanted)
         root = _common_parent(sorted(wanted | {selected})) if spread else parent
         stem = Path(selected).name[: -len(suffix)]
@@ -855,12 +821,10 @@ def _resolve_seed_hf_path(
             pattern = f"**/{candidate}" if spread else candidate
             if _pattern_fits_the_split(data_files, wanted, root, pattern):
                 return f"{_anchor(dataset_name, root)}/{pattern}"
-        # One split may be written under several of its own names, as dev-0
-        # beside validation-0, and no pattern built from the one file that was
-        # picked can gather the others. The declared-mapping widening knows how
-        # to name a set of files without reaching past it, so it is reused here,
-        # but only where every neighbour is labelled: an unlabelled file may
-        # belong to this split too, and only the broad glob would keep it.
+        # dev-0 beside validation-0 is one split, and no pattern built from the
+        # chosen file gathers the other, so the declared-mapping widening is
+        # reused. Only where every neighbour is labelled: an unlabelled file may
+        # belong to this split, and only the broad glob would keep it.
         prefix = f"{root}/" if root and root != "." else ""
         neighbours = [f for f in data_files if f.startswith(prefix) and f not in wanted]
         if len(wanted) > 1 and all(_carries_another_split(f, split_lower) for f in neighbours):
