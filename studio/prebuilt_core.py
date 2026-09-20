@@ -51,9 +51,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
+# The redirect policy lives under backend/ so the backend probes and this module
+# share one rule; put studio/ on sys.path the way install_llama_prebuilt.py does, so
+# the absolute branch resolves for a plain script run, an importlib spec load with no
+# path preparation, and a heredoc whose sys.path[0] is the cwd -- rather than relying
+# on each caller to have inserted it first. auth_safe imports only urllib, so this
+# costs a standalone installer nothing.
 if __package__:
     from .backend.utils.auth_safe import AuthSafeRedirectHandler
 else:
+    _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _STUDIO_DIR not in sys.path:
+        sys.path.insert(0, _STUDIO_DIR)
     from backend.utils.auth_safe import AuthSafeRedirectHandler
 
 try:

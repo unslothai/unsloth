@@ -14,7 +14,16 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     def _origin(url):
         parts = urllib.parse.urlsplit(url)
         scheme = parts.scheme.lower()
-        port = parts.port if parts.port is not None else (443 if scheme == "https" else 80)
+        try:
+            port = parts.port
+        except ValueError:
+            # ``Location: https://host:99999/`` or ``:abc``. Naming it "unparseable"
+            # rather than raising keeps the four probes on this handler fail-soft --
+            # none of them catches ValueError -- and it can only ever compare unequal,
+            # so a target we cannot read is treated as another origin and stripped.
+            return scheme, (parts.hostname or "").lower(), "unparseable"
+        if port is None:
+            port = 443 if scheme == "https" else 80
         return scheme, (parts.hostname or "").lower(), port
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):

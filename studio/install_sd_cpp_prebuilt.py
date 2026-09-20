@@ -26,9 +26,15 @@ import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Sequence
 
+# Same rule as prebuilt_core.py: put studio/ on sys.path ourselves so the absolute
+# branch does not depend on the caller having done it (today only
+# backend/core/inference/sd_cpp_backend.py does).
 if __package__:
     from .backend.utils.auth_safe import auth_safe_open
 else:
+    _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _STUDIO_DIR not in sys.path:
+        sys.path.insert(0, _STUDIO_DIR)
     from backend.utils.auth_safe import auth_safe_open
 
 # Default source: the Unsloth mirror's CPU/Apple prebuilts (override with UNSLOTH_SD_CPP_REPO). GPU hosts run diffusers, so only CPU/Apple assets are needed.

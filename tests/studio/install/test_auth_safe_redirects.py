@@ -62,7 +62,34 @@ def tls_certificate(tmp_path_factory):
 
 
 @pytest.fixture
-def servers(tls_certificate, monkeypatch):
+def stdlib_ssl():
+    """Run on the stdlib ``ssl``, whatever native TLS did to it at import.
+
+    ``prebuilt_core`` carries native_tls.py's inline gate, which calls
+    ``truststore.inject_into_ssl()`` at import -- on by default on macOS. truststore's
+    ``SSLContext`` reads the OS trust store, so it ignores the ``SSL_CERT_FILE`` this
+    suite points at its test CA, and it cannot wrap a server-side socket at all:
+    ``wrap_socket(server_side = True)`` dies in ``_verify_peercerts`` with
+    ``AttributeError: 'NoneType' object has no attribute 'get_unverified_chain'``.
+    Observed as 100 failures on macos-15, green on ubuntu-latest, because the gate
+    is platform-defaulted. This suite is about the redirect policy, not about which
+    root store verifies a real host, so take the injection off for its duration and
+    put it back after.
+    """
+    injected = ssl.SSLContext.__module__.startswith("truststore")
+    if injected:
+        import truststore
+
+        truststore.extract_from_ssl()
+    try:
+        yield
+    finally:
+        if injected:
+            truststore.inject_into_ssl()
+
+
+@pytest.fixture
+def servers(stdlib_ssl, tls_certificate, monkeypatch):
     cert, key = tls_certificate
     monkeypatch.setenv("SSL_CERT_FILE", str(cert))
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
@@ -223,6 +250,42 @@ def test_installer_import_without_backend_dependencies(name, mode, tmp_path):
         timeout = 10,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("target", ["https://hub.example:99999/b", "https://hub.example:abc/b"])
+def test_an_unparseable_redirect_port_strips_rather_than_raising(target):
+    """A Location whose port cannot be read must not escape as ValueError.
+
+    None of the four clients catches ValueError -- they catch URLError, HTTPError,
+    OSError and friends -- so a handler that raises turns a soft "no release info"
+    into an uncaught exception on an update check. Unreadable target, other origin,
+    strip.
+    """
+    request = urllib.request.Request(
+        "https://hub.example/a", headers = {"Authorization": TOKEN, "Accept": "application/json"}
+    )
+    result = prebuilt_core._CrossHostAuthStrippingRedirectHandler().redirect_request(
+        request, None, 302, "Found", {}, target
+    )
+    assert result.get_header("Authorization") is None
+    assert result.get_header("Accept") == "application/json"
+    assert request.get_header("Authorization") == TOKEN
+
+
+@pytest.mark.parametrize("client", ["prebuilt", "freshness", "changelog", "sd"])
+def test_an_unparseable_redirect_port_stays_soft_for_every_client(client, servers, monkeypatch):
+    """The same case end to end: no ValueError reaches the caller."""
+    release = {"tag_name": "v1", "published_at": "2026-01-01T00:00:00Z"}
+    source = servers(payload = [release] if client == "freshness" else release)
+    source.redirects["/start"] = "https://127.0.0.1:99999/final"
+    # No ValueError arm: it must not be raised, so letting it escape fails the test.
+    # The port is unroutable, so the surviving outcomes are the clients' own soft
+    # failures -- None, or a URLError/HTTPError they already declare.
+    try:
+        fetch(client, source.url + "/start", monkeypatch)
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as error:
+        getattr(error, "close", lambda: None)()
+    assert source.seen[0] == ("/start", TOKEN)
 
 
 @pytest.mark.parametrize("unredirected", [False, True])
