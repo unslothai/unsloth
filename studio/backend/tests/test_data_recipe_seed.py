@@ -1099,6 +1099,64 @@ def test_seed_hf_path_reads_a_card_that_spells_paths_with_a_dot(monkeypatch, tmp
     assert resolved == "datasets/org/repo/data/a.parquet"
 
 
+@pytest.mark.parametrize(
+    ("split", "expected"),
+    [("Train", "datasets/org/repo/b.parquet"), ("train", "datasets/org/repo/a.parquet")],
+)
+def test_seed_hf_path_reads_a_split_name_exactly(monkeypatch, tmp_path, split, expected):
+    """load_dataset is handed the name the caller asked for, not a folded one."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["a.parquet", "b.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_files": [
+                {"split": "train", "path": "a.parquet"},
+                {"split": "Train", "path": "b.parquet"},
+            ],
+        }
+    ]
+
+    assert seed_route._resolve_seed_hf_path("org/repo", files, split, None, configs) == expected
+
+
+def test_seed_hf_path_reads_declared_files_under_data_dir_even_when_they_repeat_it(
+    monkeypatch, tmp_path
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/data/train.parquet", "data/train.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_dir": "data",
+            "data_files": [{"split": "train", "path": "data/train.parquet"}],
+        }
+    ]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    assert resolved == "datasets/org/repo/data/data/train.parquet"
+
+
+def test_seed_hf_path_collapses_a_parent_component_in_a_card_path(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/a.parquet", "data/b.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_dir": "staging/../data",
+            "data_files": [
+                {"split": "train", "path": "a.parquet"},
+                {"split": "test", "path": "b.parquet"},
+            ],
+        }
+    ]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    assert resolved == "datasets/org/repo/data/a.parquet"
+
+
 def test_seed_hf_path_unions_an_exact_and_a_qualified_split_folder(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["train/0.parquet", "sets/train_a/1.parquet", "sets/test_b/2.parquet"]

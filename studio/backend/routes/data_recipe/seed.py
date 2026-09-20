@@ -160,16 +160,23 @@ def _as_pattern_list(paths: Any) -> list[str]:
     return []
 
 
-def _patterns_for_split(data_files: Any, split_lower: str) -> list[str]:
+def _patterns_for_split(
+    data_files: Any,
+    split: str,
+    *,
+    exact: bool = True,
+) -> list[str]:
     """Every shape a card may use for `data_files`, as hub/services/datasets does.
 
-    A bare string or list of strings is the shorthand for the train split.
+    A bare string or list of strings is the shorthand for the train split. The
+    name is read exactly first: a card may declare Train beside train, and
+    `load_dataset` is handed the name the caller asked for, not a folded one.
     """
     if isinstance(data_files, str):
-        return [data_files] if split_lower == DEFAULT_SPLIT else []
+        return [data_files] if _same_split(DEFAULT_SPLIT, split, exact) else []
     if isinstance(data_files, dict):
         for name, paths in data_files.items():
-            if str(name).lower() == split_lower:
+            if _same_split(str(name), split, exact):
                 return _as_pattern_list(paths)
         return []
     if isinstance(data_files, list):
@@ -179,12 +186,18 @@ def _patterns_for_split(data_files: Any, split_lower: str) -> list[str]:
         patterns: list[str] = []
         for entry in data_files:
             if isinstance(entry, str):
-                if split_lower == DEFAULT_SPLIT:
+                if _same_split(DEFAULT_SPLIT, split, exact):
                     patterns.append(entry)
-            elif isinstance(entry, dict) and str(entry.get("split") or "").lower() == split_lower:
+            elif isinstance(entry, dict) and _same_split(
+                str(entry.get("split") or ""), split, exact
+            ):
                 patterns.extend(_as_pattern_list(entry.get("path")))
         return patterns
     return []
+
+
+def _same_split(declared: str, split: str, exact: bool) -> bool:
+    return declared == split if exact else declared.lower() == split.lower()
 
 
 def _declared_split_patterns(
@@ -196,17 +209,15 @@ def _declared_split_patterns(
     config = _pick_config(configs, subset)
     if config is None:
         return []
-    patterns = [
-        _normalized_glob(pattern)
-        for pattern in _patterns_for_split(config.get("data_files"), split.lower())
-    ]
-    folder = _config_folder(config)
-    # `data_dir` scopes the config, and its `data_files` are relative to it.
-    return (
-        [p if p.startswith(f"{folder}/") else f"{folder}/{p}" for p in patterns]
-        if folder
-        else patterns
+    declared = config.get("data_files")
+    named = _patterns_for_split(declared, split) or _patterns_for_split(
+        declared, split, exact = False
     )
+    folder = _config_folder(config)
+    # `data_dir` scopes the config and its `data_files` are read under it, with
+    # no exception for a pattern that happens to start with the folder's name:
+    # `_resolve_data_files` joins the two whatever they say (`builder.py`).
+    return [_normalized_glob(f"{folder}/{p}" if folder else p) for p in named]
 
 
 def _normalized_glob(pattern: str) -> str:
@@ -214,9 +225,17 @@ def _normalized_glob(pattern: str) -> str:
 
     `datasets` runs `os.path.normpath` over `data_dir` before it resolves
     anything (`builder.py`), while `list_repo_files` returns data/train.parquet
-    with no dot at all, so ./data has to lose it here or match nothing.
+    with no dot at all, so ./data or staging/../data has to be spelled the
+    listing's way here or match nothing.
     """
-    parts = [part for part in pattern.strip().split("/") if part not in ("", ".")]
+    parts: list[str] = []
+    for part in pattern.strip().split("/"):
+        if part in ("", "."):
+            continue
+        if part == ".." and parts and parts[-1] != "..":
+            parts.pop()
+            continue
+        parts.append(part)
     return "/".join(parts)
 
 
