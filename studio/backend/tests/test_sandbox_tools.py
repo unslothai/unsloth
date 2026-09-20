@@ -3247,3 +3247,50 @@ class TestClassBodyOrder:
             f'import requests\nclass C:\n    url = "{_METADATA_URL}"\n    requests.get(url)',
             expect_phrase = "Blocked: cloud-metadata host",
         )
+
+
+class TestInlineAndLowercaseSessionFactories:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f'import requests\nrequests.Session().get("{_METADATA_URL}")', id = "inline_session"
+            ),
+            pytest.param(
+                f'import httpx\nhttpx.Client().get("{_METADATA_URL}")', id = "inline_client"
+            ),
+            pytest.param(
+                f'import requests\nrequests.session().get("{_METADATA_URL}")',
+                id = "inline_lowercase",
+            ),
+            pytest.param(
+                f'import requests\ns = requests.session()\ns.get("{_METADATA_URL}")',
+                id = "bound_lowercase",
+            ),
+        ],
+    )
+    def test_a_client_built_in_place_is_policed_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_an_inline_client_upload_is_still_refused(self):
+        _blocked(
+            "import requests\n"
+            'requests.Session().post("https://huggingface.co/u", files = {"f": open("a.bin", "rb")})',
+            expect_phrase = "Blocked: file upload disallowed in sandbox",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nrequests.Session().get("https://huggingface.co/api/models")',
+                id = "allowed_host",
+            ),
+            pytest.param(
+                'import requests\nrequests.Session().mount("https://example.com/", None)',
+                id = "sends_nothing",
+            ),
+        ],
+    )
+    def test_an_inline_client_that_is_fine_keeps_working_ok(self, code):
+        _ok(code)

@@ -16061,7 +16061,9 @@ def _check_signal_escape_patterns(code: str):
     # _NETWORK_FQ_PREFIXES, since that test is a startswith.
     _SESSION_FACTORY_FQ = {
         "requests.Session": "requests.Session",
+        "requests.session": "requests.Session",
         "requests.sessions.Session": "requests.Session",
+        "requests.sessions.session": "requests.Session",
         "httpx.Client": "httpx.Client",
         "httpx.AsyncClient": "httpx.AsyncClient",
         "aiohttp.ClientSession": "aiohttp.ClientSession",
@@ -16150,6 +16152,12 @@ def _check_signal_escape_patterns(code: str):
             parts.insert(0, cur.id)
         return ".".join(parts) if parts else ""
 
+    def _receiver_factory(node, bindings) -> "str | None":
+        """The canonical session a call-valued receiver produces, for `requests.Session().get()`."""
+        if not isinstance(node, ast.Call):
+            return None
+        return _SESSION_FACTORY_FQ.get(_canonical_fq(node.func, bindings))
+
     def _call_fq_names(func_node, bindings) -> "list[str]":
         """Every name this call answers to: as written, and with aliases and session variables
         resolved. Both are policed, because resolving is only ever allowed to ADD a match. A rewrite
@@ -16159,6 +16167,16 @@ def _check_signal_escape_patterns(code: str):
         written = _written_fq(func_node)
         if not written:
             return []
+        # `requests.Session().get(...)` bottoms out at a Call, so the written name is just "get".
+        if isinstance(func_node, ast.Attribute):
+            receiver = func_node.value
+            attrs = [func_node.attr]
+            while isinstance(receiver, ast.Attribute):
+                attrs.insert(0, receiver.attr)
+                receiver = receiver.value
+            factory = _receiver_factory(receiver, bindings)
+            if factory is not None:
+                return [".".join([factory] + attrs)]
         parts = written.split(".")
         head = parts[0]
         resolved = None
