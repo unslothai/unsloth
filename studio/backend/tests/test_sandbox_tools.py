@@ -3079,3 +3079,41 @@ class TestScopeEdgesAndWorkBudget:
             "import os, requests\nv0 = os.environ['TARGET']\n" + chain + "requests.get(v20)",
             expect_phrase = "Blocked: request target is read from the environment or input",
         )
+
+
+class TestComprehensionIterableAndAliasOrder:
+    def test_the_leftmost_iterable_is_evaluated_outside_the_comprehension_blocked(self):
+        # Python evaluates it before the comprehension scope exists, so the target does not shadow
+        # the enclosing name it reads.
+        _blocked(
+            'import os, requests\nurl = os.environ["TARGET"]\n'
+            "[x for url in requests.get(url)]",
+            expect_phrase = "Blocked: request target is read from the environment or input",
+        )
+
+    def test_a_comprehension_still_resolves_its_own_names_ok(self):
+        _ok(
+            'import requests\nurls = ["https://huggingface.co/api/models"]\n'
+            "[requests.get(u) for u in urls]"
+        )
+
+    def test_an_alias_still_applies_to_calls_before_its_rebind_blocked(self):
+        _blocked(
+            f'import requests as r\nr.get("{_METADATA_URL}")\nr = object()',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f'import requests as r\nr = object()\nr.get("{_METADATA_URL}")', id = "rebound_first"
+            ),
+            pytest.param(
+                "import requests as r\ndef go():\n    r = object()\n    r.get(input())",
+                id = "local_shadow",
+            ),
+        ],
+    )
+    def test_a_call_after_the_rebind_is_not_the_alias_ok(self, code):
+        _ok(code)

@@ -16180,6 +16180,12 @@ def _check_signal_escape_patterns(code: str):
             self._class_scopes: set = set()
             # (scope, name) -> the scope that name really binds in, for global / nonlocal.
             self._redirect: dict = {}
+            # (scope, name) -> [(position, is_alias)], so a call before a rebind still resolves.
+            self._bind_positions: dict = {}
+            # Aliases dropped for a later rebind, kept for the calls that precede it.
+            self._dropped_aliases: dict = {}
+            # Names imported twice: no order-independent answer, so no alias at all.
+            self._ambiguous_aliases: set = set()
 
         @staticmethod
         def _parameters(args) -> list:
@@ -16213,7 +16219,19 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(node, ast.ClassDef):
                 outer = list(node.decorator_list) + list(node.bases)
                 outer += [kw.value for kw in node.keywords]
-                return [(child, scope) for child in outer] + [(child, inner) for child in node.body]
+                return [(child, scope) for child in outer] + [
+                    (child, inner) for child in node.body
+                ]
+            if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                # The leftmost iterable is evaluated before the comprehension scope exists.
+                pairs = []
+                for index, gen in enumerate(node.generators):
+                    pairs.append((gen.iter, scope if index == 0 else inner))
+                    pairs.append((gen.target, inner))
+                    pairs += [(cond, inner) for cond in gen.ifs]
+                parts = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+                pairs += [(part, inner) for part in parts if part is not None]
+                return pairs
             if isinstance(node, ast.arg):
                 # The parameter name belongs to the function; its annotation is evaluated outside.
                 if node.annotation is None:
@@ -16275,10 +16293,24 @@ def _check_signal_escape_patterns(code: str):
                 key = (scope, name)
                 if key in table:
                     return table[key]
+                if self._alias_holds_here(key, node):
+                    return self._dropped_aliases[key]
                 if key in self._counts:
                     # Bound nearer than the alias, so the alias is not what this name holds.
                     return None
             return None
+
+        def _alias_holds_here(self, key, node) -> bool:
+            """Whether an alias dropped for being rebound still describes a call at *node*: the
+            last binding of that name before this point is the import itself."""
+            if key not in self._dropped_aliases or key in self._ambiguous_aliases:
+                return False
+            positions = self._bind_positions.get(key, [])
+            before = [entry for entry in positions if entry[0] <= self._position(node)]
+            if not before:
+                # The use precedes every binding we can place, so the import is the best answer.
+                return True
+            return max(before)[1]
 
         def string_for(self, name: str, node):
             """The value bound to *name* where *node* uses it, or None when nothing is trusted."""
@@ -16300,17 +16332,30 @@ def _check_signal_escape_patterns(code: str):
                     return list(self.all_values.get(key, ()))
             return []
 
-        def _mark(self, name: "str | None", scope) -> None:
+        def _record_alias(self, table: dict, key: tuple, target: str) -> None:
+            if key in table and table[key] != target:
+                self._ambiguous_aliases.add(key)
+            table[key] = target
+
+        @staticmethod
+        def _position(node) -> tuple:
+            return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+
+        def _mark(self, name: "str | None", scope, node = None, is_alias = False) -> None:
             if name:
                 scope = self._redirect.get((scope, name), scope)
                 key = (scope, name)
                 self._counts[key] = self._counts.get(key, 0) + 1
+                if node is not None:
+                    self._bind_positions.setdefault(key, []).append(
+                        (self._position(node), is_alias)
+                    )
 
         def _bind(self, target, value, scope) -> None:
             if isinstance(target, ast.Name):
                 # `global u` makes an assignment here a write to the module's u, not a local one.
                 scope = self._redirect.get((scope, target.id), scope)
-                self._mark(target.id, scope)
+                self._mark(target.id, scope, target)
                 self._candidates.setdefault((scope, target.id), value)
                 if value is not None:
                     self.all_values.setdefault((scope, target.id), []).append(value)
@@ -16336,26 +16381,31 @@ def _check_signal_escape_patterns(code: str):
             for node, scope in scoped:
                 if isinstance(node, ast.Import):
                     for alias in node.names:
-                        self._mark(alias.asname or alias.name.split(".")[0], scope)
+                        self._mark(
+                            alias.asname or alias.name.split(".")[0],
+                            scope,
+                            node,
+                            is_alias = True,
+                        )
                         # Without `as`, the bound name is already the canonical head of the FQ name.
                         if alias.asname and alias.name in _NET_MODULES:
-                            self.modules[(scope, alias.asname)] = alias.name
+                            self._record_alias(self.modules, (scope, alias.asname), alias.name)
                 elif isinstance(node, ast.ImportFrom):
                     for alias in node.names:
                         local = alias.asname or alias.name
-                        self._mark(local, scope)
+                        self._mark(local, scope, node, is_alias = True)
                         if node.level or node.module is None:
                             continue
                         fq = f"{node.module}.{alias.name}"
                         if fq in _NET_MODULES:
-                            self.modules[(scope, local)] = fq
+                            self._record_alias(self.modules, (scope, local), fq)
                         elif node.module in _NET_MODULES:
-                            self.funcs[(scope, local)] = fq
+                            self._record_alias(self.funcs, (scope, local), fq)
             for node, scope in scoped:
                 if isinstance(node, (ast.MatchAs, ast.MatchStar)):
-                    self._mark(node.name, scope)
+                    self._mark(node.name, scope, node)
                 elif isinstance(node, ast.MatchMapping):
-                    self._mark(node.rest, scope)
+                    self._mark(node.rest, scope, node)
                 elif type(node).__name__ == "TypeAlias":  # 3.12+, absent on the floor
                     self._mark(getattr(getattr(node, "name", None), "id", None), scope)
                 if isinstance(node, ast.Assign):
@@ -16385,11 +16435,11 @@ def _check_signal_escape_patterns(code: str):
                     for target in node.targets:
                         self._bind(target, None, scope)
                 elif isinstance(node, ast.ExceptHandler):
-                    self._mark(node.name, scope)
+                    self._mark(node.name, scope, node)
                 elif isinstance(node, ast.arg):
-                    self._mark(node.arg, scope)
+                    self._mark(node.arg, scope, node)
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    self._mark(node.name, scope)
+                    self._mark(node.name, scope, node)
                 elif isinstance(node, (ast.Global, ast.Nonlocal)):
                     pass  # a declaration, not a binding; collected in the first pass
             # An alias entry is only good while the name means one thing in its own scope. `import
@@ -16397,6 +16447,7 @@ def _check_signal_escape_patterns(code: str):
             # whichever the walk reached last, and ast.walk order is not specified, so drop both.
             for table in (self.modules, self.funcs):
                 for key in [k for k in table if self._counts.get(k, 0) != 1]:
+                    self._dropped_aliases[key] = table[key]
                     del table[key]
             # Sessions are resolved in their own pass: classifying them while the table fills would
             # let one binding's result change how the next one is read.
