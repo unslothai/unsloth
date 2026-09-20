@@ -1546,9 +1546,9 @@ class TestOffVolumeCacheNoticeParity:
         # sums every file with no link count available, so there the gate still does work.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert text.count("$script:StudioRollbackCostsFullSize") >= 2
-        assert "_ROLLBACK_COSTS_FULL_SIZE" not in INSTALL_SH.read_text(encoding = "utf-8"), (
-            "install.sh carries a mode flag nothing reads"
-        )
+        assert "_ROLLBACK_COSTS_FULL_SIZE" not in INSTALL_SH.read_text(
+            encoding = "utf-8"
+        ), "install.sh carries a mode flag nothing reads"
 
 
 class TestWindowsMountPointVolumes:
