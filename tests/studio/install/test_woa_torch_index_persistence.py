@@ -349,9 +349,9 @@ class TestResolverEnvironmentRestore:
         so an alias that does not resolve breaks the whole resolve rather than one file.
         """
         for source, body in zip(("install.ps1", "studio/setup.ps1"), _ps_copies("Get-UvSafePath")):
-            assert "Test-Path -LiteralPath $short" in body, (
-                f"{source}: Get-UvSafePath accepts an 8.3 alias on 'contains no space' alone"
-            )
+            assert (
+                "Test-Path -LiteralPath $short" in body
+            ), f"{source}: Get-UvSafePath accepts an 8.3 alias on 'contains no space' alone"
 
     def test_the_dependency_that_makes_this_necessary_is_still_there(self):
         """If studio.txt ever drops ddgs, this restore stops being load-bearing for brotli."""
