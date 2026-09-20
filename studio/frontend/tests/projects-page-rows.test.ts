@@ -21,7 +21,11 @@ test("a project row opens its chats in place", () => {
     /listStoredChatThreads\(\{ projectId, includeArchived: false \}\)/,
   );
   assert.match(PAGE, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, refresh\);/);
-  assert.match(PAGE, /setProjectChats\(\{\}\);\n\s*for \(const id of openProjectIdsRef\.current\) loadProjectChats\(id\);/);
+  // Debounced, since streaming fires the event per chunk, and open rows reload in place.
+  assert.match(PAGE, /timer = setTimeout\(\(\) => \{[\s\S]*?for \(const id of open\) loadProjectChats\(id, true\);\n\s*\}, PROJECT_CHATS_REFRESH_DEBOUNCE_MS\);/);
+  assert.match(PAGE, /if \(!silent\) \{\n\s*setProjectChats\(\(prev\) => \(\{ \.\.\.prev, \[projectId\]: "loading" \}\)\);/);
+  // A response a newer request overtook is dropped.
+  assert.match(PAGE, /if \(loadSeqRef\.current\.get\(projectId\) !== seq\) return;\n\s*setProjectChats/);
   // Grouped as the sidebar groups them, newest first, and a row with none says so.
   assert.match(PAGE, /groupThreads\(threads\)\.sort\(\n\s*\(a, b\) => b\.updatedAt - a\.updatedAt,/);
   assert.match(PAGE, /No chats<\/p>/);

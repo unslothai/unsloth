@@ -61,7 +61,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   COMBINED_EXPORT_FORMATS_LIST,
   exportProjectConversations,
@@ -86,6 +86,8 @@ type SortMode = "activity" | "name";
 
 // Reveal this many more projects each time the user scrolls near the bottom.
 const PROJECTS_PAGE_STEP = 12;
+// A streaming chat fires the history event per chunk; one reload per quiet window is enough.
+const PROJECT_CHATS_REFRESH_DEBOUNCE_MS = 300;
 // Visible count before the fit-to-height measurement runs.
 const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
@@ -159,10 +161,19 @@ export function ProjectsPage() {
     Record<string, SidebarItem[] | "loading">
   >({});
 
-  function loadProjectChats(projectId: string) {
-    setProjectChats((prev) => ({ ...prev, [projectId]: "loading" }));
+  // One sequence per project: a response that a newer request overtook is dropped, so a chat
+  // moved or deleted mid-flight cannot come back.
+  const loadSeqRef = useRef(new Map<string, number>());
+  const loadProjectChats = useCallback((projectId: string, silent = false) => {
+    const seq = (loadSeqRef.current.get(projectId) ?? 0) + 1;
+    loadSeqRef.current.set(projectId, seq);
+    // A reload keeps the rows on screen; only a first load shows the skeleton.
+    if (!silent) {
+      setProjectChats((prev) => ({ ...prev, [projectId]: "loading" }));
+    }
     void listStoredChatThreads({ projectId, includeArchived: false })
       .then((threads) => {
+        if (loadSeqRef.current.get(projectId) !== seq) return;
         setProjectChats((prev) => ({
           ...prev,
           [projectId]: groupThreads(threads).sort(
@@ -171,26 +182,39 @@ export function ProjectsPage() {
         }));
       })
       .catch(() => {
+        if (loadSeqRef.current.get(projectId) !== seq) return;
         setProjectChats((prev) => ({ ...prev, [projectId]: [] }));
       });
-  }
+  }, []);
 
-  // A loaded list goes stale when chats are imported, moved or deleted: open rows reload, the
-  // rest load again on their next open.
+  // A loaded list goes stale when chats are imported, moved or deleted. Streaming fires the
+  // event per chunk, so the reload is debounced: open rows reload in place, the rest load
+  // again on their next open.
   const openProjectIdsRef = useRef(openProjectIds);
   useEffect(() => {
     openProjectIdsRef.current = openProjectIds;
   }, [openProjectIds]);
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const refresh = () => {
-      setProjectChats({});
-      for (const id of openProjectIdsRef.current) loadProjectChats(id);
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        const open = openProjectIdsRef.current;
+        setProjectChats((prev) => {
+          const kept: typeof prev = {};
+          for (const id of open) if (prev[id] !== undefined) kept[id] = prev[id];
+          return kept;
+        });
+        for (const id of open) loadProjectChats(id, true);
+      }, PROJECT_CHATS_REFRESH_DEBOUNCE_MS);
     };
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
-    return () => window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
-    // loadProjectChats only touches state setters.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+    };
+  }, [loadProjectChats]);
 
   async function handleImport(source: ImportSource, projectId: string | null) {
     // Counts up while it runs: a large export takes minutes of writes.
