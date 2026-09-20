@@ -575,18 +575,18 @@ def snapshot_has_st_weights(model_name: str) -> bool:
     return cached_st_source(model_name) is not None
 
 
-def _snapshot_in_root(cache_root: Path, repo_id: str) -> Optional[Path]:
-    """``repo_id``'s main-revision snapshot under exactly ``cache_root``, or None."""
+def _repo_folder_name(repo_id: str) -> str:
+    """The cache directory name huggingface_hub gives ``repo_id``."""
     try:
         from huggingface_hub.file_download import repo_folder_name
     except Exception:
-        repo_folder_name = None
+        return "models--" + repo_id.replace("/", "--")
+    return repo_folder_name(repo_id = repo_id, repo_type = "model")
+
+
+def _snapshot_in_repo_dir(repo_dir: Path) -> Optional[Path]:
+    """``repo_dir``'s main-revision snapshot, or None. ``repo_dir`` is a cache entry the caller already picked, so no repo id is re-derived from its name."""
     try:
-        if repo_folder_name is not None:
-            folder = repo_folder_name(repo_id = repo_id, repo_type = "model")
-        else:
-            folder = "models--" + repo_id.replace("/", "--")
-        repo_dir = cache_root / folder
         ref = repo_dir / "refs" / "main"
         if not ref.is_file():
             return None
@@ -596,6 +596,14 @@ def _snapshot_in_root(cache_root: Path, repo_id: str) -> Optional[Path]:
         snapshot = repo_dir / "snapshots" / commit
         return snapshot if snapshot.is_dir() else None
     # UnicodeDecodeError is a ValueError, not an OSError: a torn refs file must keep meaning "not cached here".
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _snapshot_in_root(cache_root: Path, repo_id: str) -> Optional[Path]:
+    """``repo_id``'s main-revision snapshot under exactly ``cache_root``, or None."""
+    try:
+        return _snapshot_in_repo_dir(cache_root / _repo_folder_name(repo_id))
     except (OSError, UnicodeDecodeError):
         return None
 
@@ -669,6 +677,43 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
     if snapshot is None:
         return False
     return snapshot_is_loadable(snapshot, model_name)
+
+
+def active_hf_cache_loadable_snapshot(repo_id: str) -> Optional[Path]:
+    """Return a loadable snapshot from the active cache only, or None."""
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        snapshot = _snapshot_in_root(_expand_path(active_hf_hub_cache()), repo_id)
+    except Exception:
+        return None
+    return snapshot if snapshot is not None and snapshot_is_loadable(snapshot, repo_id) else None
+
+
+def active_hf_cache_repo_spelling(repo_id: str) -> Optional[str]:
+    """The spelling ``repo_id`` is actually cached under in the active cache, or None.
+
+    The Hub is case insensitive, the cache directories it creates are not, and huggingface_hub keys the directory on the id verbatim, so one checkpoint sits under whichever spelling first asked for it (huggingface/huggingface_hub#3838). Returning the spelling rather than a bool is what lets a caller LOAD the copy it found: asking for any other casing downloads it again.
+    """
+    if active_hf_cache_loadable_snapshot(repo_id) is not None:
+        return repo_id
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        exact = _repo_folder_name(repo_id)
+        wanted = exact.lower()
+        prefix = len("models--")
+        for repo_dir in _expand_path(active_hf_hub_cache()).iterdir():
+            if repo_dir.name.lower() != wanted or repo_dir.name == exact:
+                continue
+            # Repo ids cannot contain '--' (huggingface_hub.utils.validate_repo_id), so
+            # the directory name maps back to exactly one id.
+            variant = repo_dir.name[prefix:].replace("--", "/")
+            snapshot = _snapshot_in_repo_dir(repo_dir)
+            if snapshot is not None and snapshot_is_loadable(snapshot, variant):
+                return variant
+    except Exception:
+        return None
+    return None
 
 
 def snapshot_is_loadable(snapshot, model_name: str) -> bool:
