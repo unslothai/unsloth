@@ -128,7 +128,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, ChevronUp, Moon } from "lucide-react";
 import {
   Link,
   useNavigate,
@@ -233,6 +233,7 @@ import {
 import { createPortal } from "react-dom";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { useIsCoarsePointer } from "@/hooks/use-mobile";
 import {
   folderRingKey,
   sectionRingKey,
@@ -1894,6 +1895,8 @@ export function AppSidebar() {
     ],
   );
   const dropHintRef = useRef<HTMLDivElement | null>(null);
+  // A touch browser never fires dragstart, so its row menus keep Move up and Move down.
+  const coarsePointer = useIsCoarsePointer();
   const dnd = useSidebarDrag({
     context: dropContext,
     springOpen: dragOpensFolders,
@@ -1921,7 +1924,7 @@ export function AppSidebar() {
     if (effects.pinChat && !pinnedIdSet.has(effects.pinChat)) {
       togglePinnedChat(effects.pinChat);
     }
-    if (effects.unpinChat && pinnedIdSet.has(effects.unpinChat)) {
+    if (effects.unpinChat && !effects.moveChat && pinnedIdSet.has(effects.unpinChat)) {
       togglePinnedChat(effects.unpinChat);
     }
     if (effects.pinProject && !pinnedProjectIdSet.has(effects.pinProject)) {
@@ -1940,10 +1943,14 @@ export function AppSidebar() {
       toast.info(t("shell.organize.switchedToManual"));
     }
     const move = effects.moveChat;
-    if (move) {
-      const item = allChatItems.find((candidate) => candidate.id === move.chatId);
-      if (item) void moveChatToProject(item, move.projectId);
-    }
+    if (!move) return;
+    const item = allChatItems.find((candidate) => candidate.id === move.chatId);
+    if (!item) return;
+    // The move can fail; the pin comes off only once it has not.
+    const unpinAfter = effects.unpinChat;
+    void moveChatToProject(item, move.projectId).then((moved) => {
+      if (moved && unpinAfter) usePinnedChatsStore.getState().unpin(unpinAfter);
+    });
   }
 
   /** The insertion line for a row, on the landing edge. */
@@ -1953,8 +1960,25 @@ export function AppSidebar() {
     return edge === "bottom" ? DROP_CUE_BOTTOM : DROP_CUE_TOP;
   }
 
-  /** Makes a row draggable, plus alt + arrow to reorder it from the keyboard, under the same
-   *  sort rule as a drop. */
+  /** Moves a row one slot without a pointer, under the same sort rule as a drop. */
+  function reorderRowBy(
+    item: SidebarDragItem,
+    orderedIds: string[],
+    sort: RowSort | undefined,
+    delta: number,
+  ) {
+    const next = moveIdBy(orderedIds, item.id, delta);
+    if (next === orderedIds) return;
+    const resorts = sort !== undefined && sort.value !== "manual";
+    if (resorts && !reorderSwitchesSort) return;
+    setManualOrder(item.scope, next);
+    if (resorts) {
+      sort.set("manual");
+      toast.info(t("shell.organize.switchedToManual"));
+    }
+  }
+
+  /** Makes a row draggable, plus alt + arrow to reorder it from the keyboard. */
   function rowDragProps(config: {
     item: SidebarDragItem;
     orderedIds: string[];
@@ -1971,21 +1995,38 @@ export function AppSidebar() {
           return;
         }
         event.preventDefault();
-        const next = moveIdBy(
-          orderedIds,
-          item.id,
-          event.key === "ArrowDown" ? 1 : -1,
-        );
-        if (next === orderedIds) return;
-        const resorts = sort !== undefined && sort.value !== "manual";
-        if (resorts && !reorderSwitchesSort) return;
-        setManualOrder(item.scope, next);
-        if (resorts) {
-          sort.set("manual");
-          toast.info(t("shell.organize.switchedToManual"));
-        }
+        reorderRowBy(item, orderedIds, sort, event.key === "ArrowDown" ? 1 : -1);
       },
     };
+  }
+
+  /** Move up and Move down in a row menu, for touch screens only: the browser starts no drag
+   *  there, and a list would be stuck in its order. */
+  function renderMoveRowItems(
+    item: SidebarDragItem,
+    orderedIds: string[],
+    sort?: RowSort,
+  ) {
+    if (!coarsePointer) return null;
+    const at = orderedIds.indexOf(item.id);
+    return (
+      <>
+        <DropdownMenuItem
+          disabled={at <= 0}
+          onSelect={() => reorderRowBy(item, orderedIds, sort, -1)}
+        >
+          <ChevronUp strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.organize.moveUp")}</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={at === -1 || at >= orderedIds.length - 1}
+          onSelect={() => reorderRowBy(item, orderedIds, sort, 1)}
+        >
+          <ChevronDown strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.organize.moveDown")}</span>
+        </DropdownMenuItem>
+      </>
+    );
   }
 
   /** The hint beside the cursor: what the drop would do. */
@@ -2705,17 +2746,23 @@ export function AppSidebar() {
     }
   }
 
-  async function moveChatToProject(item: SidebarItem, projectId: string | null) {
-    if (item.projectId === projectId) return;
+  /** Resolves false when the move failed. */
+  async function moveChatToProject(
+    item: SidebarItem,
+    projectId: string | null,
+  ): Promise<boolean> {
+    if (item.projectId === projectId) return true;
     try {
       await moveChatItemToProject(item, projectId);
       if (activeThreadId === item.id) {
         useChatRuntimeStore.getState().setActiveProjectId(projectId);
       }
+      return true;
     } catch (err) {
       toast.error("Failed to move chat", {
         description: err instanceof Error ? err.message : undefined,
       });
+      return false;
     }
   }
 
@@ -3512,6 +3559,17 @@ export function AppSidebar() {
                 <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
                 <span>{isPinned ? "Unpin" : "Pin"}</span>
               </DropdownMenuItem>
+              {renderMoveRowItems(
+                {
+                  kind: "chat",
+                  id: item.id,
+                  section: list.section,
+                  scope: list.scope,
+                  projectId: item.projectId ?? null,
+                },
+                list.ids,
+                list.sort,
+              )}
               {/* The dot a finished reply leaves, put back or taken off by hand. */}
               <DropdownMenuItem
                 onSelect={() =>
@@ -3827,6 +3885,16 @@ export function AppSidebar() {
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Edit</span>
             </DropdownMenuItem>
+            {renderMoveRowItems(
+              {
+                kind: "project",
+                id: project.id,
+                section: order.section,
+                scope: order.scope,
+                projectId: null,
+              },
+              order.orderedIds,
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               variant="destructive"

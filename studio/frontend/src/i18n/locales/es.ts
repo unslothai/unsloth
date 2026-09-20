@@ -226,6 +226,8 @@ export const es = {
       dragHints: "Mostrar una pista al arrastrar",
       reorderSwitchesSort: "Reordenar cambia a orden manual",
       dragOpensFolders: "Abrir carpetas bajo el puntero",
+      moveUp: "Subir",
+      moveDown: "Bajar",
     },
     drag: {
       reorder: "Reordenar",

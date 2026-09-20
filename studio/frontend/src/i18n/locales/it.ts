@@ -191,6 +191,8 @@ export const it = {
       dragHints: "Mostra un suggerimento durante il trascinamento",
       reorderSwitchesSort: "Riordinare passa all'ordine manuale",
       dragOpensFolders: "Apri le cartelle sotto il puntatore",
+      moveUp: "Sposta su",
+      moveDown: "Sposta giù",
     },
     drag: {
       reorder: "Riordina",

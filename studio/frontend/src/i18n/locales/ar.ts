@@ -224,6 +224,8 @@ export const ar = {
       dragHints: "إظهار تلميح أثناء السحب",
       reorderSwitchesSort: "إعادة الترتيب تبدّل إلى الترتيب اليدوي",
       dragOpensFolders: "فتح المجلدات أسفل المؤشر",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
     },
     drag: {
       reorder: "إعادة ترتيب",

@@ -226,6 +226,8 @@ export const ja = {
       dragHints: "ドラッグ中にヒントを表示",
       reorderSwitchesSort: "並べ替えると手動順序に切り替える",
       dragOpensFolders: "ポインターの下のフォルダーを開く",
+      moveUp: "上へ移動",
+      moveDown: "下へ移動",
     },
     drag: {
       reorder: "並べ替え",

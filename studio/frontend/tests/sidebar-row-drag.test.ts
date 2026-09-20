@@ -601,12 +601,18 @@ test("alt and an arrow reorder a row without a pointer", () => {
     APP_SIDEBAR,
     /onKeyDown: \(event: React\.KeyboardEvent\) => \{\n\s*if \(\n\s*!event\.altKey \|\|\n\s*\(event\.key !== "ArrowUp" && event\.key !== "ArrowDown"\)\n\s*\)/,
   );
-  assert.match(APP_SIDEBAR, /moveIdBy\(\n\s*orderedIds,\n\s*item\.id,\n\s*event\.key === "ArrowDown" \? 1 : -1,\n\s*\)/);
+  assert.match(APP_SIDEBAR, /reorderRowBy\(item, orderedIds, sort, event\.key === "ArrowDown" \? 1 : -1\);/);
   // Same rule as a drop.
   assert.match(APP_SIDEBAR, /if \(resorts && !reorderSwitchesSort\) return;/);
-  for (const gone of ["renderMoveRowItems", "shell.organize.moveUp", "shell.organize.moveDown"]) {
-    assert.ok(!APP_SIDEBAR.includes(gone), `${gone} survived in the sidebar`);
+  // A touch browser starts no drag, so its row menus keep Move up and Move down.
+  assert.match(APP_SIDEBAR, /function renderMoveRowItems\(/);
+  assert.match(APP_SIDEBAR, /if \(!coarsePointer\) return null;/);
+  assert.match(APP_SIDEBAR, /const coarsePointer = useIsCoarsePointer\(\);/);
+  for (const key of ["moveUp", "moveDown"]) {
+    assert.ok(EN.includes(`${key}:`), `${key} is missing from the en locale`);
   }
+  // Both paths share the reorder, so both honour the sort rule.
+  assert.equal((APP_SIDEBAR.match(/reorderRowBy\(item, orderedIds, sort, /g) ?? []).length, 3);
 });
 
 // The hint names every kind of drop.
@@ -657,4 +663,18 @@ test("a closed folder or section opens under a resting pointer", () => {
   );
   assert.match(APP_SIDEBAR, /if \(zone\.section === "pinned"\) setPinnedOpen\(true\);/);
   assert.match(APP_SIDEBAR, /springOpen: dragOpensFolders,/);
+});
+
+// A pinned chat dropped into a folder or Recents is moved, and the move can fail. The pin comes
+// off only once the move has gone through, or a failed drop would leave the chat unpinned.
+test("a drop that moves and unpins takes the pin off after the move", () => {
+  assert.match(
+    APP_SIDEBAR,
+    /if \(effects\.unpinChat && !effects\.moveChat && pinnedIdSet\.has\(effects\.unpinChat\)\)/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /void moveChatToProject\(item, move\.projectId\)\.then\(\(moved\) => \{\n\s*if \(moved && unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+  );
+  assert.match(APP_SIDEBAR, /\): Promise<boolean> \{\n\s*if \(item\.projectId === projectId\) return true;/);
 });

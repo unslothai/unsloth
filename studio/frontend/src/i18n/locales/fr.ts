@@ -227,6 +227,8 @@ export const fr = {
       dragHints: "Afficher une indication pendant le glissement",
       reorderSwitchesSort: "Réordonner passe en ordre manuel",
       dragOpensFolders: "Ouvrir les dossiers sous le pointeur",
+      moveUp: "Monter",
+      moveDown: "Descendre",
     },
     drag: {
       reorder: "Réordonner",

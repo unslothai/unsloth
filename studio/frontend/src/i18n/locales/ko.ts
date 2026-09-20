@@ -224,6 +224,8 @@ export const ko = {
       dragHints: "드래그 중 힌트 표시",
       reorderSwitchesSort: "순서 변경 시 수동 정렬로 전환",
       dragOpensFolders: "포인터 아래 폴더 열기",
+      moveUp: "위로 이동",
+      moveDown: "아래로 이동",
     },
     drag: {
       reorder: "순서 변경",

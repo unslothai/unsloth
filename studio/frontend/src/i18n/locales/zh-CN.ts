@@ -222,6 +222,8 @@ export const zhCN = {
       dragHints: "拖动时显示提示",
       reorderSwitchesSort: "重新排序时切换为手动排序",
       dragOpensFolders: "打开指针下方的文件夹",
+      moveUp: "上移",
+      moveDown: "下移",
     },
     drag: {
       reorder: "重新排序",

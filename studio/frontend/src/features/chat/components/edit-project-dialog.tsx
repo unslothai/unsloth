@@ -133,6 +133,8 @@ export function EditProjectDialog({
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
+                // The chord would reach the dialog's handler too and save twice.
+                e.stopPropagation();
                 void save();
               }
             }}

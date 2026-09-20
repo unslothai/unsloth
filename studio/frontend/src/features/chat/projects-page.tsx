@@ -60,7 +60,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
-import type { ThreadRecord } from "./types";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -80,6 +79,8 @@ import {
 import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
+import { groupThreads, type SidebarItem } from "./hooks/use-chat-sidebar-items";
 
 type SortMode = "activity" | "name";
 
@@ -153,9 +154,43 @@ export function ProjectsPage() {
   const [openProjectIds, setOpenProjectIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  // Grouped as the sidebar groups them, so a comparison is one row that opens as one.
   const [projectChats, setProjectChats] = useState<
-    Record<string, ThreadRecord[] | "loading">
+    Record<string, SidebarItem[] | "loading">
   >({});
+
+  function loadProjectChats(projectId: string) {
+    setProjectChats((prev) => ({ ...prev, [projectId]: "loading" }));
+    void listStoredChatThreads({ projectId, includeArchived: false })
+      .then((threads) => {
+        setProjectChats((prev) => ({
+          ...prev,
+          [projectId]: groupThreads(threads).sort(
+            (a, b) => b.updatedAt - a.updatedAt,
+          ),
+        }));
+      })
+      .catch(() => {
+        setProjectChats((prev) => ({ ...prev, [projectId]: [] }));
+      });
+  }
+
+  // A loaded list goes stale when chats are imported, moved or deleted: open rows reload, the
+  // rest load again on their next open.
+  const openProjectIdsRef = useRef(openProjectIds);
+  useEffect(() => {
+    openProjectIdsRef.current = openProjectIds;
+  }, [openProjectIds]);
+  useEffect(() => {
+    const refresh = () => {
+      setProjectChats({});
+      for (const id of openProjectIdsRef.current) loadProjectChats(id);
+    };
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+    return () => window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+    // loadProjectChats only touches state setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleImport(source: ImportSource, projectId: string | null) {
     // Counts up while it runs: a large export takes minutes of writes.
@@ -331,26 +366,20 @@ export function ProjectsPage() {
       return next;
     });
     if (projectChats[projectId] !== undefined) return;
-    setProjectChats((prev) => ({ ...prev, [projectId]: "loading" }));
-    void listStoredChatThreads({ projectId, includeArchived: false })
-      .then((threads) => {
-        setProjectChats((prev) => ({
-          ...prev,
-          [projectId]: [...threads].sort(
-            (a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
-          ),
-        }));
-      })
-      .catch(() => {
-        setProjectChats((prev) => ({ ...prev, [projectId]: [] }));
-      });
+    loadProjectChats(projectId);
   }
 
-  function openChat(threadId: string, projectId: string) {
+  function openChat(item: SidebarItem, projectId: string) {
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveProjectId(projectId);
-    runtime.setActiveThreadId(threadId);
-    navigate({ to: "/chat", search: { thread: threadId } });
+    // A comparison restores from its pair id; a pane opened as a thread is half of it.
+    if (item.type === "compare") {
+      runtime.setActiveThreadId(null);
+      navigate({ to: "/chat", search: { compare: item.id, project: projectId } });
+      return;
+    }
+    runtime.setActiveThreadId(item.id);
+    navigate({ to: "/chat", search: { thread: item.id, project: projectId } });
   }
 
   function openProject(projectId: string) {
@@ -640,6 +669,8 @@ export function ProjectsPage() {
               tabIndex={0}
               onClick={() => openProject(project.id)}
               onKeyDown={(e) => {
+                // A key pressed on a control inside the row is that control's.
+                if (e.target !== e.currentTarget) return;
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
                   openProject(project.id);
@@ -794,7 +825,7 @@ export function ProjectsPage() {
                     <button
                       key={chat.id}
                       type="button"
-                      onClick={() => openChat(chat.id, project.id)}
+                      onClick={() => openChat(chat, project.id)}
                       className="flex cursor-pointer items-center gap-2 truncate rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.055]"
                     >
                       <HugeiconsIcon

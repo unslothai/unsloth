@@ -27,6 +27,25 @@ export function useIsMobile(): boolean {
   return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
+const COARSE_POINTER_QUERY = "(pointer: coarse)";
+
+function getCoarseSnapshot(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia(COARSE_POINTER_QUERY).matches;
+}
+
+function subscribeCoarse(callback: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const mql = window.matchMedia(COARSE_POINTER_QUERY);
+  mql.addEventListener("change", callback);
+  return () => mql.removeEventListener("change", callback);
+}
+
+/** A touch screen as the main pointer, where the browser never starts a native drag. */
+export function useIsCoarsePointer(): boolean {
+  return useSyncExternalStore(subscribeCoarse, getCoarseSnapshot, () => false);
+}
+
 /**
  * Whether to swap in the mobile shell: a sheet sidebar over a dimmed page, its
  * own width, its own header. Never in the desktop app, where a narrowed window

@@ -226,6 +226,8 @@ export const ptBR = {
       dragHints: "Mostrar uma dica ao arrastar",
       reorderSwitchesSort: "Reordenar muda para ordem manual",
       dragOpensFolders: "Abrir pastas sob o ponteiro",
+      moveUp: "Mover para cima",
+      moveDown: "Mover para baixo",
     },
     drag: {
       reorder: "Reordenar",

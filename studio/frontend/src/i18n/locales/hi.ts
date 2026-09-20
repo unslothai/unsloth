@@ -227,6 +227,8 @@ export const hi = {
       dragHints: "खींचते समय संकेत दिखाएँ",
       reorderSwitchesSort: "क्रम बदलने पर मैन्युअल क्रम पर स्विच करें",
       dragOpensFolders: "पॉइंटर के नीचे फ़ोल्डर खोलें",
+      moveUp: "ऊपर ले जाएँ",
+      moveDown: "नीचे ले जाएँ",
     },
     drag: {
       reorder: "क्रम बदलें",

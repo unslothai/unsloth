@@ -226,6 +226,8 @@ export const ru = {
       dragHints: "Показывать подсказку при перетаскивании",
       reorderSwitchesSort: "Перестановка включает ручной порядок",
       dragOpensFolders: "Открывать папки под указателем",
+      moveUp: "Переместить вверх",
+      moveDown: "Переместить вниз",
     },
     drag: {
       reorder: "Переставить",

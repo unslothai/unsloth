@@ -229,6 +229,8 @@ export const en = {
       dragHints: "Show a hint while dragging",
       reorderSwitchesSort: "Reordering sets Manual order",
       dragOpensFolders: "Open folders while hovering",
+      moveUp: "Move up",
+      moveDown: "Move down",
     },
     drag: {
       reorder: "Reorder",

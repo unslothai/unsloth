@@ -14,17 +14,22 @@ const PAGE = await readSrcAsync("features/chat/projects-page.tsx");
 test("a project row opens its chats in place", () => {
   assert.match(PAGE, /aria-label=\{chatsOpen \? "Hide chats" : "Show chats"\}/);
   assert.match(PAGE, /aria-expanded=\{chatsOpen\}/);
-  // Loaded once, the first time the row is opened.
-  assert.match(PAGE, /if \(projectChats\[projectId\] !== undefined\) return;/);
+  // Loaded the first time the row is opened, and again when chat history changes.
+  assert.match(PAGE, /if \(projectChats\[projectId\] !== undefined\) return;\n\s*loadProjectChats\(projectId\);/);
   assert.match(
     PAGE,
     /listStoredChatThreads\(\{ projectId, includeArchived: false \}\)/,
   );
-  // Newest first, and a row with none says so rather than showing an empty gap.
-  assert.match(PAGE, /\(b\.updatedAt \?\? b\.createdAt\) - \(a\.updatedAt \?\? a\.createdAt\)/);
+  assert.match(PAGE, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, refresh\);/);
+  assert.match(PAGE, /setProjectChats\(\{\}\);\n\s*for \(const id of openProjectIdsRef\.current\) loadProjectChats\(id\);/);
+  // Grouped as the sidebar groups them, newest first, and a row with none says so.
+  assert.match(PAGE, /groupThreads\(threads\)\.sort\(\n\s*\(a, b\) => b\.updatedAt - a\.updatedAt,/);
   assert.match(PAGE, /No chats<\/p>/);
-  // Each one opens the chat it names.
-  assert.match(PAGE, /onClick=\{\(\) => openChat\(chat\.id, project\.id\)\}/);
+  // Each one opens the chat it names; a comparison opens as one.
+  assert.match(PAGE, /onClick=\{\(\) => openChat\(chat, project\.id\)\}/);
+  assert.match(PAGE, /search: \{ compare: item\.id, project: projectId \}/);
+  // A key on a control inside the row is that control's, not the row's.
+  assert.match(PAGE, /if \(e\.target !== e\.currentTarget\) return;\n\s*if \(e\.key === "Enter" \|\| e\.key === " "\)/);
 });
 
 test("pinning a project takes one click, and says which way it goes", () => {
