@@ -511,9 +511,7 @@ def check_format_response(
 
                     # Tier 2 reaches the network on its own, whether or not tier 1 ran, and
                     # takes its record back if it fails having cached nothing.
-                    with recording_a_request_token_fetch(
-                        hf_token, request.dataset_name, "dataset"
-                    ):
+                    with recording_a_request_token_fetch(hf_token, request.dataset_name, "dataset"):
                         streamed_ds = load_dataset(**load_kwargs)
 
                         rows = list(islice(streamed_ds, PREVIEW_SIZE))
