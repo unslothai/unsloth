@@ -16290,7 +16290,12 @@ def _check_signal_escape_patterns(code: str):
             return None, True
         return None, False
 
-    def _externally_sourced(node, bindings, seen = frozenset(), depth = 0) -> bool:
+    def _externally_sourced(
+        node,
+        bindings,
+        seen = frozenset(),
+        depth = 0,
+    ) -> bool:
         """Whether *node* takes its value from outside the program: env, stdin, argv, a file read.
         Bindings are followed, so `u = os.environ["T"]` reads the same as the expression inline.
 

@@ -2630,15 +2630,11 @@ class TestExternallySourcedTargets:
                 id = "getenv_bound",
             ),
             pytest.param("import requests\nrequests.get(input())", id = "user_input_target"),
-            pytest.param(
-                "import requests\nu = input()\nrequests.get(u)", id = "user_input_bound"
-            ),
+            pytest.param("import requests\nu = input()\nrequests.get(u)", id = "user_input_bound"),
             pytest.param(
                 'import requests\nrequests.get(f"{input()}/latest")', id = "fstring_dynamic_host"
             ),
-            pytest.param(
-                "import sys, requests\nrequests.get(sys.argv[1])", id = "argv_target"
-            ),
+            pytest.param("import sys, requests\nrequests.get(sys.argv[1])", id = "argv_target"),
             pytest.param(
                 "import urllib.request\nurllib.request.urlopen(input())", id = "urlopen_dynamic"
             ),
