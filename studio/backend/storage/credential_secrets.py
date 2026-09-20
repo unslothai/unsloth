@@ -261,7 +261,6 @@ def _note_a_credential_this_host_held() -> None:
     """
     try:
         from hub.utils.hf_tokens import note_host_credential_identity
-
         note_host_credential_identity(get_hf_token(), a_credential_was_held = hf_token_row_exists())
     except Exception:  # noqa: BLE001 -- bookkeeping must never fail a settings write
         pass
