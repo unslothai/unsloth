@@ -1284,7 +1284,11 @@ export const fr = {
       },
       gpu: {
         title: "Périphériques GPU",
-        ggufInference: "Inférence GGUF",
+        memory: "Mémoire GPU",
+        sharedWithSystemRam: "Partagée avec la RAM système",
+        estimatedAvailable: "Disponibilité estimée : {value}",
+        sharedEstimatedAvailable: "RAM système partagée : disponibilité estimée de {value}",
+        ggufInference: "Mémoire pour les modèles GGUF",
         unavailable: "indisponible",
         detecting: "Recherche de GPU...",
         unreadable: "Impossible de lire le matériel de ce serveur.",

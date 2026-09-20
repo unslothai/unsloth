@@ -1264,7 +1264,11 @@ export const ru = {
       },
       gpu: {
         title: "Устройства GPU",
-        ggufInference: "Инференс GGUF",
+        memory: "Память GPU",
+        sharedWithSystemRam: "Общая с оперативной памятью системы",
+        estimatedAvailable: "Примерно доступно: {value}",
+        sharedEstimatedAvailable: "Общая оперативная память системы: примерно {value} доступно",
+        ggufInference: "Память для моделей GGUF",
         unavailable: "недоступно",
         detecting: "Поиск GPU...",
         unreadable: "Не удалось прочитать оборудование этого сервера.",
