@@ -24,6 +24,7 @@ from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
 from hub.services.datasets.local_options import (
     _MAX_MODULE_INFERENCE_FILES,
+    _METADATA_FILENAMES,
     _SEP,
     _SPLIT_KEYWORDS,
 )
@@ -185,7 +186,25 @@ def _declared_split_patterns(
     config = _pick_config(configs, subset)
     if config is None:
         return []
-    return _patterns_for_split(config.get("data_files"), split.lower())
+    patterns = _patterns_for_split(config.get("data_files"), split.lower())
+    folder = _config_folder(config)
+    # `data_dir` scopes the config, and its `data_files` are relative to it.
+    return (
+        [p if p.startswith(f"{folder}/") else f"{folder}/{p}" for p in patterns]
+        if folder
+        else patterns
+    )
+
+
+def _config_folder(config: dict[str, Any]) -> str:
+    folder = config.get("data_dir")
+    return folder.strip().strip("/") if isinstance(folder, str) and folder.strip() else ""
+
+
+def _config_scope(configs: list[dict[str, Any]], subset: str | None) -> str:
+    """The folder a config is confined to, for a card that names one and lists no files."""
+    config = _pick_config(configs, subset)
+    return _config_folder(config) if config else ""
 
 
 def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str, Any] | None:
@@ -196,12 +215,14 @@ def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str,
     config uses it whatever its name (imdb ships only `plain_text`).
     """
     if subset:
-        wanted = subset.lower()
-        # An omitted config_name is the default one, the same normalization
-        # hub/services/datasets applies, so asking for `default` still finds it.
+        # Config names are case sensitive and a card may carry both Foo and foo,
+        # so the exact one wins; a differently cased request only falls back to a
+        # loose match when nothing matches exactly. An omitted config_name is the
+        # default one, the same normalization hub/services/datasets applies.
+        names = [(c, str(c.get("config_name") or DEFAULT_CONFIG)) for c in configs]
         return next(
-            (c for c in configs if str(c.get("config_name") or DEFAULT_CONFIG).lower() == wanted),
-            None,
+            (c for c, name in names if name == subset),
+            next((c for c, name in names if name.lower() == subset.lower()), None),
         )
     flagged = next((c for c in configs if c.get("default") is True), None)
     if flagged is not None:
@@ -425,9 +446,12 @@ def _dominant_suffix(paths: list[str]) -> str:
     (`local_options._one_module`).
     """
     counts: dict[str, int] = {}
+    # Folder-builder metadata never decides a builder for the loader either, so
+    # a couple of metadata.csv cannot outvote the real shards.
+    voting = [p for p in paths if Path(p).name.lower() not in _METADATA_FILENAMES] or paths
     # The same window the loader infers from, so a split whose formats change
     # past it is read as the loader reads it rather than as the whole listing.
-    for path in sorted(paths)[:_MAX_MODULE_INFERENCE_FILES]:
+    for path in sorted(voting)[:_MAX_MODULE_INFERENCE_FILES]:
         suffix = Path(path).suffix.lower()
         counts[suffix] = counts.get(suffix, 0) + 1
     if not counts:
@@ -526,7 +550,14 @@ def _resolve_seed_hf_path(
     # Without a card mapping the subset is only a label on the files. Narrow to
     # the ones carrying it first, so the pattern is checked against those alone
     # and cannot be widened back over another config.
-    scoped = _in_subset(data_files, subset, split.lower())
+    folder = _config_scope(configs or [], subset)
+    scoped = _in_subset(
+        [f for f in data_files if f.startswith(f"{folder}/")] or data_files
+        if folder
+        else data_files,
+        subset,
+        split.lower(),
+    )
     selected = _select_best_file(scoped, split)
     if not selected:
         return None

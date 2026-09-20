@@ -844,6 +844,69 @@ def test_seed_hf_path_keeps_a_subset_written_after_the_split(
     assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset) == expected
 
 
+@pytest.mark.parametrize(
+    ("subset", "expected"),
+    [
+        ("french", "datasets/org/repo/fr/train*.parquet"),
+        ("english", "datasets/org/repo/en/train*.parquet"),
+    ],
+)
+def test_seed_hf_path_scopes_a_config_to_its_data_dir(monkeypatch, tmp_path, subset, expected):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    configs = [
+        {"config_name": "english", "data_dir": "en"},
+        {"config_name": "french", "data_dir": "fr"},
+    ]
+    files = ["en/train.parquet", "en/test.parquet", "fr/train.parquet", "fr/test.parquet"]
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset, configs) == expected
+
+
+def test_seed_hf_path_reads_data_files_relative_to_data_dir(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    configs = [
+        {
+            "config_name": "a",
+            "data_dir": "d",
+            "data_files": [{"split": "train", "path": "train-*.parquet"}],
+        }
+    ]
+    files = ["d/train-0.parquet", "d/test-0.parquet"]
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", "a", configs)
+        == "datasets/org/repo/d/train-*.parquet"
+    )
+
+
+def test_seed_format_vote_ignores_folder_metadata(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "data/*"}]}]
+    files = ["data/metadata.csv", "data/metadata2.csv", "data/shard.parquet"]
+    # metadata.csv never decides a builder for the loader, so it cannot here.
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+        == "datasets/org/repo/data/*.parquet"
+    )
+
+
+@pytest.mark.parametrize(
+    ("subset", "expected"),
+    [
+        ("Foo", "datasets/org/repo/F/train.parquet"),
+        ("foo", "datasets/org/repo/f/train.parquet"),
+    ],
+)
+def test_seed_hf_path_matches_config_names_case_sensitively(
+    monkeypatch, tmp_path, subset, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    configs = [
+        {"config_name": "Foo", "data_files": [{"split": "train", "path": "F/train.parquet"}]},
+        {"config_name": "foo", "data_files": [{"split": "train", "path": "f/train.parquet"}]},
+    ]
+    files = ["F/train.parquet", "f/train.parquet"]
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset, configs) == expected
+
+
 def test_seed_hf_path_treats_an_unnamed_config_as_the_default(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     configs = [
