@@ -261,3 +261,52 @@ def test_local_and_adapter_loads_are_untouched(mapper, hub_cache, overrides):
 
     assert _load_cached_repo_as_named(_config(**overrides), True) is False
     assert mapper.calls == []
+
+
+def test_load_model_hands_the_verdict_to_both_loaders():
+    """Everything above tests the verdict; this tests that anyone receives it.
+
+    Dropping the two keyword arguments restores the download in full and leaves every
+    other test in this file passing, so the wiring needs an assertion of its own. A
+    real ``load_model`` call cannot make it here (no weights, no network, no unsloth),
+    so read the call sites instead: both loaders take the name
+    ``_load_cached_repo_as_named`` was assigned to, inside ``load_model``.
+    """
+    import ast
+
+    source = (_BACKEND / "core/inference/inference.py").read_text(encoding = "utf-8")
+    load_model = next(
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+
+    verdicts = {
+        target.id
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "_load_cached_repo_as_named"
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert verdicts, "load_model never calls _load_cached_repo_as_named"
+
+    forwarded = {
+        node.func.value.id
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "from_pretrained"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id in ("FastLanguageModel", "FastVisionModel")
+        and any(
+            kw.arg == "use_exact_model_name"
+            and isinstance(kw.value, ast.Name)
+            and kw.value.id in verdicts
+            for kw in node.keywords
+        )
+    }
+    assert forwarded == {"FastLanguageModel", "FastVisionModel"}, (
+        f"only {sorted(forwarded)} receive use_exact_model_name"
+    )
