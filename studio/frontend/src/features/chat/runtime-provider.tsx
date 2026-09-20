@@ -65,7 +65,9 @@ import {
 } from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
-  type StoredAttachmentFile,
+  type UploadedAttachmentFile,
+  storedAttachmentFile,
+  toolOnlyAttachmentContent,
   uploadAttachmentFile,
 } from "./stored-attachment";
 import {
@@ -316,15 +318,53 @@ class StoredFileAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const [complete, storedFile] = await Promise.all([
+    const [complete, upload] = await Promise.all([
       this.delegate.send(attachment),
       uploadAttachmentFile(attachment.file),
     ]);
+    const storedFile = upload && storedAttachmentFile(upload);
     // Persisted with the message, so later turns can hand the file to the tool again.
     return storedFile
       ? ({ ...complete, storedFile } as CompleteAttachment)
       : complete;
   }
+}
+
+/** Why the chat model cannot be sent an image, or null when it can. */
+function imageInputUnavailableReason(): string | null {
+  const state = useChatRuntimeStore.getState();
+  const checkpoint = state.params.checkpoint;
+  const externalSelection = parseExternalModelId(checkpoint);
+  const isExternalModel = externalSelection !== null;
+  let externalSupportsVision: boolean | null = null;
+  let externalModelLabel: string | null = null;
+  if (externalSelection !== null) {
+    const providers = loadConnectionsEnabled() ? loadExternalProviders() : [];
+    const provider = providers.find(
+      (p) => p.id === externalSelection.providerId,
+    );
+    externalSupportsVision = providerModelSupportsVision(
+      provider?.providerType,
+      externalSelection.modelId,
+    );
+    externalModelLabel = externalSelection.modelId;
+  }
+  return getImageInputUnavailableReason({
+    activeModel: state.models.find((m) => m.id === checkpoint),
+    isExternalModel,
+    externalSupportsVision,
+    externalModelLabel,
+    loadedIsMultimodal: state.loadedIsMultimodal,
+    modelLoaded: chatModelLoaded({
+      checkpoint,
+      modelLoading: state.modelLoading,
+      isExternalModel,
+      residentCheckpoint: state.residentCheckpoint,
+    }),
+    loadError: state.lastModelLoadError,
+    visionDisabledByUser: state.loadedVisionDisabledByUser,
+    mmprojFallbackReason: state.mmprojFallbackReason,
+  });
 }
 
 class VisionImageAdapter implements AttachmentAdapter {
@@ -337,41 +377,7 @@ class VisionImageAdapter implements AttachmentAdapter {
   }: {
     file: File;
   }): AsyncGenerator<PendingAttachment, void> {
-    const state = useChatRuntimeStore.getState();
-    const checkpoint = state.params.checkpoint;
-    const activeModel = state.models.find((m) => m.id === checkpoint);
-    const externalSelection = parseExternalModelId(checkpoint);
-    const isExternalModel = externalSelection !== null;
-    const modelLoaded = chatModelLoaded({
-      checkpoint,
-      modelLoading: state.modelLoading,
-      isExternalModel,
-      residentCheckpoint: state.residentCheckpoint,
-    });
-    let externalSupportsVision: boolean | null = null;
-    let externalModelLabel: string | null = null;
-    if (externalSelection !== null) {
-      const providers = loadConnectionsEnabled() ? loadExternalProviders() : [];
-      const provider = providers.find(
-        (p) => p.id === externalSelection.providerId,
-      );
-      externalSupportsVision = providerModelSupportsVision(
-        provider?.providerType,
-        externalSelection.modelId,
-      );
-      externalModelLabel = externalSelection.modelId;
-    }
-    const unavailableReason = getImageInputUnavailableReason({
-      activeModel,
-      isExternalModel,
-      externalSupportsVision,
-      externalModelLabel,
-      loadedIsMultimodal: state.loadedIsMultimodal,
-      modelLoaded,
-      loadError: state.lastModelLoadError,
-      visionDisabledByUser: state.loadedVisionDisabledByUser,
-      mmprojFallbackReason: state.mmprojFallbackReason,
-    });
+    const unavailableReason = imageInputUnavailableReason();
     if (unavailableReason) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
@@ -844,7 +850,7 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
   accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;
   private readonly uploads = new Map<
     string,
-    Promise<StoredAttachmentFile | null>
+    Promise<UploadedAttachmentFile | null>
   >();
 
   async *add({
@@ -889,23 +895,28 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     // An incomplete chip is still sent: its failed upload is tried once more here.
-    const storedFile =
+    const upload =
       (await this.uploads.get(attachment.id)) ??
       (await uploadAttachmentFile(attachment.file));
     this.uploads.delete(attachment.id);
+    const storedFile = upload && storedAttachmentFile(upload);
     const complete: CompleteAttachment = {
       id: attachment.id,
       type: "document",
       name: attachment.name,
       contentType: attachment.contentType,
-      content: [
-        {
-          type: "text",
-          text: storedFile
-            ? `[${attachment.name}: only the python tool can read this file]`
-            : `[${attachment.name} could not be uploaded, so it cannot be read]`,
-        },
-      ],
+      content: upload
+        ? toolOnlyAttachmentContent(
+            attachment.name,
+            upload.preview,
+            !imageInputUnavailableReason(),
+          )
+        : [
+            {
+              type: "text",
+              text: `[${attachment.name} could not be uploaded, so it cannot be read]`,
+            },
+          ],
       status: { type: "complete" },
     };
     return storedFile

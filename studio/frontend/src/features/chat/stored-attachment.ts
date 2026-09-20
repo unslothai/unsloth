@@ -5,7 +5,67 @@ import { authFetch } from "@/features/auth/api";
 
 import { isToolOnlyAttachmentName } from "./open-document-accept";
 
-export type StoredAttachmentFile = { id: string; sandboxPath: string };
+/** What the backend could read of the file without the model opening it. */
+export type AttachmentPreview =
+  | { kind: "image"; description: string; image: string }
+  | { kind: "text"; label: string; text: string }
+  | { kind: "outline"; text: string };
+
+export type StoredAttachmentFile = {
+  id: string;
+  sandboxPath: string;
+  /** The preview held the file's own text, which the message now carries. */
+  inlineText?: boolean;
+};
+
+export type UploadedAttachmentFile = StoredAttachmentFile & {
+  preview?: AttachmentPreview;
+};
+
+/** What the message keeps: the preview is its content already, and would be stored twice. */
+export function storedAttachmentFile({
+  id,
+  sandboxPath,
+  preview,
+}: UploadedAttachmentFile): StoredAttachmentFile {
+  return preview?.kind === "text"
+    ? { id, sandboxPath, inlineText: true }
+    : { id, sandboxPath };
+}
+
+type AttachmentContent =
+  | { type: "text"; text: string }
+  | { type: "image"; image: string };
+
+/** What the model sees of such a file: the preview, or the note that the tool has to open it. */
+export function toolOnlyAttachmentContent(
+  name: string,
+  preview: AttachmentPreview | undefined,
+  sendsImages: boolean,
+): AttachmentContent[] {
+  if (!preview) {
+    return [
+      {
+        type: "text",
+        text: `[${name}: only the python tool can read this file]`,
+      },
+    ];
+  }
+  if (preview.kind === "image") {
+    const described: AttachmentContent = {
+      type: "text",
+      text: `[${name}: ${preview.description}]`,
+    };
+    return sendsImages
+      ? [{ type: "image", image: preview.image }, described]
+      : [described];
+  }
+  const header =
+    preview.kind === "text"
+      ? `[${preview.label}: ${name}]`
+      : `[Outline of ${name}]`;
+  return [{ type: "text", text: `${header}\n${preview.text}` }];
+}
 
 type Attachment = {
   name: string;
@@ -13,10 +73,25 @@ type Attachment = {
   storedFile?: StoredAttachmentFile;
 };
 
+/** A response's preview, or nothing when it is not one of the three shapes. */
+function parsePreview(value: unknown): AttachmentPreview | undefined {
+  const preview = value as AttachmentPreview | undefined;
+  const has = (...keys: string[]) =>
+    keys.every(
+      (key) =>
+        typeof (preview as unknown as Record<string, unknown>)[key] ===
+        "string",
+    );
+  if (preview?.kind === "image" && has("description", "image")) return preview;
+  if (preview?.kind === "text" && has("label", "text")) return preview;
+  if (preview?.kind === "outline" && has("text")) return preview;
+  return undefined;
+}
+
 /** Keeps the original bytes for the python tool. Null when that fails, leaving the inline text. */
 export async function uploadAttachmentFile(
   file: File,
-): Promise<StoredAttachmentFile | null> {
+): Promise<UploadedAttachmentFile | null> {
   const form = new FormData();
   form.append("file", file);
   try {
@@ -24,12 +99,12 @@ export async function uploadAttachmentFile(
       method: "POST",
       body: form,
     });
-    const { id, sandboxPath } = (await response.json()) as Record<
+    const { id, sandboxPath, preview } = (await response.json()) as Record<
       string,
       unknown
     >;
     return typeof id === "string" && typeof sandboxPath === "string"
-      ? { id, sandboxPath }
+      ? { id, sandboxPath, preview: parsePreview(preview) }
       : null;
   } catch {
     return null;
@@ -76,7 +151,7 @@ export function withSandboxAttachmentPaths<
     if (!message.attachments?.some(isStored)) return message;
     const attachments = message.attachments.map((attachment) => {
       if (!isStored(attachment)) return attachment;
-      const { id, sandboxPath } = attachment.storedFile;
+      const { id, sandboxPath, inlineText } = attachment.storedFile;
       // Dropped from the request, so it is not told to open a file that was never copied.
       if (!carried.has(sandboxPath)) return attachment;
       if (!listed.has(sandboxPath)) {
@@ -85,10 +160,11 @@ export function withSandboxAttachmentPaths<
         sandboxAttachments.push({ id, name: sandboxPath.split("/").pop()! });
       }
       const reader = sandboxReader(sandboxPath);
-      // A file with inline text says so, or small models reopen it with the tool.
-      const note = isToolOnlyAttachmentName(attachment.name)
-        ? `[${attachment.name} is saved at ${sandboxPath} in the python tool's working directory${reader ? `; open it with ${reader}, where path = ${JSON.stringify(sandboxPath)}` : ""}]`
-        : `[${attachment.name}: its text is below, so answer from it. For calculations, the python tool has the file at path = ${JSON.stringify(sandboxPath)}${reader ? `; ${reader}` : ""}]`;
+      // A file whose text is inline says so; an outline or an image is not its text.
+      const note =
+        isToolOnlyAttachmentName(attachment.name) && !inlineText
+          ? `[${attachment.name} is saved at ${sandboxPath} in the python tool's working directory${reader ? `; open it with ${reader}, where path = ${JSON.stringify(sandboxPath)}` : ""}]`
+          : `[${attachment.name}: its text is below, so answer from it. For calculations, the python tool has the file at path = ${JSON.stringify(sandboxPath)}${reader ? `; ${reader}` : ""}]`;
       return {
         ...attachment,
         content: [{ type: "text", text: note }, ...(attachment.content ?? [])],
