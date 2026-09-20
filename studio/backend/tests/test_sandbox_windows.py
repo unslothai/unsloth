@@ -584,7 +584,8 @@ def test_a_successful_mxc_teardown_stays_quiet(monkeypatch):
     import subprocess as sp
 
     monkeypatch.setattr(
-        sandbox_windows.subprocess, "run",
+        sandbox_windows.subprocess,
+        "run",
         lambda argv, **kwargs: sp.CompletedProcess(argv, 0, b"", b""),
     )
 

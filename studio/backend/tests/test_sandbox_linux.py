@@ -1775,9 +1775,9 @@ def test_a_cache_holding_studio_state_is_not_shared_writable(monkeypatch, tmp_pa
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
 
     assert sandbox_linux._holds_studio_state(str(state)) is True
-    assert sandbox_linux._holds_studio_state(str(tmp_path)) is True, (
-        "an ancestor of the Studio root was not recognised"
-    )
+    assert (
+        sandbox_linux._holds_studio_state(str(tmp_path)) is True
+    ), "an ancestor of the Studio root was not recognised"
     assert sandbox_linux._holds_studio_state(str(tmp_path / "elsewhere")) is False
 
 
@@ -1803,7 +1803,7 @@ def test_the_cache_bind_itself_drops_a_component_holding_studio_state(monkeypatc
     settings = types.ModuleType("utils.hf_cache_settings")
     settings.get_hf_cache_paths = lambda: types.SimpleNamespace(
         cache_home = str(elsewhere),
-        hub_cache = str(state),          # the Studio root itself
+        hub_cache = str(state),  # the Studio root itself
         xet_cache = str(elsewhere / "xet"),
     )
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)

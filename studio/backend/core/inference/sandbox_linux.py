@@ -153,10 +153,7 @@ def _within(path: str, root: str) -> bool:
 def _holds_studio_state(path: str) -> bool:
     """Whether ``path`` IS, or CONTAINS, a Studio state root."""
     real = os.path.realpath(path)
-    return any(
-        _within(real, root) or _within(root, real)
-        for root in studio_state_roots()
-    )
+    return any(_within(real, root) or _within(root, real) for root in studio_state_roots())
 
 
 def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, ...]:
@@ -577,7 +574,8 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         if _holds_studio_state(path):
             logger.warning(
                 "Not sharing the %s cache into the sandbox: it is at or above "
-                "Studio's own state directory", name,
+                "Studio's own state directory",
+                name,
             )
             continue
         # Writable caches need the workdir's host-channel checks, including nested bind mounts.
