@@ -81,10 +81,15 @@ async function refresh(item: SidebarItem): Promise<void> {
         .flatMap((message) => {
           if (message.role !== "user" && message.role !== "assistant")
             return [];
-          const text = message.content
-            .filter((part) => part.type === "text")
-            .map((part) => part.text)
-            .join("\n");
+          const text =
+            typeof message.content === "string"
+              ? message.content
+              : Array.isArray(message.content)
+                ? message.content
+                    .filter((part) => part.type === "text")
+                    .map((part) => part.text)
+                    .join("\n")
+                : "";
           const sample =
             message.role === "user"
               ? attachmentsSample(message.attachments)

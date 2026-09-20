@@ -254,3 +254,23 @@ test("long multilingual transcripts fit the loaded context and keep the latest t
   assert.ok(transcript.includes("liability clause"));
   assert.ok(transcript.includes("renewal terms"));
 });
+
+test("legacy string content contributes to the refreshed title", async () => {
+  state.messages = JSON.parse(
+    JSON.stringify(
+      state.messages.map((row) => ({
+        ...row,
+        content: row.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("\n"),
+      })),
+    ),
+  );
+  await refreshChatTitle(item);
+  const transcript = state.requests[0].messages[1].content;
+  assert.ok(transcript.includes("follow-up email"));
+  assert.ok(transcript.includes("liability clause"));
+  assert.ok(transcript.includes("renewal terms"));
+  assert.equal(state.threads[0].title, "Contract Negotiation");
+});
