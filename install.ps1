@@ -1933,6 +1933,9 @@ function Install-UnslothStudio {
     # notice runs and would therefore clear it. Under `irm | iex` the script scope IS the caller's
     # session, so a stale value from a previous run has to be cleared somewhere.
     $script:StudioRollbackCostsFullSize = $false
+    # Bounded WMI answer, taken at most once per run. Reset here for the same reason as the rest
+    # of this block: under `irm | iex` the script scope IS the caller's session.
+    $script:StudioVolumeList = $null
     # Set by the --no-rollback discard when the environment it is about to delete reports XPU,
     # read by the Intel scan once that tree is gone.
     $script:StudioPreservedXpuVerdict = $false
@@ -2810,13 +2813,43 @@ exit 1
         try { return (Get-StudioFinalPath -Path $Path) } catch { return $Path }
     }
 
+    # Bounded and cached, for the reason Invoke-BoundedVideoControllerScan already documents: a
+    # degraded WMI repository can block a CIM query indefinitely, -ErrorAction only suppresses
+    # errors that get reported and try/catch only catches a query that eventually returns, so out
+    # of process with a wall-clock kill is the only bound that holds. This one is advisory -- it
+    # decides the wording of a disk warning -- and it runs before the venv exists, so a hang here
+    # would wedge an install that had nothing wrong with it. Cached because the answer cannot
+    # change during one install and every volume question below consults it; a timeout caches the
+    # empty answer too, so a broken repository is paid for once rather than once per question.
+    function Get-StudioVolumeList {
+        if ($null -ne $script:StudioVolumeList) { return $script:StudioVolumeList }
+        $script:StudioVolumeList = @()
+        $job = $null
+        try {
+            $job = Start-Job -ScriptBlock {
+                Get-CimInstance -ClassName Win32_Volume -ErrorAction SilentlyContinue |
+                    Select-Object Name, DeviceID, FreeSpace
+            }
+            if (Wait-Job -Job $job -Timeout 15) {
+                $script:StudioVolumeList = @(Receive-Job -Job $job -ErrorAction SilentlyContinue |
+                    Where-Object { $_ -and $_.Name })
+            } else {
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
+            }
+        } catch {
+        } finally {
+            if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+        }
+        return $script:StudioVolumeList
+    }
+
     function Get-StudioMountedVolume {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
         if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) { return $null }
         try {
             return (Select-StudioVolumeForPath -Path (Resolve-StudioVolumeQueryPath -Path $Path) `
-                -Volumes @(Get-CimInstance -ClassName Win32_Volume -ErrorAction Stop))
+                -Volumes (Get-StudioVolumeList))
         } catch { return $null }
     }
 

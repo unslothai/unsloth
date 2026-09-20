@@ -284,6 +284,21 @@ try {
         Check "off Windows the probe answers nothing" ($null -eq $probed)
     }
     Check "and an empty path is not an error" ($null -eq (Get-StudioMountedVolume -Path ""))
+    # The WMI answer is advisory and runs before the venv exists, so it must be bounded and taken
+    # once. A degraded repository is what the bound is for; what is checkable here is that the
+    # call returns rather than hanging, never throws, and is not repeated.
+    $script:StudioVolumeList = $null
+    $listThrew = $false
+    $t0 = [System.Diagnostics.Stopwatch]::StartNew()
+    try { $null = Get-StudioVolumeList } catch { $listThrew = $true }
+    $firstMs = $t0.ElapsedMilliseconds
+    Check "the volume query returns rather than hanging" (-not $listThrew -and $firstMs -lt 60000)
+    $t0.Restart()
+    $null = Get-StudioVolumeList
+    Check "and is answered from the cache the second time" ($t0.ElapsedMilliseconds -lt $firstMs + 50)
+    Check "a query that answered nothing still caches an answer" (
+        $null -ne $script:StudioVolumeList)
+    $script:StudioVolumeList = $null
     # A link must be measured as the volume it points at, not the one it lives on. On one
     # filesystem the two numbers agree either way, so what this proves is that the resolution
     # happens at all and costs nothing: a helper that threw, or answered $null through a link,

@@ -1734,3 +1734,36 @@ class TestNoRollbackDoesNotNarrowDeviceDetection:
         assert text.index("function Invoke-BoundedPythonProbe") < text.index(
             "function Start-StudioVenvRollback"
         ), "Invoke-BoundedPythonProbe is defined after the function that calls it"
+
+
+class TestTheVolumeQueryIsBounded:
+    """install.ps1 documents, in Invoke-BoundedVideoControllerScan, that a CIM query can block
+    forever on a degraded WMI repository and that -ErrorAction and try/catch do not bound it.
+    The Win32_Volume lookup runs on every Windows install before the venv exists and only decides
+    the wording of a disk warning, so it takes the same treatment (#11313)."""
+
+    def test_it_runs_out_of_process_with_a_deadline(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Get-StudioVolumeList", 1)[1].split(
+            "function Get-StudioMountedVolume", 1
+        )[0]
+        assert "Start-Job" in helper and "Wait-Job" in helper and "-Timeout" in helper, (
+            "the Win32_Volume query is not bounded by a wall-clock deadline"
+        )
+        assert "Stop-Job" in helper, "a query past its deadline is never killed"
+
+    def test_nothing_queries_win32_volume_unbounded(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Get-StudioVolumeList", 1)[1].split(
+            "function Get-StudioMountedVolume", 1
+        )[0]
+        # Exactly one call site, and it is the bounded one.
+        assert text.count("Win32_Volume") == helper.count("Win32_Volume") + 1, (
+            "Win32_Volume is queried somewhere other than the bounded helper"
+        )
+
+    def test_the_answer_is_taken_once(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "$script:StudioVolumeList = $null" in text, (
+            "the cached volume list is never reset, so `irm | iex` reuses a previous run's answer"
+        )
