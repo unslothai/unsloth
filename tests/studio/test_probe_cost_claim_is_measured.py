@@ -122,27 +122,45 @@ def test_the_timeout_is_still_explained_as_the_hung_cell_bound():
     )
 
 
-def test_the_occupancy_claim_is_a_measured_one():
-    """Seconds, and said to be measured, in the sentence that makes the claim.
+# "holds it for about five seconds": the verb, then the duration it governs. Parsed
+# rather than searched for, because the unit ON THIS duration is the whole claim. A
+# nearby seconds figure is not the same thing: "holds it for about five MINUTES ...
+# median 4s" reinstates the overstatement while leaving every loose match satisfied.
+_HOLD_CLAIM = re.compile(
+    r"\bhold\w*\b[^.]{0,80}?\bfor\s+(?:about\s+|roughly\s+|around\s+|~\s*)?"
+    r"(?P<value>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*"
+    r"(?P<unit>seconds?|s\b|minutes?|mins?\b|hours?|hrs?\b)",
+    re.I,
+)
 
-    Read from where the rationale says what a cell HOLDS, not from the comment as a
-    whole: the queue figures further down are also measured and also in seconds, so a
-    check over the whole text passes with the occupancy claim removed entirely. That is
-    how this test first passed its own sabotage.
+_SECONDS = re.compile(r"^(seconds?|s)$", re.I)
+
+
+def test_the_occupancy_claim_is_a_measured_one():
+    """Seconds, and said to be measured, both read off the claim itself.
+
+    Neither is checked over a window. The queue figures further down are also measured
+    and also in seconds, so a window check passes with the occupancy claim removed
+    entirely, and it passes with the claim changed to minutes while a stale `median 4s`
+    sits behind it. Both of those were found by sabotaging this test, in that order.
     """
     rationale = _rationale()
-    holds = re.search(r"\bhold(s|ing)?\b", rationale, re.I)
-    assert holds, (
-        f"{WORKFLOW.name} no longer says how long a cell holds its runner. Without that "
-        f"the timeout is the only number in reach, which is how the wrong one got quoted "
-        f"in the first place"
+    claim = _HOLD_CLAIM.search(rationale)
+    assert claim, (
+        f"{WORKFLOW.name} no longer says how long a cell holds its runner, in the form "
+        f"'holds it for <duration>'. Without that the timeout is the only number in "
+        f"reach, which is how the wrong one got quoted in the first place"
     )
-    claim = rationale[holds.start() : holds.start() + 300]
-    assert re.search(r"\b(\d+\s*s\b|\d+\s*seconds?\b|five seconds)", claim, re.I), (
-        f"the occupancy claim gives no seconds-scale figure: {claim!r}. A cell runs one "
-        f"echo, so this is the number that keeps the timeout from being read as the cost"
+    unit = claim.group("unit")
+    assert _SECONDS.match(unit), (
+        f"the occupancy claim is {claim.group('value')} {unit}: {claim.group(0)!r}. A "
+        f"cell runs one echo and was measured at four, so anything but seconds here is "
+        f"the overstatement this guard exists to catch"
     )
-    assert re.search(r"measured|median", claim, re.I), (
-        f"the occupancy claim has no sign it was observed: {claim!r}. Both costs this "
+    # The provenance has to belong to this claim, so read to the end of its sentence.
+    sentence_end = rationale.find(".", claim.end())
+    sentence = rationale[claim.start() : sentence_end if sentence_end != -1 else len(rationale)]
+    assert re.search(r"measured|median", sentence, re.I), (
+        f"the occupancy claim has no sign it was observed: {sentence!r}. Both costs this "
         f"comment gave before were plausible numbers nobody had measured"
     )
