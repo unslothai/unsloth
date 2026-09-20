@@ -3645,6 +3645,11 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
+    # Saves setup.ps1 the process walk. A HINT, not a promise: only the desktop spawn guarantees
+    # the managed venv's python, while a pip install, a checkout or a staged run puts an
+    # interpreter here that is nowhere near $VenvDir. Get-SetupHostInterpreterInVenv tests
+    # containment itself, so presence of this name is never proof setup runs from the venv.
+    env = {**(env or os.environ), "UNSLOTH_SETUP_HOST_PYTHON": sys.executable}
 
     if platform.system() == "Windows":
         # Resolved, not bare: PATH is not trusted here (#9440) and the Popen below has no OSError handler.

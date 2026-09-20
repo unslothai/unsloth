@@ -250,9 +250,19 @@ export const en = {
   settings: {
     accounts: {
       title: "Accounts",
-      description: "Create private Unsloth Studio accounts. New users sign in with a one-time setup code and choose a password.",
+      description: "Create private Unsloth accounts. New users sign in with a one-time setup code and choose a password.",
       username: "Username",
       create: "Create account",
+      createDescription: "Share a setup code so they can choose their own password.",
+      actionsFor: "Manage {username}",
+      actions: "Actions",
+      search: "Search accounts",
+      noResults: "No matching accounts",
+      created: "Created",
+      status: "Status",
+      loginHint: "Sign in as {username} with this code as the password, then choose a new password.",
+      privateAccount: "Private account",
+      empty: "No other accounts yet",
       setupCode: "Setup code",
       setupFor: "Setup code for {username}",
       shownOnce: "Copy this code now and share it with the account holder. It is shown only here and can be used once within 60 minutes.",
@@ -262,13 +272,13 @@ export const en = {
       copyFailed: "Could not copy. Select and copy the setup code above.",
       dismiss: "Done",
       owner: "Installation owner",
-      active: "Active",
-      inactive: "Inactive",
+      active: "Enabled",
+      inactive: "Disabled",
       regenerate: "Regenerate setup code",
       resetTitle: "Reset {username}'s password?",
       resetDescription: "Regenerating the setup code replaces {username}'s password, signs them out and revokes their API keys. Give them the new code so they can choose a password again.",
-      deactivate: "Deactivate",
-      reactivate: "Reactivate",
+      deactivate: "Disable",
+      reactivate: "Enable",
       delete: "Delete account",
       deleteTitle: "Delete {username}?",
       deleteDescription: "This revokes {username}'s sessions and cancels their work. Their chats, settings, credentials, uploads, datasets, training runs, outputs, exports, galleries, sandboxes, projects and temporary files are retired. Directories are renamed aside, never deleted. Creating this username again starts a fresh account with none of this data.",
@@ -306,6 +316,9 @@ export const en = {
     keyboardShortcuts: {
       title: "Keyboard shortcuts",
       searchPlaceholder: "Search shortcuts…",
+      keystrokePlaceholder: "Press shortcut to search",
+      searchByKeystrokes: "Search by keystrokes",
+      searchByName: "Search by name",
       noResults: "No shortcuts match that search.",
       unassigned: "Unassigned",
       recording: "Press keys…",
@@ -576,7 +589,7 @@ export const en = {
       openLogsFolderFailed: "Could not open the logs folder.",
       exportFailed: "Could not download the logs.",
       exportTooOld: "Running Unsloth backend is too old to export logs. Update that backend and restart.",
-      exportForbidden: "Downloading all logs needs a signed-in Unsloth Studio session. An API key is not enough.",
+      exportForbidden: "Downloading all logs needs a signed-in Unsloth session. An API key is not enough.",
       // Not rendered: extra terms the settings search matches this tab on.
       keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
@@ -877,6 +890,9 @@ export const en = {
         showLoadedModels: "Loaded models indicator",
         showLoadedModelsDescription:
           "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
+        showWhisperUpdates: "whisper.cpp update notifications",
+        showWhisperUpdatesDescription:
+          "Notify when a newer whisper.cpp build is available for speech-to-text models. Turn off if you never transcribe audio.",
       },
       startup: {
         sectionTitle: "Startup",
@@ -1943,7 +1959,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "Run `unsloth studio update` from the terminal that started your server.",
+          "The app connected to an already-running Studio server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",

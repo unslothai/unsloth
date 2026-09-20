@@ -97,6 +97,11 @@ function harness(
     {
       react,
       "@/features/native-intents": {},
+      // No desktop update is running in these: every failure here is a real one and must report.
+      "@/lib/desktop-update-activity": {
+        isBackendDownForDesktopUpdate: () => false,
+        isSilencedDesktopUpdateFailure: () => false,
+      },
       "@/lib/toast": {
         toast: {
           error: (message: string) => errors.push(message),
