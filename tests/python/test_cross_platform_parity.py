@@ -1957,13 +1957,14 @@ class TestWindowsJudgesTheTreeNotTheRun:
     def test_the_gate_consults_the_previous_cache(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert "function Test-StudioPreviousCacheIsGone" in text
-        assert "$script:StudioUvMarkerPrevious" in text.split(
-            "function Test-StudioPreviousCacheIsGone", 1
-        )[1].split("\n    }", 1)[0], "the helper does not read the previous run's marker"
+        assert (
+            "$script:StudioUvMarkerPrevious"
+            in text.split("function Test-StudioPreviousCacheIsGone", 1)[1].split("\n    }", 1)[0]
+        ), "the helper does not read the previous run's marker"
 
     def test_the_rollback_gate_uses_it(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         before = text.split("if ((-not $script:StudioNoRollback) -and", 1)[0][-700:]
-        assert "Test-StudioPreviousCacheIsGone" in before, (
-            "the rollback warning still decides from this run's cache mode alone"
-        )
+        assert (
+            "Test-StudioPreviousCacheIsGone" in before
+        ), "the rollback warning still decides from this run's cache mode alone"
