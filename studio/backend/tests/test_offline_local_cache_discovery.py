@@ -931,9 +931,7 @@ def test_a_dataset_preview_records_only_where_it_could_fetch(
     # stubbed off, so both legs end in an error and only the ledger is read here.
     with contextlib.suppress(Exception):
         formatting.check_format_response(
-            CheckFormatRequest(
-                dataset_name = "acme/ds", prefer_local_cache = prefer_local_cache
-            ),
+            CheckFormatRequest(dataset_name = "acme/ds", prefer_local_cache = prefer_local_cache),
             "hf_a_one_off",
         )
 
