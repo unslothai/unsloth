@@ -172,3 +172,65 @@ test("metadata work is bounded and cancellation closes the source iterator", asy
   assert.equal(active, 0);
   assert.equal(closed, true);
 });
+
+test("context filters inspect supported language wrappers recursively", () => {
+  for (const key of ["llm_config", "language_config", "thinker_config"]) {
+    assert.equal(
+      modelContextLength({
+        [key]: { text_config: { max_position_embeddings: 32768 } },
+      }),
+      32768,
+    );
+  }
+  assert.equal(
+    modelContextLength({
+      llm_config: { max_position_embeddings: 32768 },
+      max_position_embeddings: 256,
+    }),
+    32768,
+  );
+});
+
+test("an exact publisher match is filtered and pinned ahead of a sparse listing", async () => {
+  const pinned = {
+    name: "publisher/model",
+    gguf: { total: 4e9, context_length: 32768 },
+  };
+  const rows = [
+    ...Array.from({ length: 200 }, (_, i) => ({
+      name: `user/${i}`,
+      gguf: { total: 70e9 },
+    })),
+    pinned,
+  ];
+  const iter = filterModelListing(
+    listing(rows),
+    { maxParams: 8e9, minContext: 32768 },
+    noFetch,
+    Promise.resolve(pinned),
+  );
+  assert.deepEqual((await iter.next()).value, pinned);
+  assert.equal((await collect(iter)).filter(Boolean).length, 0);
+  const excluded = await collect(
+    filterModelListing(
+      listing([]),
+      { maxParams: 2e9 },
+      noFetch,
+      Promise.resolve(pinned),
+    ),
+  );
+  assert.deepEqual(excluded.filter(Boolean), []);
+});
+
+test("an incomplete pinned response does not hide a matching listing entry", async () => {
+  const model = { name: "publisher/model-GGUF", gguf: { total: 4e9 } };
+  const output = await collect(
+    filterModelListing(
+      listing([model]),
+      { maxParams: 8e9 },
+      noFetch,
+      Promise.resolve({ name: model.name }),
+    ),
+  );
+  assert.deepEqual(output.filter(Boolean), [model]);
+});

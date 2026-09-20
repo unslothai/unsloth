@@ -4,7 +4,7 @@
 import { usePlatformStore } from "@/config/env";
 import { getHfEndpoint, useHfEndpoint } from "@/lib/hf-endpoint";
 import type { PipelineType } from "@huggingface/hub";
-import { listModels } from "@huggingface/hub";
+import { listModels, modelInfo } from "@huggingface/hub";
 import {
   startTransition,
   useCallback,
@@ -692,25 +692,40 @@ export function useHubModelSearch(
           },
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
-        return filterModelListing(iterator, filters, async (path) => {
-          const response = await fetchWithTimeout(
-            `${hfEndpoint}${path}`,
-            {
-              signal,
-              ...(accessToken
-                ? { headers: { Authorization: `Bearer ${accessToken}` } }
-                : {}),
-            },
-            HF_SEARCH_TIMEOUT_MS,
-          );
-          if ([401, 403, 404].includes(response.status)) return null;
-          if (!response.ok) {
-            throw new Error(
-              `Model filter metadata request failed (HTTP ${response.status})`,
+        const pinnedPromise =
+          pinnedId && !unslothOnly && !channelOwner && !channelTagsKey && !channelQuery
+            ? modelInfo({
+                hubUrl: hfEndpoint,
+                name: pinnedId,
+                additionalFields: ALL_FIELDS,
+                fetch: makeHfFetch(signal),
+                ...(accessToken ? { credentials: { accessToken } } : {}),
+              }).catch(() => null)
+            : undefined;
+        return filterModelListing(
+          iterator,
+          filters,
+          async (path) => {
+            const response = await fetchWithTimeout(
+              `${hfEndpoint}${path}`,
+              {
+                signal,
+                ...(accessToken
+                  ? { headers: { Authorization: `Bearer ${accessToken}` } }
+                  : {}),
+              },
+              HF_SEARCH_TIMEOUT_MS,
             );
-          }
-          return response.json();
-        });
+            if ([401, 403, 404].includes(response.status)) return null;
+            if (!response.ok) {
+              throw new Error(
+                `Model filter metadata request failed (HTTP ${response.status})`,
+              );
+            }
+            return response.json();
+          },
+          pinnedPromise,
+        );
       }
       // Channel scoping bypasses the unsloth-merge iterator: a hard owner/tag filter shows that slice.
       if (channelOwner || channelTagsKey || channelQuery) {

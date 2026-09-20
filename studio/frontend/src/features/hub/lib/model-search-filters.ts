@@ -33,16 +33,23 @@ function positiveNumber(value: unknown): number | undefined {
 export function modelContextLength(
   config: Record<string, unknown>,
 ): number | undefined {
-  const text = config.text_config;
-  const source =
-    text && typeof text === "object"
-      ? (text as Record<string, unknown>)
-      : config;
+  for (const key of [
+    "text_config",
+    "llm_config",
+    "language_config",
+    "thinker_config",
+  ]) {
+    const nested = config[key];
+    if (nested && typeof nested === "object") {
+      const context = modelContextLength(nested as Record<string, unknown>);
+      if (context !== undefined) return context;
+    }
+  }
   return (
-    positiveNumber(source.max_position_embeddings) ??
-    positiveNumber(source.n_positions) ??
-    positiveNumber(source.max_seq_len) ??
-    positiveNumber(source.seq_length)
+    positiveNumber(config.max_position_embeddings) ??
+    positiveNumber(config.n_positions) ??
+    positiveNumber(config.max_seq_len) ??
+    positiveNumber(config.seq_length)
   );
 }
 
@@ -71,6 +78,7 @@ export async function* filterModelListing(
   iterator: AsyncGenerator<unknown>,
   filters: ModelSearchFilters,
   fetchJson: JsonFetch,
+  pinnedModel?: Promise<unknown | null>,
 ): AsyncGenerator<unknown> {
   const owners = new Map<string, Promise<boolean>>();
   async function filter(raw: unknown): Promise<ListingModel | null> {
@@ -107,6 +115,10 @@ export async function* filterModelListing(
       : null;
   }
   try {
+    const pinned = await pinnedModel;
+    const filteredPinned = pinned ? await filter(pinned) : null;
+    const pinnedName = filteredPinned?.name;
+    if (pinned) yield filteredPinned;
     while (true) {
       const batch: unknown[] = [];
       let done = false;
@@ -119,7 +131,14 @@ export async function* filterModelListing(
         batch.push(next.value);
       }
       // preserve rejected rows so pagination's scan limit still bounds sparse searches.
-      for (const model of await Promise.all(batch.map(filter))) yield model;
+      for (const model of await Promise.all(
+        batch.map((raw) =>
+          pinnedName && (raw as ListingModel).name === pinnedName
+            ? null
+            : filter(raw),
+        ),
+      ))
+        yield model;
       if (done) return;
     }
   } finally {
