@@ -1994,7 +1994,8 @@ class TestWindowsJudgesTheTreeNotTheRun:
         about a different tree, and the next reinstall would warn about one that was hardlinked."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         gate = text.split("function Start-StudioVenvRollback", 1)[1].split(
-            "if ((-not $script:StudioNoRollback)", 1)[0]
+            "if ((-not $script:StudioNoRollback)", 1
+        )[0]
         assert (
             "$script:StudioRollbackCostsFullSize =" not in gate
         ), "the rollback gate still writes this run's verdict from the old tree's"
