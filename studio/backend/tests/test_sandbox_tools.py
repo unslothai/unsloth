@@ -3086,8 +3086,7 @@ class TestComprehensionIterableAndAliasOrder:
         # Python evaluates it before the comprehension scope exists, so the target does not shadow
         # the enclosing name it reads.
         _blocked(
-            'import os, requests\nurl = os.environ["TARGET"]\n'
-            "[x for url in requests.get(url)]",
+            'import os, requests\nurl = os.environ["TARGET"]\n' "[x for url in requests.get(url)]",
             expect_phrase = "Blocked: request target is read from the environment or input",
         )
 
@@ -3174,12 +3173,12 @@ class TestContextManagersWalrusesAndTheVersionFloor:
 
         reloaded = importlib.reload(tools_module)
         try:
-            assert reloaded._check_code_safety('import requests\nrequests.get("https://hf.co")') is None
+            assert (
+                reloaded._check_code_safety('import requests\nrequests.get("https://hf.co")')
+                is None
+            )
             assert "cloud-metadata host" in (
-                reloaded._check_code_safety(
-                    f'import requests as r\nr.get("{_METADATA_URL}")'
-                )
-                or ""
+                reloaded._check_code_safety(f'import requests as r\nr.get("{_METADATA_URL}")') or ""
             )
         finally:
             monkeypatch.undo()
@@ -3214,8 +3213,7 @@ def outer():
         "code",
         [
             pytest.param(
-                "import requests\ns = requests.Session()\n"
-                's.get_adapter("https://example.com/")',
+                "import requests\ns = requests.Session()\n" 's.get_adapter("https://example.com/")',
                 id = "get_adapter",
             ),
             pytest.param(

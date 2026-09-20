@@ -16268,9 +16268,7 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(node, ast.ClassDef):
                 outer = list(node.decorator_list) + list(node.bases)
                 outer += [kw.value for kw in node.keywords]
-                return [(child, scope) for child in outer] + [
-                    (child, inner) for child in node.body
-                ]
+                return [(child, scope) for child in outer] + [(child, inner) for child in node.body]
             if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
                 # The leftmost iterable is evaluated before the comprehension scope exists.
                 pairs = []
@@ -16418,7 +16416,13 @@ def _check_signal_escape_patterns(code: str):
         def _position(node) -> tuple:
             return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
 
-        def _mark(self, name: "str | None", scope, node = None, is_alias = False) -> None:
+        def _mark(
+            self,
+            name: "str | None",
+            scope,
+            node = None,
+            is_alias = False,
+        ) -> None:
             if name and self._raw_mode:
                 self._raw_bound.add((scope, name))
                 return
