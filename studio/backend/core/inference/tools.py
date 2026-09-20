@@ -16007,6 +16007,10 @@ def _check_signal_escape_patterns(code: str):
         if not host:
             return ""
         h = host.strip().lower().rstrip(".")
+        # A backslash ends the authority for the HTTP clients (requests percent-encodes it into the
+        # path), so "169.254.169.254\@huggingface.co" reaches the metadata IP while reading like
+        # userinfo. Cut there first, or the userinfo strip below hands back the decoy host.
+        h = h.split("\\", 1)[0].rstrip(".")
         if "@" in h:
             h = h.split("@", 1)[1]
         if h.startswith("[") and "]" in h:
@@ -16095,8 +16099,8 @@ def _check_signal_escape_patterns(code: str):
         owner, _, method = fq.rpartition(".")
         return bool(owner) and method in _HTTP_METHOD_NAMES and owner in _URL_OWNERS
 
-    def _canonical_fq(func_node, bindings) -> str:
-        """Dotted call name, with import aliases and session variables resolved to real names."""
+    def _written_fq(func_node) -> str:
+        """The dotted call name exactly as the source spells it."""
         parts: list[str] = []
         cur = func_node
         while isinstance(cur, ast.Attribute):
@@ -16104,68 +16108,138 @@ def _check_signal_escape_patterns(code: str):
             cur = cur.value
         if isinstance(cur, ast.Name):
             parts.insert(0, cur.id)
-        if not parts:
-            return ""
+        return ".".join(parts) if parts else ""
+
+    def _call_fq_names(func_node, bindings) -> "list[str]":
+        """Every name this call answers to: as written, and with aliases and session variables
+        resolved. Both are policed, because resolving is only ever allowed to ADD a match. A rewrite
+        that replaced the written name could lose one: `from requests import api as requests` turns
+        `requests.get` into `requests.api.get`, which no network prefix matches even though the
+        call is exactly requests.get."""
+        written = _written_fq(func_node)
+        if not written:
+            return []
+        parts = written.split(".")
         head = parts[0]
+        resolved = None
         if len(parts) == 1:
-            return bindings.funcs.get(head, head)
-        for table in (bindings.sessions, bindings.modules, bindings.funcs):
-            if head in table:
-                return ".".join([table[head]] + parts[1:])
-        return ".".join(parts)
+            resolved = bindings.funcs.get(head)
+        else:
+            for table in (bindings.sessions, bindings.modules, bindings.funcs):
+                if head in table:
+                    resolved = ".".join([table[head]] + parts[1:])
+                    break
+        return [written] if resolved is None or resolved == written else [resolved, written]
+
+    def _canonical_fq(func_node, bindings) -> str:
+        """The resolved name when there is one, else the name as written."""
+        names = _call_fq_names(func_node, bindings)
+        return names[0] if names else ""
 
     class _NameBindings(ast.NodeVisitor):
-        """Import aliases and single-assignment string / session bindings for the module.
+        """Import aliases and single-assignment string / session bindings, per scope.
 
         Imports are collected first so an alias is known before the assignment that uses it. A name
-        bound more than once, or bound by a loop / with / except / comprehension target, a function
-        parameter or a def, resolves to nothing: sandboxed code must not be able to launder a
-        blocked URL through a rebind."""
+        bound more than once, or bound by a loop / with / except / comprehension / match target, a
+        parameter, a def or a del, resolves to nothing: sandboxed code must not be able to launder
+        a blocked URL through a rebind. Bindings are keyed by the scope that made them, so an
+        assignment inside a function never answers for a name used outside it.
+
+        The alias and session tables stay flat. Resolving one of those only ever adds a name the
+        policy checks, so reading a function-local import at module level costs nothing but an
+        extra check; a wrong string binding, by contrast, would vouch for a host."""
 
         def __init__(self):
             self.modules: dict[str, str] = {}
             self.funcs: dict[str, str] = {}
-            self.strings: dict[str, ast.AST] = {}
+            self.strings: dict[tuple, ast.AST] = {}
             # Every value ever assigned to a name, single-assignment or not. Resolution only trusts
             # a name bound once, but "where did this value come from" has to see them all: a rebind
             # must not be able to hide that one of them reads the environment.
-            self.all_values: dict[str, list] = {}
+            self.all_values: dict[tuple, list] = {}
             self.sessions: dict[str, str] = {}
-            self._counts: dict[str, int] = {}
-            self._candidates: dict[str, ast.AST] = {}
+            self._counts: dict[tuple, int] = {}
+            self._candidates: dict[tuple, ast.AST] = {}
+            self._scope_of: dict[int, object] = {}
+            self._scope_parent: dict[object, object] = {}
 
-        def _mark(self, name: "str | None") -> None:
+        def _walk_scoped(self, root):
+            """Every node with the scope it sits in: None for module level, else id(def node)."""
+            stack = [(root, None)]
+            while stack:
+                node, scope = stack.pop()
+                self._scope_of[id(node)] = scope
+                inner = scope
+                if isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+                ):
+                    inner = id(node)
+                    self._scope_parent[inner] = scope
+                for child in ast.iter_child_nodes(node):
+                    stack.append((child, inner))
+                yield node, scope
+
+        def _chain(self, node) -> list:
+            """Scopes that can answer for a name used at *node*, innermost first."""
+            scope = self._scope_of.get(id(node))
+            chain = []
+            while scope is not None:
+                chain.append(scope)
+                scope = self._scope_parent.get(scope)
+            chain.append(None)
+            return chain
+
+        def string_for(self, name: str, node):
+            """The value bound to *name* where *node* uses it, or None when nothing is trusted."""
+            for scope in self._chain(node):
+                key = (scope, name)
+                if key in self.strings:
+                    return self.strings[key]
+                if key in self._counts:
+                    # Bound in this scope but not trusted: it shadows anything further out.
+                    return None
+            return None
+
+        def values_for(self, name: str, node) -> list:
+            out = []
+            for scope in self._chain(node):
+                out.extend(self.all_values.get((scope, name), ()))
+            return out
+
+        def _mark(self, name: "str | None", scope) -> None:
             if name:
-                self._counts[name] = self._counts.get(name, 0) + 1
+                key = (scope, name)
+                self._counts[key] = self._counts.get(key, 0) + 1
 
-        def _bind(self, target, value) -> None:
+        def _bind(self, target, value, scope) -> None:
             if isinstance(target, ast.Name):
-                self._mark(target.id)
-                self._candidates.setdefault(target.id, value)
+                self._mark(target.id, scope)
+                self._candidates.setdefault((scope, target.id), value)
                 if value is not None:
-                    self.all_values.setdefault(target.id, []).append(value)
+                    self.all_values.setdefault((scope, target.id), []).append(value)
                 return
             # Only a Name, or a Name inside a tuple / list / star target, is rebound. `d[u] = 1` and
             # `obj.u = 1` read `u` and `obj`, they do not rebind them, so counting those names would
             # discard a binding that is still good.
             if isinstance(target, ast.Starred):
-                self._bind(target.value, None)
+                self._bind(target.value, None, scope)
             elif isinstance(target, (ast.Tuple, ast.List)):
                 for element in target.elts:
-                    self._bind(element, None)
+                    self._bind(element, None, scope)
 
         def collect(self, tree) -> "_NameBindings":
-            for node in ast.walk(tree):
+            scoped = list(self._walk_scoped(tree))
+            for node, scope in scoped:
                 if isinstance(node, ast.Import):
                     for alias in node.names:
-                        self._mark(alias.asname or alias.name.split(".")[0])
+                        self._mark(alias.asname or alias.name.split(".")[0], scope)
                         # Without `as`, the bound name is already the canonical head of the FQ name.
                         if alias.asname and alias.name in _NET_MODULES:
                             self.modules[alias.asname] = alias.name
                 elif isinstance(node, ast.ImportFrom):
                     for alias in node.names:
                         local = alias.asname or alias.name
-                        self._mark(local)
+                        self._mark(local, scope)
                         if node.level or node.module is None:
                             continue
                         fq = f"{node.module}.{alias.name}"
@@ -16173,57 +16247,65 @@ def _check_signal_escape_patterns(code: str):
                             self.modules[local] = fq
                         elif node.module in _NET_MODULES:
                             self.funcs[local] = fq
-            for node in ast.walk(tree):
-                if isinstance(node, ast.MatchAs) or isinstance(node, ast.MatchStar):
-                    self._mark(node.name)
+            for node, scope in scoped:
+                if isinstance(node, (ast.MatchAs, ast.MatchStar)):
+                    self._mark(node.name, scope)
                 elif isinstance(node, ast.MatchMapping):
-                    self._mark(node.rest)
+                    self._mark(node.rest, scope)
                 elif type(node).__name__ == "TypeAlias":  # 3.12+, absent on the floor
-                    self._mark(getattr(getattr(node, "name", None), "id", None))
+                    self._mark(getattr(getattr(node, "name", None), "id", None), scope)
                 if isinstance(node, ast.Assign):
                     for target in node.targets:
-                        self._bind(target, node.value)
+                        self._bind(target, node.value, scope)
                 elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
                     if node.value is not None:
-                        self._bind(node.target, node.value)
+                        self._bind(node.target, node.value, scope)
                 elif isinstance(node, ast.AugAssign):
-                    self._bind(node.target, None)
+                    self._bind(node.target, None, scope)
                 elif isinstance(node, (ast.For, ast.AsyncFor)):
-                    self._bind(node.target, None)
+                    self._bind(node.target, None, scope)
                 elif isinstance(node, ast.comprehension):
-                    self._bind(node.target, None)
+                    self._bind(node.target, None, scope)
                 elif isinstance(node, ast.withitem):
                     if node.optional_vars is not None:
-                        self._bind(node.optional_vars, None)
+                        self._bind(node.optional_vars, None, scope)
+                elif isinstance(node, ast.Delete):
+                    # The name is gone at runtime; whatever a later lookup finds is not this value.
+                    for target in node.targets:
+                        self._bind(target, None, scope)
                 elif isinstance(node, ast.ExceptHandler):
-                    self._mark(node.name)
+                    self._mark(node.name, scope)
                 elif isinstance(node, ast.arg):
-                    self._mark(node.arg)
+                    self._mark(node.arg, scope)
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    self._mark(node.name)
+                    self._mark(node.name, scope)
                 elif isinstance(node, (ast.Global, ast.Nonlocal)):
                     for name in node.names:
-                        self._mark(name)
+                        self._mark(name, scope)
+                        self._mark(name, None)
             # An alias table entry is only good while the name means one thing. `import requests as
             # r` followed by `import socket as r`, or by an assignment to `r`, leaves the last one
             # walked in the table, and ast.walk order is not specified, so drop both.
+            bound_anywhere: dict[str, int] = {}
+            for (_scope, name), count in self._counts.items():
+                bound_anywhere[name] = bound_anywhere.get(name, 0) + count
             for table in (self.modules, self.funcs):
-                for name in [n for n in table if self._counts.get(n, 0) != 1]:
+                for name in [n for n in table if bound_anywhere.get(n, 0) != 1]:
                     del table[name]
             # Sessions are resolved in their own pass: classifying them while the table fills would
             # let one binding's result change how the next one is read.
             factories = {}
-            for name, value in self._candidates.items():
-                if value is None or self._counts.get(name, 0) != 1:
+            for (scope, name), value in self._candidates.items():
+                if value is None or self._counts.get((scope, name), 0) != 1:
                     continue
                 if isinstance(value, ast.Call):
                     factory = _SESSION_FACTORY_FQ.get(_canonical_fq(value.func, self))
-                    if factory is not None:
+                    if factory is not None and bound_anywhere.get(name, 0) == 1:
                         factories[name] = factory
                         continue
                 # A call resolves to no text, but it is still where the name's value came from, so
                 # `u = input()` has to stay followable.
-                self.strings[name] = value
+                self.strings[(scope, name)] = value
             self.sessions.update(factories)
             return self
 
@@ -16262,14 +16344,17 @@ def _check_signal_escape_patterns(code: str):
             return out, True
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left, left_complete = _static_str_prefix(node.left, bindings, seen, depth + 1)
-            if not left_complete:
-                return left, False
             right, right_complete = _static_str_prefix(node.right, bindings, seen, depth + 1)
-            return left + right, right_complete
+            if left_complete and right_complete:
+                return left + right, True
+            # A literal on the left does not make the result start with it: str.__add__ returns
+            # NotImplemented for a non-str right operand and Python then calls its __radd__, which
+            # may return anything at all. Unlike an f-string, a half-known sum knows nothing.
+            return "", False
         if isinstance(node, ast.Name):
             if node.id in seen:
                 return "", False
-            bound = bindings.strings.get(node.id)
+            bound = bindings.string_for(node.id, node)
             if bound is None:
                 return "", False
             return _static_str_prefix(bound, bindings, seen | {node.id}, depth + 1)
@@ -16314,7 +16399,7 @@ def _check_signal_escape_patterns(code: str):
                 if sub.value.id == "sys" and sub.attr in ("argv", "stdin"):
                     return True
             if isinstance(sub, ast.Name) and sub.id not in seen:
-                for bound in bindings.all_values.get(sub.id, ()):
+                for bound in bindings.values_for(sub.id, sub):
                     if _externally_sourced(bound, bindings, seen | {sub.id}, depth + 1):
                         return True
         return False
@@ -16566,7 +16651,12 @@ def _check_signal_escape_patterns(code: str):
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
-            fq = _canonical_fq(node.func, _bindings)
+            fq_names = _call_fq_names(node.func, _bindings)
+            fq = fq_names[0] if fq_names else ""
+            # The name the network policy answers on: whichever spelling a prefix matches.
+            network_fq = next(
+                (f for f in fq_names if any(f.startswith(p) for p in _NETWORK_FQ_PREFIXES)), ""
+            )
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
@@ -16609,9 +16699,9 @@ def _check_signal_escape_patterns(code: str):
                             }
                         )
 
-            if fq and any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
+            if network_fq:
                 # 1) Upload-shape check (host-independent).
-                if _call_is_upload_shape(node, fq):
+                if _call_is_upload_shape(node, network_fq):
                     network_calls.append(
                         {
                             "type": "upload_blocked",
@@ -16637,7 +16727,7 @@ def _check_signal_escape_patterns(code: str):
                 if (
                     host_arg is None
                     and not target_resolved
-                    and _takes_url_first_arg(fq)
+                    and _takes_url_first_arg(network_fq)
                     and _externally_sourced(url_node, _bindings)
                 ):
                     # A target read from the environment, stdin or argv is chosen outside the source
@@ -16678,8 +16768,7 @@ def _check_signal_escape_patterns(code: str):
 
             is_open_call = (
                 (isinstance(node.func, ast.Name) and node.func.id == "open")
-                or fq in ("io.open", "pathlib.Path.open")
-                or fq.endswith(".open")
+                or any(f in ("io.open", "pathlib.Path.open") or f.endswith(".open") for f in fq_names)
             )
             if is_open_call and node.args:
                 a0 = node.args[0]

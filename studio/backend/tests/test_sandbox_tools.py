@@ -2763,3 +2763,71 @@ class TestResolverRobustness:
     )
     def test_ordinary_fetch_shapes_keep_working_ok(self, code):
         _ok(code)
+
+
+class TestNameResolutionDoesNotLoseOrInventAHost:
+    """The resolver may add a name the policy checks; it may never remove one, and it may never
+    claim a host the call does not provably reach."""
+
+    def test_an_alias_that_renames_the_module_is_still_policed_blocked(self):
+        # `from requests import api as requests` spells the call requests.get while resolving to
+        # requests.api.get, which no network prefix matches. Both spellings are policed.
+        _blocked(
+            f'from requests import api as requests\nrequests.get("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_alias_that_renames_the_module_still_blocks_uploads(self):
+        _blocked(
+            "from requests import api as requests\n"
+            'requests.post("https://huggingface.co/", files = {"f": ("s.txt", b"x")})',
+            expect_phrase = "Blocked: file upload disallowed in sandbox",
+        )
+
+    def test_a_backslash_in_the_authority_does_not_smuggle_a_metadata_host_blocked(self):
+        # requests percent-encodes the backslash into the path, so the real host is the IP.
+        _blocked(
+            'import requests\nrequests.get("http://169.254.169.254\\\\@huggingface.co/latest/")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    @staticmethod
+    def _verdicts(template: str) -> tuple:
+        allowed = _check_code_safety(template.format(host = "https://huggingface.co/"))
+        untrusted = _check_code_safety(template.format(host = "https://example.com/"))
+        return allowed, untrusted
+
+    def test_a_half_known_sum_vouches_for_nothing(self):
+        # str.__add__ returns NotImplemented for a non-str right operand and Python then calls its
+        # __radd__, which may return any string at all, so the left literal is not a prefix.
+        template = (
+            "import requests\nclass Swap:\n    def __radd__(self, prefix):\n"
+            '        return "http://169.254.169.254/"\nrequests.get("{host}" + Swap())'
+        )
+        allowed, untrusted = self._verdicts(template)
+        assert allowed == untrusted, (allowed, untrusted)
+        assert allowed is None, allowed
+
+    def test_a_binding_in_another_scope_vouches_for_nothing(self):
+        template = 'import requests\ndef unused():\n    u = "{host}"\nrequests.get(u)'
+        allowed, untrusted = self._verdicts(template)
+        assert allowed == untrusted, (allowed, untrusted)
+        assert allowed is None, allowed
+
+    def test_a_deleted_binding_vouches_for_nothing(self):
+        template = 'import requests\nu = "{host}"\ndel u\nrequests.get(u)'
+        allowed, untrusted = self._verdicts(template)
+        assert allowed == untrusted, (allowed, untrusted)
+        assert allowed is None, allowed
+
+    def test_a_binding_in_the_calling_scope_is_still_resolved_blocked(self):
+        _blocked(
+            f'import requests\ndef go():\n    u = "{_METADATA_URL}"\n    requests.get(u)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_module_binding_is_resolved_inside_a_function_blocked(self):
+        _blocked(
+            f'import requests\nu = "{_METADATA_URL}"\ndef go():\n    requests.get(u)',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
