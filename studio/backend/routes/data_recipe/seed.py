@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastA
 
 from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
+from hub.services.datasets.local_options import _SPLIT_KEYWORDS
 from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from loggers import get_logger
@@ -275,18 +276,28 @@ def _label_in_name(name: str, label: str) -> bool:
     return re.search(rf"(?:^|[-._ ]){re.escape(label)}(?:$|[-._ ])", name) is not None
 
 
+def _split_labels(split_lower: str) -> tuple[str, ...]:
+    """The names `datasets` accepts for this split: dev is validation, training is train."""
+    for canonical, aliases in _SPLIT_KEYWORDS.items():
+        if split_lower == canonical or split_lower in aliases:
+            return aliases
+    return (split_lower,)
+
+
 def _split_rank(path: str, split_lower: str) -> int:
     """0 the split is a folder, 1 the file name carries it, 2 neither.
 
-    The name is read as separated words rather than by where the split sits in
-    it, so a shard called questions_train_000.jsonl counts as train while
-    training.jsonl does not.
+    The name is read as whole labels rather than by where the split sits in it,
+    so questions_train_000.jsonl counts as train, and `datasets` own aliases
+    count too, so dev.jsonl is validation.
     """
     lowered = path.lower()
-    if f"/{split_lower}/" in f"/{lowered}":
+    labels = _split_labels(split_lower)
+    if any(f"/{label}/" in f"/{lowered}" for label in labels):
         return 0
     # Only the final extension comes off: questions.train.parquet keeps its split.
-    if _label_in_name(Path(lowered).stem, split_lower):
+    stem = Path(lowered).stem
+    if any(_label_in_name(stem, label) for label in labels):
         return 1
     return 2
 
@@ -295,24 +306,23 @@ def _in_subset(data_files: list[str], subset: str | None, split_lower: str) -> l
     """The files carrying this config label, as a folder or in the file name.
 
     A repo may encode its configs in the names instead of the layout, as
-    main-train.parquet beside socratic-train.parquet. A label that lands on
-    nothing belonging to the split is a coincidence, not the config, so it is
-    dropped rather than allowed to decide the answer.
+    main-train.parquet beside socratic-train.parquet. A folder carrying the
+    label is the config whatever its files are called; a name only carrying it
+    while belonging to no part of the split is a coincidence, not the config,
+    so it is dropped rather than allowed to decide the answer.
     """
     if not subset:
         return data_files
     subset_lower = subset.lower()
-    hits = [
-        f
-        for f in data_files
-        if subset_lower in f.lower().split("/")[:-1]
-        or _label_in_name(Path(f.lower()).stem, subset_lower)
-    ]
-    if any(_split_rank(f, split_lower) <= 1 for f in hits):
-        return hits
+    in_folder = [f for f in data_files if subset_lower in f.lower().split("/")[:-1]]
+    if in_folder:
+        return in_folder
+    named = [f for f in data_files if _label_in_name(Path(f.lower()).stem, subset_lower)]
+    if any(_split_rank(f, split_lower) <= 1 for f in named):
+        return named
     if any(_split_rank(f, split_lower) <= 1 for f in data_files):
         return data_files
-    return hits or data_files
+    return named or data_files
 
 
 def _select_best_file(
@@ -347,18 +357,23 @@ def _pattern_fits_the_split(
 
 
 def _candidate_patterns(stem: str, suffix: str, split_lower: str) -> list[str]:
-    """Globs for this split's files in one folder, narrowest first."""
+    """Globs for this split's files in one folder, narrowest first.
+
+    Built from whichever of the split's names this file actually uses, since a
+    validation shard may well be called dev.
+    """
     stem_lower = stem.lower()
     candidates: list[str] = []
-    if stem_lower.startswith((f"{split_lower}-", f"{split_lower}_", f"{split_lower}.")):
-        candidates.append(f"{stem[: len(split_lower) + 1]}*{suffix}")
-    if stem_lower == split_lower or stem_lower.endswith((f"_{split_lower}", f"-{split_lower}")):
-        # Keep the trailing star: the split may still be sharded as train.jsonl
-        # beside train_2.jsonl, so an exact name would read only the first shard.
-        candidates.append(f"{stem}*{suffix}")
-    at = stem_lower.find(split_lower)
-    if at >= 0:
-        candidates.append(f"*{stem[at : at + len(split_lower)]}*{suffix}")
+    for label in _split_labels(split_lower):
+        if stem_lower.startswith((f"{label}-", f"{label}_", f"{label}.")):
+            candidates.append(f"{stem[: len(label) + 1]}*{suffix}")
+        if stem_lower == label or stem_lower.endswith((f"_{label}", f"-{label}")):
+            # Keep the trailing star: the split may still be sharded as train.jsonl
+            # beside train_2.jsonl, so an exact name would read only the first shard.
+            candidates.append(f"{stem}*{suffix}")
+        at = stem_lower.find(label)
+        if at >= 0:
+            candidates.append(f"*{stem[at : at + len(label)]}*{suffix}")
     return candidates
 
 

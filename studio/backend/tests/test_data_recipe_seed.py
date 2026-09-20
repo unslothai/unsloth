@@ -641,6 +641,40 @@ def test_seed_hf_path_reads_a_subset_labelled_in_the_file_name(
     assert resolved == expected
 
 
+@pytest.mark.parametrize(
+    ("files", "split", "expected"),
+    [
+        (["data/dev.jsonl", "data/train.jsonl"], "validation", "datasets/org/repo/data/dev*.jsonl"),
+        (
+            ["data/valid-0.parquet", "data/train-0.parquet"],
+            "validation",
+            "datasets/org/repo/data/valid-*.parquet",
+        ),
+        (
+            ["data/training-0.parquet", "data/test-0.parquet"],
+            "train",
+            "datasets/org/repo/data/*train*.parquet",
+        ),
+    ],
+)
+def test_seed_hf_path_follows_the_split_aliases_datasets_uses(
+    monkeypatch, tmp_path, files, split, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    assert seed_route._resolve_seed_hf_path("org/repo", files, split) == expected
+
+
+def test_seed_hf_path_keeps_a_folder_subset_whose_files_are_generic(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    # en/ is the config even though its file says nothing about the split, so
+    # other/train.parquet must not win it.
+    files = ["en/data.parquet", "other/train.parquet"]
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", "en")
+        == "datasets/org/repo/en/**/*.parquet"
+    )
+
+
 def test_seed_hf_path_ignores_a_subset_label_that_is_not_the_config(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     # x/main.parquet carries the label but nothing of the split, so it is a name
@@ -759,10 +793,10 @@ def test_seed_declared_files_match_the_glob_not_its_prefix(monkeypatch, tmp_path
             ["data/questions.train.parquet", "data/questions.test.parquet"],
             "datasets/org/repo/data/*train*.parquet",
         ),
-        # "training" is not the train split, so the narrow prefix still wins.
+        # "training" is datasets' own alias for train, so both belong to it.
         (
             ["data/train-0.parquet", "data/training-0.parquet", "data/test-0.parquet"],
-            "datasets/org/repo/data/train-*.parquet",
+            "datasets/org/repo/data/*train*.parquet",
         ),
     ],
 )
