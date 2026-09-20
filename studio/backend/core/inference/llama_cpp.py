@@ -3928,10 +3928,21 @@ def _positive_int_n_ctx(value: object) -> Optional[int]:
     ``bool`` is excluded explicitly because it subclasses ``int``: a JSON
     ``true`` would otherwise pass ``isinstance(v, int) and v > 0`` and publish a
     ONE token window, which becomes the max_tokens ceiling and rejects every
-    real prompt. Strings stay rejected rather than coerced -- a server that
-    cannot name its own context in a number is not one to guess for.
+    real prompt.
+
+    An all-digit STRING is accepted, and deliberately so. b11057 sends a JSON
+    number, but the readback this replaces did ``int(n_ctx)`` and so coerced
+    "8192" happily; rejecting it here would mean a build or proxy that
+    stringifies the field silently stops reconciling and goes back to
+    advertising the pre-launch estimate -- reintroducing the very bug this
+    reports. Only exact digits, so "8k", "8192.5" and "" stay rejected rather
+    than guessed at.
     """
-    if isinstance(value, bool) or not isinstance(value, int):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = int(value) if value.isdigit() else None
+    if not isinstance(value, int):
         return None
     return value if value > 0 else None
 

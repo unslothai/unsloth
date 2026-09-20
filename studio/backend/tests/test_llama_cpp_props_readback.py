@@ -729,3 +729,15 @@ def test_a_malformed_props_payload_reports_unknown_rather_than_raising(monkeypat
     ):
         _stub_props(monkeypatch, body = bad)
         assert _make_backend()._query_server_n_ctx() is None, bad
+
+
+def test_a_stringified_n_ctx_is_still_read(monkeypatch):
+    """The readback this replaced did ``int(n_ctx)`` and so coerced "8192".
+    Rejecting it would make a build or proxy that stringifies the field stop
+    reconciling silently and go back to advertising the pre-launch estimate --
+    the bug this reports. Digits only; "8k" is still a refusal, not a guess."""
+    _stub_props(monkeypatch, body = {"default_generation_settings": {"n_ctx": "8192"}})
+    assert _make_backend()._query_server_n_ctx() == 8192
+    for bad in ("8k", "8192.5", "", "-1"):
+        _stub_props(monkeypatch, body = {"default_generation_settings": {"n_ctx": bad}})
+        assert _make_backend()._query_server_n_ctx() is None, bad
