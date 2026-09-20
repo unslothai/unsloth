@@ -347,6 +347,16 @@ jobs:
   tag:
     runs-on: ubuntu-latest
     needs: [prepare, build, build-studio]
+    # The workflow group above deliberately carries github.run_id on main, so a dispatch runs
+    # alongside the cron instead of cancelling it. That was harmless while one stable tag moved;
+    # this run now promotes two that DOCKERHUB-ROCM.md documents as a pair (`studio` is the
+    # Studio twin of `latest`). Unserialized, two runs interleave -- A writes latest, B writes
+    # latest and studio, A writes studio -- and the pair is left sourced from different builds
+    # until the next run. This group has no run_id, so stable promotion queues across runs;
+    # cancel-in-progress stays false because a cancelled promotion is the split it prevents.
+    concurrency:
+      group: docker-publish-rocm-stable-tags-${{ github.ref }}
+      cancel-in-progress: false
     timeout-minutes: 15
     outputs:
       tags: ${{ steps.meta.outputs.tags }}
