@@ -8527,27 +8527,39 @@ def test_a_first_writer_entry_collapses_a_conflicting_claim_inside_the_write(tmp
 
     # The same identity writing again changes nothing, timestamp included.
     db.upsert_app_setting_map_entry(
-        key, "repo", {"at": 200.0, "by": "identity-a"},
-        keep_first_writer = True, ambiguous_field = "by",
+        key,
+        "repo",
+        {"at": 200.0, "by": "identity-a"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
     )
     assert db.get_app_setting(key) == {"repo": first}
 
     # A different one cannot take it over, and cannot be taken over in turn.
     db.upsert_app_setting_map_entry(
-        key, "repo", {"at": 300.0, "by": "identity-b"},
-        keep_first_writer = True, ambiguous_field = "by",
+        key,
+        "repo",
+        {"at": 300.0, "by": "identity-b"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
     )
     assert db.get_app_setting(key) == {"repo": {"at": 100.0, "by": None}}
     db.upsert_app_setting_map_entry(
-        key, "repo", {"at": 400.0, "by": "identity-a"},
-        keep_first_writer = True, ambiguous_field = "by",
+        key,
+        "repo",
+        {"at": 400.0, "by": "identity-a"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
     )
     assert db.get_app_setting(key) == {"repo": {"at": 100.0, "by": None}}
 
     # An absent entry is still created, and the ordinary write still replaces.
     db.upsert_app_setting_map_entry(
-        key, "other", {"at": 500.0, "by": "identity-b"},
-        keep_first_writer = True, ambiguous_field = "by",
+        key,
+        "other",
+        {"at": 500.0, "by": "identity-b"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
     )
     assert db.get_app_setting(key)["other"] == {"at": 500.0, "by": "identity-b"}
     db.upsert_app_setting_map_entry(key, "other", {"at": 600.0, "by": "identity-c"})
