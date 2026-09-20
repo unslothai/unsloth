@@ -1200,6 +1200,19 @@ def test_seed_config_named_Default_is_not_the_implicit_default(monkeypatch, tmp_
     )
 
 
+def test_seed_hf_path_ignores_an_extension_collision_out_of_reach(monkeypatch, tmp_path):
+    """The glob is anchored at data/, so a name in other/ cannot spoil it."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/a.json", "data/b.jsonl"]
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "data/*"}]}]
+
+    resolved = seed_route._resolve_seed_hf_path(
+        "org/repo", files, "train", None, configs, [*files, "other/c.json.gz"]
+    )
+
+    assert resolved == "datasets/org/repo/data/*.json*"
+
+
 def test_seed_hf_path_unions_an_exact_and_a_qualified_split_folder(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["train/0.parquet", "sets/train_a/1.parquet", "sets/test_b/2.parquet"]

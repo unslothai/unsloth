@@ -604,8 +604,14 @@ def _extension_glob(paths: list[str], suffix: str, repo_files: list[str]) -> str
         return suffix
     stem = os.path.commonprefix(sorted(used))
     matcher = re.compile(rf"{re.escape(stem)}[^/]*\Z", re.IGNORECASE)
+    # Only what the emitted pattern can reach: it is anchored at the folder the
+    # declared files share, so a name collision anywhere else is not its problem.
+    scope = _common_parent(paths)
+    prefix = f"{scope}/" if scope else ""
     if any(
-        Path(path).suffix.lower() not in group and matcher.search(Path(path).name)
+        path.startswith(prefix)
+        and Path(path).suffix.lower() not in group
+        and matcher.search(Path(path).name)
         for path in repo_files
     ):
         return suffix
