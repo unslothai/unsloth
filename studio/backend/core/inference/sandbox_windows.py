@@ -320,6 +320,33 @@ _REQUIRED_WINDOWS_ENV = (
 )
 
 
+def _session_package_environment(env: dict[str, str], workdir: str) -> dict[str, str]:
+    """Point pip at the writable package directory and make it importable.
+
+    Granting `.unsloth-packages` write access does not by itself send an
+    install there, nor make what is already there importable: plan.env comes
+    from _build_safe_env, which carries only the trusted shim on PYTHONPATH and
+    no PIP_TARGET. Without this a pip install targets the read-only Studio
+    virtualenv and fails, and an explicit install into the directory is
+    invisible to every later call. The Linux and macOS backends do exactly this
+    and the Windows one must not be the odd one out.
+    """
+    packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
+    updated = dict(env)
+    updated["PIP_TARGET"] = packages
+    # Appended in both cases, so a package installed by a tool call cannot
+    # shadow the sandbox_site shim or a bare command the approval logic treats
+    # as safe. <target>\Scripts is pip's console entry point directory on
+    # Windows, where POSIX uses bin.
+    updated["PATH"] = os.pathsep.join(
+        part for part in (env.get("PATH") or "", os.path.join(packages, "Scripts")) if part
+    )
+    updated["PYTHONPATH"] = os.pathsep.join(
+        part for part in (env.get("PYTHONPATH") or "", packages) if part
+    )
+    return updated
+
+
 def _policy_environment(plan_env: dict[str, str]) -> list[str]:
     """The sanitized env, plus the few variables Windows needs to start at all.
 
@@ -357,7 +384,7 @@ def build_policy(plan: ToolLaunchPlan, workdir: str, container_id: str) -> dict:
         "containerId": container_id,
         "containment": "processcontainer",
         "process": {
-            "env": _policy_environment(plan.env),
+            "env": _policy_environment(_session_package_environment(plan.env, workdir)),
             "cwd": workdir,
         },
         "filesystem": {

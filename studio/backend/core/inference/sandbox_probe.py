@@ -103,7 +103,8 @@ def must_raise(label, fn):
 
 
 def _negative_controls(
-    sentinel: str, escape: str, outside: str, interpreter_writable: bool, abstract: "bytes | None"
+    sentinel: str, escape: "str | None", outside: str, interpreter_writable: bool,
+    abstract: "bytes | None",
 ) -> str:
     """Attempt direct and symlink sentinel reads, an outside write, and socket access.
 
@@ -121,11 +122,16 @@ def _negative_controls(
             f'\nmust_raise("connected to a host abstract unix socket", lambda: '
             f"socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).connect({abstract!r}))\n"
         )
+    # Dropped when the host could not create the link at all; see _run_probe.
+    escape_leg = ""
+    if escape is not None:
+        escape_leg = (
+            '\nmust_raise("followed a workdir symlink to the host sentinel", '
+            f'lambda: open({escape!r}, "rb").close())\n'
+        )
     return f"""
 must_raise("read the host sentinel", lambda: open({sentinel!r}, "rb").close())
-must_raise("followed a workdir symlink to the host sentinel",
-           lambda: open({escape!r}, "rb").close())
-{interpreter_leg}{abstract_leg}
+{escape_leg}{interpreter_leg}{abstract_leg}
 # Allowed to succeed against a private tmpfs; the host checks afterwards that
 # nothing arrived. See _negative_controls.
 try:
@@ -199,7 +205,7 @@ if child.returncode != 0 or child.stdout.strip() != b"42":
 def _payload(
     workdir: str,
     sentinel: str,
-    escape: str,
+    escape: "str | None",
     outside: str,
     interpreter_writable: bool,
     abstract: "bytes | None",
@@ -365,7 +371,23 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
         with open(sentinel, "w", encoding = "utf-8") as handle:
             handle.write(_SENTINEL_TOKEN)
         escape = os.path.join(workdir, "escape")
-        os.symlink(sentinel, escape)
+        try:
+            os.symlink(sentinel, escape)
+        except OSError as exc:
+            # A non-elevated Windows account without Developer Mode has no
+            # SeCreateSymbolicLinkPrivilege, so this raises WinError 1314 and,
+            # left to propagate, failed the whole probe before the backend was
+            # even prepared: enabling the Windows preview would then make
+            # `auto` fall back silently and `required` refuse every call. The
+            # symlink leg is one negative control among several, and a control
+            # the HOST cannot set up proves nothing either way, so it is
+            # dropped rather than failed, exactly as the interpreter-write leg
+            # already is.
+            logger.info(
+                "The sandbox probe is skipping its symlink leg: %s. The other "
+                "negative controls still decide the verdict.", exc,
+            )
+            escape = None
         outside = os.path.join(base, "outside-write.txt")
         env = {
             "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),

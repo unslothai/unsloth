@@ -580,3 +580,50 @@ def test_an_unavailable_verdict_is_not_cached_for_the_long_window(monkeypatch, t
         "the host was never re-examined, so installing bubblewrap does not "
         "take effect until the long TTL expires"
     )
+
+
+def test_a_host_that_cannot_make_a_symlink_still_gets_a_verdict(monkeypatch, tmp_path):
+    """A non-elevated Windows account without Developer Mode has no
+    SeCreateSymbolicLinkPrivilege, so os.symlink raises WinError 1314. Left to
+    propagate it failed the whole probe before the backend was even prepared,
+    so enabling the Windows preview made `auto` fall back silently and
+    `required` refuse every call. A control the HOST cannot set up proves
+    nothing either way, so the leg is dropped and the rest still decides.
+    """
+    from core.inference import sandbox_probe
+
+    def no_symlink_privilege(*args, **kwargs):
+        raise OSError(1314, "A required privilege is not held by the client")
+
+    monkeypatch.setattr(sandbox_probe.os, "symlink", no_symlink_privilege)
+
+    class Backend:
+        BACKEND_NAME = "symlink-less-host"
+
+        @staticmethod
+        def prepare(plan):
+            raise RuntimeError("this backend declines")
+
+    sandbox_probe.reset_probe_cache()
+    available, reason = sandbox_probe.probe(Backend, force = True)
+
+    assert available is False
+    assert "privilege is not held" not in reason, (
+        "the missing symlink privilege was reported as the probe's verdict"
+    )
+    assert "this backend declines" in reason
+
+
+def test_the_symlink_leg_is_omitted_rather_than_passed(tmp_path):
+    """Dropped, not silently satisfied: a negative control that cannot be set
+    up must not look like one the sandbox refused."""
+    from core.inference import sandbox_probe
+
+    with_link = sandbox_probe._payload(
+        str(tmp_path), "/host/sentinel", "/work/escape", "/host/outside", False, None)
+    without_link = sandbox_probe._payload(
+        str(tmp_path), "/host/sentinel", None, "/host/outside", False, None)
+
+    assert "followed a workdir symlink" in with_link
+    assert "followed a workdir symlink" not in without_link
+    assert "read the host sentinel" in without_link

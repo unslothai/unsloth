@@ -8554,7 +8554,10 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
 # only supported way the executor arrives, and the backend's "re-run setup"
 # message points here.
 $MxcInstaller = Join-Path $PSScriptRoot "install_mxc_runtime.py"
-$MxcPreview = ("$($env:UNSLOTH_WINDOWS_SANDBOX_PREVIEW)".Trim() -eq "1")
+# The same values windows_preview_enabled() accepts. Matching only "1" meant a
+# user starting Studio with UNSLOTH_WINDOWS_SANDBOX_PREVIEW=true enabled the
+# backend while setup skipped the only supported way to install its executor.
+$MxcPreview = ("$($env:UNSLOTH_WINDOWS_SANDBOX_PREVIEW)".Trim().ToLowerInvariant() -in @("1", "true", "yes", "on"))
 if (-not $MxcPreview) {
     if ($script:UnslothVerbose) {
         substep "Windows tool isolation: preview not enabled; skipping the MXC executor install"

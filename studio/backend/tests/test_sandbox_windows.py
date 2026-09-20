@@ -73,7 +73,13 @@ def test_the_environment_is_passed_verbatim_not_inherited(plan, tmp_path):
     # MXC replaces rather than layers unless inheritDefaultEnv, which is 0.9
     # only, so the sanitized env tools.py built must be the whole env.
     env = policy_for(plan, tmp_path)["process"]["env"]
-    assert "PATH=C:\\Windows\\System32" in env
+    # Starts with the caller's PATH: the session package Scripts directory is
+    # appended after it, deliberately and last.
+    assert any(
+        entry == "PATH=C:\\Windows\\System32"
+        or entry.startswith("PATH=C:\\Windows\\System32" + os.pathsep)
+        for entry in env
+    )
     assert all("=" in entry for entry in env)
 
 
@@ -270,7 +276,13 @@ def test_windows_gets_the_environment_it_needs_to_start_a_process(monkeypatch):
 
     assert "SystemRoot=C:\\Windows" in env
     assert "COMSPEC=C:\\Windows\\System32\\cmd.exe" in env
-    assert "PATH=C:\\Windows\\System32" in env
+    # Starts with the caller's PATH: the session package Scripts directory is
+    # appended after it, deliberately and last.
+    assert any(
+        entry == "PATH=C:\\Windows\\System32"
+        or entry.startswith("PATH=C:\\Windows\\System32" + os.pathsep)
+        for entry in env
+    )
 
 
 def test_a_caller_supplied_value_wins_over_the_host(monkeypatch):
@@ -508,3 +520,39 @@ def test_the_installer_destination_override_is_honoured(tmp_path, monkeypatch):
     assert sandbox_windows.managed_mxc_dir() == str(dest)
     monkeypatch.delenv("UNSLOTH_MXC_EXEC", raising = False)
     assert sandbox_windows.executable_path() == str(dest / "wxc-exec.exe")
+
+
+def test_the_session_package_directory_reaches_the_windows_environment(plan, tmp_path):
+    """Write access to .unsloth-packages does not send an install there.
+
+    plan.env comes from _build_safe_env, which carries only the trusted shim on
+    PYTHONPATH and no PIP_TARGET, so without this a pip install targets the
+    read-only Studio virtualenv and fails, and an explicit install into the
+    directory is invisible to every later Python call. Linux and macOS both do
+    this and Windows must not be the odd one out.
+    """
+    from core.inference.os_sandbox import SESSION_PACKAGES_RELPATH
+
+    workdir = str(tmp_path)
+    packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
+    policy = sandbox_windows.build_policy(plan, workdir, "unsloth-test")
+    env = dict(entry.split("=", 1) for entry in policy["process"]["env"])
+
+    assert env["PIP_TARGET"] == packages
+    assert packages in env["PYTHONPATH"].split(os.pathsep)
+    # LAST on PATH, so a package a tool call installed cannot shadow a bare
+    # command the approval logic treats as safe.
+    assert env["PATH"].split(os.pathsep)[-1] == os.path.join(packages, "Scripts")
+
+
+def test_setup_accepts_every_enabled_preview_value():
+    """The backend treats true, yes and on as enabled. Setup matching only "1"
+    meant the backend engaged while its only supported installation path was
+    skipped."""
+    setup = os.path.join(os.path.dirname(__file__), "..", "..", "setup.ps1")
+    with open(setup, encoding = "utf-8") as handle:
+        body = handle.read()
+
+    line = next(l for l in body.splitlines() if "$MxcPreview =" in l)
+    for value in ("1", "true", "yes", "on"):
+        assert f'"{value}"' in line, f"setup does not accept {value!r} as an enabled preview"
