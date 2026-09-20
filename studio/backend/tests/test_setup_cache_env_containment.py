@@ -1356,6 +1356,35 @@ def test_a_write_probe_that_cannot_close_its_handle_is_a_no_not_a_crash(monkeypa
     assert sr._usable_dir(str(tmp_path)) is True
 
 
+def test_a_note_in_a_legacy_tree_cannot_defeat_the_managed_spawn_scrub(monkeypatch, tmp_path):
+    """process.rs removes UNSLOTH_HOME and UNSLOTH_PORTABLE from every managed spawn so that
+    "Tauri uses the legacy Unsloth root whatever the environment says". A note is a FILE, which no
+    env_remove can reach, and one naming an ANCESTOR passes containment: $HOME contains
+    ~/.unsloth/studio. Both variables came back through the filesystem and the packaged app's
+    Hugging Face caches moved out from under it.
+
+    Spawned exactly as start_backend does, with every scrubbed name absent, so anything that
+    comes back came off disk.
+    """
+    home = tmp_path / "home"
+    studio = home / ".unsloth" / "studio"
+    (studio / "share").mkdir(parents = True)
+    (studio / "share" / ".unsloth-master-root").write_text(str(home) + "\n", encoding = "utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
+    for scrubbed in ("UNSLOTH_HOME", "UNSLOTH_PORTABLE", "STUDIO_HOME"):
+        monkeypatch.delenv(scrubbed, raising = False)
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() is None, "a planted note reintroduced a scrubbed root"
+    assert sr.portable_mode() is False
+
+    sr._setup_cache_env()
+
+    assert os.environ["HF_HUB_CACHE"] == str(home / ".cache" / "huggingface" / "hub")
+
+
 def test_a_note_naming_the_legacy_default_root_is_declined(monkeypatch, tmp_path):
     """The reader has to decline it, not just the writer.
 

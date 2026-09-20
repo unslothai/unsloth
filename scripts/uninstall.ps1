@@ -663,9 +663,17 @@ Environment:
                 $notePath = Join-Path $noteRoot "share\.unsloth-master-root"
                 if (-not (Test-Path -LiteralPath $notePath -PathType Leaf)) { continue }
                 try {
-                    # One line, first only: a note that grew a second line is not ours.
-                    $line = @(Get-Content -LiteralPath $notePath -TotalCount 1 -ErrorAction Stop)[0]
+                    # One line, and REFUSED when there is a second -- what the comment here used
+                    # to claim while the code only took the first and carried on. storage_roots.py
+                    # and the CLI read the WHOLE file and strip it, so a two-line note is not a
+                    # directory to them and they decline it; accepting line 1 here let a note no
+                    # runtime reader honours authorise removing the master root's runtime
+                    # children. Two lines are read so the second can be seen at all; a trailing
+                    # newline on an ordinary note yields no second line.
+                    $noteLines = @(Get-Content -LiteralPath $notePath -TotalCount 2 -ErrorAction Stop)
                 } catch { continue }
+                if ($noteLines.Count -gt 1 -and -not [string]::IsNullOrWhiteSpace($noteLines[1])) { continue }
+                $line = if ($noteLines.Count -ge 1) { $noteLines[0] } else { $null }
                 if (-not [string]::IsNullOrWhiteSpace($line)) {
                     $raw = $line
                     $noteStudio = $noteRoot

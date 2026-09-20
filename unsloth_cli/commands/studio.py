@@ -146,13 +146,15 @@ def _recorded_master_root() -> Optional[Path]:
         here = STUDIO_HOME.resolve()
         if not (master.is_dir() and (here == master or master in here.parents)):
             return None
-        # The legacy default is the root every reader finds without a note, and both uninstallers
-        # refuse it outright. storage_roots._is_legacy_default_root declines it for the same
-        # reason; see test_unsloth_home_root_agreement.py, which holds the two together. Without
-        # this the CLI would export UNSLOTH_HOME for a note the backend has already declined,
-        # which is the split that function exists to close.
+        # A legacy-rooted install has no master root: it is where the installers put Studio when
+        # nobody asked for anything else, and both uninstallers already refuse what that shape
+        # records. storage_roots._is_legacy_studio_tree declines it for the same reasons, and
+        # test_unsloth_home_root_agreement.py holds the two together -- without this the CLI
+        # would export UNSLOTH_HOME for a note the backend has already declined, which is the
+        # split this function exists to close. Keyed on the TREE, so a note naming $HOME or any
+        # other ancestor goes with it.
         try:
-            if master == (Path.home() / ".unsloth").resolve():
+            if here == (Path.home() / ".unsloth" / "studio").resolve():
                 return None
         except (OSError, RuntimeError, ValueError):
             pass

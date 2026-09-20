@@ -276,6 +276,32 @@ assert_nodir "the installer's own stale lock goes" "$STALE/.node.install.lock.st
 assert_present "an unrelated hidden file stays" "$STALE/.backup.install.lock.stale.copy"
 assert_present "a non-numeric suffix stays" "$STALE/.llama.cpp.install.lock.stale.notapid"
 
+echo "== a note with a second line is refused, as the comment beside it promises =="
+# The four readers have to agree, and this is the one that authorises a delete.
+# storage_roots.py and unsloth_cli/commands/studio.py both read_text().strip() the WHOLE file,
+# so a two-line note is not a directory to them and they decline it. Taking line 1 here let a
+# note no runtime reader honours go on to license removing <master>/llama.cpp, node,
+# whisper.cpp and stable-diffusion.cpp.
+MULTI_MASTER="$_TMP_ROOT/multiline-master"
+MULTI="$MULTI_MASTER/studio"
+mkdir -p "$MULTI/share" "$_TMP_ROOT/elsewhere"
+printf '%s\n%s\n' "$MULTI_MASTER" "$_TMP_ROOT/elsewhere" > "$MULTI/share/.unsloth-master-root"
+got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$MULTI"
+         export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "a two-line note names no master root" "$got" ""
+
+# ... and a blank second line is just the trailing newline of an ordinary note.
+printf '%s\n\n' "$MULTI_MASTER" > "$MULTI/share/.unsloth-master-root"
+got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$MULTI"
+         export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "a trailing blank line is still one line" "$got" "$MULTI_MASTER"
+
+# The ordinary note must keep working, or the check above proves only that nothing is read.
+printf '%s\n' "$MULTI_MASTER" > "$MULTI/share/.unsloth-master-root"
+got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$MULTI"
+         export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "a one-line note is still honoured" "$got" "$MULTI_MASTER"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

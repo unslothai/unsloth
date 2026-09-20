@@ -543,7 +543,18 @@ $HOME/.unsloth/studio"
             [ -n "$_mr_studio" ] || continue
             _mr_conf="${_mr_studio}/share/.unsloth-master-root"
             [ -f "$_mr_conf" ] || continue
-            # One line, first only: a note that grew a second line is not one we wrote.
+            # One line, and REFUSED when there is a second. The comment here used to say that
+            # while the code only took the first line and carried on, which split the four
+            # readers apart in the one place it costs something: storage_roots.py and the CLI
+            # both read_text().strip() the WHOLE file, so a two-line note is not a directory to
+            # them and they decline it, while this function and its PowerShell twin accepted
+            # line 1 and went on to authorise removing <master>/llama.cpp, node, whisper.cpp and
+            # stable-diffusion.cpp. A note no runtime reader will honour must not license a
+            # delete either. Checked before the value is used, and a trailing newline on an
+            # ordinary one-line note is not a second line.
+            if [ -n "$(sed -n '2,$p' "$_mr_conf" 2>/dev/null | tr -d '[:space:]')" ]; then
+                continue
+            fi
             _mr=$(head -n 1 "$_mr_conf" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') \
                 || _mr=""
             if [ -n "$_mr" ]; then

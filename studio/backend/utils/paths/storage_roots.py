@@ -90,29 +90,41 @@ def _studio_root_without_master() -> Path:
     return Path.home() / ".unsloth" / "studio"
 
 
-def _is_legacy_default_root(master: Path) -> bool:
-    """Whether a RECORDED root is the one every reader already finds without a note.
+def _is_legacy_studio_tree(studio: Path) -> bool:
+    """Whether the tree a note was read from is the ordinary `~/.unsloth/studio` install.
 
-    Both uninstallers refuse this value outright, note or environment alike
+    A legacy-rooted install HAS no master root. It is where install.sh and install.ps1 put Studio
+    when nobody asked for anything else, and every reader finds its runtimes without help, so a
+    note found there can only say something no reader needs and every reader disagrees about.
+    Both uninstallers already refuse the value that shape produces
     (`case "$_mr" in "$HOME/.unsloth"|/|"") return 0`, and `_MasterRoot`'s `USERPROFILE\\.unsloth`
-    bail-out). Honouring it here is what split the four readers apart: `UNSLOTH_HOME=$HOME/.unsloth`
-    set once, for one command, naming the directory the install was already in, left a note that
-    every later BARE launch read back, so `portable_mode()` stayed true and `HF_HUB_CACHE` moved
-    off `~/.cache/huggingface` -- the one cache this module promises not to move -- while the
-    uninstaller went on treating the same note as absent.
+    bail-out).
 
-    The write side is gated in setup.sh and setup.ps1, and they sweep an old one away, but only
-    when setup runs again, and the user who hit this set the variable once. So the reader has to
-    decline it too, or the repair never reaches them.
+    Two things went wrong without this, one of them load-bearing for the desktop app:
+
+    `UNSLOTH_HOME=$HOME/.unsloth`, set once for one command and naming the directory the install
+    was already in, left a note every later BARE launch read back, so `portable_mode()` stayed
+    true for good and `HF_HUB_CACHE` moved off `~/.cache/huggingface` -- the one cache this module
+    promises not to move.
+
+    And `process.rs` scrubs `UNSLOTH_HOME` and `UNSLOTH_PORTABLE` from every managed spawn
+    precisely so "Tauri uses the legacy Unsloth root whatever the environment says". A note is a
+    FILE, which no `env_remove` can reach: one naming any ANCESTOR of the tree -- `$HOME` passes
+    containment, since `~/.unsloth/studio` is inside it -- reintroduced both through the
+    filesystem and moved the packaged app's caches out from under it. Keyed on the TREE rather
+    than on the recorded value, so `$HOME`, `/`, and every other ancestor go with it.
+
+    Nothing legitimate is lost: the feature is a Studio at `<master>/studio`, which is not this
+    tree, and the case where Studio stays legacy while the runtimes go elsewhere is already
+    refused by containment.
 
     Recorded roots only. An explicit UNSLOTH_HOME never gets here: `unsloth_home()` returns the
     override before calling this, which is the user speaking rather than a file on disk.
     """
     try:
-        legacy = (Path.home() / ".unsloth").resolve()
+        return studio.resolve() == (Path.home() / ".unsloth" / "studio").resolve()
     except (OSError, RuntimeError, ValueError):
         return False
-    return master == legacy
 
 
 def _recorded_master_root() -> Path | None:
@@ -160,7 +172,7 @@ def _recorded_master_root() -> Path | None:
         try:
             here = studio.resolve()
             if master.is_dir() and (here == master or master in here.parents) \
-                    and not _is_legacy_default_root(master):
+                    and not _is_legacy_studio_tree(studio):
                 found = master
         except (OSError, ValueError):
             found = None
