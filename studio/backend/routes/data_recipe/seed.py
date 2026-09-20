@@ -551,6 +551,11 @@ def _with_data_extension(pattern: str, suffix: str) -> str:
     return f"{pattern}{suffix}"
 
 
+def _ext_rank(suffix: str) -> int:
+    """Where `datasets` puts this extension in a draw: parquet, jsonl, json, csv."""
+    return -DATA_EXTS.index(suffix) if suffix in DATA_EXTS else -99
+
+
 def _dominant_suffix(paths: list[str]) -> str:
     """The format the loader would build this split from: most files, parquet on ties.
 
@@ -564,19 +569,23 @@ def _dominant_suffix(paths: list[str]) -> str:
     window = sorted(paths)[:_MAX_MODULE_INFERENCE_FILES]
     voting = [p for p in window if Path(p).name.lower() not in _METADATA_FILENAMES] or window
     for path in voting:
-        # One vote per extension, as `load.infer_module_for_data_files_list`
-        # counts them: .json lends .jsonl none of its votes.
-        suffix = Path(path).suffix.lower()
-        counts[suffix] = counts.get(suffix, 0) + 1
+        # A vote for every suffix in the name and one extension per vote, as
+        # `load.infer_module_for_data_files_list` counts them: a.csv.parquet is
+        # a csv as much as a parquet, and .json lends .jsonl none of its votes.
+        for part in Path(path).name.lower().split(".")[1:]:
+            counts[f".{part}"] = counts.get(f".{part}", 0) + 1
     if not counts:
         return ""
-    best = max(
-        counts,
-        key = lambda s: (counts[s], -DATA_EXTS.index(s) if s in DATA_EXTS else -99),
-    )
-    # The builder widens only once its extension has won on its own.
-    group = _builder_exts(best)
-    return next(Path(p).suffix for p in paths if Path(p).suffix.lower() in group)
+
+    # The builder widens only once its extension has won on its own. A winner no
+    # file actually ends in cannot be written as a glob, so the next one that can
+    # is taken rather than a pattern that matches nothing.
+    for winner in sorted(counts, key = lambda s: (counts[s], _ext_rank(s)), reverse = True):
+        group = _builder_exts(winner)
+        named = next((Path(p).suffix for p in paths if Path(p).suffix.lower() in group), "")
+        if named:
+            return named
+    return ""
 
 
 # Extensions one builder reads: `datasets` loads .json and .jsonl with the same one.

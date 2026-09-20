@@ -1229,6 +1229,14 @@ def test_seed_hf_path_narrows_to_the_subset_folder_by_its_own_case(
     assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset) == expected
 
 
+def test_seed_format_vote_counts_every_suffix_in_a_name(monkeypatch, tmp_path):
+    """a.csv.parquet is a csv to the loader as much as a parquet."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+
+    assert seed_route._dominant_suffix(["data/a.csv.parquet", "data/b.csv"]) == ".csv"
+    assert seed_route._dominant_suffix(["a.parquet", "b.parquet", "c.json"]) == ".parquet"
+
+
 def test_seed_format_vote_takes_the_window_before_dropping_metadata(monkeypatch, tmp_path):
     """A shard past the window is one the loader never sees either."""
     seed_route = _load_seed_route(monkeypatch, tmp_path)
