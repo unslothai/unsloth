@@ -89,13 +89,10 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
         except (OSError, ValueError):
             legacy = Path.home() / ".unsloth" / "studio"
-        # install.sh and install.ps1 do not read UNSLOTH_HOME yet: they still place the venv and
-        # the launcher at the legacy root, while setup puts the managed runtimes under the
-        # master root. Preferring <master>/studio unconditionally therefore made a machine with
-        # UNSLOTH_HOME merely exported report "Unsloth Studio not set up" for an install that is
-        # right there. So the master root wins only when it HAS an install; otherwise the one
-        # that exists does. Once the installers learn the flag, <master>/studio is populated and
-        # this fallback stops being reachable.
+        # install.sh and install.ps1 do not read UNSLOTH_HOME yet, so they leave the venv and the
+        # launcher at the legacy root while setup puts the runtimes under the master root:
+        # preferring <master>/studio unconditionally reported "Unsloth Studio not set up" for an
+        # install that is right there. The master root wins only when it HAS an install.
         if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
             if _looks_like_installer_managed_studio_home(legacy):
                 return legacy, False
@@ -146,13 +143,11 @@ def _recorded_master_root() -> Optional[Path]:
         here = STUDIO_HOME.resolve()
         if not (master.is_dir() and (here == master or master in here.parents)):
             return None
-        # A legacy-rooted install has no master root: it is where the installers put Studio when
-        # nobody asked for anything else, and both uninstallers already refuse what that shape
-        # records. storage_roots._is_legacy_studio_tree declines it for the same reasons, and
-        # test_unsloth_home_root_agreement.py holds the two together -- without this the CLI
-        # would export UNSLOTH_HOME for a note the backend has already declined, which is the
-        # split this function exists to close. Keyed on the TREE, so a note naming $HOME or any
-        # other ancestor goes with it.
+        # A legacy-rooted install has no master root, and both uninstallers already refuse what
+        # that shape records. storage_roots._is_legacy_studio_tree declines it too, and
+        # test_unsloth_home_root_agreement.py holds the two together: without this the CLI would
+        # export UNSLOTH_HOME for a note the backend has declined. Keyed on the TREE, so a note
+        # naming $HOME or any other ancestor goes with it.
         try:
             if here == (Path.home() / ".unsloth" / "studio").resolve():
                 return None
@@ -169,13 +164,10 @@ def _ensure_studio_env_exported() -> None:
     root the resolver above declined, per subcommand rather than at import, so unrelated
     importers see no env changes."""
     # storage_roots.studio_root() honours UNSLOTH_HOME with no install check, so the fallback
-    # that keeps this CLI on an installed legacy root has to be told to the backend as well.
-    # Left unexported, `unsloth studio` runs the legacy venv while the backend inside it writes
-    # studio.db, auth and the pid file under <master>/studio, which is the split
-    # tests/test_unsloth_home_root_agreement.py exists to prevent. Exporting the root does not
-    # make it custom: the value equals the legacy path, so setup.sh's and setup.ps1's own
-    # comparisons keep their ownership flags false and the installers keep their licence to
-    # replace the tree without an owner marker.
+    # keeping this CLI on an installed legacy root must be told to the backend too: unexported,
+    # `unsloth studio` runs the legacy venv while the backend inside it writes studio.db, auth
+    # and the pid file under <master>/studio. Exporting the root does not make it custom, since
+    # the value equals the legacy path both installers compare against.
     # The note, when this run has no UNSLOTH_HOME of its own. Exported rather than merely read,
     # because setup runs as a subprocess and would otherwise refresh the runtimes at
     # <master>/studio/ while the backend kept launching the ones at <master>/.

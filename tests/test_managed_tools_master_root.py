@@ -50,10 +50,9 @@ def _resolve(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
         "USERPROFILE": str(home),
         "_BACKEND": str(BACKEND),
     }
-    # A hand-built environment has to carry what the interpreter itself needs, or the child dies
-    # before the probe runs. Windows python exits 1 with no usable message when SYSTEMROOT is
-    # absent, and check = True then raised CalledProcessError with the stderr discarded, so the
-    # failure read as "the resolver answered wrongly" on every Windows runner.
+    # A hand-built environment has to carry what the interpreter needs: Windows python exits 1
+    # with no usable message when SYSTEMROOT is absent, which read as "the resolver answered
+    # wrongly" on every Windows runner.
     for name in ("SYSTEMROOT", "SystemRoot", "COMSPEC", "PATHEXT", "TEMP", "TMP", "WINDIR"):
         value = os.environ.get(name)
         if value:
@@ -144,10 +143,9 @@ def _record_note(studio: Path, master: Path) -> None:
 
 
 def test_a_recorded_master_root_outlives_the_command_that_set_it(tmp_path):
-    # UNSLOTH_HOME is documented as settable for one command -- `UNSLOTH_HOME=/mnt/portable
-    # unsloth studio update` -- and that command installs node and whisper.cpp BESIDE studio/.
-    # Nothing persists the variable, so the next launch used to resolve both one level down, at
-    # <studio>/node and <studio>/whisper.cpp, with the real trees sitting untouched next door.
+    # UNSLOTH_HOME is settable for one command, which installs node and whisper.cpp BESIDE
+    # studio/, and nothing persists it: the next launch resolved both one level down, at
+    # <studio>/node and <studio>/whisper.cpp, with the real trees untouched next door.
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "portable"
@@ -205,10 +203,9 @@ def test_an_empty_note_is_not_a_root(tmp_path):
 
 
 def test_an_explicit_studio_home_without_a_note_does_not_borrow_anothers(tmp_path):
-    # Two installs on one box: the legacy tree carries a valid note, the one named by
-    # UNSLOTH_STUDIO_HOME does not. studio_root() stays on the named tree, so reading on past it
-    # would leave unsloth_home() pointing at the OTHER install and send node, whisper.cpp,
-    # llama.cpp and the portable caches there while Studio ran from here.
+    # Two installs on one box, only the legacy tree carrying a note: studio_root() stays on the
+    # named tree, so reading past it would send the runtimes and the portable caches to the
+    # OTHER install while Studio ran from here.
     home = tmp_path / "home"
     legacy_master = home / ".unsloth"
     (legacy_master / "studio").mkdir(parents = True)
@@ -223,10 +220,8 @@ def test_an_explicit_studio_home_without_a_note_does_not_borrow_anothers(tmp_pat
 
 
 def test_a_flat_recorded_root_is_still_honoured(tmp_path):
-    # UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming one directory is a supported layout, and the
-    # note then sits in the root it names rather than in a studio/ child. Requiring an exact
-    # <root>/studio match would refuse it; the rule is containment, which this satisfies by
-    # equality.
+    # The flat layout is supported, and the note then sits in the root it names rather than in a
+    # studio/ child: an exact <root>/studio match would refuse it, containment satisfies it.
     home = tmp_path / "home"
     home.mkdir()
     flat = tmp_path / "flat"

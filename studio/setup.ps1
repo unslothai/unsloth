@@ -2817,13 +2817,10 @@ $StudioHomeIsCustom = Test-StudioHomeIsCustom
 # is what licenses the installers to replace and delete without the Unsloth-owned marker. The
 # Studio home itself, and the venvs under it, keep the other flag. Mirrors setup.sh.
 $RuntimeRootIsCustom = $StudioHomeIsCustom
-# Where the runtimes actually land, not merely whether a master root was named. Setting
-# UNSLOTH_HOME=%USERPROFILE%\.unsloth on an existing default install names the root that install
-# is already using, so nothing moves; classifying it custom anyway would demand an owner marker
-# from a legacy source-built .unsloth\llama.cpp that predates the marker, and
-# Assert-StudioOwnedOrAbsent would refuse an update that used to reuse that build. This is the
-# comparison setup.sh makes; taking any non-empty master root instead was a real divergence
-# between the two halves, not a spelling difference.
+# Keyed on where the runtimes LAND, not on whether a master root was named: UNSLOTH_HOME set to
+# the root an install already uses moves nothing, and calling that custom would demand an owner
+# marker from a legacy source-built .unsloth\llama.cpp that predates markers. The comparison
+# setup.sh makes; taking any non-empty master root instead was a real divergence.
 $_masterRootForOwnership = Get-MasterRootOverride
 if ($_masterRootForOwnership) {
     # Canonicalised the same way Get-MasterRootOverride canonicalises its answer, or a
@@ -2835,19 +2832,13 @@ if ($_masterRootForOwnership) {
 $LlamaCppDir = Get-ManagedLlamaCppDir -StagingRoot $StageRoot
 $UnslothHome = Split-Path -Parent $LlamaCppDir
 
-# Record the master root inside the Studio tree, for the uninstaller. Mirrors setup.sh.
-#
-# UNSLOTH_HOME can be set for a single command -- `$env:UNSLOTH_HOME = 'D:\portable'; unsloth
-# studio update` -- and node\, llama.cpp\ and whisper.cpp\ then live somewhere only that
-# environment named. uninstall.ps1 finds the Studio root by its own means, so it can find this
-# note; without it, a later uninstall run without the variable removed the Studio tree and
+# Record the master root inside the Studio tree, for the uninstaller: UNSLOTH_HOME can be set
+# for a single command, and without the note a later uninstall removed the Studio tree and
 # stranded multi-gigabyte runtimes beside it.
 #
-# Only for a master root: the other branches derive the root from paths the uninstaller already
-# knows, and a stale note claiming a root that moved would be worse than none.
-#
-# And only when a reader will honour it. setup.sh's _master_root_note_is_honoured holds the same
-# two rules for the same reasons; keep them together.
+# Only for a master root (the other branches derive the root from paths the uninstaller already
+# knows), and only when a reader will honour it. setup.sh's _master_root_note_is_honoured holds
+# the same two rules for the same reasons; keep them together.
 function Test-MasterRootNoteIsHonoured {
     param([string]$Root, [string]$StudioRoot)
     $norm = Get-CanonicalDir -Path $Root
@@ -2855,18 +2846,16 @@ function Test-MasterRootNoteIsHonoured {
     $here = Get-CanonicalDir -Path $StudioRoot
     if (-not $here) { return $false }
     # The legacy default is the one root every reader finds without help, and both uninstallers
-    # refuse it outright. Recording it turned UNSLOTH_HOME=%USERPROFILE%\.unsloth -- set once,
-    # naming the directory the install was already in -- into a permanent portable install: every
-    # later bare launch read it back, portable mode stayed on, and HF_HUB_CACHE moved off the
-    # shared Hugging Face cache this change promises not to move.
+    # refuse it outright. Recording it turned a one-command UNSLOTH_HOME=%USERPROFILE%\.unsloth
+    # into a permanent portable install: every later bare launch read it back and HF_HUB_CACHE
+    # moved off the shared Hugging Face cache this change promises not to move.
     $legacy = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth")
     if ($legacy -and ($norm -ieq $legacy)) { return $false }
     # A note must describe the tree it is written into: every reader requires the Studio
-    # directory it was read from to lie INSIDE the root it names, so a tree copied between master
-    # roots cannot aim a removal at the original install. install.ps1 does not read UNSLOTH_HOME
-    # yet, so a master root on an ordinary install leaves Studio at the legacy path and the
-    # runtimes under the master root -- the case the note exists for, and the shape every reader
-    # rejects. Say so rather than leaving a file that reads as a recorded root and behaves as none.
+    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot aim
+    # a removal at the original install. install.ps1 does not read UNSLOTH_HOME yet, so a master
+    # root on an ordinary install leaves Studio at the legacy path with the runtimes elsewhere,
+    # which is that shape: say so, rather than leave a file that behaves as no note at all.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
@@ -2889,10 +2878,10 @@ if ((Get-MasterRootOverride) -and -not $StageRoot -and
         $notePath = Join-Path $noteDir ".unsloth-master-root"
         $noteBytes = [System.Text.Encoding]::UTF8.GetBytes($UnslothHome + [Environment]::NewLine)
         # Nothing to do when the note already says this, which is every run after the first.
-        # Move-Item -Force is NOT an atomic replace: PowerShell's filesystem provider deletes the
-        # destination and then moves the source, so an interruption in between leaves NO note at
-        # all, and a backend that looks next caches "no master root" from it. Re-entering that
-        # window on every update, to rewrite bytes that are already there, is the avoidable half.
+        # Move-Item -Force is NOT an atomic replace: the provider deletes the destination then
+        # moves the source, so an interruption leaves NO note and a backend that looks next
+        # caches "no master root". Re-entering that window to rewrite identical bytes is the
+        # avoidable half.
         $noteCurrent = $null
         try {
             if (Test-Path -LiteralPath $notePath -PathType Leaf) {
@@ -2907,11 +2896,10 @@ if ((Get-MasterRootOverride) -and -not $StageRoot -and
             }
         }
         if (-not $noteSame) {
-            # An unpredictable name opened CreateNew, not "$notePath.$PID" written through
-            # WriteAllText: the predictable pair lets anyone who can write share/ precreate that
-            # name and have this write land on whatever it points at. CreateNew fails on an
-            # existing entry instead of opening it, and Move-Item -Force below replaces a link at
-            # the final path.
+            # An unpredictable name opened CreateNew, not "$notePath.$PID" through WriteAllText:
+            # the predictable pair lets anyone who can write share/ precreate that name as a link
+            # and have this write land on its target. Move-Item -Force replaces a link at the
+            # final path rather than following it.
             $noteTmp = Join-Path $noteDir (".unsloth-master-root." + [System.IO.Path]::GetRandomFileName())
             try {
                 $noteStream = [System.IO.File]::Open(
@@ -2940,11 +2928,10 @@ if ((Get-MasterRootOverride) -and -not $StageRoot -and
     }
 }
 
-# Clear a note an earlier run left naming the legacy default root, whatever this run was asked to
-# do. setup.sh does the same, for the same reason: the gate above stops new ones, but an install
-# that already has one keeps reading it back on every bare launch, and no later update would pass
-# through the write block to correct it. Narrow on purpose -- this is the single value both
-# uninstallers already refuse, so removing it takes nothing any reader could act on.
+# Clear a note an earlier run left naming the legacy default root, whatever this run was asked
+# to do: the gate above stops new ones, but an install that already has one keeps reading it
+# back and no later update would reach the write block to correct it. Narrow on purpose -- both
+# uninstallers already refuse this value, so removing it takes nothing a reader could act on.
 try {
     $staleNote = Join-Path (Join-Path $StudioHome "share") ".unsloth-master-root"
     if (Test-Path -LiteralPath $staleNote -PathType Leaf) {
@@ -4876,24 +4863,19 @@ if ($NeedNodeForSetup) {
     } elseif ($NodeSource -eq "bundled") {
         New-Item -ItemType Directory -Force -Path $NodeParent -ErrorAction SilentlyContinue | Out-Null
         # Minimal ownership guard; never os.replace over a user-owned dir.
-        # $RuntimeRootIsCustom as well as $NodeOverride: the master-root branch above sets
-        # $NodeParent and leaves $NodeOverride null, so <master>\node reached the whole-directory
-        # replacement in install_node_prebuilt.py with none of the ownership evidence a custom
-        # UNSLOTH_STUDIO_HOME requires. The master root is the user's directory too. setup.sh
-        # passes _RUNTIME_ROOT_IS_CUSTOM here for the same reason. Or, not replacing: a custom
-        # Studio home must keep the guard it already had.
+        # $RuntimeRootIsCustom as well as $NodeOverride: the master-root branch above leaves
+        # $NodeOverride null, so <master>\node reached install_node_prebuilt.py's whole-directory
+        # replacement with none of the ownership evidence a custom UNSLOTH_STUDIO_HOME requires,
+        # and the master root is the user's directory too. Or, not replacing: a custom Studio
+        # home keeps the guard it had.
         #
-        # Anything at the path counts as occupied, not just a directory. install_node_prebuilt's
-        # _swap_into_place renames whatever it finds there out of the way, so a regular file or a
-        # symlink named `node` under a user-selected root was displaced by a guard that only asked
-        # about containers. Ownership evidence lives inside a directory, so a non-directory can
-        # never carry it and is refused outright. setup.sh's _assert_studio_owned_or_absent takes
-        # the same view of -d against -e and -L.
-        # Get-Item -Force, not Test-Path, for the same reason Assert-StudioOwnedOrAbsent uses it:
-        # under Windows PowerShell 5.1 Test-Path reports whether the TARGET resolves, so a
-        # dangling link named `node` reads as absent, and install_node_prebuilt.py then resolves
-        # --install-dir and installs through the link. The comment above promises that anything
-        # at the path counts as occupied; this is what makes a link count too.
+        # Anything at the path counts as occupied, not just a directory: _swap_into_place renames
+        # whatever it finds out of the way, so a file or symlink named `node` was displaced by a
+        # guard that only asked about containers. Ownership evidence lives inside a directory, so
+        # a non-directory can never carry it and is refused outright.
+        # Get-Item -Force, not Test-Path: under Windows PowerShell 5.1 Test-Path reports whether
+        # the TARGET resolves, so a dangling link named `node` reads as absent and
+        # install_node_prebuilt.py installs through it.
         $nodeEntry = if ($NodeOverride -or $RuntimeRootIsCustom) {
             Get-Item -LiteralPath $NodeDir -Force -ErrorAction SilentlyContinue
         } else { $null }
@@ -5244,12 +5226,10 @@ function Assert-StudioOwnedOrAbsent {
             if ($NonFatal) { return "Denied" }
             Exit-PathAccessDenied -Path $Path -Label $Label -OwnershipUnverified
         }
-        # A Container probe answers false for a regular file and for a link whose target is
-        # gone, and the caller then rm -rf'd the path or let install_*_prebuilt.py replace it
-        # (activate_install_tree gates the aside-move on Path.exists()). Both shapes are things
-        # the user put in a directory they chose. Get-Item -Force still sees the directory
-        # entry where Test-Path does not, which is the dangling-link case under 5.1.
-        # setup.sh's _assert_studio_owned_or_absent takes the same view of -d against -e and -L.
+        # A Container probe answers false for a regular file and for a link whose target is gone,
+        # and the caller then deleted the path or let install_*_prebuilt.py replace it; both
+        # shapes are things the user put in a directory they chose. Get-Item -Force still sees
+        # the directory entry where Test-Path does not, which is the dangling link under 5.1.
         if (-not $isCustomRoot) { return }
         if (-not (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue)) { return }
         # Ownership evidence lives inside a directory, so a non-directory can never carry it
@@ -7444,16 +7424,15 @@ if ($script:UnslothVerbose) {
 # Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
 # paths on, cache under Unsloth home; else use a short drive-root dir for headroom.
 #
-# This value is persisted to the USER environment below, so every later Studio process inherits
-# it and _setup_cache_env's fill-if-unset default never applies on Windows. It therefore has to
-# name the same directory the resolver would have chosen, or the containment this branch is for
-# simply does not happen on Windows.
+# Persisted to the USER environment below, so every later Studio process inherits it and
+# _setup_cache_env's fill-if-unset default never applies on Windows: it has to name the
+# directory the resolver would have chosen, or the containment does not happen here at all.
 #
-# Two things still outrank that. Long paths off keeps the short drive-root directory, because
-# Inductor's filenames hit MAX_PATH and a contained cache that cannot be written is worse than
-# an uncontained one. And a path containing a space is refused for the same reason
-# storage_roots._TOOLCHAIN_PATH_KEYS refuses one: torch/_inductor/cpp_builder.py pastes it into
-# a compiler command line unquoted, and "C:\Users\First Last" is an ordinary account name.
+# Two things outrank that. Long paths off keeps the short drive-root directory, since Inductor's
+# filenames hit MAX_PATH and a contained cache that cannot be written is worse than an
+# uncontained one. And a path containing a space is refused as
+# storage_roots._TOOLCHAIN_PATH_KEYS refuses one: cpp_builder.py pastes it into a compiler
+# command line unquoted, and "C:\Users\First Last" is an ordinary account name.
 $TorchCacheDir = $null
 if ($StageRoot) {
     $TorchCacheDir = Join-Path $RuntimeRoot "TORCHINDUCTOR_CACHE_DIR"

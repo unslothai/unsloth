@@ -30,12 +30,10 @@ SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 
-# These execute blocks of the POSIX installer, so they need bash AND a POSIX filesystem.
-# Git Bash puts bash on PATH on a Windows runner, where the blocks then run against Windows path
-# semantics and hand back UTF-16 output: `assert '\x00' == 'ALLOWED'` is what that looks like.
-# setup.ps1 is covered separately in this file and in tests/studio/, so skipping here loses no
-# coverage and stops the Windows half of a cross-platform run reporting failures about a script
-# it never uses.
+# These execute blocks of the POSIX installer, so they need bash AND a POSIX filesystem. Git
+# Bash puts bash on PATH on a Windows runner, where the blocks run against Windows path
+# semantics and hand back UTF-16 (`assert '\x00' == 'ALLOWED'`). setup.ps1 is covered separately
+# here and in tests/studio/, so skipping loses no coverage.
 NEEDS_POSIX_BASH = pytest.mark.skipif(
     shutil.which("bash") is None or os.name == "nt",
     reason = "runs studio/setup.sh blocks: needs bash on a POSIX filesystem",
@@ -422,9 +420,8 @@ def test_every_runtime_ownership_guard_uses_the_runtime_flag():
             name in line for name in ("$NODE_DIR", "$LLAMA_CPP_DIR", "$WHISPER_CPP_DIR")
         ), line
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    # Seeded from the Studio flag and raised only when the master root is somewhere else, which
-    # is setup.sh's rule. Taking any non-empty master root instead is the divergence
-    # test_the_windows_legacy_root_named_explicitly_is_not_custom below runs for real.
+    # Seeded from the Studio flag and raised only when the master root is elsewhere, as setup.sh
+    # does; test_the_windows_legacy_root_named_explicitly_is_not_custom runs the divergence.
     assert "$RuntimeRootIsCustom = $StudioHomeIsCustom\n" in ps
     assert "$_masterRootForOwnership -ine $_legacyRuntimeRoot" in ps
     for line in ps.splitlines():
@@ -697,10 +694,9 @@ def test_the_windows_node_guard_covers_a_master_root():
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     # Every site in the Node install section that decides whether the Node path is the user's.
-    # Keyed on $NodeOverride, the variable the bug named, rather than on $NodeDir: the guard's
-    # probe moved to its own line and a $NodeDir test would have stopped finding it, passing by
-    # seeing less. The section start drops the parsing block far above, which assigns
-    # $NodeOverride from the environment and rightly says nothing about the runtime root.
+    # Keyed on $NodeOverride, the variable the bug named, not $NodeDir: the guard's probe moved
+    # to its own line, so a $NodeDir test would pass by seeing less. The section start drops the
+    # parsing block far above, which rightly says nothing about the runtime root.
     lines = ps.splitlines()
     start = next(i for i, line in enumerate(lines) if "$nodeEntry = if (" in line)
     guards = [line for line in lines[start:] if "$NodeOverride" in line]
@@ -773,9 +769,9 @@ def test_neither_uninstaller_recurses_into_an_install_lock_path():
     assert "_remove_lock_file() {" in sh
     assert "function _RemoveLockFile" in ps
 
-    # The call sites do not all spell the lock out: the PowerShell ones iterate $lockName over a
-    # list built on the line above, and both sweep a $stale from a glob. Matching only on
-    # "install.lock" let the master-root loop keep the recursive remover and still pass.
+    # The call sites do not all spell the lock out (PowerShell iterates $lockName, both sweep a
+    # $stale), so matching only "install.lock" let the master-root loop keep the recursive
+    # remover and still pass.
     lockish = ("install.lock", "lockName", "$stale", "_stale", "_mr_lock")
     for text, remover, shape in (
         (sh, "_remove_path ", "_remove_lock_file"),
@@ -796,9 +792,8 @@ def test_neither_uninstaller_recurses_into_an_install_lock_path():
         # tokens above had stopped matching and this loop proved nothing.
         assert hits >= 4, (remover, hits)
 
-    # The rename install_node_prebuilt makes keeps the leading dot, and a glob without one also
-    # matched names the user owns in their own root. The dot alone turned out not to be enough
-    # either, so the sweep now matches the installer's full shape; the rule is held by
+    # The rename keeps the leading dot, and neither a glob without one nor the dot alone is
+    # enough, so the sweep matches the installer's full shape; held by
     # test_neither_uninstaller_sweeps_a_stale_lock_name_it_did_not_make below.
     assert "install.lock.stale" in ps
     assert '"*.install.lock.stale.*"' not in ps
@@ -1052,9 +1047,8 @@ def test_the_windows_node_guard_treats_a_file_as_occupied():
         "install_node_prebuilt.py",
     )
     code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
-    # Get-Item -Force, not Test-Path: under Windows PowerShell 5.1 Test-Path answers for the
-    # link TARGET, so a dangling `node` link read as absent and install_node_prebuilt.py then
-    # installed through it. Assert-StudioOwnedOrAbsent uses Get-Item for the same reason.
+    # Get-Item -Force, not Test-Path: under 5.1 Test-Path answers for the link TARGET, so a
+    # dangling `node` link read as absent and install_node_prebuilt.py installed through it.
     assert "Get-Item -LiteralPath $NodeDir -Force" in code, code
     assert "Test-Path -LiteralPath $NodeDir" not in code, code
     # A reparse point is not a directory here either, however it resolves.
@@ -1127,9 +1121,8 @@ def test_neither_uninstaller_re_resolves_the_master_root_after_deleting_it():
     sh_code = "\n".join(l for l in sh.splitlines() if not l.lstrip().startswith("#"))
     saved = sh_code.index('_MASTER_ROOT_SAVED="$(_master_root)"')
     removal = sh_code.index("_custom_studio_roots | while")
-    # Resolved before the first deletion, and nothing asks again after it. Calls BEFORE the
-    # removal loop are fine: _custom_studio_roots and _owned_sd_cpp_roots both enumerate while
-    # every tree is still on disk.
+    # Resolved before the first deletion, and nothing asks again after it. Calls BEFORE the loop
+    # are fine: those enumerate while every tree is still on disk.
     assert saved < removal
     after = sh_code[removal:]
     assert "_master_root" not in after, after[: after.index("_master_root") + 200]
@@ -1406,9 +1399,9 @@ def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
     first = run_pwsh(argv, capture_output = True, text = True, check = True)
     note = note_dir / ".unsloth-master-root"
 
-    # Back-date the note far enough that any rewrite is unmistakable. Two runs a millisecond
-    # apart can land on one filesystem timestamp tick, so the first version of this test passed
-    # against the unfixed writer: a control that cannot fail is worse than no control.
+    # Back-dated so a rewrite is unmistakable: two runs a millisecond apart land on one
+    # filesystem tick, which is how the first version of this test passed against the unfixed
+    # writer.
     old_stamp = 1_000_000_000
     os.utime(note, (old_stamp, old_stamp))
 

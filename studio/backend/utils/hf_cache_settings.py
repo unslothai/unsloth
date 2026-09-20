@@ -148,9 +148,8 @@ def _absence_is_real(path: Path) -> bool:
 def _stored_cache_home() -> Optional[Path]:
     # get_app_setting CREATES and migrates studio.db, so an unconditional read built one on
     # machines that had never opened Studio. os.stat, not Path.exists: only a positively observed
-    # absence may skip the read, and from 3.14 the predicates report EACCES and EIO as False, so a
-    # database we could not inspect would read as "no setting stored". stat, not lstat: sqlite
-    # follows symlinks.
+    # absence may skip the read, and from 3.14 the predicates report EACCES and EIO as False.
+    # stat, not lstat: sqlite follows symlinks.
     try:
         if "storage.studio_db" not in sys.modules:
             from utils.paths.storage_roots import studio_db_path

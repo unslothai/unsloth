@@ -106,9 +106,9 @@ def test_regenerable_caches_are_pinned_under_the_studio_root(tmp_path):
         assert value.startswith(root), f"{key} escaped the studio root: {value}"
 
 
-# Pinned to a path a compiler is handed on a command line. torch/_inductor/cpp_builder.py joins
-# its arguments with spaces, interpolates the output path unquoted, and reparses the result with
-# shlex.split, so a root containing a space splits mid-path and the C++ build fails outright.
+# Pinned to a path a compiler is handed on a command line: cpp_builder.py joins with spaces,
+# interpolates unquoted and reparses with shlex.split, so a root containing a space splits
+# mid-path and the C++ build fails outright.
 _TOOLCHAIN_PINNED = (
     "TORCHINDUCTOR_CACHE_DIR",
     "TORCH_EXTENSIONS_DIR",
@@ -1056,8 +1056,8 @@ def test_torch_extension_cache_separates_a_debug_build(tmp_path):
 
 
 def test_torch_runtime_tag_never_imports_torch(tmp_path):
-    # This runs before torch exists in a fresh venv, and importing it on the startup path would
-    # cost seconds and pull CUDA in. The fake package raises on import, so a skip is a failure.
+    # Runs before torch exists in a fresh venv, and importing it on the startup path would cost
+    # seconds. The fake package raises on import, so a skip is a failure.
     sr = _load_storage_roots()
     entry = _fake_torch_on_path(tmp_path, "guard", "2.9.1+cu128", cuda = "12.8")
 
@@ -1325,9 +1325,8 @@ def test_a_genuinely_absent_note_is_still_cached(monkeypatch, tmp_path):
     sr = _load_storage_roots()
 
     assert sr.unsloth_home() is None
-    # Written after the miss was cached. A cached answer is the point; the installer that writes
-    # a note into a tree this process already looked at is what forget_recorded_master_root() is
-    # for, and it still works.
+    # Written after the miss was cached: a cached answer is the point, and
+    # forget_recorded_master_root() is the way back out for an installer that writes one later.
     (studio / "share" / ".unsloth-master-root").write_text(
         str(tmp_path / "root") + "\n",
         encoding = "utf-8",
@@ -1444,11 +1443,9 @@ def test_an_explicit_legacy_unsloth_home_is_still_the_user_speaking(monkeypatch,
     assert sr.portable_mode() is True
 
 
-# Reverting only the production hunks and keeping this file green in 25 of 113 cases is what
-# these two close. Every one of the 25 asserts that some variable is ABSENT, which is also true
-# when no pinning code exists at all, so none of them could fail on the merge base: they are
-# assertions, not negative controls. Pairing each decline with the pins that must STILL happen in
-# the same run makes the family falsifiable without rewriting twenty-five tests.
+# 25 of 113 cases stayed green with the production hunks reverted: each asserts a variable is
+# ABSENT, which is equally true when no pinning code exists, so they were assertions rather than
+# negative controls. Pairing a decline with the pins that must STILL happen makes them falsifiable.
 _DECLINE_SIBLINGS = (
     "TORCHINDUCTOR_CACHE_DIR",
     "NUMBA_CACHE_DIR",

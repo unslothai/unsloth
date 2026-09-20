@@ -70,14 +70,9 @@ _recorded_master_lock = threading.Lock()
 
 
 def _studio_root_without_master() -> Path:
-    """THE studio root, derived WITHOUT consulting the master root.
+    """The studio root as studio_root() would give it with the master root out of the picture.
 
-    studio_root() asks unsloth_home() where the studio tree is, so the note reader cannot ask
-    studio_root() back. This is the answer studio_root() gives once the master root is out of the
-    picture, and only that one: an explicit UNSLOTH_STUDIO_HOME names this exact directory, so
-    walking on to the inferred or legacy root when it carries no note would adopt an unrelated
-    install's master root while studio_root() stayed on the tree the user named, and send node,
-    whisper.cpp, llama.cpp and the portable caches somewhere the Studio is not.
+    studio_root() asks unsloth_home(), so the note reader cannot ask studio_root() back.
     """
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if not override:
@@ -93,33 +88,14 @@ def _studio_root_without_master() -> Path:
 def _is_legacy_studio_tree(studio: Path) -> bool:
     """Whether the tree a note was read from is the ordinary `~/.unsloth/studio` install.
 
-    A legacy-rooted install HAS no master root. It is where install.sh and install.ps1 put Studio
-    when nobody asked for anything else, and every reader finds its runtimes without help, so a
-    note found there can only say something no reader needs and every reader disagrees about.
-    Both uninstallers already refuse the value that shape produces
-    (`case "$_mr" in "$HOME/.unsloth"|/|"") return 0`, and `_MasterRoot`'s `USERPROFILE\\.unsloth`
-    bail-out).
-
-    Two things went wrong without this, one of them load-bearing for the desktop app:
-
-    `UNSLOTH_HOME=$HOME/.unsloth`, set once for one command and naming the directory the install
-    was already in, left a note every later BARE launch read back, so `portable_mode()` stayed
-    true for good and `HF_HUB_CACHE` moved off `~/.cache/huggingface` -- the one cache this module
-    promises not to move.
-
-    And `process.rs` scrubs `UNSLOTH_HOME` and `UNSLOTH_PORTABLE` from every managed spawn
-    precisely so "Tauri uses the legacy Unsloth root whatever the environment says". A note is a
-    FILE, which no `env_remove` can reach: one naming any ANCESTOR of the tree -- `$HOME` passes
-    containment, since `~/.unsloth/studio` is inside it -- reintroduced both through the
-    filesystem and moved the packaged app's caches out from under it. Keyed on the TREE rather
-    than on the recorded value, so `$HOME`, `/`, and every other ancestor go with it.
-
-    Nothing legitimate is lost: the feature is a Studio at `<master>/studio`, which is not this
-    tree, and the case where Studio stays legacy while the runtimes go elsewhere is already
-    refused by containment.
-
-    Recorded roots only. An explicit UNSLOTH_HOME never gets here: `unsloth_home()` returns the
-    override before calling this, which is the user speaking rather than a file on disk.
+    A legacy-rooted install has no master root, so a note there says something no reader needs;
+    both uninstallers already refuse the value it produces. Two things it broke: a one-command
+    `UNSLOTH_HOME=$HOME/.unsloth` left a note that kept `portable_mode()` true for good, moving
+    the one cache this module promises not to move; and a note naming any ANCESTOR of the tree
+    (`$HOME` passes containment) reintroduced through the filesystem what `process.rs` scrubs
+    from every managed spawn, which no `env_remove` can reach. Hence keyed on the TREE, not on
+    the recorded value. An explicit UNSLOTH_HOME never gets here: unsloth_home() returns the
+    override first.
     """
     try:
         return studio.resolve() == (Path.home() / ".unsloth" / "studio").resolve()
@@ -130,21 +106,15 @@ def _is_legacy_studio_tree(studio: Path) -> bool:
 def _recorded_master_root() -> Path | None:
     """The master root setup recorded inside the studio tree, or None.
 
-    UNSLOTH_HOME is documented as settable for a single command -- `UNSLOTH_HOME=/mnt/portable
-    unsloth studio update` -- and setup then installs node, llama.cpp and whisper.cpp as SIBLINGS
-    of studio/ under that root. Nothing persists the variable, so without this every later launch
-    resolved those three somewhere else: bare, at the legacy ~/.unsloth; and even with the studio
-    root correctly known, at its studio/ CHILD, which is not where they were put. setup already
-    writes the root to share/.unsloth-master-root for the uninstallers; read it here so the rest
-    of the process agrees with the install on disk.
+    UNSLOTH_HOME is settable for a single command (`UNSLOTH_HOME=/mnt/portable unsloth studio
+    update`) and nothing persists it, so without this every later launch resolved node, llama.cpp
+    and whisper.cpp somewhere other than the siblings of studio/ setup created. setup already
+    writes the root to share/.unsloth-master-root for the uninstallers.
 
-    Only a note that still describes reality is honoured: the recorded root must exist, the Studio
-    directory the note was read from must lie INSIDE it, and it must not be the legacy default,
-    which every reader finds without help and both uninstallers refuse. A note left behind by a
-    tree that has since moved, or copied from one master root to another, names a root this
-    process would otherwise adopt for caches and runtimes both. Containment rather than an exact
-    <root>/studio match, because the flat layout, UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming
-    one directory, is supported and would fail that; the uninstallers apply the same rule.
+    Honoured only while it still describes reality: the root must exist, the Studio directory the
+    note was read from must lie INSIDE it, and it must not be the legacy default. Containment
+    rather than an exact <root>/studio match, since the flat layout (both variables naming one
+    directory) is supported; the uninstallers apply the same rule.
     """
     studio = _studio_root_without_master()
     key = str(studio)
@@ -152,13 +122,10 @@ def _recorded_master_root() -> Path | None:
         if key in _recorded_master_roots:
             return _recorded_master_roots[key]
     found: Path | None = None
-    # A miss is cached; a failure to LOOK is not. "No note" is a fact about the install and will
-    # not change under this process, but EACCES on share/ or EIO off a mount that came back is a
-    # fact about one instant. Cached, either one pinned the backend to the legacy runtime paths
-    # for its whole lifetime, silently, with the trees it should have found sitting beside it --
-    # and forget_recorded_master_root() is the only way back out, which nothing calls in
-    # production. FileNotFoundError and NotADirectoryError are the definitive shapes: share/ or
-    # the note is absent, or a path component is not a directory, which is an absent note too.
+    # A miss is cached; a failure to LOOK is not. EACCES on share/ or EIO off a mount that came
+    # back is a fact about one instant, and cached it pinned the backend to the legacy runtime
+    # paths for its whole lifetime, with forget_recorded_master_root() the only way out and
+    # nothing calling it in production.
     definitive = True
     try:
         recorded = (studio / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8").strip()
@@ -213,10 +180,8 @@ def _warn_unrecognized_portable(raw: str) -> None:
     if _warned_unrecognized_portable:
         return
     _warned_unrecognized_portable = True
-    # Not "to leave it off": an off value is not a veto. A master root IS a portable install, so
-    # 0/false/off/no only decline to turn portable mode on by themselves, and UNSLOTH_HOME still
-    # carries it. Promising otherwise in the one message a confused user reads would be worse
-    # than the unrecognized value that got them here.
+    # Not "to leave it off": an off value declines to turn portable mode on by itself, it does
+    # not veto the master root that carries it.
     logger.warning(
         "Ignoring UNSLOTH_PORTABLE=%r: expected one of %s to turn portable mode on, or one of "
         "%s to leave that choice to UNSLOTH_HOME, which turns it on when it names a master root.",
@@ -229,16 +194,15 @@ def _warn_unrecognized_portable(raw: str) -> None:
 def portable_mode() -> bool:
     """Whether this install keeps everything under one directory. Implied by UNSLOTH_HOME, and
     settable on its own so an existing install can opt in."""
-    # Case-folded: UNSLOTH_PORTABLE=FALSE read as "on" would move the caches out from under a
-    # user who asked for the opposite.
+    # Case-folded: UNSLOTH_PORTABLE=FALSE read as "on" moves the caches out from under a user
+    # who asked for the opposite.
     raw = (os.environ.get("UNSLOTH_PORTABLE") or "").strip()
     value = raw.lower()
     if value in _PORTABLE_ON_VALUES:
         return True
     if value and value not in _PORTABLE_OFF_VALUES:
         _warn_unrecognized_portable(raw)
-    # Unrecognized means no opinion, exactly as an off value does: neither vetoes a real
-    # portable install, whose root is what makes it portable.
+    # Unrecognized means no opinion, as an off value does: neither vetoes a real master root.
     return unsloth_home() is not None
 
 
@@ -727,8 +691,8 @@ def well_known_model_dirs() -> list[Path]:
 def _user_set_hf_home() -> bool:
     """Whether HF_HOME was set by the user rather than seeded by Unsloth.
 
-    initialize_hf_cache_environment fills a blank HF_HOME before this runs, so hf_cache_settings'
-    import-time snapshot is the only record of who chose it.
+    initialize_hf_cache_environment fills a blank HF_HOME first, so the import-time snapshot is
+    the only record of who chose it.
     """
     try:
         from utils.hf_cache_settings import _EXPLICIT_CACHE_ENV
@@ -746,13 +710,11 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
     if not portable_mode():
         return {}
     if _user_set_hf_home():
-        # Assets, datasets and modules derive from an explicit HF_HOME, so pinning them here
-        # would split one deliberately chosen cache across two volumes.
+        # Assets, datasets and modules derive from an explicit HF_HOME: pinning them splits one
+        # deliberately chosen cache across two volumes.
         return {"TORCH_HOME": str(root / "torch")}
     return {
         "HF_DATASETS_CACHE": str(root / "huggingface" / "datasets"),
-        # These two derive from <HF_HOME>, which stays on the host, so they are the HF roots
-        # that would otherwise still write outside the volume.
         "HF_ASSETS_CACHE": str(root / "huggingface" / "assets"),
         # transformers.utils.hub reads this at import and appends it to sys.path, so a
         # trust_remote_code load leaves generated modules on the host without it.
@@ -764,10 +726,9 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
 def _triton_cache_defaults(root: Path) -> dict[str, str]:
     """Triton's regenerable directories, named one at a time.
 
-    TRITON_HOME would move all three at once (triton-lang/triton#4265), and that is why it is not
-    used: ~/.triton/override holds hand-written kernels, so moving their parent makes a
-    TRITON_KERNEL_OVERRIDE=1 run silently fall back to the compiler's own output. The dedicated
-    variables outrank the derivation (triton/knobs.py cache_knobs).
+    Not TRITON_HOME (triton-lang/triton#4265): it would take ~/.triton/override with it, and a
+    TRITON_KERNEL_OVERRIDE=1 run would silently fall back to the compiler's own output. The
+    dedicated variables outrank the derivation (triton/knobs.py cache_knobs).
     """
     if (os.environ.get("TRITON_HOME") or "").strip():
         # Whoever moved the whole tree meant the cache with it; TRITON_CACHE_DIR would outrank it.
@@ -793,23 +754,16 @@ def _nothing_at(path: Path, *, ending: str = "") -> bool:
         if not ending:
             os.lstat(path)
             return False
-        # A link at the directory itself is something the user put there, and scandir follows
-        # it: an empty target, or a dangling one whose volume is not mounted right now, would
-        # read as an empty directory and the styles placed at that target would be hidden behind
-        # the pin. lstat, so the link and not its target answers, and so an unreadable parent
-        # still raises into the handler below rather than being called absence.
+        # lstat, not scandir, at the directory itself: scandir follows a link, so an empty or
+        # unmounted target would read as an empty directory and hide what is placed there.
         if stat_module.S_ISLNK(os.lstat(path).st_mode) or _is_reparse_point(path):
             return False
         with os.scandir(path) as entries:
             return not any(entry.name.lower().endswith(ending) for entry in entries)
     except FileNotFoundError:
-        # Not absence on its own. POSIX distinguishes "not there" from "a parent component is a
-        # file" (NotADirectoryError) and "I may not traverse it" (PermissionError); Windows
-        # collapses all three into ERROR_PATH_NOT_FOUND, which Python raises as
-        # FileNotFoundError. Taking it at face value is the very reading the docstring above
-        # rejects, restricted to one platform: with a FILE where ~/.matplotlib belongs, POSIX
-        # declined the pin and Windows took it. Caught by the windows-latest leg on a test
-        # written for the POSIX shape.
+        # Not absence on its own: Windows collapses NotADirectoryError and PermissionError into
+        # ERROR_PATH_NOT_FOUND, so with a FILE where ~/.matplotlib belongs POSIX declined the pin
+        # and Windows took it.
         return _nothing_above(path)
     except (OSError, ValueError):
         # Could not look. Declining a pin costs a shared cache directory; taking one wrongly
@@ -820,13 +774,9 @@ def _nothing_at(path: Path, *, ending: str = "") -> bool:
 def _nothing_above(path: Path) -> bool:
     """Whether a FileNotFoundError for *path* really means nothing is there.
 
-    Decided by the nearest ancestor that can be stat'ed: a directory means the tree is real and
-    the entry genuinely is not in it; anything else means a component is a file or a reparse
-    point, so the path could never have existed and this call has learned nothing; an ancestor
-    that cannot be inspected at all is not proof either way. Running out of ancestors means
-    nothing along the path exists, which is real absence.
-
-    Same rule as hf_cache_settings._absence_is_real, for the same reason on the same platform.
+    Decided by the nearest ancestor that can be stat'ed: a directory means real absence, anything
+    else means a component is a file or a reparse point, and an ancestor that cannot be inspected
+    is proof of neither. Same rule as hf_cache_settings._absence_is_real.
     """
     current = os.path.dirname(os.fspath(path))
     while current:
@@ -849,11 +799,9 @@ def _matplotlib_config_dir() -> Path | None:
     when this machine has no such directory. Mirrors _get_config_or_cache_dir: XDG config base on
     Linux/FreeBSD, %LOCALAPPDATA% on Windows but keeping a pre-existing ~/.matplotlib there.
 
-    The Windows branch is matplotlib 3.11's; the pinned 3.10.9 sends every non-XDG platform to
-    ~/.matplotlib. The disagreement is one-way and safe: an rc under %LOCALAPPDATA% that 3.10.9
-    would ignore only costs us the pin, and it never hides a file matplotlib does read.
-
-    None means matplotlib falls back to a temporary directory, so a pin can strand nothing.
+    None means matplotlib falls back to a temporary directory, so a pin can strand nothing. The
+    Windows branch is matplotlib 3.11's and the pinned 3.10.9 uses ~/.matplotlib; that
+    disagreement only ever costs us the pin, it never hides a file matplotlib reads.
     """
     # XDG_CONFIG_HOME ahead of Path.home(), as _get_xdg_config_dir does: an install that sets it
     # has a config dir even with no resolvable home.
@@ -889,12 +837,9 @@ def _matplotlib_defaults(root: Path) -> dict[str, str]:
     """
     managed = root / "matplotlib"
     pinned = {"MPLCONFIGDIR": str(managed)}
-    # Our own configuration first, for the reason _data_designer_defaults gives: the legacy probe
-    # re-runs every launch, so on its own it hands a matplotlibrc written HERE to a
-    # ~/.config/matplotlib created later by some other tool. Measured across four launches: dpi
-    # 177 from the managed config, then 222 once a legacy rc appeared, then 177 again when it was
-    # removed, with the managed rc present throughout. A style that changes on a later launch and
-    # changes back is worse than either choice made once.
+    # Our own configuration first: the legacy probe re-runs every launch, so on its own a
+    # ~/.config/matplotlib created later by another tool takes over a matplotlibrc written HERE,
+    # and the plot style flips back and forth across launches.
     if not (
         _nothing_at(managed / "matplotlibrc")
         and _nothing_at(managed / "stylelib", ending = ".mplstyle")
@@ -928,9 +873,8 @@ def _data_designer_in_use(home: Path) -> bool:
     """Whether the managed Data Designer home holds work worth keeping.
 
     _setup_cache_env creates this directory and its managed-assets child on the first launch, so
-    existence alone would pin a home nobody has written to. Same rule as _nothing_at read for
-    contents: a home we merely cannot list still counts as in use, since dropping the pin would
-    hide the recipes here behind a re-seeded ~/.data-designer.
+    existence alone would pin a home nobody has written to. A home we cannot list counts as in
+    use: dropping the pin would hide the recipes here behind a re-seeded ~/.data-designer.
     """
     try:
         entries = list(home.iterdir())
@@ -942,10 +886,8 @@ def _data_designer_in_use(home: Path) -> bool:
         try:
             if entry.name != "managed-assets":
                 return True
-            # A link here is the user redirecting their assets somewhere else, which is state
-            # worth as much as a file. _setup_cache_env only ever makes a plain directory, and
-            # is_dir() follows a link, so an empty target read as the untouched layout Unsloth
-            # creates: the pin was dropped and the redirect went with it.
+            # A link here is the user redirecting their assets, which is state; is_dir() follows
+            # it, so an empty target read as the untouched layout and took the redirect with it.
             if entry.is_symlink() or _is_reparse_point(entry):
                 return True
             if not entry.is_dir():
@@ -973,16 +915,14 @@ def _data_designer_defaults(root: Path) -> dict[str, str]:
         "DATA_DESIGNER_HOME": str(home),
         "DATA_DESIGNER_MANAGED_ASSETS_PATH": str(home / "managed-assets"),
     }
-    # The legacy probe re-runs every launch, so on its own it would hand the recipes written here
-    # to a ~/.data-designer created later by a standalone run. Our own populated home is the
-    # record of the first choice.
+    # Our own populated home first: the legacy probe re-runs every launch, so a ~/.data-designer
+    # created later by a standalone run would otherwise take over the recipes written here.
     if _data_designer_in_use(home):
         return pinned
     try:
         legacy = Path.home() / ".data-designer"
     except (OSError, RuntimeError):
-        # No home, so this pin can hide nothing: data_designer's own default is equally
-        # unavailable, off the same call.
+        # No home, so the pin can hide nothing: data_designer's default is off the same call.
         return pinned
     return pinned if _nothing_at(legacy) else {}
 
@@ -1029,23 +969,19 @@ def _torch_runtime_tag() -> str:
 
     torch.utils.cpp_extension._get_build_directory appends a ``py<ver>_<accelerator>`` folder to
     the DEFAULT root only, never to a TORCH_EXTENSIONS_DIR we supply, so pinning a flat path drops
-    the isolation that keeps a py313/cu128 build from being loaded by a py312/cu126 one.
-
-    The accelerator comes from the generated cuda/hip fields rather than a local segment of
-    __version__: conda-forge's CPU and CUDA packages of one release carry the same __version__.
-    __version__ stays in the tag too, since local segments such as +cpu.cxx11.abi mark ABI splits
-    no other field records.
+    the isolation that keeps a py313/cu128 build from being loaded by a py312/cu126 one. The
+    accelerator comes from the generated cuda/hip fields, not from a local version segment:
+    conda-forge's CPU and CUDA packages of one release share a __version__. __version__ stays in
+    the tag anyway, since segments like +cpu.cxx11.abi mark ABI splits no other field records.
     """
     tag = f"py{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
-    # Architecture too, which torch's own py<ver>_<cu_str> naming omits: an arm64 python and a
-    # Rosetta x86_64 python on one Mac agree on every other field, so ninja reads the other's
-    # build as up to date. Same shape for a $HOME an aarch64 and an x86_64 host both mount.
+    # Architecture too, which torch's py<ver>_<cu_str> omits: an arm64 and a Rosetta x86_64
+    # python agree on every other field, so ninja reads the other's build as up to date.
     tag += "_" + _path_safe(f"{sys.platform}-{platform.machine() or 'unknown'}")
     try:
         fields = _torch_version_fields()
     except (ImportError, OSError, ValueError, AttributeError):
-        # No torch yet, or a half-built source tree. The interpreter tag alone still isolates
-        # more than the flat path it replaces.
+        # No torch yet, or a half-built tree; the interpreter tag alone still isolates.
         return tag
     if not fields:
         return tag
@@ -1059,21 +995,12 @@ def _torch_runtime_tag() -> str:
     return tag
 
 
-# Caches whose path is pasted into a compiler command line by somebody else's code, unquoted.
-#
-# torch/_inductor/cpp_builder.py builds the g++/clang++ invocation with " ".join(sources) and an
-# unquoted output path, then reparses it with shlex.split. A root containing a space therefore
-# splits into two arguments and the build fails outright:
-#
-#   g++: fatal error: input file .../my is the same as output file
-#
-# Nothing here can fix that: the quoting is in PyTorch. What we can do is not create the
-# situation. Left unset, Inductor uses its own whitespace-free temporary directory, which is
-# exactly what happened before this file started pinning these, so skipping the pin is a return
-# to the behaviour that shipped rather than a new fallback.
-#
-# It is not a rare shape. The default Studio root hangs off the profile directory, and
-# "C:\Users\First Last" is an ordinary Windows account name.
+# Caches whose path is pasted into a compiler command line, unquoted, by somebody else's code:
+# torch/_inductor/cpp_builder.py joins the g++ invocation with spaces and reparses it with
+# shlex.split, so a root containing a space splits in two and the build fails outright
+# ("g++: fatal error: input file .../my is the same as output file"). The quoting is PyTorch's
+# to fix; skipping the pin just returns to the temporary directory Inductor used before. Not a
+# rare shape: "C:\Users\First Last" is an ordinary Windows account name.
 _TOOLCHAIN_PATH_KEYS = frozenset(
     {
         "TORCHINDUCTOR_CACHE_DIR",
@@ -1089,14 +1016,11 @@ _TOOLCHAIN_PATH_KEYS = frozenset(
 def _usable_dir(value: str) -> bool:
     """Whether a path we generated is actually a directory the toolchain can compile into.
 
-    A real create, not is_dir() alone. The mkdir above passes exist_ok = False and swallows
-    every OSError, so a directory that already exists but cannot be written to reaches here
-    having proven nothing, and torch treats the value as authoritative: cache_dir() falls back
-    to its own temporary directory only when the variable is UNSET, then calls
-    os.makedirs(exist_ok = True), which succeeds on an existing read-only directory and leaves
-    every later write to fail (torch/_inductor/runtime/cache_dir_utils.py, cache_dir and
-    triton_cache_dir). Publishing such a path is worse than publishing none, which is what the
-    caller's comment promises. Same rule install.sh states for the uv cache probe.
+    A real create, not is_dir() alone. torch falls back to its own temporary directory only when
+    the variable is UNSET, then calls os.makedirs(exist_ok = True), which succeeds on an existing
+    read-only directory and leaves every later write to fail
+    (torch/_inductor/runtime/cache_dir_utils.py), so publishing an unwritable path is worse than
+    publishing none. Same rule install.sh states for the uv cache probe.
     """
     try:
         if not Path(value).is_dir():
@@ -1107,9 +1031,8 @@ def _usable_dir(value: str) -> bool:
         handle, probe = tempfile.mkstemp(dir = value, prefix = ".unsloth-write-probe.")
     except (OSError, ValueError):
         return False
-    # Guarded like the unlink below. Every other failure in this function is a False, and an
-    # EIO or ENOSPC on close escaping here would take _setup_cache_env() with it -- a whole
-    # backend start lost to a write probe whose entire job is to answer yes or no.
+    # Guarded like the unlink below: an EIO or ENOSPC on close escaping here would take the
+    # whole backend start with it, for a probe whose job is to answer yes or no.
     try:
         os.close(handle)
     except OSError:
@@ -1172,11 +1095,8 @@ def _setup_cache_env() -> None:
                     key,
                     value,
                 )
-                # Blank is not the same as absent to the library that reads this. Inductor takes
-                # "   " as a relative path and hands it to the very unquoted command line being
-                # refused here, so the key goes rather than staying blank, and torch falls back to
-                # its own temporary cache. The comment above promises "blank counts as unset";
-                # this is what makes that true on a spaced root as well.
+                # Popped, not blanked: Inductor reads "   " as a relative path and hands it to
+                # the very command line being refused here.
                 os.environ.pop(key, None)
                 continue
             os.environ[key] = value
@@ -1195,15 +1115,11 @@ def _setup_cache_env() -> None:
                     (Path(value) / CACHE_MARKER).touch(exist_ok = True)
             except (OSError, ImportError):
                 pass
-            # A toolchain path we invented and could not make is worse than no path at all. torch
-            # treats the value as authoritative, so a regular file at <studio>/cache/torchinductor
-            # or a parent with a restrictive ACL fails every compile, where an unset variable
-            # would have used the library's own temporary cache. The placement error above is
-            # deliberately swallowed, which is exactly what left an unusable path published.
-            #
-            # Only these keys. UNSLOTH_COMPILE_LOCATION left unset falls back to a bare relative
-            # name resolving against the CWD, which is the bug that pin exists to fix, and the
-            # data roots are not caches with a library default to fall back to.
+            # A toolchain path we invented and could not make is worse than none: torch treats
+            # it as authoritative and every compile fails, where unset would have used the
+            # library's temporary cache. Only these keys -- UNSLOTH_COMPILE_LOCATION unset falls
+            # back to a CWD-relative name, the bug that pin exists to fix, and the data roots
+            # have no library default to fall back to.
             if key in _TOOLCHAIN_PATH_KEYS and not _usable_dir(value):
                 logger.debug("leaving %s unset: %s is not a usable directory", key, value)
                 os.environ.pop(key, None)

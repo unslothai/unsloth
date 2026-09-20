@@ -108,11 +108,10 @@ def test_the_cli_exports_the_llama_cpp_path_the_backend_will_use(tmp_path):
 
 
 def test_the_cli_recovers_a_recorded_master_root_for_the_setup_subprocess(tmp_path):
-    # `UNSLOTH_HOME=/mnt/portable unsloth studio update` leaves nothing in a later environment.
-    # The backend recovers the root from the note, so a CLI that did not would hand setup a plain
-    # Studio root: setup refreshes the runtimes at <master>/studio/ while the backend keeps
-    # launching the stale ones at <master>/. Exported, not merely read, because setup is a
-    # subprocess.
+    # A one-command UNSLOTH_HOME leaves nothing in a later environment, and the backend recovers
+    # the root from the note, so a CLI that did not would have setup refresh the runtimes at
+    # <master>/studio/ while the backend launched the stale ones at <master>/. Exported rather
+    # than read, since setup is a subprocess.
     master = tmp_path / "portable"
     studio = master / "studio"
     (studio / "share").mkdir(parents = True)
@@ -125,10 +124,8 @@ def test_the_cli_recovers_a_recorded_master_root_for_the_setup_subprocess(tmp_pa
 
 
 def test_the_cli_and_the_backend_accept_the_same_nested_studio_root(tmp_path):
-    # UNSLOTH_HOME=<root> with UNSLOTH_STUDIO_HOME=<root>/custom/studio is a real pairing: setup
-    # records <root>, and the Studio directory is inside it but is not its studio/ child. A
-    # stricter rule in the CLI than in the backend would have the CLI decline a note the backend
-    # accepts, which is the split this recovery exists to close.
+    # A real pairing: setup records <root>, and the Studio directory is inside it without being
+    # its studio/ child. A stricter rule in the CLI would decline a note the backend accepts.
     master = tmp_path / "root"
     studio = master / "custom" / "studio"
     (studio / "share").mkdir(parents = True)

@@ -1446,18 +1446,17 @@ fi
 # The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit BESIDE
 # studio/ under it, so installing them under $STUDIO_HOME would put them one level below where
 # every runtime resolver looks. Captured here because section 7 assigns over UNSLOTH_HOME.
-# Stripped before anything else, as _studio_override is above: " " counts as unset and
-# " /opt/uns " names /opt/uns, which is what the Python resolver and the CLI both see.
+# Stripped before anything else, like _studio_override above: " " counts as unset and " /opt/uns "
+# names /opt/uns, which is what the Python resolver and the CLI both see.
 _MASTER_ROOT=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 if [ -n "$_MASTER_ROOT" ]; then
     case "$_MASTER_ROOT" in
         "~") _MASTER_ROOT="$HOME" ;;
         "~/"*) _MASTER_ROOT="$HOME/${_MASTER_ROOT#'~/'}" ;;
     esac
-    # Made absolute against the CALLER's directory even when it does not exist yet, as
-    # Path.resolve() does. Node is chosen before the first `cd "$SCRIPT_DIR"` and llama.cpp
-    # after it, so a value left relative would name two different directories and match the
-    # backend's neither.
+    # Absolute against the CALLER's directory even when it does not exist yet, as Path.resolve()
+    # does: node is chosen before the first `cd "$SCRIPT_DIR"` and llama.cpp after it, so a
+    # relative value names two different directories and matches the backend's neither.
     case "$_MASTER_ROOT" in
         /*) ;;
         *) _MASTER_ROOT="$PWD/$_MASTER_ROOT" ;;
@@ -1472,19 +1471,16 @@ if [ -n "$_MASTER_ROOT" ]; then
 fi
 
 # Ownership applies to node/, llama.cpp/ and whisper.cpp/ whenever a master root moves them,
-# even with STUDIO_HOME left at the legacy path: _STUDIO_HOME_IS_CUSTOM is false there, and
-# "false" is what licenses the installers to os.replace() and rm -rf without checking the
-# Unsloth-owned marker. The Studio home itself, and the venvs under it, keep the other flag.
+# even with STUDIO_HOME left at the legacy path, where _STUDIO_HOME_IS_CUSTOM is false and
+# "false" licenses the installers to os.replace() and rm -rf unmarked trees. The Studio home
+# and its venvs keep the other flag.
 _RUNTIME_ROOT_IS_CUSTOM="$_STUDIO_HOME_IS_CUSTOM"
-# Where the runtimes actually land, not merely whether a master root was named. Setting
-# UNSLOTH_HOME=$HOME/.unsloth on an existing default install names the root that install is
-# already using, so nothing moves; classifying it custom anyway would demand an owner marker
-# from a legacy source-built ~/.unsloth/llama.cpp that predates the marker, and the assertion
-# below would reject an update that used to reuse that build.
+# Keyed on where the runtimes LAND, not on whether a master root was named: UNSLOTH_HOME set to
+# the root an install already uses moves nothing, and calling that custom would demand an owner
+# marker from a legacy source-built ~/.unsloth/llama.cpp that predates markers.
 if [ -n "$_MASTER_ROOT" ]; then
-    # Canonicalised the same way _MASTER_ROOT was, or a symlinked $HOME compares unequal to
-    # itself and the legacy root reads as custom after all. Derived here rather than read from
-    # _LEGACY_STUDIO_HOME so this block stays self-contained.
+    # Canonicalised like _MASTER_ROOT, or a symlinked $HOME compares unequal to itself and the
+    # legacy root reads as custom after all.
     _rrc_legacy="$HOME/.unsloth"
     if [ -d "$_rrc_legacy" ]; then
         _rrc_canon=$(CDPATH= cd -P -- "$_rrc_legacy" 2>/dev/null && pwd -P) || _rrc_canon=""
@@ -1595,11 +1591,9 @@ _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
     _aso_custom="${3:-$_STUDIO_HOME_IS_CUSTOM}"
-    # -d alone read a dangling symlink and a regular file as "nothing is here", and the caller
-    # then rm -rf'd the path or let install_*_prebuilt.py os.replace() over it. Both shapes are
-    # things a user put in a directory they chose. A dangling link is the ordinary case: its
-    # target volume is simply not mounted right now, and following it later would install into
-    # somebody's other disk.
+    # -d alone read a dangling symlink or a regular file as "nothing is here", and the caller
+    # then rm -rf'd it or os.replace()d over it. A dangling link is the ordinary case: its
+    # volume is simply not mounted, and following it later installs onto somebody's other disk.
     if [ ! -d "$_aso_dir" ] && [ ! -e "$_aso_dir" ] && [ ! -L "$_aso_dir" ]; then
         return 0
     fi
@@ -3753,44 +3747,31 @@ else
     UNSLOTH_HOME="$HOME/.unsloth"
 fi
 mkdir -p "$UNSLOTH_HOME"
-# Record the master root inside the Studio tree, for the uninstaller.
+# Record the master root inside the Studio tree, for the uninstaller: UNSLOTH_HOME can be set
+# for a single command, and without the note the uninstaller removed the Studio tree and
+# stranded multi-gigabyte llama.cpp, node and whisper.cpp trees beside it.
 #
-# UNSLOTH_HOME can be set for a single command -- `UNSLOTH_HOME=/mnt/portable unsloth studio
-# update` -- and the runtimes then live somewhere only that environment named. The uninstaller
-# finds the Studio root by its own means, so it can find this note; without it, it removed the
-# Studio tree and stranded multi-gigabyte llama.cpp, node and whisper.cpp trees.
-#
-# Only for a master root: the other branches derive UNSLOTH_HOME from paths the uninstaller
-# already knows, and a stale note claiming a root that moved would be worse than none.
-#
-# And only when a reader will honour it, which is the point of _master_root_note_is_honoured
-# below. Both rejected shapes were being written: every reader then refused the note and the
-# install behaved exactly as it did before the note existed, while the file on disk said
-# otherwise. A note nobody reads is not a neutral leftover -- it is the record this feature
-# depends on, silently absent.
+# Only for a master root (the other branches derive UNSLOTH_HOME from paths the uninstaller
+# already knows), and only when a reader will honour it: both rejected shapes were being
+# written, so the file on disk claimed a recorded root while every reader refused it.
 _master_root_note_is_honoured() {
     # Canonicalised here rather than trusting the value from the top of the script: that one was
     # resolved before the mkdir above, so a root created by this run kept its uncanonical
     # spelling, and the containment test below is textual.
     _mrn_root=$(CDPATH= cd -P -- "$1" 2>/dev/null && pwd -P) || _mrn_root=""
     [ -n "$_mrn_root" ] || return 1
-    # The legacy default is the one root every reader already finds without help, and both
-    # uninstallers refuse it outright (`case "$_mr" in "$HOME/.unsloth"|/|"") return 0`). Writing
-    # it turned `UNSLOTH_HOME=$HOME/.unsloth` -- set once, for one command, naming the directory
-    # the install was already in -- into a permanent portable install: every later bare launch
-    # read the note back, portable_mode() went true for good, and HF_HUB_CACHE moved off
-    # ~/.cache/huggingface, which is the one cache this change promises not to move. Nothing is
-    # lost by staying quiet: a root that IS the default needs no note to be found again.
+    # The legacy default is the one root every reader finds without help, and both uninstallers
+    # refuse it outright. Writing it turned a one-command `UNSLOTH_HOME=$HOME/.unsloth` into a
+    # permanent portable install: every later bare launch read the note back and HF_HUB_CACHE
+    # moved off ~/.cache/huggingface, the one cache this change promises not to move.
     _mrn_legacy=$(CDPATH= cd -P -- "${HOME:-}/.unsloth" 2>/dev/null && pwd -P) || _mrn_legacy="${HOME:-}/.unsloth"
     [ "$_mrn_root" != "$_mrn_legacy" ] || return 1
-    # A note must describe the tree it is written into: every reader -- storage_roots.py, the
-    # CLI, and both uninstallers -- requires the Studio directory it was read from to lie INSIDE
-    # the root it names, so a tree copied between master roots cannot aim a removal at the
-    # original install. install.sh and install.ps1 do not read UNSLOTH_HOME yet, so
-    # `UNSLOTH_HOME=/mnt/portable unsloth studio update` on an ordinary install leaves Studio at
-    # ~/.unsloth/studio and puts the runtimes at /mnt/portable -- exactly the case the note
-    # exists for, and exactly the shape all four readers reject. Warn there instead of leaving a
-    # file that reads as a recorded root and behaves as none.
+    # A note must describe the tree it is written into: all four readers require the Studio
+    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot
+    # aim a removal at the original install. install.sh and install.ps1 do not read UNSLOTH_HOME
+    # yet, so `UNSLOTH_HOME=/mnt/portable unsloth studio update` leaves Studio at
+    # ~/.unsloth/studio with the runtimes at /mnt/portable, which is exactly that shape: warn,
+    # rather than leave a file that reads as a recorded root and behaves as none.
     case "$STUDIO_HOME" in
         "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
     esac
@@ -3802,14 +3783,10 @@ _master_root_note_is_honoured() {
 }
 if [ -n "$_MASTER_ROOT" ] && [ -z "$STAGE_ROOT" ] && _master_root_note_is_honoured "$UNSLOTH_HOME"; then
     if mkdir -p "$STUDIO_HOME/share" 2>/dev/null; then
-        # Staged then renamed: a reader that catches a half-written note would name a truncated
-        # path, and this note licenses deletions.
-        #
-        # mktemp (O_EXCL, unpredictable suffix) rather than "$$", the same rule
+        # Staged then renamed: a reader catching a half-written note would name a truncated
+        # path, and this note licenses deletions. mktemp rather than "$$", as
         # _uv_cache_root_is_writable states above: a redirection into a predictable name follows
-        # whatever is already there, so anyone who can write share/ could precreate that name as
-        # a symlink and have this write truncate the file it points at. The rename below replaces
-        # a link at the final path rather than following it, so only the staging name was open.
+        # a symlink anyone who can write share/ could have precreated there.
         if ! _mrn_tmp=$(mktemp "$STUDIO_HOME/share/.unsloth-master-root.XXXXXX" 2>/dev/null); then
             _mrn_tmp=""
         fi

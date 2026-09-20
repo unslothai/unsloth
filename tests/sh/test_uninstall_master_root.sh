@@ -148,11 +148,10 @@ got=$( ( HOME="$HOME"; UNSLOTH_HOME="/"; export HOME UNSLOTH_HOME; . "$HELPERS_F
 assert_eq "/ yields nothing" "$got" ""
 
 echo "== a root that is gone does not end the uninstall =="
-# uninstall.sh runs under set -e, and the canonicalizing `cd` fails whenever the root is absent:
-# a second uninstall, or a portable install on an unplugged drive. A bare assignment takes that
-# exit status. Ordinary bash hides it by clearing errexit inside command substitution, so this
-# runs the shells the advertised `| sh` one-liner actually reaches instead. REACHED_END is the
-# assertion: the value _master_root returns matters less than the rest of the cleanup running.
+# Under set -e the canonicalizing `cd` fails whenever the root is absent (a second uninstall, a
+# portable install on an unplugged drive) and a bare assignment takes that exit status. bash
+# hides it by clearing errexit inside command substitution, so this runs the shells the
+# advertised `| sh` one-liner reaches. REACHED_END is the assertion, not the value returned.
 for _shell in dash "bash --posix" sh; do
     command -v ${_shell%% *} > /dev/null 2>&1 || continue
     # || true: this harness runs under set -e too, so without it the failing child takes the
@@ -228,10 +227,9 @@ assert_eq "a note carried in from another master root is refused" "$got" ""
 rm -f "$NOTED/studio/share/.unsloth-master-root" "$HOME/.local/share/unsloth/studio.conf"
 
 echo "== a named Studio root does not borrow another install's note =="
-# Two installs on one box. The legacy tree carries a note; the one UNSLOTH_STUDIO_HOME names does
-# not. Probing the legacy path first let its note win here while the removal below still worked
-# on the named tree, so the run deleted the named Studio and then followed the OTHER install's
-# master root and took its runtime children with it.
+# Two installs on one box, the legacy tree carrying a note and the named one not: probing the
+# legacy path first let its note win here while the removal worked on the named tree, so the run
+# deleted one Studio and the OTHER install's runtime children.
 BORROWED="$_TMP_ROOT/borrowed"
 NAMED_MASTER="$_TMP_ROOT/named-master"
 NAMED="$NAMED_MASTER/studio"
@@ -248,10 +246,9 @@ assert_eq "the named root's own note is still read" "$got" "$NAMED_MASTER"
 rm -f "$HOME/.unsloth/studio/share/.unsloth-master-root" "$NAMED/share/.unsloth-master-root"
 
 echo "== a padded Studio override still finds the note setup.sh wrote =="
-# setup.sh trims UNSLOTH_STUDIO_HOME before choosing where to write, so the note for
-# UNSLOTH_STUDIO_HOME="  /mnt/studio  " lands at /mnt/studio/share. Appending to the padded
+# setup.sh trims UNSLOTH_STUDIO_HOME before choosing where to write, so appending to the padded
 # value looked somewhere that does not exist: the note was never found, while the removal loop
-# trimmed the same override and took /mnt/studio, stranding the master-root runtimes.
+# trimmed the same override and stranded the master-root runtimes.
 PADDED_MASTER="$_TMP_ROOT/padded-master"
 PADDED="$PADDED_MASTER/studio"
 mkdir -p "$PADDED/share"
@@ -277,11 +274,9 @@ assert_present "an unrelated hidden file stays" "$STALE/.backup.install.lock.sta
 assert_present "a non-numeric suffix stays" "$STALE/.llama.cpp.install.lock.stale.notapid"
 
 echo "== a note with a second line is refused, as the comment beside it promises =="
-# The four readers have to agree, and this is the one that authorises a delete.
-# storage_roots.py and unsloth_cli/commands/studio.py both read_text().strip() the WHOLE file,
-# so a two-line note is not a directory to them and they decline it. Taking line 1 here let a
-# note no runtime reader honours go on to license removing <master>/llama.cpp, node,
-# whisper.cpp and stable-diffusion.cpp.
+# The four readers have to agree, and this is the one that authorises a delete: the two Python
+# readers strip the WHOLE file, so a two-line note is not a directory to them, while taking
+# line 1 here licensed removing <master>/llama.cpp, node, whisper.cpp and sd.cpp.
 MULTI_MASTER="$_TMP_ROOT/multiline-master"
 MULTI="$MULTI_MASTER/studio"
 mkdir -p "$MULTI/share" "$_TMP_ROOT/elsewhere"
