@@ -16278,6 +16278,20 @@ def _check_signal_escape_patterns(code: str):
         resolved = None
         if len(parts) == 1:
             resolved = bindings.alias_for(bindings.funcs, head, func_node)
+            if resolved is None:
+                # `fetch = requests.get` is the assignment spelling of `from requests import get
+                # as fetch`, and the call has to answer to the same name either way. Every value
+                # the name can hold is offered, because resolving only ever adds a name that is
+                # checked.
+                from_values = []
+                for value in bindings.possible_values(head, func_node):
+                    if not isinstance(value, (ast.Attribute, ast.Name)):
+                        continue
+                    candidate = _canonical_fq(value, bindings)
+                    if candidate and candidate != written and candidate not in from_values:
+                        from_values.append(candidate)
+                if from_values:
+                    return from_values + [written]
         else:
             for table in (bindings.sessions, bindings.modules, bindings.funcs):
                 target = bindings.alias_for(table, head, func_node)
@@ -17738,6 +17752,17 @@ def _check_signal_escape_patterns(code: str):
     def _other_possible_hosts(url_node, bare_hosts: bool = False) -> "list[str]":
         """Hosts a target could reach besides the one it resolves to, because more than one
         assignment can hold at the call."""
+        if isinstance(url_node, ast.IfExp):
+            # Both arms are written down, so both are answered for.
+            out: list = []
+            for arm in (url_node.body, url_node.orelse):
+                host, _resolved = _host_from_url_node(arm, _bindings)
+                if host and host not in out:
+                    out.append(host)
+                out.extend(
+                    host for host in _other_possible_hosts(arm, bare_hosts) if host not in out
+                )
+            return out
         if not isinstance(url_node, ast.Name):
             return []
         values = _bindings.possible_values(url_node.id, url_node)

@@ -4861,3 +4861,72 @@ class TestAugmentedAssignments:
 
     def test_building_an_allowed_url_this_way_keeps_working_ok(self):
         _ok('import requests\nu = "https://huggingface.co"\nu += "/api/models"\nrequests.get(u)')
+
+
+class TestCallablesHeldInNames:
+    """`fetch = requests.get` is the assignment spelling of an import alias, and the call answers
+    to the same name either way."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f'import requests\nfetch = requests.get\nfetch("{_METADATA_URL}")',
+                id = "module_function",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f'fetch = s.get\nfetch("{_METADATA_URL}")',
+                id = "session_method",
+            ),
+        ],
+    )
+    def test_a_call_through_an_assigned_callable_is_policed(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_the_upload_check_follows_it_too(self):
+        _blocked(
+            "import requests\npost = requests.post\n"
+            'post("https://huggingface.co/u", files = {"f": open("a.bin", "rb")})',
+            expect_phrase = "Blocked: file upload disallowed in sandbox",
+        )
+
+    def test_an_allowed_host_through_an_assigned_callable_keeps_working_ok(self):
+        _ok('import requests\nfetch = requests.get\nfetch("https://huggingface.co/api/models")')
+
+    def test_a_name_holding_something_else_is_not_a_network_call_ok(self):
+        _ok(
+            'import requests\nfetch = len\nfetch("abc")\n'
+            'requests.get("https://huggingface.co/api/models")'
+        )
+
+
+class TestConditionalExpressionTargets:
+    """Both arms of `a if flag else b` are written down, so both are answered for."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f'import requests\nrequests.get("{_METADATA_URL}" if flag else "https://huggingface.co")',
+                id = "first_arm",
+            ),
+            pytest.param(
+                f'import requests\nrequests.get("https://huggingface.co" if flag else "{_METADATA_URL}")',
+                id = "second_arm",
+            ),
+            pytest.param(
+                f'import requests\na = "{_METADATA_URL}"\nb = "https://huggingface.co"\n'
+                "requests.get(a if flag else b)",
+                id = "through_bindings",
+            ),
+        ],
+    )
+    def test_a_blocked_host_in_either_arm_is_refused(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_two_allowed_arms_keep_working_ok(self):
+        _ok(
+            "import requests\n"
+            'requests.get("https://huggingface.co/a" if flag else "https://huggingface.co/b")'
+        )
