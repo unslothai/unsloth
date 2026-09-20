@@ -740,6 +740,8 @@ export const es = {
       },
       readAloud: {
         sectionTitle: "Lectura en voz alta",
+        languageLabel: "Idioma de lectura",
+        languageDescription: "Idioma usado para la voz",
         buttonLabel: "Botón de lectura en voz alta",
         buttonDescription: "Mostrar en las respuestas del asistente",
         engineLabel: "Motor de TTS",

@@ -2747,7 +2747,7 @@ export function AudioPage({
                   <Field
                     label="Language"
                     htmlFor="audio-language"
-                    hint="Optional, but MOSS Local v1.5 recommends a language tag when known (for example English, Arabic, or French)."
+                    hint="Optional, but MOSS Local v1.5 recommends a language tag when known (for example English, Arabic, French, or Greek)."
                   >
                     <Input
                       id="audio-language"

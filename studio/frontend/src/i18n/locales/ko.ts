@@ -733,6 +733,8 @@ export const ko = {
       },
       readAloud: {
         sectionTitle: "소리 내어 읽기",
+        languageLabel: "읽어주기 언어",
+        languageDescription: "음성 합성에 사용할 언어",
         buttonLabel: "소리 내어 읽기 버튼",
         buttonDescription: "어시스턴트 응답에 표시",
         engineLabel: "TTS 엔진",

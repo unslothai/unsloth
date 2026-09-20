@@ -725,6 +725,8 @@ export const zhCN = {
       },
       readAloud: {
         sectionTitle: "朗读",
+        languageLabel: "朗读语言",
+        languageDescription: "用于语音合成的语言",
         buttonLabel: "朗读按钮",
         buttonDescription: "在助手回复上显示",
         engineLabel: "TTS 引擎",

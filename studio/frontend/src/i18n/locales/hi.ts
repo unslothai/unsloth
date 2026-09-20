@@ -737,6 +737,8 @@ export const hi = {
       },
       readAloud: {
         sectionTitle: "ज़ोर से पढ़ना",
+        languageLabel: "पढ़कर सुनाने की भाषा",
+        languageDescription: "बोली जाने वाली भाषा",
         buttonLabel: "ज़ोर से पढ़ने का बटन",
         buttonDescription: "असिस्टेंट के जवाबों पर दिखाएँ",
         engineLabel: "TTS इंजन",

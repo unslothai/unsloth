@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { resolveTtsLanguageName } from "@/features/settings/lib/speech-languages";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
@@ -117,22 +118,26 @@ function langBase(tag: string): string {
   return tag.toLowerCase().split(/[-_]/)[0] ?? "";
 }
 
+function normalizedLang(tag: string): string {
+  return tag.toLowerCase().replaceAll("_", "-");
+}
+
 const MAX_CURATED_VOICES = 20;
 
 /** Keep the best, most relevant voices: drop low-quality ones, keep English, the browser
- *  language and the dictation language, rank by quality hints, and cap the list. The selected
+ *  language and the requested speech language, rank by quality hints, and cap the list. The selected
  *  voice is always kept. */
 export function curateSystemVoices(
   voices: SpeechSynthesisVoice[],
   selectedVoiceURI?: string,
-  dictationLanguage = useVoiceSettingsStore.getState().dictationLanguage,
+  speechLanguage = useVoiceSettingsStore.getState().dictationLanguage,
 ): SpeechSynthesisVoice[] {
   const wantedLangs = new Set<string>(["en"]);
   if (typeof navigator !== "undefined" && navigator.language) {
     wantedLangs.add(langBase(navigator.language));
   }
-  if (dictationLanguage && dictationLanguage !== "auto") {
-    wantedLangs.add(langBase(dictationLanguage));
+  if (speechLanguage && speechLanguage !== "auto") {
+    wantedLangs.add(langBase(speechLanguage));
   }
 
   // WebKit and Linux engines report voices with empty or duplicate voiceURIs; drop them so the
@@ -203,14 +208,42 @@ function defaultTtsVoice(): SpeechSynthesisVoice | undefined {
 export function createConfiguredUtterance(
   text: string,
 ): SpeechSynthesisUtterance {
-  const { ttsVoiceURI, ttsRate, ttsPitch, ttsVolume } =
+  const { ttsVoiceURI, ttsLanguage, ttsRate, ttsPitch, ttsVolume } =
     useVoiceSettingsStore.getState();
   const utterance = new SpeechSynthesisUtterance(text);
-  const voice = findTtsVoice(ttsVoiceURI) ?? defaultTtsVoice();
+  const requestedLanguage = ttsLanguage === "auto" ? undefined : ttsLanguage;
+  const selectedVoice = findTtsVoice(ttsVoiceURI);
+  const availableVoices = window.speechSynthesis.getVoices();
+  const exactLanguageVoices = requestedLanguage
+    ? availableVoices.filter(
+        (voice) =>
+          normalizedLang(voice.lang) === normalizedLang(requestedLanguage),
+      )
+    : [];
+  const languageVoices =
+    requestedLanguage && exactLanguageVoices.length === 0
+      ? availableVoices.filter(
+          (voice) => langBase(voice.lang) === langBase(requestedLanguage),
+        )
+      : exactLanguageVoices;
+  const selectedVoiceMatches =
+    !requestedLanguage ||
+    (selectedVoice &&
+      (exactLanguageVoices.length > 0
+        ? normalizedLang(selectedVoice.lang) ===
+          normalizedLang(requestedLanguage)
+        : langBase(selectedVoice.lang) === langBase(requestedLanguage)));
+  const languageVoice =
+    requestedLanguage && !selectedVoiceMatches
+      ? curateSystemVoices(languageVoices, undefined, requestedLanguage)[0]
+      : undefined;
+  const voice = selectedVoiceMatches
+    ? (selectedVoice ?? defaultTtsVoice())
+    : languageVoice;
   if (voice) {
     utterance.voice = voice;
-    utterance.lang = voice.lang;
   }
+  utterance.lang = requestedLanguage ?? voice?.lang ?? "";
   utterance.rate = ttsRate;
   utterance.pitch = ttsPitch;
   utterance.volume = ttsVolume;
@@ -222,12 +255,16 @@ export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  const audioLanguage = resolveTtsLanguageName(
+    useVoiceSettingsStore.getState().ttsLanguage,
+  );
   const response = await authFetch("/api/inference/audio/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       messages: [{ role: "user", content: text }],
       stream: false,
+      ...(audioLanguage ? { audio_language: audioLanguage } : {}),
     }),
     signal,
   });
