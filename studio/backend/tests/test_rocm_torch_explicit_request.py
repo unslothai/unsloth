@@ -2942,9 +2942,7 @@ def test_an_installed_rocm_build_on_an_unroutable_card_is_still_not_a_route(stac
     """The control on the rule above: "ROCm is already installed" must not become a blanket
     yes. gfx1010 (RDNA 1) has no index at all, so a ROCm wheel sitting on it is a wheel with
     no kernels and the CUDA repair must still run."""
-    assert (
-        _viability_across_the_install(stack, monkeypatch, "gfx1010", "2.11.0+rocm7.1") is False
-    )
+    assert _viability_across_the_install(stack, monkeypatch, "gfx1010", "2.11.0+rocm7.1") is False
 
 
 def test_the_cuda_repair_still_stands_down_after_the_swap(stack, monkeypatch):
@@ -2975,7 +2973,9 @@ def _inferred_install_args(stack, monkeypatch, arch):
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: False)
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: False)
-    monkeypatch.setattr(stack, "_probe_torch_runtime", lambda *a, **k: (True, True, "2.9.0", "", ""))
+    monkeypatch.setattr(
+        stack, "_probe_torch_runtime", lambda *a, **k: (True, True, "2.9.0", "", "")
+    )
     monkeypatch.setattr(stack, "_detect_rocm_version", lambda *a, **k: None)
     for _pin in ("_explicit_rocm_torch_index_url", "_explicit_torch_index_url"):
         monkeypatch.setattr(stack, _pin, lambda: None)
@@ -2987,9 +2987,7 @@ def _inferred_install_args(stack, monkeypatch, arch):
     "bare,suffixed",
     [("gfx1151", "gfx1151:xnack-"), ("gfx1200", "gfx1200:sramecc+:xnack-")],
 )
-def test_a_suffixed_arch_installs_the_same_pins_as_the_bare_one(
-    stack, monkeypatch, bare, suffixed
-):
+def test_a_suffixed_arch_installs_the_same_pins_as_the_bare_one(stack, monkeypatch, bare, suffixed):
     """gcnArchName is what rocminfo prints and what users copy into UNSLOTH_ROCM_GFX_ARCH.
 
     Stripping the suffix in _amd_arch_index_url is what opens the inferred-arch branch for
