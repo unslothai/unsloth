@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { RefreshChatTitleMenuItem } from "./components/refresh-chat-title-menu-item";
 import { useState } from "react";
 import {
   SidebarContent,
@@ -292,6 +293,7 @@ export function ThreadSidebar({
                         <HugeiconsIcon icon={PencilEdit02Icon} className="mr-2 size-4" />
                         Rename
                       </DropdownMenuItem>
+                      <RefreshChatTitleMenuItem item={item} />
                       <DropdownMenuSub>
                         <DropdownMenuSubTrigger>
                           <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />

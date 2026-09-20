@@ -146,6 +146,7 @@ import {
   allRecordedSandboxSessionIds,
   notifyChatHistoryUpdated,
   renameChatItem,
+  RefreshChatTitleMenuItem,
   renameChatProject,
   useChatRuntimeStore,
   useChatProjects,
@@ -3201,6 +3202,7 @@ export function AppSidebar() {
                 <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                 <span>Rename</span>
               </DropdownMenuItem>
+              <RefreshChatTitleMenuItem item={item} />
               <DropdownMenuItem onSelect={() => togglePinnedChat(item.id)}>
                 <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
                 <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>

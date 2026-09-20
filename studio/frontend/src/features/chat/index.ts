@@ -408,3 +408,5 @@ export {
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
+
+export { RefreshChatTitleMenuItem } from "./components/refresh-chat-title-menu-item";

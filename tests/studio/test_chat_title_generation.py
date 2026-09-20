@@ -10,6 +10,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 RUNTIME_TSX = REPO / "studio/frontend/src/features/chat/runtime-provider.tsx"
+TITLE_TS = REPO / "studio/frontend/src/features/chat/utils/generate-chat-title.ts"
 
 
 def _source_until(src: str, anchor: str, end_anchor: str) -> str:
@@ -46,6 +47,7 @@ def test_title_model_prompt_targets_conversation_topic():
         "\nconst inflightTitleByKey",
     )
 
+    block += TITLE_TS.read_text(encoding = "utf-8")
     assert "conversation topic" in block
     assert "not the user's exact wording" in block
     assert "Use the assistant reply as context when provided" in block
@@ -65,6 +67,7 @@ def test_title_model_payload_includes_optional_assistant_reply():
     assert "if (assistant)" in block
     assert "parts.push(`Assistant: ${assistant}`);" in block
     assert 'parts.join("\\n")' in block
+    block += TITLE_TS.read_text(encoding = "utf-8")
     assert "enable_thinking: false" in block
     assert 'reasoning_effort: "none"' in block
 
@@ -126,7 +129,8 @@ def test_model_failure_still_falls_back_to_user_text():
     )
     generate_block = _balanced_block(source, "async generateTitle(remoteId")
 
-    assert "finish_reason?: string | null;" in source
+    model_block = TITLE_TS.read_text(encoding = "utf-8")
+    assert "finish_reason?: string | null;" in model_block
     assert 'if (choice?.finish_reason === "length") return null;' in model_block
     assert r"if (!raw || /<\/?think>/i.test(raw)) return null;" in model_block
     assert "})) || fallbackTitleFromUserText(userText);" in generate_block
@@ -139,6 +143,7 @@ def test_title_normalizer_still_enforces_output_constraints():
         "\nconst inflightTitleByKey",
     )
 
+    block = TITLE_TS.read_text(encoding = "utf-8")
     assert r'replace(/[^\x20-\x7E]+/g, " ")' in block
     assert 'replace(/["\'`]+/g, "")' in block
     assert 'replace(/[.!?:;,]+/g, " ")' in block
