@@ -9762,6 +9762,19 @@ def adopt_orphaned_workspace_when_idle(workspace: str, update):
             for _, record in matches
         ]
         keys = {_session_key(session) for session in sessions}
+        # A kept record is kept BECAUSE something still points at it. Dropping it to
+        # adopt the folder into another project leaves a surviving fork's file cards
+        # answering 410 while the files sit on disk, so being referenced counts as
+        # busy here exactly as it does in the stale-record collector.
+        from storage.studio_db import sandbox_is_referenced_elsewhere
+
+        try:
+            if any(sandbox_is_referenced_elsewhere(session) for session in sessions):
+                return False, None
+        except Exception:
+            logger.warning("Could not tell whether %s is still referenced", sessions,
+                           exc_info = True)
+            return False, None
         with _sessions_free:
             if any(key in _removing_sessions or _active_sessions.get(key, 0) for key in keys):
                 return False, None

@@ -2328,3 +2328,33 @@ def test_a_folder_change_waits_for_a_generation_that_is_between_tool_calls(
     # Once the generation is over the change goes through as before.
     changed, _ = tools.update_project_workspace_when_idle(project["id"], change)
     assert changed
+
+
+def test_a_referenced_kept_folder_is_not_adopted_out_from_under_a_fork(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """A kept record is kept because something still points at it.
+
+    Dropping it so another project can adopt the folder leaves the surviving fork's
+    file cards answering 410 while the files are still sitting on disk.
+    """
+    from core.inference import tools
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    folder = workspace_projects_home / "kept-folder"
+    folder.mkdir()
+
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(folder))
+    session_id = tools.project_session_id(project["id"])
+    studio_db.delete_chat_project(project["id"], delete_files = False)
+
+    monkeypatch.setattr(
+        studio_db, "sandbox_is_referenced_elsewhere", lambda item: item == session_id
+    )
+    changed, _ = tools.adopt_orphaned_workspace_when_idle(str(folder), lambda: "adopted")
+    assert not changed, "a folder a fork still references was adopted away from it"
+
+    # With nothing referencing it, adoption goes ahead as before.
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda item: False)
+    changed, result = tools.adopt_orphaned_workspace_when_idle(str(folder), lambda: "adopted")
+    assert changed and result == "adopted"
