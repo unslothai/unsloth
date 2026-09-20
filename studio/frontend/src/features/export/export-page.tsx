@@ -219,6 +219,7 @@ export function ExportPage() {
   });
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
+  const [imatrixPath, setImatrixPath] = useState("");
   // Merged precision: one or more MERGED_FORMATS values exported in one run; seeded like exportMethod.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
     const s = useExportRuntimeStore.getState();
@@ -806,6 +807,7 @@ export function ExportPage() {
       isAdapter: adapterExport,
       quantLevels,
       useImatrix: effectiveImatrix,
+      imatrixPath,
       ggufShardSize: normalizedGgufShardSize,
       mergedSelections: selectedFormats.map((v) => ({
         ...mergedFormatPayload(v),
@@ -842,6 +844,7 @@ export function ExportPage() {
     isAdapter,
     quantLevels,
     effectiveImatrix,
+    imatrixPath,
     normalizedGgufShardSize,
     ggufShardSizeValid,
     selectedFormats,
@@ -1688,16 +1691,44 @@ export function ExportPage() {
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {requiresImatrix
-                              ? "Required for the selected IQ low-bit quant. Auto-downloads the upstream Unsloth imatrix for the base model."
-                              : "Improves quant quality and unlocks the IQ low-bit quants. Auto-downloads the upstream Unsloth imatrix for the base model."}
+                              ? "Required for the selected IQ low-bit quant. Use a local file or auto-download the upstream Unsloth imatrix."
+                              : "Improves quant quality and unlocks the IQ low-bit quants. Use a local file or auto-download the upstream Unsloth imatrix."}
                           </div>
                         </div>
                         <Switch
+                          aria-label="Importance matrix (imatrix)"
                           checked={effectiveImatrix}
                           onCheckedChange={setUseImatrix}
                           disabled={requiresImatrix}
                         />
                       </div>
+                      {effectiveImatrix && (
+                        <div className="space-y-1.5">
+                          <label
+                            htmlFor="export-imatrix-path"
+                            className="text-sm font-medium"
+                          >
+                            Local imatrix file (optional)
+                          </label>
+                          <InputGroup>
+                            <InputGroupInput
+                              id="export-imatrix-path"
+                              aria-describedby="export-imatrix-path-help"
+                              placeholder="./imatrix.gguf"
+                              value={imatrixPath}
+                              onChange={(e) => setImatrixPath(e.target.value)}
+                            />
+                          </InputGroup>
+                          <p
+                            id="export-imatrix-path-help"
+                            className="text-xs text-muted-foreground"
+                          >
+                            Enter the path to a .dat or .gguf imatrix file on the
+                            machine running Studio. Leave blank to auto-download
+                            the upstream Unsloth imatrix for the base model.
+                          </p>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

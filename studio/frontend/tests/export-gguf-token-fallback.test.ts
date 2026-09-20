@@ -102,3 +102,49 @@ test("the load phase keeps using the load token on its own", async () => {
   assert.ok(load, "no load request was made");
   assert.equal((load.args[0] as Record<string, unknown>).hf_token, "hf_load");
 });
+
+test("a local model forwards its custom imatrix for all selected quants", async () => {
+  const body = await ggufRequest({
+    modelSource: "local",
+    source: "/models/merged-model",
+    useImatrix: true,
+    imatrixPath: "  /models/calibration data/imatrix.gguf  ",
+    quantLevels: ["iq2_xxs", "q4_k_m"],
+  });
+
+  assert.equal(body.imatrix_path, "/models/calibration data/imatrix.gguf");
+  assert.deepEqual(body.quantization_method, ["iq2_xxs", "q4_k_m"]);
+});
+
+test("a checkpoint hub export preserves a Windows imatrix path", async () => {
+  const path = String.raw`C:\models\校准 data\imatrix.dat`;
+  const body = await ggufRequest({
+    sourceMode: "checkpoint",
+    checkpointPath: "/checkpoints/run/checkpoint-10",
+    useImatrix: true,
+    imatrixPath: path,
+    destination: "hub",
+    repoId: "org/model",
+  });
+
+  assert.equal(body.imatrix_path, path);
+  assert.equal(body.push_to_hub, true);
+});
+
+test("an empty custom path keeps automatic imatrix download", async () => {
+  for (const imatrixPath of [undefined, "", "   "]) {
+    const body = await ggufRequest({ useImatrix: true, imatrixPath });
+    assert.equal(body.imatrix, true);
+    assert.equal(body.imatrix_path, null);
+  }
+});
+
+test("disabling imatrix excludes a previously entered path", async () => {
+  const body = await ggufRequest({
+    useImatrix: false,
+    imatrixPath: "/models/imatrix.gguf",
+  });
+
+  assert.equal(body.imatrix, false);
+  assert.equal(body.imatrix_path, null);
+});
