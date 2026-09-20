@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -211,6 +212,156 @@ def test_the_known_unbuildable_pins_are_skipped():
         f"these pins cannot build on ubuntu-latest on any interpreter and only cost "
         f"build time, so they belong in the skip list: {missing}"
     )
+
+
+def _seed_script() -> str:
+    """The seed step's own Python, lifted out of the workflow.
+
+    Re-implementing the transform in the test was the defect in the first cut of this guard:
+    deleting the rewrite from the workflow left both tests green, so the regression they exist
+    to catch was not actually guarded. Run the production code instead.
+    """
+    shell = None
+    for step in _job()["steps"]:
+        if str(step.get("name", "")).startswith("Seed Colab-shaped venv"):
+            shell = step["run"]
+            break
+    assert shell, "the seed step is gone from the smoke job; this guard checks nothing"
+    body = re.search(r"<<'PY'\n(.*?)\n\s*PY\n", shell, re.S)
+    assert body, "could not find the seed heredoc; the step's shape changed"
+    return textwrap.dedent(body.group(1))
+
+
+def _run_seed(tmp_path, freeze_text = None) -> list[str]:
+    """Execute the workflow's seed script and return the pins it hands pip.
+
+    Laid out the way the job lays it out: the script reads `unsloth/scripts/data/...` relative
+    to its cwd. The mapping's `python_version` is rewritten to whatever interpreter is running
+    this test -- that guard is about the snapshot matching the runner and is checked by
+    test_the_smoke_job_runs_the_interpreter_the_snapshot_names, not here, so leaving it would
+    make this test fail for an unrelated reason on any other interpreter.
+    """
+    import subprocess
+
+    data = tmp_path / "unsloth" / "scripts" / "data"
+    data.mkdir(parents = True)
+    mapping = _mapping()
+    mapping["python_version"] = "%d.%d" % sys.version_info[:2]
+    (data / "colab_to_cpu_pin.json").write_text(json.dumps(mapping), encoding = "utf-8")
+    (data / "colab_pip_freeze.gpu.txt").write_text(
+        freeze_text if freeze_text is not None else FREEZE.read_text(encoding = "utf-8"),
+        encoding = "utf-8",
+    )
+    # The script writes its output to fixed paths; give it a private TMPDIR-shaped home by
+    # rewriting those two literals, which is the only edit made to the production text.
+    script = _seed_script()
+    script = script.replace("/tmp/seed_torch.txt", str(tmp_path / "seed_torch.txt"))
+    script = script.replace("/tmp/seed_pins.txt", str(tmp_path / "seed_pins.txt"))
+    script = script.replace("/tmp/seed_no_binary.txt", str(tmp_path / "seed_no_binary.txt"))
+    run = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd = str(tmp_path),
+        capture_output = True,
+        text = True,
+    )
+    assert run.returncode == 0, f"the seed script failed: {run.stdout}\n{run.stderr}"
+    pins = (tmp_path / "seed_pins.txt").read_text(encoding = "utf-8").split()
+    torch_pins = (tmp_path / "seed_torch.txt").read_text(encoding = "utf-8").split()
+    return pins + torch_pins
+
+
+def test_no_declared_distro_marker_survives_the_seed(tmp_path):
+    """The freeze is a snapshot of an image, so it carries versions as the image labels them,
+    and a distro build can label itself `.devN`. PyPI has no such release, and one unresolvable
+    pin fails the whole bulk resolve: the Ubuntu 24.04 rotation brought in `Mako==1.3.2.dev0`
+    and every leg of the matrix died on
+
+        ERROR: No matching distribution found for mako==1.3.2.dev0
+
+    Scoped to the versions declared in `distro_dev_version`, not to `.devN` as a shape. A
+    published prerelease is a legitimate pin that the seed deliberately passes through -- see
+    test_an_undeclared_dev_pin_is_left_alone_rather_than_guessed_at -- so failing on every
+    `.devN` would contradict that and push a valid pin towards being rewritten or suppressed.
+
+    Local versions are different and stay a blanket check: the seed strips `+cu128` from every
+    pin whatever the package, so any survivor is a defect.
+    """
+    seeded = _run_seed(tmp_path)
+    declared = {
+        name: rule["from"] for name, rule in _mapping().get("distro_dev_version", {}).items()
+    }
+    stale = [
+        pin
+        for pin in seeded
+        if pin.split("==", 1)[0] in declared
+        and pin.split("==", 1)[1] == declared[pin.split("==", 1)[0]]
+    ]
+    assert not stale, (
+        "these pins kept a version only the Colab image uses, and one of them fails the "
+        f"resolve for all of them: {stale}"
+    )
+
+    local = [pin for pin in seeded if "+" in pin]
+    assert not local, f"the seed left a local version on: {local}"
+
+
+def test_every_dev_pin_in_the_freeze_has_been_judged():
+    """Read from the FREEZE, not from the mapping, so deleting the mapping fails here.
+
+    Scoping the other checks to what `distro_dev_version` declares left a hole: delete or
+    misspell that key and the declared set is empty, so the marker test passes vacuously and
+    the rewrite test skips, while the seed hands pip the unresolvable `Mako==1.3.2.dev0` and
+    every leg of the matrix dies exactly as it did.
+
+    The freeze is what the image actually has, so it decides. Each `.devN` entry must be
+    judged one way or the other: a distro label to rewrite, or a prerelease upstream really
+    published and the seed must leave alone. A new one fails this until someone says which,
+    which is the point -- neither answer is guessable from the version string.
+    """
+    mapping = _mapping()
+    rewrites = mapping.get("distro_dev_version", {})
+    allowed = {entry.lower() for entry in mapping.get("published_prerelease", [])}
+
+    unjudged = []
+    for line in FREEZE.read_text(encoding = "utf-8").splitlines():
+        m = re.match(r"^([A-Za-z0-9._-]+)\s*==\s*(.+)$", line.strip())
+        if not m or ".dev" not in m.group(2):
+            continue
+        name, ver = m.group(1).lower(), m.group(2)
+        declared = rewrites.get(name, {}).get("from") == ver
+        if not declared and f"{name}=={ver}" not in allowed:
+            unjudged.append(f"{name}=={ver}")
+
+    assert not unjudged, (
+        "these pins carry a .devN version that nothing has judged. Add a distro_dev_version "
+        "entry if the image is labelling a distro build, or list it under "
+        f"published_prerelease if PyPI really publishes it: {unjudged}"
+    )
+
+
+def test_a_rewritten_pin_is_still_installed_at_the_published_version(tmp_path):
+    """The rewrite must not become a skip: the image carries Mako, so the venv this job builds
+    has to carry it too, at the version PyPI publishes."""
+    rewrites = _mapping().get("distro_dev_version", {})
+    if not rewrites:
+        pytest.skip("no distro .devN rewrites are declared")
+    seeded = dict(pin.split("==", 1) for pin in _run_seed(tmp_path) if "==" in pin)
+    for name, rule in rewrites.items():
+        assert name in seeded, f"{name} was dropped rather than rewritten"
+        assert seeded[name] == rule["to"], f"{name} seeded as {seeded[name]}, expected {rule['to']}"
+
+
+def test_an_undeclared_dev_pin_is_left_alone_rather_than_guessed_at(tmp_path):
+    """`.devN` is also a genuine PEP 440 prerelease. Stripping it by pattern would turn a real
+    `pkg==2.0.dev3` into `pkg==2.0`, a different release that may not exist and is not what the
+    image had. Anything not named in the mapping passes through untouched, so the resolve fails
+    where a human can see it rather than installing something else quietly.
+    """
+    freeze = FREEZE.read_text(encoding = "utf-8") + "\nunsloth-not-a-real-pin==2.0.dev3\n"
+    seeded = dict(pin.split("==", 1) for pin in _run_seed(tmp_path, freeze) if "==" in pin)
+    assert (
+        seeded.get("unsloth-not-a-real-pin") == "2.0.dev3"
+    ), "an undeclared .devN pin was rewritten; only the mapping may decide that"
 
 
 # --- the cache key has to represent what the job installs ----------------------------

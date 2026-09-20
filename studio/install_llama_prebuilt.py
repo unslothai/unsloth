@@ -9419,8 +9419,15 @@ def _vulkan_loader_allows(path: str) -> bool:
     manifest's basename. A manifest filtered out is registered and never loaded, so
     counting it hands an integrated host a Vulkan build with no AMD device.
 
-    Disable is read before select precisely so "disable everything, then name one back"
-    works, hence select answering alone when it is set.
+    Select is an allowlist and disable is a denylist that WINS over it, rather than being
+    skipped when select is set. The loader documents the order the other way round from the
+    way this once read it: "The values from the disable environment variable will be
+    considered before the enable or select environment variable", and
+    VK_LOADER_DRIVERS_DISABLE is "also checked before other driver environment variables
+    (such as VK_LOADER_DRIVERS_SELECT)" (Vulkan-Loader, LoaderInterfaceArchitecture.md).
+    Drivers have no VK_LOADER_LAYERS_ALLOW counterpart to name one back, so selecting
+    radeon* while also disabling radeon* leaves the real loader with no driver, where this
+    counted Radeon as usable and reported only the device-node repair.
     """
 
     def _globs(env_name: str) -> list[str]:
@@ -9428,11 +9435,11 @@ def _vulkan_loader_allows(path: str) -> bool:
         return [entry.strip() for entry in value.split(",") if entry.strip()]
 
     name = PurePath(path).name
-    select = _globs("VK_LOADER_DRIVERS_SELECT")
-    if select:
-        return any(_vulkan_glob_matches(pattern, name) for pattern in select)
     disable = _globs("VK_LOADER_DRIVERS_DISABLE")
-    return not any(_vulkan_glob_matches(pattern, name) for pattern in disable)
+    if any(_vulkan_glob_matches(pattern, name) for pattern in disable):
+        return False
+    select = _globs("VK_LOADER_DRIVERS_SELECT")
+    return any(_vulkan_glob_matches(pattern, name) for pattern in select) if select else True
 
 
 # Per call, not at import: Path.home() raises with no USERPROFILE.
