@@ -559,10 +559,11 @@ def _dominant_suffix(paths: list[str]) -> str:
     (`local_options._one_module`).
     """
     counts: dict[str, int] = {}
-    # Metadata never decides a builder, so it cannot outvote the shards.
-    voting = [p for p in paths if Path(p).name.lower() not in _METADATA_FILENAMES] or paths
-    # The same window the loader infers from.
-    for path in sorted(voting)[:_MAX_MODULE_INFERENCE_FILES]:
+    # The window first, exactly as the loader slices it, and metadata dropped
+    # only within it: a shard past the window is one the loader never sees.
+    window = sorted(paths)[:_MAX_MODULE_INFERENCE_FILES]
+    voting = [p for p in window if Path(p).name.lower() not in _METADATA_FILENAMES] or window
+    for path in voting:
         # One vote per extension, as `load.infer_module_for_data_files_list`
         # counts them: .json lends .jsonl none of its votes.
         suffix = Path(path).suffix.lower()

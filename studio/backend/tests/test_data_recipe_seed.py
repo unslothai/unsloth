@@ -1229,6 +1229,15 @@ def test_seed_hf_path_narrows_to_the_subset_folder_by_its_own_case(
     assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset) == expected
 
 
+def test_seed_format_vote_takes_the_window_before_dropping_metadata(monkeypatch, tmp_path):
+    """A shard past the window is one the loader never sees either."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = [f"a{i:04d}/metadata.csv" for i in range(200)] + ["z/shard.parquet"]
+
+    assert seed_route._dominant_suffix(files) == ".csv"
+    assert seed_route._dominant_suffix(["a/metadata.csv", "b/shard.parquet"]) == ".parquet"
+
+
 def test_seed_hf_path_unions_an_exact_and_a_qualified_split_folder(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["train/0.parquet", "sets/train_a/1.parquet", "sets/test_b/2.parquet"]
