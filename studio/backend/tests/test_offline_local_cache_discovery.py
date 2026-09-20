@@ -1032,6 +1032,168 @@ def test_the_provenance_map_is_bounded_and_says_so_when_it_is_full(monkeypatch):
     )
 
 
+def _recording_map(monkeypatch) -> dict:
+    """A real provenance map the writer under test fills, so the READ side is asked about a
+    record this code actually wrote rather than one the test spelled out itself."""
+    recorded: dict = {}
+
+    def _write(call, _key, entry, value):
+        recorded[entry] = value
+
+    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: recorded)
+    monkeypatch.setattr(hf_tokens, "_as_owner", _write)
+    return recorded
+
+
+def test_a_credential_does_not_inherit_a_repo_another_credential_fetched(monkeypatch):
+    """The whole point of the unaskable fallback is that the caller's OWN credential filled this
+    cache. Holding the credential the host holds now is not that: a one-off X-Unsloth-HF-Token
+    reaches private repos the host credential cannot, and its bytes land in the same cache.
+    """
+    host = "hf_the_operators_own_credential"
+    foreign = "hf_a_one_off_someone_else_sent"
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, (host,)))
+    monkeypatch.setattr(hf_tokens, "_no_other_credential_ever_held", lambda tokens: True)
+    monkeypatch.setattr(hf_tokens, "_repo_present_on_disk", lambda repo, kind: True)
+    recorded = _recording_map(monkeypatch)
+
+    hf_tokens.note_repo_fetched_with_a_request_token(foreign, "acme/theirs", "model")
+    hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/ours", "model")
+
+    assert (
+        hf_tokens._caller_populated_the_cache(host, repo_id = "acme/theirs", repo_type = "model")
+        is False
+    ), "the host credential inherited a repo a foreign token fetched"
+    assert hf_tokens._resolve_unaskable("acme/theirs", "model", token = host) is False
+
+    # The cases the rule exists for are untouched: the repo this credential itself fetched, and
+    # a cache older than the record, which is the tokenless offline install on first upgrade.
+    assert (
+        hf_tokens._caller_populated_the_cache(host, repo_id = "acme/ours", repo_type = "model") is True
+    )
+    assert (
+        hf_tokens._caller_populated_the_cache(host, repo_id = "acme/never-seen", repo_type = "model")
+        is True
+    )
+    # And the foreign token is still not a host credential, so it is refused as it always was.
+    assert (
+        hf_tokens._caller_populated_the_cache(foreign, repo_id = "acme/theirs", repo_type = "model")
+        is False
+    )
+    assert recorded[hf_tokens._request_token_repo_key("acme/theirs", "model")]["by"] == (
+        hf_tokens._credential_identity(foreign)
+    )
+
+
+def test_a_repo_two_different_credentials_fetched_belongs_to_neither(monkeypatch):
+    host = "hf_the_operators_own_credential"
+    foreign = "hf_a_one_off_someone_else_sent"
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, (host,)))
+    monkeypatch.setattr(hf_tokens, "_no_other_credential_ever_held", lambda tokens: True)
+    monkeypatch.setattr(hf_tokens, "_repo_present_on_disk", lambda repo, kind: True)
+    recorded = _recording_map(monkeypatch)
+
+    hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/shared", "model")
+    hf_tokens.note_repo_fetched_with_a_request_token(foreign, "acme/shared", "model")
+
+    assert recorded[hf_tokens._request_token_repo_key("acme/shared", "model")]["by"] is None
+    assert (
+        hf_tokens._caller_populated_the_cache(host, repo_id = "acme/shared", repo_type = "model")
+        is False
+    ), "a repo more than one credential fetched was claimed by one of them"
+    # Still recorded as fetched under SOME credential, so a tokenless caller is refused too.
+    assert hf_tokens._repo_was_fetched_with_a_request_token("acme/shared", "model") is True
+
+
+def test_a_provenance_write_that_failed_is_not_read_as_nothing_to_record(monkeypatch):
+    """A download must not fail on its bookkeeping, and the read side must not then take the
+    missing record as "nothing here needed a credential": that is the same absence a repo nobody
+    ever fetched leaves, and only one of the two authorizes.
+    """
+    monkeypatch.setattr(hf_tokens, "_unrecorded_fetches", set())
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ()))
+    monkeypatch.setattr(hf_tokens, "_no_other_credential_ever_held", lambda tokens: True)
+    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: {})
+
+    def _raises(*_a, **_k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(hf_tokens, "_as_owner", _raises)
+    hf_tokens.note_repo_fetched_with_a_request_token("hf_a_one_off", "acme/private", "model")
+
+    assert hf_tokens._repo_was_fetched_with_a_request_token("acme/private", "model") is None
+    assert (
+        hf_tokens._caller_populated_the_cache(None, repo_id = "acme/private", repo_type = "model")
+        is False
+    ), "a repo whose provenance write failed was read as one nothing ever fetched"
+    # Only that repo. The cost of a locked database is not the whole host losing its own cache.
+    assert (
+        hf_tokens._caller_populated_the_cache(None, repo_id = "acme/other", repo_type = "model") is True
+    )
+
+
+def test_a_denial_is_remembered_when_the_facts_that_could_overturn_it_cannot_be_read(monkeypatch):
+    """The rule below the memory answers a plain no for a fact it could not establish, because
+    its callees swallow their own failures. A denial arriving in that window was dropped, and the
+    next outage then authorized the caller the Hub had refused.
+    """
+    token = "hf_the_operators_own_credential"
+    monkeypatch.setattr(hf_tokens, "_repo_present_on_disk", lambda repo, kind: True)
+    monkeypatch.setattr(hf_tokens, "_unrecorded_fetches", set())
+
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (False, ()))
+    assert hf_tokens._denial_can_be_overturned("acme/private", "model", token) is True
+
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, (token,)))
+    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: None)
+    assert hf_tokens._denial_can_be_overturned("acme/private", "model", token) is True
+
+    # The boundary this must not move: where everything IS readable and the fallback could never
+    # have authorized this caller anyway, the denial still buys nothing and the slot is not spent.
+    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: {})
+    monkeypatch.setattr(hf_tokens, "_caller_populated_the_cache", lambda *a, **k: False)
+    assert hf_tokens._denial_can_be_overturned("acme/private", "model", token) is False
+
+
+def test_a_ledger_write_that_failed_is_retried_rather_than_remembered(monkeypatch):
+    """A missing ledger entry is not the harmless direction: a shorter ledger reads as "this host
+    never held anything else", which authorizes more.
+    """
+    token = "hf_the_operators_own_credential"
+    identity = hf_tokens._credential_identity(token)
+    monkeypatch.setattr(hf_tokens, "_noted_credential_identities", set())
+    ledger: dict = {}
+    attempts = {"n": 0}
+
+    def _write(call, _key, entry, value):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("database is locked")
+        ledger[entry] = value
+
+    monkeypatch.setattr(hf_tokens, "_host_credential_identities", lambda: dict(ledger))
+    monkeypatch.setattr(hf_tokens, "_as_owner", _write)
+
+    hf_tokens._note_host_credential_identities([token])
+    assert ledger == {}, "the write did not fail"
+    hf_tokens._note_host_credential_identities([token])
+    assert attempts["n"] == 2, "a failed ledger write was never retried"
+    assert identity in ledger
+    hf_tokens._note_host_credential_identities([token])
+    assert attempts["n"] == 2, "a ledger entry already present was rewritten"
+
+
+def test_an_unreadable_ledger_is_not_remembered_as_written(monkeypatch):
+    token = "hf_the_operators_own_credential"
+    monkeypatch.setattr(hf_tokens, "_noted_credential_identities", set())
+    monkeypatch.setattr(hf_tokens, "_host_credential_identities", lambda: None)
+    monkeypatch.setattr(
+        hf_tokens, "_as_owner", lambda *a, **k: pytest.fail("wrote into a ledger it cannot read")
+    )
+    hf_tokens._note_host_credential_identities([token])
+    assert hf_tokens._noted_credential_identities == set()
+
+
 def test_a_map_below_the_cap_still_answers_no_for_a_repo_it_does_not_hold(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: {})
     assert hf_tokens._repo_was_fetched_with_a_request_token("acme/other", "model") is False

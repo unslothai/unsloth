@@ -228,9 +228,19 @@ def _restore(payload: Any, known: "dict[str, str]") -> Any:
         restored = [_restore(item, known) for item in payload]
         if not isinstance(payload, tuple):
             return restored
+        # The same discriminator the redaction walk uses, and for the same reason. Deciding by
+        # try/except instead looked equivalent and was not: a NamedTuple takes its fields one by
+        # one and a plain tuple takes the iterable, so `type(payload)(*restored)` on a ONE-element
+        # plain tuple of a string raises nothing and quietly spells it out, `("abc",)` coming back
+        # as `("a", "b", "c")`.
+        if hasattr(payload, "_fields"):
+            try:
+                return type(payload)(*restored)
+            except Exception:  # noqa: BLE001 -- a subclass with its own constructor
+                return tuple(restored)
         try:
-            return type(payload)(*restored)
-        except Exception:  # noqa: BLE001 -- a plain tuple, not a NamedTuple
+            return type(payload)(restored)
+        except Exception:  # noqa: BLE001 -- same
             return tuple(restored)
     if isinstance(payload, str):
         text = payload
@@ -583,7 +593,20 @@ def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:
         redacted = [
             redact_inventory_error_detail(value, via_api_key = via_api_key) for value in detail
         ]
-        return type(detail)(redacted) if isinstance(detail, tuple) else redacted
+        if not isinstance(detail, tuple):
+            return redacted
+        # A NamedTuple detail takes its fields one by one; handing it the list raises TypeError,
+        # and this runs while a route is already raising, so the caller would get a 500 in place
+        # of the refusal it was being told about.
+        if hasattr(detail, "_fields"):
+            try:
+                return type(detail)(*redacted)
+            except Exception:  # noqa: BLE001 -- a subclass with its own constructor
+                return tuple(redacted)
+        try:
+            return type(detail)(redacted)
+        except Exception:  # noqa: BLE001 -- same
+            return tuple(redacted)
     return detail
 
 

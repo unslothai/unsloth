@@ -972,6 +972,40 @@ def test_a_request_that_named_a_path_directly_is_answered_with_that_path():
     assert host_paths.restore_inventory_handles(answer) == answer
 
 
+def test_a_tuple_keeps_its_shape_through_both_walks():
+    """Both walks rebuild a tuple, and the two kinds take their arguments differently: a
+    NamedTuple field by field, a plain tuple the iterable. Deciding that by try/except looked
+    equivalent and was not, because `tuple(*["abc"])` raises nothing and spells the string out.
+    """
+    from collections import namedtuple
+
+    Row = namedtuple("Row", "first second")
+    One = namedtuple("One", "only")
+
+    path = f"{HOST_ROOT}/models/Llama-3.2-1B"
+    token = host_paths._request_handles.set({path: host_paths.cache_reference(path)})
+    try:
+        assert host_paths.restore_inventory_handles(("abc",)) == ("abc",)
+        assert host_paths.restore_inventory_handles(("ab", "cd")) == ("ab", "cd")
+        assert host_paths.restore_inventory_handles(One("abc")) == One("abc")
+        assert host_paths.restore_inventory_handles(Row("ab", "cd")) == Row("ab", "cd")
+        assert host_paths.restore_inventory_handles((path,)) == (host_paths.cache_reference(path),)
+    finally:
+        host_paths._request_handles.reset(token)
+
+    # The raised-detail walk runs while a route is already raising, so a TypeError there is a
+    # 500 in place of the refusal the caller was being told about.
+    detail = host_paths.raised_inventory_detail(
+        Row(f"{HOST_ROOT}/a", f"{HOST_ROOT}/b"), via_api_key = True
+    )
+    assert isinstance(detail, Row), detail
+    assert response_leaks_host_path(detail, [HOST_ROOT]) is None, detail
+    assert host_paths.redact_inventory_error_detail(("abc",), via_api_key = True) == ("abc",)
+    assert host_paths.raised_inventory_detail(Row("ab", "cd"), via_api_key = False) == Row(
+        "ab", "cd"
+    ), "a UI session's detail was rebuilt into something else"
+
+
 def test_a_sibling_that_merely_starts_with_the_resolved_path_is_not_a_handle():
     """A response carries paths this caller never named -- the model that was resident BEFORE
     this load, most of all -- and a sibling under the same directory starts with the same text.

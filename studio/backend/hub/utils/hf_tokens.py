@@ -228,8 +228,11 @@ def reset_repo_access_cache() -> None:
         _denied_repo_access.clear()
         _denial_memory_is_complete = True
     # The ledger's write memo is process-local, and a test that recorded one identity would
-    # otherwise decide what the next one is allowed to record.
+    # otherwise decide what the next one is allowed to record. Same for the repos whose
+    # provenance write failed: one test's unwritable database would refuse the next test's
+    # fallback for a repo it never touched.
     _noted_credential_identities.clear()
+    _unrecorded_fetches.clear()
 
 
 def cache_reads_authorized(
@@ -477,30 +480,56 @@ def note_repo_fetched_with_a_request_token(
     repo_id: str,
     repo_type: Optional[str] = "model",
 ) -> None:
-    """Record that *repo_id* was fetched under a credential at all.
+    """Record that *repo_id* was fetched under a credential, and WHICH one.
 
-    The read side consults this on ONE branch: the credential set is empty NOW and the caller
-    presents none. "Empty now" says nothing about what the host held when the bytes were fetched,
-    so a download under the operator's OWN credential is recorded too, as is one whose credential
-    set could not be read -- an over-broad record withholds bytes the caller can still fetch from
-    the Hub, where a missing one hands over a private repo. Never raises.
+    Both branches of the read side consult this. The tokenless one asks whether any credential
+    was used at all: "the host holds none NOW" says nothing about what it held when the bytes
+    were fetched, so a download under the operator's OWN credential is recorded too, as is one
+    whose credential set could not be read -- an over-broad record withholds bytes the caller can
+    still fetch from the Hub, where a missing one hands over a private repo.
+
+    The credentialed branch asks the sharper question, which is why ``by`` is recorded. Holding
+    the credential the host holds now is not having filled this repo's cache with it: a one-off
+    ``X-Unsloth-HF-Token`` the host stores nowhere can fetch a private repo the host's own
+    credential cannot reach, and without an identity on the record the host credential inherited
+    it. ``by`` is the one-way identity of the credential the fetch went out under, or ``None``
+    when that cannot be attributed to exactly one credential, which authorizes nobody. Never
+    raises.
     """
     if is_anonymous(token) or not repo_id:
         return
     if token is not None and (not isinstance(token, str) or not token):
         return
     try:
+        fetched_by: Optional[str] = None
         if token is None:
             known, host_tokens = _host_hf_credentials()
             if known and not host_tokens:
                 return
+            # An ambient fetch goes out under the host's own credential, so it is attributable
+            # exactly when there is one to name. Two held credentials are already refused by the
+            # gate, and an unreadable store is not an attribution.
+            if known and len(set(host_tokens)) == 1:
+                fetched_by = _credential_identity(host_tokens[0])
+        else:
+            fetched_by = _credential_identity(token)
         from storage.studio_db import upsert_app_setting_map_entry
 
         key = _request_token_repo_key(repo_id, repo_type)
         recorded = _recorded_request_token_repos()
         if isinstance(recorded, dict):
-            # Already known: the map is a SET, and every write rewrites the whole JSON value.
-            if key in recorded:
+            existing = recorded.get(key)
+            if isinstance(existing, dict) and key in recorded:
+                # Already known. Rewriting would be the only way for a SECOND credential's fetch
+                # to claim a repo the first one filled, so the first record stands -- except to
+                # drop an attribution that is no longer the only one, which only ever refuses more.
+                if existing.get("by") not in (None, fetched_by):
+                    _as_owner(
+                        upsert_app_setting_map_entry,
+                        _REQUEST_TOKEN_REPOS_SETTING_KEY,
+                        key,
+                        {"at": existing.get("at", time.time()), "by": None},
+                    )
                 return
             # Bounded, since the repo id comes from the caller; a repo missing from a FULL map
             # answers "cannot say".
@@ -511,13 +540,38 @@ def note_repo_fetched_with_a_request_token(
             upsert_app_setting_map_entry,
             _REQUEST_TOKEN_REPOS_SETTING_KEY,
             key,
-            {"at": time.time()},
+            {"at": time.time(), "by": fetched_by},
         )
     except Exception:  # noqa: BLE001 -- a download must never fail on its own bookkeeping
         logger.debug("could not record the credential a download used", exc_info = True)
+        # A download must not fail on its bookkeeping, but the READ side must not then take the
+        # missing record as "nothing here needed a credential": that is the same absence a repo
+        # nobody ever fetched leaves. Remembered per repo, in memory, so the cost of a locked
+        # database is this repo losing the unaskable fallback rather than the host losing it.
+        try:
+            _unrecorded_fetches.add(_request_token_repo_key(repo_id, repo_type))
+        except Exception:  # noqa: BLE001 -- bookkeeping about bookkeeping, still never raises
+            logger.debug("could not note the provenance write that failed", exc_info = True)
 
 
 _REQUEST_TOKEN_REPOS_MAX = 4096
+
+# Repos whose provenance write is KNOWN to have failed in this process. Process-local on
+# purpose: a durable marker would need the same write that just failed. Bounded, since the repo
+# id comes from the caller; at the bound the whole set stops being trustworthy, which the reader
+# below treats as "cannot say" rather than discarding the oldest and quietly authorizing it.
+_UNRECORDED_FETCHES_MAX = 4096
+_unrecorded_fetches: "set[str]" = set()
+
+
+def _provenance_record_is_missing(repo_id: Optional[str], repo_type: Optional[str]) -> bool:
+    """Whether this repo's record is absent because a write FAILED rather than because nothing
+    fetched it. Both spell the same absence in the map, and only one of them authorizes."""
+    if not repo_id:
+        return False
+    if len(_unrecorded_fetches) >= _UNRECORDED_FETCHES_MAX:
+        return True
+    return _request_token_repo_key(repo_id, repo_type) in _unrecorded_fetches
 
 
 def _recorded_request_token_repos() -> "Optional[dict]":
@@ -565,20 +619,34 @@ def _host_credential_identities() -> "Optional[dict]":
 
 
 def _note_host_credential_identities(tokens: Iterable[str]) -> None:
-    """Record THAT this host held each credential. Best effort: a ledger that cannot be written
-    leaves the gate reading an older one, which only ever authorizes less than the truth."""
+    """Record THAT this host held each credential.
+
+    The process-local memo is set only once the identity is KNOWN to be in the ledger, either
+    because the write landed or because it was already there. Setting it first made a single
+    failed write permanent for the life of the process, and a missing entry is not the harmless
+    direction: ``_no_other_credential_ever_held`` reads a shorter ledger as "this host never
+    held anything else", which authorizes MORE, not less. So a write that could not be made is
+    retried on the next call instead.
+    """
     for token in tokens:
         if not isinstance(token, str) or not token:
             continue
         identity = _credential_identity(token)
         if identity in _noted_credential_identities:
             continue
-        _noted_credential_identities.add(identity)
         try:
             from storage.studio_db import upsert_app_setting_map_entry
 
             seen = _host_credential_identities()
-            if seen is None or identity in seen or len(seen) >= _HOST_CREDENTIAL_IDENTITIES_MAX:
+            if seen is None:
+                # Unreadable: not knowing is not a record, and the next call asks again.
+                continue
+            if identity in seen:
+                _noted_credential_identities.add(identity)
+                continue
+            if len(seen) >= _HOST_CREDENTIAL_IDENTITIES_MAX:
+                # A full ledger cannot take another identity. Not remembered as written, since
+                # it was not, and a later eviction or read is free to place it.
                 continue
             _as_owner(
                 upsert_app_setting_map_entry,
@@ -586,6 +654,7 @@ def _note_host_credential_identities(tokens: Iterable[str]) -> None:
                 identity,
                 {"at": time.time()},
             )
+            _noted_credential_identities.add(identity)
         except Exception:  # noqa: BLE001
             continue
 
@@ -616,7 +685,42 @@ def _repo_was_fetched_with_a_request_token(
     if len(recorded) >= _REQUEST_TOKEN_REPOS_MAX:
         # Past the cap, "not in it" no longer means "not fetched with one". Cannot say.
         return None
+    if _provenance_record_is_missing(repo_id, repo_type):
+        # A write that failed leaves exactly the absence a repo nobody fetched leaves, and this
+        # branch is the one that reads absence as "nothing here needed a credential".
+        return None
     return False
+
+
+def _repo_fetched_by_this_credential(
+    token: str, repo_id: Optional[str], repo_type: Optional[str]
+) -> bool:
+    """Whether the record for *repo_id* names *token* as the credential that fetched it.
+
+    ``True`` also when there is no record at all, which is the same reading the tokenless branch
+    takes: nothing here says another credential filled it, and a cache older than the record is
+    the case this whole path exists for. Everything else refuses -- a record naming a DIFFERENT
+    credential, a record that could not be attributed to one, and a map that cannot be read or is
+    full -- because each of those is a way of not knowing, and not knowing is not this caller.
+    """
+    if not repo_id:
+        return False
+    recorded = _recorded_request_token_repos()
+    if recorded is None:
+        return False
+    entry = recorded.get(_request_token_repo_key(repo_id, repo_type))
+    if entry is None:
+        # Absent below the cap means never recorded; at the cap, or where a write for this repo
+        # is known to have failed, it means nothing at all.
+        if _provenance_record_is_missing(repo_id, repo_type):
+            return False
+        return len(recorded) < _REQUEST_TOKEN_REPOS_MAX
+    if not isinstance(entry, dict):
+        return False
+    recorded_by = entry.get("by")
+    if not isinstance(recorded_by, str) or not recorded_by:
+        return False
+    return hmac.compare_digest(recorded_by, _credential_identity(token))
 
 
 def _caller_populated_the_cache(
@@ -671,7 +775,15 @@ def _caller_populated_the_cache(
             token.encode("utf-8", "surrogatepass"), held.encode("utf-8", "surrogatepass")
         ):
             matched = True
-    return matched
+    if not matched:
+        return False
+    # Being the credential the host holds is not having filled THIS repo's cache with it. A
+    # one-off `X-Unsloth-HF-Token` reaches private repos the host credential cannot, and the
+    # record above is what tells the two apart; without this the host credential was handed a
+    # repo that a foreign token had fetched, which is the boundary this gate exists to keep.
+    # It closes the rotation case from the other side too: a credential the ledger never saw
+    # still does not own a repo whose record names the one before it.
+    return _repo_fetched_by_this_credential(token, repo_id, repo_type)
 
 
 def _resolve_unaskable(repo_id: str, repo_type: str, *, token: Optional[str]) -> bool:
@@ -683,6 +795,23 @@ def _resolve_unaskable(repo_id: str, repo_type: str, *, token: Optional[str]) ->
     return _repo_present_on_disk(repo_id, repo_type)
 
 
+def _cache_provenance_is_establishable(repo_id: Optional[str], repo_type: Optional[str]) -> bool:
+    """Whether the facts the unaskable fallback rests on can be read at all right now.
+
+    Three ways they cannot: a credential store that will not answer, a provenance map that will
+    not answer, and a repo whose own provenance write is known to have failed in this process.
+    Each is a way of not knowing, and each is reported by the readers below as a plain refusal,
+    which is right for the reader and wrong for the caller deciding whether a denial is worth
+    remembering.
+    """
+    known, _held = _host_hf_credentials()
+    if not known:
+        return False
+    if _recorded_request_token_repos() is None:
+        return False
+    return not _provenance_record_is_missing(repo_id, repo_type)
+
+
 def _denial_can_be_overturned(repo_id: str, repo_type: str, token: Optional[str]) -> bool:
     """Whether remembering this denial protects anything: only where ``_resolve_unaskable``
     would otherwise say yes, so both the caller's credential must be one that filled this cache
@@ -690,6 +819,13 @@ def _denial_can_be_overturned(repo_id: str, repo_type: str, token: Optional[str]
     repo id, and 8192 denials for repos that do not exist (huggingface.co answers those a bare
     401) forced an eviction, after which ``_denial_memory_is_complete`` refused every unaskable
     probe process-wide. Unanswerable means remember: not remembering is what loses safety."""
+    # Asked BEFORE the rule below, because that rule answers a plain no for a fact it merely
+    # could not establish: its callees swallow their own failures. So a denial arriving while
+    # the credential store or the provenance map was unreadable was dropped, and once they
+    # could be read again the next outage authorized the caller the Hub had refused. Only an
+    # exception escaping was covered, and these do not raise.
+    if not _cache_provenance_is_establishable(repo_id, repo_type):
+        return True
     try:
         if not _caller_populated_the_cache(token, repo_id = repo_id, repo_type = repo_type):
             return False
