@@ -1965,12 +1965,35 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if "model" in call_args:
         model_length_default = "model.max_seq_length"
+        explicit_max_length = ""
         if trainer_file == "sft_trainer":
-            # A model limit must not widen an existing SFT truncation limit.
-            model_length_default = (
-                "min(model.max_seq_length, args.max_length) "
-                "if (getattr(args, 'max_length', None) or 0) > 0 else model.max_seq_length"
+            # A model limit must not widen a truncation limit the CALLER asked for. Only a
+            # caller-supplied one: `SFTConfig.max_length` carries a dataclass default of 1024 on
+            # every TRL from 0.22 to 1.x, so capping on "positive" instead caps every run that
+            # never named a length down to 1024, model context and all.
+            explicit_max_length = (
+                "_unsloth_explicit_max_length = None\n"
+                "try:\n"
+                "    import dataclasses as _unsloth_dc\n"
+                "    _unsloth_cfg_cls = type(args)\n"
+                # Walk back off Unsloth's generated subclass to TRL's own dataclass, which is where
+                # the untouched default lives.
+                "    while '_unsloth_patched_rl_config' in _unsloth_cfg_cls.__dict__ or _unsloth_cfg_cls.__name__.startswith('Unsloth'):\n"
+                "        _unsloth_cfg_cls = _unsloth_cfg_cls.__bases__[0]\n"
+                "    _unsloth_default_max_length = None\n"
+                "    for _unsloth_field in _unsloth_dc.fields(_unsloth_cfg_cls):\n"
+                "        if _unsloth_field.name == 'max_length': _unsloth_default_max_length = _unsloth_field.default\n"
+                "    _unsloth_given_max_length = getattr(args, 'max_length', None)\n"
+                "    if (_unsloth_given_max_length or 0) > 0 and _unsloth_given_max_length != _unsloth_default_max_length:\n"
+                "        _unsloth_explicit_max_length = _unsloth_given_max_length\n"
+                "except Exception:\n"
+                "    _unsloth_explicit_max_length = None\n"
             )
+            model_length_default = (
+                "min(model.max_seq_length, _unsloth_explicit_max_length) "
+                "if _unsloth_explicit_max_length else model.max_seq_length"
+            )
+        extra_args += explicit_max_length
         length_check = (
             "if 'max_seq_length' not in locals() and not hasattr(args, 'max_seq_length'):\n"
             "    pass\n"
@@ -2001,7 +2024,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "        model_max_length = getattr(model, 'max_seq_length', None)\n"
                 "        if model_max_length is None: model_max_length = getattr(model, 'max_length', None)\n"
                 "        if model_max_length is not None:\n"
-                "            args.max_length = min(args.max_length, model_max_length) if (getattr(args, 'max_length', None) or 0) > 0 else model_max_length\n"
+                "            args.max_length = min(_unsloth_explicit_max_length, model_max_length) if _unsloth_explicit_max_length else model_max_length\n"
                 "            max_length = args.max_length\n"
                 "        elif hasattr(args, 'max_length') and args.max_length is not None:\n"
                 "            max_length = args.max_length\n"
