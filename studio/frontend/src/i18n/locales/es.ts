@@ -248,9 +248,19 @@ export const es = {
   settings: {
     accounts: {
       title: "Cuentas",
-      description: "Crea cuentas privadas de Unsloth Studio. Los nuevos usuarios inician sesión con un código de configuración de un solo uso y eligen una contraseña.",
+      description: "Crea cuentas privadas de Unsloth. Los nuevos usuarios inician sesión con un código de configuración de un solo uso y eligen una contraseña.",
       username: "Nombre de usuario",
       create: "Crear cuenta",
+      createDescription: "Comparte un código de configuración para que elija su propia contraseña.",
+      actionsFor: "Gestionar {username}",
+      actions: "Acciones",
+      search: "Buscar cuentas",
+      noResults: "No hay cuentas coincidentes",
+      created: "Creada",
+      status: "Estado",
+      loginHint: "Inicia sesión como {username} con este código como contraseña y luego elige una nueva.",
+      privateAccount: "Cuenta privada",
+      empty: "Aún no hay otras cuentas",
       setupCode: "Código de configuración",
       setupFor: "Código de configuración para {username}",
       shownOnce: "Copia este código ahora y compártelo con el titular de la cuenta. Solo se muestra aquí y puede usarse una vez en un plazo de 60 minutos.",
@@ -260,13 +270,13 @@ export const es = {
       copyFailed: "No se pudo copiar. Selecciona y copia el código de configuración de arriba.",
       dismiss: "Listo",
       owner: "Propietario de la instalación",
-      active: "Activa",
-      inactive: "Inactiva",
+      active: "Activada",
+      inactive: "Desactivada",
       regenerate: "Regenerar código de configuración",
       resetTitle: "¿Restablecer la contraseña de {username}?",
       resetDescription: "Regenerar el código de configuración sustituye la contraseña de {username}, cierra sus sesiones y revoca sus claves de API. Dale el código nuevo para que elija otra contraseña.",
       deactivate: "Desactivar",
-      reactivate: "Reactivar",
+      reactivate: "Activar",
       delete: "Eliminar cuenta",
       deleteTitle: "¿Eliminar {username}?",
       deleteDescription: "Esto revoca las sesiones de {username} y cancela su trabajo. Sus chats, ajustes, credenciales, subidas, conjuntos de datos, entrenamientos, resultados, exportaciones, galerías, entornos aislados, proyectos y archivos temporales se retiran. Los directorios se renombran aparte, nunca se eliminan. Crear de nuevo este nombre de usuario inicia una cuenta nueva sin estos datos.",
@@ -304,6 +314,9 @@ export const es = {
     keyboardShortcuts: {
       title: "Atajos de teclado",
       searchPlaceholder: "Buscar atajos…",
+      keystrokePlaceholder: "Pulsa un atajo para buscar",
+      searchByKeystrokes: "Buscar por pulsación",
+      searchByName: "Buscar por nombre",
       noResults: "Ningún atajo coincide con esa búsqueda.",
       unassigned: "Sin asignar",
       recording: "Pulsa las teclas…",
@@ -574,7 +587,7 @@ export const es = {
       openLogsFolderFailed: "No se pudo abrir la carpeta de registros.",
       exportFailed: "No se pudieron descargar los registros.",
       exportTooOld: "El backend de Unsloth en ejecución es demasiado antiguo para exportar los registros. Actualízalo y reinícialo.",
-      exportForbidden: "Para descargar todos los registros hace falta una sesión de Unsloth Studio iniciada. Una clave de API no basta.",
+      exportForbidden: "Para descargar todos los registros hace falta una sesión de Unsloth iniciada. Una clave de API no basta.",
       keywords: "depuracion depurar registro registros log logs error errores fallo traza diagnostico solucion de problemas debug",
     },
     voice: {
@@ -887,6 +900,9 @@ export const es = {
         showLoadedModels: "Indicador de modelos cargados",
         showLoadedModelsDescription:
           "Muestra una pequeña tarjeta en la esquina inferior derecha con todos los modelos actualmente en memoria (chat, voz, imagen, vídeo), con un botón para expulsar cada uno.",
+        showWhisperUpdates: "Notificaciones de actualización de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Avisa cuando haya una compilación más reciente de whisper.cpp para los modelos de voz a texto. Desactívalo si nunca transcribes audio.",
       },
       startup: {
         sectionTitle: "Inicio",
@@ -1992,7 +2008,7 @@ export const es = {
         desktopAvailableDescription:
           "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "Ejecuta `unsloth studio update` desde el terminal que inició el servidor.",
+          "La aplicación se conectó a un servidor de Studio que ya estaba en ejecución y no puede actualizarlo. Detén ese servidor, cierra la aplicación de escritorio y vuelve a abrirla para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudo buscar actualizaciones",

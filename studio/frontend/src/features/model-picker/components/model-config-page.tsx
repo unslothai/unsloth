@@ -187,8 +187,20 @@ const LABEL_CLASS_WRAP =
   "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
-const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
-const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
+// One width for every typed field: a box that resized per keystroke would jump under the
+// caret. Narrow, so the label beside it is not clipped in a ~240px panel.
+const INPUT_WIDTH_CLASS = "w-[84px] shrink-0";
+// A select holds one of a known set of values, so it sizes to that value.
+const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
+// 14px each side optically. The chevron's stroke fills 14 of its 24 viewBox units, so its
+// box carries ~3px of slack; pr-[11px] pays that back.
+const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${SELECT_WIDTH_CLASS} ${CONTROL_SURFACE} pl-3.5 pr-[11px] py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
+// Left-aligned like every other value here. These fields share one width, so reading from
+// the left puts their values on a single edge.
+const NUMBER_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} ${CONTROL_SURFACE} px-3.5 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
+const TEXT_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} min-w-0 ${CONTROL_SURFACE} px-3.5 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
+// Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
+const FOOTER_BUTTON_CLASS = "h-9 rounded-full text-ui-13 font-medium tracking-nav";
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
@@ -389,7 +401,7 @@ function ChatTemplateSetting({
           type="button"
           size="sm"
           variant="ghost"
-          className={`h-8 px-3 text-ui-13 ${CONTROL_SURFACE}`}
+          className={`h-8 px-3.5 text-ui-13 ${CONTROL_SURFACE}`}
           onClick={onEditTemplate}
         >
           {readOnly ? "View" : "Edit"}
@@ -444,6 +456,7 @@ function MaxSeqLengthSetting({
           derived={isMlx && !pinned}
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
+          fixedWidth={true}
           size={8}
         />
       </div>
@@ -507,6 +520,7 @@ function AdvancedGpuSlider({
           displayValue={displayValue}
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
+          fixedWidth={true}
           size={8}
           disabled={disabled}
         />
@@ -668,7 +682,7 @@ function VramBudgetRow() {
   };
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
       <AdvancedGpuSlider
         label="VRAM Budget"
         value={percent}
@@ -837,7 +851,7 @@ function GpuMemorySettings({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+            className={SELECT_TRIGGER_CLASS}
           >
             <SelectValue />
           </SelectTrigger>
@@ -964,13 +978,15 @@ function AdvancedSettingsToggle({
   onCheckedChange: (next: boolean) => void;
 }) {
   return (
-    <div className={ROW_CLASS}>
+    // Ruled off from the context controls above, matching the estimate row's divider.
+    <div className={`${ROW_CLASS} border-t border-border/60 pt-3.5`}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
           Advanced settings
         </span>
         <InfoHint>
-          Extra options for how the model loads. Most setups don't need these.
+          Extra options for how the model loads. Unsloth already picks the best
+          settings for your device, so most setups don't need these.
         </InfoHint>
       </div>
       <Switch
@@ -1024,7 +1040,7 @@ function MlxAdvancedSettings({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+            className={SELECT_TRIGGER_CLASS}
           >
             <SelectValue />
           </SelectTrigger>
@@ -1115,7 +1131,7 @@ function LoadModeRow({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+            className={SELECT_TRIGGER_CLASS}
             aria-describedby={notice ? adviceId : undefined}
           >
             <SelectValue />
@@ -1211,7 +1227,7 @@ function GgufAdvancedSettings({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+            className={SELECT_TRIGGER_CLASS}
           >
             <SelectValue />
           </SelectTrigger>
@@ -1261,7 +1277,7 @@ function GgufAdvancedSettings({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+            className={SELECT_TRIGGER_CLASS}
           >
             <SelectValue />
           </SelectTrigger>
@@ -1333,7 +1349,7 @@ function GgufAdvancedSettings({
               animateRadius={false}
               icon={ChevronDownStandardIcon}
               iconClassName="size-3.5"
-              className={`w-[92px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+              className={SELECT_TRIGGER_CLASS}
             >
               <SelectValue />
             </SelectTrigger>
@@ -1426,7 +1442,7 @@ function GgufAdvancedSettings({
             />
           </div>
           {batchBelowFloor && (
-            <p id={batchAdviceId} className="text-ui-12 text-muted-foreground">
+            <p id={batchAdviceId} className="text-ui-11 text-muted-foreground">
               Too small for llama-server, so the load will raise it to {batchFloor}.
               {config.nParallel != null && config.nParallel > 2
                 ? " It needs one output slot per parallel slot."
@@ -1475,7 +1491,7 @@ function GgufAdvancedSettings({
             />
           </div>
           {ubatchExceedsBatch && (
-            <p id={ubatchAdviceId} className="text-ui-12 text-muted-foreground">
+            <p id={ubatchAdviceId} className="text-ui-11 text-muted-foreground">
               Micro-batch is larger than the batch size, so llama.cpp will run at{" "}
               {effectiveBatch}. Raise the batch size to use {config.nUbatch}.
             </p>
@@ -1580,7 +1596,7 @@ function GgufAdvancedSettings({
               }
             }}
             aria-label="Reasoning Budget Message"
-            className={`h-8 w-[180px] min-w-0 ${CONTROL_SURFACE} px-3 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`}
+            className={TEXT_INPUT_CLASS}
           />
         </div>
       )}
@@ -1828,40 +1844,43 @@ function ExtraArgsRow({
           </div>
         </InfoHint>
       </div>
-      <div className="panel-text-surface h-20 w-full overflow-hidden corner-squircle">
-        <textarea
-          value={text}
-          onChange={(event) => commit(event.target.value)}
-          spellCheck={false}
-          placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
-          aria-label="Extra llama-server arguments"
-          aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
-          className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground"
-        />
-      </div>
-      {(tokenCount > 0 || diagnostics.length > 0) && (
-        <div id={adviceId} className="space-y-1">
-          {tokenCount > 0 && (
-            <p className="text-ui-11 text-muted-foreground">
-              {tokenCount === 1 ? "1 argument" : `${tokenCount} arguments`}
-            </p>
-          )}
-          {diagnostics.map((diagnostic) => (
-            <p
-              key={diagnostic.message}
-              className={
-                diagnostic.level === "error"
-                  ? "text-ui-11 text-red-500"
-                  : diagnostic.level === "warning"
-                    ? "text-ui-11 text-amber-500"
-                    : "text-ui-11 text-muted-foreground"
-              }
-            >
-              {diagnostic.message}
-            </p>
-          ))}
+      {/* Grouped so the notes sit 4px under the field, as advice does elsewhere. */}
+      <div className="space-y-1">
+        <div className="panel-text-surface h-20 w-full overflow-hidden corner-squircle">
+          <textarea
+            value={text}
+            onChange={(event) => commit(event.target.value)}
+            spellCheck={false}
+            placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
+            aria-label="Extra llama-server arguments"
+            aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
+            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground"
+          />
         </div>
-      )}
+        {(tokenCount > 0 || diagnostics.length > 0) && (
+          <div id={adviceId} className="space-y-1">
+            {tokenCount > 0 && (
+              <p className="text-ui-11 text-muted-foreground">
+                {tokenCount === 1 ? "1 argument" : `${tokenCount} arguments`}
+              </p>
+            )}
+            {diagnostics.map((diagnostic) => (
+              <p
+                key={diagnostic.message}
+                className={
+                  diagnostic.level === "error"
+                    ? "text-ui-11 text-red-500"
+                    : diagnostic.level === "warning"
+                      ? "text-ui-11 text-amber-500"
+                      : "text-ui-11 text-muted-foreground"
+                }
+              >
+                {diagnostic.message}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3102,14 +3121,16 @@ export function ModelConfigPage({
   };
 
   return (
-    <div className="flex flex-col">
+    <div className="hint-on-hover flex flex-col">
       {variant === "page" && showHeader && (
+        // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
+        // the same left edge as the rows below.
         <div className="flex items-center gap-2.5 pb-4">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="nav-icon-btn shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+              className="nav-icon-btn -ml-1.5 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
               aria-label="Back to model list"
             >
               <ChevronLeftIcon
@@ -3181,57 +3202,67 @@ export function ModelConfigPage({
                   displayValue={contextIsAuto ? "Auto" : undefined}
                   ariaLabel="Context Length"
                   className={NUMBER_INPUT_CLASS}
+                  fixedWidth={true}
                   size={8}
                 />
               </div>
-              {nativeContextLength != null ? (
-                <div className="space-y-1.5">
-                  <Slider
-                    min={0}
-                    max={maxContext}
-                    step={128}
-                    value={[contextSliderValue]}
-                    onValueChange={([v]) => setContextSliderValue(v)}
-                    className="panel-slider"
-                    aria-label="Context Length"
-                    // Position 0 is Auto, not a zero-token context, so aria-valuenow alone reads as a length no
-                    // model has. The number is only spoken once one exists.
-                    thumbValueText={(v) =>
-                      v !== 0
-                        ? `${v.toLocaleString()} tokens`
-                        : activeLoadedContext != null
-                          ? `Auto, currently ${contextInputValue.toLocaleString()} tokens`
-                          : "Auto"
-                    }
-                  />
-                  <div className="flex justify-between text-ui-10 text-muted-foreground">
-                    <span>Auto</span>
-                    <span>{maxContext.toLocaleString()}</span>
+              {/* Grouped so the warning sits 4px under the slider, as advice does elsewhere. */}
+              <div className="space-y-1">
+                {nativeContextLength != null ? (
+                  <div className="space-y-1.5">
+                    <Slider
+                      min={0}
+                      max={maxContext}
+                      step={128}
+                      value={[contextSliderValue]}
+                      onValueChange={([v]) => setContextSliderValue(v)}
+                      className="panel-slider"
+                      aria-label="Context Length"
+                      // Position 0 is Auto, not a zero-token context, so aria-valuenow alone reads as a length no
+                      // model has. The number is only spoken once one exists.
+                      thumbValueText={(v) =>
+                        v !== 0
+                          ? `${v.toLocaleString()} tokens`
+                          : activeLoadedContext != null
+                            ? `Auto, currently ${contextInputValue.toLocaleString()} tokens`
+                            : "Auto"
+                      }
+                    />
+                    <div className="flex justify-between text-ui-10 text-muted-foreground">
+                      <span>Auto</span>
+                      <span>{maxContext.toLocaleString()}</span>
+                    </div>
                   </div>
-                </div>
-              ) : null}
-              {!contextIsAuto &&
-                isActiveModel &&
-                loadedMaxContextLength != null &&
-                contextValue > loadedMaxContextLength && (
-                  <p className="text-ui-11 text-amber-500">
-                    {isAppleUnifiedMemory ? (
-                      <>
-                        Exceeds what fits in unified memory (
-                        {loadedMaxContextLength.toLocaleString()} tokens). The
-                        GPU and the rest of the system share one pool here, so
-                        there is nothing to offload to.
-                      </>
-                    ) : (
-                      <>
-                        Exceeds estimated VRAM capacity (
-                        {loadedMaxContextLength.toLocaleString()} tokens). The
-                        model may use system RAM.
-                      </>
-                    )}
-                  </p>
-                )}
+                ) : null}
+                {!contextIsAuto &&
+                  isActiveModel &&
+                  loadedMaxContextLength != null &&
+                  contextValue > loadedMaxContextLength && (
+                    <p className="text-ui-11 text-amber-500">
+                      {isAppleUnifiedMemory ? (
+                        <>
+                          Exceeds what fits in unified memory (
+                          {loadedMaxContextLength.toLocaleString()} tokens). The
+                          GPU and the rest of the system share one pool here, so
+                          there is nothing to offload to.
+                        </>
+                      ) : (
+                        <>
+                          Exceeds estimated VRAM capacity (
+                          {loadedMaxContextLength.toLocaleString()} tokens). The
+                          model may use system RAM.
+                        </>
+                      )}
+                    </p>
+                  )}
+              </div>
             </div>
+
+            {/* Above the block it reveals, so expanding never moves the switch. */}
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
+            />
 
             {showAdvanced && (
               <GgufAdvancedSettings
@@ -3251,11 +3282,6 @@ export function ModelConfigPage({
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
               />
             )}
-
-            <AdvancedSettingsToggle
-              checked={showAdvanced}
-              onCheckedChange={toggleAdvanced}
-            />
           </>
         )}
         {!target.isGguf && (
@@ -3272,6 +3298,10 @@ export function ModelConfigPage({
               }
               onChange={(value) => update(contextPinPatch(value, targetIsMlx))}
             />
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
+            />
             {showAdvanced && (
               <MlxAdvancedSettings
                 config={config}
@@ -3282,10 +3312,6 @@ export function ModelConfigPage({
                 templateOutcome={chatTemplateOutcome}
               />
             )}
-            <AdvancedSettingsToggle
-              checked={showAdvanced}
-              onCheckedChange={toggleAdvanced}
-            />
           </>
         )}
       </div>
@@ -3318,15 +3344,15 @@ export function ModelConfigPage({
         <div
           className={
             variant === "sidebar"
-              ? "flex items-center justify-end gap-2"
+              ? "grid grid-cols-2 gap-3"
               : "flex shrink-0 items-center gap-2"
           }
         >
           <Button
             type="button"
-            variant="ghost"
+            variant="outline"
             size="sm"
-            className="h-8"
+            className={`${FOOTER_BUTTON_CLASS} text-muted-foreground${variant === "sidebar" ? " w-full" : ""}`}
             disabled={atDefault}
             onClick={() => {
               // Reset writes through setConfig, not update, so it marks the draft itself.
@@ -3347,7 +3373,7 @@ export function ModelConfigPage({
           <Button
             type="button"
             size="sm"
-            className="h-8"
+            className={`${FOOTER_BUTTON_CLASS}${variant === "sidebar" ? " w-full" : ""}`}
             disabled={
               stagedMetadataPending ||
               budgetSettling ||

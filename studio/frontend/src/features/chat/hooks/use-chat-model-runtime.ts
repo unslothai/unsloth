@@ -15,6 +15,10 @@ import {
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import {
+  isBackendDownForDesktopUpdate,
+  isSilencedDesktopUpdateFailure,
+} from "@/lib/desktop-update-activity";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import {
   type TransferSample,
@@ -81,12 +85,14 @@ import {
   loadedGpuMemoryFields,
   noteLoadedModelReasoningMode,
   persistGpuMemoryModeOnLoad,
+  pinHoldsLiveEffort,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   reconcilePersistedGpuIds,
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  takeEffortDisplacedByPin,
   useChatRuntimeStore,
   type LoadingModelPick,
   type ReasoningEffort,
@@ -480,6 +486,7 @@ async function syncInferenceStatusToStore(options?: {
   externalChatSlotLoad?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
+  const downWhenIssued = isBackendDownForDesktopUpdate();
   const includeLoras = options?.includeLoras ?? true;
   const generation = ++syncGeneration;
   const loraGeneration = includeLoras ? ++loraSyncGeneration : null;
@@ -624,6 +631,8 @@ async function syncInferenceStatusToStore(options?: {
     // A superseded refresh reports nothing, or a stale failure would raise a toast about a read
     // whose answer would have been discarded. The LoRA inventory settles from its own request.
     if (signal?.aborted || superseded()) return;
+    // The update screen already reports the backend it stopped.
+    if (isSilencedDesktopUpdateFailure(error, downWhenIssued)) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);
@@ -1963,7 +1972,12 @@ export function useChatModelRuntime() {
               loadResponse.reasoning_effort_levels.length > 0
                 ? (loadResponse.reasoning_effort_levels as ReasoningEffort[])
                 : (["low", "medium", "high"] as const);
-            const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
+            // The chat's own level when the model this replaces was running a pin's, for the
+            // reason applyActiveModelStatusToStore gives at its own clamp: a pin is one model's,
+            // and everything between the pick and this response can abort without loading.
+            const existingReasoningEffort =
+              (pinHoldsLiveEffort() ? takeEffortDisplacedByPin() : null) ??
+              useChatRuntimeStore.getState().reasoningEffort;
             const clampedReasoningEffort =
               reasoningStyle === "enable_thinking_effort" ||
               reasoningStyle === "reasoning_effort"

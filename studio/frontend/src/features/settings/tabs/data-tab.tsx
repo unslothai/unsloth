@@ -307,7 +307,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
     try {
       const { imported, failed } = await importConversationsFromSource(
         source,
-        null,
+        // This tab has no destination picker, so it chooses nothing and a backup keeps its
+        // own projects. The projects page does pick, and passes null for Recents.
+        undefined,
         {
           onProgress: ({ imported: done, bytesRead, totalBytes }) => {
             const percent = totalBytes

@@ -249,9 +249,19 @@ export const de = {
   settings: {
     accounts: {
       title: "Konten",
-      description: "Private Unsloth Studio-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
+      description: "Private Unsloth-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
       username: "Benutzername",
       create: "Konto anlegen",
+      createDescription: "Teilen Sie einen Einrichtungscode, damit die Person ihr eigenes Passwort wählen kann.",
+      actionsFor: "{username} verwalten",
+      actions: "Aktionen",
+      search: "Konten suchen",
+      noResults: "Keine passenden Konten",
+      created: "Erstellt",
+      status: "Status",
+      loginHint: "Melden Sie sich als {username} mit diesem Code als Passwort an und wählen Sie dann ein neues Passwort.",
+      privateAccount: "Privates Konto",
+      empty: "Noch keine weiteren Konten",
       setupCode: "Einrichtungscode",
       setupFor: "Einrichtungscode für {username}",
       shownOnce: "Kopieren Sie diesen Code jetzt und geben Sie ihn an den Kontoinhaber weiter. Er wird nur hier angezeigt und kann innerhalb von 60 Minuten einmal verwendet werden.",
@@ -261,13 +271,13 @@ export const de = {
       copyFailed: "Kopieren nicht möglich. Markieren und kopieren Sie den Einrichtungscode oben.",
       dismiss: "Fertig",
       owner: "Installationsinhaber",
-      active: "Aktiv",
-      inactive: "Inaktiv",
+      active: "Aktiviert",
+      inactive: "Deaktiviert",
       regenerate: "Einrichtungscode neu erstellen",
       resetTitle: "Passwort von {username} zurücksetzen?",
       resetDescription: "Ein neu erstellter Einrichtungscode ersetzt das Passwort von {username}, meldet die Person ab und widerruft ihre API-Schlüssel. Geben Sie ihr den neuen Code, damit sie wieder ein Passwort wählen kann.",
       deactivate: "Deaktivieren",
-      reactivate: "Reaktivieren",
+      reactivate: "Aktivieren",
       delete: "Konto löschen",
       deleteTitle: "{username} löschen?",
       deleteDescription: "Dadurch werden die Sitzungen von {username} widerrufen und laufende Arbeiten abgebrochen. Chats, Einstellungen, Zugangsdaten, Uploads, Datensätze, Trainingsläufe, Ausgaben, Exporte, Galerien, Sandboxes, Projekte und temporäre Dateien werden stillgelegt. Verzeichnisse werden beiseite umbenannt, nie gelöscht. Wird dieser Benutzername erneut angelegt, beginnt ein neues Konto ohne diese Daten.",
@@ -305,6 +315,9 @@ export const de = {
     keyboardShortcuts: {
       title: "Tastenkürzel",
       searchPlaceholder: "Kürzel suchen…",
+      keystrokePlaceholder: "Kürzel drücken, um zu suchen",
+      searchByKeystrokes: "Nach Tastendruck suchen",
+      searchByName: "Nach Name suchen",
       noResults: "Keine Kürzel passen zu dieser Suche.",
       unassigned: "Nicht zugewiesen",
       recording: "Tasten drücken…",
@@ -575,7 +588,7 @@ export const de = {
       openLogsFolderFailed: "Der Protokollordner konnte nicht geöffnet werden.",
       exportFailed: "Die Protokolle konnten nicht heruntergeladen werden.",
       exportTooOld: "Das laufende Unsloth-Backend ist zu alt für den Protokollexport. Aktualisieren Sie dieses Backend und starten Sie es neu.",
-      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Unsloth Studio-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
+      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Unsloth-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
       keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {
@@ -891,6 +904,9 @@ export const de = {
         showLoadedModels: "Anzeige geladener Modelle",
         showLoadedModelsDescription:
           "Zeigt unten rechts eine kleine Karte mit allen derzeit im Speicher befindlichen Modellen (Chat, Sprache, Bild, Video) und einer Schaltfläche, um jedes einzeln zu entladen.",
+        showWhisperUpdates: "whisper.cpp-Update-Benachrichtigungen",
+        showWhisperUpdatesDescription:
+          "Benachrichtigt, wenn ein neuerer whisper.cpp-Build für Speech-to-Text-Modelle verfügbar ist. Deaktivieren Sie dies, wenn Sie nie Audio transkribieren.",
       },
       startup: {
         sectionTitle: "Autostart",
@@ -2000,7 +2016,7 @@ export const de = {
         desktopAvailableDescription:
           "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
-          "Führen Sie `unsloth studio update` in dem Terminal aus, über das Sie Ihren Server gestartet haben.",
+          "Die App ist mit einem bereits laufenden Studio-Server verbunden und kann ihn nicht aktualisieren. Stoppen Sie diesen Server, beenden Sie die Desktop-App und öffnen Sie sie erneut, um das Update zu installieren.",
         desktopManualInstall:
           "Öffnen Sie die Release-Seite, um das neueste Linux-Paket zu installieren.",
         desktopCheckFailed: "Die Suche nach Updates ist fehlgeschlagen",
