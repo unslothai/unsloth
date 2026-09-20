@@ -198,15 +198,13 @@ _BLOCKED_COMMANDS = (
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position. `if`/`while`/`until` are followed by a CONDITION the shell executes,
-# so a command right after them is at command position. `coproc` is the same: bash runs the command behind it
-# asynchronously, so reading `coproc` as the command word left `coproc rm -rf x` scanning as arguments and it really
-# deletes.
+# so a command right after them is at command position. `coproc` too: reading it as the command word instead left
+# `coproc rm -rf x` scanning as arguments, and it really deletes.
 _SHELL_KEYWORDS_AS_SEP = frozenset(
     {"then", "do", "else", "elif", "if", "while", "until", "!", "coproc"}
 )
-# `coproc NAME compound-command` names the coprocess, so the NAME is not the command; the compound behind it is. Bash
-# accepts the optional name ONLY before a compound command, which is what tells the two forms apart: in `coproc rm -f
-# x` the same position holds the command itself.
+# Bash accepts `coproc NAME ...` only before a COMPOUND command, which is what tells a name from a command: the same
+# position holds the command itself in `coproc rm -f x`.
 _COPROC_COMPOUND_STARTERS = frozenset(
     {"{", "(", "((", "[[", "if", "while", "until", "for", "case", "select"}
 )
@@ -214,10 +212,7 @@ _COPROC_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
 
 
 def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
-    """Whether ``tokens[index]`` is the optional NAME of a `coproc NAME compound-command`.
-
-    The name is not a command word, so command position carries past it to the compound behind it.
-    """
+    """Whether `tokens[index]` is the NAME of a `coproc NAME compound-command`, not a command word."""
     return (
         index > 0
         and tokens[index - 1] == "coproc"
@@ -1338,8 +1333,7 @@ def _is_start_title(token: str) -> bool:
 # 0.60s of 3.9s. None only if the set is empty.
 _BLOCKED_WORD_RE = (
     re.compile(
-        # `coproc [NAME] ` is a command boundary bash honours but punctuation does not spell, so the raw-text pass
-        # needs it too: the lexer's view of it is fixed above, this is the screen behind that.
+        # `coproc [NAME] ` is a boundary bash honours that no punctuation spells, so this screen needs it too.
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*|\bcoproc\s+(?:[A-Za-z_]\w*\s+)?)"
         r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
         r"(" + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS)) + r")"

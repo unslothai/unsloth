@@ -1121,8 +1121,7 @@ class TestBashBlocklistPosition:
                 "coproc $(ls /usr/bin | grep '^rm$') -rf victim",
                 id = "coproc_subst_blocked",
             ),
-            # ...and the plain spellings behind it: bash runs the word after `coproc` itself, so reading `coproc`
-            # as the command word left the real one scanning as its arguments.
+            # ...and the plain spellings, where reading `coproc` as the command word left the real one as arguments.
             pytest.param("rm", "coproc rm -f victim", id = "coproc_bare_blocked"),
             pytest.param("pkill", "coproc pkill -f unsloth", id = "coproc_pkill_blocked"),
             pytest.param("ssh", "coproc ssh internal-host", id = "coproc_ssh_blocked"),
@@ -1699,10 +1698,7 @@ class TestBashBlocklistPosition:
         ],
     )
     def test_coproc_classifies_exactly_as_the_command_behind_it(self, command):
-        # `coproc` runs the command behind it, so both classifiers must reach the
-        # same verdict they reach for that command on its own - in either
-        # direction. An answer that merely gets stricter would start prompting
-        # for coprocesses that are fine.
+        # Equal in BOTH directions: merely getting stricter would start prompting for coprocesses that are fine.
         assert self._find()(f"coproc {command}") == self._find()(command)
         assert is_high_risk_tool_call(
             "terminal", {"command": f"coproc {command}"}
