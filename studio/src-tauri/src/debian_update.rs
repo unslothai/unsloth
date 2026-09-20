@@ -3,7 +3,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -95,13 +95,22 @@ pub(crate) fn run_installer() -> Option<Result<(), String>> {
 
 fn install_verified_package(bytes: Vec<u8>, signature: &str, version: &str) -> Result<(), String> {
     crate::desktop_updater::verify_bundle_signature(&bytes, signature)?;
-    // root owns both the verified bytes and the directory used by the package manager.
+    // root owns both the verified bytes and the directory used by the package manager,
+    // and 0700 is stated rather than inherited: tempfile creates directories 0777 masked
+    // by the umask, which pkexec passes through from the calling session untouched. At
+    // umask 000 that is a world-writable directory holding the package between this
+    // verification and apt reading it back, so another local user can unlink the verified
+    // file and put their own there. Same reasoning for the file itself, which would
+    // otherwise be 0666 masked.
     let directory = tempfile::Builder::new()
         .prefix("unsloth-update-")
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in("/var/tmp")
         .map_err(|error| error.to_string())?;
     let package = directory.path().join("unsloth.deb");
     fs::write(&package, bytes).map_err(|error| error.to_string())?;
+    fs::set_permissions(&package, fs::Permissions::from_mode(0o600))
+        .map_err(|error| error.to_string())?;
     let (debian_version_override, installed_version) = validate_package(&package, version)?;
     let mut command = system_command("/usr/bin/apt-get");
     if debian_version_override {
