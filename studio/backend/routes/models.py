@@ -2083,6 +2083,12 @@ def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
             return None
         blobs_dir = repo_dir / "blobs"
         resolved_blobs_dir = blobs_dir.resolve(strict = True) if blobs_dir.is_dir() else None
+        # hub 1.x keeps one content-addressed blob store per cache root and links each repo's
+        # blobs into it, so a weight file resolves outside the repo without leaving the cache.
+        shared_blobs_dir = repo_dir.parent / "blobs"
+        resolved_shared_blobs_dir = (
+            shared_blobs_dir.resolve(strict = True) if shared_blobs_dir.is_dir() else None
+        )
     except (OSError, RuntimeError, ValueError):
         return None
 
@@ -2107,9 +2113,9 @@ def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
                     candidate = (root_path / filename).resolve(strict = True)
                     if not candidate.is_file():
                         continue
-                    if not candidate.is_relative_to(snapshot) and not (
-                        resolved_blobs_dir is not None
-                        and candidate.is_relative_to(resolved_blobs_dir)
+                    if not candidate.is_relative_to(snapshot) and not any(
+                        blob_root is not None and candidate.is_relative_to(blob_root)
+                        for blob_root in (resolved_blobs_dir, resolved_shared_blobs_dir)
                     ):
                         continue
                     total += candidate.stat().st_size
