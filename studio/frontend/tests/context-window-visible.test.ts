@@ -232,8 +232,8 @@ test("pinning GPU layers preserves the launch total, but not one --fit refused",
   // exists to avoid. The launch total is only safe when nothing was reduced.
   assert.match(
     hook,
-    /loadCustomContextLength\s*=\s*\n?\s*\(loadPreFitContextLength == null \? loadLaunchContextLength : null\) \?\?\s*\n?\s*loadContextLength/,
-    "the manual+pinned branch must prefer the launch total only when --fit did not shrink it",
+    /loadCustomContextLength\s*=\s*\n?\s*loadEffectiveContextTotal \?\?\s*\n?\s*\(loadPreFitContextLength == null \? loadLaunchContextLength : null\) \?\?\s*\n?\s*loadContextLength/,
+    "the manual+pinned branch must prefer the allocated aggregate, then a launch total --fit did not refuse",
   );
   assert.match(
     hook,
@@ -246,7 +246,7 @@ test("a failed switch rolls back at the launch total", () => {
   const hook = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(
     hook,
-    /stateBeforeUnload\.launchContextLength\s*\?\?\s*\n?\s*stateBeforeUnload\.loadedContextLength/,
-    "rollback must prefer the resident server's launch total",
+    /stateBeforeUnload\.effectiveContextTotal\s*\?\?\s*\n?\s*stateBeforeUnload\.launchContextLength\s*\?\?\s*\n?\s*stateBeforeUnload\.loadedContextLength/,
+    "rollback must prefer the allocation that actually ran",
   );
 });

@@ -334,7 +334,7 @@ test("the clamp that stops a manual reload resizing is not a user pin", () => {
   // Anchored on the assignment alone, not its right-hand side: what this test
   // pins is the ORDERING against the pin capture, and the value that branch
   // preserves has now changed twice without the ordering invariant moving.
-  const clamp = RUNTIME.indexOf("loadCustomContextLength =\n                (loadPreFit");
+  const clamp = RUNTIME.indexOf("loadCustomContextLength =\n                loadEffectiveContextTotal");
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
   assert.ok(

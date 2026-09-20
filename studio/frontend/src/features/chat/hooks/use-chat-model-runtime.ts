@@ -1358,8 +1358,11 @@ export function useChatModelRuntime() {
                 stateBeforeUnload.loadedCustomContextLength,
                 // The rollback restores the old n_parallel too, so sizing from one
                 // slot's share would quarter a four-slot server on a rollback that
-                // otherwise succeeded. Falls back to the share when no total is known.
-                stateBeforeUnload.launchContextLength ??
+                // otherwise succeeded. The ALLOCATED aggregate first: it is what the
+                // server ran at, and it is the only one of the three that survives an
+                // auto-sized launch, where the launch total is null by design.
+                stateBeforeUnload.effectiveContextTotal ??
+                  stateBeforeUnload.launchContextLength ??
                   stateBeforeUnload.loadedContextLength ??
                   0,
               )
@@ -1782,6 +1785,7 @@ export function useChatModelRuntime() {
               // did shrink, fall back to the per-slot share, which is what this
               // branch sent before the launch total existed.
               loadCustomContextLength =
+                loadEffectiveContextTotal ??
                 (loadPreFitContextLength == null ? loadLaunchContextLength : null) ??
                 loadContextLength;
             }
