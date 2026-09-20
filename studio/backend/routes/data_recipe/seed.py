@@ -13,7 +13,7 @@ import os
 import re
 import shutil
 from itertools import islice
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastA
 from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
 from hub.services.datasets.local_options import (
+    _sharded_splits,
     _MAX_MODULE_INFERENCE_FILES,
     _METADATA_FILENAMES,
     _SEP,
@@ -525,6 +526,27 @@ def _name_initials(paths: list[str]) -> str:
     return "".join(initials)
 
 
+def _staged_split_files(data_files: list[str], labels: tuple[str, ...]) -> set[str]:
+    """This split's shards, when the repo is laid out the way the loader looks first.
+
+    Split inference is staged, and the sharded data names come first: once
+    data/train-00000-of-00001.parquet is there, the loader stops and never
+    considers a train-named file anywhere else (`local_options._grouped_splits`).
+    Widening over one of those would read data the split, and the preview beside
+    it, both leave out.
+    """
+    grouped = _sharded_splits([PurePosixPath(path) for path in data_files])
+    if not grouped:
+        return set()
+    staged = {
+        path.as_posix()
+        for split, paths in grouped.items()
+        if split.lower() in labels
+        for path in paths
+    }
+    return staged if staged < set(data_files) else set()
+
+
 def _anchor(dataset_name: str, root: str) -> str:
     """The recipe path up to the folder a pattern is written relative to."""
     base = f"datasets/{dataset_name}"
@@ -638,7 +660,13 @@ def _resolve_seed_hf_path(
         subset,
         split.lower(),
     )
-    selected = _select_best_file(scoped, split)
+    split_lower = split.lower()
+    labels = _split_labels(split_lower)
+    # The loader looks at the sharded names first and stops there, so when the
+    # repo has them the request is for those files, whatever else carries the
+    # split in its name.
+    staged = _staged_split_files(scoped, labels)
+    selected = _select_best_file(sorted(staged) or scoped, split)
     if not selected:
         return None
 
@@ -652,12 +680,10 @@ def _resolve_seed_hf_path(
     if parent and parent != ".":
         base = f"{base}/{parent}"
 
-    split_lower = split.lower()
-    labels = _split_labels(split_lower)
     if _split_folder(selected.lower(), labels):
         # The loader reads train_a and train_b as one train split, so a folder
         # pattern rooted at the one folder that was picked drops the other.
-        folders = {f for f in scoped if _split_rank(f, split_lower) == 0}
+        folders = staged or {f for f in scoped if _split_rank(f, split_lower) == 0}
         root = _common_parent(sorted(folders | {selected}))
         if root != parent:
             for label in labels:
@@ -670,7 +696,7 @@ def _resolve_seed_hf_path(
                         return f"{_anchor(dataset_name, root)}/{shape}"
     else:
         # The files this request is for: in the chosen subset, and of this split.
-        wanted = {f for f in scoped if _split_rank(f, split_lower) <= 1}
+        wanted = staged or {f for f in scoped if _split_rank(f, split_lower) <= 1}
         # A split sharded over sibling folders, as a/train-0.parquet beside
         # b/train-1.parquet, cannot be written under the one folder its chosen
         # file sits in, so the pattern is anchored at the folder they share and

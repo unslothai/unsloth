@@ -943,8 +943,7 @@ def test_seed_hf_path_never_widens_a_declared_split_over_another(monkeypatch, tm
     resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
 
     matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
-    assert "data/bx.parquet" not in matched
-    assert matched
+    assert sorted(matched) == ["data/ax.parquet", "data/cx.parquet"]
 
 
 def test_seed_hf_path_keeps_both_extensions_of_one_builder(monkeypatch, tmp_path):
@@ -955,6 +954,20 @@ def test_seed_hf_path_keeps_both_extensions_of_one_builder(monkeypatch, tmp_path
     resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
 
     assert resolved == "datasets/org/repo/data/*.json*"
+
+
+def test_seed_hf_path_stops_at_the_sharded_names_the_loader_reads_first(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = [
+        "data/train-00000-of-00001.parquet",
+        "data/test-00000-of-00001.parquet",
+        "extras/train-extra.parquet",
+    ]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train")
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert matched == ["data/train-00000-of-00001.parquet"]
 
 
 def test_seed_hf_path_keeps_qualified_split_folders_together(monkeypatch, tmp_path):
