@@ -44,7 +44,7 @@ def test_title_model_prompt_targets_conversation_topic():
     block = _source_until(
         RUNTIME_TSX.read_text(encoding = "utf-8"),
         "async function generateTitleWithModel",
-        "\nconst inflightTitleByKey",
+        "\nfunction cloneContent",
     )
 
     block += TITLE_TS.read_text(encoding = "utf-8")
@@ -58,7 +58,7 @@ def test_title_model_payload_includes_optional_assistant_reply():
     block = _source_until(
         RUNTIME_TSX.read_text(encoding = "utf-8"),
         "async function generateTitleWithModel",
-        "\nconst inflightTitleByKey",
+        "\nfunction cloneContent",
     )
 
     assert "assistantText?: string;" in block
@@ -125,7 +125,7 @@ def test_model_failure_still_falls_back_to_user_text():
     model_block = _source_until(
         source,
         "async function generateTitleWithModel",
-        "\nconst inflightTitleByKey",
+        "\nfunction cloneContent",
     )
     generate_block = _balanced_block(source, "async generateTitle(remoteId")
 
@@ -140,7 +140,7 @@ def test_title_normalizer_still_enforces_output_constraints():
     block = _source_until(
         RUNTIME_TSX.read_text(encoding = "utf-8"),
         "async function generateTitleWithModel",
-        "\nconst inflightTitleByKey",
+        "\nfunction cloneContent",
     )
 
     block = TITLE_TS.read_text(encoding = "utf-8")

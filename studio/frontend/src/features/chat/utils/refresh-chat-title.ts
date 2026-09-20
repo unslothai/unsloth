@@ -14,6 +14,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./chat-history-storage";
+import { queueChatTitle } from "./chat-title-queue";
 import { generateChatTitle } from "./generate-chat-title";
 import { liveThreadBranch } from "./live-thread-head";
 import { orderByParentChain } from "./message-order";
@@ -22,10 +23,12 @@ import { attachmentsSample } from "./pasted-text";
 const pending = new Map<string, Promise<void>>();
 
 export function refreshChatTitle(item: SidebarItem): Promise<void> {
-  const key = `${item.type}:${item.id}`;
+  const key = `${item.type === "compare" ? "pair" : "thread"}:${item.id}`;
   const existing = pending.get(key);
   if (existing) return existing;
-  const request = refresh(item).finally(() => pending.delete(key));
+  const request = queueChatTitle(key, () => refresh(item)).finally(() =>
+    pending.delete(key),
+  );
   pending.set(key, request);
   return request;
 }
