@@ -63,7 +63,7 @@ jobs:
           echo "bubblewrap builds a sandbox as $(id -un), uid $(id -u)"
 
       - name: Install backend dependencies
-        run: python -m pip install --quiet structlog pydantic
+        run: python -m pip install --quiet structlog pydantic pytest
 
       - name: Measure confinement
         working-directory: studio/backend
@@ -90,7 +90,7 @@ jobs:
           uname -m
 
       - name: Install backend dependencies
-        run: python -m pip install --quiet structlog pydantic
+        run: python -m pip install --quiet structlog pydantic pytest
 
       - name: Measure confinement
         working-directory: studio/backend
@@ -155,7 +155,7 @@ jobs:
           }
 
       - name: Install backend dependencies
-        run: python -m pip install --quiet structlog pydantic
+        run: python -m pip install --quiet structlog pydantic pytest
 
       - name: Measure confinement
         shell: pwsh

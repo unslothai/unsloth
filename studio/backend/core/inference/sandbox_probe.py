@@ -137,22 +137,43 @@ with open(private, encoding = "utf-8") as handle:
         raise AssertionError("workdir read-back did not match what was written")
 
 # numpy/torch in a tool call fork workers, and a sandbox that breaks the
-# socketpair breaks every one of them.
-left, right = socket.socketpair()
-try:
-    left.sendall(b"ping")
-    if right.recv(4) != b"ping":
-        raise AssertionError("socketpair did not deliver")
-    right.sendall(b"pong")
-    if left.recv(4) != b"pong":
-        raise AssertionError("socketpair did not deliver in reverse")
-    # Descriptor passing through the resource sharer, which is how Pool and
-    # ProcessPoolExecutor hand file handles between processes.
-    duplicated = multiprocessing.reduction.DupFd(left.fileno()).detach()
-    os.close(duplicated)
-finally:
-    left.close()
-    right.close()
+# IPC primitive underneath them breaks every one of them. Which primitive
+# that is differs by platform, so the control has to differ too: on POSIX
+# multiprocessing rides an AF_UNIX socketpair and passes descriptors with
+# DupFd, while on Windows it rides a named pipe and duplicates HANDLEs.
+# Testing the POSIX pair on Windows measures winsock instead of the sandbox
+# and fails on hosts where the sandbox is fine (observed on GitHub's
+# windows-2025 and windows-11-arm runners: WinError 10106, the requested
+# service provider could not be loaded, raised on the HOST before any
+# sandbox existed).
+if sys.platform == "win32":
+    parent, child_end = multiprocessing.Pipe(duplex = True)
+    try:
+        parent.send(b"ping")
+        if child_end.recv() != b"ping":
+            raise AssertionError("the pipe did not deliver")
+        child_end.send(b"pong")
+        if parent.recv() != b"pong":
+            raise AssertionError("the pipe did not deliver in reverse")
+    finally:
+        parent.close()
+        child_end.close()
+else:
+    left, right = socket.socketpair()
+    try:
+        left.sendall(b"ping")
+        if right.recv(4) != b"ping":
+            raise AssertionError("socketpair did not deliver")
+        right.sendall(b"pong")
+        if left.recv(4) != b"pong":
+            raise AssertionError("socketpair did not deliver in reverse")
+        # Descriptor passing through the resource sharer, which is how Pool and
+        # ProcessPoolExecutor hand file handles between processes.
+        duplicated = multiprocessing.reduction.DupFd(left.fileno()).detach()
+        os.close(duplicated)
+    finally:
+        left.close()
+        right.close()
 
 # A child interpreter, because tool code shells out to python constantly.
 child = subprocess.run(
