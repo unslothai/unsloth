@@ -3932,7 +3932,14 @@ def _positive_int_n_ctx(value: object) -> Optional[int]:
     if isinstance(value, bool):
         return None
     if isinstance(value, str):
-        value = int(value) if value.isdigit() else None
+        # isdigit() is not "int() will accept this": "\u00b2".isdigit() is True and
+        # int("\u00b2") raises, as does a digit string past CPython's 4300-digit cap.
+        # Both arrive from another process' JSON, and an uncaught raise here aborts
+        # the post-health reconciliation and fails the load.
+        try:
+            value = int(value) if value.isdigit() else None
+        except ValueError:
+            return None
     if not isinstance(value, int):
         return None
     return value if value > 0 else None

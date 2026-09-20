@@ -819,3 +819,17 @@ def test_an_explicit_zero_ctx_flag_is_not_answered_by_the_environment(monkeypatc
         )
         assert inst.launch_context_length is None, flag
         assert inst.pre_fit_context_length is None, flag
+
+
+def test_a_digit_string_int_refuses_is_unknown_not_a_crash(monkeypatch):
+    """`str.isdigit()` is not "int() will accept this".
+
+    Python: "²".isdigit() is True and int("²") raises ValueError, and a
+    digit string past CPython's 4300-digit cap raises too. Both reach this helper
+    from another process' JSON, and an uncaught raise here aborts the post-health
+    reconciliation and fails the load, which is the failure the /props hardening
+    exists to prevent.
+    """
+    for bad in ("²", "³", "9" * 5000):
+        _stub_props(monkeypatch, body = {"default_generation_settings": {"n_ctx": bad}})
+        assert _make_backend()._query_server_n_ctx() is None, bad[:12]
