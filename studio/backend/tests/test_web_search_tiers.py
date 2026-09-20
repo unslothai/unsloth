@@ -170,11 +170,7 @@ def test_disabled_engines_are_dropped_from_a_tier(monkeypatch, engine_calls):
 
 
 def test_the_caller_timeout_is_one_budget_for_both_tiers(monkeypatch, engine_calls):
-    """Tier 2 must inherit what is LEFT of the timeout, not a fresh copy of it.
-
-    ddgs applies `timeout` per client, as both the engine HTTP timeout and the fan-out wait, so
-    handing tier 2 the original value doubles what the caller asked for.
-    """
+    """Tier 2 inherits what is LEFT of the timeout: a fresh copy doubles what the caller asked for."""
     from ddgs.ddgs import DDGS
 
     budgets = []

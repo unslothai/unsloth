@@ -15254,9 +15254,8 @@ def _web_search(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        # One budget for the whole call, not one per tier: ddgs applies `timeout` both as each
-        # engine's HTTP timeout and as its fan-out wait, so a second client would restart it and a
-        # 7s web_search could block ~14s.
+        # ddgs applies `timeout` per client, as both the engine HTTP timeout and its fan-out wait, so
+        # a client per tier would restart the budget and a 7s web_search could block ~14s.
         deadline = time.monotonic() + timeout if timeout else None
         client = DDGS(timeout = timeout)
         # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
