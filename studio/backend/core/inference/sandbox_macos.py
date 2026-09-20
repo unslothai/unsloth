@@ -515,10 +515,7 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
 
 
 def _studio_state_rules(
-    runtime_paths: tuple[str, ...],
-    developer_paths: tuple[str, ...],
-    workdir: str,
-    private_tmp: str,
+    runtime_paths: tuple[str, ...], developer_paths: tuple[str, ...], workdir: str, private_tmp: str
 ) -> list[str]:
     """Deny Studio's own state, then restore what the launch genuinely needs.
 
@@ -535,11 +532,11 @@ def _studio_state_rules(
         for path in (*runtime_paths, *developer_paths, workdir, private_tmp)
         if path and any(_within(path, root) for root in state)
     )
-    rules = [_rule("deny file-read* file-test-existence file-map-executable",
-                   _path_filters(state))]
+    rules = [_rule("deny file-read* file-test-existence file-map-executable", _path_filters(state))]
     if needed:
-        rules.append(_rule("allow file-read* file-test-existence file-map-executable",
-                           _path_filters(needed)))
+        rules.append(
+            _rule("allow file-read* file-test-existence file-map-executable", _path_filters(needed))
+        )
     return [rule for rule in rules if rule]
 
 

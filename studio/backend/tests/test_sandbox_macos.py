@@ -839,7 +839,8 @@ def test_the_runtime_inside_a_custom_studio_home_is_restored(monkeypatch, tmp_pa
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
 
     rules = sandbox_macos._studio_state_rules(
-        (str(venv),), (), str(tmp_path / "work"), str(tmp_path / "tmp"))
+        (str(venv),), (), str(tmp_path / "work"), str(tmp_path / "tmp")
+    )
 
     assert len(rules) == 2, "the runtime under the Studio home was not restored"
     assert rules[1].startswith("(allow file-read*")

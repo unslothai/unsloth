@@ -103,7 +103,10 @@ def must_raise(label, fn):
 
 
 def _negative_controls(
-    sentinel: str, escape: "str | None", outside: str, interpreter_writable: bool,
+    sentinel: str,
+    escape: "str | None",
+    outside: str,
+    interpreter_writable: bool,
     abstract: "bytes | None",
 ) -> str:
     """Attempt direct and symlink sentinel reads, an outside write, and socket access.
@@ -385,7 +388,8 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
             # already is.
             logger.info(
                 "The sandbox probe is skipping its symlink leg: %s. The other "
-                "negative controls still decide the verdict.", exc,
+                "negative controls still decide the verdict.",
+                exc,
             )
             escape = None
         outside = os.path.join(base, "outside-write.txt")

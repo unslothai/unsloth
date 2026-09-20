@@ -608,9 +608,9 @@ def test_a_host_that_cannot_make_a_symlink_still_gets_a_verdict(monkeypatch, tmp
     available, reason = sandbox_probe.probe(Backend, force = True)
 
     assert available is False
-    assert "privilege is not held" not in reason, (
-        "the missing symlink privilege was reported as the probe's verdict"
-    )
+    assert (
+        "privilege is not held" not in reason
+    ), "the missing symlink privilege was reported as the probe's verdict"
     assert "this backend declines" in reason
 
 
@@ -620,9 +620,11 @@ def test_the_symlink_leg_is_omitted_rather_than_passed(tmp_path):
     from core.inference import sandbox_probe
 
     with_link = sandbox_probe._payload(
-        str(tmp_path), "/host/sentinel", "/work/escape", "/host/outside", False, None)
+        str(tmp_path), "/host/sentinel", "/work/escape", "/host/outside", False, None
+    )
     without_link = sandbox_probe._payload(
-        str(tmp_path), "/host/sentinel", None, "/host/outside", False, None)
+        str(tmp_path), "/host/sentinel", None, "/host/outside", False, None
+    )
 
     assert "followed a workdir symlink" in with_link
     assert "followed a workdir symlink" not in without_link
