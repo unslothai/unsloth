@@ -7890,7 +7890,10 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
         xargs_index = -1  # an xargs awaiting the command whose argv it builds
+        coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
         for _tok_idx, token in enumerate(tokens):
+            after_coproc = coproc_kw
+            coproc_kw = False
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
@@ -7899,6 +7902,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 or (token == "coproc" and prefix_pending)
                 or not set(token) - set(";&|()")
             ):
+                coproc_kw = (expect_command or prefix_pending) and token == "coproc"
                 expect_command = True
                 prefix_pending = False
                 xargs_index = -1
@@ -8393,7 +8397,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     for cand in (raw, _expand_param_defaults(raw), _expand_shell_assignments(raw))
                 ):
                     return True
-            expect_command = False
+            # A coprocess NAME is judged as a command word like any other, and only command position carries
+            # past it: `coproc JOB if git clean -fd; then :; fi` really runs the condition.
+            expect_command = after_coproc and _is_coproc_name(tokens, _tok_idx)
             prefix_pending = False
     return False
 

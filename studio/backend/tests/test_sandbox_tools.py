@@ -1755,6 +1755,11 @@ class TestBashBlocklistPosition:
             "terminal", {"command": f"coproc {command}"}
         ) == is_high_risk_tool_call("terminal", {"command": command})
         assert self._find()(f"coproc JOB if {command}; then :; fi") == self._find()(command)
+        # A named coprocess runs its condition, and `git clean -fd` is destructive without being blocklisted, so
+        # the auto-mode gate has to reach past the name too.
+        assert is_high_risk_tool_call(
+            "terminal", {"command": "coproc JOB if git clean -fd; then :; fi"}
+        ) == is_high_risk_tool_call("terminal", {"command": "git clean -fd"})
         # `time` keeps command position for bash, so it must keep it for both classifiers too.
         assert self._find()(f"time coproc {command}") == self._find()(f"time {command}")
         assert is_high_risk_tool_call(
