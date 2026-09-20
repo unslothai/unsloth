@@ -229,7 +229,8 @@ def _extract_legacy_tree(tag: str, destination: Path) -> "Path | None":
     optional = git("ls-tree", "-r", "--name-only", tag, "studio/backend/utils/auth_safe.py")
     if optional.returncode == 0:
         wanted += [
-            line for line in optional.stdout.decode("utf-8", "replace").split()
+            line
+            for line in optional.stdout.decode("utf-8", "replace").split()
             if line.endswith(".py")
         ]
     listing = git("ls-tree", "-r", "--name-only", tag, "studio/backend/utils/prebuilt")

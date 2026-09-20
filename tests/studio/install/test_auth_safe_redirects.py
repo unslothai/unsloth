@@ -79,7 +79,6 @@ def stdlib_ssl():
     injected = ssl.SSLContext.__module__.startswith("truststore")
     if injected:
         import truststore
-
         truststore.extract_from_ssl()
     try:
         yield
