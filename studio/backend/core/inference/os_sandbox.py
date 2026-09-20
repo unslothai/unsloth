@@ -454,7 +454,6 @@ def _runtime_identity() -> str:
     if sys.platform == "linux":
         try:
             from . import sandbox_linux
-
             digest.update(sandbox_linux.bwrap_identity().encode())
         except Exception as exc:  # noqa: BLE001 - an unavailable backend still needs a cache key
             digest.update(f"untrusted-bwrap:{exc}".encode())
