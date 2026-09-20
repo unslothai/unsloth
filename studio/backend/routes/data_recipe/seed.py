@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastA
 
 from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
-from hub.services.datasets.local_options import _SPLIT_KEYWORDS
+from hub.services.datasets.local_options import _SEP, _SPLIT_KEYWORDS
 from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from loggers import get_logger
@@ -158,14 +158,15 @@ def _patterns_for_split(data_files: Any, split_lower: str) -> list[str]:
                 return _as_pattern_list(paths)
         return []
     if isinstance(data_files, list):
-        bare = [entry for entry in data_files if isinstance(entry, str)]
-        if bare and split_lower == DEFAULT_SPLIT:
-            return bare
-        # A split may be declared more than once; taking the first entry would
-        # leave the rest of it out of both the preview and the recipe.
+        # Entry by entry, as hub/services/datasets does: a list may mix the bare
+        # train shorthand with explicit mappings, and a split may be declared
+        # more than once. Stopping at the first match drops the rest of it.
         patterns: list[str] = []
         for entry in data_files:
-            if isinstance(entry, dict) and str(entry.get("split") or "").lower() == split_lower:
+            if isinstance(entry, str):
+                if split_lower == DEFAULT_SPLIT:
+                    patterns.append(entry)
+            elif isinstance(entry, dict) and str(entry.get("split") or "").lower() == split_lower:
                 patterns.extend(_as_pattern_list(entry.get("path")))
         return patterns
     return []
@@ -271,9 +272,11 @@ def _label_in_name(name: str, label: str) -> bool:
     """The label standing on its own in a file name, separators and all.
 
     Tokenizing the name instead would lose a label that carries a separator, so
-    validation_matched or sample-10BT could never match anything.
+    validation_matched or sample-10BT could never match anything. The separators
+    are the loader's own (`local_options._SEP`), digits included, so train1 is
+    the train split while training is not.
     """
-    return re.search(rf"(?:^|[-._ ]){re.escape(label)}(?:$|[-._ ])", name) is not None
+    return re.search(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})", name) is not None
 
 
 def _split_labels(split_lower: str) -> tuple[str, ...]:
@@ -334,7 +337,8 @@ def _select_best_file(
         return None
     split_lower = split.lower()
     return sorted(
-        _in_subset(data_files, subset, split_lower), key = lambda p: (_split_rank(p, split_lower), len(p))
+        _in_subset(data_files, subset, split_lower),
+        key = lambda p: (_split_rank(p, split_lower), len(p)),
     )[0]
 
 
@@ -387,6 +391,12 @@ def _with_data_extension(pattern: str, suffix: str) -> str:
     return f"{pattern}{suffix}"
 
 
+def _common_name_prefix(paths: list[str]) -> str:
+    names = [Path(path).name for path in paths]
+    shared = os.path.commonprefix(names) if names else ""
+    return shared if len(set(Path(p).parent.as_posix() for p in paths)) == 1 else ""
+
+
 def _widened_declared_pattern(
     declared_files: list[str], data_files: list[str], split_lower: str, suffix: str
 ) -> str:
@@ -405,6 +415,9 @@ def _widened_declared_pattern(
     for candidate in (
         f"{base}/*{split_lower}*{suffix}",
         f"{prefix}**/*{split_lower}*/**/*{suffix}",
+        # Declared files that say nothing about the split may still share a name
+        # the neighbouring splits do not, as data/part-a beside data/part-b.
+        f"{prefix}{_common_name_prefix(declared_files)}*{suffix}",
     ):
         if set(_files_under_patterns([candidate], data_files)) == wanted:
             return candidate

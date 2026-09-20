@@ -664,6 +664,46 @@ def test_seed_hf_path_follows_the_split_aliases_datasets_uses(
     assert seed_route._resolve_seed_hf_path("org/repo", files, split) == expected
 
 
+def test_seed_hf_path_counts_a_digit_as_a_label_separator(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    # The loader's own separators include digits, so train1 is train.
+    files = ["data/train-0.parquet", "data/train1.parquet", "data/test-0.parquet"]
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train")
+        == "datasets/org/repo/data/*train*.parquet"
+    )
+    assert (
+        seed_route._resolve_seed_hf_path(
+            "org/repo", ["data/train-0.parquet", "data/testing-0.parquet"], "train"
+        )
+        == "datasets/org/repo/data/train-*.parquet"
+    )
+
+
+def test_seed_hf_path_combines_bare_and_explicit_train_entries(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    configs = [
+        {
+            "config_name": "default",
+            "data_files": [
+                "data/part-a.parquet",
+                {"split": "train", "path": "data/part-b.parquet"},
+            ],
+        }
+    ]
+    assert seed_route._declared_split_patterns(configs, "train") == [
+        "data/part-a.parquet",
+        "data/part-b.parquet",
+    ]
+    files = ["data/part-a.parquet", "data/part-b.parquet", "data/test-0.parquet"]
+    # Neither declared file names the split, but they share a name the test file
+    # does not, so the union stays exact.
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+        == "datasets/org/repo/data/part-*.parquet"
+    )
+
+
 def test_seed_hf_path_keeps_a_folder_subset_whose_files_are_generic(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     # en/ is the config even though its file says nothing about the split, so
@@ -686,9 +726,7 @@ def test_seed_hf_path_ignores_a_subset_label_that_is_not_the_config(monkeypatch,
     )
 
 
-def test_seed_hf_path_keeps_the_split_when_widening_several_declared_globs(
-    monkeypatch, tmp_path
-):
+def test_seed_hf_path_keeps_the_split_when_widening_several_declared_globs(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["sets/a/train-0.parquet", "sets/b/train-0.parquet", "sets/a/test-0.parquet"]
     configs = [
