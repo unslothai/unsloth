@@ -1775,14 +1775,18 @@ export function ChatSettingsPanel({
                 )}
               </div>
             ) : null}
-            <Textarea
-              value={systemPromptDraft}
-              onChange={(event) => setSystemPromptDraft(event.target.value)}
-              placeholder="You are a helpful assistant..."
-              fieldSizing="fixed"
-              className="min-h-[20rem] max-h-[48dvh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
-              rows={14}
-            />
+            {/* Squircle on the wrapper: Chrome leaves a scroll area's own
+                corners square. */}
+            <div className="corner-squircle overflow-hidden rounded-xl">
+              <Textarea
+                value={systemPromptDraft}
+                onChange={(event) => setSystemPromptDraft(event.target.value)}
+                placeholder="You are a helpful assistant..."
+                fieldSizing="fixed"
+                className="min-h-[20rem] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
+                rows={14}
+              />
+            </div>
           </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
             <Button
