@@ -62,9 +62,31 @@ const LINK_DEFINITION_WINDOW = 999 * 3 + 2;
 
 // Same predicate as the regex over the whole reply, since the pattern has no
 // anchor or lookaround, but `]:` is rare where `[` is not (unslothai/unsloth#10529).
+// Every match must open with a `[`, so a `]:` with none in its window cannot end
+// one and is skipped before paying for the slice and the scan. `bracket` only
+// ever moves forward, which keeps that check O(n) over the whole reply;
+// `lastIndexOf` would reintroduce the quadratic scan it exists to remove, since
+// its backward search is not bounded by the window.
 function hasLinkDefinition(text: string): boolean {
+  let bracket = text.indexOf("[");
+  // The lookahead is CACHED, not recomputed per `]:`. Asking `indexOf` again
+  // after it has already returned -1 rescans the whole remaining reply and
+  // advances nothing, which is the quadratic this skip exists to remove --
+  // measured, that mistake made a 500k reply SLOWER than no skip at all
+  // (282ms -> 881ms). Held this way the total is one `indexOf` per `[`.
+  let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
   for (let end = text.indexOf("]:"); end >= 0; end = text.indexOf("]:", end + 1)) {
+    while (nextBracket >= 0 && nextBracket <= end) {
+      bracket = nextBracket;
+      nextBracket = text.indexOf("[", bracket + 1);
+    }
     const start = end < LINK_DEFINITION_WINDOW ? 0 : end - LINK_DEFINITION_WINDOW;
+    // Note `start`, not `bracket`: the LAST `[` can fail where an earlier one
+    // matches, because the class admits `[` inside a label (`[a[]:` matches from
+    // index 0 and not from index 2), so this is only ever a skip test.
+    if (bracket < start || bracket > end) {
+      continue;
+    }
     if (LINK_DEFINITION_RE.test(text.slice(start, end + 2))) {
       return true;
     }

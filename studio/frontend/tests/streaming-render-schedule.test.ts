@@ -855,3 +855,37 @@ test("a fenced block larger than the budget keeps retaining", () => {
     parseMarkdownIntoBlocks(remend(input)),
   );
 });
+
+// The definition probe skips a `]:` with no `[` in its window, which is only
+// sound because every match must open with one. Two ways that skip could be
+// wrong, both pinned here: the LAST `[` is not the only candidate, and the
+// lookahead that finds it must not rescan the reply once it has run out.
+test("a `]:` whose window holds no `[` is skipped without changing the answer", () => {
+  // `[a[]:` matches from index 0 (label `a[`) and NOT from the last `[`, whose
+  // label would be empty. A skip that clamped the scan to the last `[` would
+  // report false here.
+  assert.equal(markdownRenderScope(`See [x][a[].\n\n${paragraphs(12)}[a[]: /url\n`), "document");
+  // Nothing to open a definition with, at any distance.
+  assert.equal(markdownRenderScope(`See [x][y].\n\n${"]: ".repeat(2000)}`), "blocks");
+});
+
+test("a reply dense with `]:` and no definition does not pay per occurrence", () => {
+  // Not a linearity check: without the skip this is linear too, just with the
+  // whole 2999-character window as its constant. What separates them is the
+  // SIZE of that constant, and the gap is ~80x -- 289ms against 3.6ms on a 500k
+  // reply, inside a path markdownRenderKey runs on EVERY streamed render.
+  // The bound is absolute and deliberately loose: a machine 10x slower than this
+  // one still lands at ~36ms fixed and ~2900ms unfixed, so it discriminates
+  // without depending on the runner's speed.
+  const dense = `See [guide][g].\n\n${"]: ".repeat(166666)}`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(dense + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(dense + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 100,
+    `500k of \`]:\` cost ${median.toFixed(1)}ms; the per-occurrence window scan is back`);
+});
