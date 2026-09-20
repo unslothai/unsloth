@@ -1151,10 +1151,22 @@ _same_volume() {  # a b
     while [ -n "$_sv_b" ] && [ ! -e "$_sv_b" ]; do _sv_b=$(dirname "$_sv_b"); done
     # Cannot tell: answer "same volume", which is the quiet direction and what install.ps1's Test-StudioSameVolume already does. Answering "different" would make an unreadable path print a cost warning nobody can act on.
     [ -n "$_sv_a" ] && [ -n "$_sv_b" ] || return 0
+    # st_dev, not the df source. The question this decides is whether uv can hardlink, and that is st_dev: btrfs gives every subvolume its own anonymous st_dev precisely so (st_dev, st_ino) stays unique, and `ln` across two of them fails EXDEV while `df` reports one shared device for both. Same for two mounts of one source. GNU takes -c, BSD and macOS take -f.
+    _sv_da=$(_path_device_id "$_sv_a")
+    _sv_db=$(_path_device_id "$_sv_b")
+    if [ -n "$_sv_da" ] && [ -n "$_sv_db" ]; then
+        [ "$_sv_da" = "$_sv_db" ]
+        return
+    fi
+    # No usable stat: the df source is coarser -- it cannot separate two mounts of one device -- but it is better than refusing to answer, and erring towards "same" stays quiet.
     _sv_da=$(df -P "$_sv_a" 2>/dev/null | awk 'NR == 2 { print $1 }')
     _sv_db=$(df -P "$_sv_b" 2>/dev/null | awk 'NR == 2 { print $1 }')
     [ -n "$_sv_da" ] && [ -n "$_sv_db" ] || return 0
     [ "$_sv_da" = "$_sv_db" ]
+}
+
+_path_device_id() {  # path that exists
+    stat -c %d "$1" 2>/dev/null || stat -f %d "$1" 2>/dev/null
 }
 
 # One line, before the move, naming both figures and the opt-out. Warn only: du over a tree full of hardlinks already counts shared blocks once, so the estimate is conservative, and a wrong guess must never stop an install that would have fitted.

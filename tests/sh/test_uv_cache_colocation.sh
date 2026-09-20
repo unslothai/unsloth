@@ -170,7 +170,7 @@ _slice_fn() {  # name
         "$INSTALL_SH"
 }
 : > "$_NOTICE_FILE"
-for _fn in _uv_no_cache_requested _same_volume _warn_if_uv_cache_is_off_volume; do
+for _fn in _uv_no_cache_requested _same_volume _path_device_id _warn_if_uv_cache_is_off_volume; do
     _slice_fn "$_fn" >> "$_NOTICE_FILE"
     if ! grep -q "^$_fn() {" "$_NOTICE_FILE"; then
         echo "FAIL: could not extract $_fn from install.sh"
@@ -216,6 +216,33 @@ esac
 case "$_NOTICE_NO_CACHE" in
     *"different filesystem"*) bad "UV_NO_CACHE printed a cross-volume notice about a co-located cache" ;;
     *) ok "UV_NO_CACHE does not blame the cache location" ;;
+esac
+
+# st_dev, not the df source: the question is whether uv can hardlink, and two btrfs subvolumes or
+# two mounts of one device share a df source while `ln` between them fails EXDEV. Driven with a
+# stubbed device id rather than a second filesystem, which this host cannot create.
+_run_devids() {  # id_a  id_b
+    {
+        printf '%s\n' 'step() { printf "STEP %s\n" "$2"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "UV_CACHE_DIR='%s'\n" "$_TMP"
+        printf "STUDIO_HOME='%s'\n" "$_TMP"
+        printf '%s\n' '_UV_CACHE_MODE=studio'
+        cat "$_NOTICE_FILE"
+        printf '_path_device_id() { case "$1" in *cache*) echo %s ;; *) echo %s ;; esac; }\n' "$1" "$2"
+        printf '%s\n' 'UV_CACHE_DIR="$STUDIO_HOME/cache"'
+        printf '%s\n' 'mkdir -p "$UV_CACHE_DIR"'
+        printf '%s\n' '_warn_if_uv_cache_is_off_volume'
+        printf '%s\n' 'printf "COSTS_FULL_SIZE=%s\n" "${_ROLLBACK_COSTS_FULL_SIZE:-false}"'
+    } | "$_SH" 2>&1
+}
+case "$(_run_devids 41 41)" in
+    *"COSTS_FULL_SIZE=false"*) ok "one device id is one volume" ;;
+    *) bad "a co-located cache was reported as off-volume" ;;
+esac
+case "$(_run_devids 41 42)" in
+    *"COSTS_FULL_SIZE=true"*) ok "two device ids are two volumes, whatever df says" ;;
+    *) bad "a cache on another filesystem was reported as co-located" ;;
 esac
 
 _NOTICE_CUSTOM=$(_run_notice custom)
