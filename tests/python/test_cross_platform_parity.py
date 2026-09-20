@@ -1827,3 +1827,23 @@ class TestRemovalIsConfirmedWithLinkAwareSemantics:
             "the retry helper confirms removal with Test-Path, which a dangling link fools"
         )
         assert "if (-not (Test-Path -LiteralPath $Path))" not in helper
+
+
+class TestArm64MigrationDoesNotPromiseWhatTheFlagDeletes:
+    """The Windows-on-ARM rebuild tells the user the ARM64 environment is kept as
+    unsloth_studio.arm64.* so extra packages can be recovered. When no rollback has started yet
+    the migration calls Start-StudioVenvRollback itself, and under --no-rollback that call
+    discards, so the promise has to be gated on the flag and not only on an earlier discard."""
+
+    def test_the_promise_is_gated_on_the_flag_too(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        gate = text.split("the ARM64 environment is kept under", 1)[0][-400:]
+        assert "$script:StudioNoRollback" in gate, (
+            "the retention promise is printed on a run whose next call deletes the tree"
+        )
+
+    def test_a_discard_inside_the_migration_is_reported(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        arm = text.split("Start-StudioVenvRollback -ExistingDir $VenvDir\n                if (", 1)
+        assert len(arm) == 2, "the migration does not check what its own rollback call did"
+        assert "discarded by --no-rollback rather than kept" in arm[1][:900]

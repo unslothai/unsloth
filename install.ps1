@@ -7686,10 +7686,11 @@ exit 0
         # anything the user pip-installed there is not reinstalled. The old tree is kept
         # under $StudioHome as unsloth_studio.arm64.* rather than deleted with the ordinary
         # rollback, so it can still be read: $script:StudioVenvRollbackPreserve below.
-        # Only when there is a tree to keep. Under --no-rollback it is already gone, and the arm
-        # below says so; printing both leaves the user looking for an unsloth_studio.arm64.* that
-        # was never written.
-        if (-not $script:StudioVenvRollbackDiscarded) {
+        # Only when there is a tree to keep. Under --no-rollback it is either already gone or
+        # about to be, and the arms below say which; printing this as well leaves the user
+        # looking for an unsloth_studio.arm64.* that was never written, and told that packages
+        # they are about to lose are recoverable.
+        if (-not ($script:StudioVenvRollbackDiscarded -or $script:StudioNoRollback)) {
             substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
             substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
         }
@@ -7710,9 +7711,18 @@ exit 0
                 $script:StudioVenvRollbackPreserve = $true
             } else {
                 Start-StudioVenvRollback -ExistingDir $VenvDir
-                # After the move, so a rollback that never started cannot leave the flag set
-                # for some later unrelated rollback to act on.
-                $script:StudioVenvRollbackPreserve = $true
+                if ($script:StudioVenvRollbackDiscarded) {
+                    # --no-rollback discarded it inside that call, so there is no tree to
+                    # preserve and setting the flag would mark one that does not exist. The
+                    # user asked for no old environments kept and that is what they get; say
+                    # so here, where a moment ago the message promised the opposite.
+                    substep "the previous ARM64 environment was discarded by --no-rollback rather than kept;" "Yellow"
+                    substep "the x64 environment is built fresh, and extra packages are not recoverable." "Yellow"
+                } else {
+                    # After the move, so a rollback that never started cannot leave the flag set
+                    # for some later unrelated rollback to act on.
+                    $script:StudioVenvRollbackPreserve = $true
+                }
             }
         } catch {
             Write-StudioLine "[ERROR] Could not move the ARM64 environment aside: $($_.Exception.Message)" -ForegroundColor Red

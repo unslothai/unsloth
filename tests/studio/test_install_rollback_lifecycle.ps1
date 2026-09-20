@@ -247,6 +247,24 @@ try {
     # "already moved aside" arm nor the "move it now" arm.
     $wouldMove = (-not $script:StudioVenvRollbackDiscarded) -and (-not $script:StudioVenvRollbackActive)
     Check "the migration would not try to move a tree that is gone" (-not $wouldMove)
+    # The other half of the same promise. When no rollback has started yet -- a healthy legacy
+    # environment migrated straight into $VenvDir -- the migration calls Start-StudioVenvRollback
+    # itself, and under --no-rollback that call DISCARDS. The retention message is printed before
+    # the call, so gating it only on "already discarded" told the user their extra packages were
+    # recoverable moments before the only copy was deleted.
+    # The gate itself is a copy of it away from the code, which would test this file rather than
+    # install.ps1, so it is pinned by text in TestArm64MigrationDoesNotPromiseWhatTheFlagDeletes
+    # instead. What IS drivable here is the state the call leaves behind: after the tree is gone,
+    # nothing may be marked as preserved.
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+    Reset-RollbackState $VenvDir
+    $script:StudioVenvRollbackDiscarded = $false
+    $script:StudioVenvRollbackPreserve = $false
+    $script:StudioNoRollback = $true
+    Start-StudioVenvRollback -ExistingDir $VenvDir
+    Check "a discard inside the migration is not marked as a preserved tree" (
+        $script:StudioVenvRollbackDiscarded -and -not $script:StudioVenvRollbackPreserve)
     $script:StudioNoRollback = $false
     $script:StudioVenvRollbackDiscarded = $false
 
