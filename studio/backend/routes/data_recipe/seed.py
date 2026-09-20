@@ -197,7 +197,12 @@ def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str,
     """
     if subset:
         wanted = subset.lower()
-        return next((c for c in configs if str(c.get("config_name") or "").lower() == wanted), None)
+        # An omitted config_name is the default one, the same normalization
+        # hub/services/datasets applies, so asking for `default` still finds it.
+        return next(
+            (c for c in configs if str(c.get("config_name") or DEFAULT_CONFIG).lower() == wanted),
+            None,
+        )
     flagged = next((c for c in configs if c.get("default") is True), None)
     if flagged is not None:
         return flagged
@@ -359,19 +364,21 @@ def _select_best_file(
 
 
 def _pattern_fits_the_split(
-    data_files: list[str], parent: str, pattern: str, split_lower: str
+    data_files: list[str], wanted: set[str], parent: str, pattern: str
 ) -> bool:
-    """The pattern must take every file of this split in the folder, and no other.
+    """The pattern must take every wanted file in the folder, and no other file there.
 
     A folder may name one split several ways at once (train-part.parquet beside
     questions_train.parquet), so a glob built from whichever file was picked can
     drop the rest; a loose glob can just as easily swallow a neighbouring split.
+    Judged against the WHOLE listing, since a candidate checked only against the
+    subset slice can still match another subset's files.
     """
     matcher = _glob_to_regex(pattern)
     for path in data_files:
         if Path(path).parent.as_posix() != parent:
             continue
-        if bool(matcher.match(Path(path).name)) != (_split_rank(path, split_lower) <= 1):
+        if bool(matcher.match(Path(path).name)) != (path in wanted):
             return False
     return True
 
@@ -394,7 +401,10 @@ def _candidate_patterns(stem: str, suffix: str, split_lower: str) -> list[str]:
         at = stem_lower.find(label)
         if at >= 0:
             candidates.append(f"*{stem[at : at + len(label)]}*{suffix}")
-    return candidates
+    # Last and narrowest: the whole name. A config written after the split, as
+    # train-main beside train-socratic, is only kept by carrying both labels.
+    candidates.append(f"{stem}*{suffix}")
+    return list(dict.fromkeys(candidates))
 
 
 def _with_data_extension(pattern: str, suffix: str) -> str:
@@ -533,9 +543,11 @@ def _resolve_seed_hf_path(
 
     split_lower = split.lower()
     if not _split_folder(selected.lower(), _split_labels(split_lower)):
+        # The files this request is for: in the chosen subset, and of this split.
+        wanted = {f for f in scoped if _split_rank(f, split_lower) <= 1}
         stem = Path(selected).name[: -len(suffix)]
         for candidate in _candidate_patterns(stem, suffix, split_lower):
-            if _pattern_fits_the_split(scoped, parent, candidate, split_lower):
+            if _pattern_fits_the_split(data_files, wanted, parent, candidate):
                 return f"{base}/{candidate}"
     return f"{base}/**/*{ext}"
 

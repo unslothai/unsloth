@@ -827,6 +827,40 @@ def test_seed_hf_path_keeps_a_folder_subset_whose_files_are_generic(monkeypatch,
     )
 
 
+@pytest.mark.parametrize(
+    ("subset", "expected"),
+    [
+        ("main", "datasets/org/repo/train-main*.parquet"),
+        ("socratic", "datasets/org/repo/train-socratic*.parquet"),
+    ],
+)
+def test_seed_hf_path_keeps_a_subset_written_after_the_split(
+    monkeypatch, tmp_path, subset, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["train-main.parquet", "test-main.parquet", "train-socratic.parquet"]
+    # train-*.parquet fits the subset slice but takes the other subset with it,
+    # so the candidate has to be judged against the whole listing.
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset) == expected
+
+
+def test_seed_hf_path_treats_an_unnamed_config_as_the_default(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    configs = [
+        {
+            "data_files": [
+                {"split": "train", "path": "a/part.parquet"},
+                {"split": "test", "path": "b/part.parquet"},
+            ]
+        }
+    ]
+    files = ["a/part.parquet", "b/part.parquet"]
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "test", "default", configs)
+        == "datasets/org/repo/b/part.parquet"
+    )
+
+
 def test_seed_hf_path_ignores_a_subset_label_that_is_not_the_config(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     # x/main.parquet carries the label but nothing of the split, so it is a name
