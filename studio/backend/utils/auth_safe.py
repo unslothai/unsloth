@@ -17,11 +17,12 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         try:
             port = parts.port
         except ValueError:
-            # ``Location: https://host:99999/`` or ``:abc``. Naming it "unparseable"
-            # rather than raising keeps the four probes on this handler fail-soft --
-            # none of them catches ValueError -- and it can only ever compare unequal,
-            # so a target we cannot read is treated as another origin and stripped.
-            return scheme, (parts.hostname or "").lower(), "unparseable"
+            # ``Location: https://host:99999/`` or ``:abc``. Returning a sentinel rather
+            # than raising keeps the four probes on this handler fail-soft -- none of
+            # them catches ValueError. A FRESH object(), not a constant: it compares
+            # unequal to everything including another unreadable port, so a target we
+            # cannot read is always treated as another origin and the token is stripped.
+            return scheme, (parts.hostname or "").lower(), object()
         if port is None:
             port = 443 if scheme == "https" else 80
         return scheme, (parts.hostname or "").lower(), port

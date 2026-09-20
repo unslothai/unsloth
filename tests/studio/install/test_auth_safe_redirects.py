@@ -251,8 +251,17 @@ def test_installer_import_without_backend_dependencies(name, mode, tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("target", ["https://hub.example:99999/b", "https://hub.example:abc/b"])
-def test_an_unparseable_redirect_port_strips_rather_than_raising(target):
+@pytest.mark.parametrize(
+    "start,target",
+    [
+        ("https://hub.example/a", "https://hub.example:99999/b"),
+        ("https://hub.example/a", "https://hub.example:abc/b"),
+        # Both ends unreadable: the sentinel must not compare equal to itself, or a
+        # request that got here with a bad port would hand the token straight on.
+        ("https://hub.example:abc/a", "https://hub.example:abc/b"),
+    ],
+)
+def test_an_unparseable_redirect_port_strips_rather_than_raising(start, target):
     """A Location whose port cannot be read must not escape as ValueError.
 
     None of the four clients catches ValueError -- they catch URLError, HTTPError,
@@ -261,7 +270,7 @@ def test_an_unparseable_redirect_port_strips_rather_than_raising(target):
     strip.
     """
     request = urllib.request.Request(
-        "https://hub.example/a", headers = {"Authorization": TOKEN, "Accept": "application/json"}
+        start, headers = {"Authorization": TOKEN, "Accept": "application/json"}
     )
     result = prebuilt_core._CrossHostAuthStrippingRedirectHandler().redirect_request(
         request, None, 302, "Found", {}, target
