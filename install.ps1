@@ -2792,12 +2792,22 @@ exit 1
         return $best
     }
 
+    # Junctions and symlinks lie about which volume a path is on, which is why
+    # Test-StudioSameVolume canonicalises. Every volume question has to, or a studio home behind
+    # a junction (or under a junctioned profile) is measured on the link's host drive instead of
+    # the volume that will actually hold the environment. Falling back to the lexical path keeps
+    # a resolver that cannot answer from costing the caller its measurement entirely.
+    function Resolve-StudioVolumeQueryPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        try { return (Get-StudioFinalPath -Path $Path) } catch { return $Path }
+    }
+
     function Get-StudioMountedVolume {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
         if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) { return $null }
         try {
-            return (Select-StudioVolumeForPath -Path $Path `
+            return (Select-StudioVolumeForPath -Path (Resolve-StudioVolumeQueryPath -Path $Path) `
                 -Volumes @(Get-CimInstance -ClassName Win32_Volume -ErrorAction Stop))
         } catch { return $null }
     }
@@ -2806,10 +2816,13 @@ exit 1
     function Get-StudioFreeSpaceBytes {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
-        $mounted = Get-StudioMountedVolume -Path $Path
+        $queryPath = Resolve-StudioVolumeQueryPath -Path $Path
+        $mounted = Get-StudioMountedVolume -Path $queryPath
         if ($mounted -and $null -ne $mounted.FreeSpace) { return [int64]$mounted.FreeSpace }
         try {
-            $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Path))
+            # The fallback needs the resolved path too: DriveInfo on the lexical one answers for
+            # the drive the junction lives on, not the drive it points at.
+            $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($queryPath))
             if (-not $root) { return $null }
             return ([System.IO.DriveInfo]::new($root)).AvailableFreeSpace
         } catch { return $null }

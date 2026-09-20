@@ -284,6 +284,32 @@ try {
         Check "off Windows the probe answers nothing" ($null -eq $probed)
     }
     Check "and an empty path is not an error" ($null -eq (Get-StudioMountedVolume -Path ""))
+    # A link must be measured as the volume it points at, not the one it lives on. On one
+    # filesystem the two numbers agree either way, so what this proves is that the resolution
+    # happens at all and costs nothing: a helper that threw, or answered $null through a link,
+    # would take the warning down with it. The cross-volume case needs a second volume and a
+    # junction, neither of which exists on any host this suite runs on.
+    $linkTarget = Join-Path $StudioHome "link-target"
+    [System.IO.Directory]::CreateDirectory($linkTarget) | Out-Null
+    $linkPath = Join-Path $StudioHome "link"
+    $linkMade = $true
+    try { New-Item -ItemType SymbolicLink -Path $linkPath -Target $linkTarget -ErrorAction Stop | Out-Null }
+    catch { $linkMade = $false }
+    if ($linkMade) {
+        # Within a tolerance, not equal: free space on a live filesystem moves between two
+        # calls, and an exact comparison fails for that reason rather than for this one.
+        $viaLink = Get-StudioFreeSpaceBytes -Path $linkPath
+        $viaTarget = Get-StudioFreeSpaceBytes -Path $linkTarget
+        Check "free space through a link is the target's volume, not some other one" (
+            $null -ne $viaLink -and $null -ne $viaTarget -and $viaLink -gt 0 -and
+            [math]::Abs($viaLink - $viaTarget) -lt ([math]::Max($viaLink, $viaTarget) * 0.01))
+        Check "a link and its target are one volume" (
+            Test-StudioSameVolume -PathA $linkPath -PathB $linkTarget)
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue
+    } else {
+        # Windows needs Developer Mode or elevation to create one; not a failure of the code.
+        Write-Host "  SKIP  this host will not create a symbolic link"
+    }
     $freeHere = Get-StudioFreeSpaceBytes -Path $StudioHome
     Check "free space still comes back from the fallback" ($null -ne $freeHere -and $freeHere -gt 0)
     Check "a path and its own child are still one volume" (

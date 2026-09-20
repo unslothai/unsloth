@@ -1673,3 +1673,32 @@ class TestNoCacheStillCostsAFullEnvironment:
         window = text.split("is on a different", 1)[0][-1600:]
         assert probe in window, f"{path.name} does not consider no-cache mode before gating"
         assert flag in window, f"{path.name} does not set the full-size flag for no-cache mode"
+
+
+class TestVolumeLookupsResolveLinks:
+    """Test-StudioSameVolume canonicalises because junctions and symlinks lie about which volume
+    a path is on. The free-space side has to as well, or a studio home behind a junction (or
+    under a junctioned profile) is measured on the link's host drive rather than the volume that
+    will hold the environment, suppressing or falsely emitting both disk warnings (#11313)."""
+
+    def test_both_volume_lookups_go_through_the_resolver(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "function Resolve-StudioVolumeQueryPath" in text
+        for name, end in (
+            ("function Get-StudioMountedVolume", "function Get-StudioFreeSpaceBytes"),
+            ("function Get-StudioFreeSpaceBytes", "function Get-StudioTreeSizeBytes"),
+        ):
+            helper = text.split(name, 1)[1].split(end, 1)[0]
+            assert "Resolve-StudioVolumeQueryPath" in helper, (
+                f"{name} asks the lexical path, which a junction answers for the wrong volume"
+            )
+
+    def test_the_driveinfo_fallback_uses_the_resolved_path(self):
+        # The fallback is the path that runs off Windows and wherever CIM cannot answer.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
+            "function Get-StudioTreeSizeBytes", 1
+        )[0]
+        assert "GetFullPath($queryPath)" in helper, (
+            "the DriveInfo fallback still measures the unresolved path"
+        )
