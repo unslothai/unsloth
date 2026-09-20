@@ -218,3 +218,27 @@ test("the chat page hands the store's pre-fit length to the bar", () => {
     "the page must pass preFitContextLength to ContextUsageBar as preFitTotal",
   );
 });
+
+
+// Two more reload paths in use-chat-model-runtime that are sized in TOTALS while
+// loadedContextLength is one slot's share. Both predate this PR and both were
+// still quartering a four-slot server after the other three were fixed. Neither
+// is reachable from a unit test (they live inside the load hook), so they are
+// pinned at the source like the bar wiring above.
+test("pinning GPU layers preserves the launch total, not one slot's share", () => {
+  const hook = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(
+    hook,
+    /loadCustomContextLength\s*=\s*loadLaunchContextLength\s*\?\?\s*loadContextLength/,
+    "the manual+pinned branch must prefer the launch total over the per-slot window",
+  );
+});
+
+test("a failed switch rolls back at the launch total", () => {
+  const hook = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(
+    hook,
+    /stateBeforeUnload\.launchContextLength\s*\?\?\s*\n?\s*stateBeforeUnload\.loadedContextLength/,
+    "rollback must prefer the resident server's launch total",
+  );
+});

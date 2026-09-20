@@ -1355,7 +1355,12 @@ export function useChatModelRuntime() {
                 stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                 stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
                 stateBeforeUnload.loadedCustomContextLength,
-                stateBeforeUnload.loadedContextLength ?? 0,
+                // The rollback restores the old n_parallel too, so sizing from one
+                // slot's share would quarter a four-slot server on a rollback that
+                // otherwise succeeded. Falls back to the share when no total is known.
+                stateBeforeUnload.launchContextLength ??
+                  stateBeforeUnload.loadedContextLength ??
+                  0,
               )
             : (previousPin ??
               unpinnedLoadContext(false, previousIsMlx, previousMaxSeqLength));
@@ -1760,7 +1765,11 @@ export function useChatModelRuntime() {
               loadCustomContextLength == null &&
               (loadContextLength ?? 0) > 0
             ) {
-              loadCustomContextLength = loadContextLength;
+              // The preserved value is sent as the total -c, while loadContextLength
+              // is one slot's share, so a split server would reload at a quarter of
+              // its window. Prefer the launch total; without one the share is still
+              // the best available answer and behaviour is unchanged.
+              loadCustomContextLength = loadLaunchContextLength ?? loadContextLength;
             }
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,

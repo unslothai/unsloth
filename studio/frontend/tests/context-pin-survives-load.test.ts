@@ -329,7 +329,11 @@ test("the clamp that stops a manual reload resizing is not a user pin", () => {
   // branch would take that as the NATIVE context. That is the app protecting the
   // load, not the user choosing a length, so the pin is captured BEFORE it.
   const capture = RUNTIME.indexOf("const explicitCtxPin = loadRequestContextPin(");
-  const clamp = RUNTIME.indexOf("loadCustomContextLength = loadContextLength;");
+  // The clamp now prefers the launch TOTAL over one slot's share; what this test
+  // pins is the ORDERING against the pin capture, not the right-hand side.
+  const clamp = RUNTIME.indexOf(
+    "loadCustomContextLength = loadLaunchContextLength ?? loadContextLength;",
+  );
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
   assert.ok(
