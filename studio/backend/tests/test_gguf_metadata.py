@@ -136,9 +136,7 @@ def test_returns_none_for_non_gguf(tmp_path: Path):
 
 
 def _write_legacy_q2_offset_mismatch_gguf(
-    path: Path,
-    *,
-    mismatch_tensor: str = "blk.0.weight",
+    path: Path, *, mismatch_tensor: str = "blk.0.weight"
 ) -> Path:
     """Two-tensor header where the second offset matches legacy Q2_0 packing, not mainline."""
     _GGML_TYPE_Q2_0 = 42
