@@ -1358,6 +1358,7 @@ async def delete_project(
             live_project_ownership,
         )
         from storage.studio_db import (
+            _project_workspace_identity,
             delete_chat_project_workspace,
             record_orphaned_project_if_unowned,
         )
@@ -1370,6 +1371,11 @@ async def delete_project(
             False,
             None,
             shared,
+            # The identity the row already verified, rather than a stat taken now:
+            # the folder may have been replaced or unplugged since it was chosen,
+            # and recording either of those is how the old session ends up serving
+            # a directory the user never selected.
+            _project_workspace_identity(project),
         )
         ownership = await run_in_threadpool(
             live_project_ownership,

@@ -1231,6 +1231,61 @@ def test_deleting_external_project_never_deletes_selected_folder(
     assert marker.read_text(encoding = "utf-8") == "keep"
 
 
+def test_a_folder_swapped_before_the_delete_is_not_recorded_as_the_chosen_one(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """The record must carry the identity the row verified, not a stat taken at delete time.
+
+    Statting during the delete writes down whatever sits at the pathname then, so a directory
+    swapped in beforehand is recorded as the folder the user chose and the retired session serves
+    it. The live row already refuses a replacement; the record has to refuse the same one.
+    """
+    from core.inference import tools
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    chosen = workspace_projects_home / "chosen-folder"
+    chosen.mkdir()
+    (chosen / "authorized.txt").write_text("picked", encoding = "utf-8")
+    stranger = workspace_projects_home / "stranger"
+    stranger.mkdir()
+    (stranger / "stranger-secret.txt").write_text("never selected", encoding = "utf-8")
+
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(chosen))
+    session_id = tools.project_session_id(project["id"])
+
+    shutil.rmtree(chosen)
+    stranger.rename(chosen)
+    studio_db.delete_chat_project(project["id"], delete_files = False)
+
+    recorded = tools._recorded_project_workdir(project["id"], session_id)
+    assert recorded is None, "a replaced folder was recorded as the chosen workspace"
+
+
+def test_a_workspace_that_has_gone_still_records_the_identity_it_was_given(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """A folder that cannot be stat'd at delete time must not record a blank identity.
+
+    A record with no identity is resolved on the pathname alone, so a different directory arriving
+    at that name later is served to the retired session.
+    """
+    from core.inference import tools
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    chosen = workspace_projects_home / "unplugged-folder"
+    chosen.mkdir()
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(chosen))
+    session_id = tools.project_session_id(project["id"])
+
+    shutil.rmtree(chosen)
+    studio_db.delete_chat_project(project["id"], delete_files = False)
+    chosen.mkdir()
+    (chosen / "stranger-secret.txt").write_text("never selected", encoding = "utf-8")
+
+    recorded = tools._recorded_project_workdir(project["id"], session_id)
+    assert recorded is None, "a directory that replaced a vanished workspace was served"
+
+
 def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
