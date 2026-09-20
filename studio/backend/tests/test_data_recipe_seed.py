@@ -957,6 +957,31 @@ def test_seed_hf_path_keeps_both_extensions_of_one_builder(monkeypatch, tmp_path
     assert resolved == "datasets/org/repo/data/*.json*"
 
 
+def test_seed_hf_path_keeps_qualified_split_folders_together(monkeypatch, tmp_path):
+    """train_a and train_b are both train to the loader, so both must be read."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = [
+        "sets/train_a/0.parquet",
+        "sets/train_b/1.parquet",
+        "sets/test_a/2.parquet",
+    ]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train")
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert sorted(matched) == ["sets/train_a/0.parquet", "sets/train_b/1.parquet"]
+
+
+def test_seed_hf_path_gathers_a_split_written_under_two_aliases(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/dev-0.parquet", "data/validation-0.parquet", "data/test-0.parquet"]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "validation")
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert sorted(matched) == ["data/dev-0.parquet", "data/validation-0.parquet"]
+
+
 def test_seed_hf_path_counts_json_and_jsonl_as_two_extensions(monkeypatch, tmp_path):
     """`load.infer_module_for_data_files_list` votes per extension, parquet on ties."""
     seed_route = _load_seed_route(monkeypatch, tmp_path)

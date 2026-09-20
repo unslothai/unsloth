@@ -525,6 +525,12 @@ def _name_initials(paths: list[str]) -> str:
     return "".join(initials)
 
 
+def _anchor(dataset_name: str, root: str) -> str:
+    """The recipe path up to the folder a pattern is written relative to."""
+    base = f"datasets/{dataset_name}"
+    return f"{base}/{root}" if root and root != "." else base
+
+
 def _name_finals(paths: list[str]) -> str:
     """The last characters of these names before the extension, as a class body."""
     finals = {Path(path).stem[-1:] for path in paths}
@@ -532,7 +538,12 @@ def _name_finals(paths: list[str]) -> str:
 
 
 def _widened_declared_pattern(
-    declared_files: list[str], data_files: list[str], split_lower: str, suffix: str
+    declared_files: list[str],
+    data_files: list[str],
+    split_lower: str,
+    suffix: str,
+    *,
+    allow_partial: bool = True,
 ) -> str:
     """One glob covering several declared ones, keeping the split out of it if it can.
 
@@ -582,8 +593,11 @@ def _widened_declared_pattern(
         # Second best is the widest that stays inside the declaration: the card
         # says the neighbours are another split, so reading them would be the
         # very mix-up the split is being resolved to avoid.
-        if matched <= wanted and len(matched) > covered:
+        if allow_partial and matched <= wanted and len(matched) > covered:
             clean, covered = candidate, len(matched)
+    # A card says outright which files are in the split, so reading a neighbour
+    # would contradict it. A guess from the file names does not, and there
+    # dropping half the split is the worse of the two.
     return clean or f"{base}/*{suffix}"
 
 
@@ -639,7 +653,22 @@ def _resolve_seed_hf_path(
         base = f"{base}/{parent}"
 
     split_lower = split.lower()
-    if not _split_folder(selected.lower(), _split_labels(split_lower)):
+    labels = _split_labels(split_lower)
+    if _split_folder(selected.lower(), labels):
+        # The loader reads train_a and train_b as one train split, so a folder
+        # pattern rooted at the one folder that was picked drops the other.
+        folders = {f for f in scoped if _split_rank(f, split_lower) == 0}
+        root = _common_parent(sorted(folders | {selected}))
+        if root != parent:
+            for label in labels:
+                for shape in (
+                    f"**/{label}/**/*{ext}",
+                    f"**/{label}{_SEP}*/**/*{ext}",
+                    f"**/*{_SEP}{label}/**/*{ext}",
+                ):
+                    if _pattern_fits_the_split(data_files, folders, root, shape):
+                        return f"{_anchor(dataset_name, root)}/{shape}"
+    else:
         # The files this request is for: in the chosen subset, and of this split.
         wanted = {f for f in scoped if _split_rank(f, split_lower) <= 1}
         # A split sharded over sibling folders, as a/train-0.parquet beside
@@ -653,16 +682,24 @@ def _resolve_seed_hf_path(
             _carries_another_split(f, split_lower) for f in outside
         )
         root = _common_parent(sorted(wanted | {selected})) if spread else parent
-        root_base = (
-            f"datasets/{dataset_name}/{root}"
-            if root and root != "."
-            else f"datasets/{dataset_name}"
-        )
         stem = Path(selected).name[: -len(suffix)]
         for candidate in _candidate_patterns(stem, suffix, split_lower):
             pattern = f"**/{candidate}" if spread else candidate
             if _pattern_fits_the_split(data_files, wanted, root, pattern):
-                return f"{root_base}/{pattern}"
+                return f"{_anchor(dataset_name, root)}/{pattern}"
+        # One split may be written under several of its own names, as dev-0
+        # beside validation-0, and no pattern built from the one file that was
+        # picked can gather the others. The declared-mapping widening knows how
+        # to name a set of files without reaching past it, so it is reused here,
+        # but only where every neighbour is labelled: an unlabelled file may
+        # belong to this split too, and only the broad glob would keep it.
+        prefix = f"{root}/" if root and root != "." else ""
+        neighbours = [f for f in data_files if f.startswith(prefix) and f not in wanted]
+        if len(wanted) > 1 and all(_carries_another_split(f, split_lower) for f in neighbours):
+            widened = _widened_declared_pattern(
+                sorted(wanted), data_files, split_lower, suffix, allow_partial = False
+            )
+            return f"datasets/{dataset_name}/{widened}"
     return f"{base}/**/*{ext}"
 
 
