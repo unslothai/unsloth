@@ -4446,3 +4446,83 @@ class TestAliasesOfTheExternalReaders:
             '    return "https://huggingface.co/x"\n'
             "requests.get(reader())"
         )
+
+
+class TestLibpqHostaddr:
+    """libpq takes a literal address in `hostaddr`, which reaches a host without naming one."""
+
+    def test_a_hostaddr_in_a_dsn_is_screened(self):
+        _blocked(
+            'import psycopg\npsycopg.connect("hostaddr=169.254.169.254 dbname=x")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_hostaddr_keyword_is_screened(self):
+        _blocked(
+            'import psycopg\npsycopg.connect(hostaddr = "169.254.169.254")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_connection_with_no_host_at_all_keeps_working_ok(self):
+        _ok('import psycopg2\npsycopg2.connect("dbname = app")')
+
+
+class TestFilesHeldByAContextManager:
+    """`with open(...) as f` hands back the file, so the name still holds it."""
+
+    def test_a_target_read_through_a_with_block_is_external(self):
+        _blocked(
+            'import requests\nwith open("target.txt") as f:\n    requests.get(f.read())',
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_writing_a_file_next_to_a_request_changes_nothing_ok(self):
+        _ok(
+            'import requests\nwith open("out.txt", "w") as f:\n    f.write("x")\n'
+            'requests.get("https://huggingface.co/api/models")'
+        )
+
+
+class TestConditionalClientBaseUrls:
+    """A constructor host gets the same possible-value screening a request target gets."""
+
+    def test_a_metadata_base_url_in_one_branch_is_refused(self):
+        _blocked(
+            'import httpx\nu = "https://huggingface.co"\nif flag:\n'
+            '    u = "http://169.254.169.254"\nhttpx.Client(base_url = u).get("/x")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_both_branches_allowed_keeps_working_ok(self):
+        _ok(
+            'import httpx\nu = "https://huggingface.co"\nif flag:\n'
+            '    u = "https://huggingface.co"\nhttpx.Client(base_url = u).get("/api/models")'
+        )
+
+
+class TestPreparedAndBuiltRequests:
+    """A request object built from a URL still carries it."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f's.send(requests.Request("GET", "{_METADATA_URL}").prepare())',
+                id = "prepared_request",
+            ),
+            pytest.param(
+                "import httpx\nc = httpx.Client()\n"
+                f'c.send(c.build_request("GET", "{_METADATA_URL}"))',
+                id = "built_request",
+            ),
+        ],
+    )
+    def test_a_built_request_is_screened_at_send(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_the_same_shape_on_an_allowed_host_keeps_working_ok(self):
+        _ok(
+            "import requests\ns = requests.Session()\n"
+            's.send(requests.Request("GET", "https://huggingface.co/api/models").prepare())'
+        )

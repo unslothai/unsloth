@@ -16228,7 +16228,14 @@ def _check_signal_escape_patterns(code: str):
 
     # Wrappers whose own first argument is the URL the request will use, so a Request object is
     # policed like the url string it was built from.
-    _URL_WRAPPER_FQ = {"urllib.request.Request": 0, "httpx.Request": 1}
+    _URL_WRAPPER_FQ = {
+        "urllib.request.Request": 0,
+        "httpx.Request": 1,
+        "requests.Request": 1,
+        "requests.models.Request": 1,
+    }
+    # Methods that hand back a request object built from a URL, with the argument that holds it.
+    _REQUEST_BUILDER_METHODS = {"build_request": 1, "prepare_request": 0, "prepare": 0}
 
     def _written_fq(func_node) -> str:
         """The dotted call name exactly as the source spells it."""
@@ -16740,9 +16747,12 @@ def _check_signal_escape_patterns(code: str):
                         held = node.context_expr
                         # requests.Session, httpx.Client, aiohttp.ClientSession and socket all
                         # hand back the object itself, so the name still holds it.
+                        # `with open(...) as f` hands back the file, so the name still holds it.
+                        opened = _canonical_fq(held.func, self) if isinstance(held, ast.Call) else ""
                         keeps_itself = isinstance(held, ast.Call) and (
-                            _canonical_fq(held.func, self) in _SOCKET_FACTORY_FQ
-                            or _canonical_fq(held.func, self) in _SESSION_FACTORY_FQ
+                            opened in _SOCKET_FACTORY_FQ
+                            or opened in _SESSION_FACTORY_FQ
+                            or opened.rpartition(".")[2] in ("open", "fdopen")
                         )
                         self._bind(node.optional_vars, held if keeps_itself else None, scope)
                 elif isinstance(node, ast.Delete):
@@ -16904,6 +16914,19 @@ def _check_signal_escape_patterns(code: str):
             return "", False
         if isinstance(node, ast.Call):
             # urllib.request.Request("...") carries the URL the later urlopen will use.
+            builder = (
+                _REQUEST_BUILDER_METHODS.get(node.func.attr)
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if builder is not None:
+                # `Request(...).prepare()` and `client.build_request(...)` hand back an object
+                # that still carries the URL it was built from.
+                inner = node.args[builder] if len(node.args) > builder else None
+                if inner is None and builder == 0 and isinstance(node.func, ast.Attribute):
+                    inner = node.func.value
+                if inner is not None:
+                    return _static_str_prefix(inner, bindings, seen, depth + 1)
             wrapper = _URL_WRAPPER_FQ.get(_canonical_fq(node.func, bindings))
             if wrapper is not None:
                 # httpx.Request("GET", url) puts the verb first, urllib's Request the URL.
@@ -16974,12 +16997,16 @@ def _check_signal_escape_patterns(code: str):
     # `host = ` in a libpq DSN, `SERVER = ` in an ODBC one.
     # The value runs to the next separator and may be a comma separated failover list, which the
     # caller splits: libpq tries each host in turn, so every one of them has to be screened.
-    _DSN_HOST_RE = re.compile(r"(?:^|[;\s])(?:host|server)\s*=\s*([^;\s]+)", re.IGNORECASE)
+    _DSN_HOST_RE = re.compile(
+        r"(?:^|[;\s])(?:hostaddr|host|server)\s*=\s*([^;\s]+)", re.IGNORECASE
+    )
     # Schemes that name a file rather than a host, so `sqlite:///state.db` opens nothing remote.
     _LOCAL_DSN_SCHEMES = ("sqlite", "duckdb", "file", "shm", "memory")
     # These open a file and nothing else, so their argument is a path however it is spelled:
     # `sqlite3.connect("host=cache.db")` is a file called host=cache.db.
     _FILE_ONLY_CONNECT_OWNERS = frozenset({"sqlite3", "apsw", "duckdb"})
+    # libpq takes a literal address in hostaddr, which reaches a host without naming one in host.
+    _DATABASE_HOST_KEYWORDS = frozenset({"host", "hostaddr", "server"})
 
     def _dsn_hosts(text: str, complete: bool = True) -> "list[str]":
         """Every host a database connection string names. A libpq DSN may list failover hosts,
@@ -17021,7 +17048,7 @@ def _check_signal_escape_patterns(code: str):
                     if (
                         isinstance(key, ast.Constant)
                         and isinstance(key.value, str)
-                        and key.value.lower() in ("host", "server")
+                        and key.value.lower() in _DATABASE_HOST_KEYWORDS
                     ):
                         found.append(value)
                 continue
@@ -17032,7 +17059,9 @@ def _check_signal_escape_patterns(code: str):
         """Every host a `connect` on a database client names, across the DSN and the keywords."""
         expanded, _opaque = _expanded_host_arguments(node)
         positional = node.args[0] if node.args else None
-        candidates = [kw.value for kw in node.keywords or [] if kw.arg in ("host", "server")]
+        candidates = [
+            kw.value for kw in node.keywords or [] if kw.arg in _DATABASE_HOST_KEYWORDS
+        ]
         candidates += expanded
         candidates += list(node.args[:1])
         for candidate in candidates:
@@ -17099,7 +17128,9 @@ def _check_signal_escape_patterns(code: str):
     def _database_target_is_external(node: ast.Call) -> bool:
         """Whether the DSN or host of a database `connect` is read from outside the source."""
         expanded, _opaque = _expanded_host_arguments(node)
-        candidates = [kw.value for kw in node.keywords or [] if kw.arg in ("host", "server")]
+        candidates = [
+            kw.value for kw in node.keywords or [] if kw.arg in _DATABASE_HOST_KEYWORDS
+        ]
         candidates += expanded
         candidates += list(node.args[:1])
         return any(_externally_sourced(candidate, _bindings) for candidate in candidates)
@@ -17749,6 +17780,8 @@ def _check_signal_escape_patterns(code: str):
                 host_node = _configured_host_node(node, name)
                 if host_node is None:
                     continue
+                for possible in _other_possible_hosts(host_node):
+                    _screen_host(possible, node)
                 configured = _configured_host(host_node)
                 if configured:
                     _screen_host(configured, node)
