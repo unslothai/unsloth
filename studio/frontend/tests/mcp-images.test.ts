@@ -11,12 +11,16 @@ import {
   MAX_TOTAL_MCP_IMAGES,
   MAX_MCP_IMAGE_MIME_CHARS,
   MAX_TOTAL_MCP_IMAGE_CHARS,
+  MAX_TOOL_TEXT_CHARS,
+  MCP_IMAGE_PARSE_ERROR_TEXT,
   planMcpImageBound,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
+  capToolText,
   mcpImagesEnvelope,
   splitMcpImages,
   stripMcpImageEnvelopes,
+  toolTextForModel,
 } from "../src/features/chat/api/mcp-images.ts";
 import { providerModelTakesMcpImages } from "../src/features/chat/external-providers.ts";
 import { localToolExchangeIndexes } from "../src/features/chat/codex-reasoning.ts";
@@ -572,6 +576,67 @@ test("a message's results are batched by replay exchange, not as one block", () 
     adapter,
     /localToolExchangeIndexes\(\n\s*toolParts,\n\s*\(\{ part \}\) => codexLocalToolRoundId\(getToolReplayProvenance\(part\)\),\n\s*\(\{ part \}\) => shouldFlushCompletedLocalToolPair\(part\),/,
   );
+});
+
+test("an mcp__ result whose marker does not parse is fail-closed for the model", () => {
+  const bad = "log" + MCP_IMAGES_MARKER + "{oops: " + "A".repeat(2_000_000);
+  assert.equal(toolTextForModel(bad, "mcp__fs__read_media_file"), MCP_IMAGE_PARSE_ERROR_TEXT);
+  const nonMcp = toolTextForModel(bad, "read_file");
+  assert.ok(nonMcp.length <= MAX_TOOL_TEXT_CHARS);
+  assert.strictEqual(nonMcp, toolTextForModel(bad, undefined));
+  const small = "log" + MCP_IMAGES_MARKER + "{oops}";
+  assert.equal(toolTextForModel(small, "read_file"), small);
+  assert.equal(toolTextForModel(small), small);
+  const literal = "before" + MCP_IMAGES_MARKER + " literal\nafter";
+  assert.equal(toolTextForModel(literal, "read_file"), literal);
+  assert.equal(toolTextForModel(literal), literal);
+});
+
+test("a valid envelope's payload still comes off for the model", () => {
+  const text = "[1 image returned]" + mcpImagesEnvelope(IMAGES);
+  assert.equal(toolTextForModel(text, "mcp__fs__read_media_file"), "[1 image returned]");
+});
+
+test("tool text is hard-capped regardless of the marker", () => {
+  const short = "x".repeat(MAX_TOOL_TEXT_CHARS - 1);
+  assert.equal(capToolText(short), short);
+  const huge = "a".repeat(MAX_TOOL_TEXT_CHARS + 100);
+  const capped = capToolText(huge);
+  assert.ok(capped.length <= MAX_TOOL_TEXT_CHARS);
+  assert.ok(capped.startsWith("a".repeat(100)));
+  assert.match(capped, /truncated/);
+});
+
+test("the serializer applies the fail-closed and the cap to string results", () => {
+  assert.match(adapter, /toolTextForModel\(result, tc\.toolName\)/);
+  assert.match(adapter, /capToolText\(replayText\)/);
+  assert.match(adapter, /content = capToolText\(JSON\.stringify\(result\)\)/);
+});
+
+test("a dead envelope uploads neither bytes nor base64 on a text-only target", () => {
+  const invalid = [
+    {
+      role: "tool",
+      name: "mcp__fs__shot",
+      content: "log" + MCP_IMAGES_MARKER + "{oops: " + "A".repeat(2_000_000),
+    },
+  ];
+  const stripped = stripMcpImageEnvelopes(invalid);
+  assert.equal(stripped[0].content, MCP_IMAGE_PARSE_ERROR_TEXT);
+  const bounded = boundMcpImageEnvelopes(invalid);
+  assert.equal(bounded[0].content, MCP_IMAGE_PARSE_ERROR_TEXT);
+});
+
+test("an oversized result with no envelope is capped on the wire shape too", () => {
+  const huge = "H".repeat(MAX_TOOL_TEXT_CHARS + 50);
+  const [bounded] = boundMcpImageEnvelopes([
+    { role: "tool", name: "read_file", content: huge },
+  ]);
+  assert.ok((bounded.content as string).length <= MAX_TOOL_TEXT_CHARS);
+  const [stripped] = stripMcpImageEnvelopes([
+    { role: "tool", name: "read_file", content: huge },
+  ]);
+  assert.ok((stripped.content as string).length <= MAX_TOOL_TEXT_CHARS);
 });
 
 test("a client tool's structured result is not unwrapped as the MCP wrapper", () => {

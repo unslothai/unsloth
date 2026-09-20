@@ -44,6 +44,42 @@ export function splitMcpImages(result: string): {
   return { text: result.slice(0, idx), images };
 }
 
+// An mcp__ result that claims images the parser rejects used to replay whole --
+// its megabytes of base64 as tool text. Fail closed instead. Mirrors
+// MCP_IMAGE_PARSE_ERROR_TEXT in mcp_images.py.
+export const MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]";
+
+export const MAX_TOOL_TEXT_CHARS = 256_000;
+const TOOL_TEXT_TRUNCATION_NOTICE =
+  "\n\n[Tool result text truncated for the model; the full output is shown in the tool card.]";
+
+export function capToolText(text: string): string {
+  if (text.length <= MAX_TOOL_TEXT_CHARS) return text;
+  const room = MAX_TOOL_TEXT_CHARS - TOOL_TEXT_TRUNCATION_NOTICE.length;
+  const head = text.slice(0, room);
+  const cut = head.lastIndexOf("\n");
+  return (cut >= room / 2 ? head.slice(0, cut) : head) + TOOL_TEXT_TRUNCATION_NOTICE;
+}
+
+/** Tool text bound for a model: a valid envelope's payload comes off (it uploads
+ *  as images), an mcp__ result whose envelope does not parse fails closed, and
+ *  nothing runs past the hard cap. */
+export function toolTextForModel(
+  content: string,
+  toolName: string | undefined,
+): string {
+  const { text, images } = splitMcpImages(content);
+  if (
+    images.length === 0 &&
+    toolName !== undefined &&
+    toolName.startsWith(MCP_TOOL_PREFIX) &&
+    content.includes(MCP_IMAGES_MARKER)
+  ) {
+    return MCP_IMAGE_PARSE_ERROR_TEXT;
+  }
+  return capToolText(text);
+}
+
 // Re-attached on replay: the backend promotes it into an image turn for a vision
 // model, and strips it for every other one.
 export function mcpImagesEnvelope(images: McpImage[]): string {
@@ -159,7 +195,11 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     if (!message || message.role !== "tool") continue;
     if (typeof message.content !== "string") continue;
     const { text, images } = splitMcpImages(message.content);
-    if (images.length === 0) continue;
+    if (images.length === 0) {
+      const safe = toolTextForModel(message.content, message.name);
+      if (safe !== message.content) out[i] = { ...message, content: safe };
+      continue;
+    }
     // Match backend provenance: strip named non-MCP envelopes so their payloads
     // cannot bypass the replay bounds and be uploaded again.
     if (
@@ -167,7 +207,7 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
       message.name &&
       !message.name.startsWith(MCP_TOOL_PREFIX)
     ) {
-      out[i] = { ...message, content: text };
+      out[i] = { ...message, content: capToolText(text) };
       continue;
     }
     carriers.push({ index: i, text, images });
@@ -192,12 +232,10 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     batch.forEach((carrier, r) => {
       const kept = plan[b][r];
       if (kept.length === carrier.images.length) return;
+      const head = capToolText(carrier.text);
       out[carrier.index] = {
         ...out[carrier.index],
-        content:
-          kept.length > 0
-            ? carrier.text + mcpImagesEnvelope(kept)
-            : carrier.text,
+        content: kept.length > 0 ? head + mcpImagesEnvelope(kept) : head,
       };
     }),
   );
@@ -215,6 +253,10 @@ export function stripMcpImageEnvelopes<T extends EnvelopeCarrier>(
     if (!message || message.role !== "tool") return message;
     if (typeof message.content !== "string") return message;
     const { text, images } = splitMcpImages(message.content);
-    return images.length === 0 ? message : { ...message, content: text };
+    if (images.length === 0) {
+      const safe = toolTextForModel(message.content, message.name);
+      return safe === message.content ? message : { ...message, content: safe };
+    }
+    return { ...message, content: capToolText(text) };
   });
 }

@@ -74,10 +74,12 @@ import {
 import { apiUrl } from "@/lib/api-base";
 import { isMcpToolName } from "../utils/mcp-tool-name";
 import {
+  capToolText,
   type McpImage,
   planMcpImageBound,
   mcpImagesEnvelope,
   splitMcpImages,
+  toolTextForModel,
 } from "./mcp-images";
 import {
   answerTextFromParts,
@@ -1071,7 +1073,12 @@ function serializeToolResultPart(
   let content: string;
   if (typeof result === "string") {
     // Backend ChatMessage rejects role="tool" with empty content; a sentinel JSON round-trips it.
-    content = result.length > 0 ? result : JSON.stringify({ result: "" });
+    // Strings are the fail-closed/cap path: an mcp__ envelope that does not parse
+    // becomes the notice, and nothing passes the character cap.
+    content =
+      result.length > 0
+        ? toolTextForModel(result, tc.toolName)
+        : JSON.stringify({ result: "" });
   } else if (
     // The wrapper the live parser builds -- {text, images} and nothing else -- from an
     // MCP result, or from any tool whose raw output ends in a valid envelope. Those
@@ -1089,7 +1096,10 @@ function serializeToolResultPart(
     const replayText = isSearchImagesToolResult(result)
       ? stripSearchImageTokens(result.text)
       : result.text;
-    content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
+    content =
+      replayText.length > 0
+        ? capToolText(replayText)
+        : JSON.stringify({ result: "" });
     // Gated on the mcp__ id the backend stamps, not on shape alone: a client tool
     // is free to answer {text, images:[{data, mimeType}]}, and appending the
     // envelope would hand its bytes to the model as image input.
@@ -1098,9 +1108,9 @@ function serializeToolResultPart(
     }
   } else {
     try {
-      content = JSON.stringify(result);
+      content = capToolText(JSON.stringify(result));
     } catch {
-      content = String(result);
+      content = capToolText(String(result));
     }
   }
 

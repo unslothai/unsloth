@@ -134,6 +134,51 @@ def mentions_images(result: str) -> bool:
     return ("\n" + SENTINEL) in result
 
 
+# An mcp result that claims images it cannot parse used to replay whole --
+# its megabytes of base64 as tool text. Fail closed instead.
+MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]"
+# Applied at the model boundary, not inside the strip: tools._split_frontend_suffix
+# recovers an envelope by subtracting the strip from the original, so the strip
+# stays suffix-only. Mirrors MAX_TOOL_TEXT_CHARS in mcp-images.ts.
+MAX_TOOL_TEXT_CHARS = 256_000
+_TOOL_TEXT_TRUNCATION_NOTICE = "\n\n[Tool result text truncated for the model; the full output is shown in the tool card.]"
+
+
+def cap_tool_text(text: str) -> str:
+    """Nothing past MAX_TOOL_TEXT_CHARS toward a model request. Cut at a line
+    break when one is near, so the notice starts fresh rather than mid-thought."""
+    if len(text) <= MAX_TOOL_TEXT_CHARS:
+        return text
+    room = MAX_TOOL_TEXT_CHARS - len(_TOOL_TEXT_TRUNCATION_NOTICE)
+    head = text[:room]
+    cut = head.rfind("\n")
+    if cut >= room // 2:
+        head = head[:cut]
+    return head + _TOOL_TEXT_TRUNCATION_NOTICE
+
+
+def sanitize_tool_text(result: str, tool_name: "str | None" = None) -> str:
+    """A valid envelope's payload comes off (it is IMAGE input, decided in
+    _promote); an mcp__ result that claims images the parser rejects is replaced
+    by a one-line notice. No cap here -- the strip must stay suffix-only."""
+    text, images = split_images(result)
+    if images:
+        return text
+    if tool_name is not None and tool_name.startswith(MCP_TOOL_PREFIX) and mentions_images(result):
+        logger.warning(
+            "Tool %r returned a result that mentions %r but does not parse into image "
+            "entries; %d chars withheld from the model.",
+            tool_name, SENTINEL, len(result),
+        )
+        return MCP_IMAGE_PARSE_ERROR_TEXT
+    return result
+
+
+def tool_text_for_model(result: str, tool_name: "str | None" = None) -> str:
+    """A tool result bound for a model: sanitize, then hard-cap."""
+    return cap_tool_text(sanitize_tool_text(result, tool_name))
+
+
 def _decoded_urls(
     images: Sequence[dict],
     limit: int = MAX_MODEL_IMAGES,
@@ -1160,19 +1205,34 @@ def _promote(
         content = message.get("content")
         if message.get("role") == "tool" and isinstance(content, str):
             text, images = split_images(content)
-            # The suffix always comes off -- it is megabytes of base64 and the model
-            # must never read it as text. Provenance decides only whether it becomes
-            # IMAGE input: a named non-MCP tool that happens to end in a valid
-            # envelope is not one an MCP server served.
             name = message.get("name") or call_names.get(position)
+            if not images:
+                if (
+                    name is None or name == "" or name.startswith(MCP_TOOL_PREFIX)
+                ) and mentions_images(content):
+                    logger.warning(
+                        "Replay of tool result (name=%r) mentions %r but does not parse "
+                        "into image entries; %d chars withheld from the model.",
+                        name, SENTINEL, len(content),
+                    )
+                    text = MCP_IMAGE_PARSE_ERROR_TEXT
+                else:
+                    text = cap_tool_text(content)
+            else:
+                text = cap_tool_text(text)
+            # The suffix always comes off below -- it is megabytes of base64 and the
+            # model must never read it as text. Provenance decides only whether it
+            # becomes IMAGE input: a named non-MCP tool that happens to end in a
+            # valid envelope is not one an MCP server served.
             if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
                 # A non-MCP result sitting between the images and their turn makes
                 # "the tool call above" name web_search or read_file.
                 if pending:
                     interrupted[0] = True
-                out.append(
-                    {**message, "content": text or "[image returned]"} if images else message
-                )
+                if images or text != content:
+                    out.append({**message, "content": text or "[image returned]"})
+                else:
+                    out.append(message)
                 continue
             if images:
                 # Only the entries the cap can still admit. The suffix comes off the
@@ -1192,7 +1252,10 @@ def _promote(
                 returned_totals.append(_returned_count(images))
             elif pending:
                 interrupted[0] = True
-            out.append({**message, "content": text or "[image returned]"} if images else message)
+            if images or text != content:
+                out.append({**message, "content": text or "[image returned]"})
+            else:
+                out.append(message)
             continue
         if pending and vision and message.get("role") == "user":
             # Merged, not inserted ahead of it: two user turns in a row is what
