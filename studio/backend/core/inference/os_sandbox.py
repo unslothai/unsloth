@@ -384,7 +384,6 @@ def model_library_roots() -> tuple[str, ...]:
     try:
         from . import tool_path_approval
         from utils.paths.storage_roots import well_known_model_dirs
-
         candidates = (
             *tool_path_approval._scan_folder_roots(),
             *well_known_model_dirs(),

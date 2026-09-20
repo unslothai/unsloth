@@ -1987,7 +1987,8 @@ def test_a_model_folder_that_is_a_system_directory_is_refused(monkeypatch):
     monkeypatch.setattr(tool_path_approval, "_scan_folder_roots", lambda: ("/etc", "/"))
     monkeypatch.setattr(
         "utils.paths.storage_roots.well_known_model_dirs",
-        lambda: (os.path.expanduser("~"),), raising = False,
+        lambda: (os.path.expanduser("~"),),
+        raising = False,
     )
 
     assert os_sandbox.model_library_roots() == ()
