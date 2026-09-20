@@ -11,6 +11,7 @@ owns an explicit cache snapshot for each operation instead of trying to refresh
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import shutil
 import tempfile
@@ -112,6 +113,38 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
     return HuggingFaceCachePaths(display_home, hub, xet, "environment", controlling)
 
 
+def _absence_is_real(path: Path) -> bool:
+    """Whether a FileNotFoundError for *path* proves the file is not there.
+
+    On POSIX it always does: a parent component that is a file raises NotADirectoryError, and a
+    parent that cannot be traversed raises PermissionError, both of which are their own types.
+    Windows collapses every one of those into ERROR_PATH_NOT_FOUND, which Python surfaces as
+    FileNotFoundError, so on Windows the exception means "not there, OR somewhere above it is not
+    a directory, OR I could not look" -- and the caller must only skip its read for the first.
+
+    Decided by the nearest ancestor that can actually be stat'ed: a directory means the tree is
+    real and the file genuinely is not in it; anything else means a component is a file or a
+    reparse point and the path could never have existed; an ancestor that cannot be inspected at
+    all is not proof either way, so it reads as "not proven". Running out of ancestors means
+    nothing along the path exists, which is the machine that has never opened Studio -- the case
+    the skip is FOR, so the absence is real there.
+    """
+    current = os.path.dirname(os.fspath(path))
+    while current:
+        try:
+            info = os.stat(current)
+        except FileNotFoundError:
+            parent = os.path.dirname(current)
+            if parent == current:
+                return True
+            current = parent
+            continue
+        except OSError:
+            return False
+        return stat.S_ISDIR(info.st_mode)
+    return True
+
+
 def _stored_cache_home() -> Optional[Path]:
     # get_app_setting CREATES and migrates studio.db, so an unconditional read built one on
     # machines that had never opened Studio. os.stat, not Path.exists: only a positively observed
@@ -121,10 +154,12 @@ def _stored_cache_home() -> Optional[Path]:
     try:
         if "storage.studio_db" not in sys.modules:
             from utils.paths.storage_roots import studio_db_path
+            database = studio_db_path()
             try:
-                os.stat(studio_db_path())
+                os.stat(database)
             except FileNotFoundError:
-                return None
+                if _absence_is_real(database):
+                    return None
     except Exception:  # noqa: BLE001 - fall through to the read on any doubt
         pass
     try:

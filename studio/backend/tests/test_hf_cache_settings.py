@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -347,7 +348,14 @@ def get_app_setting(key, fallback = None):
 """
 
 
-def _run_guard_probe(tmp_path, studio_home: Path, stored: Path) -> tuple[str | None, bool]:
+def _run_guard_probe(
+    tmp_path,
+    studio_home: Path,
+    stored: Path,
+    *,
+    probe: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[str | None, bool]:
     """Return (_stored_cache_home() answer, whether the database was read)."""
     fake = tmp_path / "fake_storage"
     (fake / "storage").mkdir(parents = True, exist_ok = True)
@@ -365,10 +373,11 @@ def _run_guard_probe(tmp_path, studio_home: Path, stored: Path) -> tuple[str | N
         UNSLOTH_STUDIO_HOME = str(studio_home),
         PYTHONPATH = "",
     )
+    environment.update(extra_env or {})
     for key in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_XET_CACHE"):
         environment.pop(key, None)
     result = subprocess.run(
-        [sys.executable, "-c", _GUARD_PROBE],
+        [sys.executable, "-c", probe if probe is not None else _GUARD_PROBE],
         capture_output = True,
         text = True,
         env = environment,
@@ -416,3 +425,64 @@ def test_uninspectable_studio_db_keeps_the_stored_cache_home(tmp_path, fixture):
     # unreadable_parent is the case 3.14 newly breaks; the other two hold on every release.
     assert was_read, "a database we could not inspect must still be read"
     assert answer == str(chosen)
+
+
+_WINDOWS_SHAPED_GUARD_PROBE = """
+import errno, json, os, sys
+
+# Windows reports a path whose PARENT is a file as ERROR_PATH_NOT_FOUND, which Python raises as
+# FileNotFoundError; POSIX raises NotADirectoryError. Reproduce the error shape, since the Linux
+# runners cannot produce it, and do it before hf_cache_settings is imported.
+_NOT_A_DIR = os.environ["NOT_A_DIRECTORY"]
+_real_stat = os.stat
+
+
+def _stat(path, *args, **kwargs):
+    text = os.fspath(path)
+    if text != _NOT_A_DIR and text.startswith(_NOT_A_DIR + os.sep):
+        raise FileNotFoundError(errno.ENOENT, "The system cannot find the path specified", text)
+    return _real_stat(path, *args, **kwargs)
+
+
+os.stat = _stat
+sys.path.insert(0, os.environ["FAKE_STORAGE"])
+sys.path.insert(1, os.environ["BACKEND_DIR"])
+from utils import hf_cache_settings
+
+assert "storage.studio_db" not in sys.modules, "the probe must exercise the skip"
+stored = hf_cache_settings._stored_cache_home()
+print(json.dumps({"stored": None if stored is None else str(stored)}))
+"""
+
+
+def test_a_studio_home_that_is_a_file_still_reads_the_database_on_windows(tmp_path):
+    """The POSIX arm of this is test_uninspectable_studio_db_keeps_the_stored_cache_home
+    [not_a_directory], which passes there because ENOTDIR is its own exception type. Windows
+    reports the same situation as FileNotFoundError, so the skip read it as "no database stored"
+    and discarded the cache home chosen in Settings -- on Windows and nowhere else. Caught by the
+    cross-platform leg, held here by reproducing the error shape rather than the platform.
+    """
+    studio_home = tmp_path / "root" / "studio"
+    studio_home.parent.mkdir(parents = True)
+    studio_home.write_text("", encoding = "utf-8")
+    chosen = tmp_path / "chosen"
+
+    answer, was_read = _run_guard_probe(
+        tmp_path, studio_home, chosen, probe = _WINDOWS_SHAPED_GUARD_PROBE,
+        extra_env = {"NOT_A_DIRECTORY": str(studio_home)},
+    )
+
+    assert was_read, "a studio home we could not inspect was read as no database"
+    assert answer == str(chosen)
+
+
+def test_a_studio_home_that_does_not_exist_still_skips_the_database_read(tmp_path):
+    """The other half. The fix above must not widen the skip into the case it exists for: a
+    machine that has never opened Studio has no studio/ directory at all, and falling through
+    there builds the 250 KB database this guard was added to avoid."""
+    studio_home = tmp_path / "never-created" / "studio"
+
+    answer, was_read = _run_guard_probe(tmp_path, studio_home, tmp_path / "chosen")
+
+    assert answer is None
+    assert not was_read, "an absent studio home must not open a database"
