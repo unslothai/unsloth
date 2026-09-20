@@ -1714,3 +1714,22 @@ def test_a_system_root_without_studio_state_is_still_bound_whole(monkeypatch, tm
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(elsewhere))
 
     assert sandbox_linux._without_studio_state((str(opt),)) == (str(opt),)
+
+
+def test_a_deeply_nested_studio_state_root_is_refused_not_restored(monkeypatch, tmp_path):
+    """The descent is bounded, and the bound must fail CLOSED.
+
+    Restoring an ancestor known to contain the state directory would hand over
+    auth/auth.db for a home buried deeper than the cutoff, which is the exact
+    opposite of what the descent exists to do.
+    """
+    from core.inference import sandbox_linux
+
+    opt = tmp_path / "opt"
+    state = opt / "a" / "b" / "c" / "d" / "studio"
+    (state / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    kept = sandbox_linux._without_studio_state((str(opt),), depth = 0)
+
+    assert kept == (), "an ancestor of the Studio auth database was bound anyway"
