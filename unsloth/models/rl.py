@@ -2588,6 +2588,19 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             arguments,
             count = 1,
         )
+        # The FIELD default carries the sentinel too. HfArgumentParser builds one argparse
+        # argument per `dataclasses.fields()` entry and always passes the value through
+        # (tests/version_compat/test_trl_loss_normalization_contract.py), so a signature-only
+        # sentinel makes every CLI run without `--max_length` arrive as an explicit 1024.
+        max_length_field = """max_length : Optional[int] = field(
+        default = _UNSLOTH_MAX_LENGTH_UNSET,
+        metadata = {'help': 'Maximum sequence length to truncate to.'},
+    )"""
+        max_seq_length_pre = (
+            max_length_field
+            if not max_seq_length_pre
+            else max_seq_length_pre + "\n    " + max_length_field
+        )
         extra_args += (
             "_unsloth_max_length_explicit = max_length is not _UNSLOTH_MAX_LENGTH_UNSET\n"
             "if not _unsloth_max_length_explicit:\n"

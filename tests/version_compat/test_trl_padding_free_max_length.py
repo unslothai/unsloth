@@ -288,6 +288,30 @@ def test_an_unnamed_max_length_still_defers_to_the_model(tmp_path, trl_has_guard
     assert cfg._unsloth_max_length_explicit is False
 
 
+def test_a_cli_default_is_not_mistaken_for_an_explicit_max_length(tmp_path):
+    """`HfArgumentParser` forwards every dataclass field, defaults included.
+
+    It builds one argparse argument per `dataclasses.fields()` entry, so a signature-only
+    sentinel leaves every CLI run without `--max_length` arriving as an explicit 1024 and
+    capping a larger model context. The FIELD default has to carry the sentinel too.
+    """
+    from transformers import HfArgumentParser
+    from trl import SFTConfig
+
+    parser = HfArgumentParser((SFTConfig,))
+    (bare,) = parser.parse_args_into_dataclasses(["--output_dir", str(tmp_path)])
+    assert bare.max_length == _trl_default_max_length(), "the sentinel reached the config"
+    assert (
+        bare._unsloth_max_length_explicit is False
+    ), "a CLI run that never named --max_length was recorded as having named it"
+
+    (named,) = parser.parse_args_into_dataclasses(
+        ["--output_dir", str(tmp_path), "--max_length", "2048"]
+    )
+    assert named.max_length == 2048
+    assert named._unsloth_max_length_explicit is True
+
+
 def test_the_cap_reads_an_explicit_max_length_not_a_positive_one():
     """The behavioural test above needs a TRL whose default is positive; this one does not."""
     from unsloth.models import rl
