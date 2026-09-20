@@ -31,16 +31,24 @@ HOST_PATH_SCALAR_FIELDS = frozenset(
         "snapshot_path",
         "local_path",
         "model_local_path",
-        "model_snapshot_path",
         "dataset_local_path",
-        "dataset_snapshot_path",
         "dataset_path",
         "tensorboard_dir",
     }
 )
 
 # Referenced, not blanked: blanking left `can_resume` true beside nothing to resume with.
-HOST_PATH_HANDLE_FIELDS = frozenset({"output_dir", "checkpoint_path", "resume_from_checkpoint"})
+# The two snapshot pins are here for the same reason one layer down. Resume replays the run's
+# config, and a blanked pin is FALSY, so the preflight stops pinning and re-resolves the newest
+# cached revision instead: the checkpoint then continues against different base weights, with no
+# warning, because a pin that was never asked for cannot go missing.
+HOST_PATH_HANDLE_FIELDS = frozenset({
+    "output_dir",
+    "checkpoint_path",
+    "resume_from_checkpoint",
+    "model_snapshot_path",
+    "dataset_snapshot_path",
+})
 
 # Scrubbed, not blanked: the only account of WHY a run failed.
 HOST_PATH_TEXT_FIELDS = frozenset({"error_message", "error", "detail", "message"})

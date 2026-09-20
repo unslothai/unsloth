@@ -778,7 +778,15 @@ def _request_model(name: str):
         ),
         (
             "TrainingStartRequest",
-            ("model_name", "resume_from_checkpoint"),
+            # The snapshot pins too: Resume replays the run's config, and a pin it cannot
+            # resolve is a pin it stops asking for, which re-resolves the newest cached
+            # revision and continues the checkpoint against different base weights.
+            (
+                "model_name",
+                "resume_from_checkpoint",
+                "model_snapshot_path",
+                "dataset_snapshot_path",
+            ),
             {"training_type": "LoRA/QLoRA", "format_type": "chat"},
         ),
         (
@@ -1402,6 +1410,12 @@ def test_a_training_run_does_not_carry_the_output_layout():
             "output_dir": REF,
             "checkpoint_path": REF,
             "resume_from_checkpoint": REF,
+            # Referenced, not blanked: a blanked pin is falsy, and Resume then silently
+            # continues from whatever revision is newest in the cache.
+            "model_snapshot_path": REF,
+            "dataset_snapshot_path": REF,
+            "model_local_path": "",
+            "dataset_local_path": "",
             "dataset_name": KEPT,
         },
     )

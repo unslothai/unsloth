@@ -460,27 +460,25 @@ def note_repo_fetched_with_a_request_token(
 
         key = _request_token_repo_key(repo_id, repo_type)
         recorded = _recorded_request_token_repos()
-        if isinstance(recorded, dict):
-            existing = recorded.get(key)
-            if isinstance(existing, dict) and key in recorded:
-                # The FIRST record stands, or a second credential claims what the first filled.
-                if existing.get("by") not in (None, fetched_by):
-                    _as_owner(
-                        upsert_app_setting_map_entry,
-                        _REQUEST_TOKEN_REPOS_SETTING_KEY,
-                        key,
-                        {"at": existing.get("at", time.time()), "by": None},
-                    )
-                return
+        if isinstance(recorded, dict) and key not in recorded:
             # Bounded: the repo id is caller-supplied. A miss in a FULL map means "cannot say".
+            # Advisory only, since the map can gain an entry between this read and the write;
+            # overshooting the bound by a handful of entries is harmless, refusing to record a
+            # fetch is not.
             if len(recorded) >= _REQUEST_TOKEN_REPOS_MAX:
                 logger.debug("the request-token provenance map is full; not recording %s", key)
                 return
+        # The first record stands, and a second credential claiming what the first filled
+        # collapses the attribution. Decided INSIDE the write's transaction: two requests with
+        # different credentials for the same uncached repo both read "absent" otherwise, and the
+        # last writer then stores its own identity where the truth is "two of them could have".
         _as_owner(
             upsert_app_setting_map_entry,
             _REQUEST_TOKEN_REPOS_SETTING_KEY,
             key,
             {"at": time.time(), "by": fetched_by},
+            keep_first_writer = True,
+            ambiguous_field = "by",
         )
     except Exception:  # noqa: BLE001 -- a download must never fail on its own bookkeeping
         logger.debug("could not record the credential a download used", exc_info = True)

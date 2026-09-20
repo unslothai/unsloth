@@ -203,20 +203,38 @@ def writes(monkeypatch) -> list:
     return seen
 
 
+class _LiveProvenance:
+    """Read-only view of the provenance map as the writer actually left it."""
+
+    def __getitem__(self, key):
+        return (hf_tokens._recorded_request_token_repos() or {})[key]
+
+    def get(self, key, default = None):
+        return (hf_tokens._recorded_request_token_repos() or {}).get(key, default)
+
+    def __contains__(self, key):
+        return key in (hf_tokens._recorded_request_token_repos() or {})
+
+    def __len__(self):
+        return len(hf_tokens._recorded_request_token_repos() or {})
+
+
 @pytest.fixture
-def provenance(monkeypatch) -> dict:
-    """A real provenance map the writer fills, so the READ side is asked about a record this
-    code wrote rather than one the test spelled out itself."""
-    recorded: dict = {}
+def provenance(monkeypatch) -> _LiveProvenance:
+    """The REAL setting store, under this test's own studio home (conftest isolates it).
+
+    Not an in-memory stand-in any more: the first-writer rule and the collapse to an ambiguous
+    `by` now happen inside the write's own transaction, because two requests holding different
+    credentials for the same uncached repo otherwise both read "absent" and the second stores
+    its own identity over the first. A fake `as_owner` that just assigns would be the test
+    re-implementing the thing under test, and would pass however the race goes."""
     _hf_state(
         monkeypatch,
         credentials = (True, (HOST_CREDENTIAL,)),
         no_other_held = True,
         present = True,
-        recorded = recorded,
-        as_owner = lambda call, _key_unused, entry, value: recorded.__setitem__(entry, value),
     )
-    return recorded
+    return _LiveProvenance()
 
 
 def _counting_probe(
@@ -1011,13 +1029,25 @@ def test_the_route_entry_guard_leaves_online_behaviour_exactly_as_it_was(monkeyp
     assert probes["n"] == 0
 
 
-def test_a_repo_already_recorded_is_not_written_again(monkeypatch, writes):
-    _hf_state(monkeypatch, recorded = {_key("acme/private"): {"at": 1.0}})
+def test_a_repo_already_recorded_keeps_the_record_the_first_writer_left(provenance):
+    """Asserted on the STORED value rather than on whether a write was attempted: the first-writer
+    rule lives inside the transaction now, so a second call reaching the store is expected and it
+    is what the store does with it that matters."""
+    _noted(ONE_OFF, "acme/private")
+    first = provenance[_key("acme/private")]
+    assert first["by"] == hf_tokens._credential_identity(ONE_OFF)
 
+    _noted(ONE_OFF, "acme/private")
+    assert provenance[_key("acme/private")] == first, "the same credential rewrote its own record"
+
+    # A DIFFERENT credential does not take it over; it makes the record say "cannot attribute".
     _noted("hf_someoneelses", "acme/private")
-    assert writes == []
-    _noted("hf_someoneelses", "acme/other")
-    assert len(writes) == 1
+    again = provenance[_key("acme/private")]
+    assert again["by"] is None
+    assert again["at"] == first["at"], "the collapse rewrote the timestamp of the first fetch"
+
+    _noted(ONE_OFF, "acme/other")
+    assert provenance[_key("acme/other")]["by"] == hf_tokens._credential_identity(ONE_OFF)
 
 
 def test_the_provenance_map_is_bounded_and_says_so_when_it_is_full(monkeypatch, writes):
