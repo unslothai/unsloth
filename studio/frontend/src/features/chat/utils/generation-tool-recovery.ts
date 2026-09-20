@@ -103,12 +103,52 @@ function recoveredToolResult(
   return text;
 }
 
+/** How a reopened tab re-arms a tool call that is still waiting on a human.
+ *
+ *  The live stream registers a parked call with the confirmation store, and `ToolConfirmationControls`
+ *  renders Approve/Deny only for a card that has an entry there. Recovery rebuilds the card but has no
+ *  store of its own, so without this the reopened tab shows the call spinning with no way to answer it
+ *  while the backend sits parked -- see `state/tool_approvals.wait_tool_decision`, which waits for the
+ *  returning session precisely so that tab can answer.
+ *
+ *  Passed in rather than imported so this module stays a pure util: the caller owns the store. Both
+ *  calls must be idempotent -- a card can be re-raised from the seed AND re-folded from its frame. */
+export type RecoveredToolConfirmations = {
+  /** This card is waiting on a decision. `partId` is the card's own `toolCallId`, which is what the
+   *  controls look themselves up by, whichever path minted it. `sessionId` is the run's sandbox
+   *  session, which the decision is resolved against and which scopes "Always allow". */
+  register: (partId: string, approvalId: string, sessionId: string) => void;
+  /** It is no longer waiting: answered, denied, timed out, or finished. */
+  resolve: (partId: string) => void;
+};
+
 export function createGenerationToolRecovery(
   carried: CarriedPart[],
   runId: string,
   snapshotSeq = 0,
+  toolConfirmations?: RecoveredToolConfirmations,
 ) {
   const pending = new Map<string, CarriedPart>();
+  /** Arm the card a frame or a seed says is parked. Reads the id off the part rather than taking one,
+   *  so the seed path and the fold path cannot disagree about which card is being armed. */
+  /** Cards this recovery armed, so it only ever resolves its own. The live adapter clears
+   *  unconditionally because it owns every card in its stream; a recovery shares the store with
+   *  whatever else is on screen, so reaching for a card it never raised is not its business. */
+  const armed = new Set<string>();
+  const armApproval = (entry: CarriedPart, approvalId: unknown, sessionId: string) => {
+    if (!toolConfirmations || typeof approvalId !== "string" || !approvalId) return;
+    const partId = record(entry.part)?.toolCallId;
+    if (typeof partId === "string" && partId) {
+      armed.add(partId);
+      toolConfirmations.register(partId, approvalId, sessionId);
+    }
+  };
+  const disarmApproval = (entry: CarriedPart) => {
+    const partId = record(entry.part)?.toolCallId;
+    if (!toolConfirmations || typeof partId !== "string" || !armed.has(partId)) return;
+    armed.delete(partId);
+    toolConfirmations.resolve(partId);
+  };
   const researchHandoff = newDeepResearchHandoff();
   /** The sources a finished search card yields, parsed once per card rather than per publish.
    *  Every rebuild used to re-run the parse over every finished search result in the turn,
@@ -176,6 +216,24 @@ export function createGenerationToolRecovery(
       pending.set(id || `#idless:saved:${savedIdless++}`, entry);
     }
   }
+  /** Re-arm every call that parked BEFORE the tab closed.
+   *
+   *  Such a call was saved as an unresolved card and its `tool_start` sits at or below the cursor, so
+   *  no frame re-folds it and the fold's own registration never fires for it: the seed is the only
+   *  place it still exists. Called by the follower once the run's session is known rather than at
+   *  construction, because the decision is resolved against that session. A call whose `tool_start`
+   *  lands above the cursor arms itself as the frame folds; `register` is idempotent, so both paths
+   *  can name the same pair without raising two cards. */
+  const armSeededApprovals = (sessionId: unknown) => {
+    if (!toolConfirmations) return;
+    for (const entry of savedPending) {
+      armApproval(
+        entry,
+        record(entry.part)?.toolApprovalId,
+        typeof sessionId === "string" ? sessionId : "",
+      );
+    }
+  };
   const replayFrom = savedPending.some(
     (entry) => typeof record(entry.part)?.backendToolCallId !== "string",
   )
@@ -371,6 +429,11 @@ export function createGenerationToolRecovery(
       pending.set(backendId || `#idless:${runId}:${seq}`, entry);
       if (backendId) completed.delete(backendId);
       else lastIdless = undefined;
+      // The frame says this call is waiting on a human, so the card must offer the decision here too:
+      // the backend parks for the returning session, and this tab IS the returning session.
+      if (event.awaiting_confirmation === true) {
+        armApproval(entry, event.approval_id, sessionId);
+      }
       return;
     }
     if (!entry) {
@@ -408,6 +471,10 @@ export function createGenerationToolRecovery(
         pending.delete(id);
       }
     }
+    // The call is answered, denied, or timed out: the card now has a result, so the decision is gone.
+    // Unconditional, as the live path's clearToolConfirmation is: a card that was never armed resolves
+    // to a no-op, and a card left armed would offer buttons over a finished result.
+    disarmApproval(entry);
     if (backendId) completed.set(backendId, entry);
     else lastIdless = entry;
   };
@@ -431,5 +498,5 @@ export function createGenerationToolRecovery(
     }
     return out;
   };
-  return { replayFrom, apply, withSources };
+  return { replayFrom, apply, withSources, armSeededApprovals };
 }

@@ -868,7 +868,23 @@ function scheduleGenerationRecovery(
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
     const stored = generationRawContent(storedMessage.content);
     const carried = stored.carried;
-    const toolRecovery = createGenerationToolRecovery(carried, runId, cursor);
+    // A durable tool turn can be parked on an approval when the tab closes; the backend keeps waiting
+    // for the returning session, so this tab has to be able to answer. Keyed and scoped exactly as the
+    // live stream keys it (chat-adapter's toolConfirmationScopeId), so a card armed here and a card
+    // armed there are the same card to the store and to "Always allow".
+    const toolRecovery = createGenerationToolRecovery(carried, runId, cursor, {
+      register: (partId, approvalId, sessionId) =>
+        useChatRuntimeStore
+          .getState()
+          .setToolConfirmation(
+            partId,
+            approvalId,
+            sessionId,
+            `${sessionId || "_default"}:${threadId}`,
+          ),
+      resolve: (partId) =>
+        useChatRuntimeStore.getState().clearToolConfirmation(partId),
+    });
     let { raw, reasoningOpen } = stored;
     let completionTokens: number | undefined;
     let recoveryUsage:
@@ -1043,6 +1059,10 @@ function scheduleGenerationRecovery(
                 raw = lastRequestMessage.content;
               }
             }
+            // The run's session is known now, and the decision is resolved against it. A call that
+            // parked before the tab closed has no frame left to re-fold, so this is the only thing
+            // that puts its Approve/Deny back in front of the user.
+            toolRecovery.armSeededApprovals(update.run.requestPayload?.session_id);
             identityValidated = true;
           }
           // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
