@@ -26,11 +26,9 @@ pub(crate) fn is_supported_install() -> bool {
         && fs::metadata(INSTALLED_BINARY)
             .is_ok_and(|metadata| metadata.uid() == 0 && metadata.mode() & 0o022 == 0)
         && Path::new("/usr/bin/pkexec").is_file()
-        // The package manager this drives, checked for the same reason install.rs checks it
-        // before offering first-run dependency elevation: bundle_type() is baked into the
-        // binary, so a .deb unpacked onto a non-apt distro by hand or by alien still reports
-        // Deb, and without this the app offers an in-app update that dies on the first
-        // dpkg-query with "No such file or directory" instead of pointing at the release page.
+        // bundle_type() is baked into the binary, so a .deb unpacked onto a non-apt distro by
+        // hand or by alien still reports Deb: without this the app offers an update that dies
+        // on the first dpkg-query. install.rs checks apt-get before elevating for the same reason.
         && Path::new("/usr/bin/apt-get").is_file()
 }
 
@@ -101,13 +99,9 @@ pub(crate) fn run_installer() -> Option<Result<(), String>> {
 
 fn install_verified_package(bytes: Vec<u8>, signature: &str, version: &str) -> Result<(), String> {
     crate::desktop_updater::verify_bundle_signature(&bytes, signature)?;
-    // root owns both the verified bytes and the directory used by the package manager,
-    // and 0700 is stated rather than inherited: tempfile creates directories 0777 masked
-    // by the umask, which pkexec passes through from the calling session untouched. At
-    // umask 000 that is a world-writable directory holding the package between this
-    // verification and apt reading it back, so another local user can unlink the verified
-    // file and put their own there. Same reasoning for the file itself, which would
-    // otherwise be 0666 masked.
+    // Stated, not inherited: tempfile creates directories 0777 masked by the umask, and pkexec
+    // passes the calling session's umask through untouched. At umask 000 another local user can
+    // unlink the verified package and put their own there before apt reads it back.
     let directory = tempfile::Builder::new()
         .prefix("unsloth-update-")
         .permissions(fs::Permissions::from_mode(0o700))

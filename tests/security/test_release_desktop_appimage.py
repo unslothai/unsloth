@@ -698,15 +698,10 @@ def test_managed_appimage_children_preserve_host_library_paths():
 
 
 def test_the_deb_ships_the_polkit_action_in_app_debian_updates_authenticate_with():
-    # In-app Debian updates run /usr/bin/unsloth-studio as root through the polkit action
-    # ai.unsloth.studio.update, and the only thing that puts that action on disk is this
-    # bundle.linux.deb.files mapping. Drop it and nothing fails: is_supported_install() still
-    # returns true, pkexec finds no action for the binary, and every update quietly falls back
-    # to the release page. The AppImage files map above is pinned for the same reason.
-    #
-    # desktop-app-clean-machine-ci.yml asserts the packaged result with dpkg -L, which is the
-    # stronger check but only runs on a non-fork pull request, so it cannot gate a staging
-    # replica. This one runs everywhere tests/security runs.
+    # Only this files mapping puts the polkit action on disk, and dropping it fails nothing:
+    # is_supported_install() still returns true and every update silently falls back to the
+    # release page. The dpkg -L check in desktop-app-clean-machine-ci.yml is stronger but runs
+    # only on a non-fork pull request, so it cannot gate a staging replica.
     config = json.loads(
         (REPO_ROOT / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
     )
@@ -718,11 +713,10 @@ def test_the_deb_ships_the_polkit_action_in_app_debian_updates_authenticate_with
     policy = REPO_ROOT / "studio/src-tauri/linux" / files[action].removeprefix("./linux/")
     source = policy.read_text(encoding = "utf-8")
     assert '<action id="ai.unsloth.studio.update">' in source
-    # auth_admin on all three implicit cases is what makes an update prompt, rather than
-    # either elevating silently or refusing outright.
+    # auth_admin on all three implicit cases is what prompts instead of elevating silently.
     assert source.count("auth_admin") == 3
-    # The annotations are the whole reason this is narrower than a plain pkexec call: polkit
-    # pins the program and its first argument, so the action cannot run anything else.
+    # The annotations are what makes this narrower than a plain pkexec call: polkit pins the
+    # program and its first argument, so the action cannot run anything else.
     assert (
         '<annotate key="org.freedesktop.policykit.exec.path">/usr/bin/unsloth-studio</annotate>'
         in source
@@ -731,8 +725,8 @@ def test_the_deb_ships_the_polkit_action_in_app_debian_updates_authenticate_with
         '<annotate key="org.freedesktop.policykit.exec.argv1">--install-debian-update</annotate>'
         in source
     )
-    # The pinned path has to be where the deb actually puts the binary, which tauri derives
-    # from the crate name, and the argument has to be the one main.rs dispatches on.
+    # Those two pins must match what tauri derives from the crate name and what main.rs
+    # dispatches on, or polkit refuses every update.
     cargo = (REPO_ROOT / "studio/src-tauri/Cargo.toml").read_text(encoding = "utf-8")
     assert 'name = "unsloth-studio"' in cargo
     debian_update = (REPO_ROOT / "studio/src-tauri/src/debian_update.rs").read_text(
