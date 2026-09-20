@@ -795,3 +795,27 @@ def test_an_inherited_zero_or_junk_names_no_launch_total(monkeypatch):
             0, launch_cmd = ["llama-server"], launch_env = {"LLAMA_ARG_CTX_SIZE": bad}
         )
         assert inst.launch_context_length is None, bad
+
+
+def test_an_explicit_zero_ctx_flag_is_not_answered_by_the_environment(monkeypatch):
+    """`-c 0` is llama.cpp's "pick one for me" and argv is parsed after the
+    environment, so an inherited LLAMA_ARG_CTX_SIZE must not answer for it.
+
+    Measured on llama-server b11057: LLAMA_ARG_CTX_SIZE=8192 with `-c 0` on the
+    argv allocates n_ctx_slot 40960, the model's native window, not 8192. So
+    reporting 8192 would both misstate the launch total and hand clients a fixed
+    size to replay for a launch that explicitly asked to be sized automatically.
+    """
+    for flag in (["-c", "0"], ["--ctx-size", "0"]):
+        _stub_endpoints(
+            monkeypatch,
+            props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 40960}}),
+        )
+        inst = _make_backend(effective_ctx = 40960)
+        inst._reconcile_effective_ctx_with_server(
+            0,
+            launch_cmd = ["llama-server", *flag],
+            launch_env = {"LLAMA_ARG_CTX_SIZE": "8192"},
+        )
+        assert inst.launch_context_length is None, flag
+        assert inst.pre_fit_context_length is None, flag

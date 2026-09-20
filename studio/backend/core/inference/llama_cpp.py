@@ -3960,9 +3960,13 @@ def _launch_ctx_from_args(
         override = parse_ctx_override(args)
     except ValueError:
         return None
-    if override:
+    # `is not None`, not truthiness: parse_ctx_override returns None for "argv
+    # named nothing" and 0 for an EXPLICIT `-c 0`, and conflating them lets an
+    # inherited value answer for a launch that asked for automatic sizing.
+    # Measured on b11057: LLAMA_ARG_CTX_SIZE=8192 with `-c 0` on the argv
+    # allocates 40960, the native window, so argv wins and 0 names no total.
+    if override is not None:
         return override if override > 0 else None
-    # Only when argv named nothing: an explicit flag outranks the environment.
     return _positive_int_n_ctx(((env or {}).get("LLAMA_ARG_CTX_SIZE") or "").strip())
 
 
