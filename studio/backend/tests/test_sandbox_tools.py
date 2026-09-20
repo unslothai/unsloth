@@ -2439,9 +2439,7 @@ class TestAliasedNetworkCalls:
     @pytest.mark.parametrize(
         "code",
         [
-            pytest.param(
-                f'import requests as r\nr.get("{_METADATA_URL}")', id = "module_alias"
-            ),
+            pytest.param(f'import requests as r\nr.get("{_METADATA_URL}")', id = "module_alias"),
             pytest.param(
                 f'from requests import get as fetch\nfetch("{_METADATA_URL}")',
                 id = "from_import_alias",
@@ -2457,9 +2455,7 @@ class TestAliasedNetworkCalls:
                 f'from urllib import request as rq\nrq.urlopen("{_METADATA_URL}")',
                 id = "urllib_submodule_alias",
             ),
-            pytest.param(
-                f'import httpx as hx\nhx.get("{_METADATA_URL}")', id = "httpx_module_alias"
-            ),
+            pytest.param(f'import httpx as hx\nhx.get("{_METADATA_URL}")', id = "httpx_module_alias"),
         ],
     )
     def test_aliased_call_still_policed_blocked(self, code):
@@ -2602,9 +2598,7 @@ class TestOpaqueUrlTargets:
             pytest.param(
                 'import os, requests\nrequests.get(os.environ["TARGET"])', id = "env_var_target"
             ),
-            pytest.param(
-                "import requests\nrequests.get(input())", id = "user_input_target"
-            ),
+            pytest.param("import requests\nrequests.get(input())", id = "user_input_target"),
             pytest.param(
                 'import requests\nrequests.get(f"{input()}/latest")', id = "fstring_dynamic_host"
             ),

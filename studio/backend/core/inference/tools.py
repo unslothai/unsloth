@@ -16190,7 +16190,11 @@ def _check_signal_escape_patterns(code: str):
                 self.strings[name] = value
             return self
 
-    def _static_str_prefix(node, bindings, seen = None) -> "tuple[str, bool]":
+    def _static_str_prefix(
+        node,
+        bindings,
+        seen = None,
+    ) -> "tuple[str, bool]":
         """``(text, is_complete)``: the longest statically known leading part of *node* as a string,
         and whether the whole value is known. An f-string keeps its literal prefix so
         ``f"https://duckduckgo.com/?q={q}"`` still resolves to a host."""
