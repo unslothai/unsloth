@@ -9543,6 +9543,45 @@ def _read_orphan_record(kind: str, record_id: str) -> "dict | None":
     return record if isinstance(record, dict) and record.get("path") else None
 
 
+def retired_workspace_is_referenced(project_id: str, root_path: "str | None") -> bool:
+    """Whether a fork still points at a workspace retired under this managed root.
+
+    A project that started managed, filled its workspace and was then switched to a
+    folder of the user's leaves that managed root on disk with a retired session
+    naming it. The delete path for such a project decided on ownership alone, so a
+    fork whose cards still resolve through that session lost its files. The managed
+    branch of the same delete already asks this question; this is the same question
+    for the root the rotation left behind.
+
+    Unreadable records count as referenced: keeping files nobody wants costs disk,
+    and deleting files somebody is still reading costs the files.
+    """
+    if not root_path:
+        return False
+    try:
+        from storage.studio_db import sandbox_is_referenced_elsewhere
+
+        wanted = os.path.normcase(os.path.realpath(root_path))
+        for _, record in _project_orphan_records():
+            if str(record.get("id")) != str(project_id):
+                continue
+            recorded = record.get("rootPath")
+            if not recorded or os.path.normcase(os.path.realpath(str(recorded))) != wanted:
+                continue
+            session = str(
+                record.get("sessionId") or f"{_PROJECT_SESSION_PREFIX}{project_id}"
+            )
+            if sandbox_is_referenced_elsewhere(session):
+                return True
+        return False
+    except Exception:
+        logger.warning(
+            "Could not tell whether a retired workspace of %s is referenced",
+            project_id, exc_info = True,
+        )
+        return True
+
+
 def _project_orphan_records() -> "list[tuple[str, dict]]":
     import json as _json
 

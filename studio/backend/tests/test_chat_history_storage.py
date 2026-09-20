@@ -2358,3 +2358,57 @@ def test_a_referenced_kept_folder_is_not_adopted_out_from_under_a_fork(
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda item: False)
     changed, result = tools.adopt_orphaned_workspace_when_idle(str(folder), lambda: "adopted")
     assert changed and result == "adopted"
+
+
+def test_a_fork_keeps_the_managed_files_a_switch_left_behind(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """Managed, filled, switched to a folder of the user's, then deleted with files.
+
+    The managed root the switch retired is still named by a fork's cards. The managed
+    branch of this delete asks `sandbox_is_referenced_elsewhere` first; this branch
+    decided on ownership alone and took the fork's files with it.
+    """
+    from core.inference import tools
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    chosen = workspace_projects_home / "chosen-later"
+    chosen.mkdir()
+
+    project = studio_db.upsert_chat_project(_project())
+    studio_db.ensure_chat_project_workspace(project["id"])
+    managed = studio_db.get_chat_project(project["id"])
+    managed_root = Path(managed["rootPath"])
+    retired_session = tools.project_session_id(project["id"])
+    made_while_managed = Path(managed["sandboxPath"]) / "the-forks-plot.png"
+    made_while_managed.write_bytes(b"still on a fork's card")
+
+    studio_db.set_chat_project_workspace(project["id"], external_workspace_path = str(chosen))
+
+    # The fork is not one of the ids this delete removes, so its reference is the
+    # only thing standing between those files and the rmtree.
+    monkeypatch.setattr(
+        studio_db, "sandbox_is_referenced_elsewhere",
+        lambda item, *_rest: item == retired_session,
+    )
+    assert tools.retired_workspace_is_referenced(project["id"], str(managed_root)) is True
+
+    # ... and the delete route, driven for real, leaves those files alone.
+    import asyncio
+
+    from routes import chat_history
+
+    def run_delete():
+        monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda request, ids: None)
+        monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda ids: None)
+        monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda pid: None)
+        return asyncio.new_event_loop().run_until_complete(
+            chat_history.delete_project(
+                project["id"], request = None, delete_files = True, current_subject = "t",
+            )
+        )
+
+    run_delete()
+    assert made_while_managed.exists(), (
+        "the delete took files a fork still has cards for"
+    )

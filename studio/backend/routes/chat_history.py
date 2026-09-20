@@ -1364,6 +1364,7 @@ async def delete_project(
         from core.inference.tools import (
             forget_orphaned_project_if_gone,
             live_project_ownership,
+            retired_workspace_is_referenced,
         )
         from storage.studio_db import (
             _project_workspace_identity,
@@ -1401,16 +1402,22 @@ async def delete_project(
         if managed_remains and ownership is not True:
             import uuid
 
+            # A fork of this project can still be showing cards for the workspace the
+            # switch to an external folder retired. The managed branch below asks the
+            # same question before removing anything; without it here those files go.
+            retired_referenced = await run_in_threadpool(
+                retired_workspace_is_referenced, project_id, managed_root_path
+            )
             cleanup_session = f"workspace-cleanup-{uuid.uuid4().hex}"
             await run_in_threadpool(
                 record_orphaned_project_if_unowned,
                 project_id,
                 managed_sandbox_path,
-                delete_files,
+                delete_files and not retired_referenced,
                 managed_root_path,
                 cleanup_session,
             )
-            if delete_files and ownership is False:
+            if delete_files and ownership is False and not retired_referenced:
                 await run_in_threadpool(delete_chat_project_workspace, managed_project)
                 await run_in_threadpool(
                     forget_orphaned_project_if_gone,
