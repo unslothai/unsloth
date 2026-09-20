@@ -1836,7 +1836,7 @@ def test_a_cache_configured_as_a_home_directory_is_not_shared(monkeypatch, tmp_p
     settings = types.ModuleType("utils.hf_cache_settings")
     settings.get_hf_cache_paths = lambda: types.SimpleNamespace(
         cache_home = str(models),
-        hub_cache = str(home),          # the home itself
+        hub_cache = str(home),  # the home itself
         xet_cache = str(models / "xet"),
     )
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
