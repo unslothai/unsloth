@@ -63,15 +63,16 @@ def test_invalid_api_type_is_rejected(schema):
 
 
 @pytest.mark.parametrize(
-    "provider_type,api_type,endpoint",
+    "provider_type,api_type,endpoint,query",
     [
-        ("custom", "responses", "responses"),
-        ("custom", "chat_completions", "chat/completions"),
-        ("vllm", "responses", "chat/completions"),
-        ("openai", "chat_completions", "responses"),
+        ("custom", "responses", "responses", ""),
+        ("custom", "responses", "responses", "?api-version=2025-04-01-preview"),
+        ("custom", "chat_completions", "chat/completions", ""),
+        ("vllm", "responses", "chat/completions", ""),
+        ("openai", "chat_completions", "responses", ""),
     ],
 )
-def test_endpoint_and_payload_translation(monkeypatch, provider_type, api_type, endpoint):
+def test_endpoint_and_payload_translation(monkeypatch, provider_type, api_type, endpoint, query):
     requests = []
 
     def handle(request):
@@ -96,7 +97,7 @@ def test_endpoint_and_payload_translation(monkeypatch, provider_type, api_type, 
         async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
             monkeypatch.setattr(ep, "_http_client", transport)
             client = ExternalProviderClient(
-                provider_type, "https://gateway.example/v1", "test-key", api_type = api_type
+                provider_type, f"https://gateway.example/v1{query}", "test-key", api_type = api_type
             )
             return [
                 line
@@ -124,6 +125,7 @@ def test_endpoint_and_payload_translation(monkeypatch, provider_type, api_type, 
     lines = asyncio.run(run())
     assert len(requests) == 1
     assert requests[0].url.path == f"/v1/{endpoint}"
+    assert requests[0].url.query.decode() == query.lstrip("?")
     assert requests[0].headers["authorization"] == "Bearer test-key"
     body = json.loads(requests[0].content)
     assert "Hello" in "".join(lines)

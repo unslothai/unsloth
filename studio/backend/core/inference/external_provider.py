@@ -5348,7 +5348,7 @@ class ExternalProviderClient:
         if responses_tool_choice is not None:
             body["tool_choice"] = responses_tool_choice
 
-        url = f"{self.base_url}/responses"
+        url = _append_provider_path(self.base_url, "/responses")
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"
 
         logger.info("Proxying OpenAI Responses API to %s (model=%s)", url, model)
