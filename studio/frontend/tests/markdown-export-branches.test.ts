@@ -34,6 +34,7 @@ type Exporters = {
     projectId: string,
     title: string,
   ) => Promise<string>;
+  exportConversationCsv: (threadId: string) => Promise<void>;
 };
 
 const SOURCE = readSrc(
@@ -75,7 +76,7 @@ function loadExporters(
         "export async function exportConversationCsv(",
         "export async function saveChatItemAsProjectSource(",
       ),
-      "globalThis.__exporters = { buildConversationMarkdownForThread, exportConversationMarkdown, saveConversationAsProjectSource };",
+      "globalThis.__exporters = { buildConversationMarkdownForThread, exportConversationMarkdown, saveConversationAsProjectSource, exportConversationCsv };",
     ].join("\n"),
     {
       compilerOptions: {
@@ -164,6 +165,17 @@ test("Markdown leaves out the reply a regeneration replaced", async () => {
     downloads: [expected],
     sources: [expected],
   });
+});
+
+// The markdown paths moving to the displayed branch must not drag CSV along: a spreadsheet of
+// every version is the one export people use to compare them.
+test("CSV still writes both replies while markdown writes one", async () => {
+  const downloads: string[] = [];
+  const exporters = loadExporters(regenerated, downloads, []);
+  await exporters.exportConversationCsv("thread");
+  assert.deepEqual(downloads, [
+    "role,content\nuser,Name one fruit.\nassistant,Pears.\nassistant,Apples.",
+  ]);
 });
 
 test("Markdown follows the prompt version on screen", async () => {
