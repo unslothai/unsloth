@@ -212,7 +212,7 @@ jobs:
         # SIGKILL 60s later. Expect a stuck FRAME, not always a test name.
         #
         # The --ignore flags and the -k filter stay HERE rather than in the matrix: they are
-        # the selection every shard inherits, so one copy is what makes "the twelve serial
+        # the selection every shard inherits, so one copy is what makes "the thirteen serial
         # files are ignored by every parallel shard" a property of the step rather than
         # three lists that have to agree. Shards differ only in `${{ matrix.selection }}`.
         run: |
@@ -231,6 +231,7 @@ jobs:
             --ignore=tests/test_anthropic_messages.py \
             --ignore=tests/test_profile_stats.py \
             --ignore=tests/test_media_auto_switch.py \
+            --ignore=tests/test_pr5624_regressions.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
@@ -253,7 +254,8 @@ jobs:
             tests/test_scan_loras_off_event_loop.py \
             tests/test_anthropic_messages.py \
             tests/test_profile_stats.py \
-            tests/test_media_auto_switch.py
+            tests/test_media_auto_switch.py \
+            tests/test_pr5624_regressions.py
 
       - name: Pre-3.12 branches, on the newest interpreter that takes them
         if: matrix.scope == 'floor-spot-check'

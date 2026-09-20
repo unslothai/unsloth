@@ -218,7 +218,9 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
-        <span className="flex min-w-0 flex-1 items-baseline">
+        {/* Hellix carries more descent than the caps use, so a box-centred label reads ~0.05em
+            low against the icons. Lift name and description together to keep their baseline. */}
+        <span className="relative -top-[0.05em] flex min-w-0 flex-1 items-baseline">
           <span
             className={cn(
               "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white",
