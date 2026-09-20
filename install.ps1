@@ -6924,6 +6924,9 @@ exit 0
     # The existing interpreter's platform tag, read before any rollback move takes it away.
     $script:PrevVenvPlatformTag = $null
     $script:StudioVenvRollbackActive = $false
+    # Set only by --no-rollback, so a branch that needs the previous tree can tell
+    # "already deleted on purpose" from "not moved aside yet".
+    $script:StudioVenvRollbackDiscarded = $false
     $script:StudioVenvRollbackPartial = $false
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
     $script:PrevTorchVer = ""
@@ -7096,6 +7099,9 @@ exit 0
             $discard = $script:StudioVenvRollbackDir
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackDir = $null
+            # Distinct from "never started". Inactive alone cannot tell the two apart, and the
+            # ARM64 migration below reads it to decide whether it still has a tree to move.
+            $script:StudioVenvRollbackDiscarded = $true
             Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment" | Out-Null
             substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
             return
@@ -7456,7 +7462,14 @@ exit 0
         substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
         substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
         try {
-            if ($script:StudioVenvRollbackActive) {
+            if ($script:StudioVenvRollbackDiscarded) {
+                # --no-rollback already deleted it. There is nothing to move and nothing to
+                # keep, and calling Start-StudioVenvRollback here would try to rename a
+                # directory that is gone, throw, and take the whole migration out through
+                # Exit-InstallFailure -- after the environment had already been destroyed.
+                substep "the previous ARM64 environment was discarded by --no-rollback, so there is" "Yellow"
+                substep "nothing to copy packages out of; the x64 environment is built fresh." "Yellow"
+            } elseif ($script:StudioVenvRollbackActive) {
                 # The ordinary reinstall already moved this environment aside; a second
                 # Start-StudioVenvRollback would try to move a directory that is no longer
                 # there and throw, taking every architecture migration out through

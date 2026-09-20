@@ -218,6 +218,39 @@ try {
     }
     $script:StudioNoRollback = $false
 
+    Write-Host "--no-rollback tells the ARM64 migration the tree is gone (#11313)"
+    # The migration branch decides what to do from the rollback state. Before this was tracked
+    # separately, --no-rollback left it merely "inactive", which that branch reads as "not moved
+    # aside yet", so it called Start-StudioVenvRollback on a directory --no-rollback had already
+    # deleted. Move-Item threw and the install exited through Exit-InstallFailure, having already
+    # destroyed the environment. The flag has to distinguish discarded from never-started.
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+    Reset-RollbackState $VenvDir
+    $script:StudioVenvRollbackDiscarded = $false
+    $script:StudioNoRollback = $true
+    Start-StudioVenvRollback -ExistingDir $VenvDir
+    Check "--no-rollback records that the tree was discarded" ($script:StudioVenvRollbackDiscarded)
+    Check "and the tree really is gone" (-not (Test-Path -LiteralPath $VenvDir))
+    # Replay the migration branch's own decision with that state. It must take neither the
+    # "already moved aside" arm nor the "move it now" arm.
+    $wouldMove = (-not $script:StudioVenvRollbackDiscarded) -and (-not $script:StudioVenvRollbackActive)
+    Check "the migration would not try to move a tree that is gone" (-not $wouldMove)
+    $script:StudioNoRollback = $false
+    $script:StudioVenvRollbackDiscarded = $false
+
+    # The ordinary path must still report "not discarded", or the migration would skip a tree
+    # that is genuinely sitting there waiting to be kept.
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+    Reset-RollbackState $VenvDir
+    Start-StudioVenvRollback -ExistingDir $VenvDir
+    Check "the ordinary path does not claim the tree was discarded" (-not $script:StudioVenvRollbackDiscarded)
+    Check "and it is still there to be kept" ($null -ne $script:StudioVenvRollbackDir -and (Test-Path -LiteralPath $script:StudioVenvRollbackDir))
+    foreach ($c in @(Get-ChildItem -LiteralPath $StudioHome -Directory -Filter "unsloth_studio.rollback.*" -ErrorAction SilentlyContinue)) {
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     Write-Host "the free-space warning names both figures and the opt-out, and never aborts"
     # Stub the two measurements rather than filling a real disk.
     [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
