@@ -891,14 +891,12 @@ class TestBashBlocklistPosition:
             ),
             pytest.param("coproc echo hi", id = "coproc_benign_allowed"),
             pytest.param("coproc MYJOB { cat train.log; }", id = "coproc_named_benign_allowed"),
-            # Bash reads `coproc` as the keyword only UNQUOTED and at command position: `'coproc' echo rm` is
-            # "command not found". So a word spelled coproc anywhere else starts nothing, and the blocked word
-            # behind it is data the command merely prints or greps for.
+            # `coproc` is the keyword only unquoted at command position (`'coproc' echo rm` is "command not found"),
+            # so anywhere else it starts nothing and the blocked word behind it is data.
             pytest.param("grep -rn coproc tools.py", id = "coproc_as_argument_allowed"),
             pytest.param("grep coproc rm file", id = "coproc_then_blocked_word_as_args_allowed"),
             pytest.param("echo coproc rm", id = "coproc_then_blocked_word_echoed_allowed"),
             pytest.param("echo 'coproc rm'", id = "quoted_coproc_payload_allowed"),
-            # A real coprocess whose command is harmless does not become blocked by its own arguments.
             pytest.param("coproc echo rm", id = "coproc_benign_command_blocked_arg_allowed"),
             # The optional-name rule needs the same guard: these three words are arguments echo prints.
             pytest.param(
@@ -1152,8 +1150,8 @@ class TestBashBlocklistPosition:
                 "FOO=bar coproc JOB if rm -f victim; then :; fi",
                 id = "coproc_named_after_assign_blocked",
             ),
-            # `time` is a reserved word that takes a pipeline, so it can prefix a coprocess and bash really runs it
-            # (checked against bash 5.2.21). An external wrapper cannot: `env coproc JOB if ...` is a syntax error.
+            # `time` is a reserved word taking a pipeline, so it prefixes a coprocess and bash runs it (5.2.21);
+            # an external wrapper cannot, `env coproc JOB if ...` being a syntax error.
             pytest.param("rm", "time coproc rm -f victim", id = "timed_coproc_blocked"),
             pytest.param(
                 "rm",
@@ -1738,7 +1736,6 @@ class TestBashBlocklistPosition:
         assert is_high_risk_tool_call(
             "terminal", {"command": f"coproc {command}"}
         ) == is_high_risk_tool_call("terminal", {"command": command})
-        # The optional NAME is only a name; the compound behind it is the command.
         assert self._find()(f"coproc JOB if {command}; then :; fi") == self._find()(command)
         # `time` keeps command position for bash, so it must keep it for both classifiers too.
         assert self._find()(f"time coproc {command}") == self._find()(f"time {command}")

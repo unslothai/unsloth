@@ -198,12 +198,12 @@ _BLOCKED_COMMANDS = (
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position. `if`/`while`/`until` are followed by a CONDITION the shell executes,
-# so a command right after them is at command position. `coproc` too: reading it as the command word instead left
-# `coproc rm -rf x` scanning as arguments, and it really deletes.
+# so a command right after them is at command position. `coproc` too: read as the command word it left `coproc rm
+# -rf x` scanning as arguments, and that really deletes.
 _SHELL_KEYWORDS_AS_SEP = frozenset(
     {"then", "do", "else", "elif", "if", "while", "until", "!", "coproc"}
 )
-# Bash accepts `coproc NAME ...` only before a COMPOUND command, which is what tells a name from a command: the same
+# Bash takes `coproc NAME ...` only before a COMPOUND command, which is what tells a name from a command: the same
 # position holds the command itself in `coproc rm -f x`.
 _COPROC_COMPOUND_STARTERS = frozenset(
     {"{", "(", "((", "[[", "if", "while", "until", "for", "case", "select"}
@@ -214,10 +214,8 @@ _COPROC_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
 def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
     """Whether `tokens[index]` is the NAME of a `coproc NAME compound-command`, not a command word.
 
-    Callers gate this on having just consumed the `coproc` KEYWORD, which each walker already knows because it
-    tracks command position. Deciding that here from the neighbouring tokens instead cannot work in both
-    directions: `echo coproc JOB if rm -f x` is three words echo prints, while `time coproc JOB if rm -f x` and
-    `time -p coproc ...` really run the compound, and bash rejects `env coproc JOB if ...` outright.
+    Gate this on the caller having just consumed the `coproc` KEYWORD: the neighbouring tokens cannot decide it,
+    since `echo coproc JOB if rm -f x` prints three words while `time coproc JOB if rm -f x` really deletes.
     """
     return (
         index > 0
@@ -1345,9 +1343,8 @@ def _is_start_title(token: str) -> bool:
 # 0.60s of 3.9s. None only if the set is empty.
 _BLOCKED_WORD_RE = (
     re.compile(
-        # No `coproc` alternative here: this pass has no quoting or command-position context, and bash recognizes the
-        # keyword only unquoted at command position, so `grep coproc rm file` would read as a boundary. The token scan
-        # above knows where a command starts, and it is the one that handles it.
+        # No `coproc` alternative here, deliberately: with no quoting or command-position context this pass refused
+        # `grep coproc rm file`. The token scan above knows where a command starts and handles the keyword.
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
         r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
         r"(" + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS)) + r")"
@@ -7905,9 +7902,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
-                # This walker carries command position through a wrapper in `prefix_pending` rather than
-                # `expect_command`, so the keyword clause above misses `time coproc rm -f x`, which bash runs and
-                # which really deletes.
+                # This walker carries a wrapper's command position in `prefix_pending`, not `expect_command`, so the
+                # clause above misses `time coproc rm -f x`, which bash runs and which really deletes.
                 or (token == "coproc" and prefix_pending)
                 or (after_coproc and _is_coproc_name(tokens, _tok_idx))
                 or not set(token) - set(";&|()")
