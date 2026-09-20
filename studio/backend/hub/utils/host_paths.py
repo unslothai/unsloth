@@ -393,8 +393,9 @@ def _redact(
                 continue
             if key in HOST_PATH_TEXT_LIST_FIELDS and isinstance(value, (list, tuple)):
                 out[key] = [
-                    redact_paths_in_text(item) if isinstance(item, str) else
-                    _redact(item, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
+                    redact_paths_in_text(item)
+                    if isinstance(item, str)
+                    else _redact(item, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
                     for item in value
                 ]
                 continue
