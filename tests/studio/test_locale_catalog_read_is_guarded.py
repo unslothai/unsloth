@@ -24,9 +24,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DRIVER = (
-    Path(__file__).resolve().parent / "playwright_data_settings.py"
-)
+DRIVER = Path(__file__).resolve().parent / "playwright_data_settings.py"
 
 # `api.messages[locale]`, however it is spaced, and whatever is read off it.
 _CATALOG_READ = re.compile(r"api\.messages\[\s*locale\s*\]")
@@ -40,9 +38,9 @@ def _source() -> str:
 def test_the_driver_still_reads_a_catalog_by_locale():
     """If this stops being true the test below passes for the wrong reason."""
     source = _source()
-    assert _CATALOG_READ.search(source), (
-        f"{DRIVER.name} no longer reads api.messages[locale]; this guard is stale"
-    )
+    assert _CATALOG_READ.search(
+        source
+    ), f"{DRIVER.name} no longer reads api.messages[locale]; this guard is stale"
 
 
 def test_every_catalog_read_sits_behind_the_undefined_check():
@@ -55,7 +53,8 @@ def test_every_catalog_read_sits_behind_the_undefined_check():
     )
     first_guard = min(guards)
     reads = [
-        match.start() for match in _CATALOG_READ.finditer(source)
+        match.start()
+        for match in _CATALOG_READ.finditer(source)
         if not _GUARD.match(source, match.start())
     ]
     assert reads, f"{DRIVER.name}: no unguarded-looking read found; this guard is stale"
@@ -83,6 +82,6 @@ def test_the_load_is_retried_before_it_is_called_a_failure():
     source = _source()
     index = source.index("catalog never loaded")
     before = source[:index]
-    assert before.count("await api.setLocale(locale)") >= 2, (
-        "the driver gives up on the first failed catalog load; it must ask once more"
-    )
+    assert (
+        before.count("await api.setLocale(locale)") >= 2
+    ), "the driver gives up on the first failed catalog load; it must ask once more"
