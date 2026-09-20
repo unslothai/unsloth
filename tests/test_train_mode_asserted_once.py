@@ -14,9 +14,11 @@ On the base tree the helper does not exist and every test that needs it is skipp
 import copy
 
 import pytest
-import torch.nn as nn
 
-from unsloth.models import _utils as U
+# These runners do not all ship torch; skip the module rather than erroring at collection.
+pytest.importorskip("torch")
+nn = pytest.importorskip("torch.nn")
+U = pytest.importorskip("unsloth.models._utils")
 
 HELPER = getattr(U, "_unsloth_train_if_needed", None)
 needs_helper = pytest.mark.skipif(HELPER is None, reason = "base tree: no _unsloth_train_if_needed")

@@ -8,14 +8,15 @@ inputs, so "same kernel, same config, same numerics" is measured, not asserted.
 """
 
 import importlib
+
 import pytest
-import torch
 
+# These runners do not all ship torch/triton/fla; skip rather than erroring at collection.
+torch = pytest.importorskip("torch")
+triton = pytest.importorskip("triton")
+tl = pytest.importorskip("triton.language")
 fla_cache = pytest.importorskip("fla.ops.utils.cache")
-import triton
-import triton.language as tl
-
-from unsloth.models import _utils as U
+U = pytest.importorskip("unsloth.models._utils")
 
 PATCHER = getattr(U, "patch_fla_autotuner_fast_path", None)
 needs_patch = pytest.mark.skipif(
