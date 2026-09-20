@@ -1394,6 +1394,10 @@ export function useChatModelRuntime() {
           // The TOTAL -c the resident server launched with. loadContextLength is one
           // slot's share of it, and the reload request is sized in totals.
           const loadLaunchContextLength = stateBeforeUnload.launchContextLength;
+          // Set only when --fit SHRANK the window, which makes the launch total a
+          // request the server refused rather than a size it ran at: replaying it
+          // with --fit off would ask for memory that did not fit.
+          const loadPreFitContextLength = stateBeforeUnload.preFitContextLength;
           const loadTensorParallel = targetIsDiffusion
             ? false
             : (pendingLoadConfig?.tensorParallel ??
@@ -1767,9 +1771,15 @@ export function useChatModelRuntime() {
             ) {
               // The preserved value is sent as the total -c, while loadContextLength
               // is one slot's share, so a split server would reload at a quarter of
-              // its window. Prefer the launch total; without one the share is still
-              // the best available answer and behaviour is unchanged.
-              loadCustomContextLength = loadLaunchContextLength ?? loadContextLength;
+              // its window. Prefer the launch total, but ONLY when --fit did not
+              // shrink the window: fixed layers make the backend emit --fit off, so
+              // replaying a total the fitter had to reduce asks for memory that did
+              // not fit, which is the OOM this whole branch exists to avoid. When it
+              // did shrink, fall back to the per-slot share, which is what this
+              // branch sent before the launch total existed.
+              loadCustomContextLength =
+                (loadPreFitContextLength == null ? loadLaunchContextLength : null) ??
+                loadContextLength;
             }
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,

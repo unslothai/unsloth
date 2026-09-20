@@ -225,12 +225,20 @@ test("the chat page hands the store's pre-fit length to the bar", () => {
 // still quartering a four-slot server after the other three were fixed. Neither
 // is reachable from a unit test (they live inside the load hook), so they are
 // pinned at the source like the bar wiring above.
-test("pinning GPU layers preserves the launch total, not one slot's share", () => {
+test("pinning GPU layers preserves the launch total, but not one --fit refused", () => {
   const hook = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  // Fixed layers make the backend emit `--fit off`, so replaying a total the
+  // fitter had to reduce asks for memory that did not fit: the OOM this branch
+  // exists to avoid. The launch total is only safe when nothing was reduced.
   assert.match(
     hook,
-    /loadCustomContextLength\s*=\s*loadLaunchContextLength\s*\?\?\s*loadContextLength/,
-    "the manual+pinned branch must prefer the launch total over the per-slot window",
+    /loadCustomContextLength\s*=\s*\n?\s*\(loadPreFitContextLength == null \? loadLaunchContextLength : null\) \?\?\s*\n?\s*loadContextLength/,
+    "the manual+pinned branch must prefer the launch total only when --fit did not shrink it",
+  );
+  assert.match(
+    hook,
+    /const loadPreFitContextLength = stateBeforeUnload\.preFitContextLength/,
+    "the branch needs the pre-fit evidence to tell the two cases apart",
   );
 });
 

@@ -331,9 +331,10 @@ test("the clamp that stops a manual reload resizing is not a user pin", () => {
   const capture = RUNTIME.indexOf("const explicitCtxPin = loadRequestContextPin(");
   // The clamp now prefers the launch TOTAL over one slot's share; what this test
   // pins is the ORDERING against the pin capture, not the right-hand side.
-  const clamp = RUNTIME.indexOf(
-    "loadCustomContextLength = loadLaunchContextLength ?? loadContextLength;",
-  );
+  // Anchored on the assignment alone, not its right-hand side: what this test
+  // pins is the ORDERING against the pin capture, and the value that branch
+  // preserves has now changed twice without the ordering invariant moving.
+  const clamp = RUNTIME.indexOf("loadCustomContextLength =\n                (loadPreFit");
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
   assert.ok(
