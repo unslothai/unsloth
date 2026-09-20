@@ -1589,3 +1589,34 @@ class TestWindowsMountPointVolumes:
         assert "$IsWindows" in helper and "Windows_NT" in helper, (
             "Get-StudioMountedVolume would call Get-CimInstance off Windows"
         )
+
+
+class TestDiskFullDiagnosisReachesTauri:
+    """The desktop installer and its Repair flow run with --tauri, and there the only thing the
+    UI and its logs ever see is the message handed to the ERROR_DEFAULT marker. A disk-full
+    diagnosis printed beside that message is one the desktop user never reads, which is the
+    scenario #11313 was reported from."""
+
+    def test_shell_folds_the_diagnosis_into_the_marker(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert (
+            'tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)$_fail_suffix"'
+            in text
+        ), "install.sh keeps the disk-full diagnosis out of the Tauri message"
+
+    def test_windows_folds_the_diagnosis_into_the_failure_message(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert (
+            'Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)$_failSuffix"'
+            in text
+        ), "install.ps1 keeps the disk-full diagnosis out of the Tauri message"
+
+    def test_windows_measures_in_both_modes(self):
+        # The probe must sit OUTSIDE the non-Tauri console branch, or --tauri never measures.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        block = text.split("if ($setupExit -ne 0) {", 1)[1].split("Clear-TauriInstallError", 1)[0]
+        probe = block.index("$_failFree = Get-StudioFreeSpaceBytes")
+        guard = block.index("if (-not $TauriMode) {")
+        assert probe < guard, (
+            "the free-space probe runs only in the non-Tauri branch, so --tauri never measures"
+        )

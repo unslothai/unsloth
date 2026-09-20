@@ -7441,14 +7441,19 @@ fi
 # If setup.sh failed, report and exit now.
 if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
+    # A full disk surfaces here as nothing but an exit code, with the one "No space left on device" line buried in setup's output (#11313). Ask the filesystem directly and name it. Below 64 MiB nothing useful can be unpacked, so it is the cause rather than a coincidence.
+    # Folded into the ERROR_DEFAULT message as well, not only stderr: under --tauri the desktop app reads that message, so a diagnosis printed beside it is one the UI never shows. One line, because a marker is one line.
+    _fail_free_kb=$(_free_space_kb "$STUDIO_HOME")
+    _fail_suffix=""
+    if [ -n "$_fail_free_kb" ] && [ "$_fail_free_kb" -lt 65536 ] 2>/dev/null; then
+        _fail_suffix=": $STUDIO_HOME has only $((_fail_free_kb / 1024)) MB free, so the disk is full, which is very likely the cause. Free some space and re-run; --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
+    fi
     if [ "$TAURI_MODE" = true ]; then
-        tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)"
+        tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)$_fail_suffix"
     else
         step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
     fi
-    # A full disk surfaces here as nothing but an exit code, with the one "No space left on device" line buried in setup's output (#11313). Ask the filesystem directly and name it. Below 64 MiB nothing useful can be unpacked, so it is the cause rather than a coincidence.
-    _fail_free_kb=$(_free_space_kb "$STUDIO_HOME")
-    if [ -n "$_fail_free_kb" ] && [ "$_fail_free_kb" -lt 65536 ] 2>/dev/null; then
+    if [ -n "$_fail_suffix" ]; then
         echo "       $STUDIO_HOME has only $((_fail_free_kb / 1024)) MB free -- the disk is full, which is very likely the cause." >&2
         echo "       Free some space and re-run. --no-rollback (or UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install." >&2
     fi
