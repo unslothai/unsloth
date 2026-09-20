@@ -18351,6 +18351,12 @@ def _python_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else ("cancelled" if cancel_event is not None and cancel_event.is_set() else "finished")
+            )
         completion = os_sandbox.verify_prepared_completion(prepared, proc)
         if completion is not None and completion.get("timedOut"):
             timed_out = True
@@ -18552,6 +18558,12 @@ def _bash_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else ("cancelled" if cancel_event is not None and cancel_event.is_set() else "finished")
+            )
         completion = os_sandbox.verify_prepared_completion(prepared, proc)
         if completion is not None and completion.get("timedOut"):
             timed_out = True

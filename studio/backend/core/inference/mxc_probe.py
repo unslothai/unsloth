@@ -40,36 +40,35 @@ def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outsi
         )
         return (selected_executable, "/d", "/s", "/c", command)
     if name in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
-        script = workdir / "probe.ps1"
-        quote = lambda value: str(value).replace("'", "''")
-        script.write_text(
-            "Set-Content -LiteralPath 'inside.txt' -Value 'ok' -Encoding utf8\n"
-            f"try {{ Get-Content -LiteralPath '{quote(canary)}' -ErrorAction Stop | Set-Content -LiteralPath '{quote(read_capture)}' }} catch {{}}\n"
-            f"try {{ Set-Content -LiteralPath '{quote(outside_write)}' -Value 'bad' -ErrorAction Stop }} catch {{}}\n"
-            "Write-Output 'UNSLOTH_MXC_TERMINAL_PROBE_OK'\n",
-            encoding="utf-8",
+        ps_inside = str(workdir / "inside.txt").replace("'", "''")
+        ps_canary = str(canary).replace("'", "''")
+        ps_capture = str(read_capture).replace("'", "''")
+        ps_outside = str(outside_write).replace("'", "''")
+        command = (
+            f"Set-Content -LiteralPath '{ps_inside}' -Value 'ok'; "
+            f"try {{ Get-Content -LiteralPath '{ps_canary}' -ErrorAction Stop | "
+            f"Set-Content -LiteralPath '{ps_capture}' }} catch {{}}; "
+            f"try {{ Set-Content -LiteralPath '{ps_outside}' -Value 'bad' "
+            "-ErrorAction Stop } catch {}; "
+            "Write-Output 'UNSLOTH_MXC_TERMINAL_PROBE_OK'"
         )
         return (
             selected_executable,
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
-            "-File",
-            str(script),
+            "-Command",
+            command,
         )
     if name in {"bash", "bash.exe"}:
-        script = workdir / "probe.sh"
-        canary_posix = str(canary).replace("\\", "/")
-        outside_posix = str(outside_write).replace("\\", "/")
-        script.write_text(
-            "printf ok > inside.txt || exit 11\n"
-            f"cat {shlex.quote(canary_posix)} > outside-read.txt 2>/dev/null || :\n"
-            f"printf bad > {shlex.quote(outside_posix)} 2>/dev/null || :\n"
-            "printf 'UNSLOTH_MXC_TERMINAL_PROBE_OK\\n'\n",
-            encoding="utf-8",
+        command = (
+            "printf ok > inside.txt; "
+            f"cat {shlex.quote(str(canary))} > {shlex.quote(str(read_capture))} 2>/dev/null; "
+            f"printf bad > {shlex.quote(str(outside_write))} 2>/dev/null; "
+            "printf 'UNSLOTH_MXC_TERMINAL_PROBE_OK\\n'"
         )
-        return (selected_executable, str(script))
-    raise ValueError(f"unsupported Windows terminal executable: {selected_executable}")
+        return (selected_executable, "-c", command)
+    raise ValueError(f"the selected Windows Terminal shell is not qualified for MXC: {name}")
 
 
 def _probe(selected_executable: str, execution_kind: str, cancel_event=None) -> tuple[bool, str]:
@@ -78,7 +77,7 @@ def _probe(selected_executable: str, execution_kind: str, cancel_event=None) -> 
     if sys.getwindowsversion().build < 26100:
         return False, "Windows 11 build 26100 or newer is required for the MXC Preview"
     try:
-        mxc_runtime.runner_path()
+        mxc_runtime.wxc_path()
     except mxc_runtime.MxcRuntimeUnavailable as exc:
         return False, str(exc)
     if cancel_event is not None and cancel_event.is_set():
@@ -128,6 +127,9 @@ def _probe(selected_executable: str, execution_kind: str, cancel_event=None) -> 
             in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PATHEXT", "PYTHONIOENCODING"}
         }
         env["PYTHONIOENCODING"] = "utf-8"
+        env["HOME"] = str(workdir)
+        env["TEMP"] = str(workdir)
+        env["TMP"] = str(workdir)
 
         probe_plan = SimpleNamespace(
             argv=probe_argv,
@@ -165,16 +167,17 @@ def _probe(selected_executable: str, execution_kind: str, cancel_event=None) -> 
                     break
                 except subprocess.TimeoutExpired:
                     continue
-            receipt = mxc_adapter.completion_receipt(proc)
+            proc._unsloth_completion_reason = "finished"
+            result = mxc_adapter.completion_result(proc)
         except Exception as exc:  # capability result, never a workload fallback decision
             return False, f"the live MXC probe failed: {type(exc).__name__}: {exc}"
         finally:
             if "proc" in locals():
-                mxc_adapter.release_control(proc)
+                mxc_adapter.release_runtime(proc)
         if (
             proc.returncode != 0
-            or receipt.get("exitCode") != 0
-            or receipt.get("cleanup") != "complete"
+            or result.get("exitCode") != 0
+            or result.get("cleanup") != "complete"
         ):
             return False, "the live MXC probe did not complete cleanly"
         if execution_kind == "terminal":
@@ -229,7 +232,7 @@ def probe(
         return False, str(exc)
     key = (
         identity,
-        mxc_policy.PROFILE_ID,
+        mxc_runtime.PROFILE_ID,
         execution_kind,
         os.path.abspath(selected_executable),
     )

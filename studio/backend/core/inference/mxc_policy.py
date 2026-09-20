@@ -10,18 +10,35 @@ import os
 from pathlib import Path
 import shutil
 import site
+import subprocess
 import sys
 import unicodedata
 import uuid
 
-from .mxc_runtime import MXC_REVISION, MXC_SCHEMA_VERSION, RUNNER_PROTOCOL_VERSION
+from .mxc_runtime import MXC_SCHEMA_VERSION
 
-PROFILE_ID = "unsloth-mxc-windows-basecontainer-v1"
-PROFILE_VERSION = 1
-POLICY_IDENTITY_VERSION = 1
 MAX_ENVIRONMENT_ENTRIES = 512
 MAX_PATH_SCAN_ENTRIES = 50_000
 _WSL_TERMINAL_MARKERS = ("\\system32\\bash.exe", "\\windowsapps\\bash.exe")
+
+
+def _studio_ui_policy() -> dict:
+    """Return Studio's explicit ProcessContainer UI policy."""
+    return {
+        "ui": {
+            "disable": False,
+            "clipboard": "none",
+            "injection": False,
+        },
+        "processContainer": {
+            "ui": {
+                "isolation": "container",
+                "desktopSystemControl": False,
+                "systemSettings": "none",
+                "ime": False,
+            }
+        },
+    }
 
 
 class MxcPolicyError(RuntimeError):
@@ -144,27 +161,6 @@ def _runtime_read_roots(executable: str) -> list[str]:
     roots = [os.path.dirname(os.path.abspath(executable)), sys.prefix, sys.base_prefix]
     roots.extend(site.getsitepackages())
     roots.append(str(Path(__file__).with_name("sandbox_site")))
-    if Path(executable).name.casefold() in {"bash", "bash.exe"}:
-        executable_dir = Path(executable).resolve().parent
-        git_root = (
-            executable_dir.parent
-            if executable_dir.name.casefold() in {"bin", "usr"}
-            else executable_dir
-        )
-        if (
-            executable_dir.name.casefold() == "bin"
-            and executable_dir.parent.name.casefold() == "usr"
-        ):
-            git_root = executable_dir.parent.parent
-        roots.extend(
-            str(path)
-            for path in (
-                git_root,
-                git_root / "bin",
-                git_root / "usr" / "bin",
-                git_root / "mingw64" / "bin",
-            )
-        )
     system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
     if system_root:
         roots.append(system_root)
@@ -208,52 +204,27 @@ def _selected_runtime(plan) -> str:
     return selected
 
 
-def canonical_policy_material(request: dict) -> dict:
-    """Return the versioned policy identity independently reconstructed by Rust."""
-    return {
-        "identityVersion": POLICY_IDENTITY_VERSION,
-        "protocolVersion": request["protocol"],
-        "profileId": request["profileId"],
-        "profileVersion": request["profileVersion"],
-        "schemaVersion": request["schemaVersion"],
-        "runtimeRevision": request["runtimeRevision"],
-        "runId": request["runId"],
-        "containerId": request["containerId"],
-        "argv": list(request["argv"]),
-        "executionKind": request["executionKind"],
-        "runtimePath": request["runtimePath"],
-        "runtimeIdentity": dict(request["runtimeIdentity"]),
-        "cwd": request["cwd"],
-        "workdirIdentity": dict(request["workdirIdentity"]),
-        "environment": dict(request["environment"]),
-        "environmentPolicy": request["environmentPolicy"],
-        "commandLinePolicy": request["commandLinePolicy"],
-        "filesystem": {
-            "readwritePaths": list(request["readwritePaths"]),
-            "readonlyPaths": list(request["readonlyPaths"]),
-            "deniedPaths": list(request["deniedPaths"]),
-            "clearPolicyOnExit": request["clearPolicyOnExit"],
-        },
-        "network": {
-            "profile": request["networkProfile"],
-            "allowOutbound": request["allowOutbound"],
-            "allowLocalNetwork": request["allowLocalNetwork"],
-        },
-        "uiPolicy": request["uiPolicy"],
-        "timeoutMs": request["timeoutMs"],
-        "fallback": {"allowDaclMutation": request["allowDaclMutation"]},
-        "admission": request["admission"],
-    }
-
-
-def compute_policy_hash(request: dict) -> str:
-    encoded = json.dumps(
-        canonical_policy_material(request),
+def canonical_config_bytes(config: dict) -> bytes:
+    """Serialize exactly the deterministic stable-v0.8 request sent to WXC."""
+    return json.dumps(
+        config,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def compute_policy_hash(config: dict) -> str:
+    return "sha256:" + hashlib.sha256(canonical_config_bytes(config)).hexdigest()
+
+
+def verify_launch_identities(request: dict) -> None:
+    """Re-check the selected workload and workdir immediately before WXC dispatch."""
+    if _object_identity(request["runtimePath"], directory=False) != request["runtimeIdentity"]:
+        raise MxcPolicyError("the selected workload executable changed before WXC dispatch")
+    if _object_identity(request["cwd"], directory=True) != request["workdirIdentity"]:
+        raise MxcPolicyError("the MXC workdir changed before WXC dispatch")
+    _absolute_existing_directory(request["cwd"])
 
 
 def build_launch_request(plan, *, run_id: str | None = None) -> dict:
@@ -271,41 +242,54 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
     workdir = _absolute_existing_directory(plan.workdir)
     selected_runtime = _selected_runtime(plan)
     readonly = _runtime_read_roots(selected_runtime)
+    execution_argv = list(plan.argv)
+    execution_argv[0] = selected_runtime
     run_id = run_id or uuid.uuid4().hex
     workload_env = dict(plan.env)
     # MXC's Windows ProcessContainer validator requires LOCALAPPDATA to be
     # present. Point it inside the session instead of exposing the real profile.
     workload_env.setdefault("LOCALAPPDATA", workdir)
-    request = {
-        "protocol": RUNNER_PROTOCOL_VERSION,
-        "runId": run_id,
-        "profileId": PROFILE_ID,
-        "profileVersion": PROFILE_VERSION,
-        "schemaVersion": MXC_SCHEMA_VERSION,
-        "runtimeRevision": MXC_REVISION,
+    ui_policy = _studio_ui_policy()
+    config = {
+        "version": MXC_SCHEMA_VERSION,
         "containerId": f"unsloth-{run_id}",
-        "argv": list(plan.argv),
-        "executionKind": plan.execution_kind,
+        "containment": "processcontainer",
+        "lifecycle": {"destroyOnExit": True, "preservePolicy": False},
+        "process": {
+            "commandLine": subprocess.list2cmdline(execution_argv),
+            "cwd": workdir,
+            "env": [f"{key}={value}" for key, value in sorted(workload_env.items())],
+            "timeout": 0
+            if plan.timeout_seconds is None
+            else max(1, int(plan.timeout_seconds * 1000)),
+        },
+        "filesystem": {
+            "readwritePaths": [workdir],
+            "readonlyPaths": readonly,
+            "deniedPaths": [],
+        },
+        "network": {
+            "defaultPolicy": "allow",
+            "allowLocalNetwork": True,
+            "allowedHosts": [],
+            "blockedHosts": [],
+            "enforcementMode": "capabilities",
+        },
+        "processContainer": {
+            "leastPrivilege": False,
+            "capabilities": ["internetClient", "privateNetworkClientServer"],
+            "ui": ui_policy["processContainer"]["ui"],
+        },
+        "ui": ui_policy["ui"],
+        "fallback": {"allowDaclMutation": False},
+    }
+    request = {
         "runtimePath": os.path.realpath(selected_runtime),
         "runtimeIdentity": _object_identity(selected_runtime, directory=False),
         "cwd": workdir,
         "workdirIdentity": _object_identity(workdir, directory=True),
-        "environment": workload_env,
-        "environmentPolicy": "sanitized-explicit-v1",
-        "commandLinePolicy": "windows-createprocess-argv-v1",
-        "readwritePaths": [workdir],
-        "readonlyPaths": readonly,
-        "deniedPaths": [],
-        "clearPolicyOnExit": True,
-        "networkProfile": "compatibility",
-        "allowOutbound": True,
-        "allowLocalNetwork": True,
-        "uiPolicy": None,
-        "timeoutMs": None
-        if plan.timeout_seconds is None
-        else max(1, int(plan.timeout_seconds * 1000)),
-        "allowDaclMutation": False,
-        "admission": "atomic-no-dacl-fallback",
+        "config": config,
+        "configBytes": canonical_config_bytes(config),
+        "policyHash": compute_policy_hash(config),
     }
-    request["policyHash"] = compute_policy_hash(request)
     return request

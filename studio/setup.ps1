@@ -7725,38 +7725,31 @@ substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
 
-# MXC Preview runtime lifecycle is deliberately separate from capability probing
-# and model execution. Release packaging places one approved x64 artifact beside
-# the installer; setup only asks the fixed lifecycle command to install/update it.
-# No host-policy preparation or elevation happens here.
-if ($stackExit -eq 0) {
-    $_mxcPackage = Join-Path $PSScriptRoot "native\mxc-runner\package\windows-x86_64\runtime-package.json"
-    $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_runtime.py"
-    if ((Test-Path -LiteralPath $_mxcPackage -PathType Leaf) -and
-        (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf)) {
-        substep "verifying the packaged Windows MXC Preview runtime..."
-        $_mxcStatusRaw = & python $_mxcInstaller verify --json 2>$null | Out-String
-        $_mxcStatusExit = $LASTEXITCODE
-        $_mxcState = ""
-        try { $_mxcState = ($_mxcStatusRaw | ConvertFrom-Json).state } catch { }
-        $_mxcOperation = if ($_mxcStatusExit -eq 0 -and $_mxcState -eq "ready") {
-            "update"
-        } elseif ($_mxcState -eq "not_installed") {
-            "install"
-        } else {
-            "repair"
-        }
-        $_mxcResult = & python $_mxcInstaller $_mxcOperation --json 2>&1 | Out-String
-        if ($LASTEXITCODE -eq 0) {
-            substep "Windows MXC Preview runtime $_mxcOperation complete"
-        } else {
-            substep "[WARN] Windows MXC Preview runtime is unavailable; setup will continue without it." "Yellow"
-            if ($script:UnslothVerbose -and $_mxcResult) {
-                Write-StudioLine $_mxcResult.Trim() -ForegroundColor Yellow
+# Windows MXC Preview is an optional, pinned prebuilt like the other native
+# runtimes. The installer owns the immutable Microsoft release URL and verifies
+# the archive and wxc-exec.exe sizes and SHA-256 digests before safely
+# activating it. Failure leaves Auto mode on software safeguards.
+if ($stackExit -eq 0 -and $env:OS -eq "Windows_NT") {
+    $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_prebuilt.py"
+    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
+    if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
+        substep "installing Windows MXC Preview runtime..."
+        $_mxcOutput = & python $_mxcInstaller --install-dir $_mxcInstallDir 2>&1 | Out-String
+        $_mxcExit = $LASTEXITCODE
+        if ($_mxcExit -eq 0) {
+            if ($_mxcOutput -match "already matches") {
+                step "MXC Preview" "prebuilt up to date and validated"
+            } else {
+                step "MXC Preview" "prebuilt installed and validated"
             }
+        } elseif ($_mxcExit -eq 3) {
+            step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
+        } else {
+            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
         }
-    } else {
-        substep "Windows MXC Preview runtime artifact is not bundled; capability remains unavailable." "Yellow"
+        if ($script:UnslothVerbose -and $_mxcOutput) {
+            Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })
+        }
     }
 }
 
@@ -8669,7 +8662,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     # caught here; an unowned tree still stops.
     step "whisper.cpp" "install directory cannot be read: access is denied; curated whisper.cpp dictation is unavailable; restore access to $WhisperCppDir or move it aside, then re-run setup; browser and Transformers dictation remain available" "Yellow"
 } elseif (Test-Path -LiteralPath $WhisperInstaller) {
-    # The installer's atomic activation replaces the whole directory, so the
+    # The installer replaces the whole directory during activation, so the
     # custom-home ownership guard must run first (mirrors the llama block).
     if ($StudioHomeIsCustom) {
         Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install"

@@ -104,12 +104,9 @@ class ToolExecutionRecord:
     limitations: tuple[str, ...] = ()
     # Always "unrestricted": this confines the filesystem, not the network.
     network_policy: str = "unrestricted"
-    record_version: int = 2
     backend_tier: str = "unknown"
     runtime_revision: str = ""
-    runtime_generation: str = ""
     runtime_artifact_digest: str = ""
-    runtime_api_revision: str = ""
     schema_version: str = ""
     policy_hash: str = ""
     execution_status: str = "planned"
@@ -128,12 +125,9 @@ class ToolExecutionRecord:
             "retained_safeguards": list(self.retained_safeguards),
             "limitations": list(self.limitations),
             "network_policy": self.network_policy,
-            "record_version": self.record_version,
             "backend_tier": self.backend_tier,
             "runtime_revision": self.runtime_revision,
-            "runtime_generation": self.runtime_generation,
             "runtime_artifact_digest": self.runtime_artifact_digest,
-            "runtime_api_revision": self.runtime_api_revision,
             "schema_version": self.schema_version,
             "policy_hash": self.policy_hash,
             "execution_status": self.execution_status,
