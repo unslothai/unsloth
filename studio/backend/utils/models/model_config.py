@@ -2688,6 +2688,7 @@ def _extract_quant_label(filename: str) -> str:
         r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
         r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
         r"|TQ[0-9]+_[0-9]+"  # Ternary quant: TQ1_0, TQ2_0
+        r"|PQ[0-9]+_[0-9]+"  # Packed Q (Prism Bonsai): PQ2_0
         r"|Q[0-9]+_K_[A-Z]+"  # K-quant: Q4_K_M, Q3_K_S
         r"|Q[0-9]+_[0-9]+"  # Standard: Q8_0, Q5_1
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
@@ -2720,6 +2721,7 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|TQ[0-9]+_[0-9]+"
+    r"|PQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
     r"|Q[0-9]+_[0-9]+"
     r"|Q[0-9]+_K"

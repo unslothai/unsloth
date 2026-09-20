@@ -2918,6 +2918,7 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|TQ[0-9]+_[0-9]+"
+    r"|PQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
     r"|Q[0-9]+_[0-9]+"
     r"|Q[0-9]+_K"
@@ -3689,23 +3690,33 @@ def _resolve_variant_gguf_files(
 ) -> tuple[Optional[str], list[str]]:
     """Which file in ``hf_repo`` this variant means, plus its extra shards.
 
-    Repo listing, then the local HF cache, then a name synthesised from the repo id; every
-    tier fails soft (``(None, [])`` means "no opinion"). Module level, not inside
-    ``_download_gguf``, so the pre-teardown header probe resolves exactly the file the
-    download will open -- two copies of this cascade would let the two drift.
+    Repo listing, then the local HF cache, then the variant-requirements cache
+    populated by ``/gguf-variants``, then a local HF cache variant listing. When
+    the variant cannot be resolved, return ``(None, [])`` — no ``{repo}-{variant}.gguf``
+    synthesis (#11343). Module level, not inside ``_download_gguf``, so the pre-teardown
+    header probe resolves exactly the file the download will open -- two copies
+    of this cascade would let the two drift.
     """
     gguf_filename: Optional[str] = None
     gguf_extra_shards: list[str] = []
+    listed_files: Optional[list[str]] = None
     if not hf_variant:
         return None, []
+
+    def _assign_from_files(files: Iterable[str]) -> bool:
+        nonlocal gguf_filename, gguf_extra_shards
+        gguf_files = _gguf_files_for_variant(files, hf_variant)
+        if not gguf_files:
+            return False
+        gguf_filename = gguf_files[0]
+        gguf_extra_shards = _gguf_extra_shards(gguf_files, gguf_filename)
+        return True
+
     try:
         from huggingface_hub import list_repo_files
 
-        files = list_repo_files(hf_repo, token = hf_token)
-        gguf_files = _gguf_files_for_variant(files, hf_variant)
-        if gguf_files:
-            gguf_filename = gguf_files[0]
-            gguf_extra_shards = _gguf_extra_shards(gguf_files, gguf_filename)
+        listed_files = list(list_repo_files(hf_repo, token = hf_token))
+        _assign_from_files(listed_files)
     except Exception as e:
         logger.warning(f"Could not list repo files: {e}")
 
@@ -3722,8 +3733,64 @@ def _resolve_variant_gguf_files(
             )
 
     if not gguf_filename:
-        repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
-        gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+        try:
+            from hub.services.models import gguf_variants as hub_gguf_variants
+
+            requirement = hub_gguf_variants.gguf_variant_requirements(
+                hf_repo, hf_variant, hf_token
+            )
+            if requirement is not None and requirement.main_filenames:
+                gguf_filename = sorted(requirement.main_filenames)[0]
+                gguf_extra_shards = _gguf_extra_shards(
+                    requirement.target_filenames,
+                    gguf_filename,
+                )
+                logger.info(
+                    "Resolved variant %s -> %s from GGUF variant requirements cache",
+                    hf_variant,
+                    gguf_filename,
+                )
+        except Exception as e:
+            logger.debug("GGUF variant requirements lookup failed for %s: %s", hf_repo, e)
+
+    if not gguf_filename and listed_files is None:
+        try:
+            from huggingface_hub import list_repo_files
+
+            listed_files = list(list_repo_files(hf_repo, token = hf_token))
+            _assign_from_files(listed_files)
+        except Exception as e:
+            logger.warning(f"Could not list repo files on retry: {e}")
+
+    if not gguf_filename and listed_files is not None:
+        return None, []
+
+    if not gguf_filename:
+        try:
+            from hub.utils.gguf import gguf_variant_key, list_gguf_variants_from_hf_cache
+
+            cached = list_gguf_variants_from_hf_cache(hf_repo)
+            if cached is not None:
+                variants, _, _ = cached
+                wanted = hf_variant.strip().lower()
+                for row in variants:
+                    if gguf_variant_key(row.filename).lower() == wanted:
+                        gguf_filename = row.filename
+                        gguf_extra_shards = _gguf_extra_shards(
+                            [row.filename],
+                            gguf_filename,
+                        )
+                        logger.info(
+                            "Resolved variant %s -> %s from local HF cache listing",
+                            hf_variant,
+                            gguf_filename,
+                        )
+                        break
+        except Exception as e:
+            logger.debug("Local GGUF variant listing failed for %s: %s", hf_repo, e)
+
+    if not gguf_filename:
+        return None, []
     return gguf_filename, gguf_extra_shards
 
 
@@ -18230,6 +18297,11 @@ class LlamaCppBackend:
         gguf_filename, gguf_extra_shards = _resolve_variant_gguf_files(
             hf_repo, hf_variant, hf_token
         )
+        if hf_variant and not gguf_filename:
+            raise ValueError(
+                f"GGUF variant '{hf_variant}' not found in {hf_repo}. "
+                "Pick a variant from the model list or download the file locally."
+            )
 
         # Prefer the existing model. Updates use force=True to fetch a new revision.
         if not force:
